@@ -18,13 +18,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   acl \
   ca-certificates \
   curl \
+  g++ \
   gcc \
   git \
   gnupg \
   jq \
   libxml2-dev \
+  make \
   openssh-client \
   procps \
+  python3 \
   psmisc \
   ripgrep \
   unzip \
@@ -78,9 +81,16 @@ COPY --chmod=755 scripts/docker-safe /usr/local/bin/docker-safe
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g npm@12.0.2
 
-# Install acpx, agent-browser, pi-web-access, gemini-cli (pi itself is installed at runtime in entrypoint.sh)
+# Install acpx, agent-browser, pi-web-access, gemini-cli, and Graft (pi itself is installed at runtime in entrypoint.sh)
+COPY scripts/graft-allow-scripts.mjs /usr/local/lib/scripts/graft-allow-scripts.mjs
+COPY extensions/shared/logger-core.mjs extensions/shared/install-logger.mjs /usr/local/lib/extensions/shared/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-  npm install -g acpx agent-browser pi-web-access @google/gemini-cli
+  npm install -g acpx agent-browser pi-web-access @google/gemini-cli && \
+  DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest --ignore-scripts && \
+  GRAFT_ALLOW_SCRIPTS="$(node /usr/local/lib/scripts/graft-allow-scripts.mjs "$(npm root -g)/@nanonets/graft" "$(npm root -g)")" && \
+  test -n "$GRAFT_ALLOW_SCRIPTS" && \
+  npm rebuild -g @nanonets/graft --allow-scripts="$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts && \
+  graft --version
 
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)

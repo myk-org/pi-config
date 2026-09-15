@@ -46,6 +46,7 @@ import { getSetting } from "./project-settings.js";
 import { checkSyncLimit } from "./sync-limit.js";
 import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
+import { withGraftTools } from "./graft.js";
 import { parseModelOverride, mergeModelOverride } from "./parse-model-override.js";
 import { clockHHMM, getPiInvocation, getProjectTmpDir, djb2Hash } from "./utils.js";
 
@@ -422,8 +423,8 @@ export async function runSingleAgent(
   const { model: effectiveModel, provider: effectiveProvider } = resolveAgentModelProvider(agentName, agent, parentModelId, parentProvider, cwd, explicit);
   if (effectiveModel) args.push("--model", effectiveModel);
   if (effectiveProvider) args.push("--provider", effectiveProvider);
-  if (agent.tools && agent.tools.length > 0)
-    args.push("--tools", agent.tools.join(","));
+  const tools = withGraftTools(agent.tools, getSetting(cwd, "graft_enable"));
+  if (tools?.length) args.push("--tools", tools.join(","));
 
   let tmpDir: string | null = null;
   let tmpFile: string | null = null;

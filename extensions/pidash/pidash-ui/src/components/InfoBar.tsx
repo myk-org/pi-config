@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ExternalLink, GitBranch, Brain, Bot, ChevronDown, Folder } from "lucide-react";
+import { ExternalLink, GitBranch, Brain, Bot, Check, ChevronDown, Folder } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@ui/popover";
 import { cn } from "@/lib/utils";
 import type { SessionInfo, TokenUsage } from "@/types";
+import { formatCompactTotal, formatExactTotal } from "@/lib/format-total";
+import { createLogger } from "@/lib/create-logger";
+import { supportsReasoning, THINKING_LEVELS } from "@/lib/model-capabilities";
+
+const log = createLogger("InfoBar");
 
 function fk(n: number): string {
   if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
@@ -14,9 +19,8 @@ interface ModelInfo {
   id: string;
   name: string;
   provider: string;
+  reasoning: boolean;
 }
-
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"];
 
 interface Props {
   session: SessionInfo;
@@ -57,6 +61,8 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
     tasks: Array<{ id: string; description: string; schedule: string; lastRun?: number; nextRun?: number; leader?: boolean }>;
   }>({ count: 0, tasks: [] });
   const filterRef = useRef<HTMLInputElement>(null);
+  const thinkingButtonRef = useRef<HTMLButtonElement>(null);
+  const thinkingOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const ctxWin = session.contextWindow || 1000000;
   const input = tokens?.input || 0;
@@ -98,15 +104,27 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
     });
   }, [onMessage]);
 
-  // Close menu on outside click
+  // Close menu on outside click or Escape
   useEffect(() => {
     if (!openMenu) { setFilter(""); return; }
-    // Focus the filter input when dropdown opens
-    setTimeout(() => filterRef.current?.focus(), 50);
+    if (openMenu === "models") setTimeout(() => filterRef.current?.focus(), 50);
+    if (openMenu === "thinking") {
+      const currentIndex = Math.max(0, THINKING_LEVELS.indexOf(thinkingLevel as typeof THINKING_LEVELS[number]));
+      setTimeout(() => thinkingOptionRefs.current[currentIndex]?.focus(), 0);
+    }
     const close = () => { setOpenMenu(null); setFilter(""); };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      close();
+      if (openMenu === "thinking") thinkingButtonRef.current?.focus();
+    };
     document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, [openMenu]);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("click", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [openMenu, thinkingLevel]);
 
   const toggleMenu = useCallback((name: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -149,6 +167,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
                 key={m.id}
                 className={`w-full text-left px-3 py-1.5 text-sm hover:bg-accent transition-colors flex justify-between ${(m.name === displayModel || m.id === displayModel) ? "bg-accent/50" : ""}`}
                 onClick={() => {
+                  log.debug("model selected", { id: m.id, reasoning: m.reasoning });
                   send({ type: "pidash-command", sessionId: session.sessionId, command: "set-model", modelId: m.id });
                   setOpenMenu(null);
                 }}
@@ -164,34 +183,67 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
       <span className="text-border">|</span>
 
       {/* Thinking */}
-      <div className="relative">
+      {supportsReasoning(session) && <div className="relative">
         <button
+          ref={thinkingButtonRef}
           className="flex items-center gap-1 hover:text-primary transition-colors"
+          aria-haspopup="menu"
+          aria-expanded={openMenu === "thinking"}
+          aria-controls="thinking-level-menu"
           onClick={(e) => toggleMenu("thinking", e)}
+          onKeyDown={(e) => {
+            if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+            e.preventDefault();
+            e.stopPropagation();
+            setOpenMenu("thinking");
+          }}
         >
           <Brain className="h-3.5 w-3.5" /> {thinkingLevel} <ChevronDown className="h-3 w-3" />
         </button>
         {openMenu === "thinking" && (
-          <div className="absolute bottom-full left-0 mb-1 z-50 bg-card border border-border rounded-lg shadow-xl py-1 min-w-[120px]" onClick={(e) => e.stopPropagation()}>
-            <div className="px-3 py-1 text-xs text-muted-foreground font-medium">Thinking level</div>
-            {THINKING_LEVELS.map((lvl) => (
+          <div
+            id="thinking-level-menu"
+            role="menu"
+            aria-label="Thinking level"
+            className="absolute bottom-full left-0 mb-1 z-50 w-max min-w-28 bg-card border border-border rounded-lg shadow-xl py-1"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              const index = thinkingOptionRefs.current.indexOf(document.activeElement as HTMLButtonElement);
+              let next = index;
+              if (e.key === "ArrowDown") next = (index + 1) % THINKING_LEVELS.length;
+              else if (e.key === "ArrowUp") next = (index - 1 + THINKING_LEVELS.length) % THINKING_LEVELS.length;
+              else if (e.key === "Home") next = 0;
+              else if (e.key === "End") next = THINKING_LEVELS.length - 1;
+              else return;
+              e.preventDefault();
+              e.stopPropagation();
+              thinkingOptionRefs.current[next]?.focus();
+            }}
+          >
+            {THINKING_LEVELS.map((lvl, index) => (
               <button
                 key={lvl}
-                className={`w-full text-left px-3 py-1.5 text-sm hover:bg-accent transition-colors ${lvl === thinkingLevel ? "bg-accent/50" : ""}`}
+                ref={(element) => { thinkingOptionRefs.current[index] = element; }}
+                role="menuitemradio"
+                aria-checked={lvl === thinkingLevel}
+                tabIndex={lvl === thinkingLevel ? 0 : -1}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent focus:bg-accent focus:outline-none transition-colors ${lvl === thinkingLevel ? "bg-accent/50 text-foreground" : ""}`}
                 onClick={() => {
                   setThinkingLevel(lvl);
                   send({ type: "pidash-command", sessionId: session.sessionId, command: "set-thinking", level: lvl });
                   setOpenMenu(null);
+                  thinkingButtonRef.current?.focus();
                 }}
               >
+                <Check className={cn("h-3 w-3", lvl !== thinkingLevel && "invisible")} aria-hidden="true" />
                 {lvl}
               </button>
             ))}
           </div>
         )}
-      </div>
+      </div>}
 
-      <span className="text-border">|</span>
+      {supportsReasoning(session) && <span className="text-border">|</span>}
 
       {/* Tokens */}
       <span className="tabular-nums">
@@ -206,6 +258,18 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
 
       {/* Context */}
       <span className={cn("tabular-nums inline-block min-w-[4em] text-right", pctColor)}>ctx {pct}%</span>
+
+      {session.graftTokenSavings !== undefined && (
+        <>
+          <span className="text-border">|</span>
+          <span
+            className="tabular-nums text-green-500"
+            title={`${formatExactTotal(session.graftTokenSavings)} Graft tokens saved`}
+          >
+            ◤ {formatCompactTotal(session.graftTokenSavings)} saved
+          </span>
+        </>
+      )}
 
       {/* Git */}
       {session.branch && (

@@ -5,6 +5,8 @@ export interface SessionInfo {
   cwd: string;
   branch: string;
   model: string;
+  /** Explicit capability of the active Pi model. */
+  reasoning?: boolean;
   startedAt: string;
   lastActivity: number;
   active: boolean;
@@ -27,4 +29,6 @@ export interface SessionInfo {
   comsName?: string;
   comsPurpose?: string;
   comsProject?: string;
+  /** Exact authoritative Graft savings for this parent Pi session. */
+  graftTokenSavings?: number;
 }

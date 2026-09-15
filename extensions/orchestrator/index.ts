@@ -36,6 +36,7 @@ import { registerReviewUI } from "./review-ui.js";
 import { registerSessionSearch } from "./session-search.js";
 import { registerSettingsTui } from "./settings-tui.js";
 import { registerMarkdownTransformer } from "./markdown-transformer.js";
+import { registerGraft } from "./graft.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
 import { setGlobalSessionId } from "../shared/file-logger.js";
@@ -94,6 +95,7 @@ export default function (pi: ExtensionAPI) {
   const { spawnAsyncAgent, killAsyncAgent, getAsyncJobs } = registerAsyncAgents(pi, terminalNotify);
   registerSubagentTool(pi, spawnAsyncAgent, killAsyncAgent);
   registerProjectSettings(pi);
+  registerGraft(pi);
   registerEnforcement(pi, IN_CONTAINER);
   registerReviewUI(pi);
   registerRules(pi, getAsyncJobs);

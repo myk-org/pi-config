@@ -22,6 +22,7 @@ import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { firstLiveExtensionCtx, isLiveExtensionCtx, resolveSessionStartCtx } from "../shared/live-ctx.js";
 import { createLogger } from "../shared/logger.js";
+import { pidashModelInfo } from "./model-info.js";
 
 const log = createLogger("pidash");
 
@@ -133,6 +134,7 @@ export function registerPidash(
   let comsIdentityName: string | undefined;
   let comsIdentityPurpose: string | undefined;
   let comsIdentityProject: string | undefined;
+  let graftTokenSavings: number | undefined;
   const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
 
   // Listen for coms identity — coms ext emits this after boot
@@ -143,6 +145,15 @@ export function registerPidash(
     log.debug("coms_identity_received", comsIdentityName);
     if (ws && connected) {
       try { ws.send(JSON.stringify({ type: "update_info", comsName: comsIdentityName, comsPurpose: comsIdentityPurpose, comsProject: comsIdentityProject })); } catch {}
+    }
+  });
+
+  pi.events.on("pidash:graft-savings", (data: any) => {
+    if (!Number.isSafeInteger(data?.tokenSavings) || data.tokenSavings < 0) return;
+    graftTokenSavings = data.tokenSavings;
+    log.debug("graft_savings_received", { tokenSavings: graftTokenSavings });
+    if (ws && connected) {
+      try { ws.send(JSON.stringify({ type: "update_info", graftTokenSavings })); } catch {}
     }
   });
 
@@ -313,6 +324,7 @@ export function registerPidash(
                 id: m.id,
                 name: m.name,
                 provider: typeof m.provider === "string" ? m.provider : m.provider?.name || "",
+                reasoning: m.reasoning === true,
               }));
               log.debug(`models found: ${list.length}`);
               if (ws && connected) ws.send(JSON.stringify({ type: "models-list", models: list }));
@@ -329,7 +341,7 @@ export function registerPidash(
             if (model) {
               await (pi as any).setModel(model);
               log.debug(`model set to: ${model.name}`);
-              ws.send(JSON.stringify({ type: "update_info", model: model.name, contextWindow: model.contextWindow || 0 }));
+              ws.send(JSON.stringify({ type: "update_info", model: model.name, contextWindow: model.contextWindow || 0, reasoning: model.reasoning === true }));
             }
           } catch (e: any) { log.debug(`set-model error: ${e.message}`); }
         }
@@ -337,6 +349,8 @@ export function registerPidash(
         if (parsed.command === "set-thinking" && parsed.level) {
           try {
             (pi as any).setThinkingLevel(parsed.level);
+            // Pi emits thinking_level_select for this setter; the provider
+            // extension persists the validated effective level for pidash too.
             log.debug(`thinking set to: ${parsed.level}`);
             ws.send(JSON.stringify({ type: "update_info", thinkingLevel: parsed.level }));
           } catch (e: any) { log.debug(`set-thinking error: ${e.message}`); }
@@ -555,6 +569,7 @@ export function registerPidash(
           gitChanges: git.changes,
           container: isContainer(),
           model: m?.name || m?.id || "",
+          reasoning: m?.reasoning === true,
           contextWindow: m?.contextWindow || 0,
           startedAt: new Date().toISOString(),
           activity,
@@ -568,6 +583,7 @@ export function registerPidash(
           comsName: comsIdentityName || (pi as any).getFlag?.("cname") || undefined,
           comsPurpose: comsIdentityPurpose || (pi as any).getFlag?.("purpose") || undefined,
           comsProject: comsIdentityProject || undefined,
+          graftTokenSavings,
         });
         log.debug(`sending register: ${reg}`);
         wsClient.send(reg);
@@ -740,11 +756,7 @@ export function registerPidash(
     pi.on("model_select", (event: any) => {
       if (shuttingDown) return;
       if (ws && connected) {
-        ws.send(JSON.stringify({
-          type: "update_info",
-          model: event.model?.name || event.model?.id || "",
-          contextWindow: event.model?.contextWindow || 0,
-        }));
+        ws.send(JSON.stringify({ type: "update_info", ...pidashModelInfo(event.model) }));
       }
     });
 
@@ -855,6 +867,7 @@ export function registerPidash(
   function handleSessionStart(event: any, ctx: any): void {
     sessionNamed = false;
     log.debug("session_start", (event as any)?.reason);
+    if (["new", "fork"].includes(event?.reason)) graftTokenSavings = 0;
 
     const resolved = resolveSessionStartCtx(lastCtx, ctx);
     lastCtx = resolved.lastCtx;
@@ -889,6 +902,11 @@ export function registerPidash(
         cwd: switchCtx.cwd,
         branch: getCurrentBranch(switchCtx.cwd),
         sessionFile: switchCtx.sessionManager?.getSessionFile?.() || switchCtx.sessionFile || "",
+        model: switchCtx.model?.name || switchCtx.model?.id || "",
+        reasoning: switchCtx.model?.reasoning === true,
+        contextWindow: switchCtx.model?.contextWindow || 0,
+        thinkingLevel: (pi as any).getThinkingLevel?.() || "medium",
+        graftTokenSavings,
       }));
       log.debug(`session_switch sent: cwd=${switchCtx.cwd}`);
     }

@@ -197,9 +197,12 @@ export function fileLog(
 
   const detail =
     err !== undefined ? ` ${formatErr(err)}` : "";
-  const line = `${new Date().toISOString()} [${level}] [${prefix}] ${oneLine(message)}${detail}\n`;
-  const safe = name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  return writeFileLogLine(name, `${new Date().toISOString()} [${level}] [${prefix}] ${oneLine(message)}${detail}\n`);
+}
 
+/** Persist an already formatted canonical logger line. */
+export function writeFileLogLine(name: string, line: string): boolean {
+  const safe = name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const logPath = getPiLogPath(name);
   if (!logPath) {
     pendingLogLines.push({ name, line });

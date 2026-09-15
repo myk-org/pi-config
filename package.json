@@ -48,6 +48,7 @@
     "scripts/httpd.py",
     "scripts/symlink-cli-specialists.sh",
     "scripts/build-extension-uis.sh",
+    "scripts/graft-allow-scripts.mjs",
     "agents/",
     "rules/",
     "prompts/",

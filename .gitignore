@@ -27,3 +27,6 @@ Thumbs.db
 .cursor/agents/
 .claude/agents/
 .gemini/agents/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

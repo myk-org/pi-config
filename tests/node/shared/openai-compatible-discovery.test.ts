@@ -9,6 +9,7 @@ import {
   findEligibleOpenAiCompatibleProviderConfigsResult,
   formatOpenAiCompatibleDiscoverySummary,
   materializeOpenAiCompatibleModels,
+  redactOpenAiCompatibleDiagnostic,
 } from "../../../extensions/shared/openai-compatible-discovery.js";
 
 function staticModel(id: string, provider = "litellm") {
@@ -121,6 +122,107 @@ describe("OpenAI-compatible provider discovery", () => {
       maxTokens: 16_384,
     });
     assert.equal(model.input.includes("image"), true);
+  });
+
+  it("enriches LiteLLM reasoning by reported model identity with resolved auth and headers", async () => {
+    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { litellmGateway: {
+      api: "openai-completions",
+      discoverModels: true,
+      headers: { "X-Route": "$TEST_LITELLM_ROUTE" },
+    } } }));
+    process.env.TEST_LITELLM_ROUTE = "fake-route";
+    let sessionStart: any;
+    const requests: Array<{ url: string; headers: Headers }> = [];
+    const registered: any[] = [];
+    globalThis.fetch = async (input, init) => {
+      requests.push({ url: String(input), headers: new Headers(init?.headers) });
+      return String(input).includes("model/info")
+        ? new Response(JSON.stringify({ data: [
+          { model_name: "explicit-true", model_info: { supports_reasoning: true } },
+          { model_name: "explicit-false", model_info: { supports_reasoning: false, supported_openai_params: ["reasoning_effort"] } },
+          { model_name: "fallback", model_info: { supported_openai_params: ["reasoning_effort"] } },
+        ] }))
+        : new Response(JSON.stringify({ data: [
+          { id: "explicit-true" }, { id: "explicit-false" }, { id: "fallback" }, { id: "ordinary" },
+        ] }));
+    };
+    installOpenAiCompatibleDiscovery({
+      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
+      registerProvider: (provider: any) => registered.push(provider),
+    } as any);
+    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
+      getProvider: () => ({ ...sourceProvider("litellmGateway"), name: "LiteLLM gateway", baseUrl: "https://gateway.example/v1?tenant=fake" }),
+      getProviderAuth: async () => ({ auth: { apiKey: "fake-key" } }), // pragma: allowlist secret
+      getAll: () => [],
+    } });
+    delete process.env.TEST_LITELLM_ROUTE;
+
+    assert.deepEqual(requests.map(({ url }) => new URL(url).pathname), ["/v1/models", "/v1/model/info"]);
+    assert.equal(new URL(requests[1].url).searchParams.get("tenant"), "fake");
+    assert.equal(requests[1].headers.get("authorization"), "Bearer fake-key");
+    assert.equal(requests[1].headers.get("x-route"), "fake-route");
+    const models = Object.fromEntries(registered[0].getModels().map((model: any) => [model.id, model]));
+    assert.equal(models["explicit-true"].reasoning, true);
+    assert.equal(models["explicit-false"].reasoning, false);
+    assert.equal(models.fallback.reasoning, true);
+    assert.equal(models.ordinary.reasoning, false);
+  });
+
+  it("fails open when LiteLLM capability discovery is unavailable or malformed", async () => {
+    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { litellm: { api: "openai-completions", discoverModels: true } } }));
+    let sessionStart: any;
+    const registered: any[] = [];
+    globalThis.fetch = async (input) => String(input).includes("model/info")
+      ? new Response("unauthorized secret payload", { status: 401 })
+      : new Response(JSON.stringify({ data: [{ id: "still-available" }] }));
+    installOpenAiCompatibleDiscovery({
+      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
+      registerProvider: (provider: any) => registered.push(provider),
+    } as any);
+    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
+      getProvider: () => sourceProvider("litellm"), getProviderAuth: async () => ({ auth: {} }), getAll: () => [],
+    } });
+
+    assert.equal(registered[0].getModels().find((model: any) => model.id === "still-available").reasoning, false);
+  });
+
+  it("does not probe capability endpoints for non-LiteLLM providers", async () => {
+    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { gateway: { api: "openai-completions", discoverModels: true } } }));
+    let sessionStart: any;
+    const urls: string[] = [];
+    globalThis.fetch = async (input) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify({ data: [{ id: "model" }] }));
+    };
+    installOpenAiCompatibleDiscovery({
+      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
+      registerProvider: () => {},
+    } as any);
+    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
+      getProvider: () => ({ ...sourceProvider("gateway"), name: "Generic gateway" }),
+      getProviderAuth: async () => ({ auth: {} }), getAll: () => [],
+    } });
+
+    assert.deepEqual(urls.map((url) => new URL(url).pathname), ["/v1/models"]);
+  });
+
+  it("preserves static reasoning metadata over LiteLLM capability records", async () => {
+    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { litellm: { api: "openai-completions", discoverModels: true } } }));
+    let sessionStart: any;
+    const registered: any[] = [];
+    globalThis.fetch = async (input) => String(input).includes("model/info")
+      ? new Response(JSON.stringify({ data: [{ model_name: "static", model_info: { supports_reasoning: true } }] }))
+      : new Response(JSON.stringify({ data: [{ id: "static" }] }));
+    installOpenAiCompatibleDiscovery({
+      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
+      registerProvider: (provider: any) => registered.push(provider),
+    } as any);
+    const configured = { ...staticModel("static"), reasoning: false, contextWindow: 42 };
+    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
+      getProvider: () => sourceProvider("litellm"), getProviderAuth: async () => ({ auth: {} }), getAll: () => [configured],
+    } });
+
+    assert.equal(registered[0].getModels().find((model: any) => model.id === "static"), configured);
   });
 
   it("routes a selected discovered model through the original configured provider", async () => {
@@ -300,6 +402,15 @@ describe("OpenAI-compatible discovery helpers", () => {
     );
 
     assert.equal(model.contextWindow, 128_000);
+  });
+
+  it("redacts LiteLLM capability diagnostics without retaining secrets or query values", () => {
+    const diagnostic = redactOpenAiCompatibleDiagnostic(
+      "GET https://user:pass@gateway.example/v1/model/info?key=query-secret failed with Bearer fake-key and fake-route", // pragma: allowlist secret
+      { apiKey: "fake-key", headers: { "X-Route": "fake-route" } }, // pragma: allowlist secret
+    );
+    for (const secret of ["user", "pass", "query-secret", "fake-key", "fake-route"])
+      assert.equal(diagnostic.includes(secret), false);
   });
 
   it("retains only exact duplicate returned IDs", () => {

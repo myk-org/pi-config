@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import platform
 import shutil
@@ -108,6 +109,72 @@ def _gitignore_path() -> str:
 
 
 # ── Install Command Builders ──────────────────────────────────────────────
+
+
+def _install_script_packages(package_dir: Path, install_root: Path) -> list[str]:
+    seen: set[Path] = set()
+    allowed: set[str] = set()
+
+    def inspect(path: Path) -> None:
+        real = path.resolve()
+        if real in seen:
+            return
+        seen.add(real)
+        manifest = json.loads((real / "package.json").read_text())
+        scripts = manifest.get("scripts", {})
+        lifecycle_hook = {"preinstall", "install", "postinstall"} & scripts.keys()
+        default_node_gyp_hook = "install" not in scripts and (real / "binding.gyp").is_file()
+        if lifecycle_hook or default_node_gyp_hook:
+            allowed.add(manifest["name"])
+        optional = manifest.get("optionalDependencies", {})
+        dependencies = manifest.get("dependencies", {}) | optional
+        for name in dependencies:
+            child = next(
+                (
+                    candidate
+                    for candidate in (
+                        real / "node_modules" / name,
+                        *(parent / "node_modules" / name for parent in real.parents),
+                        install_root / name,
+                    )
+                    if candidate.exists() and (candidate == install_root / name or install_root in candidate.parents)
+                ),
+                None,
+            )
+            if child is None:
+                if name in optional:
+                    log.debug("graft optional dependency omitted package=%s", name)
+                    continue
+                raise FileNotFoundError(f"required Graft dependency is not installed: {name}")
+            inspect(child)
+
+    inspect(package_dir)
+    log.debug("graft install-script audit packages=%s", len(allowed))
+    return sorted(allowed)
+
+
+def install_graft() -> None:
+    missing = [tool for tool in ("npm", "node", "python3", "make", "g++") if not shutil.which(tool)]
+    if missing:
+        log.warning("graft prerequisites missing=%s", ",".join(missing))
+        raise RuntimeError(f"Graft requires node-gyp prerequisites: {', '.join(missing)}")
+    npm_major = int(_run_quiet(["npm", "--version"]).split(".", 1)[0])
+    if npm_major < 12:
+        log.warning("graft secure install unsupported npm-major=%s", npm_major)
+        raise RuntimeError("Graft secure installation requires npm 12+")
+    env = os.environ | {"DO_NOT_TRACK": "1"}
+    subprocess.run(["npm", "install", "-g", "@nanonets/graft@latest", "--ignore-scripts"], check=True, env=env)
+    npm_root = Path(_run_quiet(["npm", "root", "-g"]))
+    allowed = ",".join(_install_script_packages(npm_root / "@nanonets/graft", npm_root))
+    if not allowed:
+        raise RuntimeError("Graft dependency audit found no install scripts")
+    subprocess.run(
+        ["npm", "rebuild", "-g", "@nanonets/graft", f"--allow-scripts={allowed}", "--strict-allow-scripts"],
+        check=True,
+        env=env,
+    )
+    subprocess.run(["graft", "--version"], check=True, env=env)
+    log.info("graft installation verified")
 
 
 # ── Prerequisites ──────────────────────────────────────────────────────────
@@ -271,6 +338,14 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 installed=bool(shutil.which("agent-browser")),
                 disabled=nd,
                 install_cmd="npm install -g agent-browser",
+            ),
+            Tool(
+                "graft",
+                "Local repository code graph for the optional Graft extension",
+                installed=bool(shutil.which("graft")),
+                disabled=nd,
+                install_cmd="DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest (strict dynamic script approval)",
+                install_fn=install_graft,
             ),
         ],
     )

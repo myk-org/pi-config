@@ -33,6 +33,7 @@ export function App() {
   const sessions = useSessions(connected, onMessage);
   const notifications = useNotifications();
   const [session, setSession] = useState<SessionInfo | null>(null);
+  const selectedSession = session && (sessions.find((candidate) => candidate.sessionId === session.sessionId) ?? session);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchType, setSearchType] = useState("all");
   const [scrollKey, setScrollKey] = useState(0);
@@ -270,7 +271,7 @@ export function App() {
               </div>
             )}
             <InputBar disabled={!session.active} streaming={streaming} onSend={handleSend} onAbort={handleAbort} commands={availableCommands} />
-            <InfoBar session={session} model={model} tokens={tokens} send={send} onMessage={onMessage} />
+            <InfoBar session={selectedSession!} model={model} tokens={tokens} send={send} onMessage={onMessage} />
           </>
         )}
       </div>

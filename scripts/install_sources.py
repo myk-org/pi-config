@@ -49,6 +49,8 @@ NPM_PACK_REQUIRED_PATHS = (
     "extensions/pidiff/pidiff.ts",
     "extensions/pidash/pidash-ui/package.json",
     "extensions/pidiff/pidiff-ui/package.json",
+    "extensions/shared/logger-core.mjs",
+    "extensions/shared/install-logger.mjs",
 )
 NPM_PACK_FORBIDDEN_SUBSTRINGS = (
     "pidash-ui/node_modules",

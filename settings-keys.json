@@ -77,6 +77,13 @@
     "default": true,
     "group": "Dashboard"
   },
+  "graft_enable": {
+    "description": "Enable local Graft repository graph integration",
+    "type": "bool",
+    "env": "PI_GRAFT_ENABLE",
+    "default": false,
+    "group": "Graft"
+  },
   "pidiff_stale_lock_timeout_ms": {
     "description": "Timeout for stale pidiff spawning lockfile (ms)",
     "type": "int",
@@ -502,6 +509,20 @@
     "description": "Log level for oneshot argv helpers (`pi -p` / `--mode json`)",
     "type": "string",
     "env": "PI_LOG_ONESHOT",
+    "default": "info",
+    "enum": [
+      "off",
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
+    "group": "Logging"
+  },
+  "log_graft": {
+    "description": "Log level for local Graft graph integration",
+    "type": "string",
+    "env": "PI_LOG_GRAFT",
     "default": "info",
     "enum": [
       "off",

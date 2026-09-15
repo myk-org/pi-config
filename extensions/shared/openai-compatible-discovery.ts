@@ -35,6 +35,10 @@ export interface OpenAiCompatibleModelRecord {
   /** LiteLLM's generic output capacity alias. */
   max_output_tokens?: unknown;
 }
+export interface LiteLlmCapabilityRecord {
+  model_name?: unknown;
+  model_info?: unknown;
+}
 
 /** Pi's models.json defaults for omitted static-model metadata. */
 const PI_STATIC_MODEL_DEFAULTS = {
@@ -392,6 +396,30 @@ export function buildOpenAiCompatibleModelsRequest(
     headers.Authorization = `Bearer ${connection.apiKey}`;
   }
   return { url: modelsUrl, streamBaseUrl, headers };
+}
+
+export function buildLiteLlmCapabilitiesUrl(modelsUrl: string): string {
+  const url = new URL(modelsUrl);
+  url.pathname = url.pathname.replace(/\/models$/i, "/model/info");
+  return url.toString();
+}
+
+export function enrichLiteLlmReasoning(
+  records: readonly OpenAiCompatibleModelRecord[],
+  capabilities: readonly LiteLlmCapabilityRecord[],
+): OpenAiCompatibleModelRecord[] {
+  const reasoning = new Map<string, boolean>();
+  for (const capability of capabilities) {
+    if (typeof capability.model_name !== "string" || !capability.model_info || typeof capability.model_info !== "object" || Array.isArray(capability.model_info)) continue;
+    const info = capability.model_info as Record<string, unknown>;
+    const value = typeof info.supports_reasoning === "boolean"
+      ? info.supports_reasoning
+      : Array.isArray(info.supported_openai_params) && info.supported_openai_params.includes("reasoning_effort");
+    reasoning.set(capability.model_name, value);
+  }
+  return records.map((record) => typeof record.id === "string" && reasoning.has(record.id)
+    ? { ...record, reasoning: reasoning.get(record.id) }
+    : record);
 }
 
 /** Remove resolved credentials from diagnostics before they leave the request path. */

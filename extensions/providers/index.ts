@@ -68,6 +68,7 @@ import {
   markProvidersInitialized,
 } from "./initialized-guard.js";
 import { restoreDefaultModelOnSessionStart } from "./restore-default-model.js";
+import { registerLastThinkingLevel } from "./last-thinking-level.js";
 import { teardownProvidersOnSessionShutdown } from "./session-shutdown.js";
 
 const LOG_DOMAIN = "providers";
@@ -318,7 +319,11 @@ const cwdHookBound = new WeakSet<object>();
 
 export default async function (
   pi: ExtensionAPI,
-  testOptions?: { providerSummaryParts?: readonly string[] },
+  testOptions?: {
+    providerSummaryParts?: readonly string[];
+    thinkingStatePath?: string;
+    argv?: string[];
+  },
 ) {
   if (typeof pi.registerEntryRenderer === "function") {
     pi.registerEntryRenderer<ProviderDiscoverySummary>(
@@ -603,14 +608,18 @@ export default async function (
 
   // Fire-and-forget restore so session_start is not blocked by retries (#753).
   // Omit registeredProviders: cli/acpx-only lists falsely fail-fast native defaults.
+  const lastThinking = registerLastThinkingLevel(pi, {
+    statePath: testOptions?.thinkingStatePath,
+    argv: testOptions?.argv,
+  });
   const applyCliAcpxThinking = (model: { id: string; provider: string } | undefined) => {
     log.debug("applyCliAcpxThinking", model?.provider, model?.id);
     try {
-      applyThinkingLevelFromModel(
+      lastThinking.runInternal(() => applyThinkingLevelFromModel(
         model,
         (level) => pi.setThinkingLevel(level as ThinkingLevel),
         () => pi.getThinkingLevel(),
-      );
+      ));
     } catch (err) {
       log.warn(
         "thinking from id failed",
@@ -655,7 +664,7 @@ export default async function (
       );
       projectTrusted = false;
     }
-    void restoreDefaultModelOnSessionStart({
+    const modelRestore = restoreDefaultModelOnSessionStart({
       ctx: {
         model: ctx.model
           ? { id: ctx.model.id, provider: String(ctx.model.provider) }
@@ -665,6 +674,7 @@ export default async function (
       reason,
       cwd,
       projectTrusted,
+      argv: testOptions?.argv,
       getCurrentModel: () =>
         ctx.model
           ? { id: ctx.model.id, provider: String(ctx.model.provider) }
@@ -675,7 +685,9 @@ export default async function (
         "restore-default-model session_start error",
         err instanceof Error ? err.message : String(err),
       );
+      return false;
     });
+    void lastThinking.applyAfterModelRestore(event, ctx, modelRestore);
   });
 
   pi.on("model_select", (event) => {
