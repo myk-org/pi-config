@@ -107,6 +107,7 @@ export interface SettingsKeyDef {
   max?: number;
   strict_digits?: boolean;
   per_key_resolution?: boolean;
+  enum?: string[];
 }
 
 const SETTINGS_FILENAMES = ["pi-config-settings.jsonc", "pi-config-settings.json"];

@@ -55,7 +55,6 @@ import {
   AgentOverridesSubmenu,
   SelectSubmenu,
 } from "./settings-tui-submenus.js";
-import settingsSchema from "../../settings-keys.json" with { type: "json" };
 
 // Re-export helpers for external consumers
 const log = createLogger("settings_tui");
@@ -229,8 +228,7 @@ export function buildCategoryItems(
           break;
 
         case "string": {
-          const schemaDef = settingsSchema[key as keyof typeof settingsSchema] as any;
-          const enumValues: string[] | undefined = schemaDef?.enum;
+          const enumValues = def.enum;
 
           if (enumValues && enumValues.length > 0) {
             item.submenu = (current: string, done: (val?: string) => void): Component => {

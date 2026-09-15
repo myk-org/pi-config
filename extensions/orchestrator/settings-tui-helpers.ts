@@ -9,6 +9,7 @@ import { dirname, join as joinPath } from "node:path";
 import stripJsonComments from "strip-json-comments";
 import {
   type SettingsKeyDef,
+  SETTINGS_KEYS,
   getSettingsPath,
   getGlobalSettingsPath,
 } from "./project-settings.js";
@@ -40,14 +41,12 @@ export interface CategoryDef {
   keys: string[];
 }
 
-import settingsSchema from "../../settings-keys.json" with { type: "json" };
-
 // Build CATEGORIES dynamically from schema `group` field.
 // Preserves insertion order from settings-keys.json — groups appear
 // in the order their first key is declared.
 export const CATEGORIES: CategoryDef[] = (() => {
   const groupMap = new Map<string, string[]>();
-  for (const [key, def] of Object.entries(settingsSchema)) {
+  for (const [key, def] of Object.entries(SETTINGS_KEYS)) {
     const group = (def as any).group || "Other";
     if (!groupMap.has(group)) groupMap.set(group, []);
     groupMap.get(group)!.push(key);

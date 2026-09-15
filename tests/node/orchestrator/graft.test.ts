@@ -48,36 +48,111 @@ describe("Graft opt-in, trust, and startup", () => {
     graft.createGraftIntegration({ enabled: true, graph: async () => "absent", run: command.run }).register(mock.pi as any);
     const c = ctx(); await mock.handlers.get("session_start")![0]({ reason: "startup" }, c);
     assert.deepEqual(command.calls.map(call => call.args), [["--version"]]);
-    assert.deepEqual(c.status.at(-1), { key: "4b-graft", text: "graft: failed" });
+    assert.deepEqual(c.status.at(-1), { key: "4b-graft", text: "◤ graft · 0 nodes · failed" });
   });
-  it("skips graph work for print/json oneshots, children, resumes, and reloads", async () => {
+  it("skips graph work for print/json oneshots and children", async () => {
     process.argv = [process.execPath, "pi", "-p", "prompt"]; const print = register({ graph: async () => "absent" }); await start(print); assert.equal(print.calls.length, 0);
     process.env.PI_SUBAGENT_CHILD = "1"; const child = register({ graph: async () => "absent" }); assert.equal(child.handlers.size, 0); assert.equal(child.tools.size, 0);
-    delete process.env.PI_SUBAGENT_CHILD; process.argv = originalArgv.slice(); const resume = register({ graph: async () => "absent" }); await resume.handlers.get("session_start")![0]({ reason: "resume" }, ctx()); assert.equal(resume.calls.length, 0);
-    const reload = register({ graph: async () => "absent" }); await reload.handlers.get("session_start")![0]({ reason: "reload" }, ctx()); assert.equal(reload.calls.length, 0);
+  });
+  for (const reason of ["reload", "resume"]) it(`restores the synced footer from the local graph on ${reason}`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "graft-root-"));
+    try {
+      mkdirSync(join(root, "graft/.graph"), { recursive: true });
+      writeFileSync(join(root, "graft/.graph/wiring.json"), JSON.stringify({ meta: { nodeCount: 7 } }));
+      const r = register({ graph: async () => "absent" }); const c = ctx(root);
+      await r.handlers.get("session_start")![0]({ reason }, c);
+      assert.deepEqual(c.status.at(-1), { key: "4b-graft", text: "◤ graft · 7 nodes · ✓ synced" });
+      assert.equal(r.calls.length, 0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
 
 describe("Graft retrieval and accounting", () => {
-  it("uses the safe local ask invocation for production prompt pointers", async () => {
-    const r = register({ results: [{ code: 0 }, { stdout: "src/auth.ts:12 authenticate\nsrc/session.ts:8 loadSession" }] });
-    await start(r); const result = await r.handlers.get("before_agent_start")![0]({ prompt: "where is authentication?", systemPrompt: "base" }, ctx());
-    assert.deepEqual(r.calls[1].args, ["ask", "--no-refresh", "--limit", "8", "where is authentication?"]);
-    assert.match(result.systemPrompt, /src\/auth\.ts:12/);
+  it("adds durable force-use guidance whenever a trusted enabled graph is ready", async () => {
+    const r = register(); await start(r);
+    const result = await r.handlers.get("before_agent_start")![0]({ prompt: "yes", systemPrompt: "base" }, ctx());
+    assert.match(result.systemPrompt, /use Graft before raw grep\/read/i);
+    assert.match(result.systemPrompt, /graft_trace_calls/i);
   });
-  it("sums savings footers from successful local command output", async () => {
-    const r = register({ results: [{ code: 0 }, { stdout: "map\n[graft] tokens saved ≈ 100" }, { code: 0 }, { stdout: "map\n[graft] tokens saved ≈ 1,250" }] });
+  it("retrieves before substantive code work and gates broad raw navigation", async () => {
+    const r = register({ results: [{ stdout: JSON.stringify({ coverage: .9, hits: [{ title: "authentication", pointer: "src/auth.ts:12" }] }) }] }); const c = await start(r);
+    await r.handlers.get("before_agent_start")![0]({ prompt: "locate the authentication implementation", systemPrompt: "base" }, c);
+    assert.deepEqual(r.calls[0].args, ["ask", "locate the authentication implementation", ".", "--json", "-n", "3"]);
+    assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "rg authentication" } }, c), undefined);
+  });
+  it("blocks raw navigation only when a code turn has not retrieved Graft", async () => {
+    const r = register(); const c = await start(r);
+    await r.handlers.get("before_agent_start")![0]({ prompt: "locate the authentication implementation", systemPrompt: "base" }, c);
+    assert.match((await r.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "rg authentication" } }, c))?.reason ?? "", /graft_find_code/i);
+    assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "git status --short" } }, c), undefined);
+  });
+  it("does not gate navigation when the graph is unavailable", async () => {
+    const r = register({ executable: async () => false }); const c = await start(r);
+    await r.handlers.get("before_agent_start")![0]({ prompt: "locate the authentication implementation", systemPrompt: "base" }, c);
+    assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "find src -name '*.ts'" } }, c), undefined);
+  });
+  it("allows a Graft-returned file and releases the gate after no relevant result", async () => {
+    const r = register({ results: [{ stdout: JSON.stringify({ coverage: .9, hits: [{ title: "authentication", pointer: "src/auth.ts:12" }] }) }, { stdout: JSON.stringify({ coverage: 0, coverageStrong: 0, hits: [] }) }] }); const c = await start(r);
+    await r.handlers.get("before_agent_start")![0]({ prompt: "locate the authentication implementation", systemPrompt: "base" }, c);
+    assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "read", input: { path: "src/auth.ts" } }, c), undefined);
+    await r.handlers.get("before_agent_start")![0]({ prompt: "find the session handler implementation", systemPrompt: "base" }, c);
+    assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "read", input: { path: "src/other.ts" } }, c), undefined);
+  });
+  it("uses upstream bounded JSON ask without --no-refresh and injects compact relevant pointers", async () => {
+    const r = register({ results: [{ stdout: JSON.stringify({ coverage: 0.9, hits: [{ title: "authenticate", pointer: "src/auth.ts:12", snippet: "validates sessions" }] }) }] });
+    await start(r); const result = await r.handlers.get("before_agent_start")![0]({ prompt: "where is authentication?", systemPrompt: "base" }, ctx());
+    assert.deepEqual(r.calls[0].args, ["ask", "where is authentication?", ".", "--json", "-n", "3"]);
+    assert.match(result.systemPrompt, /authenticate: src\/auth\.ts:12/);
+  });
+  it("skips conversational prompts and weak retrieval matches", async () => {
+    const r = register({ results: [{ stdout: JSON.stringify({ coverage: 0.01, coverageStrong: 0, hits: [{ title: "noise", pointer: "src/noise.ts:1" }] }) }] });
+    await start(r);
+    assert.match((await r.handlers.get("before_agent_start")![0]({ prompt: "yes", systemPrompt: "base" }, ctx())).systemPrompt, /graft/i);
+    assert.match((await r.handlers.get("before_agent_start")![0]({ prompt: "please locate the authentication implementation", systemPrompt: "base" }, ctx())).systemPrompt, /graft/i);
+  });
+  it("sums Graft's canonical savings footer from tool output", async () => {
+    const r = register({ results: [{ stdout: "map\n[graft] tokens saved ≈ 100" }, { stdout: "map\n[graft] tokens saved ≈ 1,250" }] });
     const c = await start(r); const tool = r.tools.get("graft_repo_map")!;
     await tool.execute("one", {}, undefined, undefined, c); await tool.execute("two", {}, undefined, undefined, c);
-    assert.match(c.status.at(-1)?.text ?? "", /1350 tokens saved/);
-    assert.deepEqual(r.calls.map(call => call.args), [["check", "--json"], ["map", "--no-refresh", "--max-dirs", "16"], ["check", "--json"], ["map", "--no-refresh", "--max-dirs", "16"]]);
+    assert.match(c.status.at(-1)?.text ?? "", /~1,350 tok saved/);
+    assert.deepEqual(r.calls.map(call => call.args), [["map", "--max-dirs", "16"], ["map", "--max-dirs", "16"]]);
   });
-  it("checks freshness before every provider request and rebuilds after arbitrary mutations", async () => {
-    const r = register({ results: [{ code: 0 }, { code: 1 }, { code: 0 }] });
-    const c = await start(r);
-    await r.handlers.get("before_provider_request")![0]({}, c);
-    await r.handlers.get("before_provider_request")![0]({}, c);
-    assert.deepEqual(r.calls.map(call => call.args), [["check", "--json"], ["check", "--json"], ["build"]]);
+  it("does not block the next user message on a pending post-edit refresh", async () => {
+    const r = register(); const c = await start(r);
+    r.handlers.get("tool_result")![0]({ toolName: "edit", input: { path: "src/a.ts" }, content: [], isError: false }, c);
+    const result = await r.handlers.get("before_agent_start")![0]({ prompt: "locate the authentication implementation", systemPrompt: "base" }, c);
+    assert.equal(result, undefined);
+    assert.deepEqual(r.calls, []);
+  });
+  it("syncs a dirty graph once in the background at agent end", async () => {
+    const r = register({ results: [{ code: 0 }] }); const c = await start(r);
+    r.handlers.get("tool_result")![0]({ toolName: "write", input: { path: "src/a.ts" }, content: [], isError: false }, c);
+    r.handlers.get("agent_end")![0]({}, c); await new Promise(resolve => setImmediate(resolve));
+    r.handlers.get("agent_end")![0]({}, c);
+    assert.deepEqual(r.calls.map(call => call.args), [["build"]]);
+  });
+  it("tracks Pi-native Graft and source reads without MCP", async () => {
+    const r = register(); const c = await start(r);
+    r.handlers.get("tool_result")![0]({ toolName: "graft_repo_map", input: {}, content: [{ type: "text", text: "[graft] tokens saved ≈ 500" }], isError: false }, c);
+    r.handlers.get("tool_result")![0]({ toolName: "grep", input: {}, content: [], isError: false }, c);
+    r.handlers.get("tool_result")![0]({ toolName: "read", input: {}, content: [], isError: false }, c);
+    assert.match(c.status.at(-1)?.text ?? "", /~500 tok saved/);
+  });
+  it("does not install a filesystem watcher or run a process for normal prompts", async () => {
+    let watches = 0;
+    const r = register({ watch: () => { watches++; return () => {}; } }); const c = await start(r);
+    const result = await r.handlers.get("before_agent_start")![0]({ prompt: "hello", systemPrompt: "base" }, c);
+    assert.equal(watches, 0);
+    assert.equal(r.calls.length, 0);
+    assert.match(result.systemPrompt, /graft/i);
+  });
+  it("marks only successful writes and edits dirty", async () => {
+    for (const toolName of ["write", "edit"]) {
+      const r = register(); const c = await start(r);
+      r.handlers.get("tool_result")![0]({ toolName, input: { path: "src/a.ts" }, content: [], isError: false }, c);
+      r.handlers.get("agent_end")![0]({}, c); await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(r.calls.map(call => call.args), [["build"]], toolName);
+    }
   });
 });
 
@@ -89,6 +164,9 @@ describe("Graft paths and status", () => {
       assert.match(result.content[0].text, /project/i); assert.equal(r.calls.length, 0);
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
   });
-  it("uses the shared graft status slot", async () => { const r = register({ executable: async () => false }); const c = await start(r); assert.deepEqual(c.status.at(-1), { key: "4b-graft", text: "graft: failed" }); });
-  it("formats footer states", () => { assert.equal(graft.formatGraftFooter({ state: "ready", nodeCount: 12, tokenSavings: 340 }), "graft: ready · 12 nodes · 340 tokens saved"); });
+  it("uses the shared graft status slot", async () => { const r = register({ executable: async () => false }); const c = await start(r); assert.deepEqual(c.status.at(-1), { key: "4b-graft", text: "◤ graft · 0 nodes · failed" }); });
+  it("formats Graft-style themed status with session savings", () => {
+    const theme = { fg: (color: string, value: string) => `<${color}>${value}</${color}>` };
+    assert.equal(graft.formatGraftFooter({ state: "ready", nodeCount: 12, tokenSavings: 340 }, theme), "<dim>◤ </dim><accent>graft</accent><dim> · </dim><dim>12 nodes</dim><dim> · </dim><success>✓ synced</success><dim> · </dim><accent>~340 tok saved</accent>");
+  });
 });
