@@ -83,7 +83,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 
 # Install acpx, agent-browser, pi-web-access, gemini-cli, and Graft (pi itself is installed at runtime in entrypoint.sh)
 COPY scripts/graft-allow-scripts.mjs /usr/local/lib/scripts/graft-allow-scripts.mjs
-COPY extensions/shared/install-logger.mjs /usr/local/lib/extensions/shared/install-logger.mjs
+COPY extensions/shared/logger-core.mjs extensions/shared/install-logger.mjs /usr/local/lib/extensions/shared/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g acpx agent-browser pi-web-access @google/gemini-cli && \
   DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest --ignore-scripts && \
