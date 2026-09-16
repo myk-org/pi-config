@@ -109,6 +109,52 @@ def _gitignore_path() -> str:
     return path.replace("~", str(HOME))
 
 
+def _npm_global_prefix() -> Path:
+    result = subprocess.run(["npm", "prefix", "-g"], capture_output=True, text=True, timeout=5, check=True)
+    raw = result.stdout.strip()
+    prefix = Path(raw)
+    resolved = prefix.resolve()
+    cwd = Path.cwd().resolve()
+    if (
+        not raw
+        or not prefix.is_absolute()
+        or resolved == Path(resolved.anchor)
+        or resolved == cwd
+        or cwd in resolved.parents
+    ):
+        log.warning("graft unsafe npm global prefix rejected value=%r", raw)
+        raise RuntimeError("npm prefix -g must return a safe absolute path")
+    return resolved
+
+
+def _publish_graft(stage: Path, graft_prefix: Path, graft_bin: Path, lock_path: Path) -> None:
+    import fcntl
+
+    backup = stage.with_name(f"{stage.name}.previous")
+    link = graft_bin.with_name(f".{stage.name}-graft")
+    with lock_path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        log.debug("graft publication lock acquired")
+        had_previous = graft_prefix.exists()
+        published = False
+        try:
+            if had_previous:
+                os.replace(graft_prefix, backup)
+            os.replace(stage, graft_prefix)
+            published = True
+            link.symlink_to("../lib/graft-prefix/bin/graft")
+            os.replace(link, graft_bin)
+        except Exception:
+            link.unlink(missing_ok=True)
+            if published:
+                shutil.rmtree(graft_prefix)
+            if had_previous:
+                os.replace(backup, graft_prefix)
+            raise
+        if had_previous:
+            shutil.rmtree(backup)
+
+
 # ── Install Command Builders ──────────────────────────────────────────────
 
 
@@ -164,7 +210,7 @@ def install_graft() -> None:
         log.warning("graft secure install unsupported npm-major=%s", npm_major)
         raise RuntimeError("Graft secure installation requires npm 12+")
     env = os.environ | {"DO_NOT_TRACK": "1"}
-    global_prefix = Path(_run_quiet(["npm", "prefix", "-g"]))
+    global_prefix = _npm_global_prefix()
     graft_prefix = global_prefix / "lib/graft-prefix"
     graft_bin = global_prefix / "bin/graft"
     graft_prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -201,24 +247,7 @@ def install_graft() -> None:
         )
         subprocess.run([str(stage / "bin/graft"), "--version"], check=True, env=env)
 
-        backup = stage.with_name(f"{stage.name}.previous")
-        link = graft_bin.with_name(f".{stage.name}-graft")
-        had_previous = graft_prefix.exists()
-        try:
-            if had_previous:
-                os.replace(graft_prefix, backup)
-            os.replace(stage, graft_prefix)
-            link.symlink_to("../lib/graft-prefix/bin/graft")
-            os.replace(link, graft_bin)
-        except Exception:
-            link.unlink(missing_ok=True)
-            if graft_prefix.exists():
-                shutil.rmtree(graft_prefix)
-            if had_previous:
-                os.replace(backup, graft_prefix)
-            raise
-        if had_previous:
-            shutil.rmtree(backup)
+        _publish_graft(stage, graft_prefix, graft_bin, global_prefix / ".graft-install.lock")
     log.info("graft installation verified")
 
 

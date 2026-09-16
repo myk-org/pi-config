@@ -26,8 +26,32 @@ def test_graft_install_retains_latest() -> None:
     assert "@nanonets/graft@latest" in GRAFT_INSTALL
 
 
-def test_graft_install_runs_staged_smoke_check() -> None:
-    assert '"$GRAFT_STAGE/bin/graft" --version' in DOCKERFILE
+def test_graft_install_runs_smoke_check_after_installation() -> None:
+    install = 'npm install -g --prefix "$GRAFT_STAGE" @nanonets/graft@latest'
+    smoke_check = '"$GRAFT_STAGE/bin/graft" --version'
+    assert DOCKERFILE.index(install) < DOCKERFILE.index(smoke_check)
+
+
+def test_graft_stage_permissions_are_normalized_before_verification() -> None:
+    strict_install = '--allow-scripts="$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts'
+    normalize = 'chmod -R a+rX "$GRAFT_STAGE"'
+    smoke_check = '"$GRAFT_STAGE/bin/graft" --version'
+    publication = 'mv "$GRAFT_STAGE" "$GRAFT_PREFIX"'
+    assert (
+        DOCKERFILE.index(strict_install)
+        < DOCKERFILE.index(normalize)
+        < DOCKERFILE.index(smoke_check)
+        < DOCKERFILE.index(publication)
+    )
+
+
+def test_published_graft_runs_as_first_node_user() -> None:
+    first_node = re.search(r"^USER node$", DOCKERFILE, re.MULTILINE)
+    assert first_node
+    smoke_check = DOCKERFILE.index("RUN /usr/local/bin/graft --version", first_node.end())
+    later_user = re.search(r"^USER ", DOCKERFILE[first_node.end() :], re.MULTILINE)
+    assert later_user
+    assert smoke_check < first_node.end() + later_user.start()
 
 
 def test_graft_uses_two_fresh_isolated_installs() -> None:

@@ -98,6 +98,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   GRAFT_STAGE="$(mktemp -d "$(npm prefix -g)/lib/.graft-prefix.XXXXXX")" && \
   mkdir -p "$GRAFT_STAGE/lib" && \
   DO_NOT_TRACK=1 npm install -g --prefix "$GRAFT_STAGE" @nanonets/graft@latest --allow-scripts="$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts && \
+  chmod -R a+rX "$GRAFT_STAGE" && \
   "$GRAFT_STAGE/bin/graft" --version && \
   rm -rf "$GRAFT_PREFIX" && \
   mv "$GRAFT_STAGE" "$GRAFT_PREFIX" && GRAFT_STAGE="" && \
@@ -110,6 +111,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
 RUN chown -R node:node /home/node
 USER node
+RUN /usr/local/bin/graft --version
 RUN mkdir -p /home/node/.npm-global && npm config set prefix /home/node/.npm-global
 ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:$PATH"
 ENV TERM=xterm-256color
