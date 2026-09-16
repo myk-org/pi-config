@@ -7,9 +7,14 @@ import { registerCron } from "../../../extensions/orchestrator/cron.js";
 import { readDurableCronStore } from "../../../extensions/orchestrator/cron-store.ts";
 
 const dirs: string[] = [];
-afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
+const harnesses = new Set<{ restore(): void }>();
+afterEach(() => {
+  for (const harness of [...harnesses].reverse()) harness.restore();
+  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 function makeCron() {
+  const originalChildMarker = process.env.PI_SUBAGENT_CHILD;
   delete process.env.PI_SUBAGENT_CHILD;
   const handlers = new Map<string, Function[]>();
   let tool: any;
@@ -22,7 +27,7 @@ function makeCron() {
   const originalSetTimeout = global.setTimeout;
   const originalClearTimeout = global.clearTimeout;
   (global as any).setInterval = (fn: Function, delay: number) => { const timer = { fn, delay, unref() {} }; intervals.push(timer); return timer; };
-  (global as any).setTimeout = (fn: Function, delay: number) => { const timer = { fn, delay, unref() {} }; timeouts.push(timer); return timer; };
+  (global as any).setTimeout = (fn: Function, delay: number) => { const timer = { fn, delay, scheduledAt: Date.now(), unref() {} }; timeouts.push(timer); return timer; };
   (global as any).clearInterval = (timer: any) => { timer.cleared = true; };
   (global as any).clearTimeout = (timer: any) => { timer.cleared = true; };
   const pi: any = {
@@ -31,10 +36,23 @@ function makeCron() {
     eventHandler(event: string, fn: Function) { const list = handlers.get(event) || []; list.push(fn); handlers.set(event, list); },
     registerTool(value: any) { tool = value; }, registerCommand() {}, sendUserMessage(message: string, options: any) { messages.push({ message, options }); },
   };
-  return {
+  let restored = false;
+  const harness = {
     pi, handlers, intervals, timeouts, emitted, messages, tool: () => tool,
-    restore() { global.setInterval = originalSetInterval; global.clearInterval = originalClearInterval; global.setTimeout = originalSetTimeout; global.clearTimeout = originalClearTimeout; },
+    restore() {
+      if (restored) return;
+      restored = true;
+      try { handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }); }
+      finally {
+        global.setInterval = originalSetInterval; global.clearInterval = originalClearInterval; global.setTimeout = originalSetTimeout; global.clearTimeout = originalClearTimeout;
+        if (originalChildMarker === undefined) delete process.env.PI_SUBAGENT_CHILD;
+        else process.env.PI_SUBAGENT_CHILD = originalChildMarker;
+        harnesses.delete(harness);
+      }
+    },
   };
+  harnesses.add(harness);
+  return harness;
 }
 
 function context(cwd: string, sessionId = "session-one", trusted = true) { return { cwd, mode: "interactive", hasUI: false, model: {}, isProjectTrusted: () => trusted, sessionManager: { getSessionId: () => sessionId } }; }
@@ -54,12 +72,39 @@ describe("cron lifecycle", { concurrency: false }, () => {
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
+      const cron = registerCron(h.pi, () => {});
+      h.handlers.get("session_start")![0]({}, context(cwd));
+      const [valid] = cron.getCronTasks();
+      const timer = h.timeouts.find(({ delay }) => delay >= 9_990 && delay <= 10_000);
+      assert.deepEqual(cron.getCronTasks().map(({ id }) => id), ["valid"], "malformed records are skipped");
+      assert.ok(timer, "the valid task is scheduled approximately one interval ahead");
+      assert.ok(valid.nextRun! - timer.scheduledAt >= 9_990 && valid.nextRun! - timer.scheduledAt <= 10_000);
+      assert.equal(h.timeouts.some((item) => !Number.isFinite(item.delay)), false);
+    } finally { h.restore(); }
+  });
+
+  it("tears down runtime state and restores the child marker", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const previous = process.env.PI_SUBAGENT_CHILD;
+    process.env.PI_SUBAGENT_CHILD = "preserve-me";
+    const h = makeCron();
+    try {
+      h.pi.events.on = h.pi.eventHandler;
       registerCron(h.pi, () => {});
       h.handlers.get("session_start")![0]({}, context(cwd));
-      // The valid task is scheduled, in addition to any independently owned leadership health check.
-      assert.ok(h.timeouts.some((timer) => timer.delay === 10_000));
-      assert.equal(h.timeouts.some((timer) => !Number.isFinite(timer.delay)), false);
-    } finally { h.restore(); }
+      await h.tool().execute("id", { action: "add", task: "check", interval_seconds: 10 });
+      const lock = path.join(cwd, ".pi", "cron", "crons.json.leader.lock");
+      assert.ok(fs.existsSync(lock));
+      h.restore();
+      assert.ok(h.timeouts.every(({ cleared }) => cleared));
+      assert.ok(h.intervals.every(({ cleared }) => cleared));
+      assert.equal(fs.existsSync(lock), false);
+      assert.equal(process.env.PI_SUBAGENT_CHILD, "preserve-me");
+    } finally {
+      h.restore();
+      if (previous === undefined) delete process.env.PI_SUBAGENT_CHILD;
+      else process.env.PI_SUBAGENT_CHILD = previous;
+    }
   });
 
   it("notifies the user when persisted project crons load", () => {

@@ -708,6 +708,20 @@ def test_graft_native_install_rejects_unsafe_npm_prefix(
     assert graft_bin.readlink() == Path("../lib/graft-prefix/bin/graft")
 
 
+def test_npm_global_prefix_rejects_empty_output_before_resolving(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    monkeypatch.setattr(
+        install.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, stdout=""),
+    )
+    monkeypatch.setattr(Path, "resolve", lambda _path: pytest.fail("empty prefix was resolved"))
+
+    with pytest.raises(RuntimeError, match="safe absolute path"):
+        install._npm_global_prefix()
+
+
 def test_npm_global_prefix_accepts_writable_home_descendant(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
@@ -749,6 +763,22 @@ def test_npm_global_prefix_rejects_current_directory(tmp_path: Path, monkeypatch
         install.subprocess,
         "run",
         lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, stdout=str(tmp_path)),
+    )
+
+    with pytest.raises(RuntimeError, match="safe absolute path"):
+        install._npm_global_prefix()
+
+
+def test_npm_global_prefix_rejects_regular_file_ancestor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    ancestor = tmp_path / "file"
+    ancestor.write_text("not a directory")
+    prefix = ancestor / "child"
+    monkeypatch.setattr(
+        install.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, stdout=str(prefix)),
     )
 
     with pytest.raises(RuntimeError, match="safe absolute path"):
@@ -864,11 +894,63 @@ def test_graft_publication_serializes_overlapping_attempts(tmp_path: Path) -> No
     assert list(graft_prefix.parent.glob(".graft-prefix-*")) == []
 
 
-def test_windows_lock_serializes_and_releases(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_publication_lock_emits_structured_lifecycle_diagnostics(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    caplog.set_level("DEBUG", logger="install")
+    lock_path = tmp_path / "secret-lock-path"
+
+    with install._publication_lock(lock_path):
+        pass
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert [
+        f"event={event}" in message for event, message in zip(("acquire", "acquired", "release"), messages, strict=True)
+    ] == [
+        True,
+        True,
+        True,
+    ]
+    assert all(f"platform={install.SYSTEM}" in message and "lock_id=" in message for message in messages)
+    assert all(str(lock_path) not in message for message in messages)
+
+
+def test_publication_lock_emits_structured_failure_diagnostic(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+
+    class Fcntl:
+        LOCK_EX = 1
+        LOCK_UN = 2
+
+        @staticmethod
+        def flock(_lock: Any, _mode: int) -> None:
+            raise OSError("lock failed")
+
+    monkeypatch.setitem(sys.modules, "fcntl", Fcntl)
+    monkeypatch.setattr(install, "SYSTEM", "Linux")
+    caplog.set_level("DEBUG", logger="install")
+    lock_path = tmp_path / "secret-lock-path"
+
+    with pytest.raises(OSError, match="lock failed"), install._publication_lock(lock_path):
+        pass
+
+    message = caplog.records[-1].getMessage()
+    assert "event=failure" in message
+    assert "phase=acquire" in message
+    assert "platform=Linux" in message
+    assert "lock_id=" in message
+    assert str(lock_path) not in message
+
+
+def test_windows_lock_serializes_contention(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
     locked = threading.Lock()
-    calls: list[int] = []
 
     class Msvcrt:
         LK_LOCK = 1
@@ -876,7 +958,6 @@ def test_windows_lock_serializes_and_releases(monkeypatch: pytest.MonkeyPatch, t
 
         @staticmethod
         def locking(_fd: int, mode: int, _size: int) -> None:
-            calls.append(mode)
             (locked.acquire if mode == Msvcrt.LK_LOCK else locked.release)()
 
     monkeypatch.setitem(sys.modules, "msvcrt", Msvcrt)
@@ -903,7 +984,28 @@ def test_windows_lock_serializes_and_releases(monkeypatch: pytest.MonkeyPatch, t
     second.join(5)
 
     assert second_inside.is_set()
-    assert calls == [Msvcrt.LK_LOCK, Msvcrt.LK_LOCK, Msvcrt.LK_UNLCK, Msvcrt.LK_UNLCK]
+
+
+def test_windows_lock_releases_acquired_lock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    calls: list[int] = []
+
+    class Msvcrt:
+        LK_LOCK = 1
+        LK_UNLCK = 2
+
+        @staticmethod
+        def locking(_fd: int, mode: int, _size: int) -> None:
+            calls.append(mode)
+
+    monkeypatch.setitem(sys.modules, "msvcrt", Msvcrt)
+    monkeypatch.setattr(install, "SYSTEM", "Windows")
+
+    with install._publication_lock(tmp_path / "lock"):
+        pass
+
+    assert calls == [Msvcrt.LK_LOCK, Msvcrt.LK_UNLCK]
 
 
 def test_graft_publication_rolls_back_with_windows_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -915,7 +1017,7 @@ def test_graft_publication_rolls_back_with_windows_lock(tmp_path: Path, monkeypa
     graft_prefix.mkdir(parents=True)
     (graft_prefix / "marker").write_text("old")
     graft_bin.parent.mkdir(parents=True)
-    graft_bin.symlink_to("../lib/graft-prefix/bin/graft")
+    monkeypatch.setattr(Path, "symlink_to", lambda _self, _target: None)
     stage = graft_prefix.parent / ".graft-prefix-new"
     stage.mkdir()
     (stage / "marker").write_text("new")

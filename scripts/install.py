@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import platform
@@ -115,17 +116,19 @@ def _npm_global_prefix() -> Path:
     result = subprocess.run(["npm", "prefix", "-g"], capture_output=True, text=True, timeout=5, check=True)
     raw = result.stdout.strip()
     prefix = Path(raw)
+    if not raw or not prefix.is_absolute():
+        log.warning("graft unsafe npm global prefix rejected value=%r", raw)
+        raise RuntimeError("npm prefix -g must return a safe absolute path")
     resolved = prefix.resolve()
     cwd = Path.cwd().resolve()
     writable_parent = resolved
     while not writable_parent.exists():
         writable_parent = writable_parent.parent
     if (
-        not raw
-        or not prefix.is_absolute()
-        or resolved == Path(resolved.anchor)
+        resolved == Path(resolved.anchor)
         or resolved == cwd
         or (resolved.exists() and not resolved.is_dir())
+        or not writable_parent.is_dir()
         or not os.access(writable_parent, os.W_OK)
     ):
         log.warning("graft unsafe npm global prefix rejected value=%r", raw)
@@ -135,31 +138,39 @@ def _npm_global_prefix() -> Path:
 
 @contextmanager
 def _publication_lock(lock_path: Path) -> Iterator[None]:
+    lock_id = hashlib.sha256(os.fsencode(lock_path)).hexdigest()[:12]
     with lock_path.open("a+b") as lock:
         if lock.tell() == 0:
             lock.write(b"\0")
             lock.flush()
         lock.seek(0)
-        if SYSTEM == "Windows":
-            import msvcrt
+        log.debug("graft publication lock event=acquire platform=%s lock_id=%s", SYSTEM, lock_id)
+        try:
+            if SYSTEM == "Windows":
+                import msvcrt
 
-            locking = msvcrt.locking  # type: ignore[attr-defined]
-            lock_mode = msvcrt.LK_LOCK  # type: ignore[attr-defined]
-            unlock_mode = msvcrt.LK_UNLCK  # type: ignore[attr-defined]
-            locking(lock.fileno(), lock_mode, 1)
-            try:
-                yield
-            finally:
-                lock.seek(0)
-                locking(lock.fileno(), unlock_mode, 1)
-        else:
-            import fcntl
+                msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
+            else:
+                import fcntl
 
-            fcntl.flock(lock, fcntl.LOCK_EX)
+                fcntl.flock(lock, fcntl.LOCK_EX)
+        except Exception:
+            log.error("graft publication lock event=failure phase=acquire platform=%s lock_id=%s", SYSTEM, lock_id)
+            raise
+        log.debug("graft publication lock event=acquired platform=%s lock_id=%s", SYSTEM, lock_id)
+        try:
+            yield
+        finally:
+            log.debug("graft publication lock event=release platform=%s lock_id=%s", SYSTEM, lock_id)
             try:
-                yield
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
+                if SYSTEM == "Windows":
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+                else:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+            except Exception:
+                log.error("graft publication lock event=failure phase=release platform=%s lock_id=%s", SYSTEM, lock_id)
+                raise
 
 
 def _publish_graft(stage: Path, graft_prefix: Path, graft_bin: Path, lock_path: Path) -> None:
