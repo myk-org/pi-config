@@ -350,10 +350,11 @@ export function registerPidash(
         if (parsed.command === "set-thinking" && parsed.level) {
           try {
             (pi as any).setThinkingLevel(parsed.level);
+            const effectiveLevel = (pi as any).getThinkingLevel?.() ?? parsed.level;
             // Pi emits thinking_level_select for this setter; the provider
             // extension persists the validated effective level for pidash too.
-            log.debug(`thinking set to: ${parsed.level}`);
-            ws.send(JSON.stringify({ type: "update_info", thinkingLevel: parsed.level }));
+            log.debug(`thinking set to: ${effectiveLevel}`);
+            ws.send(JSON.stringify({ type: "update_info", thinkingLevel: effectiveLevel }));
           } catch (e: any) { log.debug(`set-thinking error: ${e.message}`); }
         }
 

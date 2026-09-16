@@ -1,19 +1,16 @@
-import type { AuthResult, Model, Provider } from "@earendil-works/pi-ai";
+import type { AuthResult, Model, Provider, RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createRuntimeProvider } from "../shared/create-runtime-provider.js";
 import { createLogger } from "../shared/logger.js";
 import {
-  OpenAiCompatibleDiscoveryCache,
-  buildLiteLlmCapabilitiesUrl,
+  buildOpenAiCompatibleCapabilitiesUrl,
   buildOpenAiCompatibleModelsRequest,
-  enrichLiteLlmReasoning,
+  enrichOpenAiCompatibleReasoning,
   findEligibleOpenAiCompatibleProviderConfigsResult,
   formatOpenAiCompatibleDiscoverySummary,
   materializeOpenAiCompatibleModels,
-  openAiCompatibleConnectionFingerprint,
   redactOpenAiCompatibleDiagnostic,
   resolveStaticOpenAiCompatibleHeaders,
-  type LiteLlmCapabilityRecord,
+  type OpenAiCompatibleCapabilityRecord,
   type OpenAiCompatibleModelRecord,
   type ResolvedOpenAiCompatibleConnection,
 } from "../shared/openai-compatible-discovery.js";
@@ -31,16 +28,12 @@ function responseRecords(payload: unknown): OpenAiCompatibleModelRecord[] {
   });
 }
 
-function capabilityRecords(payload: unknown): LiteLlmCapabilityRecord[] {
+function capabilityRecords(payload: unknown): OpenAiCompatibleCapabilityRecord[] {
   if (!payload || typeof payload !== "object" || !Array.isArray((payload as { data?: unknown }).data))
-    throw new Error("LiteLLM capability response must contain a data array");
+    throw new Error("OpenAI-compatible capability response must contain a data array");
   return (payload as { data: unknown[] }).data.filter(
-    (record): record is LiteLlmCapabilityRecord => Boolean(record) && typeof record === "object" && !Array.isArray(record),
+    (record): record is OpenAiCompatibleCapabilityRecord => Boolean(record) && typeof record === "object" && !Array.isArray(record),
   );
-}
-
-function isLiteLlmProvider(sourceProviderId: string, source: Provider): boolean {
-  return `${sourceProviderId} ${source.name ?? ""}`.toLowerCase().includes("litellm");
 }
 
 function resolvedConnection(source: Provider, auth?: AuthResult, staticHeaders?: Record<string, string>): ResolvedOpenAiCompatibleConnection {
@@ -58,100 +51,62 @@ function combineModels(sourceProviderId: string, staticModels: readonly Model[],
   return [...staticModels, ...discovered];
 }
 
-async function discoverProvider(
+async function refreshProviderModels(
   pi: ExtensionAPI,
   ctx: any,
   sourceProviderId: string,
-  rawStaticHeaders: Record<string, string> | undefined,
-  cache: OpenAiCompatibleDiscoveryCache<OpenAiCompatibleModelRecord>,
-  signal: AbortSignal,
-  isCurrent: () => boolean,
-  registeredSources: Set<string>,
-): Promise<void> {
-  if (!isCurrent()) return;
-  const source = ctx.modelRegistry.getProvider(sourceProviderId) as Provider | undefined;
-  if (!source) {
-    log.warn(`${sourceProviderId}: configured provider was not resolved`);
-    return;
-  }
-  let auth: AuthResult | undefined;
-  let staticHeaders: Record<string, string> | undefined;
+  source: Provider,
+  staticModels: readonly Model[],
+  refresh: RefreshModelsContext,
+  appendSummary: () => boolean,
+  discoverModelCapabilities: boolean,
+  rawStaticHeaders?: Record<string, string>,
+): Promise<Model[]> {
+  if (!refresh.allowNetwork || refresh.signal.aborted) return [...staticModels];
+
+  let connection: ResolvedOpenAiCompatibleConnection = { baseUrl: source.baseUrl };
   try {
-    auth = await ctx.modelRegistry.getProviderAuth(sourceProviderId);
-    staticHeaders = await resolveStaticOpenAiCompatibleHeaders(rawStaticHeaders);
-  } catch {
-    log.warn(`${sourceProviderId}: authentication or configured headers could not be resolved`);
-    return;
-  }
-  const connection = resolvedConnection(source, auth, staticHeaders);
-  let request;
-  try {
-    request = buildOpenAiCompatibleModelsRequest(connection);
-  } catch (error) {
-    log.warn(`${sourceProviderId}: discovery inactive`, redactOpenAiCompatibleDiagnostic(error instanceof Error ? error.message : String(error), connection));
-    return;
-  }
-  const records = await cache.get(async () => {
-    try {
-      const response = await fetch(request.url, {
-        headers: request.headers,
-        redirect: "error",
-        signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
-      });
-      if (!response.ok) throw new Error(`OpenAI-compatible /v1/models returned HTTP ${response.status}`);
-      const records = responseRecords(await response.json());
-      if (!isLiteLlmProvider(sourceProviderId, source)) return records;
+    const auth = await ctx.modelRegistry.getProviderAuth(sourceProviderId) as AuthResult | undefined;
+    const staticHeaders = await resolveStaticOpenAiCompatibleHeaders(rawStaticHeaders);
+    connection = resolvedConnection(source, auth, staticHeaders);
+    const request = buildOpenAiCompatibleModelsRequest(connection);
+    const signal = AbortSignal.any([refresh.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
+    const response = await fetch(request.url, { headers: request.headers, redirect: "error", signal });
+    if (!response.ok) throw new Error(`OpenAI-compatible /v1/models returned HTTP ${response.status}`);
+    let records = responseRecords(await response.json());
+
+    if (discoverModelCapabilities) {
       try {
-        const capabilityResponse = await fetch(buildLiteLlmCapabilitiesUrl(request.url), {
+        const capabilityResponse = await fetch(buildOpenAiCompatibleCapabilitiesUrl(request.url), {
           headers: request.headers,
           redirect: "error",
-          signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+          signal,
         });
-        if (!capabilityResponse.ok) throw new Error(`LiteLLM capability endpoint returned HTTP ${capabilityResponse.status}`);
-        return enrichLiteLlmReasoning(records, capabilityRecords(await capabilityResponse.json()));
+        if (!capabilityResponse.ok) throw new Error(`OpenAI-compatible capability endpoint returned HTTP ${capabilityResponse.status}`);
+        records = enrichOpenAiCompatibleReasoning(records, capabilityRecords(await capabilityResponse.json()));
       } catch (error) {
+        if (refresh.signal.aborted) return [...staticModels];
         log.warn(`${sourceProviderId}: reasoning capability enrichment unavailable`, redactOpenAiCompatibleDiagnostic(error instanceof Error ? error.message : String(error), connection));
-        return records;
       }
-    } catch (error) {
-      log.warn(`${sourceProviderId}: discovery refresh failed`, redactOpenAiCompatibleDiagnostic(error instanceof Error ? error.message : String(error), connection));
-      throw error;
     }
-  }, { cacheKey: openAiCompatibleConnectionFingerprint(connection) });
-  if (!isCurrent() || !records.hasSnapshot) return;
-  if (records.stale) log.warn(`${sourceProviderId}: refresh failed; using last-known-good discovery result`);
 
-  const staticModels = (ctx.modelRegistry.getAll() as Model[])
-    .filter((model) => model.provider === sourceProviderId);
-  const models = combineModels(sourceProviderId, staticModels, records.models, request.streamBaseUrl);
-  try {
-    const provider = await createRuntimeProvider({
-      id: sourceProviderId,
-      name: source.name,
-      baseUrl: request.streamBaseUrl,
-      auth: source.auth,
-      models,
-      api: {
-        stream: source.stream.bind(source),
-        streamSimple: source.streamSimple.bind(source),
-      },
-    });
-    if (!isCurrent()) return;
-    // Pi composes this native provider with the existing models.json entry. The
-    // source key is therefore both the ordinary picker label and routing key.
-    pi.registerProvider(provider);
-    registeredSources.add(sourceProviderId);
-    try {
-      pi.appendEntry<OpenAiCompatibleDiscoverySummary>(
-        "openai-compatible-discovery-summary",
-        { summary: formatOpenAiCompatibleDiscoverySummary(sourceProviderId, records.models.length) },
-      );
-    } catch (error) {
-      log.warn(`${sourceProviderId}: discovery summary append failed`, error instanceof Error ? error.name : typeof error);
+    if (refresh.signal.aborted) return [...staticModels];
+    if (appendSummary()) {
+      try {
+        pi.appendEntry<OpenAiCompatibleDiscoverySummary>(
+          "openai-compatible-discovery-summary",
+          { summary: formatOpenAiCompatibleDiscoverySummary(sourceProviderId, records.length) },
+        );
+      } catch (error) {
+        log.warn(`${sourceProviderId}: discovery summary append failed`, error instanceof Error ? error.name : typeof error);
+      }
     }
-    log.info(`${sourceProviderId}: registered ${records.models.length} discovered model(s) on configured provider`);
+    log.info(`${sourceProviderId}: refreshed ${records.length} discovered model(s) on configured provider`);
+    return combineModels(sourceProviderId, staticModels, records, request.streamBaseUrl);
   } catch (error) {
-    log.warn(`${sourceProviderId}: provider augmentation failed`, redactOpenAiCompatibleDiagnostic(error instanceof Error ? error.message : String(error), connection));
+    if (!refresh.signal.aborted)
+      log.warn(`${sourceProviderId}: discovery refresh failed`, redactOpenAiCompatibleDiagnostic(error instanceof Error ? error.message : String(error), connection));
+    return [...staticModels];
   }
 }
 
@@ -176,16 +131,10 @@ export default function (pi: ExtensionAPI) {
     );
   }
 
-  const cache = new OpenAiCompatibleDiscoveryCache<OpenAiCompatibleModelRecord>();
   const registeredSources = new Set<string>();
-  const controllers = new Set<AbortController>();
-  let active = true;
-  let generation = 0;
-
   const restoreSources = () => {
     for (const id of registeredSources) {
       try {
-        // Removing our native overlay makes Pi recompose the unchanged static provider.
         pi.unregisterProvider(id);
       } catch (error) {
         log.warn("provider augmentation cleanup failed", { provider: id, cause: error instanceof Error ? error.name : typeof error });
@@ -194,39 +143,51 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  pi.on("session_shutdown", () => {
-    active = false;
-    generation += 1;
-    for (const controller of controllers) controller.abort();
-    controllers.clear();
-    cache.clear();
-    restoreSources();
-  });
+  pi.on("session_shutdown", restoreSources);
 
   pi.on("session_start", async (_event, ctx) => {
-    if (ctx?.mode !== "tui" || ctx?.hasUI !== true) return;
-    active = true;
-    generation += 1;
-    for (const controller of controllers) controller.abort();
-    controllers.clear();
-    cache.clear();
     restoreSources();
-    const currentGeneration = generation;
-    const controller = new AbortController();
-    controllers.add(controller);
-    const isCurrent = () => active && currentGeneration === generation;
     const configResult = findEligibleOpenAiCompatibleProviderConfigsResult();
     if (configResult.providers.length === 0) {
       const diagnostic = { modelsConfig: configResult.status };
       if (configResult.status === "unreadable" || configResult.status === "malformed")
         log.warn("inactive: OpenAI-compatible discovery configuration unavailable", diagnostic);
       else log.debug("inactive: no opted-in OpenAI-compatible providers", diagnostic);
-      controllers.delete(controller);
       return;
     }
-    await Promise.all(configResult.providers.map(({ id, headers }) =>
-      discoverProvider(pi, ctx, id, headers, cache, controller.signal, isCurrent, registeredSources),
-    ));
-    controllers.delete(controller);
+
+    let startupRefresh = ctx?.mode === "tui" && ctx?.hasUI === true;
+    for (const { id, headers, discoverModelCapabilities } of configResult.providers) {
+      const source = ctx.modelRegistry.getProvider(id) as Provider | undefined;
+      if (!source) {
+        log.warn(`${id}: configured provider was not resolved`);
+        continue;
+      }
+      const staticModels = (ctx.modelRegistry.getAll() as Model[])
+        .filter((model) => model.provider === id);
+      pi.registerProvider(id, {
+        refreshModels: (refresh) => refreshProviderModels(
+          pi,
+          ctx,
+          id,
+          source,
+          staticModels,
+          refresh,
+          () => startupRefresh,
+          discoverModelCapabilities,
+          headers,
+        ),
+      });
+      registeredSources.add(id);
+    }
+    try {
+      await ctx.modelRegistry.refresh({
+        providers: configResult.providers.map(({ id }) => id),
+        allowNetwork: true,
+        force: true,
+      });
+    } finally {
+      startupRefresh = false;
+    }
   });
 }

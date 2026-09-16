@@ -35,7 +35,7 @@ export interface OpenAiCompatibleModelRecord {
   /** LiteLLM's generic output capacity alias. */
   max_output_tokens?: unknown;
 }
-export interface LiteLlmCapabilityRecord {
+export interface OpenAiCompatibleCapabilityRecord {
   model_name?: unknown;
   model_info?: unknown;
 }
@@ -89,6 +89,7 @@ export interface CachedOpenAiCompatibleDiscovery<T> {
 export interface EligibleOpenAiCompatibleProvider {
   id: string;
   headers?: Record<string, string>;
+  discoverModelCapabilities: boolean;
 }
 
 /** Session transcript text for one successfully registered configured provider. */
@@ -185,7 +186,11 @@ export function findEligibleOpenAiCompatibleProviderConfigsResult(
         Object.values(headers).some((value) => typeof value !== "string"))
     )
       return [];
-    return [{ id, headers: headers as Record<string, string> | undefined }];
+    return [{
+      id,
+      headers: headers as Record<string, string> | undefined,
+      discoverModelCapabilities: provider.discoverModelCapabilities === true,
+    }];
   });
   return {
     status:
@@ -398,15 +403,15 @@ export function buildOpenAiCompatibleModelsRequest(
   return { url: modelsUrl, streamBaseUrl, headers };
 }
 
-export function buildLiteLlmCapabilitiesUrl(modelsUrl: string): string {
+export function buildOpenAiCompatibleCapabilitiesUrl(modelsUrl: string): string {
   const url = new URL(modelsUrl);
   url.pathname = url.pathname.replace(/\/models$/i, "/model/info");
   return url.toString();
 }
 
-export function enrichLiteLlmReasoning(
+export function enrichOpenAiCompatibleReasoning(
   records: readonly OpenAiCompatibleModelRecord[],
-  capabilities: readonly LiteLlmCapabilityRecord[],
+  capabilities: readonly OpenAiCompatibleCapabilityRecord[],
 ): OpenAiCompatibleModelRecord[] {
   const reasoning = new Map<string, boolean>();
   for (const capability of capabilities) {
@@ -510,8 +515,8 @@ export function materializeOpenAiCompatibleModels(
         : PI_STATIC_MODEL_DEFAULTS.reasoning,
       input: materializeInput(record.input),
       cost: materializeCost(record.cost),
-      // Native Pi metadata wins. LiteLLM commonly exposes only generic input
-      // and output capacities, whose combined capacity is Pi's context window.
+      // Native Pi metadata wins. OpenAI-compatible capability APIs may expose
+      // generic input/output capacities, whose sum is Pi's context window.
       contextWindow: positiveFiniteNumber(
         record.contextWindow,
         (() => {

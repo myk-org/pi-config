@@ -618,11 +618,11 @@ export default async function (
   const applyCliAcpxThinking = (model: { id: string; provider: string } | undefined) => {
     log.debug("applyCliAcpxThinking", model?.provider, model?.id);
     try {
-      lastThinking.runInternal(() => applyThinkingLevelFromModel(
+      applyThinkingLevelFromModel(
         model,
-        (level) => pi.setThinkingLevel(level as ThinkingLevel),
+        level => lastThinking.setInternalThinkingLevel(level as ThinkingLevel),
         () => pi.getThinkingLevel(),
-      ));
+      );
     } catch (err) {
       log.warn(
         "thinking from id failed",

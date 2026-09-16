@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   readLastThinkingLevel,
+  readThinkingLevelState,
   registerLastThinkingLevel,
   shouldRestoreLastThinkingLevel,
   writeLastThinkingLevel,
@@ -15,21 +16,22 @@ type Handler = (event: any, ctx: any) => any;
 function harness(statePath: string, initial = "off") {
   const handlers = new Map<string, Handler>();
   let level = initial;
+  let ctx: any = reasoningCtx();
   const pi = {
     on: (name: string, handler: Handler) => handlers.set(name, handler),
     getThinkingLevel: () => level,
     setThinkingLevel: (next: string) => {
       const previousLevel = level;
       level = next;
-      handlers.get("thinking_level_select")?.({ level: next, previousLevel }, {});
+      handlers.get("thinking_level_select")?.({ level: next, previousLevel }, ctx);
     },
   } as any;
   const api = registerLastThinkingLevel(pi, { statePath, argv: ["node", "pi"] });
-  return { handlers, api, pi, level: () => level };
+  return { handlers, api, pi, level: () => level, setCtx: (next: any) => { ctx = next; } };
 }
 
-const reasoningCtx = (entries: any[] = []) => ({
-  model: { id: "reasoner", provider: "native", reasoning: true },
+const reasoningCtx = (entries: any[] = [], id = "reasoner") => ({
+  model: { id, provider: "native", reasoning: true },
   sessionManager: { getEntries: () => entries },
 });
 
@@ -47,16 +49,38 @@ describe("last-used thinking level", () => {
   it("persists validated levels atomically with private permissions", () => {
     assert.equal(writeLastThinkingLevel("high", statePath), true);
     assert.equal(readLastThinkingLevel(statePath), "high");
+    assert.equal(statSync(join(dir, "state")).mode & 0o777, 0o700);
     assert.equal(statSync(statePath).mode & 0o777, 0o600);
-    assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), { level: "high" });
+    assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), {
+      version: 2,
+      fallback: "high",
+      models: {},
+    });
+  });
+
+  it("migrates legacy fallback when saving an exact model preference", () => {
+    writeLastThinkingLevel("high", statePath);
+    writeFileSync(statePath, JSON.stringify({ level: "high" }));
+    const h = harness(statePath);
+    h.handlers.get("session_start")!({ reason: "new" }, reasoningCtx());
+    h.pi.setThinkingLevel("low");
+    assert.deepEqual(JSON.parse(JSON.stringify(readThinkingLevelState(statePath))), {
+      version: 2,
+      fallback: "low",
+      models: { "native/reasoner": "low" },
+    });
   });
 
   it("ignores invalid and corrupt state", () => {
     writeLastThinkingLevel("high", statePath);
     writeFileSync(statePath, "not json");
     assert.equal(readLastThinkingLevel(statePath), undefined);
-    writeFileSync(statePath, JSON.stringify({ level: "turbo" }));
-    assert.equal(readLastThinkingLevel(statePath), undefined);
+    writeFileSync(statePath, JSON.stringify({ version: 2, fallback: "low", models: { safe: "high", bad: "turbo", "__proto__": "max" } }));
+    assert.deepEqual(JSON.parse(JSON.stringify(readThinkingLevelState(statePath))), {
+      version: 2,
+      fallback: "low",
+      models: { safe: "high" },
+    });
     assert.equal(writeLastThinkingLevel("turbo", statePath), false);
   });
 
@@ -119,7 +143,7 @@ describe("last-used thinking level", () => {
     assert.equal(shouldRestoreLastThinkingLevel({
       reason: "new",
       ctx: reasoningCtx(),
-      argv: ["pi", "--model", "native/reasoner:high"],
+      argv: ["pi", "--thinking", "high"],
     }), false);
     assert.equal(shouldRestoreLastThinkingLevel({
       reason: "new",
@@ -133,9 +157,45 @@ describe("last-used thinking level", () => {
 
   it("persists native TUI and pidash setter events through the direct Pi event", () => {
     const h = harness(statePath);
-    h.handlers.get("thinking_level_select")!({ level: "xhigh", previousLevel: "off" }, {});
+    h.handlers.get("session_start")!({ reason: "new" }, reasoningCtx());
+    h.handlers.get("thinking_level_select")!({ level: "xhigh", previousLevel: "off" }, reasoningCtx());
     assert.equal(readLastThinkingLevel(statePath), "xhigh");
     h.pi.setThinkingLevel("medium");
-    assert.equal(readLastThinkingLevel(statePath), "medium");
+    assert.deepEqual({ ...readThinkingLevelState(statePath).models }, { "native/reasoner": "medium" });
+  });
+
+  it("ignores a model-switch clamp and restores each exact model preference", () => {
+    const h = harness(statePath);
+    h.handlers.get("session_start")!({ reason: "new" }, reasoningCtx());
+    h.pi.setThinkingLevel("low");
+
+    const other = reasoningCtx([], "other");
+    h.setCtx(other);
+    h.handlers.get("thinking_level_select")!({ level: "off", previousLevel: "low" }, other);
+    h.handlers.get("model_select")!({ model: other.model, source: "set" }, other);
+    assert.equal(h.level(), "low");
+    assert.deepEqual({ ...readThinkingLevelState(statePath).models }, { "native/reasoner": "low" });
+
+    h.pi.setThinkingLevel("high");
+    const first = reasoningCtx();
+    h.setCtx(first);
+    h.handlers.get("thinking_level_select")!({ level: "off", previousLevel: "high" }, first);
+    h.handlers.get("model_select")!({ model: first.model, source: "set" }, first);
+    assert.equal(h.level(), "low");
+    assert.deepEqual({ ...readThinkingLevelState(statePath).models }, {
+      "native/reasoner": "low",
+      "native/other": "high",
+    });
+  });
+
+  it("clamps restored preferences without overwriting the requested value", () => {
+    writeLastThinkingLevel("max", statePath);
+    const h = harness(statePath);
+    const ctx = reasoningCtx([], "limited");
+    ctx.model.thinkingLevelMap = { xhigh: null, max: null };
+    h.handlers.get("session_start")!({ reason: "new" }, ctx);
+    h.handlers.get("model_select")!({ model: ctx.model, source: "set" }, ctx);
+    assert.equal(h.level(), "high");
+    assert.equal(readThinkingLevelState(statePath).fallback, "max");
   });
 });
