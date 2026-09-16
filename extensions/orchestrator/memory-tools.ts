@@ -339,7 +339,7 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
           return {
             content: [{
               type: "text",
-              text: `Invalid action "${params.action}". run_after requires a command (e.g., 'run_after .dev/deploy-all.sh')`,
+              text: `Invalid action "${params.action}". run_after requires a command (e.g., 'run_after npm test')`,
             }],
           };
         }

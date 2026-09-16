@@ -14,7 +14,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { createDaemonServer } from "./daemon-shared.ts";
 import type { SessionInfo } from "../extensions/shared/types.ts";
-import { disconnectPidashSession, registerPidashSession, type PiClient } from "./pidash-session-state.ts";
+import { disconnectPidashSession, registerPidashSession, updatePidashSession, type PiClient } from "./pidash-session-state.ts";
 import { setupDiscordBot } from "./pidash-discord.ts";
 import { applyActivityEvent, initialActivityState, shouldAcceptActivityEvent } from "../extensions/pidash/activity-state.ts";
 import { createLogger } from "../extensions/shared/logger.ts";
@@ -82,6 +82,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
 
   if (parsed.type === "update_info" && piClient) {
     if (parsed.model !== undefined) piClient.session.model = parsed.model;
+    if (typeof parsed.reasoning === "boolean") piClient.session.reasoning = parsed.reasoning;
     if (parsed.branch !== undefined) piClient.session.branch = parsed.branch;
     if (parsed.gitDirty !== undefined) piClient.session.gitDirty = parsed.gitDirty;
     if (parsed.gitChanges !== undefined) piClient.session.gitChanges = parsed.gitChanges;
@@ -91,7 +92,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     if (parsed.comsName !== undefined) piClient.session.comsName = parsed.comsName;
     if (parsed.comsPurpose !== undefined) piClient.session.comsPurpose = parsed.comsPurpose;
     if (parsed.comsProject !== undefined) piClient.session.comsProject = parsed.comsProject;
-    piClient.session.lastActivity = Date.now();
+    updatePidashSession(piClient.session, parsed);
     sendToWatchers(piClient.session.sessionId, { type: "session_updated", session: piClient.session });
     return;
   }
@@ -101,7 +102,10 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     if (parsed.cwd) piClient.session.cwd = parsed.cwd;
     if (parsed.branch) piClient.session.branch = parsed.branch;
     if (parsed.sessionFile) piClient.session.sessionFile = parsed.sessionFile;
-    piClient.session.lastActivity = Date.now();
+    if (parsed.model !== undefined) piClient.session.model = parsed.model;
+    if (parsed.contextWindow !== undefined) piClient.session.contextWindow = parsed.contextWindow;
+    if (parsed.thinkingLevel !== undefined) piClient.session.thinkingLevel = parsed.thinkingLevel;
+    updatePidashSession(piClient.session, parsed);
     piClient.session.activity = "idle";
     piClient.session.activitySequence = 0;
     piClient.session.activityBeforePrompt = undefined;

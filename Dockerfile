@@ -18,13 +18,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   acl \
   ca-certificates \
   curl \
+  g++ \
   gcc \
   git \
   gnupg \
   jq \
   libxml2-dev \
+  make \
   openssh-client \
   procps \
+  python3 \
   psmisc \
   ripgrep \
   unzip \
@@ -78,14 +81,37 @@ COPY --chmod=755 scripts/docker-safe /usr/local/bin/docker-safe
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g npm@12.0.2
 
-# Install acpx, agent-browser, pi-web-access, gemini-cli (pi itself is installed at runtime in entrypoint.sh)
+# Install acpx, agent-browser, pi-web-access, gemini-cli, and Graft (pi itself is installed at runtime in entrypoint.sh)
+COPY scripts/graft-allow-scripts.mjs /usr/local/lib/scripts/graft-allow-scripts.mjs
+COPY extensions/shared/logger-core.mjs extensions/shared/install-logger.mjs /usr/local/lib/extensions/shared/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-  npm install -g acpx agent-browser pi-web-access @google/gemini-cli
+  npm install -g acpx agent-browser pi-web-access @google/gemini-cli && \
+  GRAFT_AUDIT="$(mktemp -d)" && \
+  GRAFT_STAGE="" && \
+  GRAFT_LINK="" && \
+  trap 'rm -rf "$GRAFT_AUDIT" "$GRAFT_STAGE" "$GRAFT_LINK"' EXIT && \
+  GRAFT_PREFIX="$(npm prefix -g)/lib/graft-prefix" && \
+  DO_NOT_TRACK=1 npm install -g --prefix "$GRAFT_AUDIT" @nanonets/graft@latest --ignore-scripts && \
+  GRAFT_ALLOW_SCRIPTS="$(node /usr/local/lib/scripts/graft-allow-scripts.mjs "$GRAFT_AUDIT/lib/node_modules/@nanonets/graft" "$GRAFT_AUDIT/lib/node_modules")" && \
+  test -n "$GRAFT_ALLOW_SCRIPTS" && \
+  rm -rf "$GRAFT_AUDIT" && GRAFT_AUDIT="" && \
+  GRAFT_STAGE="$(mktemp -d "$(npm prefix -g)/lib/.graft-prefix.XXXXXX")" && \
+  mkdir -p "$GRAFT_STAGE/lib" && \
+  DO_NOT_TRACK=1 npm install -g --prefix "$GRAFT_STAGE" @nanonets/graft@latest --allow-scripts="$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts && \
+  chmod -R a+rX "$GRAFT_STAGE" && \
+  "$GRAFT_STAGE/bin/graft" --version && \
+  rm -rf "$GRAFT_PREFIX" && \
+  mv "$GRAFT_STAGE" "$GRAFT_PREFIX" && GRAFT_STAGE="" && \
+  GRAFT_LINK="$(npm prefix -g)/bin/.graft-link" && \
+  ln -s ../lib/graft-prefix/bin/graft "$GRAFT_LINK" && \
+  mv -Tf "$GRAFT_LINK" "$(npm prefix -g)/bin/graft" && GRAFT_LINK="" && \
+  trap - EXIT
 
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
 RUN chown -R node:node /home/node
 USER node
+RUN /usr/local/bin/graft --version
 RUN mkdir -p /home/node/.npm-global && npm config set prefix /home/node/.npm-global
 ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:$PATH"
 ENV TERM=xterm-256color

@@ -21,11 +21,16 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
+import json
 import os
 import platform
 import shutil
 import subprocess
 import sys
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -107,7 +112,186 @@ def _gitignore_path() -> str:
     return path.replace("~", str(HOME))
 
 
+def _npm_global_prefix() -> Path:
+    result = subprocess.run(["npm", "prefix", "-g"], capture_output=True, text=True, timeout=5, check=True)
+    raw = result.stdout.strip()
+    prefix = Path(raw)
+    if not raw or not prefix.is_absolute():
+        log.warning("graft unsafe npm global prefix rejected value=%r", raw)
+        raise RuntimeError("npm prefix -g must return a safe absolute path")
+    resolved = prefix.resolve()
+    cwd = Path.cwd().resolve()
+    writable_parent = resolved
+    while not writable_parent.exists():
+        writable_parent = writable_parent.parent
+    if (
+        resolved == Path(resolved.anchor)
+        or resolved == cwd
+        or (resolved.exists() and not resolved.is_dir())
+        or not writable_parent.is_dir()
+        or not os.access(writable_parent, os.W_OK)
+    ):
+        log.warning("graft unsafe npm global prefix rejected value=%r", raw)
+        raise RuntimeError("npm prefix -g must return a safe absolute path")
+    return resolved
+
+
+@contextmanager
+def _publication_lock(lock_path: Path) -> Iterator[None]:
+    lock_id = hashlib.sha256(os.fsencode(lock_path)).hexdigest()[:12]
+    with lock_path.open("a+b") as lock:
+        if lock.tell() == 0:
+            lock.write(b"\0")
+            lock.flush()
+        lock.seek(0)
+        log.debug("graft publication lock event=acquire platform=%s lock_id=%s", SYSTEM, lock_id)
+        try:
+            if SYSTEM == "Windows":
+                import msvcrt
+
+                msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
+            else:
+                import fcntl
+
+                fcntl.flock(lock, fcntl.LOCK_EX)
+        except Exception:
+            log.error("graft publication lock event=failure phase=acquire platform=%s lock_id=%s", SYSTEM, lock_id)
+            raise
+        log.debug("graft publication lock event=acquired platform=%s lock_id=%s", SYSTEM, lock_id)
+        try:
+            yield
+        finally:
+            log.debug("graft publication lock event=release platform=%s lock_id=%s", SYSTEM, lock_id)
+            try:
+                if SYSTEM == "Windows":
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+                else:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+            except Exception:
+                log.error("graft publication lock event=failure phase=release platform=%s lock_id=%s", SYSTEM, lock_id)
+                raise
+
+
+def _publish_graft(stage: Path, graft_prefix: Path, graft_bin: Path, lock_path: Path) -> None:
+    backup = stage.with_name(f"{stage.name}.previous")
+    link = graft_bin.with_name(f".{stage.name}-graft")
+    with _publication_lock(lock_path):
+        log.debug("graft publication lock acquired")
+        had_previous = graft_prefix.exists()
+        published = False
+        try:
+            if had_previous:
+                os.replace(graft_prefix, backup)
+            os.replace(stage, graft_prefix)
+            published = True
+            link.symlink_to("../lib/graft-prefix/bin/graft")
+            os.replace(link, graft_bin)
+        except Exception:
+            link.unlink(missing_ok=True)
+            if published:
+                shutil.rmtree(graft_prefix)
+            if had_previous:
+                os.replace(backup, graft_prefix)
+            raise
+        if had_previous:
+            shutil.rmtree(backup)
+
+
 # ── Install Command Builders ──────────────────────────────────────────────
+
+
+def _install_script_packages(package_dir: Path, install_root: Path) -> list[str]:
+    seen: set[Path] = set()
+    allowed: set[str] = set()
+
+    def inspect(path: Path) -> None:
+        real = path.resolve()
+        if real in seen:
+            return
+        seen.add(real)
+        manifest = json.loads((real / "package.json").read_text())
+        scripts = manifest.get("scripts", {})
+        lifecycle_hook = {"preinstall", "install", "postinstall"} & scripts.keys()
+        default_node_gyp_hook = "install" not in scripts and (real / "binding.gyp").is_file()
+        if lifecycle_hook or default_node_gyp_hook:
+            allowed.add(manifest["name"])
+        optional = manifest.get("optionalDependencies", {})
+        dependencies = manifest.get("dependencies", {}) | optional
+        for name in dependencies:
+            child = next(
+                (
+                    candidate
+                    for candidate in (
+                        real / "node_modules" / name,
+                        *(parent / "node_modules" / name for parent in real.parents),
+                        install_root / name,
+                    )
+                    if candidate.exists() and (candidate == install_root / name or install_root in candidate.parents)
+                ),
+                None,
+            )
+            if child is None:
+                if name in optional:
+                    log.debug("graft optional dependency omitted package=%s", name)
+                    continue
+                raise FileNotFoundError(f"required Graft dependency is not installed: {name}")
+            inspect(child)
+
+    inspect(package_dir)
+    log.debug("graft install-script audit packages=%s", len(allowed))
+    return sorted(allowed)
+
+
+def install_graft() -> None:
+    missing = [tool for tool in ("npm", "node", "python3", "make", "g++") if not shutil.which(tool)]
+    if missing:
+        log.warning("graft prerequisites missing=%s", ",".join(missing))
+        raise RuntimeError(f"Graft requires node-gyp prerequisites: {', '.join(missing)}")
+    npm_major = int(_run_quiet(["npm", "--version"]).split(".", 1)[0])
+    if npm_major < 12:
+        log.warning("graft secure install unsupported npm-major=%s", npm_major)
+        raise RuntimeError("Graft secure installation requires npm 12+")
+    env = os.environ | {"DO_NOT_TRACK": "1"}
+    global_prefix = _npm_global_prefix()
+    graft_prefix = global_prefix / "lib/graft-prefix"
+    graft_bin = global_prefix / "bin/graft"
+    graft_prefix.parent.mkdir(parents=True, exist_ok=True)
+    graft_bin.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix="pi-graft-audit-") as audit_raw:
+        audit = Path(audit_raw)
+        subprocess.run(
+            ["npm", "install", "-g", "--prefix", str(audit), "@nanonets/graft@latest", "--ignore-scripts"],
+            check=True,
+            env=env,
+        )
+        npm_root = audit / "lib/node_modules"
+        allowed = ",".join(_install_script_packages(npm_root / "@nanonets/graft", npm_root))
+        if not allowed:
+            raise RuntimeError("Graft dependency audit found no install scripts")
+
+    with tempfile.TemporaryDirectory(prefix=".graft-prefix-", dir=graft_prefix.parent) as stage_raw:
+        stage = Path(stage_raw)
+        (stage / "lib").mkdir()
+        subprocess.run(
+            [
+                "npm",
+                "install",
+                "-g",
+                "--prefix",
+                str(stage),
+                "@nanonets/graft@latest",
+                f"--allow-scripts={allowed}",
+                "--strict-allow-scripts",
+            ],
+            check=True,
+            env=env,
+        )
+        subprocess.run([str(stage / "bin/graft"), "--version"], check=True, env=env)
+
+        _publish_graft(stage, graft_prefix, graft_bin, global_prefix / ".graft-install.lock")
+    log.info("graft installation verified")
 
 
 # ── Prerequisites ──────────────────────────────────────────────────────────
@@ -271,6 +455,14 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 installed=bool(shutil.which("agent-browser")),
                 disabled=nd,
                 install_cmd="npm install -g agent-browser",
+            ),
+            Tool(
+                "graft",
+                "Local repository code graph for the optional Graft extension",
+                installed=bool(shutil.which("graft")),
+                disabled=nd,
+                install_cmd="DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest (strict dynamic script approval)",
+                install_fn=install_graft,
             ),
         ],
     )

@@ -41,6 +41,8 @@ interface ProjectSettings {
   cli_agents?: string | string[];
   pidash_enable?: boolean;
   pidiff_enable?: boolean;
+  /** Enable local Graft repository graph integration. Default: false. */
+  graft_enable?: boolean;
   pidash_port?: number;
   task_auto_clear_enabled?: boolean;
   task_auto_clear_minutes?: number;
@@ -105,6 +107,7 @@ export interface SettingsKeyDef {
   max?: number;
   strict_digits?: boolean;
   per_key_resolution?: boolean;
+  enum?: string[];
 }
 
 const SETTINGS_FILENAMES = ["pi-config-settings.jsonc", "pi-config-settings.json"];
@@ -136,6 +139,7 @@ const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [
   "cli_agents",
   "pidash_enable",
   "pidiff_enable",
+  "graft_enable",
   "pidash_port",
   "task_auto_clear_enabled",
   "task_auto_clear_minutes",
@@ -196,6 +200,7 @@ export function parseSettingsFile(filePath: string): ProjectSettings {
     if (typeof raw.orchestrator_edit_write_block === "boolean") result.orchestrator_edit_write_block = raw.orchestrator_edit_write_block;
     if (typeof raw.pidash_enable === "boolean") result.pidash_enable = raw.pidash_enable;
     if (typeof raw.pidiff_enable === "boolean") result.pidiff_enable = raw.pidiff_enable;
+    if (typeof raw.graft_enable === "boolean") result.graft_enable = raw.graft_enable;
     if (typeof raw.pidash_port === "number" && Number.isInteger(raw.pidash_port) && raw.pidash_port > 0 && raw.pidash_port <= 65535) {
       result.pidash_port = raw.pidash_port;
     }
@@ -248,7 +253,7 @@ export function parseSettingsFile(filePath: string): ProjectSettings {
     const SPECIAL_CASE_KEYS = new Set<string>([
       "commit_trailer", "allow_push_to_protected_branches", "use_worktrees",
       "dream_interval_hours", "dco", "comment_signature", "review_loop_enforcement",
-      "orchestrator_edit_write_block", "pidash_enable", "pidiff_enable", "pidash_port",
+      "orchestrator_edit_write_block", "pidash_enable", "pidiff_enable", "graft_enable", "pidash_port",
       "image_model", "internal_operations_provider", "internal_operations_model",
       "review_loop_max_cycles", "acpx_agents", "cli_agents", "agent_provider",
       "agent_model", "agent_overrides",
@@ -466,6 +471,7 @@ export function getSetting(cwd: string, key: "acpx_agents"): string[];
 export function getSetting(cwd: string, key: "cli_agents"): string[];
 export function getSetting(cwd: string, key: "pidash_enable"): boolean;
 export function getSetting(cwd: string, key: "pidiff_enable"): boolean;
+export function getSetting(cwd: string, key: "graft_enable"): boolean;
 export function getSetting(cwd: string, key: "pidash_port"): number;
 export function getSetting(cwd: string, key: "task_auto_clear_enabled"): boolean;
 export function getSetting(cwd: string, key: "task_auto_clear_minutes"): number;

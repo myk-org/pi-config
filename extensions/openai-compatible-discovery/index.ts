@@ -4,13 +4,16 @@ import { createRuntimeProvider } from "../shared/create-runtime-provider.js";
 import { createLogger } from "../shared/logger.js";
 import {
   OpenAiCompatibleDiscoveryCache,
+  buildLiteLlmCapabilitiesUrl,
   buildOpenAiCompatibleModelsRequest,
+  enrichLiteLlmReasoning,
   findEligibleOpenAiCompatibleProviderConfigsResult,
   formatOpenAiCompatibleDiscoverySummary,
   materializeOpenAiCompatibleModels,
   openAiCompatibleConnectionFingerprint,
   redactOpenAiCompatibleDiagnostic,
   resolveStaticOpenAiCompatibleHeaders,
+  type LiteLlmCapabilityRecord,
   type OpenAiCompatibleModelRecord,
   type ResolvedOpenAiCompatibleConnection,
 } from "../shared/openai-compatible-discovery.js";
@@ -26,6 +29,18 @@ function responseRecords(payload: unknown): OpenAiCompatibleModelRecord[] {
     const model = record as OpenAiCompatibleModelRecord;
     return typeof model.id === "string" ? [model] : [];
   });
+}
+
+function capabilityRecords(payload: unknown): LiteLlmCapabilityRecord[] {
+  if (!payload || typeof payload !== "object" || !Array.isArray((payload as { data?: unknown }).data))
+    throw new Error("LiteLLM capability response must contain a data array");
+  return (payload as { data: unknown[] }).data.filter(
+    (record): record is LiteLlmCapabilityRecord => Boolean(record) && typeof record === "object" && !Array.isArray(record),
+  );
+}
+
+function isLiteLlmProvider(sourceProviderId: string, source: Provider): boolean {
+  return `${sourceProviderId} ${source.name ?? ""}`.toLowerCase().includes("litellm");
 }
 
 function resolvedConnection(source: Provider, auth?: AuthResult, staticHeaders?: Record<string, string>): ResolvedOpenAiCompatibleConnection {
@@ -84,7 +99,20 @@ async function discoverProvider(
         signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
       });
       if (!response.ok) throw new Error(`OpenAI-compatible /v1/models returned HTTP ${response.status}`);
-      return responseRecords(await response.json());
+      const records = responseRecords(await response.json());
+      if (!isLiteLlmProvider(sourceProviderId, source)) return records;
+      try {
+        const capabilityResponse = await fetch(buildLiteLlmCapabilitiesUrl(request.url), {
+          headers: request.headers,
+          redirect: "error",
+          signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+        });
+        if (!capabilityResponse.ok) throw new Error(`LiteLLM capability endpoint returned HTTP ${capabilityResponse.status}`);
+        return enrichLiteLlmReasoning(records, capabilityRecords(await capabilityResponse.json()));
+      } catch (error) {
+        log.warn(`${sourceProviderId}: reasoning capability enrichment unavailable`, redactOpenAiCompatibleDiagnostic(error instanceof Error ? error.message : String(error), connection));
+        return records;
+      }
     } catch (error) {
       log.warn(`${sourceProviderId}: discovery refresh failed`, redactOpenAiCompatibleDiagnostic(error instanceof Error ? error.message : String(error), connection));
       throw error;
