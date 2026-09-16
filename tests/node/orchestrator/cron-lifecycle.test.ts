@@ -26,6 +26,8 @@ function makeCron() {
   const originalClearInterval = global.clearInterval;
   const originalSetTimeout = global.setTimeout;
   const originalClearTimeout = global.clearTimeout;
+  const originalDateNow = Date.now;
+  Date.now = () => 123_456;
   (global as any).setInterval = (fn: Function, delay: number) => { const timer = { fn, delay, unref() {} }; intervals.push(timer); return timer; };
   (global as any).setTimeout = (fn: Function, delay: number) => { const timer = { fn, delay, scheduledAt: Date.now(), unref() {} }; timeouts.push(timer); return timer; };
   (global as any).clearInterval = (timer: any) => { timer.cleared = true; };
@@ -45,6 +47,7 @@ function makeCron() {
       try { handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }); }
       finally {
         global.setInterval = originalSetInterval; global.clearInterval = originalClearInterval; global.setTimeout = originalSetTimeout; global.clearTimeout = originalClearTimeout;
+        Date.now = originalDateNow;
         if (originalChildMarker === undefined) delete process.env.PI_SUBAGENT_CHILD;
         else process.env.PI_SUBAGENT_CHILD = originalChildMarker;
         harnesses.delete(harness);
@@ -75,33 +78,53 @@ describe("cron lifecycle", { concurrency: false }, () => {
       const cron = registerCron(h.pi, () => {});
       h.handlers.get("session_start")![0]({}, context(cwd));
       const [valid] = cron.getCronTasks();
-      const timer = h.timeouts.find(({ delay }) => delay >= 9_990 && delay <= 10_000);
+      const timer = h.timeouts.find(({ delay }) => delay === 10_000);
       assert.deepEqual(cron.getCronTasks().map(({ id }) => id), ["valid"], "malformed records are skipped");
-      assert.ok(timer, "the valid task is scheduled approximately one interval ahead");
-      assert.ok(valid.nextRun! - timer.scheduledAt >= 9_990 && valid.nextRun! - timer.scheduledAt <= 10_000);
+      assert.ok(timer, "the valid task is scheduled one interval ahead");
+      assert.equal(timer.delay, 10_000);
+      assert.equal(valid.nextRun, timer.scheduledAt + 10_000);
       assert.equal(h.timeouts.some((item) => !Number.isFinite(item.delay)), false);
     } finally { h.restore(); }
   });
 
-  it("tears down runtime state and restores the child marker", async () => {
+  it("clears timers and intervals during teardown", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
-    const previous = process.env.PI_SUBAGENT_CHILD;
-    process.env.PI_SUBAGENT_CHILD = "preserve-me";
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
       registerCron(h.pi, () => {});
       h.handlers.get("session_start")![0]({}, context(cwd));
       await h.tool().execute("id", { action: "add", task: "check", interval_seconds: 10 });
-      const lock = path.join(cwd, ".pi", "cron", "crons.json.leader.lock");
-      assert.ok(fs.existsSync(lock));
       h.restore();
       assert.ok(h.timeouts.every(({ cleared }) => cleared));
       assert.ok(h.intervals.every(({ cleared }) => cleared));
+    } finally { h.restore(); }
+  });
+
+  it("removes the leader lock during teardown", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const h = makeCron();
+    try {
+      h.pi.events.on = h.pi.eventHandler;
+      registerCron(h.pi, () => {});
+      h.handlers.get("session_start")![0]({}, context(cwd));
+      const lock = path.join(cwd, ".pi", "cron", "crons.json.leader.lock");
+      assert.ok(fs.existsSync(lock));
+      h.restore();
       assert.equal(fs.existsSync(lock), false);
+    } finally { h.restore(); }
+  });
+
+  it("restores PI_SUBAGENT_CHILD during teardown", () => {
+    const previous = process.env.PI_SUBAGENT_CHILD;
+    process.env.PI_SUBAGENT_CHILD = "preserve-me";
+    let h: ReturnType<typeof makeCron> | undefined;
+    try {
+      h = makeCron();
+      h.restore();
       assert.equal(process.env.PI_SUBAGENT_CHILD, "preserve-me");
     } finally {
-      h.restore();
+      h?.restore();
       if (previous === undefined) delete process.env.PI_SUBAGENT_CHILD;
       else process.env.PI_SUBAGENT_CHILD = previous;
     }
@@ -180,10 +203,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
       await h.tool().execute("id", { action: "add", task: "/status", interval_seconds: 10 });
       const before = h.emitted.filter((event) => event.event === "pidash:cron-status").at(-1)!.data;
       const timer = h.timeouts.filter((item) => item.delay === 10_000).at(-1)!;
-      const originalNow = Date.now;
-      Date.now = () => 123_456;
       timer.fn();
-      Date.now = originalNow;
       const after = h.emitted.filter((event) => event.event === "pidash:cron-status").at(-1)!.data;
       assert.equal(before.count, after.count);
       assert.ok(after.tasks[0].lastRun);
