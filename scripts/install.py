@@ -28,6 +28,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -115,25 +117,55 @@ def _npm_global_prefix() -> Path:
     prefix = Path(raw)
     resolved = prefix.resolve()
     cwd = Path.cwd().resolve()
+    writable_parent = resolved
+    while not writable_parent.exists():
+        writable_parent = writable_parent.parent
     if (
         not raw
         or not prefix.is_absolute()
         or resolved == Path(resolved.anchor)
         or resolved == cwd
-        or cwd in resolved.parents
+        or (resolved.exists() and not resolved.is_dir())
+        or not os.access(writable_parent, os.W_OK)
     ):
         log.warning("graft unsafe npm global prefix rejected value=%r", raw)
         raise RuntimeError("npm prefix -g must return a safe absolute path")
     return resolved
 
 
-def _publish_graft(stage: Path, graft_prefix: Path, graft_bin: Path, lock_path: Path) -> None:
-    import fcntl
+@contextmanager
+def _publication_lock(lock_path: Path) -> Iterator[None]:
+    with lock_path.open("a+b") as lock:
+        if lock.tell() == 0:
+            lock.write(b"\0")
+            lock.flush()
+        lock.seek(0)
+        if SYSTEM == "Windows":
+            import msvcrt
 
+            locking = msvcrt.locking  # type: ignore[attr-defined]
+            lock_mode = msvcrt.LK_LOCK  # type: ignore[attr-defined]
+            unlock_mode = msvcrt.LK_UNLCK  # type: ignore[attr-defined]
+            locking(lock.fileno(), lock_mode, 1)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                locking(lock.fileno(), unlock_mode, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _publish_graft(stage: Path, graft_prefix: Path, graft_bin: Path, lock_path: Path) -> None:
     backup = stage.with_name(f"{stage.name}.previous")
     link = graft_bin.with_name(f".{stage.name}-graft")
-    with lock_path.open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with _publication_lock(lock_path):
         log.debug("graft publication lock acquired")
         had_previous = graft_prefix.exists()
         published = False

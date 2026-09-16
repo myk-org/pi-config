@@ -9,6 +9,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -49,6 +51,40 @@ from install_sources import (  # noqa: E402
 )
 
 REPO = Path(__file__).resolve().parents[2]
+
+
+def _publish_graft_worker(
+    prefix_raw: str,
+    marker: str,
+    inside: Any,
+    release: Any,
+    results: Any,
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    prefix = Path(prefix_raw)
+    graft_prefix = prefix / "lib/graft-prefix"
+    graft_bin = prefix / "bin/graft"
+    stage = graft_prefix.parent / f".graft-prefix-{marker}"
+    stage.mkdir()
+    (stage / "marker").write_text(marker)
+    (stage / "bin").mkdir()
+    (stage / "bin/graft").write_text(marker)
+    replace = install.os.replace
+
+    def controlled_replace(source: Path, destination: Path) -> None:
+        if Path(source) == stage:
+            inside.set()
+            if release is not None and not release.wait(5):
+                raise TimeoutError("publication pause timed out")
+        replace(source, destination)
+
+    install.os.replace = controlled_replace
+    try:
+        install._publish_graft(stage, graft_prefix, graft_bin, prefix / ".graft-install.lock")
+        results.put((marker, None))
+    except BaseException as exc:
+        results.put((marker, repr(exc)))
 
 
 def test_vertex_legacy_git_source_is_monorepo_not_retired_repo() -> None:
@@ -643,7 +679,7 @@ def test_graft_native_install_keeps_published_install_when_second_install_fails(
     assert graft_bin.readlink() == Path("../lib/graft-prefix/bin/graft")
 
 
-@pytest.mark.parametrize("prefix_output", ["", ".", "/"])
+@pytest.mark.parametrize("prefix_output", ["", ".", "relative/prefix", "/"])
 def test_graft_native_install_rejects_unsafe_npm_prefix(
     prefix_output: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -670,6 +706,68 @@ def test_graft_native_install_rejects_unsafe_npm_prefix(
 
     assert (completed / "marker").read_text() == "old"
     assert graft_bin.readlink() == Path("../lib/graft-prefix/bin/graft")
+
+
+def test_npm_global_prefix_accepts_writable_home_descendant(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    prefix = home / ".npm-global"
+    home.mkdir()
+    monkeypatch.chdir(home)
+    monkeypatch.setattr(
+        install.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, stdout=str(prefix)),
+    )
+
+    assert install._npm_global_prefix() == prefix
+
+
+@pytest.mark.parametrize("name", ["temporary", "custom"])
+def test_npm_global_prefix_accepts_absolute_writable_prefix(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    prefix = tmp_path / name
+    prefix.mkdir()
+    monkeypatch.setattr(
+        install.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, stdout=str(prefix)),
+    )
+
+    assert install._npm_global_prefix() == prefix
+
+
+def test_npm_global_prefix_rejects_current_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        install.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, stdout=str(tmp_path)),
+    )
+
+    with pytest.raises(RuntimeError, match="safe absolute path"):
+        install._npm_global_prefix()
+
+
+def test_npm_global_prefix_rejects_unwritable_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    prefix = tmp_path / "custom"
+    monkeypatch.setattr(
+        install.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, stdout=str(prefix)),
+    )
+    monkeypatch.setattr(install.os, "access", lambda _path, _mode: False)
+
+    with pytest.raises(RuntimeError, match="safe absolute path"):
+        install._npm_global_prefix()
 
 
 def test_graft_native_install_checks_npm_prefix_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -735,37 +833,20 @@ def test_graft_publication_serializes_overlapping_attempts(tmp_path: Path) -> No
     graft_bin = prefix / "bin/graft"
     graft_prefix.parent.mkdir(parents=True)
     graft_bin.parent.mkdir(parents=True)
-    context = multiprocessing.get_context("fork")
+    context = multiprocessing.get_context("spawn")
     first_inside = context.Event()
     release_first = context.Event()
     second_inside = context.Event()
     results = context.Queue()
 
-    def publish(marker: str, inside: Any, pause: bool) -> None:
-        install = importlib.import_module("install")
-        stage = graft_prefix.parent / f".graft-prefix-{marker}"
-        stage.mkdir()
-        (stage / "marker").write_text(marker)
-        (stage / "bin").mkdir()
-        (stage / "bin/graft").write_text(marker)
-        replace = install.os.replace
-
-        def controlled_replace(source: Path, destination: Path) -> None:
-            if Path(source) == stage:
-                inside.set()
-                if pause and not release_first.wait(5):
-                    raise TimeoutError("publication pause timed out")
-            replace(source, destination)
-
-        install.os.replace = controlled_replace
-        try:
-            install._publish_graft(stage, graft_prefix, graft_bin, prefix / ".graft-install.lock")
-            results.put((marker, None))
-        except BaseException as exc:
-            results.put((marker, repr(exc)))
-
-    first = context.Process(target=publish, args=("first", first_inside, True))
-    second = context.Process(target=publish, args=("second", second_inside, False))
+    first = context.Process(
+        target=_publish_graft_worker,
+        args=(str(prefix), "first", first_inside, release_first, results),
+    )
+    second = context.Process(
+        target=_publish_graft_worker,
+        args=(str(prefix), "second", second_inside, None, results),
+    )
     first.start()
     assert first_inside.wait(5)
     second.start()
@@ -781,6 +862,88 @@ def test_graft_publication_serializes_overlapping_attempts(tmp_path: Path) -> No
     assert graft_bin.readlink() == Path("../lib/graft-prefix/bin/graft")
     assert graft_bin.resolve().read_text() == "second"
     assert list(graft_prefix.parent.glob(".graft-prefix-*")) == []
+
+
+def test_windows_lock_serializes_and_releases(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    locked = threading.Lock()
+    calls: list[int] = []
+
+    class Msvcrt:
+        LK_LOCK = 1
+        LK_UNLCK = 2
+
+        @staticmethod
+        def locking(_fd: int, mode: int, _size: int) -> None:
+            calls.append(mode)
+            (locked.acquire if mode == Msvcrt.LK_LOCK else locked.release)()
+
+    monkeypatch.setitem(sys.modules, "msvcrt", Msvcrt)
+    monkeypatch.setattr(install, "SYSTEM", "Windows")
+    first_inside = threading.Event()
+    release_first = threading.Event()
+    second_inside = threading.Event()
+
+    def hold(inside: threading.Event, release: threading.Event | None) -> None:
+        with install._publication_lock(tmp_path / "lock"):
+            inside.set()
+            if release is not None:
+                assert release.wait(5)
+
+    first = threading.Thread(target=hold, args=(first_inside, release_first))
+    second = threading.Thread(target=hold, args=(second_inside, None))
+    first.start()
+    assert first_inside.wait(5)
+    second.start()
+    time.sleep(0.1)
+    assert not second_inside.is_set()
+    release_first.set()
+    first.join(5)
+    second.join(5)
+
+    assert second_inside.is_set()
+    assert calls == [Msvcrt.LK_LOCK, Msvcrt.LK_LOCK, Msvcrt.LK_UNLCK, Msvcrt.LK_UNLCK]
+
+
+def test_graft_publication_rolls_back_with_windows_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    prefix = tmp_path / "global"
+    graft_prefix = prefix / "lib/graft-prefix"
+    graft_bin = prefix / "bin/graft"
+    graft_prefix.mkdir(parents=True)
+    (graft_prefix / "marker").write_text("old")
+    graft_bin.parent.mkdir(parents=True)
+    graft_bin.symlink_to("../lib/graft-prefix/bin/graft")
+    stage = graft_prefix.parent / ".graft-prefix-new"
+    stage.mkdir()
+    (stage / "marker").write_text("new")
+    replace = install.os.replace
+
+    class Msvcrt:
+        LK_LOCK = 1
+        LK_UNLCK = 2
+
+        @staticmethod
+        def locking(_fd: int, _mode: int, _size: int) -> None:
+            pass
+
+    def fail_link_replace(source: Path, destination: Path) -> None:
+        if destination == graft_bin:
+            raise OSError("link publication failed")
+        replace(source, destination)
+
+    monkeypatch.setitem(sys.modules, "msvcrt", Msvcrt)
+    monkeypatch.setattr(install, "SYSTEM", "Windows")
+    monkeypatch.setattr(install.os, "replace", fail_link_replace)
+
+    with pytest.raises(OSError, match="link publication failed"):
+        install._publish_graft(stage, graft_prefix, graft_bin, prefix / ".graft-install.lock")
+
+    assert (graft_prefix / "marker").read_text() == "old"
+    assert not stage.exists()
+    assert not stage.with_name(f"{stage.name}.previous").exists()
 
 
 def test_graft_native_install_checks_node_gyp_prerequisites(monkeypatch: pytest.MonkeyPatch) -> None:

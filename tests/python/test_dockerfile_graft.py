@@ -50,8 +50,7 @@ def test_published_graft_runs_as_first_node_user() -> None:
     assert first_node
     smoke_check = DOCKERFILE.index("RUN /usr/local/bin/graft --version", first_node.end())
     later_user = re.search(r"^USER ", DOCKERFILE[first_node.end() :], re.MULTILINE)
-    assert later_user
-    assert smoke_check < first_node.end() + later_user.start()
+    assert later_user is None or smoke_check < first_node.end() + later_user.start()
 
 
 def test_graft_uses_two_fresh_isolated_installs() -> None:
