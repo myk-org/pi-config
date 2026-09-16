@@ -522,6 +522,104 @@ def test_docker_graft_auditor_logs_unresolved_dependency(tmp_path: Path) -> None
     assert '"dependency":"required"' in log
 
 
+def test_graft_native_install_uses_two_fresh_prefixes_and_publishes_verified_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    prefix = tmp_path / "global"
+    calls: list[list[str]] = []
+    stages: list[Path] = []
+
+    def run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd[:3] == ["npm", "install", "-g"]:
+            stage = Path(cmd[cmd.index("--prefix") + 1])
+            stages.append(stage)
+            if len(stages) == 2:
+                assert not stages[0].exists()
+                assert (stage / "lib").is_dir()
+            root = stage / "lib/node_modules/@nanonets/graft"
+            _write_package(root, {"name": "@nanonets/graft", "dependencies": {"native": "1"}})
+            _write_package(stage / "lib/node_modules/native", {"name": "native", "scripts": {"install": "build"}})
+            (stage / "bin").mkdir()
+            (stage / "bin/graft").write_text("#!/bin/sh\n")
+        elif cmd[-1:] == ["--version"]:
+            assert not (prefix / "lib/graft-prefix").exists()
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(install.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        install,
+        "_run_quiet",
+        lambda cmd: "12.0.2" if cmd == ["npm", "--version"] else str(prefix),
+    )
+    monkeypatch.setattr(install.subprocess, "run", run)
+
+    install.install_graft()
+
+    published = prefix / "lib/graft-prefix"
+    assert stages[0] != stages[1]
+    assert not stages[0].exists()
+    assert (published / "lib/node_modules/@nanonets/graft/package.json").is_file()
+    assert (prefix / "bin/graft").readlink() == Path("../lib/graft-prefix/bin/graft")
+    audit_cmd, install_cmd = calls[:2]
+    assert audit_cmd[5:] == ["@nanonets/graft@latest", "--ignore-scripts"]
+    assert install_cmd == [
+        "npm",
+        "install",
+        "-g",
+        "--prefix",
+        str(stages[1]),
+        "@nanonets/graft@latest",
+        "--allow-scripts=native",
+        "--strict-allow-scripts",
+    ]
+    assert calls[2] == [str(stages[1] / "bin/graft"), "--version"]
+
+
+def test_graft_native_install_cleans_stages_and_keeps_published_install_when_second_install_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    prefix = tmp_path / "global"
+    completed = prefix / "lib/graft-prefix"
+    completed.mkdir(parents=True)
+    (completed / "marker").write_text("old")
+    graft_bin = prefix / "bin/graft"
+    graft_bin.parent.mkdir(parents=True)
+    graft_bin.symlink_to("../lib/graft-prefix/bin/graft")
+    stages: list[Path] = []
+
+    def run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["npm", "install", "-g"]:
+            stage = Path(cmd[cmd.index("--prefix") + 1])
+            stages.append(stage)
+            if len(stages) == 2:
+                assert not stages[0].exists()
+                raise subprocess.CalledProcessError(1, cmd)
+            root = stage / "lib/node_modules/@nanonets/graft"
+            _write_package(root, {"name": "@nanonets/graft", "scripts": {"install": "build"}})
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(install.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        install,
+        "_run_quiet",
+        lambda cmd: "12.0.2" if cmd == ["npm", "--version"] else str(prefix),
+    )
+    monkeypatch.setattr(install.subprocess, "run", run)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        install.install_graft()
+
+    assert len(stages) == 2
+    assert all(not stage.exists() for stage in stages)
+    assert (completed / "marker").read_text() == "old"
+    assert graft_bin.readlink() == Path("../lib/graft-prefix/bin/graft")
+
+
 def test_graft_native_install_checks_node_gyp_prerequisites(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_questionary()
     install = importlib.import_module("install")

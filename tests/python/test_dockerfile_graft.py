@@ -4,7 +4,6 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).parents[2]
 DOCKERFILE = (ROOT / "Dockerfile").read_text()
-DEPLOY_SCRIPT = (ROOT / ".dev/deploy-extensions.sh").read_text()
 GRAFT_INSTALL = next(
     line.strip() for line in DOCKERFILE.splitlines() if "npm install -g" in line and "@nanonets/graft" in line
 )
@@ -27,8 +26,33 @@ def test_graft_install_retains_latest() -> None:
     assert "@nanonets/graft@latest" in GRAFT_INSTALL
 
 
-def test_graft_install_runs_smoke_check() -> None:
-    assert re.search(r"npm rebuild -g @nanonets/graft [^\n]+ && \\\n\s+graft --version", DOCKERFILE)
+def test_graft_install_runs_staged_smoke_check() -> None:
+    assert '"$GRAFT_STAGE/bin/graft" --version' in DOCKERFILE
+
+
+def test_graft_uses_two_fresh_isolated_installs() -> None:
+    assert 'GRAFT_AUDIT="$(mktemp -d)"' in DOCKERFILE
+    assert 'npm install -g --prefix "$GRAFT_AUDIT" @nanonets/graft@latest --ignore-scripts' in DOCKERFILE
+    assert 'rm -rf "$GRAFT_AUDIT"' in DOCKERFILE
+    stage = 'GRAFT_STAGE="$(mktemp -d "$(npm prefix -g)/lib/.graft-prefix.XXXXXX")"'
+    prepare = 'mkdir -p "$GRAFT_STAGE/lib"'
+    strict_install = (
+        'npm install -g --prefix "$GRAFT_STAGE" @nanonets/graft@latest '
+        '--allow-scripts="$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts'
+    )
+    assert stage in DOCKERFILE
+    assert prepare in DOCKERFILE
+    assert strict_install in DOCKERFILE
+    assert DOCKERFILE.index(stage) < DOCKERFILE.index(prepare) < DOCKERFILE.index(strict_install)
+    assert "npm rebuild" not in DOCKERFILE
+
+
+def test_graft_completed_prefix_and_bin_are_published_safely() -> None:
+    assert 'GRAFT_PREFIX="$(npm prefix -g)/lib/graft-prefix"' in DOCKERFILE
+    assert 'mv "$GRAFT_STAGE" "$GRAFT_PREFIX"' in DOCKERFILE
+    assert 'ln -s ../lib/graft-prefix/bin/graft "$GRAFT_LINK"' in DOCKERFILE
+    assert 'mv -Tf "$GRAFT_LINK" "$(npm prefix -g)/bin/graft"' in DOCKERFILE
+    assert "trap 'rm -rf" in DOCKERFILE
 
 
 def test_node_gyp_prerequisites_are_installed_before_graft() -> None:
@@ -45,14 +69,11 @@ def test_graft_install_derives_strict_script_approval_from_installed_tree() -> N
     assert dockerfile_copies(
         "extensions/shared/install-logger.mjs", "/usr/local/lib/extensions/shared/install-logger.mjs"
     )
-    command = r'npm rebuild -g @nanonets/graft --allow-scripts="\$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts'
+    command = (
+        r'npm install -g --prefix "\$GRAFT_STAGE" @nanonets/graft@latest '
+        r'--allow-scripts="\$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts'
+    )
     assert re.search(command, DOCKERFILE)
-
-
-def test_deploy_extensions_copies_worker_bootstrap_modules() -> None:
-    copies = [shlex.split(line) for line in DEPLOY_SCRIPT.splitlines() if line.startswith("cp ")]
-    for directory in ("extensions/shared", "scripts"):
-        assert any(args[1:3] == [f"$REPO_DIR/{directory}/*.mjs", f"$PI_PKG_DIR/{directory}/"] for args in copies)
 
 
 def test_install_script_approval_is_command_scoped() -> None:

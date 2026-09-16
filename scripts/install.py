@@ -27,6 +27,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -163,17 +164,61 @@ def install_graft() -> None:
         log.warning("graft secure install unsupported npm-major=%s", npm_major)
         raise RuntimeError("Graft secure installation requires npm 12+")
     env = os.environ | {"DO_NOT_TRACK": "1"}
-    subprocess.run(["npm", "install", "-g", "@nanonets/graft@latest", "--ignore-scripts"], check=True, env=env)
-    npm_root = Path(_run_quiet(["npm", "root", "-g"]))
-    allowed = ",".join(_install_script_packages(npm_root / "@nanonets/graft", npm_root))
-    if not allowed:
-        raise RuntimeError("Graft dependency audit found no install scripts")
-    subprocess.run(
-        ["npm", "rebuild", "-g", "@nanonets/graft", f"--allow-scripts={allowed}", "--strict-allow-scripts"],
-        check=True,
-        env=env,
-    )
-    subprocess.run(["graft", "--version"], check=True, env=env)
+    global_prefix = Path(_run_quiet(["npm", "prefix", "-g"]))
+    graft_prefix = global_prefix / "lib/graft-prefix"
+    graft_bin = global_prefix / "bin/graft"
+    graft_prefix.parent.mkdir(parents=True, exist_ok=True)
+    graft_bin.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix="pi-graft-audit-") as audit_raw:
+        audit = Path(audit_raw)
+        subprocess.run(
+            ["npm", "install", "-g", "--prefix", str(audit), "@nanonets/graft@latest", "--ignore-scripts"],
+            check=True,
+            env=env,
+        )
+        npm_root = audit / "lib/node_modules"
+        allowed = ",".join(_install_script_packages(npm_root / "@nanonets/graft", npm_root))
+        if not allowed:
+            raise RuntimeError("Graft dependency audit found no install scripts")
+
+    with tempfile.TemporaryDirectory(prefix=".graft-prefix-", dir=graft_prefix.parent) as stage_raw:
+        stage = Path(stage_raw)
+        (stage / "lib").mkdir()
+        subprocess.run(
+            [
+                "npm",
+                "install",
+                "-g",
+                "--prefix",
+                str(stage),
+                "@nanonets/graft@latest",
+                f"--allow-scripts={allowed}",
+                "--strict-allow-scripts",
+            ],
+            check=True,
+            env=env,
+        )
+        subprocess.run([str(stage / "bin/graft"), "--version"], check=True, env=env)
+
+        backup = stage.with_name(f"{stage.name}.previous")
+        link = graft_bin.with_name(f".{stage.name}-graft")
+        had_previous = graft_prefix.exists()
+        try:
+            if had_previous:
+                os.replace(graft_prefix, backup)
+            os.replace(stage, graft_prefix)
+            link.symlink_to("../lib/graft-prefix/bin/graft")
+            os.replace(link, graft_bin)
+        except Exception:
+            link.unlink(missing_ok=True)
+            if graft_prefix.exists():
+                shutil.rmtree(graft_prefix)
+            if had_previous:
+                os.replace(backup, graft_prefix)
+            raise
+        if had_previous:
+            shutil.rmtree(backup)
     log.info("graft installation verified")
 
 

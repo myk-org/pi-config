@@ -86,11 +86,25 @@ COPY scripts/graft-allow-scripts.mjs /usr/local/lib/scripts/graft-allow-scripts.
 COPY extensions/shared/logger-core.mjs extensions/shared/install-logger.mjs /usr/local/lib/extensions/shared/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g acpx agent-browser pi-web-access @google/gemini-cli && \
-  DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest --ignore-scripts && \
-  GRAFT_ALLOW_SCRIPTS="$(node /usr/local/lib/scripts/graft-allow-scripts.mjs "$(npm root -g)/@nanonets/graft" "$(npm root -g)")" && \
+  GRAFT_AUDIT="$(mktemp -d)" && \
+  GRAFT_STAGE="" && \
+  GRAFT_LINK="" && \
+  trap 'rm -rf "$GRAFT_AUDIT" "$GRAFT_STAGE" "$GRAFT_LINK"' EXIT && \
+  GRAFT_PREFIX="$(npm prefix -g)/lib/graft-prefix" && \
+  DO_NOT_TRACK=1 npm install -g --prefix "$GRAFT_AUDIT" @nanonets/graft@latest --ignore-scripts && \
+  GRAFT_ALLOW_SCRIPTS="$(node /usr/local/lib/scripts/graft-allow-scripts.mjs "$GRAFT_AUDIT/lib/node_modules/@nanonets/graft" "$GRAFT_AUDIT/lib/node_modules")" && \
   test -n "$GRAFT_ALLOW_SCRIPTS" && \
-  npm rebuild -g @nanonets/graft --allow-scripts="$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts && \
-  graft --version
+  rm -rf "$GRAFT_AUDIT" && GRAFT_AUDIT="" && \
+  GRAFT_STAGE="$(mktemp -d "$(npm prefix -g)/lib/.graft-prefix.XXXXXX")" && \
+  mkdir -p "$GRAFT_STAGE/lib" && \
+  DO_NOT_TRACK=1 npm install -g --prefix "$GRAFT_STAGE" @nanonets/graft@latest --allow-scripts="$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts && \
+  "$GRAFT_STAGE/bin/graft" --version && \
+  rm -rf "$GRAFT_PREFIX" && \
+  mv "$GRAFT_STAGE" "$GRAFT_PREFIX" && GRAFT_STAGE="" && \
+  GRAFT_LINK="$(npm prefix -g)/bin/.graft-link" && \
+  ln -s ../lib/graft-prefix/bin/graft "$GRAFT_LINK" && \
+  mv -Tf "$GRAFT_LINK" "$(npm prefix -g)/bin/graft" && GRAFT_LINK="" && \
+  trap - EXIT
 
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
