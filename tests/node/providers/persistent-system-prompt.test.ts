@@ -621,7 +621,7 @@ describe("persistent provider system prompts", () => {
         rmSync(logPath, { force: true });
         const runtime = {
           ensureSession: async () => ({ id: 1 }),
-          close: async () => { throw new Error("close failed safely"); },
+          close: async () => { throw shutdown === "stopSession" ? new Error("close failed safely") : "close failed safely"; },
           startTurn: () => ({ events: (async function* () {})(), result: Promise.resolve({ status: "completed", stopReason: "end_turn" }) }),
           getStatus: async () => ({}),
         } as any;
@@ -634,6 +634,7 @@ describe("persistent provider system prompts", () => {
           assert.equal(closeFailureLines.length, 1);
           assert.match(closeFailureLines[0], /\[error\].*close failed/);
           assert.doesNotMatch(closeFailureLines[0], /\[warn\]/);
+          assert.match(closeFailureLines[0], /(?:persistent-system-prompt\.test|(?:cursor-)?acpx-driver)\.ts:\d+:\d+/);
           assert.match(closeFailureLines[0], /"key":"[^" ]+"/);
           assert.doesNotMatch(body, /close-secret/);
         } finally {

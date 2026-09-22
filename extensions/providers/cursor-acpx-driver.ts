@@ -277,9 +277,8 @@ export function createCursorAcpxAdapter(
       const acpxHandle = handles.get(key);
       if (acpxHandle) {
         await runtime.close({ handle: acpxHandle, reason: "session stop" }).catch((err: unknown) => {
-          log.error("ACPX session close failed", {
-            model: handle.model, key, error: err instanceof Error ? err.message : String(err),
-          });
+          log.error("ACPX session close failed", { model: handle.model, key },
+            err instanceof Error ? err : new Error(String(err)));
         });
         if (handles.get(key) === acpxHandle) {
           handles.delete(key);
@@ -303,9 +302,8 @@ export function createCursorAcpxAdapter(
       for (const [key, acpxHandle] of handles) {
         closePromises.push(
           runtime.close({ handle: acpxHandle, reason: "stop all" }).catch((err: unknown) => {
-            log.error("ACPX stop-all close failed", {
-              model: key.split("\x1f", 1)[0], key, error: err instanceof Error ? err.message : String(err),
-            });
+            log.error("ACPX stop-all close failed", { model: key.split("\x1f", 1)[0], key },
+              err instanceof Error ? err : new Error(String(err)));
           }),
         );
       }
