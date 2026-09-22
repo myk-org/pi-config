@@ -29,7 +29,6 @@ import type {
   TurnOptions,
   TurnResult,
 } from "../shared/provider-driver.js";
-import { ProviderDriverError } from "../shared/provider-errors.js";
 import { makeManagedSnapshot, buildInitialSnapshot } from "../shared/managed-refresh.js";
 import { loadAcpxRuntime, type AcpxRuntimeModule } from "../acpx-provider/load-runtime.js";
 import { modelIdToDisplayName } from "../acpx-provider/runtime-models.js";
@@ -100,50 +99,57 @@ export function createCursorAcpxAdapter(
     return `pi-${config.agent}${model}-${slug}`;
   }
 
+  async function runExclusive<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    if (disposed) throw new Error("ACPX adapter disposed");
+    const queued = handleQueues.has(key);
+    const result = (handleQueues.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      if (disposed) throw new Error("ACPX adapter disposed");
+      return operation();
+    });
+    const tail = result.then(() => {}, () => {});
+    handleQueues.set(key, tail);
+    log.debug("queued ACPX operation", { key, queued });
+    try {
+      return await result;
+    } finally {
+      if (handleQueues.get(key) === tail) handleQueues.delete(key);
+    }
+  }
+
   async function ensureHandle(
     acpxModelId: string | undefined,
     systemPrompt: string | undefined,
     turnCwd: string,
   ): Promise<AcpRuntimeHandle> {
     const key = handleMapKey(acpxModelId, turnCwd);
-    let result!: AcpRuntimeHandle;
-    const operation = (handleQueues.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
-      const existing = handles.get(key);
-      if (existing && handleSystemPrompts.get(key) === systemPrompt) {
-        result = existing;
-        return;
-      }
-      if (existing) {
-        await runtime.close({ handle: existing, reason: "system prompt changed" });
-        if (handles.get(key) === existing) {
-          handles.delete(key);
-          handleSystemPrompts.delete(key);
-        }
-      }
-
-      const sessionOpts: { model?: string; systemPrompt?: string } = {};
-      if (acpxModelId && acpxModelId !== "default") sessionOpts.model = acpxModelId;
-      if (systemPrompt) sessionOpts.systemPrompt = systemPrompt;
-      fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
-        `ensureSession agent=${config.agent} cwd=${turnCwd} boot=${cwd} model=${acpxModelId || "default"}`);
-      result = await runtime.ensureSession({
-        sessionKey: sessionKey(acpxModelId, turnCwd),
-        agent: config.agent,
-        mode: "persistent",
-        cwd: turnCwd,
-        ...(Object.keys(sessionOpts).length > 0 ? { sessionOptions: sessionOpts } : {}),
-      });
-      handles.set(key, result);
-      handleSystemPrompts.set(key, systemPrompt);
+    const existing = handles.get(key);
+    const replacement = Boolean(existing && handleSystemPrompts.get(key) !== systemPrompt);
+    log.debug("ensuring ACPX handle", {
+      model: acpxModelId || "default", key, replacement, queued: handleQueues.has(key),
     });
-    const tail = operation.then(() => {}, () => {});
-    handleQueues.set(key, tail);
-    try {
-      await operation;
-      return result;
-    } finally {
-      if (handleQueues.get(key) === tail) handleQueues.delete(key);
+    if (existing && !replacement) return existing;
+    if (existing) {
+      await runtime.close({ handle: existing, reason: "system prompt changed" });
+      if (handles.get(key) === existing) {
+        handles.delete(key);
+        handleSystemPrompts.delete(key);
+      }
     }
+    if (disposed) throw new Error("ACPX adapter disposed");
+    const sessionOpts: { model?: string; systemPrompt?: string } = {};
+    if (acpxModelId && acpxModelId !== "default") sessionOpts.model = acpxModelId;
+    if (systemPrompt) sessionOpts.systemPrompt = systemPrompt;
+    const result = await runtime.ensureSession({
+      sessionKey: sessionKey(acpxModelId, turnCwd), agent: config.agent, mode: "persistent", cwd: turnCwd,
+      ...(Object.keys(sessionOpts).length > 0 ? { sessionOptions: sessionOpts } : {}),
+    });
+    if (disposed) {
+      await runtime.close({ handle: result, reason: "adapter disposed during session creation" }).catch(() => {});
+      throw new Error("ACPX adapter disposed");
+    }
+    handles.set(key, result);
+    handleSystemPrompts.set(key, systemPrompt);
+    return result;
   }
 
   return {
@@ -154,8 +160,11 @@ export function createCursorAcpxAdapter(
       const systemPrompt = opts.systemPrompt
         ? opts.systemPrompt
         : buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
-      requestedSystemPrompts.set(handleMapKey(model, turnCwd), systemPrompt);
-      await ensureHandle(model, systemPrompt, turnCwd);
+      const key = handleMapKey(model, turnCwd);
+      await runExclusive(key, async () => {
+        requestedSystemPrompts.set(key, systemPrompt);
+        await ensureHandle(model, systemPrompt, turnCwd);
+      });
       const sessionId = sessionKey(model, turnCwd);
       if (!disposed) knownSessionIds.add(sessionId);
       return {
@@ -172,6 +181,7 @@ export function createCursorAcpxAdapter(
     ): Promise<TurnResult> => {
       const turnCwd = resolveAdapterCwd(handle, cwd);
       const handleKey = handleMapKey(handle.model, turnCwd);
+      return runExclusive(handleKey, async () => {
       const systemPrompt = requestedSystemPrompts.get(handleKey) ?? buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
       const promptChanged = appliedSystemPrompts.has(handleKey) && appliedSystemPrompts.get(handleKey) !== systemPrompt;
       log.debug("building turn system prompt", { model: handle.model, turnCwd, promptChanged });
@@ -221,17 +231,20 @@ export function createCursorAcpxAdapter(
       }
 
       return { text, thinking: thinking || undefined, stopReason };
+      });
     },
 
     stopSession: async (handle: SessionHandle): Promise<void> => {
       const turnCwd = resolveAdapterCwd(handle, cwd);
       const key = handleMapKey(handle.model, turnCwd);
-      await handleQueues.get(key)?.catch(() => {});
+      log.debug("stopping ACPX session", { model: handle.model, key, queued: handleQueues.has(key) });
+      await runExclusive(key, async () => {
       const acpxHandle = handles.get(key);
       if (acpxHandle) {
         await runtime.close({ handle: acpxHandle, reason: "session stop" }).catch((err: unknown) => {
-          fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-            `session close failed: ${err instanceof Error ? err.message : String(err)}`);
+          log.warn("ACPX session close failed", {
+            model: handle.model, key, error: err instanceof Error ? err.message : String(err),
+          });
         });
         if (handles.get(key) === acpxHandle) {
           handles.delete(key);
@@ -241,17 +254,20 @@ export function createCursorAcpxAdapter(
       requestedSystemPrompts.delete(key);
       appliedSystemPrompts.delete(key);
       knownSessionIds.delete(sessionKey(handle.model, turnCwd));
+      });
     },
 
     stopAll: async (): Promise<void> => {
+      log.info("stopping all ACPX sessions", { handles: handles.size, queues: handleQueues.size });
       disposed = true;
       await Promise.allSettled(handleQueues.values());
       const closePromises: Promise<void>[] = [];
       for (const [key, acpxHandle] of handles) {
         closePromises.push(
           runtime.close({ handle: acpxHandle, reason: "stop all" }).catch((err: unknown) => {
-            fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-              `session close failed for ${key}: ${err instanceof Error ? err.message : String(err)}`);
+            log.warn("ACPX stop-all close failed", {
+              key, error: err instanceof Error ? err.message : String(err),
+            });
           }),
         );
       }

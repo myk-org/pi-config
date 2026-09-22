@@ -75,6 +75,8 @@ describe("persistent provider system prompts", () => {
       await fakeCli(async (binary) => {
         const envKey = `PI_LOG_${domain.toUpperCase().replaceAll("-", "_")}`;
         const previous = process.env[envKey];
+        const previousEnvSessionId = process.env.__PI_CONFIG_SESSION_ID;
+        const previousGlobalSessionId = globalThis.__piConfigSessionId;
         process.env[envKey] = "debug";
         clearLogLevelCache();
         setGlobalSessionId(`start-log-${domain}`);
@@ -89,6 +91,10 @@ describe("persistent provider system prompts", () => {
           assert.doesNotMatch(body, /secret-prompt/);
         } finally {
           if (previous === undefined) delete process.env[envKey]; else process.env[envKey] = previous;
+          if (previousEnvSessionId === undefined) delete process.env.__PI_CONFIG_SESSION_ID;
+          else process.env.__PI_CONFIG_SESSION_ID = previousEnvSessionId;
+          if (previousGlobalSessionId === undefined) delete globalThis.__piConfigSessionId;
+          else globalThis.__piConfigSessionId = previousGlobalSessionId;
           clearLogLevelCache();
         }
       });
@@ -291,10 +297,158 @@ describe("persistent provider system prompts", () => {
       await new Promise(resolve => setImmediate(resolve));
       const dispose = adapter.stopAll();
       releaseCreate();
-      const handle = await start;
+      await assert.rejects(start, /disposed/);
       await dispose;
       assert.deepEqual(closed.map(options => options.handle.id), ["prompt-A"]);
-      assert.equal(adapter.hasSession(handle.sessionId), false);
+    });
+  }
+
+  for (const [name, domain, create] of [
+    ["generic ACPX", "acpx-driver", createAcpxAdapter],
+    ["Cursor ACPX", "cursor-acpx-driver", createCursorAcpxAdapter],
+  ] as const) {
+    it(`${name} waits for an active turn before replacing its prompt`, async () => {
+      let releaseResult!: () => void;
+      const pendingResult = new Promise<void>((resolve) => { releaseResult = resolve; });
+      const closed: any[] = [];
+      const ensured: any[] = [];
+      const turns: any[] = [];
+      const runtime = {
+        ensureSession: async (options: any) => {
+          ensured.push(options);
+          return { id: options.sessionOptions.systemPrompt };
+        },
+        close: async (options: any) => { closed.push(options); },
+        startTurn: (options: any) => {
+          turns.push(options);
+          return {
+            events: (async function* () {})(),
+            result: pendingResult.then(() => ({ status: "completed", stopReason: "end_turn" })),
+          };
+        },
+        getStatus: async () => ({}),
+      } as any;
+      const adapter = create({ agent: "cursor", enabled: true }, process.cwd(), runtime);
+      const handle = await adapter.startSession({ model: "default", systemPrompt: "active-secret", cwd: process.cwd() });
+      const turn = adapter.sendTurn(handle, "turn-secret");
+      await new Promise(resolve => setImmediate(resolve));
+      const replacement = adapter.startSession({ model: "default", systemPrompt: "replacement-secret", cwd: process.cwd() });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(closed.length, 0, "replacement must not close an active turn");
+      releaseResult();
+      await turn;
+      const replacementHandle = await replacement;
+      await adapter.sendTurn(replacementHandle, "next-turn");
+      assert.deepEqual(closed.map(item => item.handle.id), ["active-secret"]);
+      assert.equal(turns.at(-1).handle.id, "replacement-secret");
+    });
+
+    for (const closeFails of [false, true]) {
+      it(`${name} stopSession clears a queued replacement when close ${closeFails ? "fails" : "succeeds"}`, async () => {
+        let releaseReplacement!: () => void;
+        const replacementPending = new Promise<void>((resolve) => { releaseReplacement = resolve; });
+        const ensured: any[] = [];
+        const closed: any[] = [];
+        const runtime = {
+          ensureSession: async (options: any) => {
+            ensured.push(options);
+            if (ensured.length === 2) await replacementPending;
+            return { id: ensured.length };
+          },
+          close: async (options: any) => {
+            closed.push(options);
+            if (closeFails && options.reason === "session stop") throw new Error("close failed");
+          },
+          startTurn: () => ({ events: (async function* () {})(), result: Promise.resolve({ status: "completed", stopReason: "end_turn" }) }),
+          getStatus: async () => ({}),
+        } as any;
+        const adapter = create({ agent: "cursor", enabled: true }, process.cwd(), runtime);
+        const first = await adapter.startSession({ model: "default", systemPrompt: "first-secret", cwd: process.cwd() });
+        const replacement = adapter.startSession({ model: "default", systemPrompt: "queued-secret", cwd: process.cwd() });
+        await new Promise(resolve => setImmediate(resolve));
+        const stop = adapter.stopSession(first);
+        releaseReplacement();
+        await Promise.all([replacement, stop]);
+        assert.equal(closed.filter(item => item.reason === "session stop").length, 1);
+        assert.equal(adapter.hasSession(first.sessionId), false);
+        const fresh = await adapter.startSession({ model: "default", systemPrompt: "fresh-secret", cwd: process.cwd() });
+        await adapter.sendTurn(fresh, "fresh-turn");
+        assert.equal(ensured.length, 3, "stop must clear handle and prompt state");
+      });
+    }
+
+    it(`${name} disposal drains accepted starts while rejecting later starts`, async () => {
+      let releaseCreate!: () => void;
+      const createPending = new Promise<void>((resolve) => { releaseCreate = resolve; });
+      const created: any[] = [];
+      const closed: any[] = [];
+      const runtime = {
+        ensureSession: async () => {
+          await createPending;
+          const handle = { id: created.length + 1 };
+          created.push(handle);
+          return handle;
+        },
+        close: async (options: any) => { closed.push(options.handle); },
+        startTurn: () => ({ events: (async function* () {})(), result: Promise.resolve({ status: "completed", stopReason: "end_turn" }) }),
+        getStatus: async () => ({}),
+      } as any;
+      const adapter = create({ agent: "cursor", enabled: true }, process.cwd(), runtime);
+      const accepted = adapter.startSession({ model: "default", systemPrompt: "accepted-secret", cwd: process.cwd() });
+      await new Promise(resolve => setImmediate(resolve));
+      const dispose = adapter.stopAll();
+      await assert.rejects(
+        adapter.startSession({ model: "other", systemPrompt: "during-secret", cwd: process.cwd() }),
+        /disposed/,
+      );
+      releaseCreate();
+      await assert.rejects(accepted, /disposed/);
+      await dispose;
+      await assert.rejects(
+        adapter.startSession({ model: "after", systemPrompt: "after-secret", cwd: process.cwd() }),
+        /disposed/,
+      );
+      assert.deepEqual(closed, created);
+      assert.equal(created.length, 1);
+    });
+
+    it(`${name} lifecycle logs safe queue context`, async () => {
+      const envKey = `PI_LOG_${domain.toUpperCase().replaceAll("-", "_")}`;
+      const previous = process.env[envKey];
+      const previousEnvSessionId = process.env.__PI_CONFIG_SESSION_ID;
+      const previousGlobalSessionId = globalThis.__piConfigSessionId;
+      process.env[envKey] = "debug";
+      clearLogLevelCache();
+      setGlobalSessionId(`lifecycle-log-${domain}`);
+      const runtime = {
+        ensureSession: async () => ({ id: 1 }),
+        close: async () => {},
+        startTurn: () => ({ events: (async function* () {})(), result: Promise.resolve({ status: "completed", stopReason: "end_turn" }) }),
+        getStatus: async () => ({}),
+      } as any;
+      try {
+        const adapter = create({ agent: "cursor", enabled: true }, process.cwd(), runtime);
+        const handle = await adapter.startSession({ model: "safe-model", systemPrompt: "ensure-secret", cwd: process.cwd() });
+        await adapter.stopSession(handle);
+        await adapter.startSession({ model: "other-model", systemPrompt: "stop-all-secret", cwd: process.cwd() });
+        await adapter.stopAll();
+        const body = readFileSync(getPiLogPath(domain)!, "utf8");
+        assert.match(body, /ensuring ACPX handle/);
+        assert.match(body, /stopping ACPX session/);
+        assert.match(body, /stopping all ACPX sessions/);
+        assert.match(body, /"model":"safe-model"/);
+        assert.match(body, /"key":"[^" ]+"/);
+        assert.match(body, /"replacement":false/);
+        assert.match(body, /"queued":false/);
+        assert.doesNotMatch(body, /ensure-secret|stop-all-secret/);
+      } finally {
+        if (previous === undefined) delete process.env[envKey]; else process.env[envKey] = previous;
+        if (previousEnvSessionId === undefined) delete process.env.__PI_CONFIG_SESSION_ID;
+        else process.env.__PI_CONFIG_SESSION_ID = previousEnvSessionId;
+        if (previousGlobalSessionId === undefined) delete globalThis.__piConfigSessionId;
+        else globalThis.__piConfigSessionId = previousGlobalSessionId;
+        clearLogLevelCache();
+      }
     });
   }
 
