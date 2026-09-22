@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -344,7 +345,7 @@ describe("persistent provider system prompts", () => {
     });
 
     for (const closeFails of [false, true]) {
-      it(`${name} stopSession clears a queued replacement when close ${closeFails ? "fails" : "succeeds"}`, async () => {
+      it(`${name} stopSession invalidates a queued replacement when close ${closeFails ? "fails" : "succeeds"}`, async () => {
         let releaseReplacement!: () => void;
         const replacementPending = new Promise<void>((resolve) => { releaseReplacement = resolve; });
         const ensured: any[] = [];
@@ -368,8 +369,9 @@ describe("persistent provider system prompts", () => {
         await new Promise(resolve => setImmediate(resolve));
         const stop = adapter.stopSession(first);
         releaseReplacement();
-        await Promise.all([replacement, stop]);
-        assert.equal(closed.filter(item => item.reason === "session stop").length, 1);
+        await assert.rejects(replacement, /stopped|generation/i);
+        await stop;
+        assert.equal(closed.filter(item => item.reason === "session invalidated during creation").length, 1);
         assert.equal(adapter.hasSession(first.sessionId), false);
         const fresh = await adapter.startSession({ model: "default", systemPrompt: "fresh-secret", cwd: process.cwd() });
         await adapter.sendTurn(fresh, "fresh-turn");
@@ -450,6 +452,203 @@ describe("persistent provider system prompts", () => {
         clearLogLevelCache();
       }
     });
+  }
+
+  for (const [name, domain, create] of [
+    ["generic ACPX", "acpx-driver", createAcpxAdapter],
+    ["Cursor ACPX", "cursor-acpx-driver", createCursorAcpxAdapter],
+  ] as const) {
+    for (const shutdown of ["stopSession", "stopAll"] as const) {
+      it(`${name} ${shutdown} aborts a stuck turn before closing`, async () => {
+        let aborted = false;
+        const closed: any[] = [];
+        const runtime = {
+          ensureSession: async () => ({ id: 1 }),
+          close: async (options: any) => { closed.push(options); },
+          startTurn: ({ signal }: any) => ({
+            events: (async function* () {
+              await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+            })(),
+            result: new Promise(resolve => signal.addEventListener("abort", () => {
+              aborted = true;
+              resolve({ status: "cancelled" });
+            }, { once: true })),
+          }),
+          getStatus: async () => ({}),
+        } as any;
+        const adapter = create({ agent: "cursor", enabled: true }, process.cwd(), runtime);
+        const handle = await adapter.startSession({ model: "default", cwd: process.cwd() });
+        const turn = adapter.sendTurn(handle, "stuck-turn");
+        await new Promise(resolve => setImmediate(resolve));
+        await Promise.race([
+          shutdown === "stopSession" ? adapter.stopSession(handle) : adapter.stopAll(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("shutdown timed out")), 250)),
+        ]);
+        await turn;
+        assert.equal(aborted, true);
+        assert.equal(closed.length, 1);
+        assert.equal(adapter.hasSession(handle.sessionId), false);
+      });
+    }
+
+    it(`${name} rejects pre-stop queued turns across 20 stop generations`, async () => {
+      for (let iteration = 0; iteration < 20; iteration++) {
+        const started: string[] = [];
+        const ensured: any[] = [];
+        const closed: any[] = [];
+        const runtime = {
+          ensureSession: async () => {
+            const handle = { id: ensured.length + 1 };
+            ensured.push(handle);
+            return handle;
+          },
+          close: async (options: any) => { closed.push(options); },
+          startTurn: ({ text, signal }: any) => {
+            started.push(text);
+            if (text !== "A") {
+              return {
+                events: (async function* () {})(),
+                result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+              };
+            }
+            return {
+              events: (async function* () {
+                await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+              })(),
+              result: new Promise(resolve => signal.addEventListener("abort", () => resolve({ status: "cancelled" }), { once: true })),
+            };
+          },
+          getStatus: async () => ({}),
+        } as any;
+        const adapter = create({ agent: "cursor", enabled: true }, process.cwd(), runtime);
+        const handle = await adapter.startSession({ model: "default", cwd: process.cwd() });
+        const first = adapter.sendTurn(handle, "A");
+        await new Promise(resolve => setImmediate(resolve));
+        const queued = adapter.sendTurn(handle, "B");
+        const queuedRejection = assert.rejects(queued, /stopped|generation/i);
+        const stop = adapter.stopSession(handle);
+
+        await Promise.race([
+          Promise.all([first, queuedRejection, stop]),
+          new Promise((_, reject) => setTimeout(() => reject(new Error(`generation stop timed out at ${iteration}`)), 250)),
+        ]);
+        assert.deepEqual(started, ["A"]);
+        assert.equal(closed.length, 1);
+
+        const fresh = await adapter.startSession({ model: "default", cwd: process.cwd() });
+        await adapter.sendTurn(fresh, "C");
+        assert.deepEqual(started, ["A", "C"]);
+        assert.equal(ensured.length, 2);
+        await adapter.stopAll();
+      }
+    });
+
+    it(`${name} clears stopping state after close failure`, async () => {
+      let closes = 0;
+      const started: string[] = [];
+      const runtime = {
+        ensureSession: async () => ({ id: closes + 1 }),
+        close: async () => { if (++closes === 1) throw new Error("expected close failure"); },
+        startTurn: ({ text }: any) => {
+          started.push(text);
+          return {
+            events: (async function* () {})(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          };
+        },
+        getStatus: async () => ({}),
+      } as any;
+      const adapter = create({ agent: "cursor", enabled: true }, process.cwd(), runtime);
+      const handle = await adapter.startSession({ model: "default", cwd: process.cwd() });
+      await adapter.stopSession(handle);
+      const fresh = await adapter.startSession({ model: "default", cwd: process.cwd() });
+      await adapter.sendTurn(fresh, "fresh-after-failure");
+      assert.deepEqual(started, ["fresh-after-failure"]);
+      assert.equal(closes, 1);
+      await adapter.stopAll();
+    });
+
+    it(`${name} promptly rejects a cancelled queued turn without starting it`, async () => {
+      let releaseFirst!: () => void;
+      const firstPending = new Promise<void>(resolve => { releaseFirst = resolve; });
+      const prompts: string[] = [];
+      const runtime = {
+        ensureSession: async () => ({ id: 1 }),
+        close: async () => {},
+        startTurn: ({ text }: any) => {
+          prompts.push(text);
+          return {
+            events: (async function* () {})(),
+            result: text === "first"
+              ? firstPending.then(() => ({ status: "completed", stopReason: "end_turn" }))
+              : Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          };
+        },
+        getStatus: async () => ({}),
+      } as any;
+      const adapter = create({ agent: "cursor", enabled: true }, process.cwd(), runtime);
+      const handle = await adapter.startSession({ model: "default", cwd: process.cwd() });
+      const first = adapter.sendTurn(handle, "first");
+      await new Promise(resolve => setImmediate(resolve));
+      const controller = new AbortController();
+      const second = adapter.sendTurn(handle, "cancelled", { signal: controller.signal });
+      controller.abort();
+      await Promise.race([
+        assert.rejects(second, error => (error as Error).name === "AbortError"),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("queued cancellation timed out")), 250)),
+      ]);
+      assert.deepEqual(prompts, ["first"]);
+      releaseFirst();
+      await first;
+      await adapter.sendTurn(handle, "third");
+      assert.deepEqual(prompts, ["first", "third"]);
+    });
+
+    for (const shutdown of ["stopSession", "stopAll"] as const) {
+      it(`${name} ${shutdown} logs an unrecovered close failure as error`, async () => {
+        const envKey = `PI_LOG_${domain.toUpperCase().replaceAll("-", "_")}`;
+        const previous = {
+          logLevel: process.env[envKey],
+          parentSessionId: process.env.__PI_PARENT_SESSION_ID,
+          sessionId: process.env.__PI_CONFIG_SESSION_ID,
+          globalSessionId: globalThis.__piConfigSessionId,
+        };
+        process.env[envKey] = "debug";
+        delete process.env.__PI_PARENT_SESSION_ID;
+        clearLogLevelCache();
+        setGlobalSessionId(`close-error-${domain}-${shutdown}-${randomUUID()}`);
+        const logPath = getPiLogPath(domain)!;
+        rmSync(logPath, { force: true });
+        const runtime = {
+          ensureSession: async () => ({ id: 1 }),
+          close: async () => { throw new Error("close failed safely"); },
+          startTurn: () => ({ events: (async function* () {})(), result: Promise.resolve({ status: "completed", stopReason: "end_turn" }) }),
+          getStatus: async () => ({}),
+        } as any;
+        try {
+          const adapter = create({ agent: "cursor", enabled: true }, process.cwd(), runtime);
+          const handle = await adapter.startSession({ model: "safe-model", systemPrompt: "close-secret", cwd: process.cwd() });
+          if (shutdown === "stopSession") await adapter.stopSession(handle); else await adapter.stopAll();
+          const body = readFileSync(logPath, "utf8");
+          const closeFailureLines = body.split("\n").filter(line => line.includes("close failed"));
+          assert.equal(closeFailureLines.length, 1);
+          assert.match(closeFailureLines[0], /\[error\].*close failed/);
+          assert.doesNotMatch(closeFailureLines[0], /\[warn\]/);
+          assert.match(closeFailureLines[0], /"key":"[^" ]+"/);
+          assert.doesNotMatch(body, /close-secret/);
+        } finally {
+          rmSync(logPath, { force: true });
+          if (previous.logLevel === undefined) delete process.env[envKey]; else process.env[envKey] = previous.logLevel;
+          if (previous.parentSessionId === undefined) delete process.env.__PI_PARENT_SESSION_ID;
+          else process.env.__PI_PARENT_SESSION_ID = previous.parentSessionId;
+          if (previous.sessionId === undefined) delete process.env.__PI_CONFIG_SESSION_ID;
+          else process.env.__PI_CONFIG_SESSION_ID = previous.sessionId;
+          if (previous.globalSessionId === undefined) delete globalThis.__piConfigSessionId;
+          else globalThis.__piConfigSessionId = previous.globalSessionId;
+          clearLogLevelCache();
+        }
+      });
+    }
   }
 
   it("Cursor ACPX retries a failed prompt application", async () => {
