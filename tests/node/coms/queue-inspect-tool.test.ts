@@ -6,6 +6,8 @@ import { join } from "node:path";
 
 interface FakePi {
 	tools: Map<string, any>;
+	handlers: Map<string, any>;
+	messages: any[];
 	start: (event: any, ctx: any) => Promise<void>;
 	shutdown?: () => Promise<void>;
 }
@@ -21,10 +23,14 @@ afterEach(async () => {
 
 function createPi(name: string): FakePi {
 	const tools = new Map<string, any>();
+	const handlers = new Map<string, any>();
+	const messages: any[] = [];
 	let start: ((event: any, ctx: any) => Promise<void>) | undefined;
 	let shutdown: (() => Promise<void>) | undefined;
 	return {
 		tools,
+		handlers,
+		messages,
 		get start() {
 			if (!start) throw new Error("session_start handler was not registered");
 			return start;
@@ -35,10 +41,11 @@ function createPi(name: string): FakePi {
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		registerCommand: () => {},
 		on: (event: string, handler: any) => {
+			handlers.set(event, handler);
 			if (event === "session_start") start = handler;
 			if (event === "session_shutdown") shutdown = handler;
 		},
-		sendMessage: () => {},
+		sendMessage: (message: any) => messages.push(message),
 		events: { on: () => {}, emit: () => {} },
 	} as FakePi;
 }
@@ -105,6 +112,54 @@ describe("coms_queue_inspect execute result", { concurrency: false }, () => {
 		const { peer, sockets } = await startShutdownPeer();
 		await peer.shutdown?.();
 		assert.equal(readdirSync(sockets).some((file) => file.endsWith(".ping")), false);
+	});
+
+	it("cleans failed sends without an unhandled rejection or pending outbound entry", async () => {
+		workspace = mkdtempSync(join(tmpdir(), "coms-send-failure-"));
+		mkdirSync(join(workspace, ".pi"));
+		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
+		const sender = await startPeer("sender", "failure-sender");
+		await startPeer("receiver", "failure-receiver");
+		const projects = join(workspace, "coms", "projects");
+		const registry = join(projects, readdirSync(projects)[0], "agents", "failure-receiver.json");
+		const receiverEntry = JSON.parse((await import("node:fs")).readFileSync(registry, "utf8"));
+		receiverEntry.endpoint = join(workspace, "missing.sock");
+		writeFileSync(registry, JSON.stringify(receiverEntry));
+		const unhandled: unknown[] = [];
+		const onUnhandled = (error: unknown) => unhandled.push(error);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			await assert.rejects(sender.tools.get("coms_send").execute("failed-send", { target: "receiver", prompt: "fail" }));
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.deepEqual(unhandled, []);
+			const list = await sender.tools.get("coms_list").execute("list", {});
+			assert.doesNotMatch(JSON.stringify(list), /pending/);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
+
+	it("captures a response that arrives while task creation is suspended", async () => {
+		workspace = mkdtempSync(join(tmpdir(), "coms-fast-reply-"));
+		mkdirSync(join(workspace, ".pi"));
+		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
+		const sender = await startPeer("sender", "fast-sender");
+		const receiver = await startPeer("receiver", "fast-receiver");
+		(receiver as any).sendMessage = () => {
+			queueMicrotask(() => receiver.handlers.get("agent_end")(
+				{ messages: [{ role: "assistant", content: [{ type: "text", text: "fast" }] }] },
+				{
+					cwd: workspace, hasUI: false, ui: { notify: () => {} },
+					sessionManager: { getBranch: () => [{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "fast" }] } }] },
+				},
+			));
+		};
+		const result = await sender.tools.get("coms_send").execute("fast-send", {
+			target: "receiver", prompt: "reply now", tasks: [{ subject: "task", description: "task" }],
+		});
+		assert.equal(result.details.msg_id.length > 0, true);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.match(sender.messages.map((message) => message.content).join("\n"), /fast/);
 	});
 
 	it("shuts down after task creation leaves a metadata-only reply", async () => {

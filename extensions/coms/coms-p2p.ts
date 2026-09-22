@@ -2024,27 +2024,8 @@ Do not respond to this message.`;
 				tasks: params.tasks ?? null,
 			};
 
-			// Send the envelope synchronously and wait for the receiver's ack.
-			await sendEnvelope(target.endpoint, env);
-			comsSendCalledThisTurn.add(target.coms_session_id);
-
-			// Auto-create tasks on the target's task store (sender-side, instant)
-			if (params.tasks && params.tasks.length > 0 && target.coms_session_id) {
-				try {
-					const count = await createComsInboundTasks(
-						params.tasks,
-						{ sender_session: identity.coms_session_id, sender_name: identity.name, sender_endpoint: identity.endpoint },
-						target.pi_session_id || target.coms_session_id,
-						target.cwd,
-					);
-					if (count > 0) {
-						log.info("tasks_auto_created", msg_id, "to", target.name, "count", count);
-					}
-				} catch { /* best-effort */ }
-			}
-
-			// Register a pending entry whose promise the receiver-side handleResponse
-			// (or the timeout below) will settle.
+			// Register before sending. A peer may acknowledge and respond before
+			// task creation's dynamic import completes.
 			let resolveFn!: (v: { response?: any; error?: string | null }) => void;
 			let rejectFn!: (e: Error) => void;
 			const promise = new Promise<{ response?: any; error?: string | null }>((res, rej) => {
@@ -2072,12 +2053,36 @@ Do not respond to this message.`;
 			try { (entry.timer as any).unref?.(); } catch { /* ignore */ }
 			pendingReplies.set(msg_id, entry);
 
-			log.debug("outbound_prompt", msg_id, "to", target.name, "hops", hops);
-
-			// Track pending outbound
 			const targetKey = target.name;
 			if (!pendingOutbound.has(targetKey)) pendingOutbound.set(targetKey, new Set());
 			pendingOutbound.get(targetKey)!.add(msg_id);
+
+			try {
+				await sendEnvelope(target.endpoint, env);
+			} catch (error) {
+				pendingReplies.delete(msg_id);
+				pendingOutbound.get(targetKey)?.delete(msg_id);
+				if (pendingOutbound.get(targetKey)?.size === 0) pendingOutbound.delete(targetKey);
+				if (entry.timer) clearTimeout(entry.timer);
+				throw error;
+			}
+			comsSendCalledThisTurn.add(target.coms_session_id);
+
+			if (params.tasks && params.tasks.length > 0 && target.coms_session_id) {
+				try {
+					const count = await createComsInboundTasks(
+						params.tasks,
+						{ sender_session: identity.coms_session_id, sender_name: identity.name, sender_endpoint: identity.endpoint },
+						target.pi_session_id || target.coms_session_id,
+						target.cwd,
+					);
+					if (count > 0) log.info("tasks_auto_created", msg_id, "to", target.name, "count", count);
+				} catch (error) {
+					log.warn("tasks_auto_create_failed", { msg_id, target: target.name, error: error instanceof Error ? error.message : String(error) });
+				}
+			}
+
+			log.debug("outbound_prompt", msg_id, "to", target.name, "hops", hops);
 
 			// Peer status from peerCards
 			const peerCard = peerCards.get(target.coms_session_id);

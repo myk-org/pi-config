@@ -75,14 +75,15 @@ type AcpRuntimeHandle = Awaited<ReturnType<AcpxRuntime["ensureSession"]>>;
 // Adapter
 // ---------------------------------------------------------------------------
 
-function createCursorAcpxAdapter(
+export function createCursorAcpxAdapter(
   config: CursorAcpxConfig,
   cwd: string,
   runtime: AcpxRuntime,
 ): ProviderAdapterShape {
   const handles = new Map<string, AcpRuntimeHandle>();
   const pendingHandles = new Map<string, Promise<AcpRuntimeHandle>>();
-  const systemPromptSent = new Set<string>();
+  const requestedSystemPrompts = new Map<string, string | undefined>();
+  const appliedSystemPrompts = new Map<string, string | undefined>();
   const knownSessionIds = new Set<string>();
 
   function handleMapKey(modelId: string | undefined, turnCwd: string): string {
@@ -151,6 +152,7 @@ function createCursorAcpxAdapter(
       const systemPrompt = opts.systemPrompt
         ? opts.systemPrompt
         : buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
+      requestedSystemPrompts.set(handleMapKey(model, turnCwd), systemPrompt);
       await ensureHandle(model, systemPrompt, turnCwd);
       const sessionId = sessionKey(model, turnCwd);
       knownSessionIds.add(sessionId);
@@ -168,16 +170,15 @@ function createCursorAcpxAdapter(
     ): Promise<TurnResult> => {
       const turnCwd = resolveAdapterCwd(handle, cwd);
       const handleKey = handleMapKey(handle.model, turnCwd);
-      const needsSystemPrompt = !systemPromptSent.has(handleKey);
-      log.debug("building turn system prompt", { model: handle.model, turnCwd, needsSystemPrompt });
-      const systemPrompt = needsSystemPrompt
-        ? buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd)
-        : undefined;
-
-      const acpxHandle = await ensureHandle(handle.model, systemPrompt, turnCwd);
-      if (needsSystemPrompt) {
-        systemPromptSent.add(handleKey);
+      const systemPrompt = requestedSystemPrompts.get(handleKey) ?? buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
+      const promptChanged = appliedSystemPrompts.has(handleKey) && appliedSystemPrompts.get(handleKey) !== systemPrompt;
+      log.debug("building turn system prompt", { model: handle.model, turnCwd, promptChanged });
+      if (promptChanged) {
+        const stale = handles.get(handleKey);
+        if (stale) await runtime.close({ handle: stale, reason: "system prompt changed" });
+        handles.delete(handleKey);
       }
+      const acpxHandle = await ensureHandle(handle.model, systemPrompt, turnCwd);
 
       const abortController = new AbortController();
       if (opts?.signal) {
@@ -214,6 +215,7 @@ function createCursorAcpxAdapter(
       }
 
       const result = await turn.result;
+      if (result.status === "completed") appliedSystemPrompts.set(handleKey, systemPrompt);
       let stopReason = "stop";
       if (result.status === "completed") {
         stopReason = result.stopReason === "end_turn" ? "stop" : (result.stopReason || "stop");
@@ -235,7 +237,8 @@ function createCursorAcpxAdapter(
         });
         handles.delete(key);
       }
-      systemPromptSent.delete(key);
+      requestedSystemPrompts.delete(key);
+      appliedSystemPrompts.delete(key);
       knownSessionIds.delete(sessionKey(handle.model, turnCwd));
     },
 
@@ -252,7 +255,8 @@ function createCursorAcpxAdapter(
       await Promise.allSettled(closePromises);
       handles.clear();
       pendingHandles.clear();
-      systemPromptSent.clear();
+      requestedSystemPrompts.clear();
+      appliedSystemPrompts.clear();
       knownSessionIds.clear();
     },
 

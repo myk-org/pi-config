@@ -11,6 +11,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { setUvAvailable, isUvAvailable } from "./enforcement-helpers.js";
 import { registerMcpc } from "./mcpc.js";
 import { checkMinPiVersion } from "./utils.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("session-validation");
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -243,7 +246,9 @@ async function checkSessionTools(ctx: any): Promise<void> {
         "prek — pre-commit wrapper (.pre-commit-config.yaml detected). Install: https://github.com/j178/prek",
       );
     }
-  } catch (e: any) { console.debug("[session-validation] tool detection failed:", e?.message || e); }
+  } catch (error) {
+    log.warn("tool detection failed", { cwd: ctx.cwd, operation: "checkSessionTools", error: error instanceof Error ? error.message : String(error) });
+  }
 
   if (missing.length > 0 || optional.length > 0) {
     const parts: string[] = [];
@@ -270,7 +275,9 @@ export function findPackageVersion(startDir = MODULE_DIR): string | null {
       try {
         const pkg = JSON.parse(fs.readFileSync(candidate, "utf-8"));
         if (pkg.name === "pi-orchestrator-config" && pkg.version) return pkg.version;
-      } catch (e: any) { console.debug("[session-validation] package.json parse failed:", e?.message || e); }
+      } catch (error) {
+        log.warn("package manifest read or parse failed", { path: candidate, operation: "findPackageVersion", error: error instanceof Error ? error.message : String(error) });
+      }
     }
     searchDir = path.dirname(searchDir);
   }
@@ -280,6 +287,7 @@ export function findPackageVersion(startDir = MODULE_DIR): string | null {
 /** Check for pi-config version upgrades and show changelog notification. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function checkUpgradeChangelog(ctx: any): Promise<void> {
+  log.debug("checking upgrade changelog", { operation: "checkUpgradeChangelog" });
   try {
     const currentVersion = findPackageVersion();
     if (currentVersion) {
@@ -291,14 +299,18 @@ async function checkUpgradeChangelog(ctx: any): Promise<void> {
       let lastVersion: string | null = null;
       try {
         lastVersion = fs.readFileSync(versionFile, "utf-8").trim();
-      } catch (e: any) { console.debug("[session-validation] read last version failed:", e?.message || e); }
+      } catch (error) {
+        log.debug("last version read failed", { path: versionFile, operation: "read", error: error instanceof Error ? error.message : String(error) });
+      }
 
       if (!lastVersion) {
         // First run — just record the version, no notification
         try {
           fs.mkdirSync(path.dirname(versionFile), { recursive: true });
           fs.writeFileSync(versionFile, currentVersion, "utf-8");
-        } catch (e: any) { console.debug("[session-validation] write version file failed:", e?.message || e); }
+        } catch (error) {
+          log.warn("version file write failed", { path: versionFile, operation: "initial-write", error: error instanceof Error ? error.message : String(error) });
+        }
       } else if (lastVersion !== currentVersion && hasCmd("gh")) {
         // Version changed — fetch release notes (5s timeout, no shell)
         const tag = `v${currentVersion}`;
@@ -321,18 +333,24 @@ async function checkUpgradeChangelog(ctx: any): Promise<void> {
             );
             notified = true;
           }
-        } catch (e: any) { console.debug("[session-validation] release notes fetch failed:", e?.message || e); }
+        } catch (error) {
+          log.warn("release notes fetch failed", { tag, operation: "fetch", error: error instanceof Error ? error.message : String(error) });
+        }
         // Only update version file after successful notification
         // so failed attempts retry on next session
         if (notified) {
           try {
             fs.mkdirSync(path.dirname(versionFile), { recursive: true });
             fs.writeFileSync(versionFile, currentVersion, "utf-8");
-          } catch (e: any) { console.debug("[session-validation] write version after notify failed:", e?.message || e); }
+          } catch (error) {
+            log.warn("version file write failed", { path: versionFile, operation: "post-notify-write", error: error instanceof Error ? error.message : String(error) });
+          }
         }
       }
     }
-  } catch (e: any) { console.debug("[session-validation] upgrade changelog failed:", e?.message || e); }
+  } catch (error) {
+    log.warn("upgrade changelog check failed", { operation: "checkUpgradeChangelog", error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 export function registerSessionValidation(pi: ExtensionAPI): void {
@@ -345,8 +363,8 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
     try {
       const uvInstalled = hasCmd("uv");
       setUvAvailable(uvInstalled);
-    } catch (e: any) {
-      console.debug("[session-validation] uv check failed:", e?.message || e);
+    } catch (error) {
+      log.warn("uv availability check failed", { operation: "session_start", error: error instanceof Error ? error.message : String(error) });
     }
 
     if (!ctx.hasUI) return;

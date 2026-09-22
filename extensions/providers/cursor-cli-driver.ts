@@ -185,7 +185,7 @@ export function createCursorCliAdapter(
   const provisionalPiSessionId = createProvisionalPiSessionId();
   let forceHistorySeed = false;
   const forceHistorySeedCwds = new Set<string>();
-  const systemPromptSent = new Set<string>();
+  const appliedSystemPrompts = new Map<string, string | undefined>();
   const storedSystemPrompts = new Map<string, string>();
   const sessionKeys = new Map<string, CliSessionKey>();
 
@@ -271,7 +271,7 @@ export function createCursorCliAdapter(
           fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
             `session_start marker cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
         }
-        deleteKeysForCwd(systemPromptSent, turnCwd);
+        deleteKeysForCwd(appliedSystemPrompts, turnCwd);
         deleteKeysForCwd(storedSystemPrompts, turnCwd);
         deleteKeysForCwd(sessionKeys, turnCwd);
       }
@@ -285,8 +285,16 @@ export function createCursorCliAdapter(
       const model = opts.model || "default";
       const turnCwd = resolveAdapterCwd(opts, cwd);
       const memKey = memoryKey(model, turnCwd);
-      if (opts.systemPrompt) storedSystemPrompts.set(memKey, opts.systemPrompt);
       const key = sessionKeyFor(model, turnCwd);
+      if (opts.systemPrompt === undefined) {
+        storedSystemPrompts.delete(memKey);
+        if (appliedSystemPrompts.get(memKey) !== undefined) {
+          clearCliSessionId(key);
+          forceHistorySeedCwds.add(turnCwd);
+        }
+      } else {
+        storedSystemPrompts.set(memKey, opts.systemPrompt);
+      }
       sessionKeys.set(memKey, key);
       const existingId = loadCliSessionId(key);
       fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
@@ -322,18 +330,11 @@ export function createCursorCliAdapter(
         forceHistorySeedCwds,
         forceHistorySeed,
       );
-      const needsSystemPrompt = !systemPromptSent.has(handleKey) || reseedThisCwd;
+      const systemPrompt = storedSystemPrompts.get(handleKey) ?? buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
+      const needsSystemPrompt = reseedThisCwd || !appliedSystemPrompts.has(handleKey) || appliedSystemPrompts.get(handleKey) !== systemPrompt;
       fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
         `sendTurn model=${handle.model} cwd=${turnCwd} boot=${cwd} reseed=${reseedThisCwd}`);
-
-      // Prefer the system prompt stored at startSession over rebuilding
-      let systemPrompt: string | undefined;
-      if (needsSystemPrompt) {
-        log.debug("building turn system prompt", { model: handle.model, turnCwd, reseed: reseedThisCwd });
-        systemPrompt =
-          storedSystemPrompts.get(handleKey) ||
-          buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
-      }
+      log.debug("building turn system prompt", { model: handle.model, turnCwd, reseed: reseedThisCwd, changed: needsSystemPrompt });
 
       // Resolve history seed plan
       const seedPlan = resolveCliHistorySeed({
@@ -390,7 +391,7 @@ export function createCursorCliAdapter(
         }
 
         if (needsSystemPrompt) {
-          systemPromptSent.add(handleKey);
+          appliedSystemPrompts.set(handleKey, systemPrompt);
         }
         forceHistorySeedCwds.delete(turnCwd);
         if (forceHistorySeed && reseedThisCwd) {
@@ -422,7 +423,7 @@ export function createCursorCliAdapter(
             saveCliSessionId(key, result.sessionId);
           }
           if (needsSystemPrompt) {
-            systemPromptSent.add(handleKey);
+            appliedSystemPrompts.set(handleKey, systemPrompt);
           }
           forceHistorySeedCwds.delete(turnCwd);
           if (forceHistorySeed && reseedThisCwd) {
@@ -446,14 +447,14 @@ export function createCursorCliAdapter(
       const key = sessionKeyFor(handle.model, turnCwd);
       clearCliSessionId(key);
       sessionKeys.delete(memKey);
-      systemPromptSent.delete(memKey);
+      appliedSystemPrompts.delete(memKey);
       storedSystemPrompts.delete(memKey);
       forceHistorySeedCwds.delete(turnCwd);
     },
 
     stopAll: async (): Promise<void> => {
       sessionKeys.clear();
-      systemPromptSent.clear();
+      appliedSystemPrompts.clear();
       storedSystemPrompts.clear();
     },
 

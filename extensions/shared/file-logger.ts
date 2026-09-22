@@ -15,6 +15,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getStandaloneSetting } from "../orchestrator/settings-source.js";
 
+var logLevelDecision: (message: string, context: object) => void;
+logLevelDecision = () => {};
+export function setLogLevelDiagnosticLogger(logger: { info(message: string, context: object): void }): void {
+  logLevelDecision = logger.info.bind(logger);
+}
+
 export type FileLogLevel = "debug" | "info" | "warn" | "error";
 
 const SESSION_ID_ENV_KEY = "__PI_CONFIG_SESSION_ID";
@@ -138,12 +144,19 @@ const minLevelCache = new Map<string, { level: number; at: number }>();
 function resolveMinLevel(name: string): number {
   const settingKey = `log_${name.replace(/-/g, "_")}`;
   const settingVal = getStandaloneSetting(process.cwd(), settingKey);
-  if (typeof settingVal === "string" && settingVal in LEVEL_ORDER) return LEVEL_ORDER[settingVal];
+  if (typeof settingVal === "string" && settingVal in LEVEL_ORDER) {
+    logLevelDecision("resolved log level", { name, source: "setting", level: settingVal });
+    return LEVEL_ORDER[settingVal];
+  }
 
   const envKey = `PI_LOG_${name.replace(/-/g, "_").toUpperCase()}`;
   const val = process.env[envKey];
-  if (val && val in LEVEL_ORDER) return LEVEL_ORDER[val];
+  if (val && val in LEVEL_ORDER) {
+    logLevelDecision("resolved log level", { name, source: "environment", level: val });
+    return LEVEL_ORDER[val];
+  }
 
+  logLevelDecision("resolved log level", { name, source: "default", level: "info" });
   return LEVEL_ORDER.info;
 }
 

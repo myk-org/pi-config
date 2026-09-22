@@ -8,9 +8,13 @@ import type { TranscriptContext } from "@earendil-works/pi-ai";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildExternalSystemPrompt } from "../../../extensions/shared/build-system-prompt.js";
+import { buildExternalSystemPrompt, createEmptyTranscriptContext } from "../../../extensions/shared/build-system-prompt.js";
 
 describe("buildExternalSystemPrompt", () => {
+  it("creates an empty transcript context", () => {
+    assert.deepEqual(createEmptyTranscriptContext(), { messages: [] });
+  });
+
   it("uses the system prompt from a normalized transcript", () => {
     const context = {
       messages: [{ role: "system", content: "Use transcript state", timestamp: 1 }],
