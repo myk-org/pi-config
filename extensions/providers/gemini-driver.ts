@@ -109,6 +109,7 @@ export function createGeminiAdapter(
       const turnCwd = resolveAdapterCwd(opts, cwd);
       const memKey = adapterMemoryKey(model, turnCwd);
       const key = sessionKeyFor(model, turnCwd);
+      log.debug("starting CLI session", { model, cwd: turnCwd, hasSystemPrompt: opts.systemPrompt !== undefined });
       if (opts.systemPrompt === undefined) {
         storedSystemPrompts.delete(memKey);
         if (appliedSystemPrompts.get(memKey) !== undefined) clearCliSessionId(key);

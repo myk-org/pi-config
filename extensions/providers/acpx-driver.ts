@@ -90,7 +90,9 @@ export function createAcpxAdapter(
   if (initialHandle) {
     handles.set(adapterMemoryKey("default", cwd), initialHandle);
   }
-  const pendingHandles = new Map<string, Promise<AcpRuntimeHandle>>();
+  const handleQueues = new Map<string, Promise<void>>();
+  const handleSystemPrompts = new Map<string, string | undefined>();
+  let disposed = false;
   const requestedSystemPrompts = new Map<string, string | undefined>();
   const appliedSystemPrompts = new Map<string, string | undefined>();
   if (initialHandle) appliedSystemPrompts.set(adapterMemoryKey("default", cwd), undefined);
@@ -114,44 +116,44 @@ export function createAcpxAdapter(
     turnCwd: string,
   ): Promise<AcpRuntimeHandle> {
     const key = handleMapKey(acpxModelId, turnCwd);
-
-    const existing = handles.get(key);
-    if (existing) return existing;
-
-    const pending = pendingHandles.get(key);
-    if (pending) return pending;
-
-    const promise = (async () => {
-      try {
-        const sessionOpts: { model?: string; systemPrompt?: string } = {};
-        if (acpxModelId && acpxModelId !== "default") {
-          sessionOpts.model = acpxModelId;
-        }
-        if (systemPrompt) {
-          sessionOpts.systemPrompt = systemPrompt;
-        }
-
-        fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
-          `ensureSession agent=${config.agent} cwd=${turnCwd} boot=${cwd} model=${acpxModelId || "default"}`);
-        const handle = await runtime.ensureSession({
-          sessionKey: sessionKey(acpxModelId, turnCwd),
-          agent: config.agent,
-          mode: "persistent",
-          cwd: turnCwd,
-          ...(Object.keys(sessionOpts).length > 0
-            ? { sessionOptions: sessionOpts }
-            : {}),
-        });
-
-        handles.set(key, handle);
-        return handle;
-      } finally {
-        pendingHandles.delete(key);
+    let result!: AcpRuntimeHandle;
+    const operation = (handleQueues.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      const existing = handles.get(key);
+      if (existing && handleSystemPrompts.get(key) === systemPrompt) {
+        result = existing;
+        return;
       }
-    })();
+      if (existing) {
+        await runtime.close({ handle: existing, reason: "system prompt changed" });
+        if (handles.get(key) === existing) {
+          handles.delete(key);
+          handleSystemPrompts.delete(key);
+        }
+      }
 
-    pendingHandles.set(key, promise);
-    return promise;
+      const sessionOpts: { model?: string; systemPrompt?: string } = {};
+      if (acpxModelId && acpxModelId !== "default") sessionOpts.model = acpxModelId;
+      if (systemPrompt) sessionOpts.systemPrompt = systemPrompt;
+      fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
+        `ensureSession agent=${config.agent} cwd=${turnCwd} boot=${cwd} model=${acpxModelId || "default"}`);
+      result = await runtime.ensureSession({
+        sessionKey: sessionKey(acpxModelId, turnCwd),
+        agent: config.agent,
+        mode: "persistent",
+        cwd: turnCwd,
+        ...(Object.keys(sessionOpts).length > 0 ? { sessionOptions: sessionOpts } : {}),
+      });
+      handles.set(key, result);
+      handleSystemPrompts.set(key, systemPrompt);
+    });
+    const tail = operation.then(() => {}, () => {});
+    handleQueues.set(key, tail);
+    try {
+      await operation;
+      return result;
+    } finally {
+      if (handleQueues.get(key) === tail) handleQueues.delete(key);
+    }
   }
 
   return {
@@ -165,7 +167,7 @@ export function createAcpxAdapter(
       requestedSystemPrompts.set(handleMapKey(model, turnCwd), systemPrompt);
       await ensureHandle(model, systemPrompt, turnCwd);
       const sessionId = sessionKey(model, turnCwd);
-      knownSessionIds.add(sessionId);
+      if (!disposed) knownSessionIds.add(sessionId);
       return {
         sessionId,
         model,
@@ -183,11 +185,6 @@ export function createAcpxAdapter(
       const systemPrompt = requestedSystemPrompts.get(handleKey) ?? buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
       const promptChanged = appliedSystemPrompts.has(handleKey) && appliedSystemPrompts.get(handleKey) !== systemPrompt;
       log.debug("building turn system prompt", { model: handle.model, turnCwd, promptChanged });
-      if (promptChanged) {
-        const stale = handles.get(handleKey);
-        if (stale) await runtime.close({ handle: stale, reason: "system prompt changed" });
-        handles.delete(handleKey);
-      }
       const acpxHandle = await ensureHandle(handle.model, systemPrompt, turnCwd);
 
       const abortController = new AbortController();
@@ -312,13 +309,17 @@ export function createAcpxAdapter(
     stopSession: async (handle: SessionHandle): Promise<void> => {
       const turnCwd = resolveAdapterCwd(handle, cwd);
       const key = handleMapKey(handle.model, turnCwd);
+      await handleQueues.get(key)?.catch(() => {});
       const acpxHandle = handles.get(key);
       if (acpxHandle) {
         await runtime.close({ handle: acpxHandle, reason: "session stop" }).catch((err: unknown) => {
           fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
             `session close failed: ${err instanceof Error ? err.message : String(err)}`);
         });
-        handles.delete(key);
+        if (handles.get(key) === acpxHandle) {
+          handles.delete(key);
+          handleSystemPrompts.delete(key);
+        }
       }
       requestedSystemPrompts.delete(key);
       appliedSystemPrompts.delete(key);
@@ -327,6 +328,8 @@ export function createAcpxAdapter(
     },
 
     stopAll: async (): Promise<void> => {
+      disposed = true;
+      await Promise.allSettled(handleQueues.values());
       const closePromises: Promise<void>[] = [];
       for (const [key, acpxHandle] of handles) {
         closePromises.push(
@@ -338,7 +341,8 @@ export function createAcpxAdapter(
       }
       await Promise.allSettled(closePromises);
       handles.clear();
-      pendingHandles.clear();
+      handleSystemPrompts.clear();
+      handleQueues.clear();
       requestedSystemPrompts.clear();
       appliedSystemPrompts.clear();
       prevCumulative.clear();

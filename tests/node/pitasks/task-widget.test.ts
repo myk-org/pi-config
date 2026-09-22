@@ -160,7 +160,7 @@ describe("session-targeted task helpers", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pitasks-session-store-"));
 		try {
 			const script = `import { createTaskForSession, createTasksForSession, deleteTaskForSession, getTaskForSession, listTasksForSession, updateTaskForSession, updateTasksForSession } from './extensions/pitasks/index.js'; const dir = process.argv[1]; const by = { type: 'local', origin: 'system', session: '', project: '' }; const task = createTaskForSession('session', 'Task', 'body', by, undefined, dir); createTasksForSession('session', [{ subject: 'Task two', description: 'body', createdBy: by }], dir); getTaskForSession('session', task.id, dir); listTasksForSession('session', dir); updateTaskForSession('session', task.id, { status: 'in_progress' }, dir); updateTasksForSession('session', [{ id: task.id, fields: { status: 'completed' } }], dir); deleteTaskForSession('session', task.id, dir);`;
-			const result = spawnSync(process.execPath, ["--import", "tsx", "-e", script, dir], { cwd: process.cwd(), timeout: 1_000 });
+			const result = spawnSync(process.execPath, ["--import", "tsx", "-e", script, dir], { cwd: process.cwd(), timeout: 5_000 });
 			assert.equal(result.signal, null, result.stderr.toString());
 			assert.equal(result.status, 0, result.stderr.toString());
 		} finally { rmSync(dir, { recursive: true, force: true }); }

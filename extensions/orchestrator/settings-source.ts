@@ -57,7 +57,24 @@ export function readSettingsObject(file: string | null, key?: string): Record<st
   }
 }
 
+const repoRootCache = new Map<string, string>();
+let repoRootResolver = resolveRepoRootUncached;
+
+export function setRepoRootResolverForTests(resolver: (cwd: string) => string): void {
+  repoRootResolver = resolver;
+  repoRootCache.clear();
+}
+
 function resolveRepoRoot(cwd: string): string {
+  const resolvedCwd = resolve(cwd);
+  const cached = repoRootCache.get(resolvedCwd);
+  if (cached) return cached;
+  const root = repoRootResolver(resolvedCwd);
+  repoRootCache.set(resolvedCwd, root);
+  return root;
+}
+
+function resolveRepoRootUncached(cwd: string): string {
   try {
     const common = execFileSync("git", ["rev-parse", "--git-common-dir"], {
       cwd, encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],

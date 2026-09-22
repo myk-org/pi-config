@@ -361,6 +361,38 @@ describe("file-logger", () => {
     assert.equal(result.status, 0, result.stderr || result.stdout);
   });
 
+  it("caches standalone repository resolution for repeated lookups", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-file-log-cache-"));
+    mkdirSync(join(root, ".pi"));
+    writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":"debug"}');
+    const script = `
+      const settings = await import(${JSON.stringify(join(REPO, "extensions/orchestrator/settings-source.ts"))});
+      let resolutions = 0;
+      settings.setRepoRootResolverForTests(cwd => { resolutions++; return cwd; });
+      settings.getStandaloneSetting(process.cwd(), "log_coms");
+      settings.getStandaloneSetting(process.cwd() + "/.", "log_acpx_provider");
+      if (resolutions !== 1) process.exit(1);
+    `;
+    const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: root, encoding: "utf8" });
+    rmSync(root, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
+  it("caches standalone repository fallback for repeated lookups", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-file-log-cache-fallback-"));
+    const script = `
+      const settings = await import(${JSON.stringify(join(REPO, "extensions/orchestrator/settings-source.ts"))});
+      let resolutions = 0;
+      settings.setRepoRootResolverForTests(cwd => { resolutions++; return cwd; });
+      settings.getStandaloneSetting(process.cwd(), "log_coms");
+      settings.getStandaloneSetting(process.cwd(), "log_acpx_provider");
+      if (resolutions !== 1) process.exit(1);
+    `;
+    const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: root, encoding: "utf8" });
+    rmSync(root, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
   it("loads project log settings from a nested directory", () => {
     const root = mkdtempSync(join(tmpdir(), "pi-file-log-nested-"));
     const nested = join(root, "a", "b");
