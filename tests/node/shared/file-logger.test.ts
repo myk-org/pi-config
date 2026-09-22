@@ -10,9 +10,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, it } from "node:test";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+const TSX = import.meta.resolve("tsx");
 
 /** Strip comments so console.* in docs/strings does not false-fail. */
 function stripTsComments(src: string): string {
@@ -294,6 +296,25 @@ describe("file-logger", () => {
     // Verify stack frames are present (not just the error message)
     assert.match(body, /Error: boom/);
     assert.match(body, /\\n\s+at /);  // Stack frames collapsed by fileLog's oneLine()
+  });
+
+  it("ACPX shim import enables debug from project settings without project-settings import", () => {
+    const project = mkdtempSync(join(tmpdir(), "pi-file-log-setting-"));
+    mkdirSync(join(project, ".pi"));
+    writeFileSync(join(project, ".pi", "pi-config-settings.jsonc"), '{"log_acpx_provider":"debug"}');
+
+    const script = `
+      await import(${JSON.stringify(join(REPO, "extensions/acpx-provider/index.ts"))});
+      const { isLevelEnabled } = await import(${JSON.stringify(join(REPO, "extensions/shared/file-logger.ts"))});
+      if (!isLevelEnabled("acpx-provider", "debug")) process.exit(1);
+    `;
+    const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], {
+      cwd: project,
+      encoding: "utf8",
+    });
+
+    rmSync(project, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
   });
 
   it("isLevelEnabled is false for debug at default info", async () => {

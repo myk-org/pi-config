@@ -44,11 +44,13 @@ import {
   createProvisionalPiSessionId,
   type CliSessionKey,
 } from "../cli-provider/sessions.js";
-import { buildExternalSystemPrompt } from "../shared/build-system-prompt.js";
+import { buildExternalSystemPrompt, createEmptyTranscriptContext } from "../shared/build-system-prompt.js";
 import { fileLog } from "../shared/file-logger.js";
+import { createLogger } from "../shared/logger.js";
 import { resolveAdapterCwd, adapterMemoryKey, deleteKeysForCwd } from "../shared/session-cwd.js";
 
 const LOG_DOMAIN = "claude-driver";
+const log = createLogger(LOG_DOMAIN);
 const DRIVER_KIND = "claude-cli";
 
 // ---------------------------------------------------------------------------
@@ -136,9 +138,10 @@ function createClaudeAdapter(
       // Prefer the system prompt stored at startSession over rebuilding
       let systemPrompt: string | undefined;
       if (needsSystemPrompt) {
+        log.debug("building turn system prompt", { model: handle.model, turnCwd });
         systemPrompt =
           storedSystemPrompts.get(handleKey) ||
-          buildExternalSystemPrompt({ systemPrompt: undefined }, turnCwd);
+          buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
       }
 
       // Apply system prompt to the prompt text

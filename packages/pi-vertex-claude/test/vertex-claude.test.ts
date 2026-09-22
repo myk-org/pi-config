@@ -1,21 +1,19 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { normalizeContext, Type, type Tool, type TranscriptContext } from "@earendil-works/pi-ai";
 import { createLogger, isDebugEnabled, oneLine, sanitizeLogSegment } from "../logger.ts";
 
-vi.mock(
-	"@earendil-works/pi-ai",
-	() => ({
-		calculateCost: () => undefined,
-		createAssistantMessageEventStream: () => ({
-			push: () => undefined,
-			end: () => undefined,
-			[Symbol.asyncIterator]: () => ({
-				next: async () => ({ done: true, value: undefined }),
-			}),
-		}),
-	}),
-	{ virtual: true },
-);
+const vertexMock = vi.hoisted(() => ({ request: undefined as any }));
+vi.mock("@anthropic-ai/vertex-sdk", () => ({
+	AnthropicVertex: class {
+		messages = {
+			stream: (request: unknown) => {
+				vertexMock.request = request;
+				return { async *[Symbol.asyncIterator]() {} };
+			},
+		};
+	},
+}));
 
 let convertMessages: typeof import("../index.js").convertMessages;
 let mapStopReason: typeof import("../index.js").mapStopReason;
@@ -25,6 +23,7 @@ let resolveProjectId: typeof import("../index.js").resolveProjectId;
 let stripOneMSuffix: typeof import("../index.js").stripOneMSuffix;
 let usesAdaptiveThinking: typeof import("../index.js").usesAdaptiveThinking;
 let applyThinkingParams: typeof import("../index.js").applyThinkingParams;
+let streamVertexClaude: typeof import("../index.js").streamVertexClaude;
 
 beforeAll(async () => {
 	const helpers = await import("../index.js");
@@ -36,6 +35,73 @@ beforeAll(async () => {
 	stripOneMSuffix = helpers.stripOneMSuffix;
 	usesAdaptiveThinking = helpers.usesAdaptiveThinking;
 	applyThinkingParams = helpers.applyThinkingParams;
+	streamVertexClaude = helpers.streamVertexClaude;
+});
+
+const model = {
+	id: "test-model",
+	name: "Test Model",
+	api: "vertex-claude-api",
+	provider: "google-vertex-claude",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 1000,
+	maxTokens: 100,
+} as const;
+
+const oldTool: Tool = { name: "old_tool", description: "Old", parameters: Type.Object({}) };
+const currentTool: Tool = {
+	name: "current_tool",
+	description: "Current",
+	parameters: Type.Object({ value: Type.String() }, { required: ["value"] }),
+};
+
+async function captureRequest(context: TranscriptContext) {
+	process.env.GOOGLE_CLOUD_PROJECT = "test-project";
+	process.env.GOOGLE_APPLICATION_CREDENTIALS = import.meta.filename;
+	for await (const _event of streamVertexClaude(model as any, context)) {}
+	return vertexMock.request;
+}
+
+beforeEach(() => {
+	vertexMock.request = undefined;
+});
+
+describe("Vertex transcript request state", () => {
+	it("uses the current system prompt", async () => {
+		const context = normalizeContext({ systemPrompt: "Initial instructions", messages: [] });
+		context.messages.push({ role: "system", content: "Updated instructions", timestamp: 1 });
+
+		const request = await captureRequest(context);
+
+		expect(request.system[0].text).toBe("Initial instructions\n\nUpdated instructions");
+	});
+
+	it("uses the current tools", async () => {
+		const context = normalizeContext({ messages: [], tools: [oldTool] });
+		context.messages.push({
+			role: "system",
+			content: "",
+			toolsRemoved: [{ name: oldTool.name }],
+			toolsAdded: [currentTool],
+			timestamp: 1,
+		});
+
+		const request = await captureRequest(context);
+
+		expect(request.tools).toEqual([
+			{
+				name: "current_tool",
+				description: "Current",
+				input_schema: {
+					type: "object",
+					properties: { value: { type: "string" } },
+					required: ["value"],
+				},
+			},
+		]);
+	});
 });
 
 describe("vertex-claude helpers", () => {

@@ -33,12 +33,14 @@ import { ProviderDriverError } from "../shared/provider-errors.js";
 import { makeManagedSnapshot, buildInitialSnapshot } from "../shared/managed-refresh.js";
 import { loadAcpxRuntime, type AcpxRuntimeModule } from "../acpx-provider/load-runtime.js";
 import { modelIdToDisplayName } from "../acpx-provider/runtime-models.js";
-import { buildExternalSystemPrompt } from "../shared/build-system-prompt.js";
+import { buildExternalSystemPrompt, createEmptyTranscriptContext } from "../shared/build-system-prompt.js";
 import { fileLog } from "../shared/file-logger.js";
+import { createLogger } from "../shared/logger.js";
 import { resolveAdapterCwd, adapterMemoryKey } from "../shared/session-cwd.js";
 import { resolveBinary } from "../shared/resolve-binary.js";
 
 const LOG_DOMAIN = "acpx-driver";
+const log = createLogger(LOG_DOMAIN);
 const DRIVER_KIND = "acpx";
 
 // ---------------------------------------------------------------------------
@@ -154,9 +156,10 @@ export function createAcpxAdapter(
     startSession: async (opts: SessionStartOptions): Promise<SessionHandle> => {
       const model = opts.model || "default";
       const turnCwd = resolveAdapterCwd(opts, cwd);
+      log.debug("building start-session system prompt", { model, turnCwd, supplied: Boolean(opts.systemPrompt) });
       const systemPrompt = opts.systemPrompt
         ? opts.systemPrompt
-        : buildExternalSystemPrompt({ systemPrompt: undefined }, turnCwd);
+        : buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
       await ensureHandle(model, systemPrompt, turnCwd);
       const sessionId = sessionKey(model, turnCwd);
       knownSessionIds.add(sessionId);
@@ -175,8 +178,9 @@ export function createAcpxAdapter(
       const turnCwd = resolveAdapterCwd(handle, cwd);
       const handleKey = handleMapKey(handle.model, turnCwd);
       const needsSystemPrompt = !systemPromptSent.has(handleKey);
+      log.debug("building turn system prompt", { model: handle.model, turnCwd, needsSystemPrompt });
       const systemPrompt = needsSystemPrompt
-        ? buildExternalSystemPrompt({ systemPrompt: undefined }, turnCwd)
+        ? buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd)
         : undefined;
 
       const acpxHandle = await ensureHandle(handle.model, systemPrompt, turnCwd);

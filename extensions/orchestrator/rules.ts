@@ -12,6 +12,7 @@ const log = createLogger("rules");
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
 import { buildSituationReport, estimateMemoryBudget, rebuildAndOrganize } from "./situation-report.js";
@@ -21,6 +22,8 @@ import { assembleRuleText, isSettingTruthy } from "./rule-placeholders.js";
 import { isComsActive } from "../shared/coms-active.js";
 import { JsonlAppendLog } from "./state-jsonl.js";
 import { getProjectDataDir } from "./utils.js";
+
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 /** Per-cwd telemetry log cache — avoids re-creating on every call. */
 const telemetryLogCache = new Map<string, JsonlAppendLog<Record<string, unknown>>>();
@@ -131,7 +134,7 @@ export function registerRules(
     // Load from: package rules/ → user ~/.pi/agent/rules/ → project .pi/rules/
     // Same-filename override: project > user > package
     if (!isSubagent) {
-      const packageRulesDir = path.resolve(__dirname, "..", "..", "rules");
+      const packageRulesDir = path.resolve(MODULE_DIR, "..", "..", "rules");
       const userRulesDir = path.join(os.homedir(), ".pi", "agent", "rules");
       const projectRulesDir = path.join(ctx.cwd, ".pi", "rules");
 

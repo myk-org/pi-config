@@ -22,6 +22,7 @@ import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { firstLiveExtensionCtx, isLiveExtensionCtx, resolveSessionStartCtx } from "../shared/live-ctx.js";
 import { createLogger } from "../shared/logger.js";
+import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
 
 const log = createLogger("pidash");
@@ -658,7 +659,11 @@ export function registerPidash(
     pi.on(type as any, (event: any, ctx: any) => {
       if (shuttingDown) return;
       lastCtx = ctx;
-      let payload: any = { type, ...event, timestamp: Date.now() };
+      const timestamp = Date.now();
+      let payload: any = type === "turn_end"
+        ? projectTurnEndEvent(event, timestamp)
+        : { type, ...event, timestamp };
+      log.debug("forwarding event", { type });
       if (["agent_start", "agent_end", "agent_settled", "ui_prompt_start", "ui_prompt_end"].includes(type)) {
         payload.activitySequence = ++activitySequence;
         if (type === "agent_start") activity = "working";

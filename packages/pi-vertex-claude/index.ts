@@ -29,8 +29,9 @@ import {
 	type AssistantMessage,
 	type AssistantMessageEventStream,
 	calculateCost,
-	type Context,
 	createAssistantMessageEventStream,
+	getCurrentSystemPrompt,
+	getCurrentTools,
 	type ImageContent,
 	type Message,
 	type Model,
@@ -41,6 +42,7 @@ import {
 	type Tool,
 	type ToolCall,
 	type ToolResultMessage,
+	type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
@@ -520,9 +522,10 @@ export function parseStreamingJson(partialJson: string): Record<string, any> {
 
 export function streamVertexClaude(
 	model: Model<Api>,
-	context: Context,
+	context: TranscriptContext,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+	log.debug("streamVertexClaude: preparing transcript", { modelId: model.id, messageCount: context.messages.length });
 	const stream = createAssistantMessageEventStream();
 
 	(async () => {
@@ -590,11 +593,12 @@ export function streamVertexClaude(
 			};
 
 			// Add system prompt with cache control
-			if (context.systemPrompt) {
+			const systemPrompt = getCurrentSystemPrompt(context.messages);
+			if (systemPrompt) {
 				params.system = [
 					{
 						type: "text",
-						text: sanitizeSurrogates(context.systemPrompt),
+						text: sanitizeSurrogates(systemPrompt),
 						cache_control: { type: "ephemeral" },
 					},
 				];
@@ -606,8 +610,14 @@ export function streamVertexClaude(
 			}
 
 			// Add tools if provided
-			if (context.tools && context.tools.length > 0) {
-				params.tools = convertTools(context.tools);
+			const tools = getCurrentTools(context.messages);
+			log.debug("streamVertexClaude: resolved transcript state", {
+				modelId: model.id,
+				hasSystemPrompt: Boolean(systemPrompt),
+				toolCount: tools.length,
+			});
+			if (tools.length > 0) {
+				params.tools = convertTools(tools);
 			}
 
 			if (options?.reasoning && model.reasoning) {

@@ -6,7 +6,7 @@ import { register } from "node:module";
 import { pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import React, { createElement } from "react";
 import { renderToString } from "react-dom/server";
@@ -19,7 +19,15 @@ const here = dirname(fileURLToPath(import.meta.url));
 register(pathToFileURL(join(here, "pierre-mock-loader.mjs")).href);
 
 (globalThis as { React?: typeof React }).React = React;
-globalThis.navigator = { hardwareConcurrency: 2 } as Navigator;
+const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+Object.defineProperty(globalThis, "navigator", {
+  configurable: true,
+  value: { hardwareConcurrency: 2 } as Navigator,
+});
+after(() => {
+  if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+  else delete (globalThis as { navigator?: Navigator }).navigator;
+});
 globalThis.window = { location: { protocol: "http:", host: "localhost" } } as Window & typeof globalThis;
 globalThis.Worker = class { constructor() {} } as unknown as typeof Worker;
 globalThis.WebSocket = class {

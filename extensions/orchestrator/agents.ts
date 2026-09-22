@@ -9,7 +9,10 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -103,7 +106,7 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
  * and the agents are in ../../agents/ relative to this file.
  */
 function getPackageAgentsDir(): string {
-	return path.resolve(__dirname, "..", "..", "agents");
+	return path.resolve(MODULE_DIR, "..", "..", "agents");
 }
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {

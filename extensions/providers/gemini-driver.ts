@@ -40,11 +40,13 @@ import {
   createProvisionalPiSessionId,
   type CliSessionKey,
 } from "../cli-provider/sessions.js";
-import { buildExternalSystemPrompt } from "../shared/build-system-prompt.js";
+import { buildExternalSystemPrompt, createEmptyTranscriptContext } from "../shared/build-system-prompt.js";
 import { fileLog } from "../shared/file-logger.js";
+import { createLogger } from "../shared/logger.js";
 import { resolveAdapterCwd, adapterMemoryKey, deleteKeysForCwd } from "../shared/session-cwd.js";
 
 const LOG_DOMAIN = "gemini-driver";
+const log = createLogger(LOG_DOMAIN);
 const DRIVER_KIND = "gemini-cli";
 
 // ---------------------------------------------------------------------------
@@ -131,9 +133,10 @@ function createGeminiAdapter(
 
       let systemPrompt: string | undefined;
       if (needsSystemPrompt) {
+        log.debug("building turn system prompt", { model: handle.model, turnCwd });
         systemPrompt =
           storedSystemPrompts.get(handleKey) ||
-          buildExternalSystemPrompt({ systemPrompt: undefined }, turnCwd);
+          buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
       }
 
       let finalPrompt = prompt;

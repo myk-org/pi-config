@@ -4,7 +4,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -25,18 +25,16 @@ describe("task-focus enforcement: store scanning", () => {
 
   /** Replicate the core store-scanning logic from rules.ts (session-first fallback) */
   function scanTaskStores(cwd: string, sessionId?: string): Array<{ id: string; status: string; subject: string }> {
-    const fs = require("node:fs");
-    const path = require("node:path");
-    const tasksDir = path.join(cwd, ".pi", "tasks");
+    const tasksDir = join(cwd, ".pi", "tasks");
     const taskCandidates: string[] = [];
-    if (sessionId) taskCandidates.push(path.join(tasksDir, `tasks-${sessionId}.json`));
-    taskCandidates.push(path.join(tasksDir, "tasks.json"));
+    if (sessionId) taskCandidates.push(join(tasksDir, `tasks-${sessionId}.json`));
+    taskCandidates.push(join(tasksDir, "tasks.json"));
 
     let allActiveTasks: Array<{ id: string; status: string; subject: string }> = [];
     for (const taskFile of taskCandidates) {
       try {
-        if (!fs.existsSync(taskFile)) continue;
-        const data = JSON.parse(fs.readFileSync(taskFile, "utf-8"));
+        if (!existsSync(taskFile)) continue;
+        const data = JSON.parse(readFileSync(taskFile, "utf-8"));
         const tasks = data.tasks || [];
         const active = tasks.filter((t: any) => t.status === "in_progress" || t.status === "pending");
         if (active.length > 0) {

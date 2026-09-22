@@ -21,8 +21,8 @@
 import type {
   AssistantMessage,
   AssistantMessageEventStream,
-  Context,
   Model,
+  TranscriptContext,
   SimpleStreamOptions,
   StreamOptions,
 } from "@earendil-works/pi-ai";
@@ -137,7 +137,8 @@ function messageText(msg: { role: string; content: unknown }): string {
   return textParts.join("\n");
 }
 
-function extractLatestUserMessage(context: Context): string {
+function extractLatestUserMessage(context: TranscriptContext): string {
+  log.debug("extracting latest user message", { messageCount: context.messages.length });
   for (let i = context.messages.length - 1; i >= 0; i--) {
     const msg = context.messages[i];
     if (msg.role === "user") {
@@ -157,11 +158,13 @@ function makeStreamFunction(
   agent: string,
   getInstance: () => ProviderInstance | undefined,
 ) {
+  log.debug("creating provider stream function", { kind, agent });
   return function streamProvider(
     model: Model<any>,
-    context: Context,
+    context: TranscriptContext,
     options?: SimpleStreamOptions | StreamOptions,
   ): AssistantMessageEventStream {
+    log.debug("starting provider stream", { kind, agent, modelId: model.id, messageCount: context.messages.length });
     const stream = createAssistantMessageEventStream();
     const output = createAssistantMessageOutput(model);
     const assembler = new StreamAssembler(output, stream);

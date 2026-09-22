@@ -6,10 +6,13 @@ import { execSync, execFileSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { setUvAvailable, isUvAvailable } from "./enforcement-helpers.js";
 import { registerMcpc } from "./mcpc.js";
 import { checkMinPiVersion } from "./utils.js";
+
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 /** Check whether a CLI command is available on PATH. */
 function hasCmd(cmd: string): boolean {
@@ -259,26 +262,26 @@ async function checkSessionTools(ctx: any): Promise<void> {
   }
 }
 
+export function findPackageVersion(startDir = MODULE_DIR): string | null {
+  let searchDir = startDir;
+  for (let i = 0; i < 5; i++) {
+    const candidate = path.join(searchDir, "package.json");
+    if (fs.existsSync(candidate)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(candidate, "utf-8"));
+        if (pkg.name === "pi-orchestrator-config" && pkg.version) return pkg.version;
+      } catch (e: any) { console.debug("[session-validation] package.json parse failed:", e?.message || e); }
+    }
+    searchDir = path.dirname(searchDir);
+  }
+  return null;
+}
+
 /** Check for pi-config version upgrades and show changelog notification. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function checkUpgradeChangelog(ctx: any): Promise<void> {
-  // Find pi-config package.json by walking up from this file's directory
   try {
-    let searchDir = __dirname ?? path.dirname(new URL(import.meta.url).pathname);
-    let currentVersion: string | null = null;
-    for (let i = 0; i < 5; i++) {
-      const candidate = path.join(searchDir, "package.json");
-      if (fs.existsSync(candidate)) {
-        try {
-          const pkg = JSON.parse(fs.readFileSync(candidate, "utf-8"));
-          if (pkg.name === "pi-orchestrator-config" && pkg.version) {
-            currentVersion = pkg.version;
-            break;
-          }
-        } catch (e: any) { console.debug("[session-validation] package.json parse failed:", e?.message || e); }
-      }
-      searchDir = path.dirname(searchDir);
-    }
+    const currentVersion = findPackageVersion();
     if (currentVersion) {
       const versionFile = path.join(
         process.env.HOME || "",

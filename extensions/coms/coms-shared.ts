@@ -461,9 +461,10 @@ export function readFrontmatterFromArgv(argv: string[]): { name?: string; descri
 	}
 }
 
-export function readTaskSummary(_cwd: string, _sessionId?: string): { total: number; completed: number; in_progress: number } | null {
+export async function readTaskSummary(_cwd: string, _sessionId?: string): Promise<{ total: number; completed: number; in_progress: number } | null> {
+	log.debug("read_task_summary", { hasSessionId: !!_sessionId });
 	try {
-		const { listTasks } = require("../pitasks/index.js");
+		const { listTasks } = await import("../pitasks/index.js");
 		const tasks = listTasks();
 		if (!tasks || tasks.length === 0) return null;
 		let total = 0, completed = 0, in_progress = 0;
@@ -650,17 +651,18 @@ const MAX_TASK_FIELD_LEN = 2000;
  * Runs on the SENDER side — uses createTaskForSession with the target's session ID.
  * TaskStore handles locking, file format, everything.
  */
-export function createComsInboundTasks(
+export async function createComsInboundTasks(
 	tasks: Array<{ subject: string; description: string }>,
 	origin: ComsOrigin,
 	targetSessionId: string,
 	targetCwd?: string,
-): number {
+): Promise<number> {
+	log.debug("create_coms_inbound_tasks", { targetSessionId, count: tasks?.length ?? 0 });
 	if (!tasks || tasks.length === 0 || !targetSessionId) return 0;
 
 	let createTaskForSession: any;
 	try {
-		createTaskForSession = require("../pitasks/index.js").createTaskForSession;
+		createTaskForSession = (await import("../pitasks/index.js")).createTaskForSession;
 	} catch { return 0; }
 	if (!createTaskForSession) return 0;
 

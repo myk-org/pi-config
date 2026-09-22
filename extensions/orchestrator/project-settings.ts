@@ -19,12 +19,17 @@
  */
 
 import { existsSync, statSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import stripJsonComments from "strip-json-comments";
 import { resolveRepoRoot } from "./utils.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  findSettingsFile,
+  SETTINGS_FILENAMES,
+  SETTINGS_KEYS,
+  type SettingsKeyDef,
+} from "./settings-source.js";
 
 interface ProjectSettings {
   commit_trailer?: boolean | string;
@@ -97,33 +102,8 @@ interface ProjectSettings {
   pidiff_daemon_startup_timeout_s?: number;
 }
 
-/** Key definition from settings-keys.json — single source of truth for env names + defaults. */
-export interface SettingsKeyDef {
-  description: string;
-  type: string;
-  env?: string;
-  default: unknown;
-  min?: number;
-  max?: number;
-  strict_digits?: boolean;
-  per_key_resolution?: boolean;
-  enum?: string[];
-}
-
-const SETTINGS_FILENAMES = ["pi-config-settings.jsonc", "pi-config-settings.json"];
-
-/** Find the first existing settings file in a directory (.jsonc preferred over .json). */
-export function findSettingsFile(dir: string): string | null {
-  for (const name of SETTINGS_FILENAMES) {
-    const p = join(dir, name);
-    if (existsSync(p)) return p;
-  }
-  return null;
-}
-
-export const SETTINGS_KEYS: Record<string, SettingsKeyDef> = JSON.parse(
-  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "settings-keys.json"), "utf-8"),
-);
+/** Settings metadata is loaded from settings-keys.json by the cycle-free settings source. */
+export { findSettingsFile, SETTINGS_KEYS, type SettingsKeyDef };
 
 /** Dev-time check: every ProjectSettings field must have a JSON definition. */
 const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [

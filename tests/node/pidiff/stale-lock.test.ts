@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   statSync,
   unlinkSync,
   utimesSync,
@@ -17,7 +18,7 @@ describe("pidiff stale lock detection", () => {
 
   afterEach(() => {
     if (tmpDir) {
-      try { require("node:fs").rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
       tmpDir = undefined;
     }
   });
