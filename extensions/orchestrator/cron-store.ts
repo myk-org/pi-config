@@ -209,7 +209,7 @@ function acquireKernelMutationLock(store: string): number {
   // operator can confirm all legacy writers have stopped and remove it.
   if (fs.existsSync(lockPath(store, "mutation"))) {
     fs.closeSync(fd);
-    log.warn("cron_mutation_legacy_lock", { store, outcome: "blocked_until_verified_migration" });
+    log.error("cron_mutation_legacy_lock", { store, outcome: "blocked_until_verified_migration" });
     throw new Error("legacy cron storage lock present; stop all old cron writers and verify they cannot resume before removing the stale mutation-lock directory");
   }
   log.debug("cron_mutation_kernel_lock", { lock, outcome: "acquired" });
