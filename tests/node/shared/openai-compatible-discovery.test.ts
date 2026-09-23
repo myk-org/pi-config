@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import type { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import installOpenAiCompatibleDiscovery from "../../../extensions/openai-compatible-discovery/index.js";
 import {
   findEligibleOpenAiCompatibleProviderConfigs,
@@ -41,6 +41,8 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
     headers?: Record<string, string>;
     discoverModelCapabilities?: boolean;
     staticModels?: Array<Record<string, unknown>>;
+    beforeStart?: (runtime: ModelRuntime) => void;
+    onRegister?: () => void;
   } = {}) {
     const provider = options.provider ?? "gateway";
     writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {
@@ -61,6 +63,7 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
       modelsStorePath: join(agentDir, "model-cache"),
       refreshOnCreate: false,
     });
+    options.beforeStart?.(runtime);
     const registry = new ModelRegistry(runtime);
     const handlers = new Map<string, (...args: any[]) => any>();
     const appended: Array<{ type: string; data: any }> = [];
@@ -68,7 +71,10 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
     const renderers: Array<{ type: string; render: any }> = [];
     const pi = {
       on: (event: string, handler: (...args: any[]) => any) => handlers.set(event, handler),
-      registerProvider: (id: string, config: any) => registry.registerProvider(id, config),
+      registerProvider: (id: string, config: any) => {
+        registry.registerProvider(id, config);
+        options.onRegister?.();
+      },
       unregisterProvider: (id: string) => registry.unregisterProvider(id),
       appendEntry: (type: string, data: any) => appended.push({ type, data }),
       registerEntryRenderer: (type: string, render: any) => renderers.push({ type, render }),
@@ -121,7 +127,39 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
     assert.equal(registry.find("gateway", "discovered")?.provider, "gateway");
   });
 
-  it("uses the public refreshModels context and performs no network work during offline restore", async () => {
+  it("waits for registration's offline refresh before startup discovery", async () => {
+    let releaseOffline!: () => void;
+    const offlineGate = new Promise<void>((resolve) => { releaseOffline = resolve; });
+    let registered!: () => void;
+    const registration = new Promise<void>((resolve) => { registered = resolve; });
+    let requests = 0;
+    globalThis.fetch = async () => {
+      requests++;
+      return new Response(JSON.stringify({ data: [{ id: "discovered" }] }));
+    };
+    const starting = setup({
+      beforeStart: (runtime) => {
+        const refresh = runtime.refresh.bind(runtime);
+        runtime.refresh = ((options) => options?.allowNetwork === false
+          ? offlineGate.then(() => refresh(options))
+          : refresh(options)) as typeof runtime.refresh;
+      },
+      onRegister: registered,
+    });
+    try {
+      await registration;
+      // The registration-triggered refresh has not finished. Network discovery must wait for it.
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(requests, 0);
+    } finally {
+      releaseOffline();
+    }
+    const { registry, appended } = await starting;
+    assert.deepEqual(modelIds(registry), ["static", "discovered"]);
+    assert.deepEqual(appended.map(({ data }) => data.summary), ["Providers: gateway (1)"]);
+  });
+
+  it("retains the discovered snapshot during offline restore", async () => {
     let calls = 0;
     globalThis.fetch = async () => {
       calls++;
@@ -132,7 +170,7 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
 
     await runtime.refresh({ providers: ["gateway"], allowNetwork: false, force: true });
     assert.equal(calls, 1);
-    assert.deepEqual(modelIds(registry), ["static"]);
+    assert.deepEqual(modelIds(registry), ["static", "discovered"]);
   });
 
   it("recovers through the public provider refresh after startup discovery fails", async () => {
@@ -161,18 +199,97 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
     assert.deepEqual(modelIds(registry), ["static"]);
   });
 
-  it("removes discovered models after a failed response and restores only a later current response", async () => {
+  it("retains the discovered snapshot after a failed response", async () => {
     let response = new Response(JSON.stringify({ data: [{ id: "old" }] }));
     globalThis.fetch = async () => response.clone();
     const { runtime, registry } = await setup();
 
     response = new Response("failed", { status: 502 });
     await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
-    assert.deepEqual(modelIds(registry), ["static"]);
+    assert.deepEqual(modelIds(registry), ["static", "old"]);
 
     response = new Response(JSON.stringify({ data: [{ id: "new" }] }));
     await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
     assert.deepEqual(modelIds(registry), ["static", "new"]);
+  });
+
+  it("drops the old catalog after API key rotation on offline refresh", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "tenant-a" }] }));
+    const { runtime, registry } = await setup();
+    await runtime.setRuntimeApiKey("gateway", "tenant-b-key"); // pragma: allowlist secret
+    assert.deepEqual(modelIds(registry), ["static"]);
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: false, force: true });
+    assert.deepEqual(modelIds(registry), ["static"]);
+  });
+
+  it("retains only the new key's snapshot after a failed refresh", async () => {
+    let id = "tenant-a";
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id }] }));
+    const { runtime, registry } = await setup();
+    await runtime.setRuntimeApiKey("gateway", "tenant-b-key"); // pragma: allowlist secret
+    globalThis.fetch = async () => new Response("unavailable", { status: 503 });
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    assert.deepEqual(modelIds(registry), ["static"]);
+    id = "tenant-b";
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id }] }));
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    globalThis.fetch = async () => new Response("unavailable", { status: 503 });
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    assert.deepEqual(modelIds(registry), ["static", "tenant-b"]);
+  });
+
+  it("drops the old catalog after routing header rotation", async () => {
+    const previous = process.env.DISCOVERY_TEST_ROUTE;
+    try {
+      process.env.DISCOVERY_TEST_ROUTE = "tenant-a";
+      globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "tenant-a" }] }));
+      const { runtime, registry } = await setup({ headers: { "X-Route": "$DISCOVERY_TEST_ROUTE" } });
+      process.env.DISCOVERY_TEST_ROUTE = "tenant-b";
+      globalThis.fetch = async () => new Response("unavailable", { status: 503 });
+      await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+      assert.deepEqual(modelIds(registry), ["static"]);
+      await runtime.refresh({ providers: ["gateway"], allowNetwork: false, force: true });
+      assert.deepEqual(modelIds(registry), ["static"]);
+    } finally {
+      if (previous === undefined) delete process.env.DISCOVERY_TEST_ROUTE;
+      else process.env.DISCOVERY_TEST_ROUTE = previous;
+    }
+  });
+
+  it("drops the old catalog after base URL rotation", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "tenant-a" }] }));
+    const { runtime, registry } = await setup();
+    const path = join(agentDir, "models.json");
+    const config = JSON.parse(readFileSync(path, "utf8"));
+    config.providers.gateway.baseUrl = "https://tenant-b.example/v1";
+    writeFileSync(path, JSON.stringify(config));
+    globalThis.fetch = async () => new Response("unavailable", { status: 503 });
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    assert.deepEqual(modelIds(registry), ["static"]);
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: false, force: true });
+    assert.deepEqual(modelIds(registry), ["static"]);
+  });
+
+  it("ignores a superseded A response after B succeeds", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "initial-a" }] }));
+    const { runtime, registry } = await setup();
+    let release!: (response: Response) => void;
+    let started!: () => void;
+    const pending = new Promise<Response>((resolve) => { release = resolve; });
+    const requested = new Promise<void>((resolve) => { started = resolve; });
+    globalThis.fetch = async () => { started(); return pending; };
+    const first = runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    await requested;
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "tenant-b" }] }));
+    const second = runtime.setRuntimeApiKey("gateway", "tenant-b-key"); // pragma: allowlist secret
+    await second;
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    release(new Response(JSON.stringify({ data: [{ id: "late-a" }] })));
+    await first;
+    assert.deepEqual(modelIds(registry), ["static", "tenant-b"]);
+    globalThis.fetch = async () => new Response("unavailable", { status: 503 });
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    assert.deepEqual(modelIds(registry), ["static", "tenant-b"]);
   });
 
   it("prevents an older concurrent refresh from replacing the newest generation", async () => {
@@ -200,6 +317,48 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
     assert.deepEqual(modelIds(registry), ["static", "newest"]);
   });
 
+  it("preserves the previous snapshot when a superseding refresh fails", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "initial" }] }));
+    const { runtime, registry } = await setup();
+    let started!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { started = resolve; });
+    globalThis.fetch = async (_input, init) => {
+      started();
+      return new Promise<Response>((_resolve, reject) => (init!.signal as AbortSignal).addEventListener(
+        "abort", () => reject(new DOMException("Superseded", "AbortError")), { once: true },
+      ));
+    };
+    const first = runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    await firstStarted;
+    globalThis.fetch = async () => new Response("failed", { status: 503 });
+    const second = runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    await Promise.all([first, second]);
+    assert.deepEqual(modelIds(registry), ["static", "initial"]);
+  });
+
+  it("grants the capability endpoint a fresh timeout", async () => {
+    const originalTimeout = AbortSignal.timeout;
+    const timeoutSignals: AbortSignal[] = [];
+    const requests: AbortSignal[] = [];
+    AbortSignal.timeout = ((ms: number) => {
+      const signal = originalTimeout(ms);
+      timeoutSignals.push(signal);
+      return signal;
+    }) as typeof AbortSignal.timeout;
+    try {
+      globalThis.fetch = async (input, init) => {
+        requests.push(init!.signal as AbortSignal);
+        return new Response(JSON.stringify({ data: String(input).includes("model/info") ? [] : [{ id: "current" }] }));
+      };
+      await setup({ discoverModelCapabilities: true });
+      assert.equal(requests.length, 2);
+      assert.equal(timeoutSignals.length, 2);
+      assert.notEqual(requests[0], requests[1]);
+    } finally {
+      AbortSignal.timeout = originalTimeout;
+    }
+  });
+
   it("does not intercept Ctrl+P model snapshot cycling", async () => {
     let fetchCalls = 0;
     globalThis.fetch = async () => {
@@ -220,7 +379,7 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
     assert.equal(typeof source.streamSimple, "function");
   });
 
-  it("registers and refreshes discovery in non-TUI modes without TUI interaction", async () => {
+  it("discovers models in non-TUI mode", async () => {
     globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "headless" }] }));
     const { registry, appended } = await setup({ mode: "json" });
     assert.deepEqual(modelIds(registry), ["static", "headless"]);
@@ -299,11 +458,11 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
 });
 
 describe("OpenAI-compatible discovery helpers", () => {
-  it("formats the configured provider key and discovered count", () => {
+  it("formats a provider discovery summary", () => {
     assert.equal(formatOpenAiCompatibleDiscoverySummary("my-openai-relay", 242), "Providers: my-openai-relay (242)");
   });
 
-  it("materializes OpenAI-compatible capacities and complete opaque model defaults", () => {
+  it("materializes generic capacity metadata", () => {
     const [model] = materializeOpenAiCompatibleModels([{
       id: "gpt-5.6-terra",
       max_input_tokens: 922_000,
@@ -323,7 +482,7 @@ describe("OpenAI-compatible discovery helpers", () => {
     assert.equal(model.contextWindow, 128_000);
   });
 
-  it("redacts credentials and query values from diagnostics", () => {
+  it("redacts sensitive diagnostics", () => {
     const diagnostic = redactOpenAiCompatibleDiagnostic(
       "GET https://user:pass@gateway.example/v1/models?key=query-secret failed with Bearer fake-key and fake-route", // pragma: allowlist secret
       { apiKey: "fake-key", headers: { "X-Route": "fake-route" } }, // pragma: allowlist secret

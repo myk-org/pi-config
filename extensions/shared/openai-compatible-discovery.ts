@@ -154,6 +154,7 @@ export function findEligibleOpenAiCompatibleProviderConfigsResult(
       "utf8",
     );
   } catch {
+    log.debug("provider configuration unavailable", { status: "unreadable" });
     return { status: "unreadable", providers: [] };
   }
 
@@ -161,8 +162,10 @@ export function findEligibleOpenAiCompatibleProviderConfigsResult(
   try {
     parsed = parsePiModelsJson(content);
   } catch {
+    log.debug("provider configuration invalid", { status: "malformed" });
     return { status: "malformed", providers: [] };
   }
+  log.debug("parsed provider configuration", { hasProviders: Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed) && (parsed as { providers?: unknown }).providers) });
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     return { status: "malformed", providers: [] };
   const providers = (parsed as { providers?: unknown }).providers;
@@ -406,6 +409,7 @@ export function buildOpenAiCompatibleModelsRequest(
 export function buildOpenAiCompatibleCapabilitiesUrl(modelsUrl: string): string {
   const url = new URL(modelsUrl);
   url.pathname = url.pathname.replace(/\/models$/i, "/model/info");
+  log.debug("built capability endpoint", { endpoint: "model/info" });
   return url.toString();
 }
 
@@ -422,6 +426,7 @@ export function enrichOpenAiCompatibleReasoning(
       : Array.isArray(info.supported_openai_params) && info.supported_openai_params.includes("reasoning_effort");
     reasoning.set(capability.model_name, value);
   }
+  log.debug("enriching reasoning metadata", { recordCount: records.length, capabilityCount: capabilities.length, matchedCount: reasoning.size });
   return records.map((record) => typeof record.id === "string" && reasoning.has(record.id)
     ? { ...record, reasoning: reasoning.get(record.id) }
     : record);

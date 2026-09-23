@@ -24,7 +24,8 @@ commit, push, open or update a PR, or post review results to a forge.
 
 Parse the raw arguments before running commands:
 
-- `--autofix` applies every finding without an approval prompt, then repeats review and repair until clean.
+- `--autofix` applies every finding without an approval prompt, then repeats review and repair for
+  at most 3 autofix cycles (one cycle = apply fixes, test, and rerun review).
 - `--fast` requests a quick review.
 - `--deep` requests a thorough review.
 - `--fast` and `--deep` are mutually exclusive. If both appear, report the conflict and stop.
@@ -83,8 +84,10 @@ For every finding, inspect the cited code and explain its impact, evidence, and 
 
 After edits, run the repository's required tests. Tests are mandatory and every test must pass.
 Fix failures before continuing. Then rerun Qodo with the same context, depth, tickets, and path scope.
-Repeat in `--autofix` mode until the result is clean. In default mode, present any new findings and
-use one new `ask_user` selection before further edits.
+In `--autofix` mode, stop early if the same findings recur or a cycle makes no effective progress;
+stop after at most 3 autofix cycles even if findings remain. Report remaining findings and the
+blocker to the user rather than continuing automatically. In default mode, present any new findings
+and use one new `ask_user` selection before further edits.
 
 Finish with the findings addressed, tests run and their results, review coverage, and anything still
 open. Never commit, push, create a PR, or offer to do those actions automatically.

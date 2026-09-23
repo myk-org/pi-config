@@ -1,12 +1,15 @@
 import {
   chmodSync,
   mkdirSync,
+  statSync,
+  unlinkSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -46,8 +49,10 @@ export function isThinkingLevel(value: unknown): value is SavedThinkingLevel {
 }
 
 export function modelThinkingKey(model: { id?: unknown; provider?: unknown } | undefined): string | undefined {
-  if (typeof model?.provider !== "string" || typeof model.id !== "string") return undefined;
-  return `${model.provider}/${model.id}`;
+  const key = typeof model?.provider === "string" && typeof model.id === "string"
+    ? `${model.provider}/${model.id}` : undefined;
+  log.debug("thinking preference model key resolved", { model: key, valid: key !== undefined });
+  return key;
 }
 
 export function resolveThinkingLevelStatePath(agentDir?: string | null): string {
@@ -55,6 +60,7 @@ export function resolveThinkingLevelStatePath(agentDir?: string | null): string 
 }
 
 function emptyState(fallback?: SavedThinkingLevel): ThinkingLevelState {
+  log.debug("thinking preference empty state created", { hasFallback: fallback !== undefined });
   return { version: STATE_VERSION, ...(fallback ? { fallback } : {}), models: Object.create(null) };
 }
 
@@ -126,9 +132,61 @@ export function writeThinkingLevelState(
     });
     return true;
   } catch (err) {
-    rmSync(tmp, { force: true });
-    log.warn("thinking preference state persist failed", { statePath }, err);
+    try { rmSync(tmp, { force: true }); } catch { /* retain original persistence failure */ }
+    log.error("thinking preference state persist failed", { statePath }, err);
     return false;
+  }
+}
+
+const lockSleep = new Int32Array(new SharedArrayBuffer(4));
+
+function updateThinkingLevelState(statePath: string, update: (state: ThinkingLevelState) => void): boolean {
+  const lockPath = `${statePath}.lock`;
+  let db: DatabaseSync | undefined;
+  let locked = false;
+  try {
+    mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
+    chmodSync(dirname(statePath), 0o700);
+    // SQLite's BEGIN IMMEDIATE serializes all writers, including simultaneous stale-lock reclaimers.
+    // Unlike unlinking a lock pathname, no contender can remove another contender's ownership.
+    db = new DatabaseSync(`${statePath}.lock.sqlite`, { timeout: 5000 });
+    chmodSync(`${statePath}.lock.sqlite`, 0o600);
+    db.exec("BEGIN IMMEDIATE");
+    locked = true;
+    const deadline = Date.now() + 5000;
+    while (true) {
+      let pid: number;
+      let age: number;
+      try {
+        pid = Number(readFileSync(lockPath, "utf8"));
+        age = Date.now() - statSync(lockPath).mtimeMs;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") break;
+        throw err;
+      }
+      let alive = false;
+      if (Number.isInteger(pid) && pid > 0) {
+        try { process.kill(pid, 0); alive = true; }
+        catch (err) { if ((err as NodeJS.ErrnoException).code !== "ESRCH") alive = true; }
+      }
+      if (!alive && age > 1000) {
+        unlinkSync(lockPath); // Only the transaction holder may reclaim a legacy lock.
+        break;
+      }
+      if (Date.now() >= deadline) throw new Error(`Timed out acquiring thinking preference lock: ${lockPath}`);
+      Atomics.wait(lockSleep, 0, 0, 20);
+    }
+    const state = readThinkingLevelState(statePath);
+    update(state);
+    const saved = writeThinkingLevelState(state, statePath);
+    log.debug("thinking preference locked update completed", { statePath, saved });
+    return saved;
+  } catch (err) {
+    log.error("thinking preference locked update failed", { statePath }, err);
+    return false;
+  } finally {
+    if (locked) db?.exec("ROLLBACK");
+    db?.close();
   }
 }
 
@@ -140,10 +198,7 @@ export function writeLastThinkingLevel(
     log.warn("thinking preference fallback not persisted: invalid level", { level });
     return false;
   }
-  const state = readThinkingLevelState(statePath);
-  state.fallback = level;
-  log.debug("thinking preference fallback queued", { statePath, level });
-  return writeThinkingLevelState(state, statePath);
+  return updateThinkingLevelState(statePath, state => { state.fallback = level; });
 }
 
 export type ThinkingRestoreContext = {
@@ -172,7 +227,6 @@ function hasEncodedThinking(model: RuntimeModel | undefined): boolean {
 function hasSessionThinkingState(ctx: ThinkingRestoreContext): boolean {
   const statefulEntryTypes = new Set([
     "message", "custom_message", "compaction", "branch_summary",
-    "thinking_level_change", "model_change",
   ]);
   const present = ctx.sessionManager?.getEntries?.().some(entry => statefulEntryTypes.has(entry.type ?? "")) === true;
   log.debug("thinking preference session state checked", { present });
@@ -213,11 +267,13 @@ function clampSavedThinkingLevel(model: RuntimeModel, level: SavedThinkingLevel)
     const mapped = model.thinkingLevelMap?.[candidate];
     return mapped !== null && ((candidate !== "xhigh" && candidate !== "max") || mapped !== undefined);
   });
-  if (available.includes(level)) return level;
   const requested = THINKING_LEVELS.indexOf(level);
-  return available.find(candidate => THINKING_LEVELS.indexOf(candidate) > requested)
-    ?? available.findLast(candidate => THINKING_LEVELS.indexOf(candidate) < requested)
-    ?? "off";
+  const effective = available.includes(level) ? level
+    : available.find(candidate => THINKING_LEVELS.indexOf(candidate) > requested)
+      ?? available.findLast(candidate => THINKING_LEVELS.indexOf(candidate) < requested)
+      ?? "off";
+  log.debug("thinking preference level clamped", { model: modelThinkingKey(model), requested: level, effective });
+  return effective;
 }
 
 export function registerLastThinkingLevel(
@@ -230,10 +286,14 @@ export function registerLastThinkingLevel(
     modelRestore: Promise<unknown>,
   ) => Promise<boolean>;
   setInternalThinkingLevel: (level: ThinkingLevel) => void;
+  restoreModel: (model: Model<any>, setModel: (model: Model<any>) => Promise<boolean>) => Promise<boolean>;
 } {
   let generation = 0;
   let activeModelKey: string | undefined;
-  let preserveSessionLevel = false;
+  let preserveCliLevel = false;
+  let modelEventGeneration = 0;
+  let lastModelEvent: { key: string | undefined; source: string; fromDefaultRestore: boolean } | undefined;
+  let defaultRestoreKey: string | undefined;
   const suppressedEvents: Array<{ model: string | undefined; level: SavedThinkingLevel }> = [];
 
   const setInternalThinkingLevel = (level: ThinkingLevel): void => {
@@ -260,16 +320,11 @@ export function registerLastThinkingLevel(
 
   pi.on("session_start", (event, ctx) => {
     activeModelKey = modelThinkingKey(ctx.model);
-    preserveSessionLevel = hasExplicitThinkingArg(opts.argv ?? process.argv)
-      || event.reason === "reload"
-      || event.reason === "resume"
-      || event.reason === "fork"
-      || hasEncodedThinking(ctx.model)
-      || (event.reason === "startup" && hasSessionThinkingState(ctx));
+    preserveCliLevel = hasExplicitThinkingArg(opts.argv ?? process.argv);
     log.debug("thinking preference session tracking reset", {
       reason: event.reason,
       model: activeModelKey,
-      preserveSessionLevel,
+      preserveCliLevel,
       generation,
     });
   });
@@ -299,13 +354,24 @@ export function registerLastThinkingLevel(
       log.warn("thinking preference ignored invalid explicit change", { model: currentModelKey, level: event.level });
       return;
     }
-    const state = readThinkingLevelState(opts.statePath);
-    state.fallback = event.level;
-    state.models[currentModelKey] = event.level;
     generation += 1;
-    writeThinkingLevelState(state, opts.statePath);
-    log.info("thinking preference saved explicit change", { model: currentModelKey, level: event.level, generation });
+    const saved = updateThinkingLevelState(opts.statePath ?? resolveThinkingLevelStatePath(), state => {
+      state.fallback = event.level;
+      state.models[currentModelKey] = event.level;
+    });
+    log.info("thinking preference explicit change handled", { model: currentModelKey, level: event.level, generation, saved });
   });
+
+  const restoreModel = async (model: Model<any>, setModel: (model: Model<any>) => Promise<boolean>): Promise<boolean> => {
+    defaultRestoreKey = modelThinkingKey(model);
+    try {
+      const restored = await setModel(model);
+      log.debug("thinking preference default model set completed", { model: defaultRestoreKey, restored });
+      return restored;
+    } finally {
+      defaultRestoreKey = undefined;
+    }
+  };
 
   pi.on("model_select", (event, ctx) => {
     const selectedKey = modelThinkingKey(event.model);
@@ -320,7 +386,9 @@ export function registerLastThinkingLevel(
     }
     activeModelKey = selectedKey;
     generation += 1;
-    if (event.source === "restore" || preserveSessionLevel) {
+    modelEventGeneration = generation;
+    lastModelEvent = { key: selectedKey, source: event.source, fromDefaultRestore: event.source === "set" && selectedKey === defaultRestoreKey };
+    if (event.source === "restore" || selectedKey === defaultRestoreKey || preserveCliLevel || hasEncodedThinking(event.model as RuntimeModel)) {
       log.debug("thinking preference model event preserved session level", {
         model: selectedKey,
         source: event.source,
@@ -338,9 +406,14 @@ export function registerLastThinkingLevel(
   ): Promise<boolean> => {
     activeModelKey = modelThinkingKey(ctx.model);
     const startGeneration = generation;
-    await modelRestore.catch(() => undefined);
+    const restored = await modelRestore.catch(() => false);
     const key = modelThinkingKey(ctx.model);
-    if (generation !== startGeneration) {
+    const expectedRestoreEvent = restored === true
+      && generation === startGeneration + 1
+      && modelEventGeneration === generation
+      && lastModelEvent?.fromDefaultRestore === true
+      && lastModelEvent.key === key;
+    if (generation !== startGeneration && !expectedRestoreEvent) {
       log.debug("thinking preference startup restore ignored stale work", {
         reason: event.reason,
         model: key,
@@ -358,5 +431,5 @@ export function registerLastThinkingLevel(
     return applyPreference(ctx.model, `session_${event.reason ?? "unknown"}`);
   };
 
-  return { applyAfterModelRestore, setInternalThinkingLevel };
+  return { applyAfterModelRestore, setInternalThinkingLevel, restoreModel };
 }

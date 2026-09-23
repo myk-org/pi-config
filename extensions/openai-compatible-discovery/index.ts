@@ -8,6 +8,7 @@ import {
   findEligibleOpenAiCompatibleProviderConfigsResult,
   formatOpenAiCompatibleDiscoverySummary,
   materializeOpenAiCompatibleModels,
+  openAiCompatibleConnectionFingerprint,
   redactOpenAiCompatibleDiagnostic,
   resolveStaticOpenAiCompatibleHeaders,
   type OpenAiCompatibleCapabilityRecord,
@@ -31,9 +32,11 @@ function responseRecords(payload: unknown): OpenAiCompatibleModelRecord[] {
 function capabilityRecords(payload: unknown): OpenAiCompatibleCapabilityRecord[] {
   if (!payload || typeof payload !== "object" || !Array.isArray((payload as { data?: unknown }).data))
     throw new Error("OpenAI-compatible capability response must contain a data array");
-  return (payload as { data: unknown[] }).data.filter(
+  const records = (payload as { data: unknown[] }).data.filter(
     (record): record is OpenAiCompatibleCapabilityRecord => Boolean(record) && typeof record === "object" && !Array.isArray(record),
   );
+  log.debug("parsed capability records", { count: records.length });
+  return records;
 }
 
 function resolvedConnection(source: Provider, auth?: AuthResult, staticHeaders?: Record<string, string>): ResolvedOpenAiCompatibleConnection {
@@ -61,17 +64,29 @@ async function refreshProviderModels(
   appendSummary: () => boolean,
   discoverModelCapabilities: boolean,
   rawStaticHeaders?: Record<string, string>,
+  snapshot: { discovered: Model[]; fingerprint?: string; generation: number },
 ): Promise<Model[]> {
-  if (!refresh.allowNetwork || refresh.signal.aborted) return [...staticModels];
-
+  const generation = ++snapshot.generation;
   let connection: ResolvedOpenAiCompatibleConnection = { baseUrl: source.baseUrl };
+  let scopeResolved = false;
   try {
     const auth = await ctx.modelRegistry.getProviderAuth(sourceProviderId) as AuthResult | undefined;
     const staticHeaders = await resolveStaticOpenAiCompatibleHeaders(rawStaticHeaders);
-    connection = resolvedConnection(source, auth, staticHeaders);
+    connection = resolvedConnection(ctx.modelRegistry.getProvider(sourceProviderId) ?? source, auth, staticHeaders);
+    if (generation !== snapshot.generation) return [...staticModels];
+    const fingerprint = openAiCompatibleConnectionFingerprint(connection);
+    if (snapshot.fingerprint !== fingerprint) {
+      snapshot.discovered = [];
+      snapshot.fingerprint = fingerprint;
+      log.debug("discovery connection scope changed", { provider: sourceProviderId });
+    }
+    scopeResolved = true;
+    if (!refresh.allowNetwork || refresh.signal.aborted) return [...staticModels, ...snapshot.discovered];
     const request = buildOpenAiCompatibleModelsRequest(connection);
-    const signal = AbortSignal.any([refresh.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
-    const response = await fetch(request.url, { headers: request.headers, redirect: "error", signal });
+    const response = await fetch(request.url, {
+      headers: request.headers, redirect: "error",
+      signal: AbortSignal.any([refresh.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+    });
     if (!response.ok) throw new Error(`OpenAI-compatible /v1/models returned HTTP ${response.status}`);
     let records = responseRecords(await response.json());
 
@@ -80,17 +95,19 @@ async function refreshProviderModels(
         const capabilityResponse = await fetch(buildOpenAiCompatibleCapabilitiesUrl(request.url), {
           headers: request.headers,
           redirect: "error",
-          signal,
+          signal: AbortSignal.any([refresh.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
         });
         if (!capabilityResponse.ok) throw new Error(`OpenAI-compatible capability endpoint returned HTTP ${capabilityResponse.status}`);
         records = enrichOpenAiCompatibleReasoning(records, capabilityRecords(await capabilityResponse.json()));
       } catch (error) {
-        if (refresh.signal.aborted) return [...staticModels];
+        if (refresh.signal.aborted || generation !== snapshot.generation) return [...staticModels];
         log.warn(`${sourceProviderId}: reasoning capability enrichment unavailable`, redactOpenAiCompatibleDiagnostic(error instanceof Error ? error.message : String(error), connection));
       }
     }
 
-    if (refresh.signal.aborted) return [...staticModels];
+    if (refresh.signal.aborted || generation !== snapshot.generation) return [...staticModels];
+    const models = combineModels(sourceProviderId, staticModels, records, request.streamBaseUrl);
+    snapshot.discovered = models.slice(staticModels.length);
     if (appendSummary()) {
       try {
         pi.appendEntry<OpenAiCompatibleDiscoverySummary>(
@@ -102,11 +119,15 @@ async function refreshProviderModels(
       }
     }
     log.info(`${sourceProviderId}: refreshed ${records.length} discovered model(s) on configured provider`);
-    return combineModels(sourceProviderId, staticModels, records, request.streamBaseUrl);
+    return models;
   } catch (error) {
-    if (!refresh.signal.aborted)
-      log.warn(`${sourceProviderId}: discovery refresh failed`, redactOpenAiCompatibleDiagnostic(error instanceof Error ? error.message : String(error), connection));
-    return [...staticModels];
+    if (!refresh.signal.aborted && generation === snapshot.generation)
+      log.warn(`${sourceProviderId}: discovery refresh failed`, scopeResolved
+        ? redactOpenAiCompatibleDiagnostic(error instanceof Error ? error.message : String(error), connection)
+        : { phase: "connection resolution", cause: error instanceof Error ? error.name : typeof error });
+    if (generation !== snapshot.generation) return [...staticModels];
+    if (!scopeResolved) { snapshot.discovered = []; snapshot.fingerprint = undefined; }
+    return [...staticModels, ...snapshot.discovered];
   }
 }
 
@@ -157,6 +178,8 @@ export default function (pi: ExtensionAPI) {
     }
 
     let startupRefresh = ctx?.mode === "tui" && ctx?.hasUI === true;
+    const registrationRefreshes: Promise<void>[] = [];
+    const activeProviders: string[] = [];
     for (const { id, headers, discoverModelCapabilities } of configResult.providers) {
       const source = ctx.modelRegistry.getProvider(id) as Provider | undefined;
       if (!source) {
@@ -165,24 +188,28 @@ export default function (pi: ExtensionAPI) {
       }
       const staticModels = (ctx.modelRegistry.getAll() as Model[])
         .filter((model) => model.provider === id);
+      const snapshot = { discovered: [] as Model[], fingerprint: undefined as string | undefined, generation: 0 };
+      // Registration starts an unawaited offline refresh. Its first callback signals
+      // that it has acquired its generation, so the network pass can safely supersede it.
+      let registrationStarted!: () => void;
+      registrationRefreshes.push(new Promise<void>((resolve) => { registrationStarted = resolve; }));
       pi.registerProvider(id, {
-        refreshModels: (refresh) => refreshProviderModels(
-          pi,
-          ctx,
-          id,
-          source,
-          staticModels,
-          refresh,
-          () => startupRefresh,
-          discoverModelCapabilities,
-          headers,
-        ),
+        refreshModels: (refresh) => {
+          registrationStarted();
+          return refreshProviderModels(
+            pi, ctx, id, source, staticModels, refresh, () => startupRefresh,
+            discoverModelCapabilities, headers, snapshot,
+          );
+        },
       });
       registeredSources.add(id);
+      activeProviders.push(id);
     }
     try {
+      await Promise.all(registrationRefreshes);
+      log.debug("registration offline refreshes started", { providers: activeProviders });
       await ctx.modelRegistry.refresh({
-        providers: configResult.providers.map(({ id }) => id),
+        providers: activeProviders,
         allowNetwork: true,
         force: true,
       });

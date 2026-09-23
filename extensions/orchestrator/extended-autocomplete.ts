@@ -82,14 +82,14 @@ function filter(items: AutocompleteItem[], prefix: string): AutocompleteItem[] |
 }
 
 export function qodoReviewArgumentCompletions(prefix: string): AutocompleteItem[] | null {
-  log.debug("Completing qodo-review arguments", { prefix });
   const tokens = prefix.trim().split(/\s+/).filter(Boolean);
+  log.debug("Completing qodo-review arguments", { tokenCount: tokens.length });
   const selected = new Set(tokens);
-  const lastPart = prefix.endsWith(" ") ? "" : (tokens[tokens.length - 1] || "");
-  if (tokens.at(-2) === "--ticket" || (prefix.endsWith(" ") && tokens.at(-1) === "--ticket")) return null;
+  const lastPart = /\s$/.test(prefix) ? "" : (tokens[tokens.length - 1] || "");
+  if ((lastPart && tokens.at(-2) === "--ticket") || (!lastPart && tokens.at(-1) === "--ticket")) return null;
 
   const flags = [
-    { value: "--autofix", label: "--autofix", description: "Fix all findings and repeat until clean" },
+    { value: "--autofix", label: "--autofix", description: "Fix findings in up to 3 cycles" },
     { value: "--fast", label: "--fast", description: "Run a quick review" },
     { value: "--deep", label: "--deep", description: "Run a thorough review" },
     { value: "--ticket ", label: "--ticket", description: "Attach a ticket URL" },

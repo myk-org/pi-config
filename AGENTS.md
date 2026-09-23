@@ -127,6 +127,14 @@ Writing effective rules:
 - Numbered checklists over flowcharts. Merge overlapping sub-sections.
 - Gate setting/feature-specific prose with `{{IF}}`/`{{IFNOT}}` or frontmatter so off settings do not inject dead tokens.
 
+## When Reviewing Local Changes
+
+Use `/qodo-review [--autofix] [--fast|--deep] [--ticket <url>] [path ...]` before committing
+or opening a PR to review local changes with Qodo and session context. Repeat `--ticket <url>`
+for multiple tickets; paths are optional git pathspecs. Default mode asks which findings to fix;
+`--autofix` fixes findings without approval, stopping after at most 3 cycles or sooner on no
+progress. It does not commit, push, create a PR, or post results.
+
 ## When Adding a Prompt Template
 
 1. Create `prompts/<name>.md` with YAML frontmatter (`description: "..."`)

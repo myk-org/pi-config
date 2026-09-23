@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
   readLastThinkingLevel,
   readThinkingLevelState,
@@ -46,7 +48,7 @@ describe("last-used thinking level", () => {
 
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it("persists validated levels atomically with private permissions", () => {
+  it("persists a validated fallback with private permissions", () => {
     assert.equal(writeLastThinkingLevel("high", statePath), true);
     assert.equal(readLastThinkingLevel(statePath), "high");
     assert.equal(statSync(join(dir, "state")).mode & 0o777, 0o700);
@@ -58,7 +60,7 @@ describe("last-used thinking level", () => {
     });
   });
 
-  it("migrates legacy fallback when saving an exact model preference", () => {
+  it("migrates a legacy fallback when saving an exact model preference", () => {
     writeLastThinkingLevel("high", statePath);
     writeFileSync(statePath, JSON.stringify({ level: "high" }));
     const h = harness(statePath);
@@ -71,7 +73,7 @@ describe("last-used thinking level", () => {
     });
   });
 
-  it("ignores invalid and corrupt state", () => {
+  it("ignores corrupt state when reading the saved fallback", () => {
     writeLastThinkingLevel("high", statePath);
     writeFileSync(statePath, "not json");
     assert.equal(readLastThinkingLevel(statePath), undefined);
@@ -84,7 +86,7 @@ describe("last-used thinking level", () => {
     assert.equal(writeLastThinkingLevel("turbo", statePath), false);
   });
 
-  it("restores on cold startup and /new after model restoration settles", async () => {
+  it("restores saved preferences after cold startup or /new model restoration settles", async () => {
     writeLastThinkingLevel("high", statePath);
     for (const reason of ["startup", "new"]) {
       const h = harness(statePath);
@@ -98,7 +100,7 @@ describe("last-used thinking level", () => {
     }
   });
 
-  it("skips reload, resume, fork, and startup of an existing conversational session", () => {
+  it("skips lifecycle preference restoration for existing sessions", () => {
     for (const reason of ["reload", "resume", "fork"]) {
       assert.equal(shouldRestoreLastThinkingLevel({ reason, ctx: reasoningCtx(), argv: [] }), false);
     }
@@ -109,7 +111,20 @@ describe("last-used thinking level", () => {
     }), false);
   });
 
-  it("restores when provider discovery appended only its summary before the startup handler", async () => {
+  it("restores after the SDK appends its initial model and thinking entries before session_start", async () => {
+    writeLastThinkingLevel("high", statePath);
+    const h = harness(statePath);
+    const sessionManager = SessionManager.inMemory();
+    // sdk.createAgentSession appends these before AgentSession emits session_start.
+    sessionManager.appendModelChange("native", "reasoner");
+    sessionManager.appendThinkingLevelChange("off");
+    const ctx = { ...reasoningCtx(), sessionManager };
+    h.handlers.get("session_start")!({ reason: "startup" }, ctx);
+    assert.equal(await h.api.applyAfterModelRestore({ reason: "startup" }, ctx, Promise.resolve(false)), true);
+    assert.equal(h.level(), "high");
+  });
+
+  it("restores on startup with only a provider discovery summary", async () => {
     writeLastThinkingLevel("high", statePath);
     const h = harness(statePath);
     const ctx = reasoningCtx([{ type: "custom", customType: "provider-discovery-summary" }]);
@@ -118,7 +133,7 @@ describe("last-used thinking level", () => {
     assert.equal(h.level(), "high");
   });
 
-  it("skips non-reasoning models", () => {
+  it("skips preference restoration on non-reasoning models", () => {
     assert.equal(shouldRestoreLastThinkingLevel({
       reason: "new",
       ctx: { model: { reasoning: false } },
@@ -126,7 +141,7 @@ describe("last-used thinking level", () => {
     }), false);
   });
 
-  it("does not overwrite a user change while model restoration is pending", async () => {
+  it("does not overwrite an explicit thinking change while model restoration is pending", async () => {
     writeLastThinkingLevel("high", statePath);
     const h = harness(statePath);
     let release!: () => void;
@@ -139,7 +154,7 @@ describe("last-used thinking level", () => {
     assert.equal(readLastThinkingLevel(statePath), "low");
   });
 
-  it("preserves explicit CLI and CLI/ACPX suffix thinking", () => {
+  it("skips lifecycle preference restoration for explicitly selected thinking", () => {
     assert.equal(shouldRestoreLastThinkingLevel({
       reason: "new",
       ctx: reasoningCtx(),
@@ -155,7 +170,7 @@ describe("last-used thinking level", () => {
     }), false);
   });
 
-  it("persists native TUI and pidash setter events through the direct Pi event", () => {
+  it("persists explicit thinking selections from Pi events", () => {
     const h = harness(statePath);
     h.handlers.get("session_start")!({ reason: "new" }, reasoningCtx());
     h.handlers.get("thinking_level_select")!({ level: "xhigh", previousLevel: "off" }, reasoningCtx());
@@ -164,7 +179,7 @@ describe("last-used thinking level", () => {
     assert.deepEqual({ ...readThinkingLevelState(statePath).models }, { "native/reasoner": "medium" });
   });
 
-  it("ignores a model-switch clamp and restores each exact model preference", () => {
+  it("restores the exact preference after switching back to a saved model", () => {
     const h = harness(statePath);
     h.handlers.get("session_start")!({ reason: "new" }, reasoningCtx());
     h.pi.setThinkingLevel("low");
@@ -188,7 +203,88 @@ describe("last-used thinking level", () => {
     });
   });
 
-  it("clamps restored preferences without overwriting the requested value", () => {
+  it("applies saved preferences on model switches after resume", () => {
+    writeLastThinkingLevel("high", statePath);
+    const h = harness(statePath);
+    const original = reasoningCtx();
+    h.handlers.get("session_start")!({ reason: "resume" }, original);
+    h.handlers.get("model_select")!({ model: original.model, source: "restore" }, original);
+    assert.equal(h.level(), "off");
+    const selected = reasoningCtx([], "other");
+    h.setCtx(selected);
+    h.handlers.get("model_select")!({ model: selected.model, source: "set" }, selected);
+    assert.equal(h.level(), "high");
+  });
+
+  it("restores the default model preference after its set event", async () => {
+    writeLastThinkingLevel("high", statePath);
+    const h = harness(statePath);
+    const initial = reasoningCtx();
+    const target = reasoningCtx([], "default");
+    h.handlers.get("session_start")!({ reason: "startup" }, initial);
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const restore = h.api.restoreModel(target.model, async () => {
+      await waiting;
+      h.setCtx(target);
+      h.handlers.get("model_select")!({ model: target.model, source: "set" }, target);
+      return true;
+    });
+    const pending = h.api.applyAfterModelRestore({ reason: "startup" }, target, restore);
+    release();
+    assert.equal(await pending, true);
+    assert.equal(h.level(), "high");
+  });
+
+  it("does not override a user model switch during default restoration", async () => {
+    writeLastThinkingLevel("high", statePath);
+    const h = harness(statePath);
+    const initial = reasoningCtx();
+    h.handlers.get("session_start")!({ reason: "startup" }, initial);
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const target = reasoningCtx([], "default");
+    const restore = h.api.restoreModel(target.model, async () => { await waiting; return false; });
+    const pending = h.api.applyAfterModelRestore({ reason: "startup" }, initial, restore);
+    const selected = reasoningCtx([], "chosen");
+    h.setCtx(selected);
+    h.handlers.get("model_select")!({ model: selected.model, source: "set" }, selected);
+    release();
+    assert.equal(await pending, false);
+    assert.equal(h.level(), "high"); // selection applied its own preference
+  });
+
+  it("recovers a stale empty legacy lock during a preference write", () => {
+    mkdirSync(join(dir, "state"), { recursive: true });
+    writeFileSync(`${statePath}.lock`, "");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(`${statePath}.lock`, old, old);
+    assert.equal(writeLastThinkingLevel("high", statePath), true);
+    assert.equal(readLastThinkingLevel(statePath), "high");
+  });
+
+  it("retains both preferences from concurrent processes", async () => {
+    const script = `import { registerLastThinkingLevel } from ${JSON.stringify(new URL("../../../extensions/providers/last-thinking-level.ts", import.meta.url).href)};
+      const model = { provider: 'native', id: process.argv[2], reasoning: true };
+      const handlers = new Map();
+      const pi = { on: (name, handler) => handlers.set(name, handler), setThinkingLevel: () => {}, getThinkingLevel: () => 'off' };
+      registerLastThinkingLevel(pi, { statePath: process.argv[1], argv: [] });
+      handlers.get('session_start')({ reason: 'new' }, { model });
+      handlers.get('thinking_level_select')({ level: 'high' }, { model });`;
+    const run = (id: string) => new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script, statePath, id], { stdio: "ignore" });
+      child.on("error", reject);
+      child.on("exit", code => code === 0 ? resolve() : reject(new Error(`writer ${id} exited ${code}`)));
+    });
+    mkdirSync(join(dir, "state"), { recursive: true });
+    writeFileSync(`${statePath}.lock`, "999999999");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(`${statePath}.lock`, old, old);
+    await Promise.all([run("one"), run("two")]);
+    assert.deepEqual({ ...readThinkingLevelState(statePath).models }, { "native/one": "high", "native/two": "high" });
+  });
+
+  it("clamps a restored preference while preserving the saved value", () => {
     writeLastThinkingLevel("max", statePath);
     const h = harness(statePath);
     const ctx = reasoningCtx([], "limited");

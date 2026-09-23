@@ -682,7 +682,7 @@ export default async function (
         ctx.model
           ? { id: ctx.model.id, provider: String(ctx.model.provider) }
           : undefined,
-      setModel: (model) => pi.setModel(model as Model<any>),
+      setModel: (model) => lastThinking.restoreModel(model as Model<any>, (selected) => pi.setModel(selected)),
     }).catch((err) => {
       log.warn(
         "restore-default-model session_start error",
