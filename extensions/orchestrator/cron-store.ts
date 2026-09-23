@@ -204,6 +204,14 @@ function acquireKernelMutationLock(store: string): number {
     log.warn("cron_mutation_kernel_lock", { lock, outcome: "timeout_or_unavailable", reason: result.error?.message || result.stderr });
     throw new Error("Timed out waiting for cron storage lock");
   }
+  // A previous pi version may still hold its independent directory lock.
+  // Never infer death from an invisible PID or an old heartbeat: only the
+  // operator can confirm all legacy writers have stopped and remove it.
+  if (fs.existsSync(lockPath(store, "mutation"))) {
+    fs.closeSync(fd);
+    log.warn("cron_mutation_legacy_lock", { store, outcome: "blocked_until_verified_migration" });
+    throw new Error("legacy cron storage lock present; stop all old cron writers and verify they cannot resume before removing the stale mutation-lock directory");
+  }
   log.debug("cron_mutation_kernel_lock", { lock, outcome: "acquired" });
   return fd;
 }
