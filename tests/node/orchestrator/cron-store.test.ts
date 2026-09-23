@@ -82,11 +82,17 @@ describe("durable cron store", () => {
     assert.equal(fs.existsSync(dir), true);
   });
 
-  it("does not reclaim a live mutation owner in a foreign namespace after a long transaction", () => {
+  it("does not reclaim a fresh legacy mutation owner with an invisible PID", () => {
     const store = tempStore();
-    writeLockOwner(store, "mutation", { pid: 999_999_999, process_start_token: "proc:foreign", instance_id: "foreign", heartbeat_at: new Date(0).toISOString(), pid_namespace: "pid:[foreign]" });
+    writeLockOwner(store, "mutation", { pid: 999_999_999, process_start_token: "proc:foreign", instance_id: "legacy", heartbeat_at: new Date().toISOString() });
     assert.throws(() => mutateDurableCronStore(store, (tasks) => [...tasks, task("must-not-write")]), /Timed out waiting for cron storage lock/);
-    assert.deepEqual(readDurableCronStore(store).tasks, []);
+  });
+
+  it("reclaims a crashed foreign mutation lock after its lease expires", () => {
+    const store = tempStore();
+    writeLockOwner(store, "mutation", { pid: 999_999_999, process_start_token: "proc:foreign", instance_id: "crashed", heartbeat_at: new Date(0).toISOString(), pid_namespace: "pid:[foreign]" });
+    mutateDurableCronStore(store, (tasks) => [...tasks, task("recovered")]);
+    assert.deepEqual(readDurableCronStore(store).tasks, [task("recovered")]);
   });
 
   it("does not reclaim a fresh ownerless leader lock", () => {
@@ -205,7 +211,7 @@ describe("durable cron store", () => {
     assert.equal(acquireLeaderLock(store, "follower"), null);
   });
 
-  it("reclaims an expired foreign lease and fences its previous owner", () => {
+  it("reclaims an expired foreign lease", () => {
     const store = tempStore();
     writeLockOwner(store, "leader", { pid: 999_999_999, process_start_token: "proc:foreign", instance_id: "foreign", heartbeat_at: new Date(Date.now() - 31_000).toISOString(), pid_namespace: "pid:[foreign]" });
     const follower = acquireLeaderLock(store, "follower");
@@ -225,18 +231,31 @@ describe("durable cron store", () => {
     releaseLeaderLock(store, first);
   });
 
-  it("reclaims dead and reused PIDs, and fences a live owner after lease expiry", () => {
+  it("reclaims an expired legacy mutation lock", () => {
+    const store = tempStore();
+    writeLockOwner(store, "mutation", { pid: 999_999_999, process_start_token: "proc:foreign", instance_id: "legacy", heartbeat_at: new Date(0).toISOString() });
+    mutateDurableCronStore(store, (tasks) => [...tasks, task("recovered")]);
+    assert.deepEqual(readDurableCronStore(store).tasks, [task("recovered")]);
+  });
+
+  it("reclaims a dead local leader", () => {
     const store = tempStore();
     writeLockOwner(store, "leader", { pid: 999_999_999, process_start_token: "dead", instance_id: "dead", heartbeat_at: new Date().toISOString(), pid_namespace: fs.readlinkSync("/proc/self/ns/pid") });
     const reclaimedDead = acquireLeaderLock(store, "reclaimer");
     assert.ok(reclaimedDead);
     releaseLeaderLock(store, reclaimedDead);
+  });
 
+  it("reclaims a reused local PID", () => {
+    const store = tempStore();
     writeLockOwner(store, "leader", { pid: process.pid, process_start_token: "wrong-token", instance_id: "reused", heartbeat_at: new Date().toISOString(), pid_namespace: fs.readlinkSync("/proc/self/ns/pid") });
     const reclaimedReusedPid = acquireLeaderLock(store, "reclaimer");
     assert.ok(reclaimedReusedPid);
     releaseLeaderLock(store, reclaimedReusedPid);
+  });
 
+  it("fences a live leader after lease expiry", () => {
+    const store = tempStore();
     const live = acquireLeaderLock(store, "live");
     assert.ok(live);
     live!.heartbeat_at = new Date(Date.now() - 31_000).toISOString();

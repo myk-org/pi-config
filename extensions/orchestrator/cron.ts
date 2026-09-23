@@ -108,7 +108,13 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
       }
       task.lastRun = Date.now(); persist(task); updateStatus(); log.info("cron_execute", qualifyCronId(task));
       const cmd = task.task.trim();
-      if (cmd.startsWith("/")) { pi.sendUserMessage(cmd, { deliverAs: "followUp" }); return; }
+      if (cmd.startsWith("/")) {
+        if (durable(task.scope) && !refreshLeaderLock(projectStore(task.cwd), owned.get(projectStore(task.cwd))!)) {
+          log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost_before_dispatch" });
+          election(); return;
+        }
+        pi.sendUserMessage(cmd, { deliverAs: "followUp" }); return;
+      }
       const dispatch = decideAsyncLlmDispatch({ parentProvider: ctx?.model?.provider, cwd: task.cwd, mustAsync: true });
       if (dispatch.action === "skip") { log.error("cron_error", qualifyCronId(task), dispatch.note); return; }
       const { discoverAgents } = await import("./agents.js");

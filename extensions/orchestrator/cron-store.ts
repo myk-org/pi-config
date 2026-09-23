@@ -27,6 +27,7 @@ type StartTokenDeps = { readFileSync: (path: string, encoding: BufferEncoding) =
 const startTokenDeps: StartTokenDeps = { readFileSync: fs.readFileSync, execFileSync, platform: process.platform };
 const log = createLogger("cron_store");
 const STALE_LOCK_MS = 30_000;
+const STALE_MUTATION_MS = 300_000;
 const leaderOwners = new Map<string, CronLockOwner>();
 const sleepCell = new Int32Array(new SharedArrayBuffer(4));
 function sleep(ms: number) { Atomics.wait(sleepCell, 0, 0, ms); }
@@ -55,19 +56,26 @@ function ownerIsProvenDead(owner: CronLockOwner): boolean {
   // A PID from another namespace (or a legacy record without namespace) is
   // not evidence of death, even when kill(pid, 0) reports ESRCH.
   const namespace = processPidNamespace();
-  if (namespace && owner.pid_namespace !== namespace) return false;
+  if (namespace ? !owner.pid_namespace || owner.pid_namespace !== namespace : owner.pid_namespace?.startsWith("pid:[")) {
+    log.debug("cron_lock_owner_foreign", { pid: owner.pid, instance_id: owner.instance_id, namespace: owner.pid_namespace });
+    return false;
+  }
   try {
     process.kill(owner.pid, 0);
   } catch (error: any) {
     // EPERM means the process exists but is not signalable; all other failures
     // are treated conservatively except the OS's definitive "no such process".
-    return error?.code === "ESRCH";
+    const dead = error?.code === "ESRCH";
+    log.debug("cron_lock_owner_pid_check", { pid: owner.pid, instance_id: owner.instance_id, dead, reason: error?.code });
+    return dead;
   }
   if (!owner.process_start_token || owner.process_start_token === "unknown") return false;
   const token = resolveProcessStartToken(owner.pid);
   // An unavailable identity source fails closed. A different issued token
   // proves PID reuse, so this record belongs to a dead process.
-  return token !== null && token !== owner.process_start_token;
+  const dead = token !== null && token !== owner.process_start_token;
+  log.debug("cron_lock_owner_token_check", { pid: owner.pid, instance_id: owner.instance_id, dead });
+  return dead;
 }
 function processPidNamespace(): string | null {
   try { return fs.readlinkSync("/proc/self/ns/pid"); }
@@ -83,7 +91,8 @@ function canReclaim(owner: CronLockOwner, kind: "leader" | "mutation"): boolean 
   const dead = ownerIsProvenDead(owner);
   // Mutation records have no heartbeat after acquisition; reclaim only if
   // the local OS can prove the owner dead, never while a write could be live.
-  const expired = kind === "leader" && leaseIsExpired(owner);
+  const ageMs = Date.now() - Date.parse(owner.heartbeat_at);
+  const expired = kind === "leader" ? leaseIsExpired(owner) : Number.isFinite(ageMs) && ageMs >= STALE_MUTATION_MS && !(owner.pid_namespace && owner.pid_namespace === processPidNamespace() && !dead);
   log.debug("cron_lock_reclaim_decision", { instance_id: owner.instance_id, dead, expired });
   return dead || expired;
 }
@@ -96,7 +105,9 @@ function readOwner(dir: string): CronLockOwner | null {
   } catch (error: any) { log.debug("cron_lock_owner_unreadable", { dir, reason: error?.code || "parse_error" }); return null; }
 }
 function sameOwner(a: CronLockOwner | null, b: CronLockOwner) {
-  return !!a && a.instance_id === b.instance_id && a.pid === b.pid && a.process_start_token === b.process_start_token && a.pid_namespace === b.pid_namespace;
+  const same = !!a && a.instance_id === b.instance_id && a.pid === b.pid && a.process_start_token === b.process_start_token && a.pid_namespace === b.pid_namespace;
+  log.debug("cron_lock_owner_compare", { instance_id: b.instance_id, current_instance_id: a?.instance_id, same });
+  return same;
 }
 function serializedOwner(owner: CronLockOwner) {
   const { fd: _fd, ...record } = owner;
@@ -210,6 +221,10 @@ export function mutateDurableCronStore(store: string, change: (tasks: DurableCro
     // log each skipped record before calling here.
     const current = readDurableCronStore(store).tasks.filter((task) => { try { validateDurableCronTask(task); return true; } catch { return false; } });
     const tasks = change(current); validate(tasks);
+    if (!sameOwner(readOwner(lock), owner) || Date.now() - Date.parse(owner.heartbeat_at) >= STALE_MUTATION_MS) {
+      log.warn("cron_mutation_lease_lost", { lock, instance_id: owner.instance_id });
+      throw new Error("Cron storage lock lost during mutation");
+    }
     const envelope: DurableCronEnvelope = { version: 1, tasks }; atomicWrite(store, JSON.stringify(envelope)); return envelope;
   }
   finally { releaseMutationLock(lock, owner); }
