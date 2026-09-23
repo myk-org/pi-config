@@ -73,16 +73,23 @@ describe("last-used thinking level", () => {
     });
   });
 
-  it("ignores corrupt state when reading the saved fallback", () => {
-    writeLastThinkingLevel("high", statePath);
+  it("returns no fallback for malformed JSON state", () => {
+    mkdirSync(join(dir, "state"));
     writeFileSync(statePath, "not json");
     assert.equal(readLastThinkingLevel(statePath), undefined);
+  });
+
+  it("filters invalid model entries from version-two state", () => {
+    mkdirSync(join(dir, "state"));
     writeFileSync(statePath, JSON.stringify({ version: 2, fallback: "low", models: { safe: "high", bad: "turbo", "__proto__": "max" } }));
     assert.deepEqual(JSON.parse(JSON.stringify(readThinkingLevelState(statePath))), {
       version: 2,
       fallback: "low",
       models: { safe: "high" },
     });
+  });
+
+  it("rejects unsupported thinking levels during writes", () => {
     assert.equal(writeLastThinkingLevel("turbo", statePath), false);
   });
 
@@ -308,6 +315,15 @@ describe("last-used thinking level", () => {
     release();
     assert.equal(await pending, false);
     assert.equal(h.level(), "high"); // selection applied its own preference
+  });
+
+  it("reclaims an aged legacy lock with a live reused PID", () => {
+    mkdirSync(join(dir, "state"), { recursive: true });
+    writeFileSync(`${statePath}.lock`, String(process.pid));
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(`${statePath}.lock`, old, old);
+    assert.equal(writeLastThinkingLevel("high", statePath), true);
+    assert.equal(readLastThinkingLevel(statePath), "high");
   });
 
   it("recovers a stale empty legacy lock during a preference write", () => {

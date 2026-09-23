@@ -165,11 +165,12 @@ function updateThinkingLevelState(statePath: string, update: (state: ThinkingLev
         throw err;
       }
       let alive = false;
-      if (Number.isInteger(pid) && pid > 0) {
+      if (age <= 30_000 && Number.isInteger(pid) && pid > 0) {
         try { process.kill(pid, 0); alive = true; }
         catch (err) { if ((err as NodeJS.ErrnoException).code !== "ESRCH") alive = true; }
       }
-      if (!alive && age > 1000) {
+      // The five-second acquisition deadline bounds legacy writers; allow 30 seconds for scheduling delays.
+      if (age > 30_000 || (!alive && age > 1000)) {
         unlinkSync(lockPath); // Only the transaction holder may reclaim a legacy lock.
         break;
       }
