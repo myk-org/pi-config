@@ -28,6 +28,7 @@ describe("redactProviderStatusAuth", () => {
     provider: "google",
     registered: true,
     modelCount: 3,
+    supportsSessionApiKey: true,
     authStatus: {
       configured: true,
       source: "environment" as const,
@@ -46,6 +47,7 @@ describe("redactProviderStatusAuth", () => {
     assert.deepEqual(redacted.authCheck, { type: "api_key" });
     assert.equal(redacted.provider, "google");
     assert.equal(redacted.modelCount, 3);
+    assert.equal(redacted.supportsSessionApiKey, true);
   });
 
   it("preserves null auth fields when redacting", () => {
@@ -53,6 +55,7 @@ describe("redactProviderStatusAuth", () => {
       provider: "x",
       registered: false,
       modelCount: 0,
+      supportsSessionApiKey: false,
       authStatus: null,
       authCheck: null,
     };

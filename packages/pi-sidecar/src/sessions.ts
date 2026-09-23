@@ -7,6 +7,7 @@ import {
   type AgentSession,
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
+  type LoadExtensionsResult,
   DefaultResourceLoader,
   ModelRegistry,
   ModelRuntime,
@@ -18,6 +19,7 @@ import {
   createAgentSessionServices,
 } from "@earendil-works/pi-coding-agent";
 import { getModel } from "@earendil-works/pi-ai/compat";
+import type { Provider } from "@earendil-works/pi-ai";
 import { createJiti } from "jiti";
 
 import { createLogger, logger } from "./logger.js";
@@ -406,7 +408,20 @@ const INTERNAL_AGENT_DIR = "/tmp/pi-sidecar-agent";
  * settings, extensions, and diagnostics) reads independently of the
  * lazy-init/idempotency plumbing around it.
  */
-function createInternalRuntimeFactory(extensionPaths: string[]): CreateAgentSessionRuntimeFactory {
+export function snapshotLegacyAmbientProviders(
+  registrations: LoadExtensionsResult["runtime"]["pendingNativeProviderRegistrations"],
+  legacyAmbientProviders: WeakSet<Provider>,
+): void {
+  for (const { provider, extensionPath } of registrations) {
+    if ([PROVIDER_EXTENSION, CLI_PROVIDER_EXTENSION, ACPX_EXTENSION].includes(extensionPath) &&
+        provider.auth.apiKey && Reflect.get(provider.auth.apiKey, Symbol.for("pi-config.ambientLoginAuth")) === undefined) {
+      legacyAmbientProviders.add(provider);
+      logger.debug(`[sidecar] LEGACY_AMBIENT_REGISTRATION: provider=${provider.id}`);
+    }
+  }
+}
+
+function createInternalRuntimeFactory(extensionPaths: string[], legacyAmbientProviders: WeakSet<Provider>): CreateAgentSessionRuntimeFactory {
   return async ({ cwd, agentDir, sessionManager: runtimeSessionManager, sessionStartEvent }) => {
     const settingsManager = createSessionSettingsManager();
     const services = await createAgentSessionServices({
@@ -415,6 +430,12 @@ function createInternalRuntimeFactory(extensionPaths: string[]): CreateAgentSess
       settingsManager,
       resourceLoaderOptions: {
         additionalExtensionPaths: extensionPaths,
+        // Called after extension load but before queued native providers are registered.
+        // The queue records the actual registering extension, unlike names or env vars.
+        extensionsOverride: (result: LoadExtensionsResult) => {
+          snapshotLegacyAmbientProviders(result.runtime.pendingNativeProviderRegistrations, legacyAmbientProviders);
+          return result;
+        },
         systemPromptOverride: () => INTERNAL_REGISTRAR_SYSTEM_PROMPT,
       },
     });
@@ -477,6 +498,8 @@ export interface ProviderStatus {
   provider: string;
   registered: boolean;
   modelCount: number;
+  /** Whether POST /sessions accepts api_key for this provider, regardless of server credentials. */
+  supportsSessionApiKey: boolean;
   authStatus: ReturnType<ModelRuntime["getProviderAuthStatus"]> | null;
   /** Always null or AuthCheck — never undefined (checkAuth's undefined is normalized via ?? null). */
   authCheck: NonNullable<Awaited<ReturnType<ModelRuntime["checkAuth"]>>> | null;
@@ -493,6 +516,8 @@ export class SessionStore {
   /** Shared ModelRuntime (0.81+) — sourced from internalRuntime.services once created. */
   private modelRuntime: ModelRuntime | undefined;
   private modelRegistry: ModelRegistry | undefined;
+  /** Legacy providers identified by the registrar's registration queue, not mutable configuration. */
+  private legacyAmbientProviders = new WeakSet<Provider>();
   /**
    * Internal AgentSessionRuntime that owns the shared ModelRuntime and keeps
    * unified Providers (ACPX + CLI), Vertex, and Subagent extensions loaded for the sidecar process's
@@ -636,7 +661,7 @@ export class SessionStore {
         logger.log(`[sidecar] INTERNAL_EXTENSIONS_LOADING: count=${extensionPaths.length}`);
 
         const sessionManager = SessionManager.inMemory();
-        const createRuntime = createInternalRuntimeFactory(extensionPaths);
+        const createRuntime = createInternalRuntimeFactory(extensionPaths, this.legacyAmbientProviders);
 
         const runtime = await createAgentSessionRuntime(createRuntime, {
           cwd: "/tmp",
@@ -834,6 +859,19 @@ export class SessionStore {
     }
   }
 
+  /** Shared by status and create; model snapshots do not indicate auth capability. */
+  private supportsSessionApiKey(provider: string): boolean {
+    const auth = this.modelRuntime!.getProvider(provider)?.auth?.apiKey;
+    const native = this.modelRuntime!.getRegisteredNativeProvider(provider);
+    const ambientMarker = Symbol.for("pi-config.ambientLoginAuth");
+    const supported = !HEADLESS_EXCLUDED_PROVIDERS.has(provider) && !!auth &&
+      Reflect.get(auth, ambientMarker) !== true &&
+      !(native?.auth.apiKey && Reflect.get(native.auth.apiKey, ambientMarker) === true) &&
+      !(native && this.legacyAmbientProviders.has(native));
+    logger.debug(`[sidecar] SESSION_KEY_CAPABILITY: provider=${provider}, supported=${supported}`);
+    return supported;
+  }
+
   /**
    * Auth/registration/model-count snapshot for one provider, for diagnostics
    * (GET /models/:provider/status). Model counts for acpx-* / cli-* come from
@@ -846,6 +884,7 @@ export class SessionStore {
 
     const registeredProvider = this.modelRuntime!.getProvider(provider);
     const registered = !!registeredProvider;
+    const supportsSessionApiKey = this.supportsSessionApiKey(provider);
 
     let modelCount: number;
     if (HEADLESS_EXCLUDED_PROVIDERS.has(provider)) {
@@ -863,14 +902,14 @@ export class SessionStore {
 
     if (!registered) {
       logger.debug(`[sidecar] PROVIDER_STATUS: provider=${provider}, registered=false, modelCount=${modelCount}`);
-      return { provider, registered: false, modelCount, authStatus: null, authCheck: null };
+      return { provider, registered: false, modelCount, supportsSessionApiKey, authStatus: null, authCheck: null };
     }
 
     // Excluded providers are unusable headlessly (create() rejects them). Skip
     // checkAuth/getProviderAuthStatus to avoid OAuth side effects and noise.
     if (HEADLESS_EXCLUDED_PROVIDERS.has(provider)) {
       logger.debug(`[sidecar] PROVIDER_STATUS: provider=${provider}, registered=true, modelCount=0, auth=skipped_headless_excluded`);
-      return { provider, registered: true, modelCount: 0, authStatus: null, authCheck: null };
+      return { provider, registered: true, modelCount: 0, supportsSessionApiKey, authStatus: null, authCheck: null };
     }
 
     let authCheck: ProviderStatus["authCheck"] = null;
@@ -889,7 +928,7 @@ export class SessionStore {
 
     logger.debug(`[sidecar] PROVIDER_STATUS: provider=${provider}, registered=${registered}, modelCount=${modelCount}`);
 
-    return { provider, registered, modelCount, authStatus, authCheck };
+    return { provider, registered, modelCount, supportsSessionApiKey, authStatus, authCheck };
   }
 
   async create(options: CreateSessionOptions): Promise<string> {
@@ -961,16 +1000,8 @@ export class SessionStore {
       }
     }
 
-    if (apiKey !== undefined) {
-      const provider = this.modelRuntime!.getProvider(options.provider);
-      if (!provider?.auth.apiKey) {
-        throw httpError("Selected provider does not support API key authentication", 400);
-      }
-      // These registered providers use apiKey only as a marker for local CLI login.
-      if ((isCliProvider && this.cliModels.some((m) => m.provider === options.provider)) ||
-          (isAcpxProvider && this.acpxModels.some((m) => m.provider === options.provider))) {
-        throw httpError("CLI/ACPX providers use ambient login; api_key is not supported", 400);
-      }
+    if (apiKey !== undefined && !this.supportsSessionApiKey(options.provider)) {
+      throw httpError("Selected provider does not support session API key authentication", 400);
     }
     // The original key is retained only by this session's runtime facade and redactor.
     log.debug(`[sidecar] Model resolved: session=${id}, acpxSource=${isAcpxProvider}, cliSource=${isCliProvider}`);

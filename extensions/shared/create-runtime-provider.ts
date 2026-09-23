@@ -80,6 +80,8 @@ export function buildAmbientLoginAuth(
   const { displayName, isConfigured, sourceLabel } = opts;
 
   return {
+    // Shared with the standalone sidecar; no SDK auth capability flag exists for ambient login.
+    [Symbol.for("pi-config.ambientLoginAuth")]: true,
     name: displayName,
     async login(interaction: AuthInteraction) {
       const choice = await interaction.prompt({

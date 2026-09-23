@@ -1,14 +1,15 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { startSidecar } from "../../src/index.js";
 import { createServer } from "node:http";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { SessionStore, redactApiKey } from "../../src/sessions.js";
+import { SessionStore, redactApiKey, resolveExt, snapshotLegacyAmbientProviders } from "../../src/sessions.js";
 import { logger } from "../../src/logger.js";
+import { buildAmbientLoginAuth } from "../../../../extensions/shared/create-runtime-provider.js";
 
 const secret = 'session-"\\-key';
 const escaped = JSON.stringify(secret).slice(1, -1);
@@ -49,6 +50,14 @@ describe("session API key", () => {
     if (cwd) rmSync(cwd, { recursive: true, force: true });
   });
 
+  it("reports session key capability independently of ambient authentication", async () => {
+    for (const provider of ["openai", "google", "test-session-key", "test-key-only"]) {
+      const status = await store.getProviderStatus(provider);
+      assert.equal(status.supportsSessionApiKey, true, provider);
+    }
+    assert.equal((await store.getProviderStatus("totally-unknown-provider-xyz")).supportsSessionApiKey, false);
+  });
+
   const create = (apiKey?: string) => store.create({
     provider: "test-session-key", model: "local", systemPrompt: "Reply briefly", cwd, agentDir: cwd, tools: [], apiKey,
   });
@@ -64,11 +73,127 @@ describe("session API key", () => {
   it("rejects ambient CLI/ACPX login markers even when they advertise apiKey", async () => {
     for (const provider of ["cli-test", "acpx-test"]) {
       const marker = fauxProvider({ provider, models: [{ id: "local" }] });
-      marker.provider.auth = { apiKey: { name: "Local login", resolve: async () => ({ auth: { apiKey: "ambient" }, source: "local" }) } } as never; // pragma: allowlist secret — fake provider marker
+      marker.provider.auth = { apiKey: buildAmbientLoginAuth({
+        displayName: "Local login", isConfigured: () => true, sourceLabel: "local",
+      }) };
       runtime.registerNativeProvider(marker.provider);
       (store as any)[provider.startsWith("cli-") ? "cliModels" : "acpxModels"].push({ provider, id: "local", name: "local" });
+      assert.equal((await store.getProviderStatus(provider)).supportsSessionApiKey, false);
       await assert.rejects(() => store.create({ provider, model: "local", systemPrompt: "hi", cwd, agentDir: cwd, tools: [], apiKey: secret }),
-        (error: any) => error.statusCode === 400 && /ambient login/.test(error.message) && !error.message.includes(secret));
+        (error: any) => error.statusCode === 400 && /session API key/.test(error.message) && !error.message.includes(secret));
+    }
+  });
+
+  it("rejects session keys when models.json overlays marked native CLI/ACPX auth", async () => {
+    const ids = ["cli-overlaid", "acpx-overlaid"];
+    const modelsPath = join(cwd, "models.json");
+    writeFileSync(modelsPath, JSON.stringify({ providers: Object.fromEntries(ids.map((id) => [id, { modelOverrides: { local: { name: "Overlay" } } }])) }));
+    const overlaidRuntime = await ModelRuntime.create({ modelsPath, refreshOnCreate: false });
+    const overlaidStore = new SessionStore();
+    Object.assign(overlaidStore, {
+      internalRuntime: { services: { modelRuntime: overlaidRuntime }, dispose: async () => {} },
+      modelRuntime: overlaidRuntime,
+      modelRegistry: new ModelRegistry(overlaidRuntime),
+      _ready: true,
+    });
+    try {
+      for (const provider of ids) {
+        const native = fauxProvider({ provider, models: [{ id: "local" }] });
+        native.provider.auth = { apiKey: buildAmbientLoginAuth({
+          displayName: provider, isConfigured: () => false, sourceLabel: "local runtime",
+        }) };
+        overlaidRuntime.registerNativeProvider(native.provider);
+        assert.notEqual(overlaidRuntime.getProvider(provider)?.auth.apiKey, native.provider.auth.apiKey);
+        assert.equal(Reflect.get(overlaidRuntime.getProvider(provider)!.auth.apiKey!, Symbol.for("pi-config.ambientLoginAuth")), undefined);
+        (overlaidStore as any)[provider.startsWith("cli-") ? "cliModels" : "acpxModels"].push({ provider, id: "local", name: "local" });
+        assert.equal((await overlaidStore.getProviderStatus(provider)).supportsSessionApiKey, false);
+        await assert.rejects(() => overlaidStore.create({ provider, model: "local", systemPrompt: "hi", cwd, agentDir: cwd, tools: [], apiKey: secret }),
+          (error: any) => error.statusCode === 400 && /session API key/.test(error.message) && !error.message.includes(secret));
+      }
+    } finally {
+      await overlaidStore.disposeAll();
+      rmSync(modelsPath, { force: true });
+    }
+  });
+
+  it("reports registered ambient CLI/ACPX providers with empty snapshots as unsupported", async () => {
+    for (const provider of ["cli-empty-marker", "acpx-empty-marker"]) {
+      const marker = fauxProvider({ provider, models: [] });
+      marker.provider.auth = { apiKey: buildAmbientLoginAuth({
+        displayName: provider, isConfigured: () => false, sourceLabel: "local runtime",
+      }) };
+      runtime.registerNativeProvider(marker.provider);
+      const status = await store.getProviderStatus(provider);
+      assert.equal(status.registered, true);
+      assert.equal(status.modelCount, 0);
+      assert.equal(status.supportsSessionApiKey, false);
+      await assert.rejects(() => store.create({ provider, model: "missing", systemPrompt: "hi", cwd, apiKey: secret }),
+        (error: any) => error.statusCode === 400 && /not found for provider/.test(error.message) && !error.message.includes(secret));
+    }
+  });
+
+  it("keeps legacy ambient classification after agent env changes", async () => {
+    const oldCli = process.env.CLI_AGENTS;
+    const oldAcpx = process.env.ACPX_AGENTS;
+    try {
+      for (const [provider, extensionPath] of [
+        ["cli-legacy", resolveExt("SIDECAR_CLI_PROVIDER_EXTENSION_PATH", "pi-orchestrator-config", "extensions/cli-provider/index.ts", "extensions/cli-provider/index.ts")],
+        ["acpx-legacy", resolveExt("SIDECAR_ACPX_EXTENSION_PATH", "pi-orchestrator-config", "extensions/acpx-provider/index.ts", "extensions/acpx-provider/index.ts")],
+      ]) {
+        const legacy = fauxProvider({ provider, models: [] });
+        legacy.provider.auth = { apiKey: {
+          name: provider, login: async () => ({ type: "api_key", key: "configured" }), // pragma: allowlist secret — synthetic ambient marker
+          resolve: async () => ({ auth: { apiKey: "ambient" }, source: "local" }), // pragma: allowlist secret — synthetic ambient marker
+        } };
+        process.env.CLI_AGENTS = "legacy";
+        process.env.ACPX_AGENTS = "legacy";
+        snapshotLegacyAmbientProviders([{ provider: legacy.provider, extensionPath }], (store as any).legacyAmbientProviders);
+        runtime.registerNativeProvider(legacy.provider);
+        process.env.CLI_AGENTS = "other";
+        process.env.ACPX_AGENTS = "other";
+        assert.equal((await store.getProviderStatus(provider)).modelCount, 0);
+        assert.equal((await store.getProviderStatus(provider)).supportsSessionApiKey, false);
+        legacy.provider.getModels = () => [{ ...runtime.getModels("openai")[0], provider, id: "local" }];
+        (store as any)[provider.startsWith("cli-") ? "cliModels" : "acpxModels"].push({ provider, id: "local", name: "local" });
+        await assert.rejects(() => store.create({ provider, model: "local", systemPrompt: "hi", cwd, apiKey: secret }),
+          (error: any) => error.statusCode === 400 && /session API key/.test(error.message));
+      }
+    } finally {
+      if (oldCli === undefined) delete process.env.CLI_AGENTS;
+      else process.env.CLI_AGENTS = oldCli;
+      if (oldAcpx === undefined) delete process.env.ACPX_AGENTS;
+      else process.env.ACPX_AGENTS = oldAcpx;
+    }
+  });
+
+  it("accepts an unmarked generic provider colliding with a legacy agent ID and name", async () => {
+    const provider = "cli-legacy";
+    const generic = fauxProvider({ provider, models: [{ id: "local" }] });
+    generic.provider.name = "CLI legacy";
+    const previous = fauxProvider({ provider, models: [] });
+    snapshotLegacyAmbientProviders([{ provider: previous.provider, extensionPath: resolveExt(
+      "SIDECAR_PROVIDER_EXTENSION_PATH", "pi-orchestrator-config", "extensions/providers/index.ts", "extensions/providers/index.ts",
+    ) }], (store as any).legacyAmbientProviders);
+    runtime.registerNativeProvider(previous.provider);
+    snapshotLegacyAmbientProviders([{ provider: generic.provider, extensionPath: "/other-extension/index.ts" }], (store as any).legacyAmbientProviders);
+    runtime.registerNativeProvider(generic.provider);
+    (store as any).cliModels.push({ provider, id: "local", name: "local" });
+    assert.equal((await store.getProviderStatus(provider)).supportsSessionApiKey, true);
+    const id = await store.create({ provider, model: "local", systemPrompt: "hi", cwd, agentDir: cwd, tools: [], apiKey: secret });
+    store.delete(id);
+  });
+
+  it("accepts session keys for generic providers with CLI-like names", async () => {
+    for (const provider of ["cli-generic-key", "acpx-generic-key"]) {
+      const generic = fauxProvider({ provider, models: [{ id: "local" }] });
+      generic.provider.name = provider.startsWith("cli-") ? "CLI generic-key" : "ACPX generic-key";
+      // Explicit capability from an unrelated provider remains supported.
+      Reflect.set(generic.provider.auth.apiKey!, Symbol.for("pi-config.ambientLoginAuth"), false);
+      runtime.registerNativeProvider(generic.provider);
+      assert.equal((await store.getProviderStatus(provider)).supportsSessionApiKey, true);
+      (store as any)[provider.startsWith("cli-") ? "cliModels" : "acpxModels"].push({ provider, id: "local", name: "local" });
+      const id = await store.create({ provider, model: "local", systemPrompt: "hi", cwd, agentDir: cwd, tools: [], apiKey: secret });
+      store.delete(id);
     }
   });
 
@@ -76,8 +201,16 @@ describe("session API key", () => {
     const oauth = fauxProvider({ provider: "test-oauth-only", models: [{ id: "local" }] });
     oauth.provider.auth = { oauth: { name: "test", login: async () => { throw new Error("unused"); } } } as never;
     runtime.registerNativeProvider(oauth.provider);
+    assert.equal((await store.getProviderStatus("test-oauth-only")).supportsSessionApiKey, false);
     await assert.rejects(() => store.create({ provider: "test-oauth-only", model: "local", systemPrompt: "hi", cwd, agentDir: cwd, tools: [], apiKey: secret }),
-      (error: any) => error.statusCode === 400 && /does not support API key/.test(error.message));
+      (error: any) => error.statusCode === 400 && /does not support session API key/.test(error.message));
+  });
+
+  it("reports headless-excluded providers as unable to accept a session key", async () => {
+    const status = await store.getProviderStatus("github-copilot");
+    assert.equal(status.supportsSessionApiKey, false);
+    await assert.rejects(() => store.create({ provider: "github-copilot", model: "unused", systemPrompt: "hi", cwd, apiKey: secret }),
+      (error: any) => error.statusCode === 400 && /headless/.test(error.message));
   });
 
   it("redacts the key in session creation errors", async () => {
@@ -193,6 +326,7 @@ describe("session API key", () => {
   it("accepts supplied auth for a builtin provider without ambient credentials", async () => {
     const model = runtime.getModels("openai")[0];
     assert.ok(model);
+    assert.equal((await store.getProviderStatus("openai")).supportsSessionApiKey, true);
     const id = await store.create({ provider: "openai", model: model.id, systemPrompt: "hi", cwd, agentDir: cwd, tools: [], apiKey: "auth-only-key" }); // pragma: allowlist secret — test sentinel
     store.delete(id);
   });
@@ -272,6 +406,39 @@ describe("session API key", () => {
 });
 
 describe("session key HTTP validation", () => {
+  it("returns a public capability without revealing ambient credentials", async () => {
+    const blocker = createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+    const address = blocker.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    const offline = process.env.PI_OFFLINE;
+    const ambient = process.env.OPENAI_API_KEY;
+    process.env.PI_OFFLINE = "1";
+    const handle = startSidecar({ port, host: "127.0.0.1" });
+    try {
+      await handle.ready;
+      for (const configured of [false, true]) {
+        if (configured) process.env.OPENAI_API_KEY = secret;
+        else delete process.env.OPENAI_API_KEY;
+        const response = await fetch(`http://127.0.0.1:${port}/models/openai/status`);
+        const body = await response.text();
+        assert.equal(response.status, 200, body);
+        assert.equal(JSON.parse(body).supportsSessionApiKey, true);
+        assert.ok(!body.includes(secret) && !body.includes(escaped));
+      }
+      const unknown = await fetch(`http://127.0.0.1:${port}/models/totally-unknown-provider-xyz/status`);
+      assert.equal(unknown.status, 404);
+      assert.equal((await unknown.json()).supportsSessionApiKey, false);
+    } finally {
+      await handle.close();
+      if (offline === undefined) delete process.env.PI_OFFLINE;
+      else process.env.PI_OFFLINE = offline;
+      if (ambient === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = ambient;
+    }
+  });
+
   it("returns 400 for unknown models even when redaction removes the status clue", async () => {
     const blocker = createServer();
     await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", resolve));

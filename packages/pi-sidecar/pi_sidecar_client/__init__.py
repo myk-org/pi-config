@@ -299,6 +299,10 @@ class SidecarClient:
             - ``modelCount`` (int): number of models known for this provider
               (from the acpx/cli snapshot cache for ``acpx-*``/``cli-*``
               providers, or the live catalog for builtins).
+            - ``supportsSessionApiKey`` (bool): whether this provider accepts
+              ``api_key`` on ``POST /sessions``. Independent of server auth;
+              false for unknown, headless-excluded, and ambient CLI/ACPX providers.
+              Included even on non-loopback binds and in 404 response bodies.
             - ``authStatus`` (dict | None): result of
               ``ModelRuntime.getProviderAuthStatus()``, or ``None`` if that
               call raised. On non-loopback sidecar binds the response is
