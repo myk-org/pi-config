@@ -71,18 +71,14 @@ describe("session API key", () => {
     }
   });
 
-  it("preserves provider status when auth exceptions contain malformed stacks", async () => {
+  const expectSafeAuthFailure = async (error: Error) => {
     const checkAuth = runtime.checkAuth;
     const getProviderAuthStatus = runtime.getProviderAuthStatus;
     const warn = logger.warn;
     const warnings: string[] = [];
     logger.warn = (...args) => { warnings.push(JSON.stringify(args)); };
-    const badStack = new Error("non-string stack");
-    Object.defineProperty(badStack, "stack", { value: 42 });
-    const throwingStack = new Error("throwing stack");
-    Object.defineProperty(throwingStack, "stack", { get: () => { throw new Error(secret); } });
-    runtime.checkAuth = async () => { throw badStack; };
-    runtime.getProviderAuthStatus = () => { throw throwingStack; };
+    runtime.checkAuth = async () => { throw error; };
+    runtime.getProviderAuthStatus = () => { throw error; };
     try {
       const status = await store.getProviderStatus("test-session-key");
       assert.equal(status.authCheck, null);
@@ -94,6 +90,18 @@ describe("session API key", () => {
       runtime.getProviderAuthStatus = getProviderAuthStatus;
       logger.warn = warn;
     }
+  };
+
+  it("preserves provider status for non-string auth error stacks", async () => {
+    const error = new Error("non-string stack");
+    Object.defineProperty(error, "stack", { value: 42 });
+    await expectSafeAuthFailure(error);
+  });
+
+  it("preserves provider status for throwing auth error stack getters", async () => {
+    const error = new Error("throwing stack");
+    Object.defineProperty(error, "stack", { get: () => { throw new Error(secret); } });
+    await expectSafeAuthFailure(error);
   });
 
   it("reports session key capability independently of ambient authentication", async () => {
