@@ -311,8 +311,31 @@ class TestSidecarClient:
             await client.create_session(provider="google", model="flash", system_prompt="hi", api_key=key)
         client._client.post.assert_not_awaited()
 
+    @pytest.mark.parametrize("key", ["", "   ", "\u00a0\ufeff\u2003"])
+    async def test_create_session_rejects_blank_key_before_http(self, client: SidecarClient, key: str) -> None:
+        client._client.post = AsyncMock()
+        with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+            with pytest.raises(ValueError, match="Invalid api_key: blank"):
+                await client.create_session(provider="google", model="flash", system_prompt="hi", api_key=key)
+        client._client.post.assert_not_awaited()
+        assert not log_debug.called
+
+    async def test_create_session_accepts_js_nonwhitespace_c1_control(self, client: SidecarClient) -> None:
+        key = "\u0085"  # Python strip removes this; JavaScript trim does not.
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"session_id": "sess-key"}))
+        assert await client.create_session(provider="google", model="flash", system_prompt="hi", api_key=key)
+        assert client._client.post.call_args.kwargs["json"]["api_key"] == key
+
     async def test_create_session_accepts_maximum_key(self, client: SidecarClient) -> None:
         key = "x" * 1024
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"session_id": "sess-key"}))
+        assert (
+            await client.create_session(provider="google", model="flash", system_prompt="hi", api_key=key) == "sess-key"
+        )
+        assert client._client.post.call_args.kwargs["json"]["api_key"] == key
+
+    async def test_create_session_accepts_512_astral_characters(self, client: SidecarClient) -> None:
+        key = "😀" * 512
         client._client.post = AsyncMock(return_value=_mock_response(200, {"session_id": "sess-key"}))
         assert (
             await client.create_session(provider="google", model="flash", system_prompt="hi", api_key=key) == "sess-key"
@@ -517,7 +540,7 @@ class TestConvenienceFunctions:
         assert result.success is False
         assert result.error is not None and "api_key" in result.error
         assert result.text == result.error
-        assert result.session_id == "existing"
+        assert result.session_id == ("existing" if api_key else None)
         mock_client.create_session.assert_not_awaited()
         mock_client.prompt.assert_not_awaited()
         mock_client.delete_session.assert_not_awaited()
@@ -671,6 +694,44 @@ class TestConvenienceFunctions:
         mock_client.create_session.assert_not_awaited()
         assert key not in str(log_debug.call_args_list)
         assert key not in str(log_error.call_args_list)
+
+    @pytest.mark.parametrize("key", ["", "   ", "\ufeff\u00a0", "😀" * 513, "😀" * 1024])
+    @pytest.mark.parametrize("entrypoint", ["create_session", "call_ai", "call_ai_once"])
+    async def test_invalid_key_rejected_before_logging_or_network(
+        self, mock_client: AsyncMock, key: str, entrypoint: str
+    ) -> None:
+        client = SidecarClient(base_url="http://localhost:9100") if entrypoint == "create_session" else None
+        with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+            if client is not None:
+                client._client.post = AsyncMock()
+                with pytest.raises(ValueError, match="Invalid api_key") as exc_info:
+                    await client.create_session(provider="google", model=key, system_prompt="hi", api_key=key)
+                error = str(exc_info.value)
+                client._client.post.assert_not_awaited()
+            else:
+                result = await (call_ai if entrypoint == "call_ai" else call_ai_once)(
+                    "hello", ai_model=key, api_key=key
+                )
+                assert not result.success
+                error = result.error or ""
+            assert "Invalid api_key" in error
+            mock_client.create_session.assert_not_awaited()
+            mock_client.prompt.assert_not_awaited()
+            mock_client.delete_session.assert_not_awaited()
+            assert not log_debug.called
+            if key:
+                assert key not in error
+                assert key not in str(log_debug.call_args_list)
+        if client is not None:
+            await client.close()
+
+    async def test_call_ai_once_rejects_unpaired_surrogate_before_logging(self, mock_client: AsyncMock) -> None:
+        key = "a\ud800b"
+        with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+            result = await call_ai_once("hello", api_key=key)
+        assert result.text == result.error == "Invalid api_key: unpaired Unicode surrogate"
+        assert not log_debug.called
+        mock_client.create_session.assert_not_awaited()
 
     async def test_call_ai_rejects_oversized_key_before_logging(self, mock_client: AsyncMock) -> None:
         key = "x" * 1025

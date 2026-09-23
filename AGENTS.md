@@ -26,6 +26,13 @@ pi-sidecar lives under `packages/pi-sidecar/` as an npm workspace package. It is
 **Public API contract:** The HTTP REST API (`/health`, `/models`, `/sessions`) and the Python client (`pi_sidecar_client`) are the external contract — never break these.
 Internal code, imports, and structure can change freely.
 
+`POST /sessions` and `pi_sidecar_client` optionally accept a non-empty `api_key`
+(at most 1,024 UTF-16 code units). It overrides stored/environment credentials
+only for the selected API-key-capable provider and session; omission preserves
+fallback. Reject unsupported auth (including CLI/ACPX ambient-login markers);
+delete/expiry removes the in-memory key. Never log, return, persist, or pass it
+to nested agents. See `packages/pi-sidecar/README.md` for usage.
+
 pi-sidecar tests are part of the test suite. Breaking pi-sidecar is breaking the project.
 
 ## Definition of Done

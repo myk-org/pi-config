@@ -35,12 +35,18 @@ MAX_ERROR_DETAIL_LENGTH = 2048
 
 def _validate_api_key(api_key: str) -> str | None:
     """Return a safe validation error, or None for a usable key."""
-    if len(api_key) > MAX_API_KEY_LENGTH:
-        return f"Invalid api_key: exceeds {MAX_API_KEY_LENGTH} characters"
+    # JavaScript String.trim whitespace (Python str.strip also strips C1 controls).
+    js_whitespace = "\t\n\v\f\r \u00a0\u1680\u2028\u2029\u202f\u205f\u3000\ufeff" + "".join(
+        chr(codepoint) for codepoint in range(0x2000, 0x200B)
+    )
+    if not api_key.strip(js_whitespace):
+        return "Invalid api_key: blank"
     try:
-        api_key.encode("utf-8")
+        length = len(api_key.encode("utf-16-le")) // 2
     except UnicodeEncodeError:
         return "Invalid api_key: unpaired Unicode surrogate"
+    if length > MAX_API_KEY_LENGTH:
+        return f"Invalid api_key: exceeds {MAX_API_KEY_LENGTH} characters"
     return None
 
 
