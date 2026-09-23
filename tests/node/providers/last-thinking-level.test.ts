@@ -69,7 +69,7 @@ describe("last-used thinking level", () => {
     assert.deepEqual(JSON.parse(JSON.stringify(readThinkingLevelState(statePath))), {
       version: 2,
       fallback: "low",
-      models: { "native/reasoner": "low" },
+      models: { '["native","reasoner"]': "low" },
     });
   });
 
@@ -176,7 +176,7 @@ describe("last-used thinking level", () => {
     h.handlers.get("thinking_level_select")!({ level: "xhigh", previousLevel: "off" }, reasoningCtx());
     assert.equal(readLastThinkingLevel(statePath), "xhigh");
     h.pi.setThinkingLevel("medium");
-    assert.deepEqual({ ...readThinkingLevelState(statePath).models }, { "native/reasoner": "medium" });
+    assert.deepEqual({ ...readThinkingLevelState(statePath).models }, { '["native","reasoner"]': "medium" });
   });
 
   it("restores the exact preference after switching back to a saved model", () => {
@@ -189,7 +189,7 @@ describe("last-used thinking level", () => {
     h.handlers.get("thinking_level_select")!({ level: "off", previousLevel: "low" }, other);
     h.handlers.get("model_select")!({ model: other.model, source: "set" }, other);
     assert.equal(h.level(), "low");
-    assert.deepEqual({ ...readThinkingLevelState(statePath).models }, { "native/reasoner": "low" });
+    assert.deepEqual({ ...readThinkingLevelState(statePath).models }, { '["native","reasoner"]': "low" });
 
     h.pi.setThinkingLevel("high");
     const first = reasoningCtx();
@@ -198,9 +198,65 @@ describe("last-used thinking level", () => {
     h.handlers.get("model_select")!({ model: first.model, source: "set" }, first);
     assert.equal(h.level(), "low");
     assert.deepEqual({ ...readThinkingLevelState(statePath).models }, {
-      "native/reasoner": "low",
-      "native/other": "high",
+      '["native","reasoner"]': "low",
+      '["native","other"]': "high",
     });
+  });
+
+  it("keeps preferences distinct when slash-joined model identifiers collide", () => {
+    const h = harness(statePath);
+    const first = { model: { provider: "relay", id: "vendor/model", reasoning: true } };
+    const second = { model: { provider: "relay/vendor", id: "model", reasoning: true } };
+    h.setCtx(first);
+    h.handlers.get("session_start")!({ reason: "new" }, first);
+    h.pi.setThinkingLevel("low");
+    h.setCtx(second);
+    h.handlers.get("model_select")!({ model: second.model, source: "set" }, second);
+    h.pi.setThinkingLevel("high");
+    assert.deepEqual({ ...readThinkingLevelState(statePath).models }, {
+      '["relay","vendor/model"]': "low",
+      '["relay/vendor","model"]': "high",
+    });
+    h.setCtx(first);
+    h.handlers.get("model_select")!({ model: first.model, source: "set" }, first);
+    assert.equal(h.level(), "low");
+    h.setCtx(second);
+    h.handlers.get("model_select")!({ model: second.model, source: "set" }, second);
+    assert.equal(h.level(), "high");
+  });
+
+  it("restores a legacy unambiguous key without discarding its saved value", () => {
+    mkdirSync(join(dir, "state"));
+    writeFileSync(statePath, JSON.stringify({ version: 2, models: { "native/reasoner": "high" } }));
+    const h = harness(statePath);
+    const ctx = reasoningCtx();
+    h.handlers.get("session_start")!({ reason: "new" }, ctx);
+    h.handlers.get("model_select")!({ model: ctx.model, source: "set" }, ctx);
+    assert.equal(h.level(), "high");
+    h.pi.setThinkingLevel("low");
+    assert.deepEqual({ ...readThinkingLevelState(statePath).models }, {
+      "native/reasoner": "high",
+      '["native","reasoner"]': "low",
+    });
+    const resumed = harness(statePath);
+    resumed.handlers.get("session_start")!({ reason: "new" }, ctx);
+    resumed.handlers.get("model_select")!({ model: ctx.model, source: "set" }, ctx);
+    assert.equal(resumed.level(), "low");
+  });
+
+  it("does not assign an ambiguous legacy preference to either colliding model", () => {
+    mkdirSync(join(dir, "state"));
+    writeFileSync(statePath, JSON.stringify({ version: 2, models: { "relay/vendor/model": "max" } }));
+    const h = harness(statePath);
+    const first = { model: { provider: "relay", id: "vendor/model", reasoning: true } };
+    const second = { model: { provider: "relay/vendor", id: "model", reasoning: true } };
+    for (const ctx of [first, second]) {
+      h.setCtx(ctx);
+      h.handlers.get("session_start")!({ reason: "new" }, ctx);
+      h.handlers.get("model_select")!({ model: ctx.model, source: "set" }, ctx);
+      assert.equal(h.level(), "off");
+    }
+    assert.equal(readThinkingLevelState(statePath).models["relay/vendor/model"], "max");
   });
 
   it("applies saved preferences on model switches after resume", () => {
@@ -281,7 +337,7 @@ describe("last-used thinking level", () => {
     const old = new Date(Date.now() - 60_000);
     utimesSync(`${statePath}.lock`, old, old);
     await Promise.all([run("one"), run("two")]);
-    assert.deepEqual({ ...readThinkingLevelState(statePath).models }, { "native/one": "high", "native/two": "high" });
+    assert.deepEqual({ ...readThinkingLevelState(statePath).models }, { '["native","one"]': "high", '["native","two"]': "high" });
   });
 
   it("clamps a restored preference while preserving the saved value", () => {

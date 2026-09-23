@@ -65,15 +65,17 @@ async function refreshProviderModels(
   discoverModelCapabilities: boolean,
   rawStaticHeaders?: Record<string, string>,
   snapshot: { discovered: Model[]; fingerprint?: string; generation: number },
+  lifecycle: { signal: AbortSignal; isCurrent: () => boolean },
 ): Promise<Model[]> {
   const generation = ++snapshot.generation;
+  const active = () => lifecycle.isCurrent() && !refresh.signal.aborted && generation === snapshot.generation;
   let connection: ResolvedOpenAiCompatibleConnection = { baseUrl: source.baseUrl };
   let scopeResolved = false;
   try {
     const auth = await ctx.modelRegistry.getProviderAuth(sourceProviderId) as AuthResult | undefined;
     const staticHeaders = await resolveStaticOpenAiCompatibleHeaders(rawStaticHeaders);
     connection = resolvedConnection(ctx.modelRegistry.getProvider(sourceProviderId) ?? source, auth, staticHeaders);
-    if (generation !== snapshot.generation) return [...staticModels];
+    if (!active()) return [...staticModels];
     const fingerprint = openAiCompatibleConnectionFingerprint(connection);
     if (snapshot.fingerprint !== fingerprint) {
       snapshot.discovered = [];
@@ -81,11 +83,11 @@ async function refreshProviderModels(
       log.debug("discovery connection scope changed", { provider: sourceProviderId });
     }
     scopeResolved = true;
-    if (!refresh.allowNetwork || refresh.signal.aborted) return [...staticModels, ...snapshot.discovered];
+    if (!refresh.allowNetwork) return [...staticModels, ...snapshot.discovered];
     const request = buildOpenAiCompatibleModelsRequest(connection);
     const response = await fetch(request.url, {
       headers: request.headers, redirect: "error",
-      signal: AbortSignal.any([refresh.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+      signal: AbortSignal.any([refresh.signal, lifecycle.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
     });
     if (!response.ok) throw new Error(`OpenAI-compatible /v1/models returned HTTP ${response.status}`);
     let records = responseRecords(await response.json());
@@ -95,20 +97,20 @@ async function refreshProviderModels(
         const capabilityResponse = await fetch(buildOpenAiCompatibleCapabilitiesUrl(request.url), {
           headers: request.headers,
           redirect: "error",
-          signal: AbortSignal.any([refresh.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+          signal: AbortSignal.any([refresh.signal, lifecycle.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
         });
         if (!capabilityResponse.ok) throw new Error(`OpenAI-compatible capability endpoint returned HTTP ${capabilityResponse.status}`);
         records = enrichOpenAiCompatibleReasoning(records, capabilityRecords(await capabilityResponse.json()));
       } catch (error) {
-        if (refresh.signal.aborted || generation !== snapshot.generation) return [...staticModels];
+        if (!active()) return [...staticModels];
         log.warn(`${sourceProviderId}: reasoning capability enrichment unavailable`, redactOpenAiCompatibleDiagnostic(error instanceof Error ? error.message : String(error), connection));
       }
     }
 
-    if (refresh.signal.aborted || generation !== snapshot.generation) return [...staticModels];
+    if (!active()) return [...staticModels];
     const models = combineModels(sourceProviderId, staticModels, records, request.streamBaseUrl);
     snapshot.discovered = models.slice(staticModels.length);
-    if (appendSummary()) {
+    if (active() && appendSummary()) {
       try {
         pi.appendEntry<OpenAiCompatibleDiscoverySummary>(
           "openai-compatible-discovery-summary",
@@ -121,11 +123,11 @@ async function refreshProviderModels(
     log.info(`${sourceProviderId}: refreshed ${records.length} discovered model(s) on configured provider`);
     return models;
   } catch (error) {
-    if (!refresh.signal.aborted && generation === snapshot.generation)
+    if (active())
       log.warn(`${sourceProviderId}: discovery refresh failed`, scopeResolved
         ? redactOpenAiCompatibleDiagnostic(error instanceof Error ? error.message : String(error), connection)
         : { phase: "connection resolution", cause: error instanceof Error ? error.name : typeof error });
-    if (generation !== snapshot.generation) return [...staticModels];
+    if (!active()) return [...staticModels];
     if (!scopeResolved) { snapshot.discovered = []; snapshot.fingerprint = undefined; }
     return [...staticModels, ...snapshot.discovered];
   }
@@ -153,7 +155,11 @@ export default function (pi: ExtensionAPI) {
   }
 
   const registeredSources = new Set<string>();
+  let lifecycleGeneration = 0;
+  let lifecycleController = new AbortController();
   const restoreSources = () => {
+    lifecycleController.abort();
+    lifecycleGeneration++;
     for (const id of registeredSources) {
       try {
         pi.unregisterProvider(id);
@@ -168,6 +174,12 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     restoreSources();
+    lifecycleController = new AbortController();
+    const generation = lifecycleGeneration;
+    const lifecycle = {
+      signal: lifecycleController.signal,
+      isCurrent: () => generation === lifecycleGeneration,
+    };
     const configResult = findEligibleOpenAiCompatibleProviderConfigsResult();
     if (configResult.providers.length === 0) {
       const diagnostic = { modelsConfig: configResult.status };
@@ -198,7 +210,7 @@ export default function (pi: ExtensionAPI) {
           registrationStarted();
           return refreshProviderModels(
             pi, ctx, id, source, staticModels, refresh, () => startupRefresh,
-            discoverModelCapabilities, headers, snapshot,
+            discoverModelCapabilities, headers, snapshot, lifecycle,
           );
         },
       });

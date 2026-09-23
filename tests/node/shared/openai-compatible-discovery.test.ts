@@ -42,7 +42,8 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
     discoverModelCapabilities?: boolean;
     staticModels?: Array<Record<string, unknown>>;
     beforeStart?: (runtime: ModelRuntime) => void;
-    onRegister?: () => void;
+    onRegister?: (handlers: Map<string, (...args: any[]) => any>, registry: ModelRegistry) => void;
+    detachedRefreshSignal?: boolean;
   } = {}) {
     const provider = options.provider ?? "gateway";
     writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {
@@ -72,8 +73,11 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
     const pi = {
       on: (event: string, handler: (...args: any[]) => any) => handlers.set(event, handler),
       registerProvider: (id: string, config: any) => {
-        registry.registerProvider(id, config);
-        options.onRegister?.();
+        registry.registerProvider(id, options.detachedRefreshSignal ? {
+          ...config,
+          refreshModels: (refresh: any) => config.refreshModels({ ...refresh, signal: new AbortController().signal }),
+        } : config);
+        options.onRegister?.(handlers, registry);
       },
       unregisterProvider: (id: string) => registry.unregisterProvider(id),
       appendEntry: (type: string, data: any) => appended.push({ type, data }),
@@ -397,30 +401,52 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
     assert.deepEqual(requests.map((url) => new URL(url).pathname), ["/v1/models"]);
   });
 
-  it("enriches capabilities only for an explicitly opted-in arbitrary provider", async () => {
-    const requests: Array<{ url: string; headers: Headers }> = [];
-    globalThis.fetch = async (input, init) => {
-      requests.push({ url: String(input), headers: new Headers(init?.headers) });
-      return String(input).includes("model/info")
-        ? new Response(JSON.stringify({ data: [
-          { model_name: "reasoning", model_info: { supported_openai_params: ["reasoning_effort"] } },
-          { model_name: "static", model_info: { supports_reasoning: true } },
-        ] }))
-        : new Response(JSON.stringify({ data: [{ id: "reasoning" }, { id: "static" }] }));
+  it("routes opted-in arbitrary provider capabilities to model/info", async () => {
+    const paths: string[] = [];
+    globalThis.fetch = async (input) => {
+      paths.push(new URL(String(input)).pathname);
+      return new Response(JSON.stringify({ data: [] }));
     };
-    const { registry } = await setup({
-      provider: "arbitrary-relay",
-      name: "Unrelated vendor",
-      discoverModelCapabilities: true,
-      headers: { "X-Route": "fake-route" },
-      staticModels: [{ id: "static", reasoning: false }],
-    });
+    await setup({ provider: "arbitrary-relay", name: "Unrelated vendor", discoverModelCapabilities: true });
+    assert.deepEqual(paths, ["/v1/models", "/v1/model/info"]);
+  });
 
-    assert.deepEqual(requests.map(({ url }) => new URL(url).pathname), ["/v1/models", "/v1/model/info"]);
-    assert.equal(requests[0].headers.get("authorization"), "Bearer fake-key");
-    assert.equal(requests[1].headers.get("x-route"), "fake-route");
-    assert.equal(registry.find("arbitrary-relay", "reasoning")?.reasoning, true);
-    assert.equal(registry.find("arbitrary-relay", "static")?.reasoning, false);
+  it("propagates credentials and custom headers to both discovery endpoints", async () => {
+    const headers: Headers[] = [];
+    globalThis.fetch = async (_input, init) => {
+      headers.push(new Headers(init?.headers));
+      return new Response(JSON.stringify({ data: [] }));
+    };
+    await setup({ discoverModelCapabilities: true, headers: { "X-Route": "fake-route" } });
+    assert.equal(headers.length, 2);
+    for (const request of headers) {
+      assert.equal(request.get("authorization"), "Bearer fake-key");
+      assert.equal(request.get("x-route"), "fake-route");
+    }
+  });
+
+  it("infers reasoning from supported_openai_params", async () => {
+    globalThis.fetch = async (input) => new Response(JSON.stringify({ data: String(input).includes("model/info")
+      ? [{ model_name: "reasoning", model_info: { supported_openai_params: ["reasoning_effort"] } }]
+      : [{ id: "reasoning" }] }));
+    const { registry } = await setup({ discoverModelCapabilities: true });
+    assert.equal(registry.find("gateway", "reasoning")?.reasoning, true);
+  });
+
+  it("honors explicit reasoning opt-out over reasoning_effort inference", async () => {
+    globalThis.fetch = async (input) => new Response(JSON.stringify({ data: String(input).includes("model/info")
+      ? [{ model_name: "opt-out", model_info: { supports_reasoning: false, supported_openai_params: ["reasoning_effort"] } }]
+      : [{ id: "opt-out" }] }));
+    const { registry } = await setup({ discoverModelCapabilities: true });
+    assert.equal(registry.find("gateway", "opt-out")?.reasoning, false);
+  });
+
+  it("preserves static reasoning metadata over discovered capabilities", async () => {
+    globalThis.fetch = async (input) => new Response(JSON.stringify({ data: String(input).includes("model/info")
+      ? [{ model_name: "static", model_info: { supports_reasoning: true } }]
+      : [{ id: "static" }] }));
+    const { registry } = await setup({ discoverModelCapabilities: true, staticModels: [{ id: "static", reasoning: false }] });
+    assert.equal(registry.find("gateway", "static")?.reasoning, false);
   });
 
   it("keeps current discovered models un-enriched when capability discovery fails", async () => {
@@ -447,6 +473,58 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
     );
     assert.equal(rendered.render(80).join("\n"), "Providers: gateway (2)");
     assert.doesNotThrow(() => rendered.invalidate());
+  });
+
+  it("aborts delayed discovery on shutdown without publishing a summary or stale catalog", async () => {
+    let release!: (response: Response) => void;
+    let requested!: () => void;
+    let shutdown!: () => void;
+    const pending = new Promise<Response>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { requested = resolve; });
+    let signal!: AbortSignal;
+    globalThis.fetch = async (_input, init) => {
+      signal = init!.signal as AbortSignal;
+      requested();
+      return pending; // Deliberately ignores abort to test a late network response.
+    };
+    const starting = setup({ detachedRefreshSignal: true, onRegister: (handlers) => { shutdown = handlers.get("session_shutdown")!; } });
+    await started;
+    shutdown();
+    assert.equal(signal.aborted, true);
+    release(new Response(JSON.stringify({ data: [{ id: "late" }] })));
+    const { registry, appended } = await starting;
+    assert.deepEqual(appended, []);
+    assert.deepEqual(modelIds(registry), ["static"]);
+  });
+
+  it("ignores an old discovery response after a replacement session starts", async () => {
+    let release!: (response: Response) => void;
+    let requested!: () => void;
+    let restart!: (...args: any[]) => Promise<void>;
+    let registry!: ModelRegistry;
+    const pending = new Promise<Response>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { requested = resolve; });
+    let calls = 0;
+    let oldSignal!: AbortSignal;
+    globalThis.fetch = async (_input, init) => {
+      if (++calls === 1) {
+        oldSignal = init!.signal as AbortSignal;
+        requested();
+        return pending; // A completed old response must not publish into the replacement.
+      }
+      return new Response(JSON.stringify({ data: [{ id: "new" }] }));
+    };
+    const starting = setup({ detachedRefreshSignal: true, onRegister: (handlers, current) => {
+      restart = handlers.get("session_start")!;
+      registry = current;
+    } });
+    await started;
+    await restart({}, { mode: "tui", hasUI: true, modelRegistry: registry });
+    assert.equal(oldSignal.aborted, true);
+    release(new Response(JSON.stringify({ data: [{ id: "late" }] })));
+    const { appended } = await starting;
+    assert.deepEqual(appended.map(({ data }) => data.summary), ["Providers: gateway (1)"]);
+    assert.deepEqual(modelIds(registry), ["static", "new"]);
   });
 
   it("unregisters only its provider refresh overlays on shutdown", async () => {

@@ -50,7 +50,7 @@ export function isThinkingLevel(value: unknown): value is SavedThinkingLevel {
 
 export function modelThinkingKey(model: { id?: unknown; provider?: unknown } | undefined): string | undefined {
   const key = typeof model?.provider === "string" && typeof model.id === "string"
-    ? `${model.provider}/${model.id}` : undefined;
+    ? JSON.stringify([model.provider, model.id]) : undefined;
   log.debug("thinking preference model key resolved", { model: key, valid: key !== undefined });
   return key;
 }
@@ -257,8 +257,12 @@ function preferredLevel(
   state: ThinkingLevelState,
 ): SavedThinkingLevel | undefined {
   const key = modelThinkingKey(model);
-  const level = key ? state.models[key] ?? state.fallback : state.fallback;
-  log.debug("thinking preference resolved", { model: key, level, exact: !!key && state.models[key] !== undefined });
+  // Only a single-slash legacy key identifies one pair. Keep ambiguous entries untouched.
+  const legacyKey = !model.provider.includes("/") && !model.id.includes("/")
+    ? `${model.provider}/${model.id}` : undefined;
+  const exact = key ? state.models[key] ?? (legacyKey ? state.models[legacyKey] : undefined) : undefined;
+  const level = exact ?? state.fallback;
+  log.debug("thinking preference resolved", { model: key, level, exact: exact !== undefined });
   return level;
 }
 
