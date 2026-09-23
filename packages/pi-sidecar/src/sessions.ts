@@ -928,14 +928,17 @@ export class SessionStore {
     try {
       authCheck = (await this.modelRuntime!.checkAuth(provider)) ?? null;
     } catch (err) {
-      log.warn("Provider auth check failed", { provider, errorType: err instanceof Error ? "Error" : typeof err });
+      // Auth exceptions may contain credentials: retain the traceback frames, not the message.
+      log.warn("Provider auth check failed", { provider, errorType: err instanceof Error ? "Error" : typeof err,
+        stackFrames: err instanceof Error ? err.stack?.split("\n").slice(1, 9).map((line) => /^\s*at ([\w.$<>]+)\s*\(/.exec(line)?.[1] ?? "[anonymous]") : undefined });
     }
 
     let authStatus: ProviderStatus["authStatus"] = null;
     try {
       authStatus = this.modelRuntime!.getProviderAuthStatus(provider);
     } catch (err) {
-      log.warn("Provider auth status failed", { provider, errorType: err instanceof Error ? "Error" : typeof err });
+      log.warn("Provider auth status failed", { provider, errorType: err instanceof Error ? "Error" : typeof err,
+        stackFrames: err instanceof Error ? err.stack?.split("\n").slice(1, 9).map((line) => /^\s*at ([\w.$<>]+)\s*\(/.exec(line)?.[1] ?? "[anonymous]") : undefined });
     }
 
     log.debug("Provider status resolved", { provider, registered, modelCount, supportsSessionApiKey, hasAuthCheck: !!authCheck, hasAuthStatus: !!authStatus });

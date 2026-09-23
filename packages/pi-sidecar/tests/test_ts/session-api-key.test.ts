@@ -50,6 +50,27 @@ describe("session API key", () => {
     if (cwd) rmSync(cwd, { recursive: true, force: true });
   });
 
+  it("keeps auth exception frames without logging credential-bearing messages", async () => {
+    const checkAuth = runtime.checkAuth;
+    const getProviderAuthStatus = runtime.getProviderAuthStatus;
+    const warn = logger.warn;
+    const warnings: string[] = [];
+    logger.warn = (...args) => { warnings.push(JSON.stringify(args)); };
+    runtime.checkAuth = async () => { throw new Error(`failed credential ${secret}`); };
+    runtime.getProviderAuthStatus = () => { throw new Error(`failed credential ${secret}`); };
+    try {
+      const status = await store.getProviderStatus("test-session-key");
+      assert.equal(status.authCheck, null);
+      assert.equal(status.authStatus, null);
+      assert.equal(warnings.length, 2);
+      assert.ok(warnings.every((line) => line.includes("stackFrames") && !line.includes(secret)));
+    } finally {
+      runtime.checkAuth = checkAuth;
+      runtime.getProviderAuthStatus = getProviderAuthStatus;
+      logger.warn = warn;
+    }
+  });
+
   it("reports session key capability independently of ambient authentication", async () => {
     for (const provider of ["openai", "google", "test-session-key", "test-key-only"]) {
       const status = await store.getProviderStatus(provider);
