@@ -700,49 +700,110 @@ class TestConvenienceFunctions:
         assert result.success is False
         assert result.text == result.error == "Invalid api_key: unpaired Unicode surrogate"
         mock_client.create_session.assert_not_awaited()
+        mock_client.prompt.assert_not_awaited()
+        mock_client.delete_session.assert_not_awaited()
         log_debug.assert_called_once_with("API key validation: outcome=%s", "malformed")
         assert key not in str(log_debug.call_args_list)
         assert key not in str(log_error.call_args_list)
 
-    @pytest.mark.parametrize("key", ["", "   ", "\ufeff\u00a0", "😀" * 513, "😀" * 1024])
-    @pytest.mark.parametrize("entrypoint", ["create_session", "call_ai", "call_ai_once"])
-    async def test_invalid_key_rejected_with_safe_validation_log_before_network(
-        self, mock_client: AsyncMock, key: str, entrypoint: str
-    ) -> None:
-        client = SidecarClient(base_url="http://localhost:9100") if entrypoint == "create_session" else None
+    @pytest.mark.parametrize("key", ["", "   ", "\ufeff\u00a0"], ids=["empty", "spaces", "unicode-whitespace"])
+    async def test_create_session_rejects_blank_key_without_http(self, key: str) -> None:
+        async with SidecarClient(base_url="http://localhost:9100") as client:
+            with patch.object(client._client, "post", new_callable=AsyncMock) as post:
+                with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+                    with pytest.raises(ValueError, match="^Invalid api_key: blank$") as exc_info:
+                        await client.create_session(provider="google", model=key, system_prompt="hi", api_key=key)
+                post.assert_not_awaited()
+        log_debug.assert_called_once_with("API key validation: outcome=%s", "blank")
+        if key:
+            assert key not in str(exc_info.value)
+            assert key not in str(log_debug.call_args_list)
+
+    @pytest.mark.parametrize("length", [513, 1024])
+    async def test_create_session_rejects_astral_oversized_key_without_http(self, length: int) -> None:
+        key = "😀" * length
+        async with SidecarClient(base_url="http://localhost:9100") as client:
+            with patch.object(client._client, "post", new_callable=AsyncMock) as post:
+                with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+                    with pytest.raises(ValueError, match="^Invalid api_key: exceeds 1024 characters$") as exc_info:
+                        await client.create_session(provider="google", model=key, system_prompt="hi", api_key=key)
+                post.assert_not_awaited()
+        log_debug.assert_called_once_with("API key validation: outcome=%s", "oversized")
+        assert key not in str(exc_info.value)
+        assert key not in str(log_debug.call_args_list)
+
+    @pytest.mark.parametrize("key", ["", "   ", "\ufeff\u00a0"], ids=["empty", "spaces", "unicode-whitespace"])
+    async def test_call_ai_rejects_blank_key_without_network(self, mock_client: AsyncMock, key: str) -> None:
         with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
-            if client is not None:
-                client._client.post = AsyncMock()
-                with pytest.raises(ValueError, match="Invalid api_key") as exc_info:
-                    await client.create_session(provider="google", model=key, system_prompt="hi", api_key=key)
-                error = str(exc_info.value)
-                client._client.post.assert_not_awaited()
-            else:
-                result = await (call_ai if entrypoint == "call_ai" else call_ai_once)(
-                    "hello", ai_model=key, api_key=key
-                )
-                assert not result.success
-                error = result.error or ""
-            assert "Invalid api_key" in error
-            mock_client.create_session.assert_not_awaited()
-            mock_client.prompt.assert_not_awaited()
-            mock_client.delete_session.assert_not_awaited()
-            outcome = "oversized" if key.startswith("😀") else "blank"
-            log_debug.assert_called_once_with("API key validation: outcome=%s", outcome)
-            if key:
-                assert key not in error
-                assert key not in str(log_debug.call_args_list)
-        if client is not None:
-            await client.close()
+            result = await call_ai("hello", ai_model=key, api_key=key)
+        assert result.success is False
+        assert result.text == result.error == "Invalid api_key: blank"
+        assert result.session_id is None
+        mock_client.create_session.assert_not_awaited()
+        mock_client.prompt.assert_not_awaited()
+        mock_client.delete_session.assert_not_awaited()
+        log_debug.assert_called_once_with("API key validation: outcome=%s", "blank")
+        if key:
+            assert key not in str(log_debug.call_args_list)
+
+    @pytest.mark.parametrize("length", [513, 1024])
+    async def test_call_ai_rejects_astral_oversized_key_without_network(
+        self, mock_client: AsyncMock, length: int
+    ) -> None:
+        key = "😀" * length
+        with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+            result = await call_ai("hello", ai_model=key, api_key=key)
+        assert result.success is False
+        assert result.text == result.error == "Invalid api_key: exceeds 1024 characters"
+        assert result.session_id is None
+        mock_client.create_session.assert_not_awaited()
+        mock_client.prompt.assert_not_awaited()
+        mock_client.delete_session.assert_not_awaited()
+        log_debug.assert_called_once_with("API key validation: outcome=%s", "oversized")
+        assert key not in str(log_debug.call_args_list)
+
+    @pytest.mark.parametrize("key", ["", "   ", "\ufeff\u00a0"], ids=["empty", "spaces", "unicode-whitespace"])
+    async def test_call_ai_once_rejects_blank_key_without_network(self, mock_client: AsyncMock, key: str) -> None:
+        with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+            result = await call_ai_once("hello", ai_model=key, api_key=key)
+        assert result.success is False
+        assert result.text == result.error == "Invalid api_key: blank"
+        assert result.session_id is None
+        mock_client.create_session.assert_not_awaited()
+        mock_client.prompt.assert_not_awaited()
+        mock_client.delete_session.assert_not_awaited()
+        log_debug.assert_called_once_with("API key validation: outcome=%s", "blank")
+        if key:
+            assert key not in str(log_debug.call_args_list)
+
+    @pytest.mark.parametrize("length", [513, 1024])
+    async def test_call_ai_once_rejects_astral_oversized_key_without_network(
+        self, mock_client: AsyncMock, length: int
+    ) -> None:
+        key = "😀" * length
+        with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+            result = await call_ai_once("hello", ai_model=key, api_key=key)
+        assert result.success is False
+        assert result.text == result.error == "Invalid api_key: exceeds 1024 characters"
+        assert result.session_id is None
+        mock_client.create_session.assert_not_awaited()
+        mock_client.prompt.assert_not_awaited()
+        mock_client.delete_session.assert_not_awaited()
+        log_debug.assert_called_once_with("API key validation: outcome=%s", "oversized")
+        assert key not in str(log_debug.call_args_list)
 
     async def test_call_ai_once_rejects_unpaired_surrogate_with_safe_log(self, mock_client: AsyncMock) -> None:
         key = "a\ud800b"
         with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
             result = await call_ai_once("hello", api_key=key)
+        assert result.success is False
         assert result.text == result.error == "Invalid api_key: unpaired Unicode surrogate"
+        assert result.session_id is None
         log_debug.assert_called_once_with("API key validation: outcome=%s", "malformed")
         assert key not in str(log_debug.call_args_list)
         mock_client.create_session.assert_not_awaited()
+        mock_client.prompt.assert_not_awaited()
+        mock_client.delete_session.assert_not_awaited()
 
     async def test_call_ai_rejects_oversized_key_with_safe_log(self, mock_client: AsyncMock) -> None:
         key = "x" * 1025
