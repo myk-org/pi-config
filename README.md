@@ -467,6 +467,13 @@ settings; it reads the project locally and stores its regenerable graph in `./gr
 Native installations require Node.js 22+, npm 12+, Python 3, `make`, and G++; the
 installer uses the same audited strict installation and failure remains non-fatal.
 
+**Persistent cron locking:** The image includes `flock` from `util-linux` for kernel-backed,
+cross-container store mutations on shared mounts. The shared filesystem must support
+advisory locks. Before deploying this version alongside old Pi containers, stop and
+drain every legacy cron writer. An existing legacy mutation-lock directory blocks
+new writes until an operator verifies old writers cannot resume and removes only
+that directory. Do not stop running containers merely to test this PR.
+
 **CLI provider binaries (optional `cli_agents`):** The image installs the CLIs used by
 `cli-*` providers — `claude` (Claude Code), `gemini` (`@google/gemini-cli`), and
 `agent` (Cursor Agent CLI). Enable with `cli_agents` in settings (e.g.

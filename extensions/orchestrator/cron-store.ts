@@ -201,7 +201,7 @@ function acquireKernelMutationLock(store: string): number {
   const result = spawnSync("flock", ["-x", "-w", "2", "3"], { stdio: ["ignore", "ignore", "pipe", fd], encoding: "utf8" });
   if (result.status !== 0) {
     fs.closeSync(fd);
-    log.warn("cron_mutation_kernel_lock", { lock, outcome: "timeout_or_unavailable", reason: result.error?.message || result.stderr });
+    log.error("cron_mutation_kernel_lock", { lock, outcome: "failed", reason: result.error?.message || result.stderr });
     throw new Error("Timed out waiting for cron storage lock");
   }
   // A previous pi version may still hold its independent directory lock.
