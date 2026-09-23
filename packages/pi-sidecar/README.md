@@ -9,7 +9,7 @@ simple JSON API. Ships with a Python client for easy integration.
 
 ## Features
 
-- **Session management** — create, prompt, abort, and delete AI sessions over REST
+- **Session management** — create, prompt, abort, and delete AI sessions over REST; optionally supply a provider-agnostic, session-scoped API key
 - **Model discovery** — auto-discover models from ACPX agents, CLI providers (`cli-*`), and built-in providers
 - **Provider diagnostics** — `GET /models/:provider/status` reports registration,
   model count, and auth status for a single provider
@@ -45,6 +45,18 @@ result = await call_ai_once(
 )
 print(result.text)
 ```
+
+To override the server's stored/environment API key for one session, pass
+`api_key=user_api_key` to `SidecarClient.create_session`, `call_ai`, or
+`call_ai_once`. The wire field is `api_key` in `POST /sessions` (a non-empty
+string of at most 1,024 characters); the response remains `{ "session_id": "..." }`. The key applies only
+to the selected provider and that session, takes precedence over server
+credentials, and is held in memory until the session is deleted or expires.
+Omitting it preserves server credential fallback. Providers without Pi API-key
+auth capability reject it with HTTP 400; OAuth, Vertex/ADC and CLI login state
+are not configured by this field. Keys are not saved in session files, returned
+in API responses, or passed to nested agents. Treat sidecar access as privileged:
+its default loopback bind is not an authentication boundary against local users.
 
 ```bash
 # Start the sidecar

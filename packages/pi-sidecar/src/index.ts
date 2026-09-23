@@ -8,7 +8,7 @@ import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { SessionStore } from "./sessions.js";
+import { SessionStore, isValidApiKey, createApiKeyRedactor, redactDiagnostic } from "./sessions.js";
 import { startWatchdog, type WatchdogOptions } from "./watchdog.js";
 import { assertPiVersionFloor } from "./pi-version.js";
 import { createLogger, logger } from "./logger.js";
@@ -408,6 +408,7 @@ export function startSidecar(options?: {
     }
 
     activeRequests++;
+    let requestApiKey: string | undefined;
     try {
       // GET /health
       if (method === "GET" && url === "/health") {
@@ -473,7 +474,15 @@ export function startSidecar(options?: {
       // POST /sessions
       if (method === "POST" && url === "/sessions") {
         const body = await parseBody(req);
-        const { provider, model, system_prompt, cwd, custom_tools, tools, agent_dir } = body;
+        const { provider, model, system_prompt, cwd, custom_tools, tools, agent_dir, api_key } = body;
+        if (api_key !== undefined) {
+          if (!isValidApiKey(api_key)) { // pragma: allowlist secret — field validation, not a credential
+            logger.warn(`[sidecar] POST /sessions 400: validation=failed, field=api_key`);
+            sendJson(res, 400, { error: "api_key must be a non-empty string with well-formed Unicode and at most 1024 characters" });
+            return;
+          }
+          requestApiKey = api_key;
+        }
         if (typeof provider !== "string" || provider.length === 0 || typeof system_prompt !== "string" || system_prompt.length === 0) {
           logger.warn(`[sidecar] POST /sessions 400 ${Date.now() - requestStart}ms: validation=failed, field=provider|system_prompt, reason=must be non-empty strings`);
           sendJson(res, 400, { error: "provider and system_prompt are required and must be non-empty strings" });
@@ -575,10 +584,11 @@ export function startSidecar(options?: {
           systemPrompt: system_prompt,
           cwd: cwd || process.cwd(),
           agentDir: effectiveAgentDir,
+          apiKey: requestApiKey,
           tools,
           customTools: custom_tools,
         });
-        logger.info(`[sidecar] POST /sessions 201 ${Date.now() - requestStart}ms session=${sessionId} provider=${provider} model=${model}`);
+        logger.info(`[sidecar] POST /sessions 201 ${Date.now() - requestStart}ms session=${sessionId}`);
         sendJson(res, 201, { session_id: sessionId });
         return;
       }
@@ -595,7 +605,7 @@ export function startSidecar(options?: {
         }
         logger.debug(`[sidecar] POST /sessions/${idLog}/prompt: message_length=${body.message.length}`);
         const result = await store.prompt(params.id, body.message);
-        logger.info(`[sidecar] POST /sessions/${idLog}/prompt 200 ${Date.now() - requestStart}ms text_length=${result.text.length}${result.error ? ` error=${sanitizeForLog(result.error)}` : ""}`);
+        logger.info(`[sidecar] POST /sessions/${idLog}/prompt 200 ${Date.now() - requestStart}ms text_length=${result.text.length}${result.error ? " with_errors=true" : ""}`);
         sendJson(res, 200, result);
         return;
       }
@@ -625,24 +635,33 @@ export function startSidecar(options?: {
       logger.debug(`[sidecar] Route not found: ${method} ${sanitizeForLog(url.split("?")[0])}`);
       sendJson(res, 404, { error: "Not found" });
     } catch (err: any) {
-      const message = err?.message || "Internal server error";
-      const sanitizedUrl = sanitizeForLog(url.split("?")[0]); // Strip query params before logging
+      const secret = requestApiKey;
+      const redact = createApiKeyRedactor(secret);
+      const rawMessage = err?.message || "Internal server error";
+      let promptId: string | undefined;
+      if (method === "POST" && /^\/sessions\/[^/]+\/prompt(?:\?|$)/.test(url)) {
+        try { promptId = routeMatch(url, "/sessions/:id/prompt")?.id; } catch { /* original error takes precedence */ }
+      }
+      const message = promptId ? store.redactSessionValue(promptId, redactDiagnostic(rawMessage, redact)) : redactDiagnostic(rawMessage, redact);
+      const sanitizedUrl = requestApiKey ? "/sessions" : sanitizeForLog(url.split("?")[0]); // Never log a key-bearing create URL.
       const rawStatus = typeof err?.statusCode === "number" && err.statusCode >= 100 && err.statusCode <= 599
         ? err.statusCode
         : undefined;
       const status = rawStatus
-        ?? (message.includes("not found for provider") ? 400
-        : message.includes("Model is required") ? 400
-        : message.includes("Payload too large") ? 413
-        : message.includes("Invalid JSON") ? 400
-        : message.includes("is busy") ? 409
-        : message.includes("shutting down") ? 503
-        : message.includes("not found") ? 404
+        ?? (rawMessage.includes("not found for provider") ? 400
+        : rawMessage.includes("Model is required") ? 400
+        : rawMessage.includes("Payload too large") ? 413
+        : rawMessage.includes("Invalid JSON") ? 400
+        : rawMessage.includes("is busy") ? 409
+        : rawMessage.includes("shutting down") ? 503
+        : rawMessage.includes("not found") ? 404
         : 500);
       if (status === 500) {
-        logger.error(`[sidecar] REQUEST_FAILED: method=${method}, url=${sanitizedUrl}, status=${status}, duration_ms=${Date.now() - requestStart}, error=${sanitizeForLog(message)}`, err);
+        const stack = err instanceof Error ? err.cause instanceof Error ? err.cause.stack ?? err.cause.message : err.stack ?? err.message : String(err);
+        const safeStack = promptId ? store.redactSessionValue(promptId, redactDiagnostic(stack, redact)) : redactDiagnostic(stack, redact);
+        logger.error(`[sidecar] REQUEST_FAILED: method=${method}, url=${sanitizeForLog(redact(sanitizedUrl))}, status=${status}, duration_ms=${Date.now() - requestStart}, error=${sanitizeForLog(message)}, stack=${sanitizeForLog(safeStack)}`);
       } else {
-        logger.warn(`[sidecar] REQUEST_FAILED: method=${method}, url=${sanitizedUrl}, status=${status}, duration_ms=${Date.now() - requestStart}, error=${sanitizeForLog(message)}`);
+        logger.warn(`[sidecar] REQUEST_FAILED: method=${method}, url=${sanitizeForLog(redact(sanitizedUrl))}, status=${status}, duration_ms=${Date.now() - requestStart}, error=${sanitizeForLog(message)}`);
       }
       sendJson(res, status, { error: message });
     } finally {
