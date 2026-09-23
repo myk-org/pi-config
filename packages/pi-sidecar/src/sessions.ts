@@ -412,16 +412,21 @@ export function snapshotLegacyAmbientProviders(
   registrations: LoadExtensionsResult["runtime"]["pendingNativeProviderRegistrations"],
   legacyAmbientProviders: WeakSet<Provider>,
 ): void {
+  const log = createLogger("legacy-ambient-providers");
+  let legacyCount = 0;
   for (const { provider, extensionPath } of registrations) {
     if ([PROVIDER_EXTENSION, CLI_PROVIDER_EXTENSION, ACPX_EXTENSION].includes(extensionPath) &&
         provider.auth.apiKey && Reflect.get(provider.auth.apiKey, Symbol.for("pi-config.ambientLoginAuth")) === undefined) {
       legacyAmbientProviders.add(provider);
-      logger.debug(`[sidecar] LEGACY_AMBIENT_REGISTRATION: provider=${provider.id}`);
+      legacyCount++;
     }
   }
+  log.debug("Legacy ambient registrations classified", { registrationCount: registrations.length, legacyCount });
 }
 
 function createInternalRuntimeFactory(extensionPaths: string[], legacyAmbientProviders: WeakSet<Provider>): CreateAgentSessionRuntimeFactory {
+  const log = createLogger("internal-runtime-factory");
+  log.debug("Internal runtime factory configured", { extensionCount: extensionPaths.length });
   return async ({ cwd, agentDir, sessionManager: runtimeSessionManager, sessionStartEvent }) => {
     const settingsManager = createSessionSettingsManager();
     const services = await createAgentSessionServices({
@@ -433,6 +438,8 @@ function createInternalRuntimeFactory(extensionPaths: string[], legacyAmbientPro
         // Called after extension load but before queued native providers are registered.
         // The queue records the actual registering extension, unlike names or env vars.
         extensionsOverride: (result: LoadExtensionsResult) => {
+          const overrideLog = createLogger("internal-runtime-extensions");
+          overrideLog.debug("Classifying pending native providers", { registrationCount: result.runtime.pendingNativeProviderRegistrations.length });
           snapshotLegacyAmbientProviders(result.runtime.pendingNativeProviderRegistrations, legacyAmbientProviders);
           return result;
         },
@@ -868,7 +875,11 @@ export class SessionStore {
       Reflect.get(auth, ambientMarker) !== true &&
       !(native?.auth.apiKey && Reflect.get(native.auth.apiKey, ambientMarker) === true) &&
       !(native && this.legacyAmbientProviders.has(native));
-    logger.debug(`[sidecar] SESSION_KEY_CAPABILITY: provider=${provider}, supported=${supported}`);
+    const log = createLogger("session-key-capability");
+    log.debug("Session key capability decided", {
+      supported, hasAuth: !!auth, legacyAmbient: !!(native && this.legacyAmbientProviders.has(native)),
+      headlessExcluded: HEADLESS_EXCLUDED_PROVIDERS.has(provider),
+    });
     return supported;
   }
 
@@ -879,6 +890,7 @@ export class SessionStore {
    * validates against — rather than the provider's live (auth-gated) catalog.
    */
   async getProviderStatus(provider: string): Promise<ProviderStatus> {
+    const log = createLogger("provider-status");
     this.assertNotDisposed("getProviderStatus");
     await this.ensureDiscoveryComplete();
 
@@ -901,14 +913,14 @@ export class SessionStore {
     }
 
     if (!registered) {
-      logger.debug(`[sidecar] PROVIDER_STATUS: provider=${provider}, registered=false, modelCount=${modelCount}`);
+      log.debug("Provider status resolved", { provider, registered: false, modelCount, supportsSessionApiKey });
       return { provider, registered: false, modelCount, supportsSessionApiKey, authStatus: null, authCheck: null };
     }
 
     // Excluded providers are unusable headlessly (create() rejects them). Skip
     // checkAuth/getProviderAuthStatus to avoid OAuth side effects and noise.
     if (HEADLESS_EXCLUDED_PROVIDERS.has(provider)) {
-      logger.debug(`[sidecar] PROVIDER_STATUS: provider=${provider}, registered=true, modelCount=0, auth=skipped_headless_excluded`);
+      log.debug("Provider status skipped headless auth", { provider, registered: true, modelCount: 0, supportsSessionApiKey });
       return { provider, registered: true, modelCount: 0, supportsSessionApiKey, authStatus: null, authCheck: null };
     }
 
@@ -916,17 +928,17 @@ export class SessionStore {
     try {
       authCheck = (await this.modelRuntime!.checkAuth(provider)) ?? null;
     } catch (err) {
-      logger.warn(`[sidecar] PROVIDER_STATUS_AUTH_CHECK_FAILED: provider=${provider}`, err);
+      log.warn("Provider auth check failed", { provider, errorType: err instanceof Error ? "Error" : typeof err });
     }
 
     let authStatus: ProviderStatus["authStatus"] = null;
     try {
       authStatus = this.modelRuntime!.getProviderAuthStatus(provider);
     } catch (err) {
-      logger.warn(`[sidecar] PROVIDER_STATUS_AUTH_STATUS_FAILED: provider=${provider}`, err);
+      log.warn("Provider auth status failed", { provider, errorType: err instanceof Error ? "Error" : typeof err });
     }
 
-    logger.debug(`[sidecar] PROVIDER_STATUS: provider=${provider}, registered=${registered}, modelCount=${modelCount}`);
+    log.debug("Provider status resolved", { provider, registered, modelCount, supportsSessionApiKey, hasAuthCheck: !!authCheck, hasAuthStatus: !!authStatus });
 
     return { provider, registered, modelCount, supportsSessionApiKey, authStatus, authCheck };
   }

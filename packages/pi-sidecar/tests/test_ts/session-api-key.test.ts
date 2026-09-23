@@ -166,7 +166,7 @@ describe("session API key", () => {
     }
   });
 
-  it("accepts an unmarked generic provider colliding with a legacy agent ID and name", async () => {
+  const registerGenericOverLegacy = () => {
     const provider = "cli-legacy";
     const generic = fauxProvider({ provider, models: [{ id: "local" }] });
     generic.provider.name = "CLI legacy";
@@ -178,7 +178,16 @@ describe("session API key", () => {
     snapshotLegacyAmbientProviders([{ provider: generic.provider, extensionPath: "/other-extension/index.ts" }], (store as any).legacyAmbientProviders);
     runtime.registerNativeProvider(generic.provider);
     (store as any).cliModels.push({ provider, id: "local", name: "local" });
+    return provider;
+  };
+
+  it("reports key capability for an unmarked generic provider replacing a legacy agent", async () => {
+    const provider = registerGenericOverLegacy();
     assert.equal((await store.getProviderStatus(provider)).supportsSessionApiKey, true);
+  });
+
+  it("accepts a session key for an unmarked generic provider replacing a legacy agent", async () => {
+    const provider = registerGenericOverLegacy();
     const id = await store.create({ provider, model: "local", systemPrompt: "hi", cwd, agentDir: cwd, tools: [], apiKey: secret });
     store.delete(id);
   });
