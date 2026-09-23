@@ -56,6 +56,23 @@ export function redactDiagnostic(value: string, redact: (value: string) => strin
   return value.length > MAX_DIAGNOSTIC_LENGTH ? "[oversized diagnostic omitted]" : redact(value);
 }
 
+function safeErrorFrames(err: unknown): string[] | undefined {
+  const log = createLogger("auth-error-frames");
+  try {
+    const stack = err instanceof Error ? err.stack : undefined;
+    if (typeof stack !== "string") {
+      log.debug("Auth error has no readable stack");
+      return undefined;
+    }
+    const frames = stack.split("\n").slice(1, 9).map((line) => /^\s*at ([\w.$<>]+)\s*\(/.exec(line)?.[1] ?? "[anonymous]");
+    log.debug("Sanitized auth error frames", { frameCount: frames.length });
+    return frames;
+  } catch {
+    log.debug("Auth error stack getter failed");
+    return undefined;
+  }
+}
+
 export function isValidApiKey(value: unknown): value is string {
   const log = createLogger("api-key-validation");
   const valid = typeof value === "string" && value.length <= MAX_API_KEY_LENGTH && value.trim().length > 0
@@ -930,7 +947,7 @@ export class SessionStore {
     } catch (err) {
       // Auth exceptions may contain credentials: retain the traceback frames, not the message.
       log.warn("Provider auth check failed", { provider, errorType: err instanceof Error ? "Error" : typeof err,
-        stackFrames: err instanceof Error ? err.stack?.split("\n").slice(1, 9).map((line) => /^\s*at ([\w.$<>]+)\s*\(/.exec(line)?.[1] ?? "[anonymous]") : undefined });
+        stackFrames: safeErrorFrames(err) });
     }
 
     let authStatus: ProviderStatus["authStatus"] = null;
@@ -938,7 +955,7 @@ export class SessionStore {
       authStatus = this.modelRuntime!.getProviderAuthStatus(provider);
     } catch (err) {
       log.warn("Provider auth status failed", { provider, errorType: err instanceof Error ? "Error" : typeof err,
-        stackFrames: err instanceof Error ? err.stack?.split("\n").slice(1, 9).map((line) => /^\s*at ([\w.$<>]+)\s*\(/.exec(line)?.[1] ?? "[anonymous]") : undefined });
+        stackFrames: safeErrorFrames(err) });
     }
 
     log.debug("Provider status resolved", { provider, registered, modelCount, supportsSessionApiKey, hasAuthCheck: !!authCheck, hasAuthStatus: !!authStatus });

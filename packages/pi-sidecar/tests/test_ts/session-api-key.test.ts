@@ -71,6 +71,31 @@ describe("session API key", () => {
     }
   });
 
+  it("preserves provider status when auth exceptions contain malformed stacks", async () => {
+    const checkAuth = runtime.checkAuth;
+    const getProviderAuthStatus = runtime.getProviderAuthStatus;
+    const warn = logger.warn;
+    const warnings: string[] = [];
+    logger.warn = (...args) => { warnings.push(JSON.stringify(args)); };
+    const badStack = new Error("non-string stack");
+    Object.defineProperty(badStack, "stack", { value: 42 });
+    const throwingStack = new Error("throwing stack");
+    Object.defineProperty(throwingStack, "stack", { get: () => { throw new Error(secret); } });
+    runtime.checkAuth = async () => { throw badStack; };
+    runtime.getProviderAuthStatus = () => { throw throwingStack; };
+    try {
+      const status = await store.getProviderStatus("test-session-key");
+      assert.equal(status.authCheck, null);
+      assert.equal(status.authStatus, null);
+      assert.equal(warnings.length, 2);
+      assert.ok(warnings.every((line) => !line.includes(secret)));
+    } finally {
+      runtime.checkAuth = checkAuth;
+      runtime.getProviderAuthStatus = getProviderAuthStatus;
+      logger.warn = warn;
+    }
+  });
+
   it("reports session key capability independently of ambient authentication", async () => {
     for (const provider of ["openai", "google", "test-session-key", "test-key-only"]) {
       const status = await store.getProviderStatus(provider);
