@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import json
 import os
 import sys
 import tempfile
@@ -227,6 +228,7 @@ class SidecarClient:
         agent_dir: str | None = None,
         custom_tools: list | None = None,
         tools: list[str] | None = None,
+        api_key: str | None = None,
     ) -> str:
         """Create a new AI session. Returns session_id.
 
@@ -264,8 +266,20 @@ class SidecarClient:
             body["custom_tools"] = custom_tools
         if tools is not None:
             body["tools"] = tools
-        resp = await self._client.post("/sessions", json=body)
-        resp.raise_for_status()
+        if api_key is not None:
+            body["api_key"] = api_key
+        logger.debug("Creating session request: api_key_supplied=%s", api_key is not None)
+        try:
+            resp = await self._client.post("/sessions", json=body)
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            if api_key is None:
+                raise
+            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            logger.error("Session creation HTTP failure: status=%s, error_type=%s", status, type(exc).__name__)
+            raise RuntimeError(
+                f"Sidecar session creation failed (HTTP {status})" if status else "Sidecar session creation failed"
+            ) from None
         session_id = resp.json()["session_id"]
         logger.info(
             "Session created: session_id=%s, provider=%s, model=%s", session_id, sidecar_provider, sidecar_model
@@ -287,7 +301,7 @@ class SidecarClient:
                 error = payload.get("error", resp.text) if isinstance(payload, dict) else resp.text
             except ValueError:
                 error = resp.text or f"HTTP {resp.status_code}"
-            logger.error("Prompt failed: session=%s, status=%d, error=%s", session_id, resp.status_code, error)
+            logger.error("Prompt failed: session=%s, status=%d", session_id, resp.status_code)
             return AIResult(success=False, text=error, error=error)
 
         data = resp.json()
@@ -305,9 +319,8 @@ class SidecarClient:
         error = data.get("error")
         if error:
             logger.error(
-                "Prompt returned error from AI: session=%s, error=%s, text_length=%d",
+                "Prompt returned error from AI: session=%s, text_length=%d",
                 session_id,
-                error,
                 len(data.get("text", "")),
             )
             return AIResult(success=False, text=data.get("text", ""), usage=usage, error=error)
@@ -388,6 +401,7 @@ async def call_ai(
     session_id: str | None = None,
     custom_tools: list | None = None,
     tools: list[str] | None = None,
+    api_key: str | None = None,
 ) -> AIResult:
     """Call AI via the sidecar.
 
@@ -408,14 +422,18 @@ async def call_ai(
       previous result to continue the conversation.
     """
     logger.debug(
-        "call_ai: provider=%s, model=%s, session_id=%s, prompt_length=%d, agent_dir=%s, tools=%s",
+        "call_ai: provider=%s, model=%s, session_id=%s, prompt_length=%d, agent_dir=%s, tools=%s, api_key_supplied=%s",
         ai_provider,
         ai_model,
         session_id or "new",
         len(prompt),
         agent_dir,
         tools,
+        api_key is not None,
     )
+    if session_id and api_key is not None:
+        error = "api_key cannot be supplied with an existing session_id"
+        return AIResult(success=False, text=error, error=error, session_id=session_id)
     client = get_sidecar_client()
     created_session = False
     try:
@@ -428,6 +446,7 @@ async def call_ai(
                 agent_dir=agent_dir,
                 custom_tools=custom_tools,
                 tools=tools,
+                api_key=api_key,
             )
             created_session = True
         else:
@@ -435,6 +454,11 @@ async def call_ai(
         # Convert minutes to seconds for httpx timeout
         timeout = ai_call_timeout * 60.0 if ai_call_timeout else None
         result = await client.prompt(session_id, prompt, timeout=timeout)
+        if api_key is not None and not result.success and result.error:
+            if api_key:
+                for secret in (api_key, json.dumps(api_key)[1:-1]):
+                    result.error = result.error.replace(secret, "[redacted]")
+                    result.text = result.text.replace(secret, "[redacted]")
         # Attach session_id to result so callers can reuse or clean up
         result.session_id = session_id
         logger.debug(
@@ -442,7 +466,11 @@ async def call_ai(
         )
         return result
     except Exception as e:
-        logger.error("Sidecar call failed: %s", e, exc_info=True)
+        error = "Sidecar call failed" if api_key is not None else str(e)
+        if api_key is not None:
+            logger.error("Sidecar call failed: error_type=%s", type(e).__name__)
+        else:
+            logger.error("Sidecar call failed: %s", e, exc_info=True)
         # Clean up session if WE created it and the prompt failed
         cleanup_succeeded = False
         if created_session and session_id:
@@ -450,11 +478,11 @@ async def call_ai(
                 await client.delete_session(session_id)
                 cleanup_succeeded = True
             except Exception:
-                logger.warning("Failed to cleanup leaked session %s", session_id, exc_info=True)
+                logger.warning("Failed to cleanup leaked session %s", session_id, exc_info=api_key is None)
         return AIResult(
             success=False,
-            text=str(e),
-            error=str(e),
+            text=error,
+            error=error,
             session_id=None if cleanup_succeeded else session_id,
         )
 
@@ -470,6 +498,7 @@ async def call_ai_once(
     ai_call_timeout: int | None = None,
     custom_tools: list | None = None,
     tools: list[str] | None = None,
+    api_key: str | None = None,
 ) -> AIResult:
     """Single-shot AI call with automatic session cleanup.
 
@@ -496,6 +525,7 @@ async def call_ai_once(
         ai_call_timeout=ai_call_timeout,
         custom_tools=custom_tools,
         tools=tools,
+        api_key=api_key,
     )
     # Always clean up — this is a single-shot call
     if result.session_id:
@@ -503,7 +533,9 @@ async def call_ai_once(
             await get_sidecar_client().delete_session(result.session_id)
             result.session_id = None  # Clear so caller doesn't try to reuse
         except Exception:
-            logger.warning("Failed to cleanup session %s after call_ai_once", result.session_id, exc_info=True)
+            logger.warning(
+                "Failed to cleanup session %s after call_ai_once", result.session_id, exc_info=api_key is None
+            )
             # Preserve session_id so caller can retry cleanup
     logger.debug("call_ai_once complete: success=%s, text_length=%d", result.success, len(result.text))
     return result

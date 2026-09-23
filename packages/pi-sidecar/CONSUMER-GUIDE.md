@@ -102,6 +102,26 @@ async with SidecarClient() as client:
         await client.delete_session(session_id)
 ```
 
+### Per-session API key
+
+```python
+result = await call_ai_once(
+    "Summarize this log file",
+    ai_provider="google",
+    ai_model="gemini-2.5-flash",
+    api_key=user_api_key,
+)
+```
+
+`SidecarClient.create_session(..., api_key=...)` and `call_ai(..., api_key=...)`
+accept the same optional field. On the wire, `POST /sessions` takes `api_key`
+as a non-empty string; no existing parameter or response changes. The supplied
+key overrides stored/environment credentials only for that session's selected
+provider; omit it to use server credentials. Unsupported API-key auth returns
+400. Keys live in memory until session deletion/expiry, not session files or
+API responses, and are not inherited by nested agents. Keep sidecar access
+restricted to trusted callers, particularly when binding beyond loopback.
+
 ### Custom tools
 
 ```python

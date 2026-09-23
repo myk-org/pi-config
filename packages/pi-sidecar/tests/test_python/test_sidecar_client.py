@@ -1,5 +1,6 @@
 """Tests for pi_sidecar_client — all HTTP calls are mocked."""
 
+import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -204,6 +205,33 @@ class TestSidecarClient:
         assert body["provider"] == "acpx-cursor"
         assert body["model"] == "cursor:gpt-4o"
 
+    @pytest.mark.parametrize("api_key", [None, "synthetic-session-key"])
+    async def test_create_session_serializes_optional_api_key(self, client: SidecarClient, api_key: str | None) -> None:
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"session_id": "sess-key"}))
+
+        assert (
+            await client.create_session(provider="gemini", model="flash", system_prompt="hi", api_key=api_key)
+            == "sess-key"
+        )
+
+        body = client._client.post.call_args.kwargs["json"]
+        assert client._client.post.call_args.args == ("/sessions",)
+        assert body["provider"] == "google"
+        assert body["model"] == "flash"
+        assert body.get("api_key") == api_key
+        assert ("api_key" in body) is (api_key is not None)
+
+    async def test_create_session_http_failure_hides_key(self, client: SidecarClient) -> None:
+        key = "synthetic-secret-key"
+        client._client.post = AsyncMock(return_value=_mock_response(400, {"error": key}))
+
+        with patch.object(pi_sidecar_client.logger, "error") as log_error:
+            with pytest.raises(RuntimeError) as exc_info:
+                await client.create_session(provider="google", model="flash", system_prompt="hi", api_key=key)
+
+        assert key not in str(exc_info.value)
+        assert key not in str(log_error.call_args_list)
+
     # -- create_session with tools --
     async def test_client_create_session_with_tools(self, client: SidecarClient, tmp_path: Path) -> None:
         mock_resp = _mock_response(200, {"session_id": "sess-tools"})
@@ -357,6 +385,33 @@ class TestConvenienceFunctions:
         assert result.success is True
         assert result.session_id == "sess-new"
 
+    @pytest.mark.parametrize("api_key", [None, "synthetic-session-key"])
+    async def test_call_ai_forwards_key_only_at_creation(self, mock_client: AsyncMock, api_key: str | None) -> None:
+        mock_client.create_session.return_value = "sess-key"
+        mock_client.prompt.return_value = AIResult(success=True, text="ok")
+
+        result = await call_ai("hello", ai_provider="gemini", api_key=api_key)
+
+        assert result.session_id == "sess-key"
+        assert mock_client.create_session.call_args.kwargs["api_key"] == api_key
+        assert mock_client.prompt.call_args.kwargs == {"timeout": None}
+
+    @pytest.mark.parametrize("api_key", ["synthetic-session-key", ""])
+    async def test_call_ai_reuse_rejects_key_without_prompt(self, mock_client: AsyncMock, api_key: str) -> None:
+        with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+            result = await call_ai("hello", session_id="existing", api_key=api_key)
+
+        assert result.success is False
+        assert result.error is not None and "api_key" in result.error
+        assert result.text == result.error
+        assert result.session_id == "existing"
+        mock_client.create_session.assert_not_awaited()
+        mock_client.prompt.assert_not_awaited()
+        mock_client.delete_session.assert_not_awaited()
+        if api_key:
+            assert api_key not in result.error
+            assert api_key not in str(log_debug.call_args_list)
+
     # -- call_ai passes tools --
     async def test_call_ai_passes_tools(self, mock_client: AsyncMock) -> None:
         mock_client.create_session.return_value = "sess-tools"
@@ -415,6 +470,68 @@ class TestConvenienceFunctions:
         assert result.success is True
         assert result.session_id is None  # cleared after cleanup
         mock_client.delete_session.assert_awaited_once_with("sess-once")
+
+    @pytest.mark.parametrize("api_key", [None, "synthetic-session-key"])
+    async def test_call_ai_once_forwards_key_at_creation(self, mock_client: AsyncMock, api_key: str | None) -> None:
+        mock_client.create_session.return_value = "sess-once-key"
+        mock_client.prompt.return_value = AIResult(success=True, text="done")
+
+        result = await call_ai_once("hello", api_key=api_key)
+
+        assert result.session_id is None
+        assert mock_client.create_session.call_args.kwargs["api_key"] == api_key
+        mock_client.delete_session.assert_awaited_once_with("sess-once-key")
+
+    async def test_call_ai_once_deletes_session_after_prompt_error(self, mock_client: AsyncMock) -> None:
+        mock_client.create_session.return_value = "sess-failed"
+        mock_client.prompt.side_effect = RuntimeError("provider unavailable")
+
+        key = "synthetic-session-key"  # pragma: allowlist secret — test sentinel
+        result = await call_ai_once("hello", api_key=key)
+
+        assert result.success is False
+        assert result.session_id is None
+        mock_client.delete_session.assert_awaited_once_with("sess-failed")
+
+    async def test_call_ai_once_preserves_session_when_cleanup_fails(self, mock_client: AsyncMock) -> None:
+        mock_client.create_session.return_value = "sess-failed"
+        mock_client.prompt.side_effect = RuntimeError("provider unavailable")
+        mock_client.delete_session.side_effect = RuntimeError("cleanup failed")
+
+        key = "synthetic-session-key"  # pragma: allowlist secret — test sentinel
+        result = await call_ai_once("hello", api_key=key)
+
+        assert result.success is False
+        assert result.session_id == "sess-failed"
+        mock_client.delete_session.assert_awaited()
+
+    async def test_call_ai_redacts_escaped_key_in_prompt_error(self, mock_client: AsyncMock) -> None:
+        key = 'synthetic-"secret-key'
+        escaped_key = json.dumps(key)[1:-1]
+        mock_client.create_session.return_value = "sess-key-error"
+        mock_client.prompt.return_value = AIResult(success=False, text=escaped_key, error=escaped_key)
+
+        with patch.object(pi_sidecar_client.logger, "error") as log_error:
+            result = await call_ai("hello", api_key=key)
+
+        assert key not in (result.text, result.error)
+        assert escaped_key not in (result.text, result.error)
+        assert key not in str(log_error.call_args_list)
+        assert escaped_key not in str(log_error.call_args_list)
+
+    async def test_call_ai_exception_hides_key_from_result_and_logs(self, mock_client: AsyncMock) -> None:
+        key = "synthetic-secret-key"
+        mock_client.create_session.return_value = "sess-key-error"
+        mock_client.prompt.side_effect = RuntimeError(f"provider rejected {key}")
+
+        with patch.object(pi_sidecar_client.logger, "error") as log_error:
+            result = await call_ai("hello", api_key=key)
+
+        assert not result.success
+        assert key not in result.text
+        assert key not in (result.error or "")
+        assert key not in str(log_error.call_args_list)
+        mock_client.delete_session.assert_awaited_once_with("sess-key-error")
 
     # -- call_ai_once passes tools --
     async def test_call_ai_once_passes_tools(self, mock_client: AsyncMock) -> None:
