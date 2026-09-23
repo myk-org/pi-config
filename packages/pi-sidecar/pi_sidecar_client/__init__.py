@@ -40,14 +40,19 @@ def _validate_api_key(api_key: str) -> str | None:
         chr(codepoint) for codepoint in range(0x2000, 0x200B)
     )
     if not api_key.strip(js_whitespace):
-        return "Invalid api_key: blank"
-    try:
-        length = len(api_key.encode("utf-16-le")) // 2
-    except UnicodeEncodeError:
-        return "Invalid api_key: unpaired Unicode surrogate"
-    if length > MAX_API_KEY_LENGTH:
-        return f"Invalid api_key: exceeds {MAX_API_KEY_LENGTH} characters"
-    return None
+        outcome, error = "blank", "Invalid api_key: blank"
+    else:
+        try:
+            length = len(api_key.encode("utf-16-le")) // 2
+        except UnicodeEncodeError:
+            outcome, error = "malformed", "Invalid api_key: unpaired Unicode surrogate"
+        else:
+            if length > MAX_API_KEY_LENGTH:
+                outcome, error = "oversized", f"Invalid api_key: exceeds {MAX_API_KEY_LENGTH} characters"
+            else:
+                outcome, error = "accepted", None
+    logger.debug("API key validation: outcome=%s", outcome)
+    return error
 
 
 def _redact_api_key(value: str, api_key: str | None) -> str:
