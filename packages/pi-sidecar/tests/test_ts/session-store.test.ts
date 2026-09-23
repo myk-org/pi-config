@@ -68,6 +68,7 @@ function installMockRuntime(
       const models = providerModels[id];
       return models ? { getModels: () => models } : undefined;
     },
+    getRegisteredNativeProvider: () => undefined,
     getModel: (provider: string, modelId: string) => {
       const models = providerModels[provider] ?? [];
       return models.find((m) => m.id === modelId);
@@ -203,6 +204,7 @@ describe("SessionStore (mocked runtime)", () => {
     const status = await store.getProviderStatus("totally-unknown-provider-xyz");
     assert.equal(status.registered, false);
     assert.equal(status.modelCount, 0);
+    assert.equal(status.supportsSessionApiKey, false);
   });
 
   it("getProviderStatus() reports zero models for acpx-*/cli-* providers when no agents are configured", async () => {
@@ -215,6 +217,8 @@ describe("SessionStore (mocked runtime)", () => {
     const cliStatus = await store.getProviderStatus("cli-cursor");
     assert.equal(acpxStatus.modelCount, 0);
     assert.equal(cliStatus.modelCount, 0);
+    assert.equal(acpxStatus.supportsSessionApiKey, false);
+    assert.equal(cliStatus.supportsSessionApiKey, false);
   });
 
   it("create() rejects an acpx-* model when ACPX_AGENTS is not configured", async () => {

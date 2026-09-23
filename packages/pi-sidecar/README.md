@@ -12,10 +12,14 @@ simple JSON API. Ships with a Python client for easy integration.
 - **Session management** — create, prompt, abort, and delete AI sessions over REST; optionally supply a provider-agnostic, session-scoped API key
 - **Model discovery** — auto-discover models from ACPX agents, CLI providers (`cli-*`), and built-in providers
 - **Provider diagnostics** — `GET /models/:provider/status` reports registration,
-  model count, and auth status for a single provider
-  (Python: `SidecarClient.get_model_provider_status()`). Full auth detail on
+  model count, auth status, and `supportsSessionApiKey` (a boolean indicating
+  whether `POST /sessions` accepts `api_key` for that provider, regardless of
+  server credentials; false for unknown, headless-excluded, and ambient
+  CLI/ACPX providers). Python: `SidecarClient.get_model_provider_status()`.
+  Full auth detail on
   loopback; on non-loopback binds (`SIDECAR_HOST` / `DEV_MODE`)
-  `authStatus`/`authCheck` are redacted to `{ configured }` / `{ type }`
+  `authStatus`/`authCheck` are redacted to `{ configured }` / `{ type }`;
+  `supportsSessionApiKey` remains public on both binds and in 404 responses
 - **Custom tools** — plug in domain-specific tools at session creation via `custom_tools`
 - **HTTP-backed tools** — custom tools with `http` config get automatic request execution with parameter interpolation and security hardening
 - **Subagent delegation** — delegate tasks to specialized agents via the `subagent` tool (loaded as a Pi SDK extension)

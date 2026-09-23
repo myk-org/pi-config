@@ -117,7 +117,10 @@ result = await call_ai_once(
 accept the same optional field. On the wire, `POST /sessions` takes `api_key`
 as a non-empty string of at most 1,024 characters; no existing parameter or response changes. The supplied
 key overrides stored/environment credentials only for that session's selected
-provider; omit it to use server credentials. Unsupported API-key auth returns
+provider; omit it to use server credentials. Check `GET /models/:provider/status` for `supportsSessionApiKey` before
+sending a key. This boolean is independent of server credentials and remains
+visible on non-loopback binds and unknown-provider 404 responses (false).
+Headless-excluded and ambient CLI/ACPX providers report false. Unsupported API-key auth returns
 400. Keys live in memory until session deletion/expiry, not session files or
 API responses, and are not inherited by nested agents. Keep sidecar access
 restricted to trusted callers, particularly when binding beyond loopback.
@@ -298,7 +301,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 |--------|----------|-------------|
 | `GET` | `/health` | Health check |
 | `GET` | `/models` | List all available models |
-| `GET` | `/models/:provider/status` | Provider diagnostics |
+| `GET` | `/models/:provider/status` | Provider diagnostics, including `supportsSessionApiKey` |
 | `POST` | `/models/refresh` | Refresh model catalog |
 | `POST` | `/sessions` | Create a session |
 | `POST` | `/sessions/:id/prompt` | Send a prompt |

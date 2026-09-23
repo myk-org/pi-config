@@ -6,6 +6,8 @@
  * ProviderStreams (requires pi >= 0.87.0).
  */
 
+import { createLogger } from "./logger.js";
+
 import type {
   Api,
   AuthCheck,
@@ -78,8 +80,12 @@ export function buildAmbientLoginAuth(
   opts: AmbientLoginAuthOptions,
 ): NonNullable<ProviderAuth["apiKey"]> {
   const { displayName, isConfigured, sourceLabel } = opts;
+  const log = createLogger("runtime-provider-auth");
+  log.debug("Ambient login auth configured", { authKind: "ambient", hasAvailabilityCheck: typeof isConfigured === "function" });
 
   return {
+    // Shared with the standalone sidecar; no SDK auth capability flag exists for ambient login.
+    [Symbol.for("pi-config.ambientLoginAuth")]: true,
     name: displayName,
     async login(interaction: AuthInteraction) {
       const choice = await interaction.prompt({
