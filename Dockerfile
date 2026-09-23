@@ -81,6 +81,14 @@ COPY --chmod=755 scripts/docker-safe /usr/local/bin/docker-safe
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g npm@12.0.2
 
+# Qodo CLI: official versioned single-file release, verified against its published SHA-256.
+# Keep it outside HOME so PI_HOST_USER mounts cannot hide the executable.
+RUN curl -fsSL -o /usr/local/lib/qodo.mjs https://get.qodo.ai/releases/1.0.3/qodo.mjs && \
+  echo '74911b15c3d78e497a73e7b4e25a27aa47640ddae7aa9bd77628702f16eec48e  /usr/local/lib/qodo.mjs' | sha256sum -c - && \
+  printf '#!/bin/sh\nexec node /usr/local/lib/qodo.mjs "$@"\n' > /usr/local/bin/qodo && \
+  chmod +x /usr/local/bin/qodo && \
+  test "$(qodo --version)" = 1.0.3
+
 # Install acpx, agent-browser, pi-web-access, gemini-cli, and Graft (pi itself is installed at runtime in entrypoint.sh)
 COPY scripts/graft-allow-scripts.mjs /usr/local/lib/scripts/graft-allow-scripts.mjs
 COPY extensions/shared/logger-core.mjs extensions/shared/install-logger.mjs /usr/local/lib/extensions/shared/

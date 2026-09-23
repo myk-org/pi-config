@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import installOpenAiCompatibleDiscovery from "../../../extensions/openai-compatible-discovery/index.js";
 import {
   findEligibleOpenAiCompatibleProviderConfigs,
@@ -12,22 +13,11 @@ import {
   redactOpenAiCompatibleDiagnostic,
 } from "../../../extensions/shared/openai-compatible-discovery.js";
 
-function staticModel(id: string, provider = "litellm") {
-  return { id, name: id, api: "openai-completions", provider, baseUrl: "https://gateway.example/v1" };
+function modelIds(registry: ModelRegistry, provider = "gateway") {
+  return registry.getAll().filter((model) => model.provider === provider).map((model) => model.id);
 }
 
-function sourceProvider(id: string, stream = () => "streamed") {
-  return {
-    id,
-    name: id,
-    baseUrl: "https://gateway.example/v1",
-    auth: { apiKey: { name: id, resolve: async () => ({ auth: {} }), check: async () => ({ type: "api_key" as const, source: id }) } },
-    stream,
-    streamSimple: () => "simple-streamed",
-  };
-}
-
-describe("OpenAI-compatible provider discovery", () => {
+describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
   const originalFetch = globalThis.fetch;
   const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
   let agentDir: string;
@@ -36,6 +26,7 @@ describe("OpenAI-compatible provider discovery", () => {
     agentDir = mkdtempSync(join(tmpdir(), "openai-compatible-discovery-agent-"));
     process.env.PI_CODING_AGENT_DIR = agentDir;
   });
+
   afterEach(() => {
     globalThis.fetch = originalFetch;
     if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -43,377 +34,554 @@ describe("OpenAI-compatible provider discovery", () => {
     rmSync(agentDir, { recursive: true, force: true });
   });
 
+  async function setup(options: {
+    provider?: string;
+    name?: string;
+    mode?: "tui" | "json" | "print";
+    headers?: Record<string, string>;
+    discoverModelCapabilities?: boolean;
+    staticModels?: Array<Record<string, unknown>>;
+    beforeStart?: (runtime: ModelRuntime) => void;
+    onRegister?: (handlers: Map<string, (...args: any[]) => any>, registry: ModelRegistry) => void;
+    detachedRefreshSignal?: boolean;
+  } = {}) {
+    const provider = options.provider ?? "gateway";
+    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {
+      [provider]: {
+        name: options.name,
+        baseUrl: "https://gateway.example/v1?tenant=fake",
+        apiKey: "fake-key", // pragma: allowlist secret
+        api: "openai-completions",
+        discoverModels: true,
+        discoverModelCapabilities: options.discoverModelCapabilities,
+        headers: options.headers,
+        models: options.staticModels ?? [{ id: "static" }],
+      },
+    } }));
+    const { ModelRegistry, ModelRuntime } = await import("./pi-model-runtime.mts");
+    const runtime = await ModelRuntime.create({
+      modelsPath: join(agentDir, "models.json"),
+      modelsStorePath: join(agentDir, "model-cache"),
+      refreshOnCreate: false,
+    });
+    options.beforeStart?.(runtime);
+    const registry = new ModelRegistry(runtime);
+    const handlers = new Map<string, (...args: any[]) => any>();
+    const appended: Array<{ type: string; data: any }> = [];
+    const shortcuts: string[] = [];
+    const renderers: Array<{ type: string; render: any }> = [];
+    const pi = {
+      on: (event: string, handler: (...args: any[]) => any) => handlers.set(event, handler),
+      registerProvider: (id: string, config: any) => {
+        registry.registerProvider(id, options.detachedRefreshSignal ? {
+          ...config,
+          refreshModels: (refresh: any) => config.refreshModels({ ...refresh, signal: new AbortController().signal }),
+        } : config);
+        options.onRegister?.(handlers, registry);
+      },
+      unregisterProvider: (id: string) => registry.unregisterProvider(id),
+      appendEntry: (type: string, data: any) => appended.push({ type, data }),
+      registerEntryRenderer: (type: string, render: any) => renderers.push({ type, render }),
+      registerShortcut: (shortcut: string) => shortcuts.push(shortcut),
+    };
+    installOpenAiCompatibleDiscovery(pi as any);
+    await handlers.get("session_start")?.({}, {
+      mode: options.mode ?? "tui",
+      hasUI: (options.mode ?? "tui") === "tui",
+      modelRegistry: registry,
+    });
+    return { runtime, registry, handlers, appended, shortcuts, renderers };
+  }
+
   it("finds only exact opted-in OpenAI-compatible provider objects", () => {
     writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {
       gateway: { api: "openai-completions", discoverModels: true },
       disabled: { api: "openai-completions" },
       wrongApi: { api: "openai-responses", discoverModels: true },
     } }));
-    assert.deepEqual(findEligibleOpenAiCompatibleProviderConfigsResult().providers, [{ id: "gateway", headers: undefined }]);
-  });
-
-  it("maps eligible provider configuration objects through the public wrapper", () => {
-    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {
-      gateway: {
-        api: "openai-completions",
-        discoverModels: true,
-        headers: { "X-Gateway": "relay" },
-      },
-      disabled: { api: "openai-completions" },
-    } }));
-
-    assert.deepEqual(findEligibleOpenAiCompatibleProviderConfigs(), [{
+    assert.deepEqual(findEligibleOpenAiCompatibleProviderConfigsResult().providers, [{
       id: "gateway",
-      headers: { "X-Gateway": "relay" },
+      headers: undefined,
+      discoverModelCapabilities: false,
     }]);
   });
 
-  it("augments the configured provider so the ordinary picker renders its exact source key", async () => {
-    const modelsJson = JSON.stringify({ providers: { litellm: { api: "openai-completions", discoverModels: true } } });
-    writeFileSync(join(agentDir, "models.json"), modelsJson);
-    const registered: any[] = [];
-    let sessionStart: any;
+  it("maps eligible provider headers through the public wrapper", () => {
+    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {
+      gateway: { api: "openai-completions", discoverModels: true, headers: { "X-Gateway": "relay" } },
+    } }));
+    assert.deepEqual(findEligibleOpenAiCompatibleProviderConfigs(), [{
+      id: "gateway",
+      headers: { "X-Gateway": "relay" },
+      discoverModelCapabilities: false,
+    }]);
+  });
+
+  it("publishes the startup catalog under the configured provider identity with static precedence", async () => {
     globalThis.fetch = async () => new Response(JSON.stringify({ data: [
-      { id: "chatgpt-image-latest" }, { id: "  opaque  " }, { id: "chatgpt-image-latest" }, { id: "" },
+      { id: "static", reasoning: true, contextWindow: 999 },
+      { id: "discovered" },
     ] }));
-    installOpenAiCompatibleDiscovery({
-      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
-      registerProvider: (item: any) => registered.push(item),
-    } as any);
-    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
-      getProvider: () => sourceProvider("litellm"),
-      getProviderAuth: async () => ({ auth: {} }),
-      getAll: () => [staticModel("static-model")],
-    } });
+    const { registry } = await setup({ staticModels: [{ id: "static", reasoning: false, contextWindow: 42 }] });
 
-    assert.equal(readFileSync(join(agentDir, "models.json"), "utf8"), modelsJson);
-    assert.equal(registered.length, 1);
-    assert.equal(registered[0].id, "litellm");
-    assert.deepEqual(registered[0].getModels().map((model: any) => [model.provider, model.id]), [
-      ["litellm", "static-model"], ["litellm", "chatgpt-image-latest"], ["litellm", "  opaque  "], ["litellm", ""],
-    ]);
+    assert.deepEqual(modelIds(registry), ["static", "discovered"]);
+    const staticEntry = registry.find("gateway", "static")!;
+    assert.equal(staticEntry.reasoning, false);
+    assert.equal(staticEntry.contextWindow, 42);
+    assert.equal(registry.find("gateway", "discovered")?.provider, "gateway");
   });
 
-  it("materializes an opaque discovered model with Pi's complete contract", async () => {
-    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { genericKey: { api: "openai-completions", discoverModels: true } } }));
-    let sessionStart: any;
-    const source = sourceProvider("genericKey");
-    const registered: any[] = [];
-    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "opaque-discovered-model" }] }));
-    installOpenAiCompatibleDiscovery({
-      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
-      registerProvider: (item: any) => registered.push(item),
-    } as any);
-    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
-      getProvider: () => source, getProviderAuth: async () => ({ auth: {} }), getAll: () => [],
-    } });
-
-    const model = registered[0].getModels().find((item: any) => item.id === "opaque-discovered-model");
-    assert.deepEqual(model, {
-      id: "opaque-discovered-model",
-      name: "opaque-discovered-model",
-      api: "openai-completions",
-      provider: "genericKey",
-      baseUrl: "https://gateway.example/v1",
-      reasoning: false,
-      input: ["text", "image"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 128_000,
-      maxTokens: 16_384,
-    });
-    assert.equal(model.input.includes("image"), true);
-  });
-
-  it("enriches LiteLLM reasoning by reported model identity with resolved auth and headers", async () => {
-    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { litellmGateway: {
-      api: "openai-completions",
-      discoverModels: true,
-      headers: { "X-Route": "$TEST_LITELLM_ROUTE" },
-    } } }));
-    process.env.TEST_LITELLM_ROUTE = "fake-route";
-    let sessionStart: any;
-    const requests: Array<{ url: string; headers: Headers }> = [];
-    const registered: any[] = [];
-    globalThis.fetch = async (input, init) => {
-      requests.push({ url: String(input), headers: new Headers(init?.headers) });
-      return String(input).includes("model/info")
-        ? new Response(JSON.stringify({ data: [
-          { model_name: "explicit-true", model_info: { supports_reasoning: true } },
-          { model_name: "explicit-false", model_info: { supports_reasoning: false, supported_openai_params: ["reasoning_effort"] } },
-          { model_name: "fallback", model_info: { supported_openai_params: ["reasoning_effort"] } },
-        ] }))
-        : new Response(JSON.stringify({ data: [
-          { id: "explicit-true" }, { id: "explicit-false" }, { id: "fallback" }, { id: "ordinary" },
-        ] }));
+  it("waits for registration's offline refresh before startup discovery", async () => {
+    let releaseOffline!: () => void;
+    const offlineGate = new Promise<void>((resolve) => { releaseOffline = resolve; });
+    let registered!: () => void;
+    const registration = new Promise<void>((resolve) => { registered = resolve; });
+    let requests = 0;
+    globalThis.fetch = async () => {
+      requests++;
+      return new Response(JSON.stringify({ data: [{ id: "discovered" }] }));
     };
-    installOpenAiCompatibleDiscovery({
-      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
-      registerProvider: (provider: any) => registered.push(provider),
-    } as any);
-    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
-      getProvider: () => ({ ...sourceProvider("litellmGateway"), name: "LiteLLM gateway", baseUrl: "https://gateway.example/v1?tenant=fake" }),
-      getProviderAuth: async () => ({ auth: { apiKey: "fake-key" } }), // pragma: allowlist secret
-      getAll: () => [],
-    } });
-    delete process.env.TEST_LITELLM_ROUTE;
-
-    assert.deepEqual(requests.map(({ url }) => new URL(url).pathname), ["/v1/models", "/v1/model/info"]);
-    assert.equal(new URL(requests[1].url).searchParams.get("tenant"), "fake");
-    assert.equal(requests[1].headers.get("authorization"), "Bearer fake-key");
-    assert.equal(requests[1].headers.get("x-route"), "fake-route");
-    const models = Object.fromEntries(registered[0].getModels().map((model: any) => [model.id, model]));
-    assert.equal(models["explicit-true"].reasoning, true);
-    assert.equal(models["explicit-false"].reasoning, false);
-    assert.equal(models.fallback.reasoning, true);
-    assert.equal(models.ordinary.reasoning, false);
+    const starting = setup({
+      beforeStart: (runtime) => {
+        const refresh = runtime.refresh.bind(runtime);
+        runtime.refresh = ((options) => options?.allowNetwork === false
+          ? offlineGate.then(() => refresh(options))
+          : refresh(options)) as typeof runtime.refresh;
+      },
+      onRegister: registered,
+    });
+    try {
+      await registration;
+      // The registration-triggered refresh has not finished. Network discovery must wait for it.
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(requests, 0);
+    } finally {
+      releaseOffline();
+    }
+    const { registry, appended } = await starting;
+    assert.deepEqual(modelIds(registry), ["static", "discovered"]);
+    assert.deepEqual(appended.map(({ data }) => data.summary), ["Providers: gateway (1)"]);
   });
 
-  it("fails open when LiteLLM capability discovery is unavailable or malformed", async () => {
-    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { litellm: { api: "openai-completions", discoverModels: true } } }));
-    let sessionStart: any;
-    const registered: any[] = [];
-    globalThis.fetch = async (input) => String(input).includes("model/info")
-      ? new Response("unauthorized secret payload", { status: 401 })
-      : new Response(JSON.stringify({ data: [{ id: "still-available" }] }));
-    installOpenAiCompatibleDiscovery({
-      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
-      registerProvider: (provider: any) => registered.push(provider),
-    } as any);
-    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
-      getProvider: () => sourceProvider("litellm"), getProviderAuth: async () => ({ auth: {} }), getAll: () => [],
-    } });
+  it("retains the discovered snapshot during offline restore", async () => {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      return new Response(JSON.stringify({ data: [{ id: "discovered" }] }));
+    };
+    const { runtime, registry } = await setup();
+    assert.equal(calls, 1);
 
-    assert.equal(registered[0].getModels().find((model: any) => model.id === "still-available").reasoning, false);
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: false, force: true });
+    assert.equal(calls, 1);
+    assert.deepEqual(modelIds(registry), ["static", "discovered"]);
   });
 
-  it("does not probe capability endpoints for non-LiteLLM providers", async () => {
-    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { gateway: { api: "openai-completions", discoverModels: true } } }));
-    let sessionStart: any;
-    const urls: string[] = [];
+  it("recovers through the public provider refresh after startup discovery fails", async () => {
+    let succeeds = false;
+    globalThis.fetch = async () => succeeds
+      ? new Response(JSON.stringify({ data: [{ id: "recovered" }] }))
+      : new Response("unavailable", { status: 503 });
+    const { runtime, registry, appended } = await setup();
+    assert.deepEqual(modelIds(registry), ["static"]);
+    assert.deepEqual(appended, []);
+
+    succeeds = true;
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    assert.deepEqual(modelIds(registry), ["static", "recovered"]);
+    assert.deepEqual(appended, []);
+  });
+
+  it("removes discovered models after a successful empty response", async () => {
+    let data = [{ id: "old" }];
+    globalThis.fetch = async () => new Response(JSON.stringify({ data }));
+    const { runtime, registry } = await setup();
+    assert.deepEqual(modelIds(registry), ["static", "old"]);
+
+    data = [];
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    assert.deepEqual(modelIds(registry), ["static"]);
+  });
+
+  it("retains the discovered snapshot after a failed response", async () => {
+    let response = new Response(JSON.stringify({ data: [{ id: "old" }] }));
+    globalThis.fetch = async () => response.clone();
+    const { runtime, registry } = await setup();
+
+    response = new Response("failed", { status: 502 });
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    assert.deepEqual(modelIds(registry), ["static", "old"]);
+
+    response = new Response(JSON.stringify({ data: [{ id: "new" }] }));
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    assert.deepEqual(modelIds(registry), ["static", "new"]);
+  });
+
+  it("drops the old catalog after API key rotation on offline refresh", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "tenant-a" }] }));
+    const { runtime, registry } = await setup();
+    await runtime.setRuntimeApiKey("gateway", "tenant-b-key"); // pragma: allowlist secret
+    assert.deepEqual(modelIds(registry), ["static"]);
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: false, force: true });
+    assert.deepEqual(modelIds(registry), ["static"]);
+  });
+
+  it("retains only the new key's snapshot after a failed refresh", async () => {
+    let id = "tenant-a";
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id }] }));
+    const { runtime, registry } = await setup();
+    await runtime.setRuntimeApiKey("gateway", "tenant-b-key"); // pragma: allowlist secret
+    globalThis.fetch = async () => new Response("unavailable", { status: 503 });
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    assert.deepEqual(modelIds(registry), ["static"]);
+    id = "tenant-b";
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id }] }));
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    globalThis.fetch = async () => new Response("unavailable", { status: 503 });
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    assert.deepEqual(modelIds(registry), ["static", "tenant-b"]);
+  });
+
+  it("drops the old catalog after routing header rotation", async () => {
+    const previous = process.env.DISCOVERY_TEST_ROUTE;
+    try {
+      process.env.DISCOVERY_TEST_ROUTE = "tenant-a";
+      globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "tenant-a" }] }));
+      const { runtime, registry } = await setup({ headers: { "X-Route": "$DISCOVERY_TEST_ROUTE" } });
+      process.env.DISCOVERY_TEST_ROUTE = "tenant-b";
+      globalThis.fetch = async () => new Response("unavailable", { status: 503 });
+      await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+      assert.deepEqual(modelIds(registry), ["static"]);
+      await runtime.refresh({ providers: ["gateway"], allowNetwork: false, force: true });
+      assert.deepEqual(modelIds(registry), ["static"]);
+    } finally {
+      if (previous === undefined) delete process.env.DISCOVERY_TEST_ROUTE;
+      else process.env.DISCOVERY_TEST_ROUTE = previous;
+    }
+  });
+
+  it("drops the old catalog after base URL rotation", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "tenant-a" }] }));
+    const { runtime, registry } = await setup();
+    const path = join(agentDir, "models.json");
+    const config = JSON.parse(readFileSync(path, "utf8"));
+    config.providers.gateway.baseUrl = "https://tenant-b.example/v1";
+    writeFileSync(path, JSON.stringify(config));
+    globalThis.fetch = async () => new Response("unavailable", { status: 503 });
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    assert.deepEqual(modelIds(registry), ["static"]);
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: false, force: true });
+    assert.deepEqual(modelIds(registry), ["static"]);
+  });
+
+  it("ignores a superseded A response after B succeeds", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "initial-a" }] }));
+    const { runtime, registry } = await setup();
+    let release!: (response: Response) => void;
+    let started!: () => void;
+    const pending = new Promise<Response>((resolve) => { release = resolve; });
+    const requested = new Promise<void>((resolve) => { started = resolve; });
+    globalThis.fetch = async () => { started(); return pending; };
+    const first = runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    await requested;
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "tenant-b" }] }));
+    const second = runtime.setRuntimeApiKey("gateway", "tenant-b-key"); // pragma: allowlist secret
+    await second;
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    release(new Response(JSON.stringify({ data: [{ id: "late-a" }] })));
+    await first;
+    assert.deepEqual(modelIds(registry), ["static", "tenant-b"]);
+    globalThis.fetch = async () => new Response("unavailable", { status: 503 });
+    await runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    assert.deepEqual(modelIds(registry), ["static", "tenant-b"]);
+  });
+
+  it("prevents an older concurrent refresh from replacing the newest generation", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "initial" }] }));
+    const { runtime, registry } = await setup();
+    const signals: AbortSignal[] = [];
+    globalThis.fetch = async (_input, init) => {
+      const signal = init!.signal as AbortSignal;
+      signals.push(signal);
+      if (signals.length > 1)
+        return new Response(JSON.stringify({ data: [{ id: "newest" }] }));
+      return new Promise<Response>((_resolve, reject) => signal.addEventListener(
+        "abort",
+        () => reject(new DOMException("Superseded", "AbortError")),
+        { once: true },
+      ));
+    };
+
+    const first = runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    while (signals.length === 0) await new Promise((resolve) => setImmediate(resolve));
+    const second = runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    await Promise.all([first, second]);
+
+    assert.equal(signals[0].aborted, true);
+    assert.deepEqual(modelIds(registry), ["static", "newest"]);
+  });
+
+  it("preserves the previous snapshot when a superseding refresh fails", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "initial" }] }));
+    const { runtime, registry } = await setup();
+    let started!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { started = resolve; });
+    globalThis.fetch = async (_input, init) => {
+      started();
+      return new Promise<Response>((_resolve, reject) => (init!.signal as AbortSignal).addEventListener(
+        "abort", () => reject(new DOMException("Superseded", "AbortError")), { once: true },
+      ));
+    };
+    const first = runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    await firstStarted;
+    globalThis.fetch = async () => new Response("failed", { status: 503 });
+    const second = runtime.refresh({ providers: ["gateway"], allowNetwork: true, force: true });
+    await Promise.all([first, second]);
+    assert.deepEqual(modelIds(registry), ["static", "initial"]);
+  });
+
+  it("grants the capability endpoint a fresh timeout", async () => {
+    const originalTimeout = AbortSignal.timeout;
+    const timeoutSignals: AbortSignal[] = [];
+    const requests: AbortSignal[] = [];
+    AbortSignal.timeout = ((ms: number) => {
+      const signal = originalTimeout(ms);
+      timeoutSignals.push(signal);
+      return signal;
+    }) as typeof AbortSignal.timeout;
+    try {
+      globalThis.fetch = async (input, init) => {
+        requests.push(init!.signal as AbortSignal);
+        return new Response(JSON.stringify({ data: String(input).includes("model/info") ? [] : [{ id: "current" }] }));
+      };
+      await setup({ discoverModelCapabilities: true });
+      assert.equal(requests.length, 2);
+      assert.equal(timeoutSignals.length, 2);
+      assert.notEqual(requests[0], requests[1]);
+    } finally {
+      AbortSignal.timeout = originalTimeout;
+    }
+  });
+
+  it("does not intercept Ctrl+P model snapshot cycling", async () => {
+    let fetchCalls = 0;
+    globalThis.fetch = async () => {
+      fetchCalls++;
+      return new Response(JSON.stringify({ data: [{ id: "discovered" }] }));
+    };
+    const { shortcuts } = await setup();
+    assert.deepEqual(shortcuts, []);
+    assert.equal(fetchCalls, 1);
+  });
+
+  it("preserves the configured provider stream implementation for discovered models", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "discovered" }] }));
+    const { registry } = await setup();
+    const source = registry.getProvider("gateway")!;
+    assert.equal(source.getModels().some((model) => model.id === "discovered"), true);
+    assert.equal(typeof source.stream, "function");
+    assert.equal(typeof source.streamSimple, "function");
+  });
+
+  it("discovers models in non-TUI mode", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "headless" }] }));
+    const { registry, appended } = await setup({ mode: "json" });
+    assert.deepEqual(modelIds(registry), ["static", "headless"]);
+    assert.deepEqual(appended, []);
+  });
+
+  it("does not infer capability discovery from provider strings containing litellm", async () => {
+    const requests: string[] = [];
     globalThis.fetch = async (input) => {
-      urls.push(String(input));
-      return new Response(JSON.stringify({ data: [{ id: "model" }] }));
+      requests.push(String(input));
+      return new Response(JSON.stringify({ data: [{ id: "plain" }] }));
     };
-    installOpenAiCompatibleDiscovery({
-      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
-      registerProvider: () => {},
-    } as any);
-    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
-      getProvider: () => ({ ...sourceProvider("gateway"), name: "Generic gateway" }),
-      getProviderAuth: async () => ({ auth: {} }), getAll: () => [],
-    } });
+    await setup({ provider: "contains-litellm", name: "also litellm" });
 
-    assert.deepEqual(urls.map((url) => new URL(url).pathname), ["/v1/models"]);
+    assert.deepEqual(requests.map((url) => new URL(url).pathname), ["/v1/models"]);
   });
 
-  it("preserves static reasoning metadata over LiteLLM capability records", async () => {
-    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { litellm: { api: "openai-completions", discoverModels: true } } }));
-    let sessionStart: any;
-    const registered: any[] = [];
-    globalThis.fetch = async (input) => String(input).includes("model/info")
-      ? new Response(JSON.stringify({ data: [{ model_name: "static", model_info: { supports_reasoning: true } }] }))
-      : new Response(JSON.stringify({ data: [{ id: "static" }] }));
-    installOpenAiCompatibleDiscovery({
-      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
-      registerProvider: (provider: any) => registered.push(provider),
-    } as any);
-    const configured = { ...staticModel("static"), reasoning: false, contextWindow: 42 };
-    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
-      getProvider: () => sourceProvider("litellm"), getProviderAuth: async () => ({ auth: {} }), getAll: () => [configured],
-    } });
-
-    assert.equal(registered[0].getModels().find((model: any) => model.id === "static"), configured);
+  it("routes opted-in arbitrary provider capabilities to model/info", async () => {
+    const paths: string[] = [];
+    globalThis.fetch = async (input) => {
+      paths.push(new URL(String(input)).pathname);
+      return new Response(JSON.stringify({ data: [] }));
+    };
+    await setup({ provider: "arbitrary-relay", name: "Unrelated vendor", discoverModelCapabilities: true });
+    assert.deepEqual(paths, ["/v1/models", "/v1/model/info"]);
   });
 
-  it("routes a selected discovered model through the original configured provider", async () => {
-    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { genericKey: { api: "openai-completions", discoverModels: true } } }));
-    let sessionStart: any;
-    const calls: unknown[][] = [];
-    const source = sourceProvider("genericKey", (...args: unknown[]) => { calls.push(args); return "source-result"; });
-    const registered: any[] = [];
-    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "returned-id" }] }));
-    installOpenAiCompatibleDiscovery({
-      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
-      registerProvider: (item: any) => registered.push(item),
-    } as any);
-    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
-      getProvider: () => source, getProviderAuth: async () => ({ auth: {} }), getAll: () => [],
-    } });
-    assert.equal(registered[0].stream("returned-id", "context"), "source-result");
-    assert.deepEqual(calls, [["returned-id", "context", undefined]]);
-  });
-
-  it("renders the durable discovery summary with a valid Pi theme color", async () => {
-    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { relay: { api: "openai-completions", discoverModels: true } } }));
-    let sessionStart: any;
-    const appended: Array<{ type: string; data: any }> = [];
-    const renderers: Array<{ type: string; render: any }> = [];
-    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "one" }, { id: "two" }] }));
-    installOpenAiCompatibleDiscovery({
-      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
-      registerProvider: () => {},
-      appendEntry: (type: string, data: any) => appended.push({ type, data }),
-      registerEntryRenderer: (type: string, render: any) => renderers.push({ type, render }),
-    } as any);
-    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
-      getProvider: () => sourceProvider("relay"), getProviderAuth: async () => ({ auth: {} }), getAll: () => [],
-    } });
-
-    assert.deepEqual(appended, [{ type: "openai-compatible-discovery-summary", data: { summary: "Providers: relay (2)" } }]);
-    assert.equal(renderers.length, 1);
-    assert.equal(renderers[0].type, "openai-compatible-discovery-summary");
-    const piThemeColors = new Set([
-      "accent", "border", "borderAccent", "borderMuted", "success", "error", "warning", "muted", "dim", "text",
-      "thinkingText", "searchMatchText", "userMessageText", "customMessageText", "customMessageLabel", "toolTitle", "toolOutput",
-      "mdHeading", "mdLink", "mdLinkUrl", "mdCode", "mdCodeBlock", "mdCodeBlockBorder", "mdQuote", "mdQuoteBorder", "mdHr",
-      "mdListBullet", "toolDiffAdded", "toolDiffRemoved", "toolDiffContext", "syntaxComment", "syntaxKeyword", "syntaxFunction",
-      "syntaxVariable", "syntaxString", "syntaxNumber", "syntaxType", "syntaxOperator", "syntaxPunctuation", "thinkingOff",
-      "thinkingMinimal", "thinkingLow", "thinkingMedium", "thinkingHigh", "thinkingXhigh", "thinkingMax", "bashMode",
+  it("propagates bearer credentials to both discovery endpoints", async () => {
+    const requests: Array<{ path: string; header: string | null }> = [];
+    globalThis.fetch = async (input, init) => {
+      requests.push({ path: new URL(String(input)).pathname, header: new Headers(init?.headers).get("authorization") });
+      return new Response(JSON.stringify({ data: [] }));
+    };
+    await setup({ discoverModelCapabilities: true });
+    assert.deepEqual(requests, [
+      { path: "/v1/models", header: "Bearer fake-key" },
+      { path: "/v1/model/info", header: "Bearer fake-key" },
     ]);
-    let rendered: any;
-    assert.doesNotThrow(() => {
-      rendered = renderers[0].render(
-        { data: appended[0].data },
-        {},
-        { fg: (color: string, text: string) => {
-          if (!piThemeColors.has(color)) throw new Error(`Unknown theme color: ${color}`);
-          return text;
-        } },
-      );
-    });
-    assert.equal(rendered.render(80).join("\n").trimEnd(), "Providers: relay (2)");
   });
 
-  it("invalidates the durable discovery summary renderer", () => {
-    const renderers: Array<{ type: string; render: any }> = [];
-    installOpenAiCompatibleDiscovery({
-      on: () => {},
-      registerEntryRenderer: (type: string, render: any) => renderers.push({ type, render }),
-    } as any);
+  it("propagates custom routing headers to both discovery endpoints", async () => {
+    const requests: Array<{ path: string; header: string | null }> = [];
+    globalThis.fetch = async (input, init) => {
+      requests.push({ path: new URL(String(input)).pathname, header: new Headers(init?.headers).get("x-route") });
+      return new Response(JSON.stringify({ data: [] }));
+    };
+    await setup({ discoverModelCapabilities: true, headers: { "X-Route": "fake-route" } });
+    assert.deepEqual(requests, [
+      { path: "/v1/models", header: "fake-route" },
+      { path: "/v1/model/info", header: "fake-route" },
+    ]);
+  });
 
+  it("infers reasoning from supported_openai_params", async () => {
+    globalThis.fetch = async (input) => new Response(JSON.stringify({ data: String(input).includes("model/info")
+      ? [{ model_name: "reasoning", model_info: { supported_openai_params: ["reasoning_effort"] } }]
+      : [{ id: "reasoning" }] }));
+    const { registry } = await setup({ discoverModelCapabilities: true });
+    assert.equal(registry.find("gateway", "reasoning")?.reasoning, true);
+  });
+
+  it("honors explicit reasoning opt-out over reasoning_effort inference", async () => {
+    globalThis.fetch = async (input) => new Response(JSON.stringify({ data: String(input).includes("model/info")
+      ? [{ model_name: "opt-out", model_info: { supports_reasoning: false, supported_openai_params: ["reasoning_effort"] } }]
+      : [{ id: "opt-out" }] }));
+    const { registry } = await setup({ discoverModelCapabilities: true });
+    assert.equal(registry.find("gateway", "opt-out")?.reasoning, false);
+  });
+
+  it("preserves static reasoning metadata over discovered capabilities", async () => {
+    globalThis.fetch = async (input) => new Response(JSON.stringify({ data: String(input).includes("model/info")
+      ? [{ model_name: "static", model_info: { supports_reasoning: true } }]
+      : [{ id: "static" }] }));
+    const { registry } = await setup({ discoverModelCapabilities: true, staticModels: [{ id: "static", reasoning: false }] });
+    assert.equal(registry.find("gateway", "static")?.reasoning, false);
+  });
+
+  it("keeps current discovered models un-enriched when capability discovery fails", async () => {
+    globalThis.fetch = async (input) => String(input).includes("model/info")
+      ? new Response("unavailable", { status: 503 })
+      : new Response(JSON.stringify({ data: [{ id: "current", reasoning: false }] }));
+    const { registry } = await setup({ provider: "arbitrary", discoverModelCapabilities: true });
+
+    assert.deepEqual(modelIds(registry, "arbitrary"), ["static", "current"]);
+    assert.equal(registry.find("arbitrary", "current")?.reasoning, false);
+  });
+
+  it("renders a durable TUI discovery summary with a valid theme color", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "one" }, { id: "two" }] }));
+    const { appended, renderers } = await setup();
+    assert.deepEqual(appended, [{ type: "openai-compatible-discovery-summary", data: { summary: "Providers: gateway (2)" } }]);
     const rendered = renderers[0].render(
-      { data: { summary: "Providers: relay (2)" } },
+      { data: appended[0].data },
       {},
-      { fg: (_color: string, text: string) => text },
+      { fg: (color: string, text: string) => {
+        assert.equal(color, "muted");
+        return text;
+      } },
     );
+    assert.equal(rendered.render(80).join("\n"), "Providers: gateway (2)");
     assert.doesNotThrow(() => rendered.invalidate());
   });
 
-  it("does not append a prior session's summary when new-session discovery fails", async () => {
-    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { relay: { api: "openai-completions", discoverModels: true } } }));
-    let sessionStart: any;
-    const appended: Array<{ type: string; data: any }> = [];
-    let succeeds = true;
-    globalThis.fetch = async () => succeeds
-      ? new Response(JSON.stringify({ data: [{ id: "one" }, { id: "two" }] }))
-      : new Response("nope", { status: 502 });
-    installOpenAiCompatibleDiscovery({
-      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
-      registerProvider: () => {}, unregisterProvider: () => {},
-      appendEntry: (type: string, data: any) => appended.push({ type, data }),
-      registerEntryRenderer: () => {},
-    } as any);
-    const ctx = { mode: "tui", hasUI: true, modelRegistry: {
-      getProvider: () => sourceProvider("relay"), getProviderAuth: async () => ({ auth: {} }), getAll: () => [],
-    } };
-    await sessionStart({}, ctx);
-    succeeds = false;
-    await sessionStart({}, ctx);
-
-    assert.deepEqual(appended, [{ type: "openai-compatible-discovery-summary", data: { summary: "Providers: relay (2)" } }]);
-  });
-
-  it("does not register after discovery errors", async () => {
-    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { gateway: { api: "openai-completions", discoverModels: true } } }));
-    let sessionStart: any;
-    let registrations = 0;
-    globalThis.fetch = async () => new Response("nope", { status: 502 });
-    installOpenAiCompatibleDiscovery({
-      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; },
-      registerProvider: () => registrations++,
-    } as any);
-    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
-      getProvider: () => sourceProvider("gateway"), getProviderAuth: async () => ({ auth: {} }), getAll: () => [],
-    } });
-    assert.equal(registrations, 0);
-  });
-
-  it("does not fetch outside the interactive TUI lifecycle", async () => {
-    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { gateway: { api: "openai-completions", discoverModels: true } } }));
-    let sessionStart: any;
-    let fetchCalls = 0;
-    globalThis.fetch = async () => { fetchCalls++; throw new Error("must not fetch"); };
-    installOpenAiCompatibleDiscovery({ on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; } } as any);
-    await sessionStart({}, { mode: "json", hasUI: false, modelRegistry: {} });
-    assert.equal(fetchCalls, 0);
-  });
-
-  it("restores the unchanged static provider on session shutdown", async () => {
-    writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { gateway: { api: "openai-completions", discoverModels: true } } }));
-    let sessionStart: any;
-    let shutdown: any;
-    const unregistered: string[] = [];
-    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "returned-id" }] }));
-    installOpenAiCompatibleDiscovery({
-      on: (event: string, handler: any) => { if (event === "session_start") sessionStart = handler; if (event === "session_shutdown") shutdown = handler; },
-      registerProvider: () => {}, unregisterProvider: (id: string) => unregistered.push(id),
-    } as any);
-    await sessionStart({}, { mode: "tui", hasUI: true, modelRegistry: {
-      getProvider: () => sourceProvider("gateway"), getProviderAuth: async () => ({ auth: {} }), getAll: () => [staticModel("static", "gateway")],
-    } });
+  it("aborts delayed discovery on shutdown without publishing a summary or stale catalog", async () => {
+    let release!: (response: Response) => void;
+    let requested!: () => void;
+    let shutdown!: () => void;
+    const pending = new Promise<Response>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { requested = resolve; });
+    let signal!: AbortSignal;
+    globalThis.fetch = async (_input, init) => {
+      signal = init!.signal as AbortSignal;
+      requested();
+      return pending; // Deliberately ignores abort to test a late network response.
+    };
+    const starting = setup({ detachedRefreshSignal: true, onRegister: (handlers) => { shutdown = handlers.get("session_shutdown")!; } });
+    await started;
     shutdown();
-    assert.deepEqual(unregistered, ["gateway"]);
+    assert.equal(signal.aborted, true);
+    release(new Response(JSON.stringify({ data: [{ id: "late" }] })));
+    const { registry, appended } = await starting;
+    assert.deepEqual(appended, []);
+    assert.deepEqual(modelIds(registry), ["static"]);
+  });
+
+  it("ignores an old discovery response after a replacement session starts", async () => {
+    let release!: (response: Response) => void;
+    let requested!: () => void;
+    let restart!: (...args: any[]) => Promise<void>;
+    let registry!: ModelRegistry;
+    const pending = new Promise<Response>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { requested = resolve; });
+    let calls = 0;
+    let oldSignal!: AbortSignal;
+    globalThis.fetch = async (_input, init) => {
+      if (++calls === 1) {
+        oldSignal = init!.signal as AbortSignal;
+        requested();
+        return pending; // A completed old response must not publish into the replacement.
+      }
+      return new Response(JSON.stringify({ data: [{ id: "new" }] }));
+    };
+    const starting = setup({ detachedRefreshSignal: true, onRegister: (handlers, current) => {
+      restart = handlers.get("session_start")!;
+      registry = current;
+    } });
+    await started;
+    await restart({}, { mode: "tui", hasUI: true, modelRegistry: registry });
+    assert.equal(oldSignal.aborted, true);
+    release(new Response(JSON.stringify({ data: [{ id: "late" }] })));
+    const { appended } = await starting;
+    assert.deepEqual(appended.map(({ data }) => data.summary), ["Providers: gateway (1)"]);
+    assert.deepEqual(modelIds(registry), ["static", "new"]);
+  });
+
+  it("unregisters only its provider refresh overlays on shutdown", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: [{ id: "discovered" }] }));
+    const { handlers, registry } = await setup();
+    handlers.get("session_shutdown")?.();
+    assert.deepEqual(modelIds(registry), ["static"]);
   });
 });
 
 describe("OpenAI-compatible discovery helpers", () => {
-  it("formats the configured provider key and discovered count without provider-specific naming", () => {
+  it("formats a provider discovery summary", () => {
     assert.equal(formatOpenAiCompatibleDiscoverySummary("my-openai-relay", 242), "Providers: my-openai-relay (242)");
   });
 
-  function materializeLiteLlmCapacityModel() {
-    return materializeOpenAiCompatibleModels(
-      [{
-        id: "gpt-5.6-terra",
-        object: "model",
-        owned_by: "openai",
-        mode: "chat",
-        max_input_tokens: 922_000,
-        max_output_tokens: 128_000,
-      }],
-      "https://gateway.example/v1",
-      "litellm",
-    )[0];
-  }
-
-  it("maps LiteLLM capacity into Pi context window", () => {
-    assert.equal(materializeLiteLlmCapacityModel().contextWindow, 1_050_000);
+  it("materializes generic capacity metadata", () => {
+    const [model] = materializeOpenAiCompatibleModels([{
+      id: "gpt-5.6-terra",
+      max_input_tokens: 922_000,
+      max_output_tokens: 128_000,
+    }], "https://gateway.example/v1", "arbitrary");
+    assert.equal(model.contextWindow, 1_050_000);
+    assert.equal(model.maxTokens, 128_000);
+    assert.deepEqual(model.input, ["text", "image"]);
   });
 
-  it("maps LiteLLM output capacity into Pi output limit", () => {
-    assert.equal(materializeLiteLlmCapacityModel().maxTokens, 128_000);
-  });
-
-  it("falls back to the static context window when LiteLLM capacity sum overflows", () => {
+  it("falls back to the static context window when capability capacity sum overflows", () => {
     const [model] = materializeOpenAiCompatibleModels(
       [{ id: "overflow", max_input_tokens: Number.MAX_VALUE, max_output_tokens: Number.MAX_VALUE }],
       "https://gateway.example/v1",
-      "litellm",
+      "arbitrary",
     );
-
     assert.equal(model.contextWindow, 128_000);
   });
 
-  it("redacts LiteLLM capability diagnostics without retaining secrets or query values", () => {
+  it("redacts sensitive diagnostics", () => {
     const diagnostic = redactOpenAiCompatibleDiagnostic(
-      "GET https://user:pass@gateway.example/v1/model/info?key=query-secret failed with Bearer fake-key and fake-route", // pragma: allowlist secret
+      "GET https://user:pass@gateway.example/v1/models?key=query-secret failed with Bearer fake-key and fake-route", // pragma: allowlist secret
       { apiKey: "fake-key", headers: { "X-Route": "fake-route" } }, // pragma: allowlist secret
     );
     for (const secret of ["user", "pass", "query-secret", "fake-key", "fake-route"])
       assert.equal(diagnostic.includes(secret), false);
   });
 
-  it("retains only exact duplicate returned IDs", () => {
+  it("retains opaque IDs while removing exact duplicates", () => {
     assert.deepEqual(materializeOpenAiCompatibleModels(
       [{ id: "x" }, { id: "x" }, { id: " x " }, { id: "" }], "https://gateway.example/v1", "generic",
     ).map((model) => model.id), ["x", " x ", ""]);

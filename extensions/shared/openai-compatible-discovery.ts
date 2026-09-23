@@ -35,7 +35,7 @@ export interface OpenAiCompatibleModelRecord {
   /** LiteLLM's generic output capacity alias. */
   max_output_tokens?: unknown;
 }
-export interface LiteLlmCapabilityRecord {
+export interface OpenAiCompatibleCapabilityRecord {
   model_name?: unknown;
   model_info?: unknown;
 }
@@ -89,6 +89,7 @@ export interface CachedOpenAiCompatibleDiscovery<T> {
 export interface EligibleOpenAiCompatibleProvider {
   id: string;
   headers?: Record<string, string>;
+  discoverModelCapabilities: boolean;
 }
 
 /** Session transcript text for one successfully registered configured provider. */
@@ -153,6 +154,7 @@ export function findEligibleOpenAiCompatibleProviderConfigsResult(
       "utf8",
     );
   } catch {
+    log.debug("provider configuration unavailable", { status: "unreadable" });
     return { status: "unreadable", providers: [] };
   }
 
@@ -160,8 +162,10 @@ export function findEligibleOpenAiCompatibleProviderConfigsResult(
   try {
     parsed = parsePiModelsJson(content);
   } catch {
+    log.debug("provider configuration invalid", { status: "malformed" });
     return { status: "malformed", providers: [] };
   }
+  log.debug("parsed provider configuration", { hasProviders: Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed) && (parsed as { providers?: unknown }).providers) });
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     return { status: "malformed", providers: [] };
   const providers = (parsed as { providers?: unknown }).providers;
@@ -185,7 +189,11 @@ export function findEligibleOpenAiCompatibleProviderConfigsResult(
         Object.values(headers).some((value) => typeof value !== "string"))
     )
       return [];
-    return [{ id, headers: headers as Record<string, string> | undefined }];
+    return [{
+      id,
+      headers: headers as Record<string, string> | undefined,
+      discoverModelCapabilities: provider.discoverModelCapabilities === true,
+    }];
   });
   return {
     status:
@@ -398,15 +406,16 @@ export function buildOpenAiCompatibleModelsRequest(
   return { url: modelsUrl, streamBaseUrl, headers };
 }
 
-export function buildLiteLlmCapabilitiesUrl(modelsUrl: string): string {
+export function buildOpenAiCompatibleCapabilitiesUrl(modelsUrl: string): string {
   const url = new URL(modelsUrl);
   url.pathname = url.pathname.replace(/\/models$/i, "/model/info");
+  log.debug("built capability endpoint", { endpoint: "model/info" });
   return url.toString();
 }
 
-export function enrichLiteLlmReasoning(
+export function enrichOpenAiCompatibleReasoning(
   records: readonly OpenAiCompatibleModelRecord[],
-  capabilities: readonly LiteLlmCapabilityRecord[],
+  capabilities: readonly OpenAiCompatibleCapabilityRecord[],
 ): OpenAiCompatibleModelRecord[] {
   const reasoning = new Map<string, boolean>();
   for (const capability of capabilities) {
@@ -417,6 +426,7 @@ export function enrichLiteLlmReasoning(
       : Array.isArray(info.supported_openai_params) && info.supported_openai_params.includes("reasoning_effort");
     reasoning.set(capability.model_name, value);
   }
+  log.debug("enriching reasoning metadata", { recordCount: records.length, capabilityCount: capabilities.length, matchedCount: reasoning.size });
   return records.map((record) => typeof record.id === "string" && reasoning.has(record.id)
     ? { ...record, reasoning: reasoning.get(record.id) }
     : record);
@@ -510,8 +520,8 @@ export function materializeOpenAiCompatibleModels(
         : PI_STATIC_MODEL_DEFAULTS.reasoning,
       input: materializeInput(record.input),
       cost: materializeCost(record.cost),
-      // Native Pi metadata wins. LiteLLM commonly exposes only generic input
-      // and output capacities, whose combined capacity is Pi's context window.
+      // Native Pi metadata wins. OpenAI-compatible capability APIs may expose
+      // generic input/output capacities, whose sum is Pi's context window.
       contextWindow: positiveFiniteNumber(
         record.contextWindow,
         (() => {

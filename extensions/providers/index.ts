@@ -618,11 +618,11 @@ export default async function (
   const applyCliAcpxThinking = (model: { id: string; provider: string } | undefined) => {
     log.debug("applyCliAcpxThinking", model?.provider, model?.id);
     try {
-      lastThinking.runInternal(() => applyThinkingLevelFromModel(
+      applyThinkingLevelFromModel(
         model,
-        (level) => pi.setThinkingLevel(level as ThinkingLevel),
+        level => lastThinking.setInternalThinkingLevel(level as ThinkingLevel),
         () => pi.getThinkingLevel(),
-      ));
+      );
     } catch (err) {
       log.warn(
         "thinking from id failed",
@@ -682,7 +682,7 @@ export default async function (
         ctx.model
           ? { id: ctx.model.id, provider: String(ctx.model.provider) }
           : undefined,
-      setModel: (model) => pi.setModel(model as Model<any>),
+      setModel: (model) => lastThinking.restoreModel(model as Model<any>, (selected) => pi.setModel(selected)),
     }).catch((err) => {
       log.warn(
         "restore-default-model session_start error",

@@ -14,6 +14,7 @@
  *   /review-local <Tab>          → git branch names
  *   /release <Tab>               → recent git tags + --dry-run, --prerelease, --draft, --target <branch>, --tag-match <pattern>
  *   /review-handler <Tab>        → --autorabbit, --autoqodo
+ *   /qodo-review <Tab>           → --autofix, --fast, --deep, --ticket
  *   /review-status <Tab>         → active worktree paths
  *   /create-skill <Tab>          → (free-text name)
  *   /cron <Tab>                  → add, list, remove
@@ -27,8 +28,11 @@ import type { AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions } 
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
+import { createLogger } from "../shared/logger.js";
 import { getCronRemoveAutocompleteItems } from "./cron.js";
 import { mcpcArgumentCompletions } from "./mcpc.js";
+
+const log = createLogger("autocomplete");
 
 // ── Cache infrastructure ────────────────────────────────────────────
 
@@ -77,6 +81,27 @@ function filter(items: AutocompleteItem[], prefix: string): AutocompleteItem[] |
   return filtered.length > 0 ? filtered : null;
 }
 
+export function qodoReviewArgumentCompletions(prefix: string): AutocompleteItem[] | null {
+  const tokens = prefix.trim().split(/\s+/).filter(Boolean);
+  log.debug("Completing qodo-review arguments", { tokenCount: tokens.length });
+  const selected = new Set(tokens);
+  const lastPart = /\s$/.test(prefix) ? "" : (tokens[tokens.length - 1] || "");
+  if ((lastPart && tokens.at(-2) === "--ticket") || (!lastPart && tokens.at(-1) === "--ticket")) return null;
+
+  const flags = [
+    { value: "--autofix", label: "--autofix", description: "Fix findings in up to 3 cycles" },
+    { value: "--fast", label: "--fast", description: "Run a quick review" },
+    { value: "--deep", label: "--deep", description: "Run a thorough review" },
+    { value: "--ticket ", label: "--ticket", description: "Attach a ticket URL" },
+  ];
+  const available = flags.filter(({ value }) => {
+    const flag = value.trim();
+    if (flag !== "--ticket" && selected.has(flag)) return false;
+    return !((flag === "--fast" && selected.has("--deep")) || (flag === "--deep" && selected.has("--fast")));
+  });
+  return filter(available, lastPart);
+}
+
 // ── Shared types ────────────────────────────────────────────────────
 
 type CompletionFn = (prefix: string) => AutocompleteItem[] | null;
@@ -102,6 +127,7 @@ function registerCompletions(
   pi: ExtensionAPI,
   ctx: AutocompleteContext,
 ): Record<string, CompletionFn> {
+  log.debug("Registering extended autocomplete completions");
 
   // ── Completion definitions ──────────────────────────────────────
 
@@ -238,6 +264,8 @@ function registerCompletions(
       return filter(available, lastPart);
     },
 
+    "qodo-review": qodoReviewArgumentCompletions,
+
     "review-status": (prefix: string) => {
       // List active worktrees (excluding main repo) as completion options
       try {
@@ -341,6 +369,7 @@ function setupPromptTemplateInterceptor(
   ctx: AutocompleteContext,
   completions: Record<string, CompletionFn>,
 ): void {
+  log.debug("Setting up prompt template autocomplete interceptor");
   // Prompt templates (acpx-prompt, review-local, etc.) are registered by
   // pi itself — not through our registerCommand wrapper. We intercept
   // them in the autocomplete provider, which runs before the built-in.
@@ -348,7 +377,7 @@ function setupPromptTemplateInterceptor(
   // Set of prompt template names that we handle
   const promptTemplateCommands = new Set([
     "external-ai", "pr-review", "issue-review", "coderabbit-rate-limit",
-    "review-local", "release", "review-handler", "create-skill", "create-coms-feature-manager",
+    "review-local", "release", "review-handler", "qodo-review", "create-skill", "create-coms-feature-manager",
     "pi-config-settings",
   ]);
 
