@@ -181,6 +181,79 @@ describe("cron lifecycle", { concurrency: false }, () => {
     } finally { h.restore(); }
   });
 
+  it("does not dispatch a durable task after losing its lease", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    fs.mkdirSync(path.dirname(store), { recursive: true });
+    fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ id: "due", scope: "project", cwd, description: "due", task: "/status", intervalMs: 10_000, createdAt: 1, nextRun: 1 }] }));
+    const h = makeCron();
+    try {
+      h.pi.events.on = h.pi.eventHandler;
+      registerCron(h.pi, () => {});
+      h.handlers.get("session_start")![0]({}, context(cwd));
+      const due = h.timeouts.find((timer) => timer.delay === 0)!;
+      assert.ok(due);
+      const lock = `${store}.leader.lock`;
+      fs.renameSync(lock, `${lock}.old`);
+      fs.mkdirSync(lock);
+      fs.writeFileSync(path.join(lock, "owner.json"), JSON.stringify({ pid: process.pid, process_start_token: "other", instance_id: "new-leader", heartbeat_at: new Date().toISOString(), pid_namespace: "pid:[foreign]" }));
+      await due.fn();
+      assert.deepEqual(h.messages, []);
+      assert.equal(readDurableCronStore(store).tasks[0].lastRun, undefined);
+      assert.equal(h.timeouts.filter((timer) => timer.delay === 10_000).length, 0, "fenced follower must not re-arm its timer");
+    } finally { h.restore(); }
+  });
+
+  it("does not dispatch a slash task after losing its lease during persistence", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    fs.mkdirSync(path.dirname(store), { recursive: true });
+    fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ id: "due", scope: "project", cwd, description: "due", task: "/status", intervalMs: 10_000, createdAt: 1, nextRun: 1 }] }));
+    const h = makeCron();
+    try {
+      h.pi.events.on = h.pi.eventHandler;
+      registerCron(h.pi, () => {});
+      h.handlers.get("session_start")![0]({}, context(cwd));
+      const due = h.timeouts.find((timer) => timer.delay === 0)!;
+      assert.ok(due);
+      const lock = `${store}.leader.lock`;
+      let replaced = false;
+      const originalEmit = h.pi.events.emit;
+      h.pi.events.emit = (event: string, data: any) => {
+        if (event === "pidash:cron-status" && !replaced) {
+          replaced = true;
+          fs.renameSync(lock, `${lock}.old`);
+          fs.mkdirSync(lock);
+          fs.writeFileSync(path.join(lock, "owner.json"), JSON.stringify({ pid: process.pid, process_start_token: "other", instance_id: "new-leader", heartbeat_at: new Date().toISOString(), pid_namespace: "pid:[foreign]" }));
+        }
+        originalEmit(event, data);
+      };
+      await due.fn();
+      assert.equal(replaced, true, "test must replace leadership after the initial refresh");
+      assert.deepEqual(h.messages, []);
+    } finally { h.restore(); }
+  });
+
+  it("does not dispatch a durable task when its own heartbeat has expired", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    fs.mkdirSync(path.dirname(store), { recursive: true });
+    fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ id: "due", scope: "project", cwd, description: "due", task: "/status", intervalMs: 10_000, createdAt: 1, nextRun: 1 }] }));
+    const h = makeCron();
+    try {
+      h.pi.events.on = h.pi.eventHandler;
+      registerCron(h.pi, () => {});
+      h.handlers.get("session_start")![0]({}, context(cwd));
+      const due = h.timeouts.find((timer) => timer.delay === 0)!;
+      assert.ok(due);
+      const file = `${store}.leader.lock/owner.json`;
+      fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), heartbeat_at: new Date(0).toISOString() }));
+      await due.fn();
+      assert.deepEqual(h.messages, []);
+      assert.equal(readDurableCronStore(store).tasks[0].lastRun, undefined);
+    } finally { h.restore(); }
+  });
+
   it("starts a newly added durable task immediately when this process is leader", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
     const h = makeCron();

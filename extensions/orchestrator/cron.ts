@@ -10,7 +10,7 @@ import { decideAsyncLlmDispatch } from "./async-capability.js";
 import { formatCronSchedule, toCronStatusTaskView } from "./cron-status-format.js";
 import { openCronStatusOverlay } from "./cron-status-ui.js";
 import { setSlot } from "./status-bar.js";
-import { acquireLeaderLock, durableCronSupported, mutateDurableCronStore, readDurableCronStore, refreshLeaderLock, releaseLeaderLock, validateDurableCronTask, type CronLockOwner, type CronScope, type DurableCronTask } from "./cron-store.js";
+import { acquireLeaderLock, durableCronSupported, isLeaderLockCurrent, mutateDurableCronStore, readDurableCronStore, refreshLeaderLock, releaseLeaderLock, validateDurableCronTask, type CronLockOwner, type CronScope, type DurableCronTask } from "./cron-store.js";
 
 const log = createLogger("cron");
 export interface CronTask { id: string; scope: CronScope; cwd: string; description: string; task: string; intervalMs?: number; atHour?: number; atMinute?: number; createdAt: number; lastRun?: number; nextRun?: number; leader?: boolean; }
@@ -99,14 +99,30 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
   }
   async function execute(task: CronTask) {
     try {
-      if (durable(task.scope) && !task.leader) return;
+      if (durable(task.scope)) {
+        const file = projectStore(task.cwd); const owner = owned.get(file);
+        if (!task.leader || !owner || !refreshLeaderLock(file, owner)) {
+          log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost" });
+          election(); return;
+        }
+      }
       task.lastRun = Date.now(); persist(task); updateStatus(); log.info("cron_execute", qualifyCronId(task));
       const cmd = task.task.trim();
-      if (cmd.startsWith("/")) { pi.sendUserMessage(cmd, { deliverAs: "followUp" }); return; }
+      if (cmd.startsWith("/")) {
+        if (durable(task.scope) && !refreshLeaderLock(projectStore(task.cwd), owned.get(projectStore(task.cwd))!)) {
+          log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost_before_dispatch" });
+          election(); return;
+        }
+        pi.sendUserMessage(cmd, { deliverAs: "followUp" }); return;
+      }
       const dispatch = decideAsyncLlmDispatch({ parentProvider: ctx?.model?.provider, cwd: task.cwd, mustAsync: true });
       if (dispatch.action === "skip") { log.error("cron_error", qualifyCronId(task), dispatch.note); return; }
       const { discoverAgents } = await import("./agents.js");
       const { agents } = discoverAgents(task.cwd, "user");
+      if (durable(task.scope) && !refreshLeaderLock(projectStore(task.cwd), owned.get(projectStore(task.cwd))!)) {
+        log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost_before_dispatch" });
+        election(); return;
+      }
       spawnAsyncAgent("worker", cmd, task.cwd, agents, { name: `Cron: ${task.description.slice(0, 40)}`, ...(dispatch.action === "sidecar-async" ? { parentProvider: dispatch.sidecar.provider, parentModelId: dispatch.sidecar.model } : {}) });
     } catch (error: any) { log.error("cron_execute_failed", qualifyCronId(task), error?.message || error); }
   }
@@ -115,7 +131,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
     stop(task.id); if (durable(task.scope) && !task.leader) return;
     const schedule = (runAt = task.nextRun ?? Date.now() + nextDelay(task)) => {
       const delay = Math.max(0, runAt - Date.now());
-      const timer = setTimeout(async () => { try { await execute(task); schedule(Date.now() + nextDelay(task)); } catch (error: any) { log.error("cron_timer_failed", qualifyCronId(task), error?.message || error); } }, delay);
+      const timer = setTimeout(async () => { try { await execute(task); if (!durable(task.scope) || (task.leader && owned.has(projectStore(task.cwd)))) schedule(Date.now() + nextDelay(task)); } catch (error: any) { log.error("cron_timer_failed", qualifyCronId(task), error?.message || error); } }, delay);
       task.nextRun = runAt; persist(task); updateStatus(); timer.unref?.(); timers.set(task.id, timer);
     };
     schedule();
@@ -131,7 +147,12 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
   }
   function election() {
     for (const { scope, file } of stores()) {
-      let owner = owned.get(file); if (owner && !refreshLeaderLock(file, owner)) { owned.delete(file); owner = undefined; }
+      let owner = owned.get(file);
+      // fs.watch also observes our own heartbeat writes; only the health tick
+      // renews eagerly. Other elections renew only when the lease is aging.
+      if (owner && (Date.now() - Date.parse(owner.heartbeat_at) >= 5_000 || !isLeaderLockCurrent(file, owner))) {
+        if (!refreshLeaderLock(file, owner)) { releaseLeaderLock(file, owner); owned.delete(file); owner = undefined; }
+      }
       if (!owner) { owner = acquireLeaderLock(file, instanceId) || undefined; if (owner) { owned.set(file, owner); log.info("cron_leader_acquired", scope); } }
       syncStore(scope, file);
     }
@@ -146,7 +167,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
     if (durable(scope)) mutateDurableCronStore(projectStore(task.cwd), old => [...old, task as DurableCronTask]);
     tasks.set(task.id, task);
     // We may already own the relevant lock; schedule synchronously rather than waiting for fs.watch.
-    if (scope === "session" || owned.has(projectStore(task.cwd))) { task.leader = true; start(task); }
+    if (scope === "session" || (owned.has(projectStore(task.cwd)) && isLeaderLockCurrent(projectStore(task.cwd), owned.get(projectStore(task.cwd))!))) { task.leader = true; start(task); }
     else election();
     if (scope === "session") persist(task);
     updateStatus(); log.info("cron_created", { scope, id: qualifyCronId(task) }); return task;
