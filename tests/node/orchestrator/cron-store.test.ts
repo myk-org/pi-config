@@ -65,10 +65,28 @@ describe("durable cron store", () => {
 
   it("reclaims a crashed mutation lease before a new transaction", () => {
     const store = tempStore();
-    writeLockOwner(store, "mutation", { pid: 999_999_999, process_start_token: "dead", instance_id: "crashed", heartbeat_at: new Date(0).toISOString() });
+    writeLockOwner(store, "mutation", { pid: 999_999_999, process_start_token: "dead", instance_id: "crashed", heartbeat_at: new Date(0).toISOString(), pid_namespace: fs.readlinkSync("/proc/self/ns/pid") });
     mutateDurableCronStore(store, (tasks) => [...tasks, task("recovered")]);
     assert.deepEqual(readDurableCronStore(store).tasks, [task("recovered")]);
     assert.equal(fs.existsSync(`${store}.mutation.lock`), false);
+  });
+
+  it("does not reclaim a freshly written owner file when its directory is old", () => {
+    const store = tempStore();
+    const dir = `${store}.leader.lock`;
+    fs.mkdirSync(dir);
+    fs.utimesSync(dir, new Date(0), new Date(0));
+    fs.writeFileSync(path.join(dir, "owner.json"), "{", { flag: "wx" });
+    fs.utimesSync(dir, new Date(0), new Date(0));
+    assert.equal(acquireLeaderLock(store, "follower"), null);
+    assert.equal(fs.existsSync(dir), true);
+  });
+
+  it("does not reclaim a live mutation owner in a foreign namespace after a long transaction", () => {
+    const store = tempStore();
+    writeLockOwner(store, "mutation", { pid: 999_999_999, process_start_token: "proc:foreign", instance_id: "foreign", heartbeat_at: new Date(0).toISOString(), pid_namespace: "pid:[foreign]" });
+    assert.throws(() => mutateDurableCronStore(store, (tasks) => [...tasks, task("must-not-write")]), /Timed out waiting for cron storage lock/);
+    assert.deepEqual(readDurableCronStore(store).tasks, []);
   });
 
   it("does not reclaim a fresh ownerless leader lock", () => {
@@ -77,6 +95,13 @@ describe("durable cron store", () => {
     fs.mkdirSync(dir, { recursive: true });
     assert.equal(acquireLeaderLock(store, "follower"), null);
     assert.equal(fs.existsSync(dir), true);
+  });
+
+  it("does not reclaim a live mutation owner when its lease expires during a transaction", () => {
+    const store = tempStore();
+    writeLockOwner(store, "mutation", { pid: process.pid, process_start_token: processStartToken(), instance_id: "busy", heartbeat_at: new Date(0).toISOString(), pid_namespace: fs.readlinkSync("/proc/self/ns/pid") });
+    assert.throws(() => mutateDurableCronStore(store, (tasks) => [...tasks, task("must-not-write")]), /Timed out waiting for cron storage lock/);
+    assert.deepEqual(readDurableCronStore(store).tasks, []);
   });
 
   it("does not reclaim a live mutation owner", () => {
@@ -161,28 +186,67 @@ describe("durable cron store", () => {
     releaseLeaderLock(store, follower);
   });
 
-  it("reclaims dead locks but never takes over a live owner with an expired heartbeat", () => {
+  it("keeps a fresh lock when its PID is invisible across namespaces", () => {
     const store = tempStore();
-    writeLockOwner(store, "leader", { pid: 999_999_999, process_start_token: "dead", instance_id: "dead", heartbeat_at: new Date().toISOString() });
+    writeLockOwner(store, "leader", { pid: 999_999_999, process_start_token: "proc:foreign", instance_id: "foreign", heartbeat_at: new Date().toISOString(), pid_namespace: "pid:[foreign]" });
+    assert.equal(acquireLeaderLock(store, "follower"), null);
+    assert.equal(fs.existsSync(`${store}.leader.lock`), true);
+  });
+
+  it("does not use a PID collision to reclaim a fresh foreign lease", () => {
+    const store = tempStore();
+    writeLockOwner(store, "leader", { pid: process.pid, process_start_token: "proc:foreign", instance_id: "foreign", heartbeat_at: new Date().toISOString(), pid_namespace: "pid:[foreign]" });
+    assert.equal(acquireLeaderLock(store, "follower"), null);
+  });
+
+  it("keeps a fresh legacy lock whose namespace cannot be established", () => {
+    const store = tempStore();
+    writeLockOwner(store, "leader", { pid: 999_999_999, process_start_token: "proc:foreign", instance_id: "legacy", heartbeat_at: new Date().toISOString() });
+    assert.equal(acquireLeaderLock(store, "follower"), null);
+  });
+
+  it("reclaims an expired foreign lease and fences its previous owner", () => {
+    const store = tempStore();
+    writeLockOwner(store, "leader", { pid: 999_999_999, process_start_token: "proc:foreign", instance_id: "foreign", heartbeat_at: new Date(Date.now() - 31_000).toISOString(), pid_namespace: "pid:[foreign]" });
+    const follower = acquireLeaderLock(store, "follower");
+    assert.ok(follower);
+    assert.equal(refreshLeaderLock(store, { ...follower, instance_id: "foreign" }), false);
+    releaseLeaderLock(store, follower);
+  });
+
+  it("cannot let two contenders both claim an expired foreign lease", () => {
+    const store = tempStore();
+    writeLockOwner(store, "leader", { pid: 999_999_999, process_start_token: "proc:foreign", instance_id: "foreign", heartbeat_at: new Date(0).toISOString(), pid_namespace: "pid:[foreign]" });
+    const first = acquireLeaderLock(store, "first");
+    const second = acquireLeaderLock(store, "second");
+    assert.ok(first);
+    assert.equal(second, null);
+    assert.equal(refreshLeaderLock(store, first), true);
+    releaseLeaderLock(store, first);
+  });
+
+  it("reclaims dead and reused PIDs, and fences a live owner after lease expiry", () => {
+    const store = tempStore();
+    writeLockOwner(store, "leader", { pid: 999_999_999, process_start_token: "dead", instance_id: "dead", heartbeat_at: new Date().toISOString(), pid_namespace: fs.readlinkSync("/proc/self/ns/pid") });
     const reclaimedDead = acquireLeaderLock(store, "reclaimer");
     assert.ok(reclaimedDead);
     releaseLeaderLock(store, reclaimedDead);
 
-    writeLockOwner(store, "leader", { pid: process.pid, process_start_token: "wrong-token", instance_id: "reused", heartbeat_at: new Date().toISOString() });
+    writeLockOwner(store, "leader", { pid: process.pid, process_start_token: "wrong-token", instance_id: "reused", heartbeat_at: new Date().toISOString(), pid_namespace: fs.readlinkSync("/proc/self/ns/pid") });
     const reclaimedReusedPid = acquireLeaderLock(store, "reclaimer");
     assert.ok(reclaimedReusedPid);
     releaseLeaderLock(store, reclaimedReusedPid);
 
     const live = acquireLeaderLock(store, "live");
     assert.ok(live);
-    // This is the stale-takeover/heartbeat race: a contender sees an old lease,
-    // while its still-live owner renews. A lease alone must not permit replacement.
     live!.heartbeat_at = new Date(Date.now() - 31_000).toISOString();
     fs.writeFileSync(path.join(`${store}.leader.lock`, "owner.json"), JSON.stringify(live));
-    assert.equal(acquireLeaderLock(store, "follower"), null);
-    assert.equal(refreshLeaderLock(store, live!), true);
-    assert.equal(acquireLeaderLock(store, "follower"), null);
+    const follower = acquireLeaderLock(store, "follower");
+    assert.ok(follower);
+    assert.equal(refreshLeaderLock(store, live!), false);
     releaseLeaderLock(store, live);
+    assert.equal(refreshLeaderLock(store, follower!), true);
+    releaseLeaderLock(store, follower);
   });
 
   it("fails leadership closed without a reliable process identity but still mutates the store", () => {
@@ -225,7 +289,10 @@ describe("durable cron store", () => {
     const store = tempStore();
     const dir = `${store}.${kind}.lock`;
     fs.mkdirSync(dir, { recursive: true });
-    if (record !== undefined) fs.writeFileSync(path.join(dir, "owner.json"), record);
+    if (record !== undefined) {
+      fs.writeFileSync(path.join(dir, "owner.json"), record);
+      fs.utimesSync(path.join(dir, "owner.json"), new Date(0), new Date(0));
+    }
     fs.utimesSync(dir, new Date(0), new Date(0));
     if (kind === "leader") {
       const owner = acquireLeaderLock(store, "reclaimer");
