@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, it } from "node:test";
 import {
@@ -54,6 +54,25 @@ describe("durable cron store", () => {
     assert.equal(JSON.parse(fs.readFileSync(store, "utf8")).version, 1);
   });
 
+  it("holds the kernel lock through a paused write, so a contender cannot commit", () => {
+    const store = tempStore();
+    const fixture = fileURLToPath(new URL("./fixtures/cron-store-mutate-worker.ts", import.meta.url));
+    const contenders = 1;
+    assert.throws(() => mutateDurableCronStore(store, (tasks) => {
+      // The worker cannot acquire the OS lock while this callback is paused;
+      // its bounded mutation attempt must fail without writing anything.
+      const result = spawnSync(process.execPath, ["--import", "tsx", fixture, store, "contender", String(contenders)], { encoding: "utf8", timeout: 6_000 });
+      assert.equal(result.status, 1, `contender should time out under lock: ${result.stderr}`);
+      assert.match(result.stderr, /Timed out waiting for cron storage lock/);
+      assert.equal(fs.existsSync(`${store}.mutation.lock`), false, "stable flock must not be the reclaimable lease directory");
+      assert.deepEqual(readDurableCronStore(store).tasks, []);
+      throw new Error("pause complete");
+    }), /pause complete/);
+    assert.deepEqual(readDurableCronStore(store).tasks, []);
+    mutateDurableCronStore(store, (tasks) => [...tasks, task("after-release")]);
+    assert.deepEqual(readDurableCronStore(store).tasks, [task("after-release")]);
+  });
+
   it("serializes simultaneous cross-process mutations without losing tasks", async () => {
     const store = tempStore();
     const mutationsPerWorker = 12;
@@ -63,12 +82,11 @@ describe("durable cron store", () => {
     assert.equal(new Set(tasks.map((stored) => stored.id)).size, mutationsPerWorker * 2);
   });
 
-  it("reclaims a crashed mutation lease before a new transaction", () => {
+  it("ignores a crashed legacy mutation directory when the kernel lock is free", () => {
     const store = tempStore();
     writeLockOwner(store, "mutation", { pid: 999_999_999, process_start_token: "dead", instance_id: "crashed", heartbeat_at: new Date(0).toISOString(), pid_namespace: fs.readlinkSync("/proc/self/ns/pid") });
     mutateDurableCronStore(store, (tasks) => [...tasks, task("recovered")]);
     assert.deepEqual(readDurableCronStore(store).tasks, [task("recovered")]);
-    assert.equal(fs.existsSync(`${store}.mutation.lock`), false);
   });
 
   it("does not reclaim a freshly written owner file when its directory is old", () => {
@@ -82,10 +100,11 @@ describe("durable cron store", () => {
     assert.equal(fs.existsSync(dir), true);
   });
 
-  it("does not reclaim a fresh legacy mutation owner with an invisible PID", () => {
+  it("ignores a fresh legacy mutation owner without a kernel lock", () => {
     const store = tempStore();
     writeLockOwner(store, "mutation", { pid: 999_999_999, process_start_token: "proc:foreign", instance_id: "legacy", heartbeat_at: new Date().toISOString() });
-    assert.throws(() => mutateDurableCronStore(store, (tasks) => [...tasks, task("must-not-write")]), /Timed out waiting for cron storage lock/);
+    mutateDurableCronStore(store, (tasks) => [...tasks, task("written")]);
+    assert.deepEqual(readDurableCronStore(store).tasks, [task("written")]);
   });
 
   it("reclaims a crashed foreign mutation lock after its lease expires", () => {
@@ -103,18 +122,24 @@ describe("durable cron store", () => {
     assert.equal(fs.existsSync(dir), true);
   });
 
-  it("does not reclaim a live mutation owner when its lease expires during a transaction", () => {
+  it("keeps an in-flight transaction past the old lease deadline", () => {
     const store = tempStore();
-    writeLockOwner(store, "mutation", { pid: process.pid, process_start_token: processStartToken(), instance_id: "busy", heartbeat_at: new Date(0).toISOString(), pid_namespace: fs.readlinkSync("/proc/self/ns/pid") });
-    assert.throws(() => mutateDurableCronStore(store, (tasks) => [...tasks, task("must-not-write")]), /Timed out waiting for cron storage lock/);
-    assert.deepEqual(readDurableCronStore(store).tasks, []);
+    mutateDurableCronStore(store, (tasks) => [...tasks, task("saved")]);
+    const now = Date.now;
+    try {
+      mutateDurableCronStore(store, (tasks) => {
+        Date.now = () => now() + 301_000;
+        return [...tasks, task("after-deadline")];
+      });
+    } finally { Date.now = now; }
+    assert.deepEqual(readDurableCronStore(store).tasks, [task("saved"), task("after-deadline")]);
   });
 
-  it("does not reclaim a live mutation owner", () => {
+  it("ignores a live legacy mutation owner when only its old lease expires", () => {
     const store = tempStore();
-    writeLockOwner(store, "mutation", { pid: process.pid, process_start_token: processStartToken(), instance_id: "live", heartbeat_at: new Date().toISOString() });
-    assert.throws(() => mutateDurableCronStore(store, (tasks) => [...tasks, task("must-not-write")]), /Timed out waiting for cron storage lock/);
-    assert.deepEqual(readDurableCronStore(store).tasks, []);
+    writeLockOwner(store, "mutation", { pid: process.pid, process_start_token: processStartToken(), instance_id: "busy", heartbeat_at: new Date(0).toISOString(), pid_namespace: fs.readlinkSync("/proc/self/ns/pid") });
+    mutateDurableCronStore(store, (tasks) => [...tasks, task("written")]);
+    assert.deepEqual(readDurableCronStore(store).tasks, [task("written")]);
   });
 
   it("keeps stores, captured cwd values, and removal targets isolated", () => {
@@ -304,7 +329,7 @@ describe("durable cron store", () => {
   for (const [kind, record] of [
     ["leader", undefined], ["leader", "{"], ["leader", JSON.stringify({ pid: 1 })],
     ["mutation", undefined], ["mutation", "{"], ["mutation", JSON.stringify({ pid: 1 })],
-  ] as const) it(`reclaims an old ${kind} lock with ${record === undefined ? "no" : "invalid"} owner`, () => {
+  ] as const) it(`${kind === "leader" ? "reclaims" : "ignores"} an old ${kind} lock with ${record === undefined ? "no" : "invalid"} owner`, () => {
     const store = tempStore();
     const dir = `${store}.${kind}.lock`;
     fs.mkdirSync(dir, { recursive: true });

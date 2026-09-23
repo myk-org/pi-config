@@ -1,7 +1,7 @@
 /** Durable cron storage and local-filesystem leader locks. Delivery is at-least-once. */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { parseProcStartTime } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
@@ -27,7 +27,6 @@ type StartTokenDeps = { readFileSync: (path: string, encoding: BufferEncoding) =
 const startTokenDeps: StartTokenDeps = { readFileSync: fs.readFileSync, execFileSync, platform: process.platform };
 const log = createLogger("cron_store");
 const STALE_LOCK_MS = 30_000;
-const STALE_MUTATION_MS = 300_000;
 const leaderOwners = new Map<string, CronLockOwner>();
 const sleepCell = new Int32Array(new SharedArrayBuffer(4));
 function sleep(ms: number) { Atomics.wait(sleepCell, 0, 0, ms); }
@@ -87,12 +86,9 @@ function leaseIsExpired(owner: CronLockOwner): boolean {
   log.debug("cron_lock_lease_age", { instance_id: owner.instance_id, age_ms: ageMs, expired });
   return expired;
 }
-function canReclaim(owner: CronLockOwner, kind: "leader" | "mutation"): boolean {
+function canReclaim(owner: CronLockOwner): boolean {
   const dead = ownerIsProvenDead(owner);
-  // Mutation records have no heartbeat after acquisition; reclaim only if
-  // the local OS can prove the owner dead, never while a write could be live.
-  const ageMs = Date.now() - Date.parse(owner.heartbeat_at);
-  const expired = kind === "leader" ? leaseIsExpired(owner) : Number.isFinite(ageMs) && ageMs >= STALE_MUTATION_MS && !(owner.pid_namespace && owner.pid_namespace === processPidNamespace() && !dead);
+  const expired = leaseIsExpired(owner);
   log.debug("cron_lock_reclaim_decision", { instance_id: owner.instance_id, dead, expired });
   return dead || expired;
 }
@@ -131,15 +127,15 @@ function restoreClaim(claim: string, dir: string) {
   try { fs.renameSync(claim, dir); } catch { log.warn("cron_lock_claim_restore_failed", { claim, dir }); }
 }
 /** Read the canonical record first; detach and delete only that proven-stale record. */
-function reclaimStaleLock(dir: string, instanceId: string, kind: "leader" | "mutation"): boolean {
+function reclaimStaleLock(dir: string, instanceId: string): boolean {
   const expected = readOwner(dir);
-  if (!(expected ? canReclaim(expected, kind) : claimIsOld(dir))) return false;
+  if (!(expected ? canReclaim(expected) : claimIsOld(dir))) return false;
   const claim = `${dir}.claim-${randomUUID()}`;
   try { fs.renameSync(dir, claim); } catch { return false; }
   const current = readOwner(claim);
-  if (expected ? !sameOwner(current, expected) || !canReclaim(current!, kind) : current || !claimIsOld(claim)) { restoreClaim(claim, dir); return false; }
-  try { fs.rmSync(claim, { recursive: true, force: false }); log.info(`cron_${kind}_lock_reclaim`, { dir, instance_id: instanceId, outcome: "reclaimed" }); return true; }
-  catch (error: any) { log.warn(`cron_${kind}_lock_reclaim`, { dir, instance_id: instanceId, outcome: "failed", reason: error?.code || "remove_error" }); restoreClaim(claim, dir); return false; }
+  if (expected ? !sameOwner(current, expected) || !canReclaim(current!) : current || !claimIsOld(claim)) { restoreClaim(claim, dir); return false; }
+  try { fs.rmSync(claim, { recursive: true, force: false }); log.info("cron_leader_lock_reclaim", { dir, instance_id: instanceId, outcome: "reclaimed" }); return true; }
+  catch (error: any) { log.warn("cron_leader_lock_reclaim", { dir, instance_id: instanceId, outcome: "failed", reason: error?.code || "remove_error" }); restoreClaim(claim, dir); return false; }
 }
 function safelyRemoveLock(dir: string, expected?: CronLockOwner): boolean {
   if (expected && !sameOwner(readOwner(dir), expected)) { log.debug("cron_lock_remove", { dir, outcome: "not_owner" }); return false; }
@@ -167,7 +163,7 @@ function acquireDirectoryLock(dir: string, instanceId: string, reclaimStale: boo
   } catch (error: any) {
     if (owner.fd !== undefined) try { fs.closeSync(owner.fd); } catch {}
     if (error?.code !== "EEXIST" || !reclaimStale) { (error?.code === "EEXIST" ? log.debug : log.warn)("cron_leader_lock_acquire", { dir, instance_id: instanceId, outcome: "failed", reason: error?.code || "lock_error" }); return null; }
-    if (!reclaimStaleLock(dir, instanceId, "leader")) return null;
+    if (!reclaimStaleLock(dir, instanceId)) return null;
     return acquireDirectoryLock(dir, instanceId, false);
   }
 }
@@ -195,39 +191,35 @@ function atomicWrite(file: string, content: string) {
   fs.writeFileSync(temp, content, { mode: 0o600 });
   fs.renameSync(temp, file);
 }
-function acquireMutationLock(dir: string, instanceId = randomUUID()): CronLockOwner | null {
-  const token = resolveProcessStartToken(process.pid);
-  if (!token) { log.warn("cron_mutation_lock_unavailable", { dir, instance_id: instanceId, reason: "no_process_token" }); return null; }
-  const owner: CronLockOwner = { pid: process.pid, process_start_token: token, instance_id: instanceId, heartbeat_at: new Date().toISOString(), pid_namespace: processPidNamespace() || undefined };
-  try {
-    fs.mkdirSync(dir, { mode: 0o700 });
-    fs.writeFileSync(ownerPath(dir), serializedOwner(owner), { flag: "wx", mode: 0o600 });
-    const acquired = sameOwner(readOwner(dir), owner);
-    log.debug("cron_mutation_lock_acquire", { dir, instance_id: instanceId, outcome: acquired ? "acquired" : "verification_failed" });
-    return acquired ? owner : null;
-  } catch (error: any) {
-    if (error?.code !== "EEXIST") { log.warn("cron_mutation_lock_acquire", { dir, instance_id: instanceId, outcome: "failed", reason: error?.code || "lock_error" }); return null; }
-    if (!reclaimStaleLock(dir, instanceId, "mutation")) return null;
-    return acquireMutationLock(dir, instanceId);
+function acquireKernelMutationLock(store: string): number {
+  fs.mkdirSync(path.dirname(store), { recursive: true, mode: 0o700 });
+  const lock = `${store}.mutation.flock`;
+  const fd = fs.openSync(lock, "a", 0o600);
+  // flock(1) locks the inherited open file description. The parent keeps its
+  // fd open across the whole synchronous transaction; close releases it even
+  // after the short-lived flock process exits. Never replace this lock inode.
+  const result = spawnSync("flock", ["-x", "-w", "2", "3"], { stdio: ["ignore", "ignore", "pipe", fd], encoding: "utf8" });
+  if (result.status !== 0) {
+    fs.closeSync(fd);
+    log.warn("cron_mutation_kernel_lock", { lock, outcome: "timeout_or_unavailable", reason: result.error?.message || result.stderr });
+    throw new Error("Timed out waiting for cron storage lock");
   }
+  log.debug("cron_mutation_kernel_lock", { lock, outcome: "acquired" });
+  return fd;
 }
-function releaseMutationLock(dir: string, owner: CronLockOwner) { safelyRemoveLock(dir, owner); }
 export function mutateDurableCronStore(store: string, change: (tasks: DurableCronTask[]) => DurableCronTask[]): DurableCronEnvelope {
-  const lock = lockPath(store, "mutation"); let owner: CronLockOwner | null = null;
-  for (let attempt = 0; attempt < 100; attempt++) { owner = acquireMutationLock(lock); if (owner) break; sleep(20); }
-  if (!owner) throw new Error("Timed out waiting for cron storage lock");
+  const kernel = acquireKernelMutationLock(store);
   try {
     // Corrupt records must not prevent valid tasks from being updated. Schedulers
     // log each skipped record before calling here.
     const current = readDurableCronStore(store).tasks.filter((task) => { try { validateDurableCronTask(task); return true; } catch { return false; } });
     const tasks = change(current); validate(tasks);
-    if (!sameOwner(readOwner(lock), owner) || Date.now() - Date.parse(owner.heartbeat_at) >= STALE_MUTATION_MS) {
-      log.warn("cron_mutation_lease_lost", { lock, instance_id: owner.instance_id });
-      throw new Error("Cron storage lock lost during mutation");
-    }
     const envelope: DurableCronEnvelope = { version: 1, tasks }; atomicWrite(store, JSON.stringify(envelope)); return envelope;
   }
-  finally { releaseMutationLock(lock, owner); }
+  finally {
+    fs.closeSync(kernel);
+    log.debug("cron_mutation_kernel_lock", { store, outcome: "released" });
+  }
 }
 export function acquireLeaderLock(store: string, instanceId: string, deps: StartTokenDeps = startTokenDeps): CronLockOwner | null { return acquireDirectoryLock(lockPath(store, "leader"), instanceId, true, deps); }
 export function isLeaderLockCurrent(store: string, owner: CronLockOwner): boolean {

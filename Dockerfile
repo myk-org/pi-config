@@ -22,6 +22,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   gcc \
   git \
   gnupg \
+  util-linux \
   jq \
   libxml2-dev \
   make \
