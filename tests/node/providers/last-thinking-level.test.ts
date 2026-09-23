@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -315,6 +315,18 @@ describe("last-used thinking level", () => {
     release();
     assert.equal(await pending, false);
     assert.equal(h.level(), "high"); // selection applied its own preference
+  });
+
+  it("preserves a fresh legacy lock owned by a live PID", () => {
+    mkdirSync(join(dir, "state"), { recursive: true });
+    const lockPath = `${statePath}.lock`;
+    writeFileSync(lockPath, String(process.pid));
+    const fresh = new Date(Date.now() - 2_000);
+    utimesSync(lockPath, fresh, fresh);
+
+    assert.equal(writeLastThinkingLevel("high", statePath), false);
+    assert.equal(readFileSync(lockPath, "utf8"), String(process.pid));
+    assert.equal(existsSync(statePath), false);
   });
 
   it("reclaims an aged legacy lock with a live reused PID", () => {
