@@ -148,7 +148,7 @@ export function tryGetSystemPromptOptions(ctx: any): { contextFiles?: any[]; ski
 }
 
 /** Minimum pi version required by this pi-config version. */
-export const MIN_PI_VERSION = "0.84.4";
+export const MIN_PI_VERSION = "0.87.0";
 
 /** Get the installed pi version from its package.json. */
 export function getPiVersion(): string | null {

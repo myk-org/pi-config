@@ -29,16 +29,17 @@ import type {
   TurnOptions,
   TurnResult,
 } from "../shared/provider-driver.js";
-import { ProviderDriverError } from "../shared/provider-errors.js";
 import { makeManagedSnapshot, buildInitialSnapshot } from "../shared/managed-refresh.js";
 import { loadAcpxRuntime, type AcpxRuntimeModule } from "../acpx-provider/load-runtime.js";
 import { modelIdToDisplayName } from "../acpx-provider/runtime-models.js";
-import { buildExternalSystemPrompt } from "../shared/build-system-prompt.js";
+import { buildExternalSystemPrompt, createEmptyTranscriptContext } from "../shared/build-system-prompt.js";
 import { fileLog } from "../shared/file-logger.js";
+import { createLogger } from "../shared/logger.js";
 import { resolveAdapterCwd, adapterMemoryKey } from "../shared/session-cwd.js";
 import { resolveBinary } from "../shared/resolve-binary.js";
 
 const LOG_DOMAIN = "acpx-driver";
+const log = createLogger(LOG_DOMAIN);
 const DRIVER_KIND = "acpx";
 
 // ---------------------------------------------------------------------------
@@ -88,8 +89,15 @@ export function createAcpxAdapter(
   if (initialHandle) {
     handles.set(adapterMemoryKey("default", cwd), initialHandle);
   }
-  const pendingHandles = new Map<string, Promise<AcpRuntimeHandle>>();
-  const systemPromptSent = new Set<string>();
+  const handleQueues = new Map<string, Promise<void>>();
+  const activeTurnControllers = new Map<string, AbortController>();
+  const handleEpochs = new Map<string, number>();
+  const stoppingKeys = new Set<string>();
+  const handleSystemPrompts = new Map<string, string | undefined>();
+  let disposed = false;
+  const requestedSystemPrompts = new Map<string, string | undefined>();
+  const appliedSystemPrompts = new Map<string, string | undefined>();
+  if (initialHandle) appliedSystemPrompts.set(adapterMemoryKey("default", cwd), undefined);
   const knownSessionIds = new Set<string>();
 
   function handleMapKey(modelId: string | undefined, turnCwd: string): string {
@@ -104,62 +112,98 @@ export function createAcpxAdapter(
     return `pi-${config.agent}${model}-${slug}`;
   }
 
+  async function runExclusive<T>(key: string, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (disposed) throw new Error("ACPX adapter disposed");
+    signal?.throwIfAborted();
+    const queued = handleQueues.has(key);
+    const result = (handleQueues.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      if (disposed) throw new Error("ACPX adapter disposed");
+      signal?.throwIfAborted();
+      return operation();
+    });
+    const tail = result.then(() => {}, () => {});
+    handleQueues.set(key, tail);
+    log.debug("queued ACPX operation", { key, queued });
+    let rejectAborted!: (reason: unknown) => void;
+    const aborted = new Promise<never>((_, reject) => { rejectAborted = reject; });
+    const onAbort = () => rejectAborted(signal?.reason);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    void tail.then(() => {
+      if (handleQueues.get(key) === tail) handleQueues.delete(key);
+    });
+    try {
+      return await (signal ? Promise.race([result, aborted]) : result);
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  function assertCurrent(key: string, epoch: number, signal?: AbortSignal): void {
+    if (disposed) throw new Error("ACPX adapter disposed");
+    signal?.throwIfAborted();
+    if (stoppingKeys.has(key) || (handleEpochs.get(key) ?? 0) !== epoch) {
+      throw new Error("ACPX session stopped before queued operation started");
+    }
+  }
+
   async function ensureHandle(
     acpxModelId: string | undefined,
     systemPrompt: string | undefined,
     turnCwd: string,
+    epoch: number,
+    signal?: AbortSignal,
   ): Promise<AcpRuntimeHandle> {
     const key = handleMapKey(acpxModelId, turnCwd);
-
     const existing = handles.get(key);
-    if (existing) return existing;
-
-    const pending = pendingHandles.get(key);
-    if (pending) return pending;
-
-    const promise = (async () => {
-      try {
-        const sessionOpts: { model?: string; systemPrompt?: string } = {};
-        if (acpxModelId && acpxModelId !== "default") {
-          sessionOpts.model = acpxModelId;
-        }
-        if (systemPrompt) {
-          sessionOpts.systemPrompt = systemPrompt;
-        }
-
-        fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
-          `ensureSession agent=${config.agent} cwd=${turnCwd} boot=${cwd} model=${acpxModelId || "default"}`);
-        const handle = await runtime.ensureSession({
-          sessionKey: sessionKey(acpxModelId, turnCwd),
-          agent: config.agent,
-          mode: "persistent",
-          cwd: turnCwd,
-          ...(Object.keys(sessionOpts).length > 0
-            ? { sessionOptions: sessionOpts }
-            : {}),
-        });
-
-        handles.set(key, handle);
-        return handle;
-      } finally {
-        pendingHandles.delete(key);
+    const replacement = Boolean(existing && handleSystemPrompts.get(key) !== systemPrompt);
+    log.debug("ensuring ACPX handle", {
+      model: acpxModelId || "default", key, replacement, queued: handleQueues.has(key),
+    });
+    assertCurrent(key, epoch, signal);
+    if (existing && !replacement) return existing;
+    if (existing) {
+      await runtime.close({ handle: existing, reason: "system prompt changed" });
+      if (handles.get(key) === existing) {
+        handles.delete(key);
+        handleSystemPrompts.delete(key);
       }
-    })();
-
-    pendingHandles.set(key, promise);
-    return promise;
+    }
+    assertCurrent(key, epoch, signal);
+    const sessionOpts: { model?: string; systemPrompt?: string } = {};
+    if (acpxModelId && acpxModelId !== "default") sessionOpts.model = acpxModelId;
+    if (systemPrompt) sessionOpts.systemPrompt = systemPrompt;
+    const result = await runtime.ensureSession({
+      sessionKey: sessionKey(acpxModelId, turnCwd), agent: config.agent, mode: "persistent", cwd: turnCwd,
+      ...(Object.keys(sessionOpts).length > 0 ? { sessionOptions: sessionOpts } : {}),
+    });
+    try {
+      assertCurrent(key, epoch, signal);
+    } catch (error) {
+      await runtime.close({ handle: result, reason: "session invalidated during creation" }).catch(() => {});
+      throw error;
+    }
+    handles.set(key, result);
+    handleSystemPrompts.set(key, systemPrompt);
+    return result;
   }
 
   return {
     startSession: async (opts: SessionStartOptions): Promise<SessionHandle> => {
       const model = opts.model || "default";
       const turnCwd = resolveAdapterCwd(opts, cwd);
+      log.debug("building start-session system prompt", { model, turnCwd, supplied: Boolean(opts.systemPrompt) });
       const systemPrompt = opts.systemPrompt
         ? opts.systemPrompt
-        : buildExternalSystemPrompt({ systemPrompt: undefined }, turnCwd);
-      await ensureHandle(model, systemPrompt, turnCwd);
+        : buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
+      const key = handleMapKey(model, turnCwd);
+      const epoch = handleEpochs.get(key) ?? 0;
+      await runExclusive(key, async () => {
+        assertCurrent(key, epoch);
+        requestedSystemPrompts.set(key, systemPrompt);
+        await ensureHandle(model, systemPrompt, turnCwd, epoch);
+      });
       const sessionId = sessionKey(model, turnCwd);
-      knownSessionIds.add(sessionId);
+      if (!disposed) knownSessionIds.add(sessionId);
       return {
         sessionId,
         model,
@@ -174,25 +218,22 @@ export function createAcpxAdapter(
     ): Promise<TurnResult> => {
       const turnCwd = resolveAdapterCwd(handle, cwd);
       const handleKey = handleMapKey(handle.model, turnCwd);
-      const needsSystemPrompt = !systemPromptSent.has(handleKey);
-      const systemPrompt = needsSystemPrompt
-        ? buildExternalSystemPrompt({ systemPrompt: undefined }, turnCwd)
-        : undefined;
+      const epoch = handleEpochs.get(handleKey) ?? 0;
+      return runExclusive(handleKey, async () => {
+      assertCurrent(handleKey, epoch, opts?.signal);
+      const systemPrompt = requestedSystemPrompts.get(handleKey) ?? buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
+      const promptChanged = appliedSystemPrompts.has(handleKey) && appliedSystemPrompts.get(handleKey) !== systemPrompt;
+      log.debug("building turn system prompt", { model: handle.model, turnCwd, promptChanged });
+      const acpxHandle = await ensureHandle(handle.model, systemPrompt, turnCwd, epoch, opts?.signal);
 
-      const acpxHandle = await ensureHandle(handle.model, systemPrompt, turnCwd);
-      if (needsSystemPrompt) {
-        systemPromptSent.add(handleKey);
-      }
-
+      assertCurrent(handleKey, epoch, opts?.signal);
       const abortController = new AbortController();
-      if (opts?.signal) {
-        if (opts.signal.aborted) {
-          abortController.abort();
-        } else {
-          opts.signal.addEventListener("abort", () => abortController.abort(), { once: true });
-        }
-      }
-
+      const forwardAbort = () => abortController.abort(opts?.signal?.reason);
+      opts?.signal?.addEventListener("abort", forwardAbort, { once: true });
+      opts?.signal?.throwIfAborted();
+      activeTurnControllers.set(handleKey, abortController);
+      try {
+      assertCurrent(handleKey, epoch, opts?.signal);
       const turn = runtime.startTurn({
         handle: acpxHandle,
         text: prompt,
@@ -233,6 +274,7 @@ export function createAcpxAdapter(
       }
 
       const result = await turn.result;
+      if (result.status === "completed") appliedSystemPrompts.set(handleKey, systemPrompt);
       let stopReason = "stop";
       if (result.status === "completed") {
         stopReason = result.stopReason === "end_turn" ? "stop" : (result.stopReason || "stop");
@@ -300,38 +342,63 @@ export function createAcpxAdapter(
       }
 
       return { text, thinking: thinking || undefined, stopReason, usage };
+      } finally {
+        opts?.signal?.removeEventListener("abort", forwardAbort);
+        if (activeTurnControllers.get(handleKey) === abortController) activeTurnControllers.delete(handleKey);
+      }
+      }, opts?.signal);
     },
 
     stopSession: async (handle: SessionHandle): Promise<void> => {
       const turnCwd = resolveAdapterCwd(handle, cwd);
       const key = handleMapKey(handle.model, turnCwd);
+      log.debug("stopping ACPX session", { model: handle.model, key, queued: handleQueues.has(key) });
+      handleEpochs.set(key, (handleEpochs.get(key) ?? 0) + 1);
+      stoppingKeys.add(key);
+      activeTurnControllers.get(key)?.abort();
+      await runExclusive(key, async () => {
       const acpxHandle = handles.get(key);
       if (acpxHandle) {
         await runtime.close({ handle: acpxHandle, reason: "session stop" }).catch((err: unknown) => {
-          fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-            `session close failed: ${err instanceof Error ? err.message : String(err)}`);
+          log.error("ACPX session close failed", { model: handle.model, key },
+            err instanceof Error ? err : new Error(String(err)));
         });
-        handles.delete(key);
+        if (handles.get(key) === acpxHandle) {
+          handles.delete(key);
+          handleSystemPrompts.delete(key);
+        }
       }
-      systemPromptSent.delete(key);
+      requestedSystemPrompts.delete(key);
+      appliedSystemPrompts.delete(key);
       prevCumulative.delete(key);
       knownSessionIds.delete(sessionKey(handle.model, turnCwd));
+      }).finally(() => stoppingKeys.delete(key));
     },
 
     stopAll: async (): Promise<void> => {
+      log.info("stopping all ACPX sessions", { handles: handles.size, queues: handleQueues.size });
+      disposed = true;
+      const knownKeys = new Set([...handles.keys(), ...handleQueues.keys(), ...handleEpochs.keys(), ...requestedSystemPrompts.keys()]);
+      for (const key of knownKeys) handleEpochs.set(key, (handleEpochs.get(key) ?? 0) + 1);
+      for (const controller of activeTurnControllers.values()) controller.abort();
+      await Promise.allSettled(handleQueues.values());
       const closePromises: Promise<void>[] = [];
       for (const [key, acpxHandle] of handles) {
         closePromises.push(
           runtime.close({ handle: acpxHandle, reason: "stop all" }).catch((err: unknown) => {
-            fileLog(LOG_DOMAIN, "warn", LOG_DOMAIN,
-              `session close failed for ${key}: ${err instanceof Error ? err.message : String(err)}`);
+            log.error("ACPX stop-all close failed", { model: key.split("\x1f", 1)[0], key },
+              err instanceof Error ? err : new Error(String(err)));
           }),
         );
       }
       await Promise.allSettled(closePromises);
       handles.clear();
-      pendingHandles.clear();
-      systemPromptSent.clear();
+      handleSystemPrompts.clear();
+      handleQueues.clear();
+      activeTurnControllers.clear();
+      stoppingKeys.clear();
+      requestedSystemPrompts.clear();
+      appliedSystemPrompts.clear();
       prevCumulative.clear();
       knownSessionIds.clear();
     },

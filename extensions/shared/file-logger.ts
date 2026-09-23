@@ -13,6 +13,13 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getStandaloneSetting } from "../orchestrator/settings-source.js";
+
+var logLevelDecision: (message: string, context: object) => void;
+logLevelDecision = () => {};
+export function setLogLevelDiagnosticLogger(logger: { info(message: string, context: object): void }): void {
+  logLevelDecision = logger.info.bind(logger);
+}
 
 export type FileLogLevel = "debug" | "info" | "warn" | "error";
 
@@ -130,32 +137,26 @@ function appendLine(filePath: string, line: string): void {
  */
 const LEVEL_ORDER: Record<string, number> = Object.assign(Object.create(null), { off: -1, debug: 0, info: 1, warn: 2, error: 3 });
 
-let _cachedGetSetting: ((cwd: string, key: string) => any) | null | false = null;
-
 /** Match settings mtime throttle — burst register calls must not re-stat. */
 const MIN_LEVEL_CACHE_MS = 30_000;
 const minLevelCache = new Map<string, { level: number; at: number }>();
 
 function resolveMinLevel(name: string): number {
-  if (_cachedGetSetting !== false) {
-    try {
-      if (!_cachedGetSetting) {
-        _cachedGetSetting = require("../orchestrator/project-settings.js").getSetting;
-      }
-      if (_cachedGetSetting) {
-        const settingKey = `log_${name.replace(/-/g, "_")}`;
-        const settingVal = _cachedGetSetting(process.cwd(), settingKey);
-        if (settingVal && settingVal in LEVEL_ORDER) return LEVEL_ORDER[settingVal];
-      }
-    } catch {
-      _cachedGetSetting = false;
-    }
+  const settingKey = `log_${name.replace(/-/g, "_")}`;
+  const settingVal = getStandaloneSetting(process.cwd(), settingKey);
+  if (typeof settingVal === "string" && settingVal in LEVEL_ORDER) {
+    logLevelDecision("resolved log level", { name, source: "setting", level: settingVal });
+    return LEVEL_ORDER[settingVal];
   }
 
   const envKey = `PI_LOG_${name.replace(/-/g, "_").toUpperCase()}`;
   const val = process.env[envKey];
-  if (val && val in LEVEL_ORDER) return LEVEL_ORDER[val];
+  if (val && val in LEVEL_ORDER) {
+    logLevelDecision("resolved log level", { name, source: "environment", level: val });
+    return LEVEL_ORDER[val];
+  }
 
+  logLevelDecision("resolved log level", { name, source: "default", level: "info" });
   return LEVEL_ORDER.info;
 }
 

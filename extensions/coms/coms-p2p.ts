@@ -848,10 +848,11 @@ export default function (pi: ExtensionAPI) {
 		ackOk(socket, env.msg_id);
 	}
 
-	function buildAgentCard(): AgentCard {
+	async function buildAgentCard(): Promise<AgentCard> {
 		const ctx = currentCtx;
 		const ident = identity;
 		const pct = ctx ? Math.round(ctx.getContextUsage()?.percent ?? 0) : 0;
+		log.debug("build_agent_card", { hasIdentity: !!ident });
 		return {
 			name: ident?.name ?? "unknown",
 			purpose: ident?.purpose ?? "",
@@ -859,22 +860,24 @@ export default function (pi: ExtensionAPI) {
 			color: ident?.color ?? "#36F9F6",
 			context_used_pct: pct,
 			queue_depth: getPendingInboundCount(),
-			tasks_summary: readTaskSummary(currentCtx?.cwd ?? process.cwd(), currentCtx?.sessionManager?.getSessionId?.()),
+			tasks_summary: await readTaskSummary(currentCtx?.cwd ?? process.cwd(), currentCtx?.sessionManager?.getSessionId?.()),
 		};
 	}
 
 	/** Push current agent card to ping worker so it can respond independently */
-	function updatePingWorkerCard(): void {
+	async function updatePingWorkerCard(): Promise<void> {
+		log.debug("update_ping_worker_card", { ready: pingWorkerReady });
 		if (!pingWorker || !pingWorkerReady) return;
 		try {
-			const card = buildAgentCard();
+			const card = await buildAgentCard();
 			const pong: Pong = { type: "pong", msg_id: "", agent_card: card };
 			pingWorker.postMessage({ type: "update_card", pong });
 		} catch { /* ignore */ }
 	}
 
-	function handlePing(socket: net.Socket, env: PingEnvelope): void {
-		const card = buildAgentCard();
+	async function handlePing(socket: net.Socket, env: PingEnvelope): Promise<void> {
+		log.debug("handle_ping", { msgId: env.msg_id });
+		const card = await buildAgentCard();
 		const pong: Pong = { type: "pong", msg_id: env.msg_id, agent_card: card };
 		try {
 			socket.write(JSON.stringify(pong) + "\n");
@@ -883,7 +886,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		try { socket.end(); } catch { /* ignore */ }
 		// Also update worker with latest card
-		updatePingWorkerCard();
+		await updatePingWorkerCard();
 	}
 
 	function isValidEnvelope(obj: any): obj is Envelope {
@@ -935,7 +938,7 @@ export default function (pi: ExtensionAPI) {
 				} else if (parsed.type === "response") {
 					handleResponse(socket, parsed as ResponseEnvelope);
 				} else if (parsed.type === "ping") {
-					handlePing(socket, parsed as PingEnvelope);
+					void handlePing(socket, parsed as PingEnvelope).catch(() => nack(socket, parsed.msg_id, "internal error"));
 				} else if (parsed.type === "task_update") {
 					handleTaskUpdate(socket, parsed as TaskUpdateEnvelope);
 				} else if (parsed.type === "queue_manage") {
@@ -1994,7 +1997,7 @@ Do not respond to this message.`;
 			// Append sender's active tasks for this peer to the prompt
 			let promptText = params.prompt;
 			try {
-				const { listTasksForSession } = require("../pitasks/index.js");
+				const { listTasksForSession } = await import("../pitasks/index.js");
 				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
 				const allTasks = listTasksForSession(targetPiSessionId, target.cwd) || [];
 				const myTasks = allTasks.filter((t: any) =>
@@ -2021,27 +2024,8 @@ Do not respond to this message.`;
 				tasks: params.tasks ?? null,
 			};
 
-			// Send the envelope synchronously and wait for the receiver's ack.
-			await sendEnvelope(target.endpoint, env);
-			comsSendCalledThisTurn.add(target.coms_session_id);
-
-			// Auto-create tasks on the target's task store (sender-side, instant)
-			if (params.tasks && params.tasks.length > 0 && target.coms_session_id) {
-				try {
-					const count = createComsInboundTasks(
-						params.tasks,
-						{ sender_session: identity.coms_session_id, sender_name: identity.name, sender_endpoint: identity.endpoint },
-						target.pi_session_id || target.coms_session_id,
-						target.cwd,
-					);
-					if (count > 0) {
-						log.info("tasks_auto_created", msg_id, "to", target.name, "count", count);
-					}
-				} catch { /* best-effort */ }
-			}
-
-			// Register a pending entry whose promise the receiver-side handleResponse
-			// (or the timeout below) will settle.
+			// Register before sending. A peer may acknowledge and respond before
+			// task creation's dynamic import completes.
 			let resolveFn!: (v: { response?: any; error?: string | null }) => void;
 			let rejectFn!: (e: Error) => void;
 			const promise = new Promise<{ response?: any; error?: string | null }>((res, rej) => {
@@ -2069,12 +2053,36 @@ Do not respond to this message.`;
 			try { (entry.timer as any).unref?.(); } catch { /* ignore */ }
 			pendingReplies.set(msg_id, entry);
 
-			log.debug("outbound_prompt", msg_id, "to", target.name, "hops", hops);
-
-			// Track pending outbound
 			const targetKey = target.name;
 			if (!pendingOutbound.has(targetKey)) pendingOutbound.set(targetKey, new Set());
 			pendingOutbound.get(targetKey)!.add(msg_id);
+
+			try {
+				await sendEnvelope(target.endpoint, env);
+			} catch (error) {
+				pendingReplies.delete(msg_id);
+				pendingOutbound.get(targetKey)?.delete(msg_id);
+				if (pendingOutbound.get(targetKey)?.size === 0) pendingOutbound.delete(targetKey);
+				if (entry.timer) clearTimeout(entry.timer);
+				throw error;
+			}
+			comsSendCalledThisTurn.add(target.coms_session_id);
+
+			if (params.tasks && params.tasks.length > 0 && target.coms_session_id) {
+				try {
+					const count = await createComsInboundTasks(
+						params.tasks,
+						{ sender_session: identity.coms_session_id, sender_name: identity.name, sender_endpoint: identity.endpoint },
+						target.pi_session_id || target.coms_session_id,
+						target.cwd,
+					);
+					if (count > 0) log.info("tasks_auto_created", msg_id, "to", target.name, "count", count);
+				} catch (error) {
+					log.warn("tasks_auto_create_failed", { msg_id, target: target.name, error: error instanceof Error ? error.message : String(error) });
+				}
+			}
+
+			log.debug("outbound_prompt", msg_id, "to", target.name, "hops", hops);
 
 			// Peer status from peerCards
 			const peerCard = peerCards.get(target.coms_session_id);
@@ -2305,6 +2313,7 @@ Do not respond to this message.`;
 			}), { description: "Tasks to create on the peer" }),
 		}),
 		async execute(_callId, params) {
+			log.debug("coms_tasks_create_start", { target: params.target, count: params.tasks?.length ?? 0 });
 			if (!identity) throw new Error("coms not initialised");
 			if (!params.tasks || params.tasks.length === 0) throw new Error("coms_tasks_create requires at least one task");
 			const target = await resolveTarget(params.target);
@@ -2320,7 +2329,7 @@ Do not respond to this message.`;
 			if (identity.endpoint) meta.sender_endpoint = identity.endpoint;
 
 			try {
-				const { createTasksForSession, listTasksForSession, updateTaskForSession } = require("../pitasks/index.js");
+				const { createTasksForSession, listTasksForSession, updateTaskForSession } = await import("../pitasks/index.js");
 				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
 
 				// Create all tasks in one batch
@@ -2401,12 +2410,13 @@ Do not respond to this message.`;
 			task_id: Type.String({ description: "Task ID to delete." }),
 		}),
 		async execute(_callId, params) {
+			log.debug("coms_task_delete_start", { target: params.target, taskId: params.task_id });
 			if (!identity) throw new Error("coms not initialised");
 			const target = await resolveTarget(params.target);
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
 
 			try {
-				const { getTaskForSession, deleteTaskForSession } = require("../pitasks/index.js");
+				const { getTaskForSession, deleteTaskForSession } = await import("../pitasks/index.js");
 				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
 				const task = getTaskForSession(targetPiSessionId, params.task_id, target.cwd);
 				if (!task) throw new Error(`Task #${params.task_id} not found`);
@@ -2440,12 +2450,13 @@ Do not respond to this message.`;
 			target: Type.String({ description: "Peer name or session_id." }),
 		}),
 		async execute(_callId, params) {
+			log.debug("coms_task_list_start", { target: params.target });
 			if (!identity) throw new Error("coms not initialised");
 			const target = await resolveTarget(params.target);
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
 
 			try {
-				const { listTasksForSession } = require("../pitasks/index.js");
+				const { listTasksForSession } = await import("../pitasks/index.js");
 				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
 				const tasks = listTasksForSession(targetPiSessionId, target.cwd);
 				log.debug("coms_task_list", target.name, "tasks", tasks?.length ?? 0);
@@ -2494,12 +2505,13 @@ Do not respond to this message.`;
 			task_id: Type.String({ description: "Task ID to retrieve." }),
 		}),
 		async execute(_callId, params) {
+			log.debug("coms_task_get_start", { target: params.target, taskId: params.task_id });
 			if (!identity) throw new Error("coms not initialised");
 			const target = await resolveTarget(params.target);
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
 
 			try {
-				const { getTaskForSession } = require("../pitasks/index.js");
+				const { getTaskForSession, listTasksForSession } = await import("../pitasks/index.js");
 				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
 				const task = getTaskForSession(targetPiSessionId, params.task_id, target.cwd);
 				if (!task) throw new Error(`Task #${params.task_id} not found on ${target.name}`);
@@ -2512,7 +2524,6 @@ Do not respond to this message.`;
 				if (task.owner) lines.push(`Owner: ${task.owner}`);
 				lines.push(`Description: ${desc}`);
 				if (task.blockedBy?.length > 0) {
-					const { listTasksForSession } = require("../pitasks/index.js");
 					const allTasks = listTasksForSession(targetPiSessionId, target.cwd);
 					const openBlockers = task.blockedBy.filter((bid: string) => {
 						const blocker = allTasks.find((bt: any) => bt.id === bid);
@@ -2549,12 +2560,13 @@ Do not respond to this message.`;
 			addBlockedBy: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that block this task" })),
 		}),
 		async execute(_callId, params) {
+			log.debug("coms_task_update_start", { target: params.target, taskId: params.task_id });
 			if (!identity) throw new Error("coms not initialised");
 			const target = await resolveTarget(params.target);
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
 
 			try {
-				const { getTaskForSession, updateTaskForSession } = require("../pitasks/index.js");
+				const { getTaskForSession, updateTaskForSession } = await import("../pitasks/index.js");
 				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
 				const task = getTaskForSession(targetPiSessionId, params.task_id, target.cwd);
 				if (!task) throw new Error(`Task #${params.task_id} not found on ${target.name}`);

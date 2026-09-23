@@ -44,11 +44,13 @@ import {
   createProvisionalPiSessionId,
   type CliSessionKey,
 } from "../cli-provider/sessions.js";
-import { buildExternalSystemPrompt } from "../shared/build-system-prompt.js";
+import { buildExternalSystemPrompt, createEmptyTranscriptContext } from "../shared/build-system-prompt.js";
 import { fileLog } from "../shared/file-logger.js";
+import { createLogger } from "../shared/logger.js";
 import { resolveAdapterCwd, adapterMemoryKey, deleteKeysForCwd } from "../shared/session-cwd.js";
 
 const LOG_DOMAIN = "claude-driver";
+const log = createLogger(LOG_DOMAIN);
 const DRIVER_KIND = "claude-cli";
 
 // ---------------------------------------------------------------------------
@@ -77,7 +79,7 @@ const claudeConfigSchema: ConfigSchema<ClaudeCliConfig> = {
 // Adapter (session / turn runtime)
 // ---------------------------------------------------------------------------
 
-function createClaudeAdapter(
+export function createClaudeAdapter(
   config: ClaudeCliConfig,
   cwd: string,
   instanceId: string,
@@ -86,7 +88,7 @@ function createClaudeAdapter(
   handleSessionStart: (reason: string, sid: string | null, sessionCwd?: string) => void;
 } {
   let piSessionId = createProvisionalPiSessionId();
-  const systemPromptSent = new Set<string>();
+  const appliedSystemPrompts = new Map<string, string | undefined>();
   const storedSystemPrompts = new Map<string, string>();
 
   function sessionKeyFor(model: string, turnCwd: string = cwd): CliSessionKey {
@@ -101,7 +103,7 @@ function createClaudeAdapter(
     handleSessionStart: (reason: string, _sid: string | null, sessionCwd?: string) => {
       if (reason === "new" || reason === "resume") {
         const turnCwd = sessionCwd || cwd;
-        deleteKeysForCwd(systemPromptSent, turnCwd);
+        deleteKeysForCwd(appliedSystemPrompts, turnCwd);
         deleteKeysForCwd(storedSystemPrompts, turnCwd);
       }
     },
@@ -110,8 +112,14 @@ function createClaudeAdapter(
       const model = opts.model || "default";
       const turnCwd = resolveAdapterCwd(opts, cwd);
       const memKey = adapterMemoryKey(model, turnCwd);
-      if (opts.systemPrompt) storedSystemPrompts.set(memKey, opts.systemPrompt);
       const key = sessionKeyFor(model, turnCwd);
+      log.debug("starting CLI session", { model, cwd: turnCwd, hasSystemPrompt: opts.systemPrompt !== undefined });
+      if (opts.systemPrompt === undefined) {
+        storedSystemPrompts.delete(memKey);
+        if (appliedSystemPrompts.get(memKey) !== undefined) clearCliSessionId(key);
+      } else {
+        storedSystemPrompts.set(memKey, opts.systemPrompt);
+      }
       const existingId = loadCliSessionId(key);
       fileLog(LOG_DOMAIN, "debug", LOG_DOMAIN,
         `startSession model=${model} cwd=${turnCwd} boot=${cwd}`);
@@ -131,15 +139,9 @@ function createClaudeAdapter(
       const key = sessionKeyFor(handle.model, turnCwd);
       const sessionId = loadCliSessionId(key);
       const handleKey = adapterMemoryKey(handle.model, turnCwd);
-      const needsSystemPrompt = !systemPromptSent.has(handleKey);
-
-      // Prefer the system prompt stored at startSession over rebuilding
-      let systemPrompt: string | undefined;
-      if (needsSystemPrompt) {
-        systemPrompt =
-          storedSystemPrompts.get(handleKey) ||
-          buildExternalSystemPrompt({ systemPrompt: undefined }, turnCwd);
-      }
+      const systemPrompt = storedSystemPrompts.get(handleKey) ?? buildExternalSystemPrompt(createEmptyTranscriptContext(), turnCwd);
+      const needsSystemPrompt = !appliedSystemPrompts.has(handleKey) || appliedSystemPrompts.get(handleKey) !== systemPrompt;
+      log.debug("building turn system prompt", { model: handle.model, turnCwd, changed: needsSystemPrompt });
 
       // Apply system prompt to the prompt text
       let finalPrompt = prompt;
@@ -183,7 +185,7 @@ function createClaudeAdapter(
 
         // Mark system prompt sent on success
         if (needsSystemPrompt) {
-          systemPromptSent.add(handleKey);
+          appliedSystemPrompts.set(handleKey, systemPrompt);
         }
 
         return {
@@ -208,7 +210,7 @@ function createClaudeAdapter(
             saveCliSessionId(key, result.sessionId);
           }
           if (needsSystemPrompt) {
-            systemPromptSent.add(handleKey);
+            appliedSystemPrompts.set(handleKey, systemPrompt);
           }
           return {
             text: result.text,
@@ -227,12 +229,12 @@ function createClaudeAdapter(
       const key = sessionKeyFor(handle.model, turnCwd);
       clearCliSessionId(key);
       const handleKey = adapterMemoryKey(handle.model, turnCwd);
-      systemPromptSent.delete(handleKey);
+      appliedSystemPrompts.delete(handleKey);
       storedSystemPrompts.delete(handleKey);
     },
 
     stopAll: async (): Promise<void> => {
-      systemPromptSent.clear();
+      appliedSystemPrompts.clear();
       storedSystemPrompts.clear();
     },
 

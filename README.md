@@ -886,7 +886,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for tips on testing extensions locally, run
 
 ## Prerequisites
 
-- [pi](https://github.com/badlogic/pi-mono) (minimum version: **0.84.4**). Pidash uses Pi's `ui_prompt_start` and `ui_prompt_end` events to show prompt wait separately from agent work.
+- [pi](https://github.com/badlogic/pi-mono) (minimum version: **0.87.0**). Pidash uses Pi's `ui_prompt_start` and `ui_prompt_end` events to show prompt wait separately from agent work.
 - `gh` CLI (for GitHub operations)
 - `uv` (for Python execution)
 - `myk-pi-tools` (optional, for `/pr-review` and `/release`)

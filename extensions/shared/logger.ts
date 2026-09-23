@@ -10,8 +10,9 @@
  * Writes to ~/.pi/logs/<name>/<PI_SESSION_ID>.log.  Never console.* (chat UI leak).
  */
 
-import { isLevelEnabled, writeFileLogLine } from "./file-logger.js";
+import { isLevelEnabled, setLogLevelDiagnosticLogger, writeFileLogLine } from "./file-logger.js";
 import { createLoggerCore } from "./logger-core.mjs";
+import { setSettingsSourceLogger } from "../orchestrator/settings-source.js";
 
 export interface Logger {
   debug(...args: any[]): void;
@@ -21,9 +22,12 @@ export interface Logger {
   isDebugEnabled(): boolean;
 }
 
-export function createLogger(name: string, prefix?: string): Logger {
+export function createLogger(name: string, prefix?: string, bypassLevelResolution = false): Logger {
   return createLoggerCore(name, prefix, {
-    isLevelEnabled: level => isLevelEnabled(name, level),
+    isLevelEnabled: level => bypassLevelResolution || isLevelEnabled(name, level),
     write: line => { writeFileLogLine(name, line); },
   }) as Logger;
 }
+
+setLogLevelDiagnosticLogger(createLogger("file-logger-bootstrap", undefined, true));
+setSettingsSourceLogger(createLogger("settings-source", undefined, true));

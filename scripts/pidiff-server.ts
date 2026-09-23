@@ -12,7 +12,7 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createDaemonServer } from "./daemon-shared.ts";
+import { createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import { isGitIgnoredRelPath, parseGitIgnoredWatchFilter, type GitIgnoredWatchFilter } from "./pidiff-git-ignore.ts";
 import { createLogger } from "../extensions/shared/logger.ts";
 
@@ -314,7 +314,7 @@ interface PiClient {
 
 const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start } = createDaemonServer({
   port,
-  uiDir: path.join(path.dirname(process.argv[1] || __filename), "..", "extensions", "pidiff", "pidiff-ui", "dist"),
+  uiDir: resolveUiDir(process.argv[1], import.meta.url, "..", "extensions", "pidiff", "pidiff-ui", "dist"),
   uiName: "pidiff-ui",
   log,
   listenAddress: "127.0.0.1",

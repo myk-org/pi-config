@@ -12,7 +12,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { createDaemonServer } from "./daemon-shared.ts";
+import { createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import type { SessionInfo } from "../extensions/shared/types.ts";
 import { disconnectPidashSession, registerPidashSession, updatePidashSession, type PiClient } from "./pidash-session-state.ts";
 import { setupDiscordBot } from "./pidash-discord.ts";
@@ -282,7 +282,7 @@ function handleBrowserMessage(ws: any, parsed: any): void {
 
 const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, start } = createDaemonServer({
   port,
-  uiDir: path.join(path.dirname(process.argv[1] || __filename), "..", "extensions", "pidash", "pidash-ui", "dist"),
+  uiDir: resolveUiDir(process.argv[1], import.meta.url, "..", "extensions", "pidash", "pidash-ui", "dist"),
   uiName: "pidash-ui",
   log,
   listenAddress: "0.0.0.0",

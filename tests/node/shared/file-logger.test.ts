@@ -10,9 +10,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, it } from "node:test";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+const TSX = import.meta.resolve("tsx");
 
 /** Strip comments so console.* in docs/strings does not false-fail. */
 function stripTsComments(src: string): string {
@@ -294,6 +296,138 @@ describe("file-logger", () => {
     // Verify stack frames are present (not just the error message)
     assert.match(body, /Error: boom/);
     assert.match(body, /\\n\s+at /);  // Stack frames collapsed by fileLog's oneLine()
+  });
+
+  it("ACPX shim import enables debug from project settings without project-settings import", () => {
+    const project = mkdtempSync(join(tmpdir(), "pi-file-log-setting-"));
+    mkdirSync(join(project, ".pi"));
+    writeFileSync(join(project, ".pi", "pi-config-settings.jsonc"), '{"log_acpx_provider":"debug"}');
+
+    const script = `
+      await import(${JSON.stringify(join(REPO, "extensions/acpx-provider/index.ts"))});
+      const { isLevelEnabled } = await import(${JSON.stringify(join(REPO, "extensions/shared/file-logger.ts"))});
+      if (!isLevelEnabled("acpx-provider", "debug")) process.exit(1);
+    `;
+    const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], {
+      cwd: project,
+      encoding: "utf8",
+    });
+
+    rmSync(project, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
+  it("writes standalone settings diagnostics without recursing or exposing values", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-settings-audit-project-"));
+    const home = mkdtempSync(join(tmpdir(), "pi-settings-audit-home-"));
+    mkdirSync(join(root, ".pi"));
+    mkdirSync(join(home, ".pi"));
+    writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":"debug","private_value":"do-not-log"}');
+    const script = `
+      process.env.HOME = ${JSON.stringify(home)};
+      delete process.env.__PI_PARENT_SESSION_ID;
+      const logger = await import(${JSON.stringify(join(REPO, "extensions/shared/logger.ts"))});
+      const fileLogger = await import(${JSON.stringify(join(REPO, "extensions/shared/file-logger.ts"))});
+      fileLogger.setGlobalSessionId("audit-session");
+      const { isLevelEnabled } = fileLogger;
+      if (!isLevelEnabled("coms", "debug")) process.exit(1);
+    `;
+    const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: root, encoding: "utf8" });
+    const settingsLog = readFileSync(join(home, ".pi", "logs", "settings-source", "audit-session", "main.log"), "utf8");
+    const bootstrapLog = readFileSync(join(home, ".pi", "logs", "file-logger-bootstrap", "audit-session", "main.log"), "utf8");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(settingsLog, /resolved standalone setting/);
+    assert.match(bootstrapLog, /resolved log level/);
+    assert.doesNotMatch(settingsLog + bootstrapLog, /do-not-log/);
+  });
+
+  it("uses a valid global setting when the project setting is invalid", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-file-log-project-"));
+    const home = mkdtempSync(join(tmpdir(), "pi-file-log-home-"));
+    mkdirSync(join(root, ".pi"));
+    mkdirSync(join(home, ".pi"));
+    writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":42}');
+    writeFileSync(join(home, ".pi", "pi-config-settings.jsonc"), '{"log_coms":"debug"}');
+    const script = `
+      process.env.HOME = ${JSON.stringify(home)};
+      const { isLevelEnabled } = await import(${JSON.stringify(join(REPO, "extensions/shared/file-logger.ts"))});
+      if (!isLevelEnabled("coms", "debug")) process.exit(1);
+    `;
+    const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: root, encoding: "utf8" });
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
+  it("caches standalone repository resolution for repeated lookups", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-file-log-cache-"));
+    mkdirSync(join(root, ".pi"));
+    writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":"debug"}');
+    const script = `
+      const settings = await import(${JSON.stringify(join(REPO, "extensions/orchestrator/settings-source.ts"))});
+      let resolutions = 0;
+      settings.setRepoRootResolverForTests(cwd => { resolutions++; return cwd; });
+      settings.getStandaloneSetting(process.cwd(), "log_coms");
+      settings.getStandaloneSetting(process.cwd() + "/.", "log_acpx_provider");
+      if (resolutions !== 1) process.exit(1);
+    `;
+    const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: root, encoding: "utf8" });
+    rmSync(root, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
+  it("caches standalone repository fallback for repeated lookups", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-file-log-cache-fallback-"));
+    const script = `
+      const settings = await import(${JSON.stringify(join(REPO, "extensions/orchestrator/settings-source.ts"))});
+      let resolutions = 0;
+      settings.setRepoRootResolverForTests(cwd => { resolutions++; return cwd; });
+      settings.getStandaloneSetting(process.cwd(), "log_coms");
+      settings.getStandaloneSetting(process.cwd(), "log_acpx_provider");
+      if (resolutions !== 1) process.exit(1);
+    `;
+    const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: root, encoding: "utf8" });
+    rmSync(root, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
+  it("loads project log settings from a nested directory", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-file-log-nested-"));
+    const nested = join(root, "a", "b");
+    mkdirSync(join(root, ".git"));
+    mkdirSync(join(root, ".pi"));
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":"debug"}');
+    const script = `
+      const { isLevelEnabled } = await import(${JSON.stringify(join(REPO, "extensions/shared/file-logger.ts"))});
+      if (!isLevelEnabled("coms", "debug")) process.exit(1);
+    `;
+    const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: nested, encoding: "utf8" });
+    rmSync(root, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
+  it("loads project log settings from a linked worktree", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-file-log-main-"));
+    const worktree = mkdtempSync(join(tmpdir(), "pi-file-log-worktree-"));
+    const nested = join(worktree, "nested");
+    mkdirSync(join(root, ".git"));
+    mkdirSync(join(root, ".pi"));
+    mkdirSync(nested);
+    writeFileSync(join(worktree, ".git"), `gitdir: ${join(root, ".git", "worktrees", "test")}\n`);
+    mkdirSync(join(root, ".git", "worktrees", "test"), { recursive: true });
+    writeFileSync(join(root, ".git", "worktrees", "test", "commondir"), "../..\n");
+    writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":"debug"}');
+    const script = `
+      const { isLevelEnabled } = await import(${JSON.stringify(join(REPO, "extensions/shared/file-logger.ts"))});
+      if (!isLevelEnabled("coms", "debug")) process.exit(1);
+    `;
+    const result = spawnSync(process.execPath, ["--import", TSX, "--input-type=module", "--eval", script], { cwd: nested, encoding: "utf8" });
+    rmSync(root, { recursive: true, force: true });
+    rmSync(worktree, { recursive: true, force: true });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
   });
 
   it("isLevelEnabled is false for debug at default info", async () => {

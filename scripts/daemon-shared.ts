@@ -6,7 +6,18 @@
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { createRequire } from "node:module";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { createLogger } from "../extensions/shared/logger.ts";
 import { serveUi } from "./serve-ui.ts";
+
+const daemonLog = createLogger("daemon-shared");
+
+export function resolveUiDir(programPath: string | undefined, moduleUrl: string, ...segments: string[]): string {
+  const resolved = path.join(path.dirname(programPath || fileURLToPath(moduleUrl)), ...segments);
+  daemonLog.debug("resolved UI directory", { programPath: programPath || "(module URL)", resolved });
+  return resolved;
+}
 
 const _require = createRequire(import.meta.url);
 const WebSocket = _require("ws");

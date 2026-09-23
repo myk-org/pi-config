@@ -53,8 +53,8 @@ afterEach(() => {
 });
 
 describe("minimum Pi version", () => {
-  it("requires Pi 0.84.4", () => {
-    assert.equal(MIN_PI_VERSION, "0.84.4");
+  it("requires Pi 0.87.0", () => {
+    assert.equal(MIN_PI_VERSION, "0.87.0");
   });
 });
 
