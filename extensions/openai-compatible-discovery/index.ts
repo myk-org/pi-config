@@ -68,7 +68,11 @@ async function refreshProviderModels(
   lifecycle: { signal: AbortSignal; isCurrent: () => boolean },
 ): Promise<Model[]> {
   const generation = ++snapshot.generation;
-  const active = () => lifecycle.isCurrent() && !refresh.signal.aborted && generation === snapshot.generation;
+  const active = () => {
+    const current = lifecycle.isCurrent();
+    log.debug("discovery refresh eligibility", { provider: sourceProviderId, generation, current, aborted: refresh.signal.aborted, latest: generation === snapshot.generation });
+    return current && !refresh.signal.aborted && generation === snapshot.generation;
+  };
   let connection: ResolvedOpenAiCompatibleConnection = { baseUrl: source.baseUrl };
   let scopeResolved = false;
   try {
@@ -178,7 +182,11 @@ export default function (pi: ExtensionAPI) {
     const generation = lifecycleGeneration;
     const lifecycle = {
       signal: lifecycleController.signal,
-      isCurrent: () => generation === lifecycleGeneration,
+      isCurrent: () => {
+        const current = generation === lifecycleGeneration;
+        log.debug("discovery lifecycle eligibility", { generation, lifecycleGeneration, current });
+        return current;
+      },
     };
     const configResult = findEligibleOpenAiCompatibleProviderConfigsResult();
     if (configResult.providers.length === 0) {
@@ -207,6 +215,7 @@ export default function (pi: ExtensionAPI) {
       registrationRefreshes.push(new Promise<void>((resolve) => { registrationStarted = resolve; }));
       pi.registerProvider(id, {
         refreshModels: (refresh) => {
+          log.debug("provider discovery refresh requested", { provider: id, generation: snapshot.generation + 1, allowNetwork: refresh.allowNetwork, aborted: refresh.signal.aborted });
           registrationStarted();
           return refreshProviderModels(
             pi, ctx, id, source, staticModels, refresh, () => startupRefresh,

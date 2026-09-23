@@ -411,18 +411,30 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
     assert.deepEqual(paths, ["/v1/models", "/v1/model/info"]);
   });
 
-  it("propagates credentials and custom headers to both discovery endpoints", async () => {
-    const headers: Headers[] = [];
-    globalThis.fetch = async (_input, init) => {
-      headers.push(new Headers(init?.headers));
+  it("propagates bearer credentials to both discovery endpoints", async () => {
+    const requests: Array<{ path: string; header: string | null }> = [];
+    globalThis.fetch = async (input, init) => {
+      requests.push({ path: new URL(String(input)).pathname, header: new Headers(init?.headers).get("authorization") });
+      return new Response(JSON.stringify({ data: [] }));
+    };
+    await setup({ discoverModelCapabilities: true });
+    assert.deepEqual(requests, [
+      { path: "/v1/models", header: "Bearer fake-key" },
+      { path: "/v1/model/info", header: "Bearer fake-key" },
+    ]);
+  });
+
+  it("propagates custom routing headers to both discovery endpoints", async () => {
+    const requests: Array<{ path: string; header: string | null }> = [];
+    globalThis.fetch = async (input, init) => {
+      requests.push({ path: new URL(String(input)).pathname, header: new Headers(init?.headers).get("x-route") });
       return new Response(JSON.stringify({ data: [] }));
     };
     await setup({ discoverModelCapabilities: true, headers: { "X-Route": "fake-route" } });
-    assert.equal(headers.length, 2);
-    for (const request of headers) {
-      assert.equal(request.get("authorization"), "Bearer fake-key");
-      assert.equal(request.get("x-route"), "fake-route");
-    }
+    assert.deepEqual(requests, [
+      { path: "/v1/models", header: "fake-route" },
+      { path: "/v1/model/info", header: "fake-route" },
+    ]);
   });
 
   it("infers reasoning from supported_openai_params", async () => {
