@@ -1,11 +1,16 @@
-"""Tests for pi_sidecar_client — all HTTP calls are mocked."""
+"""Tests for pi_sidecar_client with mocked responses and a local HTTP request test."""
 
 import json
 import os
 from collections.abc import Iterator
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from time import perf_counter
 from typing import Any
 from unittest.mock import AsyncMock, patch
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -16,6 +21,7 @@ from pi_sidecar_client import (
     AITokenUsage,
     SidecarClient,
     _map_provider_model,
+    _redact_api_key,
     call_ai,
     call_ai_once,
     check_sidecar_available,
@@ -24,6 +30,38 @@ from pi_sidecar_client import (
     run_parallel_with_limit,
     set_usage_recorder,
 )
+
+
+@contextmanager
+def session_server() -> Iterator[tuple[str, list[dict]]]:
+    received: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            received.append({
+                "path": self.path,
+                "body": json.loads(self.rfile.read(int(self.headers["Content-Length"]))),
+            })
+            body = b'{"session_id":"sess-key"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", received
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
 
 # ---------------------------------------------------------------------------
 # 1. Provider mapping
@@ -206,16 +244,17 @@ class TestSidecarClient:
         assert body["model"] == "cursor:gpt-4o"
 
     @pytest.mark.parametrize("api_key", [None, "synthetic-session-key"])
-    async def test_create_session_serializes_optional_api_key(self, client: SidecarClient, api_key: str | None) -> None:
-        client._client.post = AsyncMock(return_value=_mock_response(200, {"session_id": "sess-key"}))
+    async def test_create_session_serializes_optional_api_key(self, api_key: str | None) -> None:
+        with session_server() as (url, received):
+            async with SidecarClient(base_url=url) as client:
+                assert (
+                    await client.create_session(provider="gemini", model="flash", system_prompt="hi", api_key=api_key)
+                    == "sess-key"
+                )
 
-        assert (
-            await client.create_session(provider="gemini", model="flash", system_prompt="hi", api_key=api_key)
-            == "sess-key"
-        )
-
-        body = client._client.post.call_args.kwargs["json"]
-        assert client._client.post.call_args.args == ("/sessions",)
+        assert len(received) == 1
+        assert received[0]["path"] == "/sessions"
+        body = received[0]["body"]
         assert body["provider"] == "google"
         assert body["model"] == "flash"
         assert body.get("api_key") == api_key
@@ -231,6 +270,74 @@ class TestSidecarClient:
 
         assert key not in str(exc_info.value)
         assert key not in str(log_error.call_args_list)
+
+    @pytest.mark.parametrize("encoding", ["raw", "json", "url", "unicode"])
+    async def test_create_session_preserves_sanitized_http_error(self, client: SidecarClient, encoding: str) -> None:
+        key = 'séc-ret"'
+        variants = {
+            "raw": key,
+            "json": json.dumps(key)[1:-1],
+            "url": quote(key, safe="").lower(),
+            "unicode": json.dumps(key, ensure_ascii=True)[1:-1].replace("00e9", "00E9"),
+        }
+        secret = variants[encoding]
+        client._client.post = AsyncMock(return_value=_mock_response(422, {"error": f"Unsupported model: {secret}"}))
+
+        with patch.object(pi_sidecar_client.logger, "error") as log_error:
+            with pytest.raises(RuntimeError) as exc_info:
+                await client.create_session(provider="google", model="flash", system_prompt="hi", api_key=key)
+
+        assert str(exc_info.value) == "Sidecar session creation failed (HTTP 422): Unsupported model: [redacted]"
+        assert secret not in str(exc_info.value)
+        assert secret not in str(log_error.call_args_list)
+
+    async def test_create_session_redacts_mixed_json_error_and_log(self, client: SidecarClient) -> None:
+        key = 'a"é'
+        mixed = 'a\\"é'
+        client._client.post = AsyncMock(return_value=_mock_response(422, {"error": f"Unsupported model: {mixed}"}))
+
+        with patch.object(pi_sidecar_client.logger, "error") as log_error:
+            with pytest.raises(RuntimeError) as exc_info:
+                await client.create_session(provider="google", model="flash", system_prompt="hi", api_key=key)
+
+        assert str(exc_info.value) == "Sidecar session creation failed (HTTP 422): Unsupported model: [redacted]"
+        assert mixed not in str(log_error.call_args_list)
+        assert key not in str(log_error.call_args_list)
+
+    async def test_create_session_rejects_unpaired_surrogate_before_http(self, client: SidecarClient) -> None:
+        client._client.post = AsyncMock()
+        with pytest.raises(ValueError, match="Invalid api_key: unpaired Unicode surrogate"):
+            key = "a\ud800b"  # pragma: allowlist secret — malformed test sentinel
+            await client.create_session(provider="google", model="flash", system_prompt="hi", api_key=key)
+        client._client.post.assert_not_awaited()
+
+    async def test_create_session_accepts_maximum_key(self, client: SidecarClient) -> None:
+        key = "x" * 1024
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"session_id": "sess-key"}))
+        assert (
+            await client.create_session(provider="google", model="flash", system_prompt="hi", api_key=key) == "sess-key"
+        )
+        assert client._client.post.call_args.kwargs["json"]["api_key"] == key
+
+    @pytest.mark.parametrize("length", [1025, 100_000])
+    async def test_create_session_rejects_oversized_key(self, client: SidecarClient, length: int) -> None:
+        client._client.post = AsyncMock()
+        with pytest.raises(ValueError, match="Invalid api_key: exceeds 1024 characters"):
+            await client.create_session(provider="google", model="flash", system_prompt="hi", api_key="x" * length)
+        client._client.post.assert_not_awaited()
+
+    async def test_create_session_omits_huge_http_error(self, client: SidecarClient) -> None:
+        key = "private-key"
+        client._client.post = AsyncMock(return_value=_mock_response(422, {"error": "a" * 100_000 + key}))
+        with pytest.raises(RuntimeError) as exc_info:
+            await client.create_session(provider="google", model="flash", system_prompt="hi", api_key=key)
+        assert str(exc_info.value) == "Sidecar session creation failed (HTTP 422): [error detail omitted]"
+
+    async def test_create_session_preserves_transport_error(self, client: SidecarClient) -> None:
+        key = "synthetic-secret-key"
+        client._client.post = AsyncMock(side_effect=httpx.ConnectError(f"connection refused for {key}"))
+        with pytest.raises(RuntimeError, match="connection refused for \\[redacted\\]"):
+            await client.create_session(provider="google", model="flash", system_prompt="hi", api_key=key)
 
     # -- create_session with tools --
     async def test_client_create_session_with_tools(self, client: SidecarClient, tmp_path: Path) -> None:
@@ -325,6 +432,12 @@ class TestSidecarClient:
         assert result.error == "AI model returned an error during processing"
         assert result.usage is not None
         assert result.usage.input_tokens == 10
+
+    async def test_client_prompt_error_only_uses_error_as_text(self, client: SidecarClient) -> None:
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"error": "provider unavailable", "text": ""}))
+        result = await client.prompt("sess-1", "hi")
+        assert result.success is False
+        assert result.text == result.error == "provider unavailable"
 
     # -- prompt empty text --
     async def test_client_prompt_empty_text(self, client: SidecarClient) -> None:
@@ -519,19 +632,92 @@ class TestConvenienceFunctions:
         assert key not in str(log_error.call_args_list)
         assert escaped_key not in str(log_error.call_args_list)
 
-    async def test_call_ai_exception_hides_key_from_result_and_logs(self, mock_client: AsyncMock) -> None:
+    async def test_call_ai_exception_preserves_sanitized_result(self, mock_client: AsyncMock) -> None:
+        key = "synthetic-secret-key"
+        mock_client.create_session.return_value = "sess-key-error"
+        mock_client.prompt.side_effect = RuntimeError(f"provider rejected {key}")
+
+        result = await call_ai("hello", api_key=key)
+
+        assert not result.success
+        assert result.text == result.error == "provider rejected [redacted]"
+        mock_client.delete_session.assert_awaited_once_with("sess-key-error")
+
+    async def test_call_ai_exception_hides_key_from_logs(self, mock_client: AsyncMock) -> None:
         key = "synthetic-secret-key"
         mock_client.create_session.return_value = "sess-key-error"
         mock_client.prompt.side_effect = RuntimeError(f"provider rejected {key}")
 
         with patch.object(pi_sidecar_client.logger, "error") as log_error:
-            result = await call_ai("hello", api_key=key)
+            await call_ai("hello", api_key=key)
 
-        assert not result.success
-        assert key not in result.text
-        assert key not in (result.error or "")
         assert key not in str(log_error.call_args_list)
-        mock_client.delete_session.assert_awaited_once_with("sess-key-error")
+        assert "provider rejected [redacted]" in str(log_error.call_args_list)
+
+    async def test_call_ai_preserves_http_status_in_result(self, mock_client: AsyncMock) -> None:
+        mock_client.create_session.side_effect = RuntimeError("Sidecar session creation failed (HTTP 400): invalid key")
+        key = "synthetic-secret-key"  # pragma: allowlist secret — test sentinel
+        result = await call_ai("hello", api_key=key)
+        assert result.text == result.error == "Sidecar session creation failed (HTTP 400): invalid key"
+
+    async def test_call_ai_rejects_unpaired_surrogate_before_http(self, mock_client: AsyncMock) -> None:
+        key = "a\ud800b"
+        with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+            with patch.object(pi_sidecar_client.logger, "error") as log_error:
+                result = await call_ai("hello", api_key=key)
+
+        assert result.success is False
+        assert result.text == result.error == "Invalid api_key: unpaired Unicode surrogate"
+        mock_client.create_session.assert_not_awaited()
+        assert key not in str(log_debug.call_args_list)
+        assert key not in str(log_error.call_args_list)
+
+    async def test_call_ai_rejects_oversized_key_before_logging(self, mock_client: AsyncMock) -> None:
+        key = "x" * 1025
+        with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+            result = await call_ai("hello", ai_model=key, api_key=key)
+        assert result.error == "Invalid api_key: exceeds 1024 characters"
+        mock_client.create_session.assert_not_awaited()
+        assert key not in str(log_debug.call_args_list)
+
+    async def test_call_ai_once_rejects_oversized_key_before_logging(self, mock_client: AsyncMock) -> None:
+        key = "x" * 1025
+        with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+            result = await call_ai_once("hello", ai_model=key, api_key=key)
+        assert result.error == "Invalid api_key: exceeds 1024 characters"
+        mock_client.create_session.assert_not_awaited()
+        assert key not in str(log_debug.call_args_list)
+
+    async def test_call_ai_once_redacts_keyed_debug_fields(self, mock_client: AsyncMock) -> None:
+        key = "synthetic-secret-key"
+        mock_client.create_session.return_value = "sess-once"
+        mock_client.prompt.return_value = AIResult(success=True, text="ok")
+        with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+            await call_ai_once(
+                "hello",
+                ai_provider=f"provider-{key}",
+                ai_model=f"model-{key}",
+                agent_dir=f"/tmp/{key}",
+                tools=[key],
+                api_key=key,
+            )
+        assert key not in str(log_debug.call_args_list)
+        assert "[redacted]" in str(log_debug.call_args_list)
+
+    async def test_call_ai_redacts_mixed_prompt_error(self, mock_client: AsyncMock) -> None:
+        key = 'a"é'
+        mock_client.create_session.return_value = "sess-key-error"
+        mock_client.prompt.return_value = AIResult(success=False, text='rejected a\\"é', error='rejected a\\"é')
+        result = await call_ai("hello", api_key=key)
+        assert result.text == result.error == "rejected [redacted]"
+
+    async def test_call_ai_redacts_encoded_prompt_error(self, mock_client: AsyncMock) -> None:
+        key = "séc-ret"
+        secret = json.dumps(key, ensure_ascii=True)[1:-1].replace("00e9", "00E9")
+        mock_client.create_session.return_value = "sess-key-error"
+        mock_client.prompt.return_value = AIResult(success=False, text=f"rejected {secret}", error=f"rejected {secret}")
+        result = await call_ai("hello", api_key=key)
+        assert result.text == result.error == "rejected [redacted]"
 
     # -- call_ai_once passes tools --
     async def test_call_ai_once_passes_tools(self, mock_client: AsyncMock) -> None:
@@ -651,6 +837,59 @@ class TestSingleton:
 
 
 class TestUtilityFunctions:
+    @pytest.mark.parametrize(
+        ("key", "secret"),
+        [
+            ('a"é', 'a\\"é'),
+            ('a"é', 'a\\"\\u00E9'),
+            ('a"é', "a%22%C3%A9"),
+            ("Ab", "%41b"),
+            ('a"é', '%61"é'),
+            ('a"é', "a%22\\u00e9"),
+            ('a"é', 'a\\"%c3%a9'),
+            ('a"é', 'a"é'),
+            ("Ab", "Ab"),
+            ("\\" * 64 + "X", "\\" * 64 + "Y"),
+            ("é", "\\u00E9"),
+            ("😀", "\\uD83D\\uDE00"),
+            ("é", "\\uD800"),
+        ],
+    )
+    def test_redact_key_variants(self, key: str, secret: str) -> None:
+        expected = secret if key == "\\" * 64 + "X" or secret == "\\uD800" else "[redacted]"
+        assert _redact_api_key(secret, key) == expected
+
+    def test_redact_repeated_backslash_near_match(self) -> None:
+        key = "\\" * 128 + "X"
+        value = ("\\" * 128 + "Y") * 100
+        assert _redact_api_key(value, key) == "[error detail omitted]"
+
+    def test_redact_max_key_near_match(self) -> None:
+        key = "a" * 1023 + "X"
+        value = "a" * 1023 + "Y"
+        assert _redact_api_key(value, key) == value
+        assert _redact_api_key(key, key) == "[redacted]"
+
+    def test_redact_long_near_match_within_time_bound(self) -> None:
+        key = "a" * 1023 + "X"
+        value = "a" * 2048
+        start = perf_counter()
+        for _ in range(5):
+            assert _redact_api_key(value, key) == value
+        assert perf_counter() - start < 2.0
+
+    def test_redact_mixed_escapes_at_maximum_key_length(self) -> None:
+        key = "a" * 1021 + '"é😀'
+        secret = "a" * 1021 + "%22\\u00e9%f0%9f%98%80"
+        assert _redact_api_key("prefix " + secret, key) == "prefix [redacted]"
+
+    def test_redact_oversized_detail_without_partial_secret(self) -> None:
+        key = "secret-key"
+        assert _redact_api_key("a" * 2048 + key, key) == "[error detail omitted]"
+
+    def test_redact_preserves_literal_case(self) -> None:
+        assert _redact_api_key("ab AB %61b", "Ab") == "ab AB %61b"
+
     async def test_check_sidecar_available_ok(self) -> None:
         """Health returns ok → (True, 'Sidecar is ready')."""
         with patch.object(SidecarClient, "health", new_callable=AsyncMock) as mock_health:

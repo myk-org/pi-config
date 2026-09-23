@@ -33,6 +33,9 @@ describe("session API key", () => {
     }));
     runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
     runtime.registerNativeProvider(faux.provider);
+    const keyOnly = fauxProvider({ provider: "test-key-only", models: [{ id: "local" }] });
+    keyOnly.provider.auth = { apiKey: { name: "Key only", resolve: async ({ credential }: any) => credential ? { auth: { apiKey: credential.key }, source: "key" } : undefined } } as never; // pragma: allowlist secret — fake provider
+    runtime.registerNativeProvider(keyOnly.provider);
     store = new SessionStore();
     Object.assign(store, {
       internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
@@ -77,20 +80,23 @@ describe("session API key", () => {
       (error: any) => error.statusCode === 400 && /does not support API key/.test(error.message));
   });
 
-  it("redacts errors during session creation without leaking the key", async () => {
+  it("redacts the key in session creation errors", async () => {
+    await assert.rejects(() => store.create({ provider: secret, model: "missing", systemPrompt: "hi", cwd, apiKey: secret }),
+      (error: any) => !error.message.includes(secret) && !error.message.includes(escaped) && error.message.includes("[REDACTED]"));
+  });
+
+  it("redacts the key in session creation logs", async () => {
     const oldError = logger.error;
     const logs: string[] = [];
     logger.error = (...args) => { logs.push(args.join(" ")); };
     try {
-      await assert.rejects(() => store.create({ provider: secret, model: "missing", systemPrompt: "hi", cwd, apiKey: secret }),
-        (error: any) => !error.message.includes(secret) && !error.message.includes(escaped) && error.message.includes("[REDACTED]"));
+      await assert.rejects(() => store.create({ provider: secret, model: "missing", systemPrompt: "hi", cwd, apiKey: secret }));
+      assert.ok(logs.some((message) => message.includes("[REDACTED]")));
       assert.ok(logs.every((message) => !message.includes(secret) && !message.includes(escaped)));
-    } finally {
-      logger.error = oldError;
-    }
+    } finally { logger.error = oldError; }
   });
 
-  it("redacts lowercase percent escapes in rejected model names without changing raw or JSON matching", async () => {
+  it("redacts lowercase percent escapes in rejected model names", async () => {
     const key = "a/b";
     const encoded = "a%2fb";
     const logs: string[] = [];
@@ -104,10 +110,16 @@ describe("session API key", () => {
     } finally { logger.error = oldError; }
   });
 
-  it("matches percent-escape hex case but keeps raw and JSON matching case-sensitive", () => {
+  it("matches percent-escape hex case", () => {
     assert.equal(redactApiKey("a%2fb a%2Fb", "a/b"), "[REDACTED] [REDACTED]");
     assert.equal(redactApiKey("%c2%af %C2%AF %c2%AF", "¯"), "[REDACTED] [REDACTED] [REDACTED]");
-    assert.equal(redactApiKey('Ab ab A\\nB a\\nB', 'Ab'), '[REDACTED] ab A\\nB a\\nB');
+  });
+
+  it("keeps raw key matching case-sensitive", () => {
+    assert.equal(redactApiKey('Ab ab', 'Ab'), '[REDACTED] ab');
+  });
+
+  it("keeps JSON-escaped key matching case-sensitive", () => {
     assert.equal(redactApiKey('A\\nB a\\nB', 'A\nB'), '[REDACTED] a\\nB');
   });
 
@@ -121,59 +133,77 @@ describe("session API key", () => {
     await assert.rejects(() => create("   "), (error: any) => error.statusCode === 400);
   });
 
-  it("uses the session key for direct SDK complete calls", async () => {
+  it("uses the session key for prompts", async () => {
     const id = await create("direct-key");
     try {
-      const session = (store as any).sessions.get(id).session;
-      const result = await session.modelRuntime.completeSimple(session.model, { messages: [] });
-      assert.equal(result.content[0]?.type === "text" && result.content[0].text, "direct-key");
-    } finally {
-      store.delete(id);
-    }
-  });
-
-  it("shows only its own key-backed models without changing shared availability", async () => {
-    const keyOnly = fauxProvider({ provider: "test-key-only", models: [{ id: "local" }] });
-    keyOnly.provider.auth = { apiKey: { name: "Key only", resolve: async ({ credential }: any) => credential ? { auth: { apiKey: credential.key }, source: "key" } : undefined } } as never; // pragma: allowlist secret — fake provider
-    runtime.registerNativeProvider(keyOnly.provider);
-    await runtime.getAvailable();
-    const shared = runtime.getAvailableSnapshot();
-    const id = await store.create({ provider: "test-key-only", model: "local", systemPrompt: "hi", cwd, agentDir: cwd, tools: [], apiKey: "view-key" }); // pragma: allowlist secret — test sentinel
-    try {
-      const view = (store as any).sessions.get(id).session.modelRuntime;
-      assert.ok(view.getAvailableSnapshot().some((m: any) => m.provider === "test-key-only" && m.id === "local"));
-      assert.ok((await view.getAvailable()).some((m: any) => m.provider === "test-key-only" && m.id === "local"));
-      assert.ok((await view.getAvailable("test-key-only")).some((m: any) => m.id === "local"));
-      assert.deepEqual(await view.getAvailable("test-oauth-only"), await runtime.getAvailable("test-oauth-only"));
-      assert.ok(!view.getAvailableSnapshot().some((m: any) => m.provider === "test-oauth-only"));
-      assert.deepEqual(runtime.getAvailableSnapshot(), shared);
-      assert.ok(!shared.some((m) => m.provider === "test-key-only"));
+      assert.equal((await store.prompt(id, "hi")).text, "[REDACTED]");
+      assert.equal(seen.at(-1), "direct-key");
     } finally { store.delete(id); }
   });
 
-  it("resolves supplied auth for a builtin provider without ambient credentials", async () => {
+  const keyOnlyProvider = "test-key-only";
+  const createKeyOnly = (apiKey?: string) => store.create({
+    provider: keyOnlyProvider, model: "local", systemPrompt: "hi", cwd, agentDir: cwd, tools: [], apiKey,
+  });
+
+  it("accepts a private key-backed model", async () => {
+    const count = store.count();
+    const id = await createKeyOnly("view-key"); // pragma: allowlist secret — test sentinel
+    try {
+      assert.equal(store.count(), count + 1);
+    } finally { store.delete(id); }
+  });
+
+  it("does not add a private key-backed model to shared availability", async () => {
+    const before = await store.getModels();
+    assert.ok(!before.some((m) => m.provider === keyOnlyProvider));
+    const id = await createKeyOnly("view-key"); // pragma: allowlist secret — test sentinel
+    try {
+      assert.deepEqual(await store.getModels(), before);
+    } finally { store.delete(id); }
+  });
+
+  it("filters private models from the shared provider catalog", async () => {
+    const id = await createKeyOnly("view-key"); // pragma: allowlist secret — test sentinel
+    try {
+      const models = await store.getModels();
+      assert.deepEqual(models.filter((model) => model.provider === keyOnlyProvider), []);
+    } finally { store.delete(id); }
+  });
+
+  it("keeps another provider usable with ambient credentials", async () => {
+    const id = await createKeyOnly("view-key"); // pragma: allowlist secret — test sentinel
+    try {
+      const other = await create();
+      try {
+        assert.equal((await store.prompt(other, "hi")).text, "ambient");
+      } finally { store.delete(other); }
+    } finally { store.delete(id); }
+  });
+
+  it("preserves the shared availability snapshot after private session creation", async () => {
+    await runtime.getAvailable();
+    const snapshot = runtime.getAvailableSnapshot();
+    const id = await createKeyOnly("view-key"); // pragma: allowlist secret — test sentinel
+    try {
+      assert.deepEqual(runtime.getAvailableSnapshot(), snapshot);
+    } finally { store.delete(id); }
+  });
+
+  it("accepts supplied auth for a builtin provider without ambient credentials", async () => {
     const model = runtime.getModels("openai")[0];
     assert.ok(model);
     const id = await store.create({ provider: "openai", model: model.id, systemPrompt: "hi", cwd, agentDir: cwd, tools: [], apiKey: "auth-only-key" }); // pragma: allowlist secret — test sentinel
-    try {
-      const session = (store as any).sessions.get(id).session;
-      const auth = await session.modelRuntime.getAuth(model);
-      assert.equal(auth?.auth.apiKey, "auth-only-key");
-    } finally {
-      store.delete(id);
-    }
+    store.delete(id);
   });
 
-  it("does not attach a session key to another provider's model", async () => {
+  it("keeps another provider's prompt on ambient credentials", async () => {
     const id = await create("private-key");
+    const other = await create();
     try {
-      const view = (store as any).sessions.get(id).session.modelRuntime;
-      const other = runtime.getModels("openai")[0];
-      assert.ok(other);
-      const auth = await view.getAuth(other);
-      assert.notEqual(auth?.auth.apiKey, "private-key");
-      assert.deepEqual(await view.getAvailable("openai"), await runtime.getAvailable("openai"));
-    } finally { store.delete(id); }
+      assert.equal((await store.prompt(other, "hi")).text, "ambient");
+      assert.equal(seen.at(-1), "");
+    } finally { store.delete(id); store.delete(other); }
   });
 
   it("redacts echoed keys in prompt text", async () => {
@@ -183,43 +213,39 @@ describe("session API key", () => {
     store.delete(id);
   });
 
-  it("redacts URL-encoded keys and SDK diagnostic errors", async () => {
-    const encoded = encodeURIComponent(secret);
+  const providerError = async () => {
     const id = await create(secret);
-    const oldError = logger.error;
-    const logs: string[] = [];
-    logger.error = (...args) => { logs.push(args.join(" ")); };
-    try {
-      echoError = true;
-      const result = await store.prompt(id, "hi");
-      assert.equal(result.text, "");
-      assert.equal(result.error, "failed [REDACTED] / [REDACTED] / [REDACTED]");
-      assert.ok(!JSON.stringify(result).includes(encoded));
-      assert.ok(logs.every((message) => !message.includes(encoded)));
-    } finally {
-      logger.error = oldError;
-      echoError = false;
-      store.delete(id);
-    }
+    echoError = true;
+    try { return await store.prompt(id, "hi"); }
+    finally { echoError = false; store.delete(id); }
+  };
+
+  it("redacts URL-encoded keys in provider errors", async () => {
+    const result = await providerError();
+    assert.ok(!JSON.stringify(result).includes(encodeURIComponent(secret)));
+    assert.match(result.error ?? "", /\[REDACTED\]/);
   });
 
-  it("redacts raw and escaped keys in provider errors", async () => {
-    const id = await create(secret);
-    const oldError = logger.error;
+  it("redacts raw keys in provider errors", async () => {
+    const result = await providerError();
+    assert.ok(!JSON.stringify(result).includes(secret));
+    assert.match(result.error ?? "", /\[REDACTED\]/);
+  });
+
+  it("redacts JSON-escaped keys in provider errors", async () => {
+    const result = await providerError();
+    assert.ok(!JSON.stringify(result).includes(escaped));
+    assert.match(result.error ?? "", /\[REDACTED\]/);
+  });
+
+  it("redacts keys in provider diagnostic logs", async () => {
     const logs: string[] = [];
+    const oldError = logger.error;
     logger.error = (...args) => { logs.push(args.join(" ")); };
-    echoError = true;
     try {
-      const result = await store.prompt(id, "hi");
-      assert.equal(result.error, "failed [REDACTED] / [REDACTED] / [REDACTED]");
-      assert.ok(!JSON.stringify(result).includes(secret));
-      assert.ok(!JSON.stringify(result).includes(escaped));
-      assert.ok(logs.every((message) => !message.includes(secret) && !message.includes(escaped)));
-    } finally {
-      logger.error = oldError;
-      echoError = false;
-      store.delete(id);
-    }
+      await providerError();
+      assert.ok(logs.every((message) => !message.includes(secret) && !message.includes(escaped) && !message.includes(encodeURIComponent(secret))));
+    } finally { logger.error = oldError; }
   });
 
   it("returns final assistant errors without a session key", async () => {

@@ -8,7 +8,7 @@ import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { SessionStore, isValidApiKey, redactApiKey } from "./sessions.js";
+import { SessionStore, isValidApiKey, createApiKeyRedactor, redactDiagnostic } from "./sessions.js";
 import { startWatchdog, type WatchdogOptions } from "./watchdog.js";
 import { assertPiVersionFloor } from "./pi-version.js";
 import { createLogger, logger } from "./logger.js";
@@ -478,7 +478,7 @@ export function startSidecar(options?: {
         if (api_key !== undefined) {
           if (!isValidApiKey(api_key)) { // pragma: allowlist secret — field validation, not a credential
             logger.warn(`[sidecar] POST /sessions 400: validation=failed, field=api_key`);
-            sendJson(res, 400, { error: "api_key must be a non-empty string with well-formed Unicode" });
+            sendJson(res, 400, { error: "api_key must be a non-empty string with well-formed Unicode and at most 1024 characters" });
             return;
           }
           requestApiKey = api_key;
@@ -636,13 +636,13 @@ export function startSidecar(options?: {
       sendJson(res, 404, { error: "Not found" });
     } catch (err: any) {
       const secret = requestApiKey;
-      const redact = (value: string) => redactApiKey(value, secret);
+      const redact = createApiKeyRedactor(secret);
       const rawMessage = err?.message || "Internal server error";
       let promptId: string | undefined;
       if (method === "POST" && /^\/sessions\/[^/]+\/prompt(?:\?|$)/.test(url)) {
         try { promptId = routeMatch(url, "/sessions/:id/prompt")?.id; } catch { /* original error takes precedence */ }
       }
-      const message = promptId ? store.redactSessionValue(promptId, redact(rawMessage)) : redact(rawMessage);
+      const message = promptId ? store.redactSessionValue(promptId, redactDiagnostic(rawMessage, redact)) : redactDiagnostic(rawMessage, redact);
       const sanitizedUrl = requestApiKey ? "/sessions" : sanitizeForLog(url.split("?")[0]); // Never log a key-bearing create URL.
       const rawStatus = typeof err?.statusCode === "number" && err.statusCode >= 100 && err.statusCode <= 599
         ? err.statusCode
@@ -657,7 +657,9 @@ export function startSidecar(options?: {
         : rawMessage.includes("not found") ? 404
         : 500);
       if (status === 500) {
-        logger.error(`[sidecar] REQUEST_FAILED: method=${method}, url=${sanitizeForLog(redact(sanitizedUrl))}, status=${status}, duration_ms=${Date.now() - requestStart}, error=${sanitizeForLog(message)}`);
+        const stack = err instanceof Error ? err.cause instanceof Error ? err.cause.stack ?? err.cause.message : err.stack ?? err.message : String(err);
+        const safeStack = promptId ? store.redactSessionValue(promptId, redactDiagnostic(stack, redact)) : redactDiagnostic(stack, redact);
+        logger.error(`[sidecar] REQUEST_FAILED: method=${method}, url=${sanitizeForLog(redact(sanitizedUrl))}, status=${status}, duration_ms=${Date.now() - requestStart}, error=${sanitizeForLog(message)}, stack=${sanitizeForLog(safeStack)}`);
       } else {
         logger.warn(`[sidecar] REQUEST_FAILED: method=${method}, url=${sanitizeForLog(redact(sanitizedUrl))}, status=${status}, duration_ms=${Date.now() - requestStart}, error=${sanitizeForLog(message)}`);
       }

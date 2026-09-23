@@ -115,7 +115,7 @@ result = await call_ai_once(
 
 `SidecarClient.create_session(..., api_key=...)` and `call_ai(..., api_key=...)`
 accept the same optional field. On the wire, `POST /sessions` takes `api_key`
-as a non-empty string; no existing parameter or response changes. The supplied
+as a non-empty string of at most 1,024 characters; no existing parameter or response changes. The supplied
 key overrides stored/environment credentials only for that session's selected
 provider; omit it to use server credentials. Unsupported API-key auth returns
 400. Keys live in memory until session deletion/expiry, not session files or

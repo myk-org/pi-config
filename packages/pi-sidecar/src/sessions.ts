@@ -38,26 +38,130 @@ function baseModelId(id: string): string {
 /** Error with HTTP status for the sidecar request handler. */
 type HttpError = Error & { statusCode: number };
 
-function httpError(message: string, statusCode: number): HttpError {
-  const err = new Error(message) as HttpError;
+function httpError(message: string, statusCode: number, cause?: unknown): HttpError {
+  const log = createLogger("http-error");
+  log.debug(`Creating HTTP error: status=${statusCode}, hasCause=${cause !== undefined}`);
+  const err = new Error(message, { cause }) as HttpError;
   err.statusCode = statusCode;
   return err;
 }
 
+const MAX_API_KEY_LENGTH = 1024;
+const MAX_DIAGNOSTIC_LENGTH = 16_384;
+
+/** Oversized diagnostics are omitted, not truncated: a truncated prefix can contain a partial key. */
+export function redactDiagnostic(value: string, redact: (value: string) => string): string {
+  return value.length > MAX_DIAGNOSTIC_LENGTH ? "[oversized diagnostic omitted]" : redact(value);
+}
+
 export function isValidApiKey(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0
+  const log = createLogger("api-key-validation");
+  const valid = typeof value === "string" && value.length <= MAX_API_KEY_LENGTH && value.trim().length > 0
     && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value);
+  log.debug(`API key validation: valid=${valid}, lengthWithinLimit=${typeof value === "string" && value.length <= MAX_API_KEY_LENGTH}`);
+  return valid;
+}
+
+/** Compile key representations once per session, never per log or response. */
+export function createApiKeyRedactor(apiKey?: string): (value: string) => string {
+  const log = createLogger("api-key-redactor");
+  log.debug(`Creating API key redactor: hasKey=${Boolean(apiKey)}`);
+  if (!apiKey) return (value) => value;
+  if (apiKey.length > MAX_API_KEY_LENGTH) throw new RangeError("API key exceeds maximum length");
+  const escapes: Record<string, string> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+  return (value: string): string => {
+    log.debug(`Redacting API key: inputLength=${value.length}, hasKey=true`);
+    if (!value.includes("\\") && !value.includes("%")) return value.replaceAll(apiKey, "[REDACTED]");
+    const parts: string[] = [];
+    // One key unit expands to at most 8 source units (JSON-escaped percent byte),
+    // with up to four UTF-8 bytes per code point. Keep a full match's lookahead.
+    const overlap = apiKey.length * 32 + 8;
+    const chunkSize = 16_384;
+    let cursor = 0;
+    while (cursor < value.length) {
+      const cut = Math.min(cursor + chunkSize, value.length);
+      const raw = value.slice(cursor, Math.min(cut + overlap, value.length));
+      const matches: Array<[number, number]> = [];
+      for (let at = raw.indexOf(apiKey); at !== -1; at = raw.indexOf(apiKey, at + apiKey.length)) {
+        matches.push([at, at + apiKey.length]);
+      }
+      let decoded = "";
+      const starts: number[] = [];
+      const ends: number[] = [];
+      for (let i = 0; i < raw.length;) {
+        const start = i;
+        let char = raw[i++];
+        if (char === "\\" && i < raw.length) {
+          const next = raw[i];
+          if (next === "u" && /^[0-9a-fA-F]{4}$/.test(raw.slice(i + 1, i + 5))) {
+            char = String.fromCharCode(parseInt(raw.slice(i + 1, i + 5), 16));
+            i += 5;
+          } else if (Object.hasOwn(escapes, next)) {
+            char = escapes[next];
+            i++;
+          }
+        }
+        decoded += char;
+        starts.push(start);
+        ends.push(i);
+      }
+      let text = "";
+      const percentStarts: number[] = [];
+      const percentEnds: number[] = [];
+      for (let i = 0; i < decoded.length;) {
+        let char = decoded[i];
+        let end = i + 1;
+        if (char === "%" && /^%[0-9a-fA-F]{2}$/.test(decoded.slice(i, i + 3))) {
+          const lead = parseInt(decoded.slice(i + 1, i + 3), 16);
+          const count = lead < 0x80 ? 1 : lead >= 0xc2 && lead <= 0xdf ? 2
+            : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 0;
+          let valid = count > 0 && i + count * 3 <= decoded.length;
+          for (let byte = 1; valid && byte < count; byte++) {
+            const offset = i + byte * 3;
+            if (!/^%[0-9a-fA-F]{2}$/.test(decoded.slice(offset, offset + 3))) { valid = false; break; }
+            const continuation = parseInt(decoded.slice(offset + 1, offset + 3), 16);
+            valid = continuation >= 0x80 && continuation <= 0xbf
+              && (byte !== 1 || !(lead === 0xe0 && continuation < 0xa0
+                || lead === 0xed && continuation > 0x9f
+                || lead === 0xf0 && continuation < 0x90
+                || lead === 0xf4 && continuation > 0x8f));
+          }
+          if (valid) {
+            end = i + count * 3;
+            char = decodeURIComponent(decoded.slice(i, end));
+          }
+        }
+        text += char;
+        for (let j = 0; j < char.length; j++) {
+          percentStarts.push(starts[i]);
+          percentEnds.push(ends[end - 1]);
+        }
+        i = end;
+      }
+      for (let at = text.indexOf(apiKey); at !== -1; at = text.indexOf(apiKey, at + apiKey.length)) {
+        matches.push([percentStarts[at], percentEnds[at + apiKey.length - 1]]);
+      }
+      matches.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+      let consumed = 0;
+      const limit = cut - cursor;
+      for (const [start, end] of matches) {
+        if (start >= limit) break;
+        if (start < consumed) continue;
+        parts.push(raw.slice(consumed, start), "[REDACTED]");
+        consumed = end;
+      }
+      const advance = Math.max(limit, consumed);
+      parts.push(raw.slice(consumed, advance));
+      cursor += advance;
+    }
+    return parts.join("");
+  };
 }
 
 export function redactApiKey(value: string, apiKey?: string): string {
-  if (!apiKey) return value;
-  const encoded = encodeURIComponent(apiKey);
-  const pattern = encoded.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/%[0-9A-F]{2}/g, (escape) =>
-      `%${[...escape.slice(1)].map((digit) => /[A-F]/.test(digit) ? `[${digit}${digit.toLowerCase()}]` : digit).join("")}`);
-  return value.replaceAll(apiKey, "[REDACTED]")
-    .replaceAll(JSON.stringify(apiKey).slice(1, -1), "[REDACTED]")
-    .replace(new RegExp(pattern, "g"), "[REDACTED]");
+  const log = createLogger("redact-api-key");
+  log.debug(`Redacting API key value: inputLength=${value.length}, hasKey=${Boolean(apiKey)}`);
+  return createApiKeyRedactor(apiKey)(value);
 }
 
 const DISCOVERY_TIMEOUT_MS = 30_000;
@@ -383,7 +487,8 @@ export class SessionStore {
 
   /** Redact only the credential owned by this session. Never expose it to the registrar or other sessions. */
   redactSessionValue(id: string, value: string): string {
-    return this.sessions.get(id)?.redact(value) ?? value;
+    const redact = this.sessions.get(id)?.redact ?? ((text: string) => text);
+    return redactDiagnostic(value, redact);
   }
   /** Shared ModelRuntime (0.81+) — sourced from internalRuntime.services once created. */
   private modelRuntime: ModelRuntime | undefined;
@@ -790,9 +895,9 @@ export class SessionStore {
   async create(options: CreateSessionOptions): Promise<string> {
     const apiKey = options.apiKey;
     if (apiKey !== undefined && !isValidApiKey(apiKey)) { // pragma: allowlist secret — field validation, not a credential
-      throw httpError("api_key must be a non-empty string with well-formed Unicode", 400);
+      throw httpError("api_key must be a non-empty string with well-formed Unicode and at most 1024 characters", 400);
     }
-    const redact = (value: string): string => redactApiKey(value, apiKey);
+    const redact = createApiKeyRedactor(apiKey);
     const log = createLogger("session-create");
     const id = randomUUID();
     try {
@@ -946,7 +1051,7 @@ export class SessionStore {
       if (tool.http) {
         const httpConfig = normalizeHttpToolConfig(tool.http);
         const httpExecutor = createHttpToolExecutor(httpConfig);
-        log.debug(`[sidecar] Creating HTTP executor for custom tool: name=${redact(tool.name)}, method=${httpConfig.method}`);
+        log.debug(`[sidecar] Creating HTTP executor for custom tool: name=${redactDiagnostic(tool.name, redact)}, method=${httpConfig.method}`);
         const { http: _http, execute: _exec, ...rest } = tool;
         return {
           ...rest,
@@ -1021,7 +1126,7 @@ export class SessionStore {
             e.path.includes("subagent") ||
             (SUBAGENT_EXTENSION !== "" && e.path.endsWith("examples/extensions/subagent/index.ts")),
         );
-        log.error(`[sidecar] SUBAGENT_LOAD_FAILED: session=${id}, error=${redact(loadError?.error ?? "extension_not_in_loader_result")}`);
+        log.error(`[sidecar] SUBAGENT_LOAD_FAILED: session=${id}, error=${redactDiagnostic(loadError?.error ?? "extension_not_in_loader_result", redact)}`);
         throw httpError(
           "Tool 'subagent' was requested but the subagent extension could not be loaded. Check logs for details.",
           400,
@@ -1049,18 +1154,18 @@ export class SessionStore {
       try {
         session.dispose();
       } catch (err) {
-        log.warn(`[sidecar] SESSION_ORPHAN_DISPOSE_FAILED: session=${id}, error=${redact(err instanceof Error ? err.message : String(err))}`);
+        log.warn(`[sidecar] SESSION_ORPHAN_DISPOSE_FAILED: session=${id}, error=${redactDiagnostic(err instanceof Error ? err.message : String(err), redact)}`);
       }
       throw httpError("Sidecar is shutting down", 503);
     }
 
     this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact });
-    log.info(`[sidecar] Session created: ${id} (provider=${redact(options.provider)}, model=${redact(options.model)}, tools=${tools.length}, customTools=${customTools.length})`);
+    log.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${customTools.length})`);
     return id;
     } catch (err) {
-      const message = redact(err instanceof Error ? err.message : String(err));
-      log.error(`[sidecar] Session creation rejected: session=${id}, error=${message}`);
-      throw httpError(message, (err as HttpError)?.statusCode ?? 500);
+      const message = redactDiagnostic(err instanceof Error ? err.message : String(err), redact);
+      log.error(`[sidecar] Session creation rejected: session=${id}, error=${message}, stack=${redactDiagnostic(err instanceof Error ? err.stack ?? err.message : String(err), redact)}`);
+      throw httpError(message, (err as HttpError)?.statusCode ?? 500, err);
     }
   }
 
@@ -1076,7 +1181,7 @@ export class SessionStore {
     entry.lastActivity = Date.now();
     entry.inFlight = true;
 
-    logger.log(`[sidecar] Prompt started: session=${id}, message_length=${message.length}, cwd=${entry.redact(entry.cwd)}`);
+    logger.log(`[sidecar] Prompt started: session=${id}, message_length=${message.length}, cwd=${redactDiagnostic(entry.cwd, entry.redact)}`);
 
     const errors: string[] = [];
     let errorsDropped = 0;
@@ -1104,11 +1209,11 @@ export class SessionStore {
           }
         }
         if (errors.length < 10) {
-          errors.push(entry.redact(errorMsg));
+          errors.push(redactDiagnostic(errorMsg, entry.redact));
         } else {
           errorsDropped++;
         }
-        logger.error(`[sidecar] Prompt error event: session=${id}, error=${entry.redact(errorMsg)}`);
+        logger.error(`[sidecar] Prompt error event: session=${id}, error=${redactDiagnostic(errorMsg, entry.redact)}`);
       }
       // Track assistant message boundaries via message_start events.
       // Using message_start instead of object reference comparison because some
@@ -1144,7 +1249,7 @@ export class SessionStore {
         const finalAssistant = [...event.messages].reverse().find((msg) => msg.role === "assistant");
         if (finalAssistant?.stopReason === "error" && finalAssistant.errorMessage) {
           if (errors.length < 10) {
-            errors.push(entry.redact(finalAssistant.errorMessage));
+            errors.push(redactDiagnostic(finalAssistant.errorMessage, entry.redact));
           } else {
             errorsDropped++;
           }
@@ -1177,19 +1282,19 @@ export class SessionStore {
     try {
       await runWithSessionCwd(entry.cwd, () => entry.session.prompt(message));
     } catch (err: any) {
-      logger.error(`[sidecar] Prompt failed: session=${id}, error=${entry.redact(err?.message || String(err))}`);
+      logger.error(`[sidecar] Prompt failed: session=${id}, error=${redactDiagnostic(err?.message || String(err), entry.redact)}, stack=${redactDiagnostic(err instanceof Error ? err.stack ?? err.message : String(err), entry.redact)}`);
       // If we captured partial text or error events before the rejection,
       // return structured data instead of throwing — preserves partial state for callers
       if (responseText || errors.length > 0) {
         const rejectionError = err?.message || "Prompt rejected";
         if (errors.length < 10) {
-          errors.push(entry.redact(rejectionError));
+          errors.push(redactDiagnostic(rejectionError, entry.redact));
         } else {
           errorsDropped++;
         }
         // fall through to structured return below
       } else {
-        throw httpError(entry.redact(err?.message || String(err)), err?.statusCode ?? 500);
+        throw httpError(redactDiagnostic(err?.message || String(err), entry.redact), err?.statusCode ?? 500, err);
       }
     } finally {
       unsubscribe();

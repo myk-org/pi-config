@@ -49,7 +49,7 @@ print(result.text)
 To override the server's stored/environment API key for one session, pass
 `api_key=user_api_key` to `SidecarClient.create_session`, `call_ai`, or
 `call_ai_once`. The wire field is `api_key` in `POST /sessions` (a non-empty
-string); the response remains `{ "session_id": "..." }`. The key applies only
+string of at most 1,024 characters); the response remains `{ "session_id": "..." }`. The key applies only
 to the selected provider and that session, takes precedence over server
 credentials, and is held in memory until the session is deleted or expires.
 Omitting it preserves server credential fallback. Providers without Pi API-key
