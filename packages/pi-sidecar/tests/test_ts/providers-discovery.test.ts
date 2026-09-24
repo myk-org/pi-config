@@ -8,6 +8,7 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { startSidecar } from "../../src/index.js";
 import { SessionStore } from "../../src/sessions.js";
+import { logger } from "../../src/logger.js";
 import { buildAmbientLoginAuth } from "../../../../extensions/shared/create-runtime-provider.js";
 
 describe("GET /providers", () => {
@@ -35,12 +36,40 @@ describe("GET /providers", () => {
     else process.env.OPENAI_API_KEY = openaiKey;
   });
 
-  it("returns exact provider IDs and capability without credentials", async () => {
+  it("preserves exact provider IDs", async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/providers`);
+    assert.equal(response.status, 200);
+    const body = await response.json() as { providers: Array<{ provider: string; supportsSessionApiKey: boolean }> };
+    assert.ok(body.providers.some((p) => p.provider === "openai"));
+  });
+
+  it("returns only public provider fields", async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/providers`);
+    assert.equal(response.status, 200);
+    const body = await response.json() as { providers: Array<{ provider: string; supportsSessionApiKey: boolean }> };
+    assert.ok(body.providers.every((p) => Object.keys(p).sort().join(",") === "provider,supportsSessionApiKey"));
+  });
+
+  it("reports session-key capability without credentials", async () => {
     const response = await fetch(`http://127.0.0.1:${port}/providers`);
     assert.equal(response.status, 200);
     const body = await response.json() as { providers: Array<{ provider: string; supportsSessionApiKey: boolean }> };
     assert.deepEqual(body.providers.find((p) => p.provider === "openai"), { provider: "openai", supportsSessionApiKey: true });
-    assert.ok(body.providers.every((p) => Object.keys(p).sort().join(",") === "provider,supportsSessionApiKey"));
+  });
+
+  it("logs the endpoint provider count", async () => {
+    const debug = logger.debug;
+    const records: unknown[][] = [];
+    logger.debug = (...args: unknown[]) => { records.push(args); };
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/providers`);
+      assert.equal(response.status, 200);
+      const body = await response.json() as { providers: unknown[] };
+      assert.ok(records.some(([message]) => typeof message === "string" &&
+        message.includes("GET /providers 200") && message.includes(`count=${body.providers.length}`)));
+    } finally {
+      logger.debug = debug;
+    }
   });
 
   it("keeps OpenAI discoverable when the auth-filtered model catalog omits it", async () => {
@@ -95,6 +124,19 @@ describe("SessionStore provider discovery", () => {
   });
   it("omits unknown provider IDs", async () => {
     assert.equal((await store.getProviders()).some((p) => p.provider === "not-registered"), false);
+  });
+  it("logs the runtime provider count", async () => {
+    const debug = logger.debug;
+    const records: unknown[][] = [];
+    logger.debug = (...args: unknown[]) => { records.push(args); };
+    try {
+      const providers = await store.getProviders();
+      assert.ok(records.some(([name, message, context]) => name === "[provider-discovery]" &&
+        message === "Runtime providers listed" &&
+        typeof context === "object" && context !== null && "count" in context && context.count === providers.length));
+    } finally {
+      logger.debug = debug;
+    }
   });
   it("does not call filtered model discovery or auth checks", async () => {
     runtime.getAvailable = () => { throw new Error("filtered models called"); };

@@ -914,6 +914,8 @@ A standalone HTTP sidecar wrapping the Pi SDK, living under `packages/pi-sidecar
 
 CLI commands: `npx pi-sidecar` (start server), `npx pi-sidecar-start` (background start/stop).
 
+`GET /providers` lists registered providers and whether each supports a session API key, even when no models or credentials are available. The Python client exposes this as `await SidecarClient.get_providers()`.
+
 See [`packages/pi-sidecar/README.md`](packages/pi-sidecar/README.md) for full documentation.
 See [`packages/pi-sidecar/CONSUMER-GUIDE.md`](packages/pi-sidecar/CONSUMER-GUIDE.md) for integration best practices.
 
