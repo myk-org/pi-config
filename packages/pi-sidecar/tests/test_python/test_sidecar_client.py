@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 from time import perf_counter
-from typing import Any
+from typing import Any, get_type_hints
 from unittest.mock import AsyncMock, patch
 from urllib.parse import quote
 
@@ -19,6 +19,7 @@ import pi_sidecar_client
 from pi_sidecar_client import (
     AIResult,
     AITokenUsage,
+    ProviderDiscovery,
     SidecarClient,
     _map_provider_model,
     _redact_api_key,
@@ -158,6 +159,29 @@ class TestSidecarClient:
         result = await client.get_models()
         assert result == models
         client._client.get.assert_awaited_once_with("/models")
+
+    # -- get_providers --
+    async def test_client_get_providers_returns_typed_records(self, client: SidecarClient) -> None:
+        providers = [
+            {"provider": "google", "supportsSessionApiKey": True},
+            {"provider": "acpx-cursor", "supportsSessionApiKey": False},
+        ]
+        client._client.get = AsyncMock(return_value=_mock_response(200, {"providers": providers}))
+
+        assert await client.get_providers() == providers
+        assert get_type_hints(SidecarClient.get_providers)["return"] == list[ProviderDiscovery]
+        assert ProviderDiscovery.__annotations__ == {"provider": str, "supportsSessionApiKey": bool}
+        client._client.get.assert_awaited_once_with("/providers")
+
+    async def test_client_get_providers_empty(self, client: SidecarClient) -> None:
+        client._client.get = AsyncMock(return_value=_mock_response(200, {"providers": []}))
+        assert await client.get_providers() == []
+
+    async def test_client_get_providers_raises_on_http_error(self, client: SidecarClient) -> None:
+        client._client.get = AsyncMock(return_value=_mock_response(503, {"error": "unavailable"}))
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await client.get_providers()
+        assert exc_info.value.response.status_code == 503
 
     # -- get_model_provider_status --
     async def test_client_get_model_provider_status(self, client: SidecarClient) -> None:

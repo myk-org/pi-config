@@ -23,8 +23,17 @@ pi-sidecar lives under `packages/pi-sidecar/` as an npm workspace package. It is
 
 **CLI commands:** `npx pi-sidecar` (start server), `npx pi-sidecar-start` (background start/stop).
 
-**Public API contract:** The HTTP REST API (`/health`, `/models`, `/sessions`) and the Python client (`pi_sidecar_client`) are the external contract — never break these.
+**Public API contract:** The HTTP REST API (`/health`, `/models`, `/providers`, `/sessions`) and the Python client (`pi_sidecar_client`) are the external contract — never break these.
 Internal code, imports, and structure can change freely.
+
+`GET /providers` lists all provider IDs registered in the initialized runtime,
+including built-ins and extensions, regardless of ambient auth or whether
+`GET /models` includes their models. It returns `{ "providers": [...] }` with
+records containing `provider` (exact ID) and `supportsSessionApiKey` (boolean capability, not
+credential availability); no credentials or auth diagnostics. Python
+`SidecarClient.get_providers()` returns a typed list of the same records.
+Use discovery to enumerate providers and `/models/:provider/status` for details
+about a known ID.
 
 `GET /models/:provider/status` includes public boolean `supportsSessionApiKey`
 (including on non-loopback and unknown-provider 404 responses). It reflects

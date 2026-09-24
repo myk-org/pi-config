@@ -7,7 +7,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import ModuleType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 from urllib.parse import quote
 
 import httpx
@@ -138,6 +138,7 @@ if TYPE_CHECKING:
 __all__ = [
     "AIResult",
     "AITokenUsage",
+    "ProviderDiscovery",
     "SIDECAR_URL",
     "SidecarClient",
     "call_ai",
@@ -148,6 +149,13 @@ __all__ = [
     "run_parallel_with_limit",
     "set_usage_recorder",
 ]
+
+
+class ProviderDiscovery(TypedDict):
+    """Provider identity and session API key capability from GET /providers."""
+
+    provider: str
+    supportsSessionApiKey: bool
 
 
 @dataclass
@@ -270,6 +278,15 @@ class SidecarClient:
         models = resp.json().get("models", [])
         logger.debug("Fetched %d models from sidecar", len(models))
         return models
+
+    async def get_providers(self) -> list[ProviderDiscovery]:
+        """Return providers and their session API key capability from the sidecar."""
+        logger.debug("Fetching providers from sidecar")
+        resp = await self._client.get("/providers")
+        resp.raise_for_status()
+        providers = resp.json()["providers"]
+        logger.debug("Fetched %d providers from sidecar", len(providers))
+        return providers
 
     async def refresh_models(self) -> list[dict]:
         """Trigger model discovery and return updated list."""

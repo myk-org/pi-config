@@ -719,6 +719,19 @@ export class SessionStore {
     this.assertNotDisposed("ensureInternalRuntime");
   }
 
+  /** List registered runtime provider IDs without model discovery or auth checks. */
+  async getProviders(): Promise<Array<{ provider: string; supportsSessionApiKey: boolean }>> {
+    this.assertNotDisposed("getProviders");
+    await this.ensureInternalRuntime();
+    const providers = this.modelRuntime!.getProviders().map(({ id }) => ({
+      provider: id,
+      supportsSessionApiKey: this.supportsSessionApiKey(id),
+    }));
+    const log = createLogger("provider-discovery");
+    log.debug("Runtime providers listed", { count: providers.length });
+    return providers;
+  }
+
   /**
    * List models from all sources. Ensures the internal runtime is initialized
    * so builtins are never silently empty during startup races.
@@ -890,7 +903,7 @@ export class SessionStore {
     const ambientMarker = Symbol.for("pi-config.ambientLoginAuth");
     const supported = !HEADLESS_EXCLUDED_PROVIDERS.has(provider) && !!auth &&
       Reflect.get(auth, ambientMarker) !== true &&
-      !(native?.auth.apiKey && Reflect.get(native.auth.apiKey, ambientMarker) === true) &&
+      !(native?.auth?.apiKey && Reflect.get(native.auth.apiKey, ambientMarker) === true) &&
       !(native && this.legacyAmbientProviders.has(native));
     const log = createLogger("session-key-capability");
     log.debug("Session key capability decided", {
