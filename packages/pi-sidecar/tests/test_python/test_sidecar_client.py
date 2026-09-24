@@ -282,6 +282,44 @@ class TestSidecarClient:
             assert variant not in str(log_error.call_args_list)
             assert variant not in str(exc_info.value)
 
+    @pytest.mark.parametrize(
+        ("body", "case"),
+        [
+            (b'{"models":', "malformed-json"),
+            (b"null", "null-response"),
+            (b"[]", "array-response"),
+            (b'"synthetic-denied-839"', "string-response"),
+            (b"{}", "missing-fields"),
+            (b'{"models": []}', "missing-capability"),
+            (b'{"modelListingSupported": true}', "missing-models"),
+            (b'{"models": null, "modelListingSupported": true}', "null-models"),
+            (b'{"models": {}, "modelListingSupported": true}', "object-models"),
+            (b'{"models": "synthetic-denied-839", "modelListingSupported": true}', "string-models"),
+            (b'{"models": [null], "modelListingSupported": true}', "null-model-record"),
+            (b'{"models": [[], {}], "modelListingSupported": true}', "array-model-record"),
+            (b'{"models": [], "modelListingSupported": 1}', "numeric-capability"),
+            (b'{"models": [], "modelListingSupported": null}', "null-capability"),
+            (b'{"models": [], "modelListingSupported": "true"}', "string-capability"),
+        ],
+        ids=lambda value: value if isinstance(value, str) else None,
+    )
+    async def test_get_models_for_api_key_rejects_invalid_response(self, body: bytes, case: str) -> None:
+        key = "synthetic-denied-839"  # pragma: allowlist secret — test sentinel
+        response = httpx.Response(200, content=body, request=httpx.Request("POST", "http://test/models/for-api-key"))
+        async with SidecarClient(base_url="http://localhost:9100") as client:
+            client._client.post = AsyncMock(return_value=response)
+            with (
+                patch.object(pi_sidecar_client.logger, "debug") as log_debug,
+                patch.object(pi_sidecar_client.logger, "error") as log_error,
+            ):
+                with pytest.raises(RuntimeError) as exc_info:
+                    await client.get_models_for_api_key("openai", key)
+        assert str(exc_info.value) == "Sidecar API key model discovery returned invalid response", case
+        assert exc_info.value.__cause__ is None
+        assert key not in str(exc_info.value)
+        assert key not in str(log_debug.call_args_list)
+        assert key not in str(log_error.call_args_list)
+
     # -- get_providers --
     async def test_client_get_providers_returns_records(self) -> None:
         with provider_server() as (url, _):

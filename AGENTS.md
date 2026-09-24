@@ -40,6 +40,14 @@ about a known ID.
 provider API-key capability independent of server auth; headless-excluded and
 ambient CLI/ACPX providers report false.
 
+`POST /models/for-api-key` accepts `{ "provider": string, "api_key": string }` for
+key-capable providers. Python `await SidecarClient.get_models_for_api_key(provider, api_key)`
+returns `{ "models": [...], "modelListingSupported": boolean }`. `true` means native
+key-scoped listing ran (an empty list means no models); `false` means no native
+listing, so the user must supply a model ID. The key and result are request-local:
+never cache them or add key-listed models to the shared catalog. Listing does
+not verify that a model can complete a prompt.
+
 `POST /sessions` and `pi_sidecar_client` optionally accept a non-empty `api_key`
 (at most 1,024 UTF-16 code units). It overrides stored/environment credentials
 only for the selected API-key-capable provider and session; omission preserves

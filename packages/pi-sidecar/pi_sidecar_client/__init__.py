@@ -304,6 +304,13 @@ class SidecarClient:
             ) from None
         try:
             data = resp.json()
+            if (
+                not isinstance(data, dict)
+                or not isinstance(data.get("models"), list)
+                or not all(isinstance(model, dict) for model in data["models"])
+                or not isinstance(data.get("modelListingSupported"), bool)
+            ):
+                raise ValueError("Invalid model discovery response")
             result: KeyModelDiscovery = {
                 "models": data["models"],
                 "modelListingSupported": data["modelListingSupported"],

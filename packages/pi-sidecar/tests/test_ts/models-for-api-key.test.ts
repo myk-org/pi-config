@@ -179,6 +179,50 @@ describe("POST /models/for-api-key", { concurrency: false }, () => {
     } finally { pageResponse = undefined; }
   });
 
+  it("rejects a deeply encoded credential in providerId", async () => {
+    const nested = Array.from({ length: 8 }, (_, i) => i).reduce((value) => encodeURIComponent(value), keyA);
+    const response = await request({ provider: nested, api_key: keyA });
+    assert.equal(response.status, 400, await response.clone().text());
+    noKey(await response.text(), keyA);
+  });
+
+  it("omits model fields with deeply percent-encoded credentials", async () => {
+    const nested = Array.from({ length: 8 }, (_, i) => i).reduce((value) => encodeURIComponent(value), keyA);
+    upstreamBody = { data: [{ id: "safe-model" }, { id: `echo-${nested}` }, { id: "echo-name", name: nested }] };
+    const response = await request({ provider: "openai", api_key: keyA });
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.deepEqual((await response.json()).models.map((m: { id: string }) => m.id), ["safe-model"]);
+  });
+
+  it("rejects deeply encoded pagination credentials before another request", async () => {
+    const nested = Array.from({ length: 8 }, (_, i) => i).reduce((value) => encodeURIComponent(value), keyA);
+    pageResponse = () => ({ models: [], nextPageToken: nested });
+    const before = received.length;
+    try {
+      const response = await request({ provider: "google", api_key: keyA });
+      assert.equal(response.status, 502, await response.clone().text());
+      assert.equal(received.length, before + 1);
+      noKey(await response.text(), keyA);
+    } finally { pageResponse = undefined; }
+  });
+
+  it("rejects pagination tokens beyond the decode bound", async () => {
+    const token = Array.from({ length: 34 }, (_, i) => i).reduce((value) => encodeURIComponent(value), "%41");
+    pageResponse = () => ({ models: [], nextPageToken: token });
+    try {
+      const response = await request({ provider: "google", api_key: keyA });
+      assert.equal(response.status, 502, await response.clone().text());
+    } finally { pageResponse = undefined; }
+  });
+
+  it("rejects undecodable pagination tokens at the decode bound", async () => {
+    pageResponse = () => ({ models: [], nextPageToken: "%".repeat(200) });
+    try {
+      const response = await request({ provider: "google", api_key: keyA });
+      assert.equal(response.status, 502, await response.clone().text());
+    } finally { pageResponse = undefined; }
+  });
+
   it("reports native listing support when upstream returns an empty list", async () => {
     upstreamBody = { data: [] };
     const response = await request({ provider: "openai", api_key: keyA });
@@ -209,15 +253,15 @@ describe("POST /models/for-api-key", { concurrency: false }, () => {
     assert.equal((await (await fetch(`${url}/health`)).json() as { sessions: number }).sessions, healthBefore.sessions);
   });
 
-  it("rejects missing, malformed, and oversized keys without contacting the provider", async () => {
-    for (const api_key of [undefined, null, "", "  ", 42, "x".repeat(1025), "a\ud800b"]) {
+  for (const [name, api_key] of [["missing", undefined], ["null", null], ["empty", ""], ["blank", "  "], ["numeric", 42], ["oversized", "x".repeat(1025)], ["unpaired surrogate", "a\ud800b"]] as const) {
+    it(`rejects ${name} keys without contacting the provider`, async () => {
       const count = received.length;
       const response = await request({ provider: "openai", api_key });
       assert.equal(response.status, 400, await response.clone().text());
       assert.equal(received.length, count);
       noKey(await response.text(), keyA);
-    }
-  });
+    });
+  }
 
   it("rejects providers without session-key capability before model discovery", async () => {
     for (const provider of [undefined, "", "unknown-provider-839", "github-copilot"]) {
@@ -239,16 +283,17 @@ describe("POST /models/for-api-key", { concurrency: false }, () => {
     } finally { upstreamStatus = 200; }
   });
 
-  it("rejects invalid model-list payloads and upstream failures without falling back to static models", async () => {
-    for (const [status, body] of [[200, { data: "invalid" }], [503, { error: "unavailable" }]] as const) {
+  for (const [name, status, body] of [["invalid model-list payloads", 200, { data: "invalid" }], ["upstream failures", 503, { error: "unavailable" }]] as const) {
+    it(`rejects ${name} without static model fallback`, async () => {
       upstreamStatus = status;
       upstreamBody = body;
-      const response = await request({ provider: "openai", api_key: keyA });
-      assert.ok(response.status >= 400, await response.clone().text());
-      assert.ok(!('models' in await response.json()));
-    }
-    upstreamStatus = 200;
-  });
+      try {
+        const response = await request({ provider: "openai", api_key: keyA });
+        assert.ok(response.status >= 400, await response.clone().text());
+        assert.ok(!('models' in await response.json()));
+      } finally { upstreamStatus = 200; }
+    });
+  }
 
   it("does not expose credential variants in malicious upstream fields, responses, or logs", async () => {
     const captured: string[] = [];
@@ -273,23 +318,23 @@ describe("POST /models/for-api-key", { concurrency: false }, () => {
 });
 
 describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: false }, () => {
-  it("lists Groq and xAI models only at their SDK builtin endpoints", async () => {
-    const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
-    const store = new SessionStore();
-    Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
-    const originalFetch = globalThis.fetch;
-    const paths: string[] = [];
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
-      paths.push(String(input));
-      return new Response(JSON.stringify({ data: [{ id: "new-private-839" }] }), { status: 200 });
-    }) as typeof fetch;
-    try {
-      for (const [provider, base] of [["groq", "https://api.groq.com/openai/v1"], ["xai", "https://api.x.ai/v1"]]) {
+  for (const [provider, base] of [["groq", "https://api.groq.com/openai/v1"], ["xai", "https://api.x.ai/v1"]]) {
+    it(`lists ${provider} models only at the SDK builtin endpoint`, async () => {
+      const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
+      const store = new SessionStore();
+      Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+      const originalFetch = globalThis.fetch;
+      const paths: string[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        paths.push(String(input));
+        return new Response(JSON.stringify({ data: [{ id: "new-private-839" }] }), { status: 200 });
+      }) as typeof fetch;
+      try {
         assert.deepEqual((await store.getModelsForApiKey(provider, keyA)).models.map((m) => m.id), ["new-private-839"]);
         assert.equal(paths.at(-1), `${base}/models`);
-      }
-    } finally { globalThis.fetch = originalFetch; await store.disposeAll(); }
-  });
+      } finally { globalThis.fetch = originalFetch; await store.disposeAll(); }
+    });
+  }
 
   it("rejects a builtin ID whose runtime endpoint differs from Pi's builtin", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sidecar-839-shadow-"));
@@ -393,6 +438,23 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
     }
   });
 
+  it("logs sanitized provider context for unsupported model listing", async () => {
+    const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
+    const native = fauxProvider({ provider: "key-no-list-log-839", models: [{ id: "static-only" }] });
+    native.provider.auth = { apiKey: { name: "Key", resolve: async () => undefined } } as never;
+    runtime.registerNativeProvider(native.provider);
+    const store = new SessionStore();
+    Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+    const original = logger.debug;
+    const logs: string[] = [];
+    logger.debug = (...args) => { logs.push(JSON.stringify(args)); };
+    try {
+      assert.equal((await store.getModelsForApiKey("key-no-list-log-839", keyA)).modelListingSupported, false);
+      assert.ok(logs.some((line) => line.includes("Provider has no native model listing") && line.includes("key-no-list-log-839") && line.includes("modelListingSupported")));
+      noKey(logs.join("\n"), keyA);
+    } finally { logger.debug = original; await store.disposeAll(); }
+  });
+
   it("does not contact a custom gateway when no key is supplied", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sidecar-839-no-key-"));
     writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { "gateway.example": {
@@ -448,6 +510,21 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  for (const status of [401, 502]) {
+    it(`preserves discovery status ${status} for an unknown session model`, async () => {
+      const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
+      const store = new SessionStore();
+      Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async () => new Response("{}", { status: status === 401 ? 401 : 503 })) as typeof fetch;
+      const dir = mkdtempSync(join(tmpdir(), "sidecar-839-fail-"));
+      try {
+        await assert.rejects(() => store.create({ provider: "openai", model: "unknown-839", systemPrompt: "hi", cwd: dir, agentDir: dir, tools: [], apiKey: keyA }),
+          (error: any) => error.statusCode === status && !error.message.includes(keyA));
+      } finally { globalThis.fetch = originalFetch; await store.disposeAll(); rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
 
   it("uses validated Google token limits for a session-only model", async () => {
     const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });

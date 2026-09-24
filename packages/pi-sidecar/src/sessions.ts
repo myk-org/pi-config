@@ -51,6 +51,27 @@ function httpError(message: string, statusCode: number, cause?: unknown): HttpEr
 
 const MAX_API_KEY_LENGTH = 1024;
 const MAX_DIAGNOSTIC_LENGTH = 16_384;
+const MAX_KEY_DECODE_DEPTH = 32;
+
+/** Reject credentials at any encoding depth, including the last permitted decode. */
+function isKeyFree(value: string, redact: (value: string) => string): boolean {
+  const log = createLogger("key-model-discovery");
+  for (let depth = 0; depth <= MAX_KEY_DECODE_DEPTH; depth++) {
+    if (redact(value) !== value) {
+      log.debug("Discovery value contains credential", { depth });
+      return false;
+    }
+    let decoded: string;
+    try { decoded = decodeURIComponent(value); } catch {
+      log.debug("Discovery value cannot be decoded safely", { depth });
+      return !value.includes("%");
+    }
+    if (decoded === value) return true;
+    value = decoded;
+  }
+  log.debug("Discovery value exceeds decode bound", { depth: MAX_KEY_DECODE_DEPTH });
+  return false;
+}
 
 /** Oversized diagnostics are omitted, not truncated: a truncated prefix can contain a partial key. */
 export function redactDiagnostic(value: string, redact: (value: string) => string): string {
@@ -988,13 +1009,10 @@ export class SessionStore {
     this.assertNotDisposed("getModelsForApiKey");
     await this.ensureInternalRuntime();
     const redact = createApiKeyRedactor(apiKey);
-    let decodedProvider = providerId;
-    for (let i = 0; i < 5; i++) {
-      if (redact(decodedProvider) !== decodedProvider) throw httpError("Invalid provider or api_key", 400);
-      try { decodedProvider = decodeURIComponent(decodedProvider); } catch { break; }
-    }
+    if (!isKeyFree(providerId, redact)) throw httpError("Invalid provider or api_key", 400);
+    const safeProviderId = redactDiagnostic(providerId, redact);
     if (!this.supportsSessionApiKey(providerId)) {
-      log.debug("Provider has no session API key capability", { supported: false });
+      log.debug("Provider has no session API key capability", { providerId: safeProviderId, supported: false });
       throw httpError("Provider does not support session API keys", 400);
     }
     const provider = this.modelRuntime!.getProvider(providerId)!;
@@ -1010,7 +1028,7 @@ export class SessionStore {
       : openAiCompatible && catalog.every((model) => model.baseUrl === provider.baseUrl)
         ? provider.baseUrl : undefined;
     if (typeof base !== "string" || !base) {
-      log.debug("Provider has no native model listing", { modelListingSupported: false });
+      log.debug("Provider has no native model listing", { providerId: safeProviderId, modelListingSupported: false });
       return { models: [], modelListingSupported: false };
     }
     let url: URL;
@@ -1024,11 +1042,11 @@ export class SessionStore {
           (loopback && !["http:", "https:"].includes(url.protocol)) ||
           url.username || url.password || url.search || url.hash ||
           redact(url.href) !== url.href) {
-        log.debug("Provider listing endpoint not trusted", { modelListingSupported: false });
+        log.debug("Provider listing endpoint not trusted", { providerId: safeProviderId, modelListingSupported: false });
         return { models: [], modelListingSupported: false };
       }
     } catch {
-      log.debug("Provider listing endpoint invalid", { modelListingSupported: false });
+      log.debug("Provider listing endpoint invalid", { providerId: safeProviderId, modelListingSupported: false });
       return { models: [], modelListingSupported: false };
     }
     url.pathname = `${url.pathname.replace(/\/+$/, "")}${kind === "anthropic" ? "/v1/models" : "/models"}`;
@@ -1098,15 +1116,9 @@ export class SessionStore {
           if (typeof item.outputTokenLimit === "number" && Number.isSafeInteger(item.outputTokenLimit) && item.outputTokenLimit > 0) capabilities.outputTokenLimit = item.outputTokenLimit;
           if (Object.keys(capabilities).length) model.capabilities = capabilities;
         }
-        let serialized = JSON.stringify(model);
         // Drop records that echo the key, including nested percent/JSON-escaped forms.
-        let safe = true;
-        for (let i = 0; i < 5; i++) {
-          if (redact(serialized) !== serialized) { safe = false; break; }
-          try { serialized = decodeURIComponent(serialized); } catch { break; }
-        }
         // An unknown ID requires an unambiguous same-provider runtime template at create time.
-        if (safe && (this.modelRuntime!.getModel(providerId, id) || catalog.length > 0 && catalog.every((entry) => entry.api === catalog[0].api && entry.baseUrl === catalog[0].baseUrl))) models.push(model);
+        if (isKeyFree(JSON.stringify(model), redact) && (this.modelRuntime!.getModel(providerId, id) || catalog.length > 0 && catalog.every((entry) => entry.api === catalog[0].api && entry.baseUrl === catalog[0].baseUrl))) models.push(model);
       }
       const body = payload as { has_more?: unknown; last_id?: unknown; nextPageToken?: unknown };
       const token = kind === "anthropic" && body.has_more === true ? body.last_id
@@ -1114,11 +1126,7 @@ export class SessionStore {
       if (kind === "anthropic" && body.has_more === true && !token) throw httpError("Model discovery upstream failed", 502);
       if (token === undefined || token === "") break;
       if (typeof token !== "string" || token.length > 2048 || seenTokens.has(token)) throw httpError("Model discovery upstream failed", 502);
-      let decodedToken = token;
-      for (let i = 0; i < 5; i++) {
-        if (redact(decodedToken) !== decodedToken) throw httpError("Model discovery upstream failed", 502);
-        try { decodedToken = decodeURIComponent(decodedToken); } catch { break; }
-      }
+      if (!isKeyFree(token, redact)) throw httpError("Model discovery upstream failed", 502);
       seenTokens.add(token);
       if (page === 9) throw httpError("Model discovery page limit exceeded", 502);
       url.searchParams.set(kind === "anthropic" ? "after_id" : "pageToken", token);
@@ -1200,37 +1208,37 @@ export class SessionStore {
         || this.modelRuntime!.getModel(options.provider, options.model)
         || getModel(options.provider as any, options.model)
         || undefined;
+      if (!model && apiKey !== undefined && !isKeyFree(options.model, redact)) {
+        throw httpError("Invalid model for session API key: [REDACTED]", 400);
+      }
       if (!model && apiKey !== undefined && this.supportsSessionApiKey(options.provider)) {
-        try {
-          const listed = await this.getModelsForApiKey(options.provider, apiKey);
-          const discovered = listed.models.find((candidate) => candidate.id === options.model);
-          const templates = this.modelRuntime!.getProvider(options.provider)?.getModels() ?? [];
-          const template = templates[0];
-          if (discovered && template && templates.every((entry) => entry.api === template.api && entry.baseUrl === template.baseUrl)) {
-            // Private to this session; never publish a key-scoped model to the shared runtime.
-            const capabilities = discovered.capabilities;
-            const positiveLimit = (value: unknown): number | undefined =>
-              typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
-            const contextWindow = positiveLimit(capabilities?.inputTokenLimit);
-            const maxTokens = positiveLimit(capabilities?.outputTokenLimit);
-            if (!contextWindow || !maxTokens) {
-              throw httpError("Model metadata missing reliable input/output token limits for unknown model", 400);
-            }
-            model = {
-              id: discovered.id, name: discovered.name, provider: options.provider,
-              api: template.api, baseUrl: template.baseUrl,
-              reasoning: false, input: ["text"],
-              // Pi requires numeric prices and limits; zero means unknown pricing here, not free.
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              contextWindow,
-              maxTokens,
-            } satisfies Model<typeof template.api>;
-            log.debug("Session model resolved from key-scoped listing", { session: id });
+        const listed = await this.getModelsForApiKey(options.provider, apiKey);
+        const discovered = listed.models.find((candidate) => candidate.id === options.model);
+        const templates = this.modelRuntime!.getProvider(options.provider)?.getModels() ?? [];
+        const template = templates[0];
+        if (discovered && template && templates.every((entry) => entry.api === template.api && entry.baseUrl === template.baseUrl)) {
+          // Private to this session; never publish a key-scoped model to the shared runtime.
+          const capabilities = discovered.capabilities;
+          const positiveLimit = (value: unknown): number | undefined => {
+            const valid = typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+            log.debug("Validating key-discovered model token limit", { session: id, valid });
+            return valid ? value : undefined;
+          };
+          const contextWindow = positiveLimit(capabilities?.inputTokenLimit);
+          const maxTokens = positiveLimit(capabilities?.outputTokenLimit);
+          if (!contextWindow || !maxTokens) {
+            throw httpError("Model metadata missing reliable input/output token limits for unknown model", 400);
           }
-        } catch (err) {
-          const status = (err as HttpError)?.statusCode;
-          if (status !== 401 && status !== 502) throw err;
-          log.warn("Session model listing failed; retaining catalog validation", { session: id, status });
+          model = {
+            id: discovered.id, name: discovered.name, provider: options.provider,
+            api: template.api, baseUrl: template.baseUrl,
+            reasoning: false, input: ["text"],
+            // Pi requires numeric prices and limits; zero means unknown pricing here, not free.
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow,
+            maxTokens,
+          } satisfies Model<typeof template.api>;
+          log.debug("Session model resolved from key-scoped listing", { session: id });
         }
       }
       if (!model) {
