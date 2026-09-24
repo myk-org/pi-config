@@ -13,6 +13,10 @@ describe("qodo-review prompt", () => {
     assert.match(prompt, /## Raw Arguments\n\n```text\n\$ARGUMENTS\n```/);
   });
 
+  it("omits removed boilerplate", () => {
+    assert.doesNotMatch(prompt, /Bug Reporting Policy/);
+  });
+
   it("documents the safe prerequisite stop", () => {
     assert.match(prompt, /curl -fsSL https:\/\/get\.qodo\.ai \| sh/);
     assert.match(prompt, /NEVER execute it/);
