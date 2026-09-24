@@ -158,6 +158,13 @@ class ProviderDiscovery(TypedDict):
     supportsSessionApiKey: bool
 
 
+class KeyModelDiscovery(TypedDict):
+    """Models and native listing capability for a request-scoped API key."""
+
+    models: list[dict]
+    modelListingSupported: bool
+
+
 @dataclass
 class AITokenUsage:
     """Token usage data from an AI call."""
@@ -278,6 +285,38 @@ class SidecarClient:
         models = resp.json().get("models", [])
         logger.debug("Fetched %d models from sidecar", len(models))
         return models
+
+    async def get_models_for_api_key(self, provider: str, api_key: str) -> KeyModelDiscovery:
+        """Return keyed models and whether the provider supports native model listing."""
+        if error := _validate_api_key(api_key):
+            raise ValueError(error)
+        logger.debug("Fetching models for API key: key_supplied=True")
+        try:
+            resp = await self._client.post("/models/for-api-key", json={"provider": provider, "api_key": api_key})
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            logger.error("API key model discovery failed: status=%s, error_type=%s", status, type(exc).__name__)
+            raise RuntimeError(
+                f"Sidecar API key model discovery failed (HTTP {status})"
+                if status is not None
+                else "Sidecar API key model discovery failed"
+            ) from None
+        try:
+            data = resp.json()
+            result: KeyModelDiscovery = {
+                "models": data["models"],
+                "modelListingSupported": data["modelListingSupported"],
+            }
+        except (ValueError, KeyError, TypeError):
+            logger.error("API key model discovery returned invalid response")
+            raise RuntimeError("Sidecar API key model discovery returned invalid response") from None
+        logger.debug(
+            "Fetched %d models for API key; listing_supported=%s",
+            len(result["models"]),
+            result["modelListingSupported"],
+        )
+        return result
 
     async def get_providers(self) -> list[ProviderDiscovery]:
         """Return providers and their session API key capability from the sidecar."""

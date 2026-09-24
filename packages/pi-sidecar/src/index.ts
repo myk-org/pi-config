@@ -447,6 +447,23 @@ export function startSidecar(options?: {
         return;
       }
 
+      // POST /models/for-api-key
+      if (method === "POST" && url === "/models/for-api-key") {
+        const log = createLogger("key-model-discovery-route");
+        const body = await parseBody(req);
+        if (!body || typeof body !== "object" || Array.isArray(body) ||
+            typeof body.provider !== "string" || !body.provider.trim() || !isValidApiKey(body.api_key)) {
+          log.debug("Key model discovery request rejected", { validation: "invalid" });
+          sendJson(res, 400, { error: "Invalid provider or api_key" });
+          return;
+        }
+        requestApiKey = body.api_key;
+        const result = await store.getModelsForApiKey(body.provider, body.api_key);
+        log.debug("Key model discovery request completed", { count: result.models.length, modelListingSupported: result.modelListingSupported });
+        sendJson(res, 200, result);
+        return;
+      }
+
       // POST /models/refresh
       if (method === "POST" && url === "/models/refresh") {
         const models = await store.refreshModels();
@@ -651,7 +668,7 @@ export function startSidecar(options?: {
         try { promptId = routeMatch(url, "/sessions/:id/prompt")?.id; } catch { /* original error takes precedence */ }
       }
       const message = promptId ? store.redactSessionValue(promptId, redactDiagnostic(rawMessage, redact)) : redactDiagnostic(rawMessage, redact);
-      const sanitizedUrl = requestApiKey ? "/sessions" : sanitizeForLog(url.split("?")[0]); // Never log a key-bearing create URL.
+      const sanitizedUrl = requestApiKey ? method === "POST" && url === "/models/for-api-key" ? "/models/for-api-key" : "/sessions" : sanitizeForLog(url.split("?")[0]); // Never log a key-bearing URL.
       const rawStatus = typeof err?.statusCode === "number" && err.statusCode >= 100 && err.statusCode <= 599
         ? err.statusCode
         : undefined;

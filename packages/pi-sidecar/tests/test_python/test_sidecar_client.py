@@ -100,6 +100,49 @@ def provider_server() -> Iterator[tuple[str, list[str]]]:
         thread.join()
 
 
+@contextmanager
+def key_models_server(
+    status: int = 200, *, listing_supported: bool = True, empty: bool = False
+) -> Iterator[tuple[str, list[dict]]]:
+    received: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            request_body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            received.append({
+                "path": self.path,
+                "body": request_body,
+                "authorization": self.headers.get("Authorization"),
+            })
+            key = request_body["api_key"]
+            body = json.dumps(
+                {
+                    "models": [] if empty else [{"id": "key-only-839", "provider": "openai"}],
+                    "modelListingSupported": listing_supported,
+                }
+                if status == 200
+                else {"error": f"unauthorized {key} {quote(key, safe='')} {json.dumps(key)[1:-1]}"}
+            ).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", received
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
 # ---------------------------------------------------------------------------
 # 1. Provider mapping
 # ---------------------------------------------------------------------------
@@ -195,6 +238,49 @@ class TestSidecarClient:
         result = await client.get_models()
         assert result == models
         client._client.get.assert_awaited_once_with("/models")
+
+    # -- key-scoped models --
+    async def test_get_models_for_api_key_posts_credentials_only_in_body(self) -> None:
+        key = 'synthetic-"\\/839'  # pragma: allowlist secret — test sentinel
+        with key_models_server() as (url, received):
+            async with SidecarClient(base_url=url) as client:
+                with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+                    result = await client.get_models_for_api_key("openai", key)
+        assert result == {"models": [{"id": "key-only-839", "provider": "openai"}], "modelListingSupported": True}
+        assert received == [
+            {
+                "path": "/models/for-api-key",
+                "body": {"provider": "openai", "api_key": key},
+                "authorization": None,
+            }
+        ]
+        assert all(part not in str(log_debug.call_args_list) for part in (key, quote(key, safe="")))
+
+    @pytest.mark.parametrize("supported", [True, False])
+    async def test_get_models_for_api_key_preserves_empty_listing_capability(self, supported: bool) -> None:
+        with key_models_server(listing_supported=supported, empty=True) as (url, received):
+            async with SidecarClient(base_url=url) as client:
+                result = await client.get_models_for_api_key(
+                    "openai" if supported else "custom-no-list-839", "synthetic-key"
+                )
+        assert result == {"models": [], "modelListingSupported": supported}
+        assert received[0]["body"]["api_key"] == "synthetic-key"  # pragma: allowlist secret — test sentinel
+
+    async def test_get_models_for_api_key_raises_sanitized_error_without_logging_key(self) -> None:
+        key = "synthetic-denied-839"  # pragma: allowlist secret — test sentinel
+        with key_models_server(401) as (url, received):
+            async with SidecarClient(base_url=url) as client:
+                with (
+                    patch.object(pi_sidecar_client.logger, "debug") as log_debug,
+                    patch.object(pi_sidecar_client.logger, "error") as log_error,
+                ):
+                    with pytest.raises(RuntimeError, match="HTTP 401") as exc_info:
+                        await client.get_models_for_api_key("openai", key)
+        assert received[0]["body"]["api_key"] == key
+        for variant in (key, quote(key, safe=""), json.dumps(key)[1:-1]):
+            assert variant not in str(log_debug.call_args_list)
+            assert variant not in str(log_error.call_args_list)
+            assert variant not in str(exc_info.value)
 
     # -- get_providers --
     async def test_client_get_providers_returns_records(self) -> None:

@@ -19,7 +19,8 @@ import {
   createAgentSessionServices,
 } from "@earendil-works/pi-coding-agent";
 import { getModel } from "@earendil-works/pi-ai/compat";
-import type { Provider } from "@earendil-works/pi-ai";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import type { Model, Provider } from "@earendil-works/pi-ai";
 import { createJiti } from "jiti";
 
 import { createLogger, logger } from "./logger.js";
@@ -184,6 +185,8 @@ export function redactApiKey(value: string, apiKey?: string): string {
 }
 
 const DISCOVERY_TIMEOUT_MS = 30_000;
+// Only SDK-owned literal endpoints are trusted for key-scoped model listing.
+const builtinBaseUrls = new Map(builtinProviders().filter((provider) => provider.baseUrl).map((provider) => [provider.id, provider.baseUrl!]));
 
 /**
  * Providers that require interactive browser OAuth and therefore cannot work
@@ -976,6 +979,165 @@ export class SessionStore {
     return { provider, registered, modelCount, supportsSessionApiKey, authStatus, authCheck };
   }
 
+  /** Query the provider with this request's key, never the shared model registry. */
+  async getModelsForApiKey(providerId: string, apiKey: string): Promise<{ models: Array<{ provider: string; id: string; name: string; capabilities?: Record<string, unknown> }>; modelListingSupported: boolean }> {
+    const log = createLogger("key-model-discovery");
+    if (!isValidApiKey(apiKey) || typeof providerId !== "string" || !providerId.trim()) {
+      throw httpError("Invalid provider or api_key", 400);
+    }
+    this.assertNotDisposed("getModelsForApiKey");
+    await this.ensureInternalRuntime();
+    const redact = createApiKeyRedactor(apiKey);
+    let decodedProvider = providerId;
+    for (let i = 0; i < 5; i++) {
+      if (redact(decodedProvider) !== decodedProvider) throw httpError("Invalid provider or api_key", 400);
+      try { decodedProvider = decodeURIComponent(decodedProvider); } catch { break; }
+    }
+    if (!this.supportsSessionApiKey(providerId)) {
+      log.debug("Provider has no session API key capability", { supported: false });
+      throw httpError("Provider does not support session API keys", 400);
+    }
+    const provider = this.modelRuntime!.getProvider(providerId)!;
+    // Only native endpoints and explicitly configured literal loopback OpenAI-compatible
+    // gateways can receive request credentials.
+    const kind = providerId === "anthropic" ? "anthropic" : providerId === "google" ? "google" : "openai";
+    const catalog = provider.getModels();
+    const openAiCompatible = catalog.length > 0 && catalog.every((model) =>
+      model.api === "openai-completions" || model.api === "openai-responses");
+    const canonical = builtinBaseUrls.get(providerId);
+    const base = (kind === "anthropic" || kind === "google")
+      ? provider.baseUrl === canonical && catalog.length > 0 && catalog.every((model) => model.baseUrl === canonical) ? canonical : undefined
+      : openAiCompatible && catalog.every((model) => model.baseUrl === provider.baseUrl)
+        ? provider.baseUrl : undefined;
+    if (typeof base !== "string" || !base) {
+      log.debug("Provider has no native model listing", { modelListingSupported: false });
+      return { models: [], modelListingSupported: false };
+    }
+    let url: URL;
+    try {
+      url = new URL(base);
+      // Only provider-owned canonical hosts or literal loopback; DNS names for
+      // custom gateways can rebind to private addresses after validation.
+      const loopback = ["127.0.0.1", "[::1]"].includes(url.hostname);
+      const trusted = canonical !== undefined && url.href === new URL(canonical).href;
+      if ((!loopback && !trusted) || (canonical !== undefined && !trusted) || (loopback && kind !== "openai") ||
+          (loopback && !["http:", "https:"].includes(url.protocol)) ||
+          url.username || url.password || url.search || url.hash ||
+          redact(url.href) !== url.href) {
+        log.debug("Provider listing endpoint not trusted", { modelListingSupported: false });
+        return { models: [], modelListingSupported: false };
+      }
+    } catch {
+      log.debug("Provider listing endpoint invalid", { modelListingSupported: false });
+      return { models: [], modelListingSupported: false };
+    }
+    url.pathname = `${url.pathname.replace(/\/+$/, "")}${kind === "anthropic" ? "/v1/models" : "/models"}`;
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (kind === "anthropic") {
+      headers["x-api-key"] = apiKey;
+      headers["anthropic-version"] = "2023-06-01";
+    } else if (kind === "google") {
+      headers["x-goog-api-key"] = apiKey;
+    } else {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    const models: Array<{ provider: string; id: string; name: string; capabilities?: Record<string, unknown> }> = [];
+    const seenTokens = new Set<string>();
+    try {
+      for (let page = 0; page < 10; page++) {
+      const response = await fetch(url, {
+        method: "GET", headers,
+        redirect: "manual", signal: controller.signal,
+      });
+      if (response.status === 401 || response.status === 403) {
+        log.error("Upstream rejected discovery credential", { status: response.status });
+        throw httpError("API key rejected by provider", 401);
+      }
+      if (!response.ok || response.redirected || (response.status >= 300 && response.status < 400)) throw httpError("Model discovery upstream failed", 502);
+      const reader = response.body?.getReader();
+      if (!reader) throw httpError("Model discovery upstream failed", 502);
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > 1_048_576) throw httpError("Model discovery upstream failed", 502);
+          chunks.push(value);
+        }
+      } finally {
+        void reader.cancel().catch(() => {});
+      }
+      const payload: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+      const records = payload && typeof payload === "object"
+        ? kind === "google" ? (payload as { models?: unknown }).models : (payload as { data?: unknown }).data
+        : undefined;
+      if (!Array.isArray(records)) throw httpError("Model discovery upstream failed", 502);
+      for (const record of records) {
+        if (!record || typeof record !== "object" || Array.isArray(record)) continue;
+        const item = record as { id?: unknown; name?: unknown; displayName?: unknown; display_name?: unknown; capabilities?: unknown; supportedGenerationMethods?: unknown; inputTokenLimit?: unknown; outputTokenLimit?: unknown };
+        const rawId = kind === "google" ? item.name : item.id;
+        if (typeof rawId !== "string" || !rawId.trim() ||
+            (kind === "google" && !rawId.startsWith("models/"))) continue;
+        const id = kind === "google" ? rawId.slice("models/".length) : rawId;
+        // Listing proves key visibility, not prompt support. Exclude only known non-chat families.
+        if (kind === "google" ? !Array.isArray(item.supportedGenerationMethods) || !item.supportedGenerationMethods.includes("generateContent")
+          : kind === "openai" && /^(?:(?:text|omni)-)?(?:embedding|moderation|image|audio|whisper|tts)(?:[-_/]|$)|^dall-e(?:[-_/]|$)|^gpt-(?:image|audio)(?:[-_/]|$)|^gpt-[\w.-]+-(?:tts|audio|image|transcribe)(?:[-_/]|$)/i.test(id)) continue;
+        const name = kind === "google" ? item.displayName : kind === "anthropic" ? item.display_name : item.name;
+        if (!id || id.length > 512 || /[\x00-\x1f\x7f]/.test(id) ||
+            (name !== undefined && (typeof name !== "string" || name.length > 512 || /[\x00-\x1f\x7f]/.test(name)))) continue;
+        const model: typeof models[number] = { provider: providerId, id, name: name ?? id };
+        // Capabilities are included only when returned by this key-scoped upstream.
+        if (kind === "google") {
+          const capabilities: Record<string, unknown> = {};
+          if (Array.isArray(item.supportedGenerationMethods) && item.supportedGenerationMethods.every((v) => typeof v === "string")) capabilities.supportedGenerationMethods = item.supportedGenerationMethods;
+          if (typeof item.inputTokenLimit === "number" && Number.isSafeInteger(item.inputTokenLimit) && item.inputTokenLimit > 0) capabilities.inputTokenLimit = item.inputTokenLimit;
+          if (typeof item.outputTokenLimit === "number" && Number.isSafeInteger(item.outputTokenLimit) && item.outputTokenLimit > 0) capabilities.outputTokenLimit = item.outputTokenLimit;
+          if (Object.keys(capabilities).length) model.capabilities = capabilities;
+        }
+        let serialized = JSON.stringify(model);
+        // Drop records that echo the key, including nested percent/JSON-escaped forms.
+        let safe = true;
+        for (let i = 0; i < 5; i++) {
+          if (redact(serialized) !== serialized) { safe = false; break; }
+          try { serialized = decodeURIComponent(serialized); } catch { break; }
+        }
+        // An unknown ID requires an unambiguous same-provider runtime template at create time.
+        if (safe && (this.modelRuntime!.getModel(providerId, id) || catalog.length > 0 && catalog.every((entry) => entry.api === catalog[0].api && entry.baseUrl === catalog[0].baseUrl))) models.push(model);
+      }
+      const body = payload as { has_more?: unknown; last_id?: unknown; nextPageToken?: unknown };
+      const token = kind === "anthropic" && body.has_more === true ? body.last_id
+        : kind === "google" ? body.nextPageToken : undefined;
+      if (kind === "anthropic" && body.has_more === true && !token) throw httpError("Model discovery upstream failed", 502);
+      if (token === undefined || token === "") break;
+      if (typeof token !== "string" || token.length > 2048 || seenTokens.has(token)) throw httpError("Model discovery upstream failed", 502);
+      let decodedToken = token;
+      for (let i = 0; i < 5; i++) {
+        if (redact(decodedToken) !== decodedToken) throw httpError("Model discovery upstream failed", 502);
+        try { decodedToken = decodeURIComponent(decodedToken); } catch { break; }
+      }
+      seenTokens.add(token);
+      if (page === 9) throw httpError("Model discovery page limit exceeded", 502);
+      url.searchParams.set(kind === "anthropic" ? "after_id" : "pageToken", token);
+      }
+      log.debug("Key-scoped model discovery completed", { count: models.length, modelListingSupported: true });
+      return { models, modelListingSupported: true };
+    } catch (err) {
+      if (err && typeof err === "object" && "statusCode" in err) {
+        log.error("Key-scoped model discovery failed", { failure: "upstream", status: (err as HttpError).statusCode });
+        throw err;
+      }
+      // Never log or return upstream exception text, which can include headers or URLs.
+      log.error("Key-scoped model discovery failed", { failure: "upstream" });
+      throw httpError("Model discovery upstream failed", 502);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async create(options: CreateSessionOptions): Promise<string> {
     const apiKey = options.apiKey;
     if (apiKey !== undefined && !isValidApiKey(apiKey)) { // pragma: allowlist secret — field validation, not a credential
@@ -1038,6 +1200,39 @@ export class SessionStore {
         || this.modelRuntime!.getModel(options.provider, options.model)
         || getModel(options.provider as any, options.model)
         || undefined;
+      if (!model && apiKey !== undefined && this.supportsSessionApiKey(options.provider)) {
+        try {
+          const listed = await this.getModelsForApiKey(options.provider, apiKey);
+          const discovered = listed.models.find((candidate) => candidate.id === options.model);
+          const templates = this.modelRuntime!.getProvider(options.provider)?.getModels() ?? [];
+          const template = templates[0];
+          if (discovered && template && templates.every((entry) => entry.api === template.api && entry.baseUrl === template.baseUrl)) {
+            // Private to this session; never publish a key-scoped model to the shared runtime.
+            const capabilities = discovered.capabilities;
+            const positiveLimit = (value: unknown): number | undefined =>
+              typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+            const contextWindow = positiveLimit(capabilities?.inputTokenLimit);
+            const maxTokens = positiveLimit(capabilities?.outputTokenLimit);
+            if (!contextWindow || !maxTokens) {
+              throw httpError("Model metadata missing reliable input/output token limits for unknown model", 400);
+            }
+            model = {
+              id: discovered.id, name: discovered.name, provider: options.provider,
+              api: template.api, baseUrl: template.baseUrl,
+              reasoning: false, input: ["text"],
+              // Pi requires numeric prices and limits; zero means unknown pricing here, not free.
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow,
+              maxTokens,
+            } satisfies Model<typeof template.api>;
+            log.debug("Session model resolved from key-scoped listing", { session: id });
+          }
+        } catch (err) {
+          const status = (err as HttpError)?.statusCode;
+          if (status !== 401 && status !== 502) throw err;
+          log.warn("Session model listing failed; retaining catalog validation", { session: id, status });
+        }
+      }
       if (!model) {
         throw httpError(
           `Model '${options.model}' not found for provider '${options.provider}'. Use GET /models to list available models.`, 400,
