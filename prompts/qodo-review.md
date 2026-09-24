@@ -9,12 +9,6 @@ argument-hint: "[--autofix] [--fast|--deep] [--ticket <url>] [path ...]"
 $ARGUMENTS
 ```
 
-> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
-> while executing this command, DO NOT work around it silently. Ask the user:
-> "Should I create a GitHub issue for this?" Route to:
-> `myk-org/pi-config` for plugin/command spec or `myk-pi-tools` CLI issues.
-> Do not silently skip steps or apply manual fixes that hide the root cause.
-
 # Qodo local review
 
 Review local changes with the installed `qodo-review` skill. This is a pre-PR workflow. Do not

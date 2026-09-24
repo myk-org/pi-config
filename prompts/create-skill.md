@@ -8,12 +8,6 @@ description: "Create a reusable skill from a successful workflow — /create-ski
 $ARGUMENTS
 ```
 
-> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
-> while executing this command — DO NOT work around it silently. Ask the user:
-> "Should I create a GitHub issue for this?" Route to:
-> `myk-org/pi-config` for prompt/extension issues, or to the relevant tool's repository for CLI issues.
-> Do not silently skip steps or apply manual fixes that hide the root cause.
-
 # Create Skill
 
 Save a successful workflow as a reusable pi skill.
