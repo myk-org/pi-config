@@ -11,13 +11,6 @@ $ARGUMENTS
 
 # GitHub Review Handler
 
-> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
-> while executing this command — DO NOT work around it silently. Ask the user:
-> "Should I create a GitHub issue for this?" Route to:
-> `myk-org/pi-config` for plugin/command spec or `myk-pi-tools` CLI issues.
-> Do not silently skip steps or apply manual fixes that hide the root cause.
-> Documented retry loops (e.g., auto polling) are not bugs — only report reproducible failures.
-
 Unified handler that processes ALL review sources from the current branch's GitHub PR.
 
 ## Multi-PR Handling (MANDATORY)

@@ -11,13 +11,6 @@ $ARGUMENTS
 
 # ai-cli-runner Multi-Agent Prompt Command
 
-> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
-> while executing this command — DO NOT work around it silently. Ask the user:
-> "Should I create a GitHub issue for this?" Route to:
-> `myk-org/pi-config` for plugin/command spec issues,
-> `myk-org/ai-cli-runner` for ai-cli-runner package issues.
-> Do not silently skip steps or apply manual fixes that hide the root cause.
-
 🚨 **CRITICAL: NEVER set a timeout on AI CLI execution commands** (Step 5 and Step 9).
 External agents can take minutes to complete (reading files, thinking, multi-step tool calls).
 Any bash call running an AI CLI prompt MUST NOT include a timeout parameter. Let it run

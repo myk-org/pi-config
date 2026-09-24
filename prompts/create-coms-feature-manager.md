@@ -10,12 +10,6 @@ $ARGUMENTS
 
 # Create Coms Feature Manager Prompt
 
-> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
-> while executing this command — DO NOT work around it silently. Ask the user:
-> "Should I create a GitHub issue for this?" Route to:
-> `myk-org/pi-config` for plugin/command spec or `myk-pi-tools` CLI issues.
-> Do not silently skip steps or apply manual fixes that hide the root cause.
-
 Generates a project-specific **coms feature manager** prompt from the template.
 The coms feature manager pattern uses pi's coms system (`coms_send`/`coms_list` — responses auto-deliver as followUp)
 to coordinate between a manager agent (reviewer) and a coder agent (implementer).

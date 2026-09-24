@@ -11,12 +11,6 @@ $ARGUMENTS
 
 # Refine Pending Review Command
 
-> **Bug Reporting Policy:** If you encounter ANY error, unexpected behavior, or reproducible bug
-> while executing this command — DO NOT work around it silently. Ask the user:
-> "Should I create a GitHub issue for this?" Route to:
-> `myk-org/pi-config` for plugin/command spec or `myk-pi-tools` CLI issues.
-> Do not silently skip steps or apply manual fixes that hide the root cause.
-
 Refines the user's pending GitHub PR review comments using AI before submitting. The user starts a review on GitHub, adds comments, then calls this command to polish and submit.
 
 ## Prerequisites Check (MANDATORY)

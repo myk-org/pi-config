@@ -9,8 +9,8 @@ import { qodoReviewArgumentCompletions } from "../../../extensions/orchestrator/
 const prompt = readFileSync(new URL("../../../prompts/qodo-review.md", import.meta.url), "utf8");
 
 describe("qodo-review prompt", () => {
-  it("keeps the bug-report policy immediately after raw arguments", () => {
-    assert.match(prompt, /## Raw Arguments\n\n```text\n\$ARGUMENTS\n```\n\n> \*\*Bug Reporting Policy:/);
+  it("keeps the raw arguments block", () => {
+    assert.match(prompt, /## Raw Arguments\n\n```text\n\$ARGUMENTS\n```/);
   });
 
   it("documents the safe prerequisite stop", () => {
