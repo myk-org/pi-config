@@ -11,6 +11,17 @@ simple JSON API. Ships with a Python client for easy integration.
 
 - **Session management** — create, prompt, abort, and delete AI sessions over REST; optionally supply a provider-agnostic, session-scoped API key
 - **Model discovery** — auto-discover models from ACPX agents, CLI providers (`cli-*`), and built-in providers
+- **Provider discovery** — `GET /providers` lists every provider registered in
+  the initialized runtime, including built-ins and extensions, even without
+  discoverable models or ambient credentials. The JSON response is
+  `{ "providers": [{ "provider": string, "supportsSessionApiKey": boolean }] }`.
+  `provider`
+  is the exact ID; `supportsSessionApiKey` says whether `POST /sessions` accepts
+  `api_key`, not whether the server has credentials. No credentials or auth
+  diagnostics are returned. Python: `await SidecarClient.get_providers()`
+  returns a typed list of these records. Use discovery to enumerate providers,
+  `GET /models` for available models, and `GET /models/:provider/status` for
+  details about a known provider.
 - **Provider diagnostics** — `GET /models/:provider/status` reports registration,
   model count, auth status, and `supportsSessionApiKey` (a boolean indicating
   whether `POST /sessions` accepts `api_key` for that provider, regardless of

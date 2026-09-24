@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 from time import perf_counter
-from typing import Any
+from typing import Any, get_type_hints
 from unittest.mock import AsyncMock, patch
 from urllib.parse import quote
 
@@ -19,6 +19,7 @@ import pi_sidecar_client
 from pi_sidecar_client import (
     AIResult,
     AITokenUsage,
+    ProviderDiscovery,
     SidecarClient,
     _map_provider_model,
     _redact_api_key,
@@ -43,6 +44,42 @@ def session_server() -> Iterator[tuple[str, list[dict]]]:
                 "body": json.loads(self.rfile.read(int(self.headers["Content-Length"]))),
             })
             body = b'{"session_id":"sess-key"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", received
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@contextmanager
+def provider_server() -> Iterator[tuple[str, list[str]]]:
+    received: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            received.append(self.path)
+            if self.path != "/providers":
+                self.send_error(404)
+                return
+            body = json.dumps({
+                "providers": [
+                    {"provider": "google", "supportsSessionApiKey": True},
+                    {"provider": "acpx-cursor", "supportsSessionApiKey": False},
+                ]
+            }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -158,6 +195,42 @@ class TestSidecarClient:
         result = await client.get_models()
         assert result == models
         client._client.get.assert_awaited_once_with("/models")
+
+    # -- get_providers --
+    async def test_client_get_providers_returns_records(self) -> None:
+        with provider_server() as (url, _):
+            async with SidecarClient(base_url=url) as client:
+                assert await client.get_providers() == [
+                    {"provider": "google", "supportsSessionApiKey": True},
+                    {"provider": "acpx-cursor", "supportsSessionApiKey": False},
+                ]
+
+    def test_client_get_providers_public_return_type_schema(self) -> None:
+        assert get_type_hints(SidecarClient.get_providers)["return"] == list[ProviderDiscovery]
+        assert ProviderDiscovery.__annotations__ == {"provider": str, "supportsSessionApiKey": bool}
+
+    async def test_client_get_providers_requests_endpoint(self) -> None:
+        with provider_server() as (url, received):
+            async with SidecarClient(base_url=url) as client:
+                await client.get_providers()
+        assert received == ["/providers"]
+
+    async def test_client_get_providers_logs_count(self) -> None:
+        with provider_server() as (url, _):
+            async with SidecarClient(base_url=url) as client:
+                with patch.object(pi_sidecar_client.logger, "debug") as log_debug:
+                    await client.get_providers()
+        assert ("Fetched %d providers from sidecar", 2) in [call.args for call in log_debug.call_args_list]
+
+    async def test_client_get_providers_empty(self, client: SidecarClient) -> None:
+        client._client.get = AsyncMock(return_value=_mock_response(200, {"providers": []}))
+        assert await client.get_providers() == []
+
+    async def test_client_get_providers_raises_on_http_error(self, client: SidecarClient) -> None:
+        client._client.get = AsyncMock(return_value=_mock_response(503, {"error": "unavailable"}))
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await client.get_providers()
+        assert exc_info.value.response.status_code == 503
 
     # -- get_model_provider_status --
     async def test_client_get_model_provider_status(self, client: SidecarClient) -> None:

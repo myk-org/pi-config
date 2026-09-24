@@ -431,6 +431,14 @@ export function startSidecar(options?: {
         return;
       }
 
+      // GET /providers
+      if (method === "GET" && url === "/providers") {
+        const providers = await store.getProviders();
+        logger.debug(`[sidecar] GET /providers 200 ${Date.now() - requestStart}ms: count=${providers.length}`);
+        sendJson(res, 200, { providers });
+        return;
+      }
+
       // GET /models
       if (method === "GET" && url === "/models") {
         const models = await store.getModels();
