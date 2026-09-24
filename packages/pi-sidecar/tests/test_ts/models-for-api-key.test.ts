@@ -521,10 +521,23 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
       const dir = mkdtempSync(join(tmpdir(), "sidecar-839-fail-"));
       try {
         await assert.rejects(() => store.create({ provider: "openai", model: "unknown-839", systemPrompt: "hi", cwd: dir, agentDir: dir, tools: [], apiKey: keyA }),
-          (error: any) => error.statusCode === status && !error.message.includes(keyA));
+          (error: any) => error.statusCode === status);
       } finally { globalThis.fetch = originalFetch; await store.disposeAll(); rmSync(dir, { recursive: true, force: true }); }
     });
   }
+
+  it("does not include the supplied key in discovery errors", async () => {
+    const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
+    const store = new SessionStore();
+    Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ error: `invalid ${keyA}` }), { status: 401 })) as typeof fetch;
+    const dir = mkdtempSync(join(tmpdir(), "sidecar-839-secret-"));
+    try {
+      await assert.rejects(() => store.create({ provider: "openai", model: "unknown-839", systemPrompt: "hi", cwd: dir, agentDir: dir, tools: [], apiKey: keyA }),
+        (error: Error) => { noKey(error.message, keyA); return true; });
+    } finally { globalThis.fetch = originalFetch; await store.disposeAll(); rmSync(dir, { recursive: true, force: true }); }
+  });
 
   it("uses validated Google token limits for a session-only model", async () => {
     const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });

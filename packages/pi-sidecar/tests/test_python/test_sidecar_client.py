@@ -304,18 +304,36 @@ class TestSidecarClient:
         ids=lambda value: value if isinstance(value, str) else None,
     )
     async def test_get_models_for_api_key_rejects_invalid_response(self, body: bytes, case: str) -> None:
-        key = "synthetic-denied-839"  # pragma: allowlist secret — test sentinel
         response = httpx.Response(200, content=body, request=httpx.Request("POST", "http://test/models/for-api-key"))
         async with SidecarClient(base_url="http://localhost:9100") as client:
             client._client.post = AsyncMock(return_value=response)
-            with (
-                patch.object(pi_sidecar_client.logger, "debug") as log_debug,
-                patch.object(pi_sidecar_client.logger, "error") as log_error,
-            ):
-                with pytest.raises(RuntimeError) as exc_info:
-                    await client.get_models_for_api_key("openai", key)
+            with pytest.raises(RuntimeError) as exc_info:
+                await client.get_models_for_api_key("openai", "synthetic-denied-839")
         assert str(exc_info.value) == "Sidecar API key model discovery returned invalid response", case
+
+    async def test_get_models_for_api_key_invalid_response_suppresses_exception_chain(
+        self, client: SidecarClient
+    ) -> None:
+        response = httpx.Response(
+            200, content=b'{"models":', request=httpx.Request("POST", "http://test/models/for-api-key")
+        )
+        client._client.post = AsyncMock(return_value=response)
+        with pytest.raises(RuntimeError) as exc_info:
+            await client.get_models_for_api_key("openai", "synthetic-denied-839")
         assert exc_info.value.__cause__ is None
+
+    async def test_get_models_for_api_key_invalid_response_hides_key(self, client: SidecarClient) -> None:
+        key = "synthetic-denied-839"  # pragma: allowlist secret — test sentinel
+        response = httpx.Response(
+            200, content=json.dumps(key).encode(), request=httpx.Request("POST", "http://test/models/for-api-key")
+        )
+        client._client.post = AsyncMock(return_value=response)
+        with (
+            patch.object(pi_sidecar_client.logger, "debug") as log_debug,
+            patch.object(pi_sidecar_client.logger, "error") as log_error,
+        ):
+            with pytest.raises(RuntimeError) as exc_info:
+                await client.get_models_for_api_key("openai", key)
         assert key not in str(exc_info.value)
         assert key not in str(log_debug.call_args_list)
         assert key not in str(log_error.call_args_list)
