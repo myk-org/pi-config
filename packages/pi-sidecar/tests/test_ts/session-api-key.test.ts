@@ -502,7 +502,7 @@ describe("session key HTTP validation", () => {
     }
   });
 
-  it("returns 400 for unknown models even when redaction removes the status clue", async () => {
+  it("returns 400 for unknown models after successful empty discovery", async () => {
     const blocker = createServer();
     await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", resolve));
     const address = blocker.address();
@@ -510,6 +510,11 @@ describe("session key HTTP validation", () => {
     await new Promise<void>((resolve) => blocker.close(() => resolve()));
     const offline = process.env.PI_OFFLINE;
     process.env.PI_OFFLINE = "1";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).startsWith("https://api.openai.com/")
+        ? Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+        : originalFetch(input, init)) as typeof fetch;
     const handle = startSidecar({ port, host: "127.0.0.1" });
     const logs: string[] = [];
     const oldError = logger.error;
@@ -534,6 +539,7 @@ describe("session key HTTP validation", () => {
       logger.error = oldError;
       logger.warn = oldWarn;
       await handle.close();
+      globalThis.fetch = originalFetch;
       if (offline === undefined) delete process.env.PI_OFFLINE;
       else process.env.PI_OFFLINE = offline;
     }

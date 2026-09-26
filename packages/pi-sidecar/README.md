@@ -10,7 +10,8 @@ simple JSON API. Ships with a Python client for easy integration.
 ## Features
 
 - **Session management** — create, prompt, abort, and delete AI sessions over REST; optionally supply a provider-agnostic, session-scoped API key
-- **Model discovery** — auto-discover models from ACPX agents, CLI providers (`cli-*`), and built-in providers
+- **Model discovery** — discover models from ACPX, CLI, and built-in providers.
+  See [key-scoped model discovery](#key-scoped-model-discovery) for user keys.
 - **Provider discovery** — `GET /providers` lists every provider registered in
   the initialized runtime, including built-ins and extensions, even without
   discoverable models or ambient credentials. The JSON response is
@@ -83,6 +84,37 @@ scripts/start-sidecar.sh
 
 See the [Consumer Integration Guide](CONSUMER-GUIDE.md) for Docker, Python client, and deployment best practices.
 See the [full documentation](https://myk-org.github.io/pi-config/) for everything else.
+
+## Key-scoped model discovery
+
+`GET /models` uses the server's credentials. Static `getModels` metadata
+cannot verify what a supplied key can access. For providers with
+`supportsSessionApiKey: true` in `GET /providers`, query with the key instead:
+
+```bash
+curl -s -X POST http://127.0.0.1:9100/models/for-api-key \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"openai","api_key":"<your-key>"}'
+# Returns: {"models": [...], "modelListingSupported": true}
+```
+
+The response is `{ "models": [...], "modelListingSupported": boolean }`.
+A provider with native key-scoped listing returns `modelListingSupported: true`;
+`models: []` then means the listing returned no models. A provider without
+native key-scoped listing returns `{ "models": [], "modelListingSupported": false }`.
+In that case, ask the user to enter a model ID. A listing is only **key-listed**:
+it does not verify that a prompt will work. Google results require
+`generateContent`; known non-generation OpenAI model families are excluded,
+but remaining IDs are not **prompt-verified**. Do not use static catalog entries
+as verified models for that key. Known static IDs can be used with a supplied
+key. Unknown IDs can create a session only when the native listing supplies
+reliable positive input and output token limits (currently Google); otherwise
+`POST /sessions` returns HTTP 400 for missing model metadata.
+
+In Python, `await SidecarClient.get_models_for_api_key(provider, api_key)`
+returns the full dictionary, including `models` and `modelListingSupported`.
+Providers without `supportsSessionApiKey` return HTTP 400. The lookup is
+request-local: the sidecar does not cache the supplied key or result.
 
 ## CLI Commands
 
