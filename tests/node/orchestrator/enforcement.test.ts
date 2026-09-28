@@ -39,42 +39,54 @@ import {
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
 
 describe("comment signature hook model switches", () => {
-  it("uses each operation's ctx.model instead of the inherited parent environment", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "pi-enforcement-model-"));
-    const prior = Object.fromEntries(["PI_PRIMARY_MODEL", "PI_MODEL", "PI_COMMENT_SIGNATURE", "PI_SUBAGENT_CHILD"].map(key => [key, process.env[key]]));
-    try {
-      mkdirSync(join(cwd, ".pi"));
-      writeFileSync(join(cwd, ".pi", "pi-config-settings.json"), JSON.stringify({ comment_signature: true }));
-      process.env.PI_PRIMARY_MODEL = "parent-model";
-      process.env.PI_MODEL = "parent-model";
-      process.env.PI_COMMENT_SIGNATURE = "Assisted-by: PI (parent-model)";
-      process.env.PI_SUBAGENT_CHILD = "1";
-      const hooks = new Map<string, Function>();
-      registerEnforcement({ on: (name: string, handler: Function) => { hooks.set(name, handler); }, registerTool: () => {}, registerCommand: () => {} } as any);
-      const start = hooks.get("session_start")!;
-      const tool = hooks.get("tool_call")!;
-      const ctx = { cwd, model: { id: "start-model", provider: "openai" } };
-      start({}, ctx);
-      assert.equal(process.env.PI_COMMENT_SIGNATURE, "Assisted-by: PI (start-model)");
-      ctx.model.id = "switched-model";
-      const event = { type: "tool_call", toolName: "bash", input: { command: 'gh pr comment 1 --body "hello"' } };
-      await tool(event, ctx);
-      assert.match(event.input.command, /\*Assisted-by: PI \(switched-model\)\*/);
-      assert.doesNotMatch(event.input.command, /parent-model|start-model/);
-      ctx.model.id = "subagent-model";
-      await tool(event, ctx);
-      assert.equal((event.input.command.match(/\*Assisted-by: PI \(/g) ?? []).length, 1);
-      assert.match(event.input.command, /\*Assisted-by: PI \(subagent-model\)\*/);
-      process.env.PI_MODEL = "child-env-model";
-      await tool(event, { cwd, model: undefined });
-      assert.match(event.input.command, /\*Assisted-by: PI \(child-env-model\)\*/);
-      assert.equal((event.input.command.match(/\*Assisted-by: PI \(/g) ?? []).length, 1);
-    } finally {
-      for (const [key, value] of Object.entries(prior)) {
-        if (value === undefined) delete process.env[key]; else process.env[key] = value;
-      }
-      rmSync(cwd, { recursive: true, force: true });
+  let cwd: string;
+  let prior: Record<string, string | undefined>;
+  let hooks: Map<string, Function>;
+
+  before(() => {
+    cwd = mkdtempSync(join(tmpdir(), "pi-enforcement-model-"));
+    mkdirSync(join(cwd, ".pi"));
+    writeFileSync(join(cwd, ".pi", "pi-config-settings.json"), JSON.stringify({ comment_signature: true }));
+    prior = Object.fromEntries(["PI_PRIMARY_MODEL", "PI_MODEL", "PI_COMMENT_SIGNATURE", "PI_SUBAGENT_CHILD"].map(key => [key, process.env[key]]));
+    process.env.PI_PRIMARY_MODEL = "parent-model";
+    process.env.PI_MODEL = "parent-model";
+    process.env.PI_COMMENT_SIGNATURE = "Assisted-by: PI (parent-model)";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    hooks = new Map();
+    registerEnforcement({ on: (name: string, handler: Function) => { hooks.set(name, handler); }, registerTool: () => {}, registerCommand: () => {} } as any);
+  });
+
+  after(() => {
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("caches the session-start context model instead of the inherited parent model", () => {
+    hooks.get("session_start")!({}, { cwd, model: { id: "start-model", provider: "openai" } });
+    assert.equal(process.env.PI_COMMENT_SIGNATURE, "Assisted-by: PI (start-model)");
+  });
+
+  it("replaces the stale footer on each switched bash operation", async () => {
+    const tool = hooks.get("tool_call")!;
+    const ctx = { cwd, model: { id: "switched-model", provider: "openai" } };
+    const event = { type: "tool_call", toolName: "bash", input: { command: 'gh pr comment 1 --body "hello\n\n---\n*Assisted-by: PI (parent-model)*"' } };
+    await tool(event, ctx);
+    assert.match(event.input.command, /\*Assisted-by: PI \(switched-model\)\*/);
+    assert.doesNotMatch(event.input.command, /parent-model/);
+    ctx.model.id = "subagent-model";
+    await tool(event, ctx);
+    assert.equal((event.input.command.match(/\*Assisted-by: PI \(/g) ?? []).length, 1);
+    assert.match(event.input.command, /\*Assisted-by: PI \(subagent-model\)\*/);
+  });
+
+  it("uses the child environment model when the bash context model is absent", async () => {
+    process.env.PI_MODEL = "child-env-model";
+    const event = { type: "tool_call", toolName: "bash", input: { command: 'gh pr comment 1 --body "hello\n\n---\n*Assisted-by: PI (parent-model)*"' } };
+    await hooks.get("tool_call")!(event, { cwd, model: undefined });
+    assert.match(event.input.command, /\*Assisted-by: PI \(child-env-model\)\*/);
+    assert.equal((event.input.command.match(/\*Assisted-by: PI \(/g) ?? []).length, 1);
   });
 });
 
@@ -1781,14 +1793,14 @@ describe("isRealGhBodyCommand", () => {
 });
 
 describe("injectGhBodySignature", () => {
-  it("preserves a signed CRLF quoted body without duplicating its footer", () => {
+  it("replaces the stale footer in a signed CRLF quoted body", () => {
     const cmd = 'gh pr create --body "Summary\r\n\r\n---\r\n*Assisted-by: PI (gpt-6-luna)*\r\n"';
     const out = injectGhBodySignature(cmd, SIG);
     assert.equal(out, cmd.replace("gpt-6-luna", "cursor:cursor-grok-4.6-high"));
     assert.equal((out.match(/Assisted-by:/g) ?? []).length, 1);
   });
 
-  it("preserves a signed CRLF heredoc body", () => {
+  it("replaces the stale footer in a signed CRLF heredoc body", () => {
     const cmd = `gh pr create --body "$(cat <<'EOF'\r\nSummary\r\n\r\n---\r\n*Assisted-by: PI (gpt-6-luna)*\r\nEOF\r\n)"`;
     assert.equal(injectGhBodySignature(cmd, SIG), cmd.replace("gpt-6-luna", "cursor:cursor-grok-4.6-high"));
   });
@@ -1800,8 +1812,8 @@ describe("injectGhBodySignature", () => {
     assert.equal((out.match(/Assisted-by:/g) ?? []).length, 1);
   });
 
-  it("preserves a signed hyphenated heredoc with double quotes in its body", () => {
-    const cmd = `gh pr create --body "$(cat <<'EOF-1'\nSummary says "hello"\nEOF-1 is not the closer\n${FOOTER}\nEOF-1\n)"`;
+  it("replaces the stale footer in a signed hyphenated heredoc with quoted prose", () => {
+    const cmd = `gh pr create --body "$(cat <<'EOF-1'\nSummary says "hello"\nEOF-1 is not the closer\n\n---\n*Assisted-by: PI (gpt-6-luna)*\nEOF-1\n)"`;
     const out = injectGhBodySignature(cmd, SIG);
     assert.equal(out, cmd.replace("gpt-6-luna", "cursor:cursor-grok-4.6-high"));
     assert.equal((out.match(/Assisted-by:/g) ?? []).length, 1);
@@ -1869,8 +1881,8 @@ describe("injectGhBodySignature", () => {
     assert.ok(!out.includes("PI_MODEL"));
   });
 
-  it("keeps the signed body intact when a heredoc line starts with its delimiter", () => {
-    const cmd = `gh pr create --body "$(cat <<'EOF'\nSummary\nEOF is an "example"\n${FOOTER}\nEOF\n)"`;
+  it("replaces the stale footer in a signed heredoc containing a delimiter-prefixed line", () => {
+    const cmd = `gh pr create --body "$(cat <<'EOF'\nSummary\nEOF is an "example"\n\n---\n*Assisted-by: PI (gpt-6-luna)*\nEOF\n)"`;
     const out = injectGhBodySignature(cmd, SIG);
     assert.equal(out, cmd.replace("gpt-6-luna", "cursor:cursor-grok-4.6-high"));
     assert.equal((out.match(/\*Assisted-by: PI \([^\n]*\)\*/g) ?? []).length, 1);

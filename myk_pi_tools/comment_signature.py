@@ -8,13 +8,14 @@ PI_COMMENT_SIGNATURE, to sign comment / review bodies when enabled. `gh pr creat
 
 from __future__ import annotations
 
-import logging
 import os
 import re
 
+from myk_pi_tools.logger import create_logger
+
 _FOOTER = re.compile(r"(?:\r?\n\r?\n---\r?\n|\r?\n|^)\*Assisted-by: PI \(([^\r\n]*?)\)\*(?=\r?\n|$)")
 _VALID_MODEL = re.compile(r"[\w:./+@-]+(?: [\w:./+@-]+)*", re.ASCII)
-log = logging.getLogger(__name__)
+log = create_logger(__name__)
 
 
 def append_signature(body: str) -> str:

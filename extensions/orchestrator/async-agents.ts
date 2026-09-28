@@ -1041,6 +1041,7 @@ export function registerAsyncAgents(
     // Resolve base branch for reviewers so they diff against the correct target
     const spawnEnv: Record<string, string | undefined> = {
       ...process.env,
+      PI_MODEL: effectiveModel || undefined,
       PI_SUBAGENT_CHILD: "1",
       PI_AGENT_NAME: agentName,
       PI_PRIMARY_MODEL: process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || "",

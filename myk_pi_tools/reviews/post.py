@@ -37,7 +37,6 @@ Resolution behavior by source:
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import shlex
@@ -50,9 +49,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES
 
-log = logging.getLogger(__name__)
+log = create_logger(__name__)
 
 # Lazy reply patterns that indicate the AI didn't write a real response
 _INTERNAL_ISSUE_REFERENCE = re.compile(r"\binternal\s+(?:issue\s+)?#\d+\b", re.IGNORECASE)

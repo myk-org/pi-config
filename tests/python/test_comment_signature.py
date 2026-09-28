@@ -159,18 +159,30 @@ class TestAppendSignature:
         assert result == "Summary" + footer
         assert result.count("*Assisted-by: PI (old-model)*") == 1
 
-    def test_operation_model_overrides_cached_signature_and_parent(self) -> None:
-        """The child operation model wins over both session and parent models."""
+    def test_operation_model_overrides_cached_signature(self) -> None:
+        """A valid per-command model takes precedence over the cached signature."""
+        with patch.dict(
+            "os.environ", {"PI_COMMENT_SIGNATURE": "Assisted-by: PI (session-model)", "PI_MODEL": "child/model"}
+        ):
+            assert append_signature("Summary") == "Summary\n\n---\n*Assisted-by: PI (child/model)*"
+
+    def test_child_session_model_overrides_parent_when_operation_model_absent(self) -> None:
+        """Without a per-command model, the child session cache beats the parent model."""
         with patch.dict(
             "os.environ",
-            {
-                "PI_COMMENT_SIGNATURE": "Assisted-by: PI (session-model)",
-                "PI_MODEL": "child/model",
-                "PI_PRIMARY_MODEL": "parent/model",
-            },
+            {"PI_COMMENT_SIGNATURE": "Assisted-by: PI (child/model)", "PI_PRIMARY_MODEL": "parent/model"},
+            clear=True,
         ):
-            result = append_signature("Summary")
-        assert result == "Summary\n\n---\n*Assisted-by: PI (child/model)*"
+            assert append_signature("Summary") == "Summary\n\n---\n*Assisted-by: PI (child/model)*"
+
+    def test_invalid_operation_model_uses_cached_signature(self) -> None:
+        """Invalid nonempty model input cannot displace a valid session signature."""
+        with patch.dict(
+            "os.environ",
+            {"PI_COMMENT_SIGNATURE": "Assisted-by: PI (child/model)", "PI_MODEL": "parent)\nspoof"},
+            clear=True,
+        ):
+            assert append_signature("Summary") == "Summary\n\n---\n*Assisted-by: PI (child/model)*"
 
     def test_operation_model_without_cached_signature_does_not_enable_signing(self) -> None:
         """An operation model cannot turn on a disabled comment signature setting."""
@@ -181,7 +193,12 @@ class TestAppendSignature:
         """Replace stale standalone footers, but keep prose and line endings."""
         body = "First\r\nSecond\r\n\r\n---\r\n*Assisted-by: PI (session-model)*\r\nMore prose"
         with patch.dict(
-            "os.environ", {"PI_COMMENT_SIGNATURE": "Assisted-by: PI (session-model)", "PI_MODEL": "child/model"}
+            "os.environ",
+            {
+                "PI_COMMENT_SIGNATURE": "Assisted-by: PI (child/model)",
+                "PI_MODEL": "child/model",
+                "PI_PRIMARY_MODEL": "parent/model",
+            },
         ):
             expected = body.replace("(session-model)", "(child/model)")
             assert append_signature(body) == expected
