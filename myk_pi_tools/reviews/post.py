@@ -306,6 +306,10 @@ def post_thread_reply(thread_id: str, body: str) -> bool:
     from myk_pi_tools.comment_signature import append_signature
 
     body = append_signature(body)
+    log.debug(
+        "Prepared signed review thread reply",
+        extra={"thread_id": thread_id, "operation_model_present": bool(os.environ.get("PI_MODEL"))},
+    )
     # GitHub comment bodies have a size limit (~65KB); truncate to avoid failures
     max_len = 60000
     if len(body) > max_len:

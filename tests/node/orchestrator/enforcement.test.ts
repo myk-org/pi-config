@@ -8,6 +8,7 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync, rmSync } from "node
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { DANGEROUS } from "../../../extensions/orchestrator/git-helpers.js";
+import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import {
   READ_ONLY_COMMANDS,
   extractSubshells,
@@ -36,6 +37,46 @@ import {
   injectGhBodySignature,
   isRealGhBodyCommand,
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
+
+describe("comment signature hook model switches", () => {
+  it("uses each operation's ctx.model instead of the inherited parent environment", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "pi-enforcement-model-"));
+    const prior = Object.fromEntries(["PI_PRIMARY_MODEL", "PI_MODEL", "PI_COMMENT_SIGNATURE", "PI_SUBAGENT_CHILD"].map(key => [key, process.env[key]]));
+    try {
+      mkdirSync(join(cwd, ".pi"));
+      writeFileSync(join(cwd, ".pi", "pi-config-settings.json"), JSON.stringify({ comment_signature: true }));
+      process.env.PI_PRIMARY_MODEL = "parent-model";
+      process.env.PI_MODEL = "parent-model";
+      process.env.PI_COMMENT_SIGNATURE = "Assisted-by: PI (parent-model)";
+      process.env.PI_SUBAGENT_CHILD = "1";
+      const hooks = new Map<string, Function>();
+      registerEnforcement({ on: (name: string, handler: Function) => { hooks.set(name, handler); }, registerTool: () => {}, registerCommand: () => {} } as any);
+      const start = hooks.get("session_start")!;
+      const tool = hooks.get("tool_call")!;
+      const ctx = { cwd, model: { id: "start-model", provider: "openai" } };
+      start({}, ctx);
+      assert.equal(process.env.PI_COMMENT_SIGNATURE, "Assisted-by: PI (start-model)");
+      ctx.model.id = "switched-model";
+      const event = { type: "tool_call", toolName: "bash", input: { command: 'gh pr comment 1 --body "hello"' } };
+      await tool(event, ctx);
+      assert.match(event.input.command, /\*Assisted-by: PI \(switched-model\)\*/);
+      assert.doesNotMatch(event.input.command, /parent-model|start-model/);
+      ctx.model.id = "subagent-model";
+      await tool(event, ctx);
+      assert.equal((event.input.command.match(/\*Assisted-by: PI \(/g) ?? []).length, 1);
+      assert.match(event.input.command, /\*Assisted-by: PI \(subagent-model\)\*/);
+      process.env.PI_MODEL = "child-env-model";
+      await tool(event, { cwd, model: undefined });
+      assert.match(event.input.command, /\*Assisted-by: PI \(child-env-model\)\*/);
+      assert.equal((event.input.command.match(/\*Assisted-by: PI \(/g) ?? []).length, 1);
+    } finally {
+      for (const [key, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
 
 // ── extractSubshells ──
 
@@ -1742,13 +1783,14 @@ describe("isRealGhBodyCommand", () => {
 describe("injectGhBodySignature", () => {
   it("preserves a signed CRLF quoted body without duplicating its footer", () => {
     const cmd = 'gh pr create --body "Summary\r\n\r\n---\r\n*Assisted-by: PI (gpt-6-luna)*\r\n"';
-    assert.equal(injectGhBodySignature(cmd, SIG), cmd);
-    assert.equal((injectGhBodySignature(cmd, SIG).match(/Assisted-by:/g) ?? []).length, 1);
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, cmd.replace("gpt-6-luna", "cursor:cursor-grok-4.6-high"));
+    assert.equal((out.match(/Assisted-by:/g) ?? []).length, 1);
   });
 
   it("preserves a signed CRLF heredoc body", () => {
     const cmd = `gh pr create --body "$(cat <<'EOF'\r\nSummary\r\n\r\n---\r\n*Assisted-by: PI (gpt-6-luna)*\r\nEOF\r\n)"`;
-    assert.equal(injectGhBodySignature(cmd, SIG), cmd);
+    assert.equal(injectGhBodySignature(cmd, SIG), cmd.replace("gpt-6-luna", "cursor:cursor-grok-4.6-high"));
   });
 
   it("places an unsigned CRLF heredoc footer before its closer", () => {
@@ -1760,8 +1802,9 @@ describe("injectGhBodySignature", () => {
 
   it("preserves a signed hyphenated heredoc with double quotes in its body", () => {
     const cmd = `gh pr create --body "$(cat <<'EOF-1'\nSummary says "hello"\nEOF-1 is not the closer\n${FOOTER}\nEOF-1\n)"`;
-    assert.equal(injectGhBodySignature(cmd, SIG), cmd);
-    assert.equal((injectGhBodySignature(cmd, SIG).match(/Assisted-by:/g) ?? []).length, 1);
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, cmd.replace("gpt-6-luna", "cursor:cursor-grok-4.6-high"));
+    assert.equal((out.match(/Assisted-by:/g) ?? []).length, 1);
   });
 
   it("inserts one footer before the actual hyphenated heredoc closer", () => {
@@ -1822,14 +1865,14 @@ describe("injectGhBodySignature", () => {
     const cmd = `gh pr create --body "$(cat <<'EOF'\nSummary\n\n---\n${placeholder}\n\n---\n${existing}\nEOF\n)"`;
     const out = injectGhBodySignature(cmd, SIG);
     assert.equal((out.match(/\*Assisted-by: PI \([\w:.-]+\)\*/g) ?? []).length, 1);
-    assert.ok(out.includes(existing));
+    assert.ok(out.includes(`*${SIG}*`));
     assert.ok(!out.includes("PI_MODEL"));
   });
 
   it("keeps the signed body intact when a heredoc line starts with its delimiter", () => {
     const cmd = `gh pr create --body "$(cat <<'EOF'\nSummary\nEOF is an "example"\n${FOOTER}\nEOF\n)"`;
     const out = injectGhBodySignature(cmd, SIG);
-    assert.equal(out, cmd);
+    assert.equal(out, cmd.replace("gpt-6-luna", "cursor:cursor-grok-4.6-high"));
     assert.equal((out.match(/\*Assisted-by: PI \([^\n]*\)\*/g) ?? []).length, 1);
   });
 
@@ -1837,7 +1880,7 @@ describe("injectGhBodySignature", () => {
     const existing = "*Assisted-by: PI (gpt-6-luna)*";
     const cmd = `gh pr edit 1 --body "$(cat <<'EOF'\nSummary\n\n---\n${existing}\n\n---\n${existing}\nEOF\n)"`;
     const out = injectGhBodySignature(cmd, SIG);
-    assert.equal((out.match(/\*Assisted-by: PI \(gpt-6-luna\)\*/g) ?? []).length, 1);
+    assert.equal((out.match(/\*Assisted-by: PI \(cursor:cursor-grok-4\.6-high\)\*/g) ?? []).length, 1);
     assert.equal((out.match(/\*Assisted-by: PI \([^\n]*\)\*/g) ?? []).length, 1);
   });
 
@@ -1855,13 +1898,13 @@ describe("injectGhBodySignature", () => {
     const second = "*Assisted-by: PI (cursor:second)*";
     const cmd = `gh pr edit 1 --body "$(cat <<'EOF'\nSummary\n${first}\nordinary prose with ${second} inline\n${second}\nEOF\n)"`;
     const out = injectGhBodySignature(cmd, SIG);
-    assert.equal(out, `gh pr edit 1 --body "$(cat <<'EOF'\nSummary\n${first}\nordinary prose with ${second} inline\nEOF\n)"`);
+    assert.equal(out, `gh pr edit 1 --body "$(cat <<'EOF'\nSummary\n*${SIG}*\nordinary prose with ${second} inline\nEOF\n)"`);
   });
 
   it("recognizes a runtime model ID containing a slash and spaces without adding another signature", () => {
     const existing = "*Assisted-by: PI (openai/gpt 6 preview)*";
     const cmd = `gh pr create --body 'Summary\n${existing}'`;
-    assert.equal(injectGhBodySignature(cmd, SIG), cmd);
+    assert.equal(injectGhBodySignature(cmd, SIG), cmd.replace("openai/gpt 6 preview", "cursor:cursor-grok-4.6-high"));
   });
 
   it("replaces a standalone quoted literal placeholder without a separator", () => {
@@ -1870,14 +1913,19 @@ describe("injectGhBodySignature", () => {
     assert.equal(out, `gh pr create --body "$(cat <<'EOF'\nSummary${FOOTER}\nEOF\n)"`);
   });
 
-  it("preserves a lone valid footer for a different model", () => {
-    const cmd = 'gh pr create --body "hello\n\n---\n*Assisted-by: PI (gpt-6-luna)*"';
-    assert.equal(injectGhBodySignature(cmd, SIG), cmd);
+  it("replaces a lone stale escaped-newline footer and stays idempotent", () => {
+    const cmd = 'gh pr create --body "hello\\n\\n---\\n*Assisted-by: PI (gpt-6-luna)*"';
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, cmd.replace("gpt-6-luna", "cursor:cursor-grok-4.6-high"));
+    assert.equal(injectGhBodySignature(out, SIG), out);
+    const switched = injectGhBodySignature(out, "Assisted-by: PI (next-model)");
+    assert.equal(switched, out.replace("cursor:cursor-grok-4.6-high", "next-model"));
+    assert.equal((switched.match(/Assisted-by:/g) ?? []).length, 1);
   });
 
-  it("skips when Assisted-by already present in body", () => {
-    const cmd = 'gh pr create --body "hello\n\n---\n*Assisted-by: PI (old)*"';
-    assert.equal(injectGhBodySignature(cmd, SIG), cmd);
+  it("updates a stale standalone signature but leaves inline prose intact", () => {
+    const cmd = 'gh pr create --body "inline *Assisted-by: PI (old)* prose\n\n---\n*Assisted-by: PI (old)*"';
+    assert.equal(injectGhBodySignature(cmd, SIG), cmd.replace("\n*Assisted-by: PI (old)*\"", `\n*${SIG}*\"`));
   });
 
   it("leaves command unchanged when signature is empty", () => {
