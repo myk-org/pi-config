@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from myk_pi_tools.comment_signature import append_signature
+
+
+@pytest.fixture(autouse=True)
+def _without_host_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep legacy cases independent of the caller's operation model."""
+    monkeypatch.delenv("PI_MODEL", raising=False)
 
 
 class TestAppendSignature:
@@ -150,6 +158,77 @@ class TestAppendSignature:
             result = append_signature(body)
         assert result == "Summary" + footer
         assert result.count("*Assisted-by: PI (old-model)*") == 1
+
+    def test_operation_model_overrides_cached_signature(self) -> None:
+        """A valid per-command model takes precedence over the cached signature."""
+        with patch.dict(
+            "os.environ", {"PI_COMMENT_SIGNATURE": "Assisted-by: PI (session-model)", "PI_MODEL": "child/model"}
+        ):
+            assert append_signature("Summary") == "Summary\n\n---\n*Assisted-by: PI (child/model)*"
+
+    def test_child_session_model_overrides_parent_when_operation_model_absent(self) -> None:
+        """Without a per-command model, the child session cache beats the parent model."""
+        with patch.dict(
+            "os.environ",
+            {"PI_COMMENT_SIGNATURE": "Assisted-by: PI (child/model)", "PI_PRIMARY_MODEL": "parent/model"},
+            clear=True,
+        ):
+            assert append_signature("Summary") == "Summary\n\n---\n*Assisted-by: PI (child/model)*"
+
+    def test_invalid_operation_model_uses_cached_signature(self) -> None:
+        """Invalid nonempty model input cannot displace a valid session signature."""
+        with patch.dict(
+            "os.environ",
+            {"PI_COMMENT_SIGNATURE": "Assisted-by: PI (child/model)", "PI_MODEL": "parent)\nspoof"},
+            clear=True,
+        ):
+            assert append_signature("Summary") == "Summary\n\n---\n*Assisted-by: PI (child/model)*"
+
+    def test_operation_model_without_cached_signature_does_not_enable_signing(self) -> None:
+        """An operation model cannot turn on a disabled comment signature setting."""
+        with patch.dict("os.environ", {"PI_MODEL": "child/model", "PI_PRIMARY_MODEL": "parent/model"}, clear=True):
+            assert append_signature("Summary") == "Summary"
+
+    def test_operation_model_replaces_existing_footer_without_changing_prose(self) -> None:
+        """Replace stale standalone footers, but keep prose and line endings."""
+        body = "First\r\nSecond\r\n\r\n---\r\n*Assisted-by: PI (session-model)*\r\nMore prose"
+        with patch.dict(
+            "os.environ",
+            {
+                "PI_COMMENT_SIGNATURE": "Assisted-by: PI (child/model)",
+                "PI_MODEL": "child/model",
+                "PI_PRIMARY_MODEL": "parent/model",
+            },
+        ):
+            expected = body.replace("(session-model)", "(child/model)")
+            assert append_signature(body) == expected
+            assert append_signature(expected) == expected
+
+    def test_operation_model_collapses_different_valid_footers(self) -> None:
+        """A stale footer followed by another valid footer becomes one current footer."""
+        body = "Summary\n\n---\n*Assisted-by: PI (old)*\n\n---\n*Assisted-by: PI (other)*"
+        with patch.dict(
+            "os.environ", {"PI_MODEL": "child/model", "PI_COMMENT_SIGNATURE": "Assisted-by: PI (old)"}, clear=True
+        ):
+            assert append_signature(body) == "Summary\n\n---\n*Assisted-by: PI (child/model)*"
+
+    def test_operation_model_does_not_replace_inline_example(self) -> None:
+        """An inline prose example is not a standalone footer."""
+        body = "*Assisted-by: PI (old)* is an example"
+        with patch.dict(
+            "os.environ", {"PI_MODEL": "child/model", "PI_COMMENT_SIGNATURE": "Assisted-by: PI (old)"}, clear=True
+        ):
+            assert append_signature(body) == body + "\n\n---\n*Assisted-by: PI (child/model)*"
+
+    def test_parent_model_without_operation_model_preserves_legacy_footer(self) -> None:
+        """PI_PRIMARY_MODEL cannot override the legacy cached signature."""
+        body = "Summary\n*Assisted-by: PI (original)*"
+        with patch.dict(
+            "os.environ",
+            {"PI_COMMENT_SIGNATURE": "Assisted-by: PI (cached)", "PI_PRIMARY_MODEL": "parent/model"},
+            clear=True,
+        ):
+            assert append_signature(body) == body
 
     def test_removes_unresolved_footer_beside_valid_footer(self) -> None:
         """A template beside a valid footer must not trigger a second signature."""

@@ -37,7 +37,6 @@ Resolution behavior by source:
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import shlex
@@ -50,9 +49,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES
 
-log = logging.getLogger(__name__)
+log = create_logger(__name__)
 
 # Lazy reply patterns that indicate the AI didn't write a real response
 _INTERNAL_ISSUE_REFERENCE = re.compile(r"\binternal\s+(?:issue\s+)?#\d+\b", re.IGNORECASE)
@@ -306,6 +306,10 @@ def post_thread_reply(thread_id: str, body: str) -> bool:
     from myk_pi_tools.comment_signature import append_signature
 
     body = append_signature(body)
+    log.debug(
+        "Prepared signed review thread reply",
+        extra={"thread_id": thread_id, "operation_model_present": bool(os.environ.get("PI_MODEL"))},
+    )
     # GitHub comment bodies have a size limit (~65KB); truncate to avoid failures
     max_len = 60000
     if len(body) > max_len:

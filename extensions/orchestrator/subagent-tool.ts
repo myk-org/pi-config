@@ -485,7 +485,7 @@ export async function runSingleAgent(
         cwd: cwd,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, PI_SUBAGENT_CHILD: "1", PI_AGENT_NAME: agentName, PI_PRIMARY_MODEL: process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || "", __PI_CONFIG_SESSION_ID: (globalThis as any).__piConfigSessionId || "", __PI_PARENT_SESSION_ID: (globalThis as any).__piConfigSessionId || "" },
+        env: { ...process.env, PI_MODEL: effectiveModel || undefined, PI_SUBAGENT_CHILD: "1", PI_AGENT_NAME: agentName, PI_PRIMARY_MODEL: process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || "", __PI_CONFIG_SESSION_ID: (globalThis as any).__piConfigSessionId || "", __PI_PARENT_SESSION_ID: (globalThis as any).__piConfigSessionId || "" },
       });
       let buf = "";
 

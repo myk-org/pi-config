@@ -817,8 +817,8 @@ function bodyAlreadySigned(text: string): boolean {
   return false;
 }
 
-/** Keep the first standalone valid signature; discard placeholders and duplicates. */
-function normalizeGhBodyFooters(payload: string): string {
+/** Keep the first standalone valid footer, but use the current operation's model. */
+function normalizeGhBodyFooters(payload: string, signature: string): string {
   let signed = false;
   return payload.replace(ghSignatureLine, (block, _prefix: string, model: string) => {
     if (model.includes("PI_MODEL")) {
@@ -831,6 +831,10 @@ function normalizeGhBodyFooters(payload: string): string {
         return "";
       }
       signed = true;
+      if (`Assisted-by: PI (${model})` !== signature) {
+        enfLog.debug("injectGhBodySignature replaced stale footer", model);
+        return block.replace(`*Assisted-by: PI (${model})*`, `*${signature}*`);
+      }
     }
     return block;
   });
@@ -933,7 +937,7 @@ export function injectGhBodySignature(command: string, signature: string): strin
   }
 
   const payload = command.slice(span.open + 1, span.close);
-  const normalizedPayload = normalizeGhBodyFooters(payload);
+  const normalizedPayload = normalizeGhBodyFooters(payload, signature);
   if (normalizedPayload !== payload) {
     // Re-parse positions after cleanup so command-substitution heredocs still
     // receive their footer before the closing delimiter.

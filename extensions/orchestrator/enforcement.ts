@@ -389,7 +389,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     cachedTrailerSelection = null;
     // Set comment signature env var for CLI tools to read
     if (getSetting(ctx.cwd, "comment_signature")) {
-      const modelId = (process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || (ctx as any).model?.id || "unknown").replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() || "unknown";
+      const modelId = ((ctx as any).model?.id || process.env.PI_MODEL || process.env.PI_PRIMARY_MODEL || "unknown").replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() || "unknown";
       process.env.PI_COMMENT_SIGNATURE = `Assisted-by: PI (${modelId})`;
     } else {
       delete process.env.PI_COMMENT_SIGNATURE;
@@ -535,12 +535,12 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // comment_signature: inject Assisted-by footer into gh pr/issue create|comment|edit bodies
     if (getSetting(ctx.cwd, "comment_signature")) {
       const modelId = (
-        process.env.PI_PRIMARY_MODEL ||
-        process.env.PI_MODEL ||
         (ctx as any).model?.id ||
+        process.env.PI_MODEL ||
+        process.env.PI_PRIMARY_MODEL ||
         "unknown"
       ).replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() || "unknown";
-      const signature = process.env.PI_COMMENT_SIGNATURE || `Assisted-by: PI (${modelId})`;
+      const signature = `Assisted-by: PI (${modelId})`;
       const injected = injectGhBodySignature(event.input.command, signature);
       if (injected !== event.input.command) {
         log.info("comment_signature injected into gh body command", signature);

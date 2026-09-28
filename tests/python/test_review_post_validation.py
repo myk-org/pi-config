@@ -240,6 +240,29 @@ def test_split_http_response_does_not_parse_http_like_body_content() -> None:
     assert (headers, parsed_body, status) == ({"content-type": "text/plain"}, body, "200")
 
 
+def test_qodo_thread_reply_uses_operation_model_in_graphql(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """GraphQL Qodo replies replace stale session footers with the child model."""
+    monkeypatch.setenv("PI_COMMENT_SIGNATURE", "Assisted-by: PI (session-model)")
+    monkeypatch.setenv("PI_MODEL", "child/model")
+    monkeypatch.setenv("PI_PRIMARY_MODEL", "parent/model")
+    graphql = Mock(return_value=(True, {"data": {}}))
+    monkeypatch.setattr(post, "run_graphql", graphql)
+    body = "Fixed the Qodo finding.\r\n\r\n---\r\n*Assisted-by: PI (session-model)*"
+
+    with caplog.at_level("DEBUG", logger="myk_pi_tools.reviews.post"):
+        assert post.post_thread_reply("qodo-thread", body)
+
+    query, variables = graphql.call_args.args
+    assert "addPullRequestReviewThreadReply" in query
+    assert variables == {
+        "threadId": "qodo-thread",
+        "body": body.replace("(session-model)", "(child/model)"),
+    }
+    assert any(record.message == "Prepared signed review thread reply" for record in caplog.records)
+
+
 def test_run_allows_valid_linked_issue_spec_skip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A valid linked completed spec update passes validation and is posted."""
     review_file = _write_sticky_review(
