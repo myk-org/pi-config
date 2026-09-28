@@ -806,17 +806,34 @@ function commentSignatureFooter(signature: string): string {
   return `\n\n---\n*${signature}*`;
 }
 
+const ghSignatureModel = /^[\w:./+@-]+(?: [\w:./+@-]+)*$/;
+const ghSignatureLine = /(^|\n|\\n)(?:(?:\n|\\n)---(?:\n|\\n))?\*Assisted-by: PI \(([^\r\n]*?)\)\*(?=\r?\n|\\n|$)/g;
+
 function bodyAlreadySigned(text: string): boolean {
-  return /\*Assisted-by:/.test(text) || /(?:^|\n|\\n)Assisted-by:\s/.test(text);
+  const lines = text.matchAll(ghSignatureLine);
+  for (const line of lines) {
+    if (ghSignatureModel.test(line[2])) return true;
+  }
+  return false;
 }
 
-/** Unresolved model placeholders are stale template footers, not signatures. */
-function replaceUnresolvedModelFooters(payload: string): string {
-  const unresolvedFooter = /(?:\n|\\n){2}---(?:\n|\\n)\*Assisted-by: PI \((?:\$PI_MODEL|\$\{PI_MODEL(?::-unknown)?\})\)\*/g;
-  const replaced = payload.replace(unresolvedFooter, "");
-  if (replaced !== payload)
-    enfLog.debug("injectGhBodySignature replaced unresolved PI_MODEL footer");
-  return replaced;
+/** Keep the first standalone valid signature; discard placeholders and duplicates. */
+function normalizeGhBodyFooters(payload: string): string {
+  let signed = false;
+  return payload.replace(ghSignatureLine, (block, _prefix: string, model: string) => {
+    if (model.includes("PI_MODEL")) {
+      enfLog.debug("injectGhBodySignature removed unresolved PI_MODEL footer");
+      return "";
+    }
+    if (ghSignatureModel.test(model)) {
+      if (signed) {
+        enfLog.debug("injectGhBodySignature removed duplicate valid footer", model);
+        return "";
+      }
+      signed = true;
+    }
+    return block;
+  });
 }
 
 /** Index of the matching closer for a quote at `openIdx`, honoring POSIX escapes. */
@@ -829,6 +846,17 @@ function matchingQuoteIndex(s: string, openIdx: number): number | null {
     return close < 0 ? null : close;
   }
   for (let i = openIdx + 1; i < s.length; i++) {
+    if (s.startsWith("<<", i)) {
+      const opener = /^<<(-?)[ \t]*(['"]?)([\w-]+)\2[^\n]*\n/.exec(s.slice(i));
+      if (opener) {
+        const closer = new RegExp(String.raw`\n${opener[1] ? "\\t*" : ""}${opener[3]}\r?(?=\n|$)`).exec(s.slice(i + opener[0].length - 1));
+        if (closer) {
+          enfLog.debug("matchingQuoteIndex skip heredoc", opener[3]);
+          i += opener[0].length - 1 + closer.index + closer[0].length - 1;
+          continue;
+        }
+      }
+    }
     if (s[i] === "\\") {
       i++;
       continue;
@@ -873,7 +901,7 @@ function lastHeredocInSpan(
   spanStart: number,
   spanEnd: number,
 ): RegExpExecArray | null {
-  const heredocRe = /<<(?:-)?\s*(['"]?)(\w+)\1[^\n]*\n([\s\S]*?)\n([ \t]*)\2\s*(?=\n|$)/g;
+  const heredocRe = /<<-?[ \t]*(['"]?)([\w-]+)\1[^\n]*\n([\s\S]*?)\n([ \t]*)\2\r?(?=\n|$)/g;
   let last: RegExpExecArray | null = null;
   let m: RegExpExecArray | null;
   while ((m = heredocRe.exec(command)) !== null) {
@@ -905,9 +933,9 @@ export function injectGhBodySignature(command: string, signature: string): strin
   }
 
   const payload = command.slice(span.open + 1, span.close);
-  const normalizedPayload = replaceUnresolvedModelFooters(payload);
+  const normalizedPayload = normalizeGhBodyFooters(payload);
   if (normalizedPayload !== payload) {
-    // Re-parse positions after removal so command-substitution heredocs still
+    // Re-parse positions after cleanup so command-substitution heredocs still
     // receive their footer before the closing delimiter.
     const normalizedCommand = command.slice(0, span.open + 1) + normalizedPayload + command.slice(span.close);
     return injectGhBodySignature(normalizedCommand, signature);
@@ -925,7 +953,9 @@ export function injectGhBodySignature(command: string, signature: string): strin
     const closeIdx = last.index + last[0].lastIndexOf(closeToken);
     if (closeIdx >= last.index) {
       enfLog.debug("injectGhBodySignature heredoc in --body", delim);
-      return command.slice(0, closeIdx) + footer + command.slice(closeIdx);
+      const crlf = command[closeIdx - 1] === "\r";
+      const insertAt = crlf ? closeIdx - 1 : closeIdx;
+      return command.slice(0, insertAt) + (crlf ? footer.replaceAll("\n", "\r\n") : footer) + command.slice(insertAt);
     }
   }
 
