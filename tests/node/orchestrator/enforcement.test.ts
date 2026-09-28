@@ -1740,6 +1740,36 @@ describe("isRealGhBodyCommand", () => {
 });
 
 describe("injectGhBodySignature", () => {
+  it("preserves a signed CRLF quoted body without duplicating its footer", () => {
+    const cmd = 'gh pr create --body "Summary\r\n\r\n---\r\n*Assisted-by: PI (gpt-6-luna)*\r\n"';
+    assert.equal(injectGhBodySignature(cmd, SIG), cmd);
+    assert.equal((injectGhBodySignature(cmd, SIG).match(/Assisted-by:/g) ?? []).length, 1);
+  });
+
+  it("preserves a signed CRLF heredoc body", () => {
+    const cmd = `gh pr create --body "$(cat <<'EOF'\r\nSummary\r\n\r\n---\r\n*Assisted-by: PI (gpt-6-luna)*\r\nEOF\r\n)"`;
+    assert.equal(injectGhBodySignature(cmd, SIG), cmd);
+  });
+
+  it("places an unsigned CRLF heredoc footer before its closer", () => {
+    const cmd = `gh pr create --body "$(cat <<'EOF'\r\nSummary\r\nEOF\r\n)"`;
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, `gh pr create --body "$(cat <<'EOF'\r\nSummary${FOOTER.replaceAll("\n", "\r\n")}\r\nEOF\r\n)"`);
+    assert.equal((out.match(/Assisted-by:/g) ?? []).length, 1);
+  });
+
+  it("preserves a signed hyphenated heredoc with double quotes in its body", () => {
+    const cmd = `gh pr create --body "$(cat <<'EOF-1'\nSummary says "hello"\nEOF-1 is not the closer\n${FOOTER}\nEOF-1\n)"`;
+    assert.equal(injectGhBodySignature(cmd, SIG), cmd);
+    assert.equal((injectGhBodySignature(cmd, SIG).match(/Assisted-by:/g) ?? []).length, 1);
+  });
+
+  it("inserts one footer before the actual hyphenated heredoc closer", () => {
+    const cmd = `gh pr create --body "$(cat <<'EOF-1'\nSummary says "hello"\nEOF-1 is not the closer\nEOF-1\n)"`;
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, `gh pr create --body "$(cat <<'EOF-1'\nSummary says "hello"\nEOF-1 is not the closer${FOOTER}\nEOF-1\n)"`);
+    assert.equal((out.match(/Assisted-by:/g) ?? []).length, 1);
+  });
   it("appends footer before heredoc closer on gh pr create", () => {
     const cmd = "gh pr create --title \"t\" --body \"$(cat <<'EOF'\n## Summary\nhello\nEOF\n)\"";
     const out = injectGhBodySignature(cmd, SIG);
@@ -1784,6 +1814,65 @@ describe("injectGhBodySignature", () => {
     const out = injectGhBodySignature(cmd, SIG);
     assert.equal(out, `gh issue create --body "hello${FOOTER}"`);
     assert.equal((out.match(/Assisted-by:/g) ?? []).length, 1);
+  });
+
+  it("removes the PR260 placeholder beside a valid footer in a create heredoc", () => {
+    const placeholder = `*Assisted-by: PI ('"\${PI_MODEL:-unknown}"')*`;
+    const existing = "*Assisted-by: PI (gpt-6-luna)*";
+    const cmd = `gh pr create --body "$(cat <<'EOF'\nSummary\n\n---\n${placeholder}\n\n---\n${existing}\nEOF\n)"`;
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal((out.match(/\*Assisted-by: PI \([\w:.-]+\)\*/g) ?? []).length, 1);
+    assert.ok(out.includes(existing));
+    assert.ok(!out.includes("PI_MODEL"));
+  });
+
+  it("keeps the signed body intact when a heredoc line starts with its delimiter", () => {
+    const cmd = `gh pr create --body "$(cat <<'EOF'\nSummary\nEOF is an "example"\n${FOOTER}\nEOF\n)"`;
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, cmd);
+    assert.equal((out.match(/\*Assisted-by: PI \([^\n]*\)\*/g) ?? []).length, 1);
+  });
+
+  it("deduplicates identical valid footers in an edit heredoc", () => {
+    const existing = "*Assisted-by: PI (gpt-6-luna)*";
+    const cmd = `gh pr edit 1 --body "$(cat <<'EOF'\nSummary\n\n---\n${existing}\n\n---\n${existing}\nEOF\n)"`;
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal((out.match(/\*Assisted-by: PI \(gpt-6-luna\)\*/g) ?? []).length, 1);
+    assert.equal((out.match(/\*Assisted-by: PI \([^\n]*\)\*/g) ?? []).length, 1);
+  });
+
+  it("resolves a standalone PR260 placeholder in a create heredoc", () => {
+    const placeholder = `*Assisted-by: PI ('"\${PI_MODEL:-unknown}"')*`;
+    const cmd = `gh pr create --body "$(cat <<'EOF'\nSummary\n\n---\n${placeholder}\nEOF\n)"`;
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.ok(!out.includes("PI_MODEL"));
+    assert.match(out, /\*Assisted-by: PI \(cursor:cursor-grok-4\.6-high\)\*\nEOF/);
+    assert.equal((out.match(/\*Assisted-by: PI \([^\n]*\)\*/g) ?? []).length, 1);
+  });
+
+  it("keeps only the first of two standalone signatures without separators, leaving prose intact", () => {
+    const first = "*Assisted-by: PI (gpt-6-luna)*";
+    const second = "*Assisted-by: PI (cursor:second)*";
+    const cmd = `gh pr edit 1 --body "$(cat <<'EOF'\nSummary\n${first}\nordinary prose with ${second} inline\n${second}\nEOF\n)"`;
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, `gh pr edit 1 --body "$(cat <<'EOF'\nSummary\n${first}\nordinary prose with ${second} inline\nEOF\n)"`);
+  });
+
+  it("recognizes a runtime model ID containing a slash and spaces without adding another signature", () => {
+    const existing = "*Assisted-by: PI (openai/gpt 6 preview)*";
+    const cmd = `gh pr create --body 'Summary\n${existing}'`;
+    assert.equal(injectGhBodySignature(cmd, SIG), cmd);
+  });
+
+  it("replaces a standalone quoted literal placeholder without a separator", () => {
+    const cmd = `gh pr create --body "$(cat <<'EOF'\nSummary\n*Assisted-by: PI ('"\${PI_MODEL:-unknown}"')*\nEOF\n)"`;
+    const out = injectGhBodySignature(cmd, SIG);
+    assert.equal(out, `gh pr create --body "$(cat <<'EOF'\nSummary${FOOTER}\nEOF\n)"`);
+  });
+
+  it("preserves a lone valid footer for a different model", () => {
+    const cmd = 'gh pr create --body "hello\n\n---\n*Assisted-by: PI (gpt-6-luna)*"';
+    assert.equal(injectGhBodySignature(cmd, SIG), cmd);
   });
 
   it("skips when Assisted-by already present in body", () => {
