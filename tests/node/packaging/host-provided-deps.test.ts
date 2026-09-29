@@ -11,8 +11,12 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createLogger } from "../../../extensions/shared/logger.ts";
 
-const repoRoot = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..");
+const log = createLogger("packaging-test");
+
+// tests/node/packaging -> repo root
+const repoRoot = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "..");
 
 /** Mirrors HOST_PROVIDED_EXTENSION_PACKAGES in pi's resource-loader. */
 const HOST_PROVIDED = new Set([
@@ -46,6 +50,7 @@ const PACKAGES: PackageUnderTest[] = [
 function importedHostPackages(sources: string[]): Set<string> {
 	const found = new Set<string>();
 	for (const source of sources) {
+		log.debug("scanning package sources", { source, repoRoot });
 		for (const entry of readdirSync(join(repoRoot, source), {
 			recursive: true,
 			encoding: "utf-8",
@@ -58,10 +63,14 @@ function importedHostPackages(sources: string[]): Set<string> {
 			const code = readFileSync(join(parent, entry.name), "utf-8");
 			for (const match of code.matchAll(IMPORT_RE)) {
 				const specifier = match[1];
-				if (HOST_PROVIDED.has(specifier)) found.add(specifier);
+				if (HOST_PROVIDED.has(specifier)) {
+					log.debug("found host-provided import", { specifier, file: join(parent, entry.name) });
+					found.add(specifier);
+				}
 			}
 		}
 	}
+	log.info("package source scan complete", { sources, hostProvided: [...found] });
 	return found;
 }
 
