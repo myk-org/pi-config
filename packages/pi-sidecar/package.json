@@ -27,7 +27,6 @@
   "files": [
     "dist",
     "scripts",
-    "npm-shrinkwrap.json",
     "!dist/*.whl",
     "!dist/*.tar.gz"
   ],
