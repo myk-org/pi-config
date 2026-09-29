@@ -36,6 +36,7 @@
   },
   "scripts": {
     "test": "vitest --run",
+    "test:integration": "VERTEX_CLAUDE_INTEGRATION=1 vitest --run",
     "test:watch": "vitest"
   },
   "dependencies": {

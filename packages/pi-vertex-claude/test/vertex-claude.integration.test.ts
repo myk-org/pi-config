@@ -14,7 +14,19 @@ function hasAdcCredentials(): boolean {
 
 const project = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
 const location = process.env.GOOGLE_CLOUD_LOCATION || process.env.CLOUD_ML_REGION;
-const shouldRun = !!project && !!location && hasAdcCredentials();
+
+/**
+ * This test makes a real, billable call to Vertex AI. It must never run merely
+ * because a developer happens to have GCP configured in their shell — an
+ * ambient `GOOGLE_CLOUD_PROJECT` plus ADC credentials is not consent to spend
+ * money or to depend on live service state.
+ *
+ * Opt in explicitly:
+ *   VERTEX_CLAUDE_INTEGRATION=1 npx vitest --run
+ * or `npm run test:integration` in this package.
+ */
+const optedIn = process.env.VERTEX_CLAUDE_INTEGRATION === "1";
+const shouldRun = optedIn && !!project && !!location && hasAdcCredentials();
 
 describe.skipIf(!shouldRun)("Vertex Claude integration (ADC)", () => {
 	beforeAll(async () => {
