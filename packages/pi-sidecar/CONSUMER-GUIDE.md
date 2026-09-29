@@ -11,6 +11,31 @@ service if either is older.
 
 ## Installation
 
+### Version alignment
+
+Keep the npm package and the Python client on the **same version**. They are released together
+and share one version number:
+
+| Package | Registry |
+|---|---|
+| `@myk-org/pi-sidecar` | npm |
+| `pi-sidecar-client` | PyPI |
+| `pi-orchestrator-config` | npm |
+
+Bump both when you bump either. A half-applied bump changes one runtime's dependency graph and
+leaves the other stale, and nothing errors — the versions simply disagree.
+
+Use a **range**, never an exact pin. An exact pin never moves on its own, so consumers stay on
+vulnerable versions indefinitely and no upstream fix can ever reach them.
+
+```json
+"@myk-org/pi-sidecar": ">=4.6.5"
+```
+
+```toml
+"pi-sidecar-client>=4.6.5"
+```
+
 ### Node.js (TypeScript server wrapper)
 
 Create a `sidecar-helper/` directory in your project:
@@ -22,14 +47,49 @@ npm init -y
 npm install @myk-org/pi-sidecar
 ```
 
+### Re-resolving after a version bump
+
+**Delete the lockfile. Refreshing it is not sufficient.**
+
+```bash
+cd sidecar-helper
+rm -rf node_modules package-lock.json
+npm install
+```
+
+A plain `npm install` — including `rm -rf node_modules && npm install` with the lockfile left in
+place — does **not** re-resolve. npm treats existing lockfile entries as still satisfying their
+ranges and preserves them. The result reads like a successful bump while the tree underneath is
+unchanged, so it audits like the pre-bump world. Automated dependency bots that update a lockfile
+incrementally hit exactly this.
+
+This is how a stale tree survived across a manifest fix: the declaration was corrected, the
+lockfile that overrode it was not.
+
+Verify the resolved tree rather than trusting the version you asked for:
+
+```bash
+npm ls @myk-org/pi-sidecar pi-orchestrator-config @huggingface/transformers sharp adm-zip --all
+```
+
+Every `sharp` and `adm-zip` should be on a patched version, and `npm ls` must report no
+`invalid` or `extraneous` entries. A nested `sharp` flagged `extraneous` is a leftover from a
+previous resolution, not a harmless extra.
+
 ### Python client
 
 ```bash
-# In your project's pyproject.toml dependencies:
-"pi-sidecar-client>=4.2.0"
+# In your project's pyproject.toml dependencies — keep in step with the npm package:
+"pi-sidecar-client>=4.6.5"
 
 # Or install directly:
 uv add pi-sidecar-client
+```
+
+Then regenerate the Python lock so the client actually moves:
+
+```bash
+uv lock
 ```
 
 ## Project Structure
