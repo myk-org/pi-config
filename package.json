@@ -59,11 +59,14 @@
     "skills/",
     "settings-keys.json"
   ],
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
   "dependencies": {
-    "@earendil-works/pi-agent-core": ">=0.87.0",
-    "@earendil-works/pi-ai": ">=0.87.0",
-    "@earendil-works/pi-coding-agent": ">=0.87.0",
-    "@earendil-works/pi-tui": ">=0.87.0",
     "@huggingface/transformers": "^4.2.0",
     "acpx": ">=0.12.0 <1",
     "chokidar": "^5.0.0",
