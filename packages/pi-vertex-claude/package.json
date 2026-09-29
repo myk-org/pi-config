@@ -48,7 +48,7 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.11"
   },
   "overrides": {
     "google-auth-library": "^10.0.0"
