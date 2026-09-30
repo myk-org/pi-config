@@ -306,6 +306,16 @@
 <code>url</code>/<code>headers</code>/<code>oauth</code> means streamable HTTP. The legacy SSE transport is not supported.
 <code>${VAR}</code> in a value expands from the environment.</p>
 <p>After editing <code>mcp.json</code>, run <code>/mcp</code> to reconnect, or restart pi.</p>
+<h3 id="upgrading-from-the-mcpc-bridge">Upgrading from the <code>mcpc</code> bridge</h3>
+<p>Before pi 0.99, pi-config reached MCP through the external <code>mcpc</code> binary, which read
+<code>~/.pi/pi-config/mcp.json</code>. <code>builtin:mcp</code> reads <code>~/.pi/agent/mcp.json</code> instead, so an
+existing install would upgrade to a pi that finds no servers at all — silently, with no
+error to look for.</p>
+<p>pi-config copies the file across for you at startup, and only when
+<code>~/.pi/agent/mcp.json</code> does not already exist. Your existing <code>~/.pi/agent/mcp.json</code> is
+never overwritten, and the old file is left in place for you to delete whenever you
+like. The copy is logged to <code>~/.pi/logs/mcp-config-migration/</code>; if it fails, the reason
+is in there and you can copy the file by hand.</p>
 <h2 id="managing-servers">Managing servers</h2>
 <table>
 <thead>
@@ -440,7 +450,10 @@ not <code>hidden</code>, and take the widest exposure among them.</p>
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#configuration">Configuration</a></li>
+<li><a href="#configuration">Configuration</a><ul>
+<li><a href="#upgrading-from-the-mcpc-bridge">Upgrading from the mcpc bridge</a></li>
+</ul>
+</li>
 <li><a href="#managing-servers">Managing servers</a></li>
 <li><a href="#how-tools-reach-the-model">How tools reach the model</a></li>
 <li><a href="#calling-a-tool">Calling a tool</a></li>

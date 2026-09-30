@@ -41,6 +41,7 @@ import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./uti
 import { createLogger } from "../shared/logger.js";
 import { registerBackgroundModel } from "../shared/background-model.js";
 import { registerProviderStreamLog } from "../shared/provider-stream-log.js";
+import { migrateMcpConfig } from "../shared/mcp-config-migration.js";
 import { setGlobalSessionId } from "../shared/file-logger.js";
 
 const IN_CONTAINER = isRunningInContainer();
@@ -120,6 +121,8 @@ export default function (pi: ExtensionAPI) {
   registerMarkdownTransformer(pi);
   // Raw provider stream logging — gated on `log_providers=debug` (#848).
   registerProviderStreamLog(pi);
+  // Copy a pre-#848 `~/.pi/pi-config/mcp.json` to where builtin:mcp reads it (#848).
+  migrateMcpConfig();
 
   // ── list_models tool — LLM-callable model discovery ──
   pi.registerTool({

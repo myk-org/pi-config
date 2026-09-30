@@ -419,6 +419,44 @@ export PI_ASYNC_LLM_MODEL=gpt-5.4
 
 See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details.
 
+### `background_virtual_model_enable`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `background_virtual_model_enable` | boolean | `false` | `PI_BACKGROUND_VIRTUAL_MODEL_ENABLE` | Register the `pi-bg/auto` virtual model and route background work through it (requires pi >= 0.99.0). | Background work starts on `internal_operations_model` instead of inheriting the parent model's interactive model. Stays on that model for the rest of the session, so the prompt cache and thinking signatures survive. |
+
+```json
+{
+  "background_virtual_model_enable": true,
+  "internal_operations_provider": "anthropic",
+  "internal_operations_model": "claude-haiku-4-5"
+}
+```
+
+```bash
+export PI_BACKGROUND_VIRTUAL_MODEL_ENABLE=true
+```
+
+> **Warning:** `internal_operations_provider` and `internal_operations_model` must be set, and the model must have credentials, or the router has nothing to send the first request to and falls back to a model the session can already reach.
+
+This is an experimental pi API. The setting defaults to off, is ignored on pi versions before 0.99, and is a no-op on those versions rather than an error. If routing cannot resolve a model it falls back to the one already answering, so a background task never fails because of it.
+
+## Provider Stream Logging
+
+### `log_providers`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `log_providers` | string | `info` | `PI_LOG_PROVIDERS` | Log level for the provider diagnostics namespace. | Set to `debug` to capture every parsed provider stream event, which is how a misbehaving provider is diagnosed from the stream rather than reconstructed from rendered output. |
+
+```bash
+export PI_LOG_PROVIDERS=debug
+```
+
+The stream is written to `~/.pi/logs/providers/<session-id>/main.log` under a `[provider-stream]` prefix, with one line per event and credential-shaped fields redacted. Capturing every event has a real cost, so the hook only registers at `debug` and costs nothing at the default level.
+
+See [Configuration](configuration.html) for the full settings reference.
+
 ## Environment-only Process Flag
 
 ### `PI_SUBAGENT_CHILD`

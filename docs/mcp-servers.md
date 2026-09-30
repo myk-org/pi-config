@@ -32,6 +32,19 @@ pi infers the transport from the keys present: `command`/`args`/`env`/`cwd` mean
 
 After editing `mcp.json`, run `/mcp` to reconnect, or restart pi.
 
+### Upgrading from the `mcpc` bridge
+
+Before pi 0.99, pi-config reached MCP through the external `mcpc` binary, which read
+`~/.pi/pi-config/mcp.json`. `builtin:mcp` reads `~/.pi/agent/mcp.json` instead, so an
+existing install would upgrade to a pi that finds no servers at all — silently, with no
+error to look for.
+
+pi-config copies the file across for you at startup, and only when
+`~/.pi/agent/mcp.json` does not already exist. Your existing `~/.pi/agent/mcp.json` is
+never overwritten, and the old file is left in place for you to delete whenever you
+like. The copy is logged to `~/.pi/logs/mcp-config-migration/`; if it fails, the reason
+is in there and you can copy the file by hand.
+
 ## Managing servers
 
 | Command | Purpose |

@@ -1083,6 +1083,72 @@
 <p><strong>Warning:</strong> <code>async_llm_provider</code> cannot be an <code>acpx-*</code> provider ID.</p>
 </blockquote>
 <p>See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details.</p>
+<h3 id="background_virtual_model_enable"><code>background_virtual_model_enable</code></h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>background_virtual_model_enable</code></td>
+<td>boolean</td>
+<td><code>false</code></td>
+<td><code>PI_BACKGROUND_VIRTUAL_MODEL_ENABLE</code></td>
+<td>Register the <code>pi-bg/auto</code> virtual model and route background work through it (requires pi &gt;= 0.99.0).</td>
+<td>Background work starts on <code>internal_operations_model</code> instead of inheriting the parent model's interactive model. Stays on that model for the rest of the session, so the prompt cache and thinking signatures survive.</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"background_virtual_model_enable"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"internal_operations_provider"</span><span class="p">:</span><span class="w"> </span><span class="s2">"anthropic"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"internal_operations_model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"claude-haiku-4-5"</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_BACKGROUND_VIRTUAL_MODEL_ENABLE</span><span class="o">=</span><span class="nb">true</span>
+</code></pre></div>
+
+<blockquote>
+<p><strong>Warning:</strong> <code>internal_operations_provider</code> and <code>internal_operations_model</code> must be set, and the model must have credentials, or the router has nothing to send the first request to and falls back to a model the session can already reach.</p>
+</blockquote>
+<p>This is an experimental pi API. The setting defaults to off, is ignored on pi versions before 0.99, and is a no-op on those versions rather than an error. If routing cannot resolve a model it falls back to the one already answering, so a background task never fails because of it.</p>
+<h2 id="provider-stream-logging">Provider Stream Logging</h2>
+<h3 id="log_providers"><code>log_providers</code></h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>log_providers</code></td>
+<td>string</td>
+<td><code>info</code></td>
+<td><code>PI_LOG_PROVIDERS</code></td>
+<td>Log level for the provider diagnostics namespace.</td>
+<td>Set to <code>debug</code> to capture every parsed provider stream event, which is how a misbehaving provider is diagnosed from the stream rather than reconstructed from rendered output.</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_LOG_PROVIDERS</span><span class="o">=</span>debug
+</code></pre></div>
+
+<p>The stream is written to <code>~/.pi/logs/providers/&lt;session-id&gt;/main.log</code> under a <code>[provider-stream]</code> prefix, with one line per event and credential-shaped fields redacted. Capturing every event has a real cost, so the hook only registers at <code>debug</code> and costs nothing at the default level.</p>
+<p>See <a href="configuration.html">Configuration</a> for the full settings reference.</p>
 <h2 id="environment-only-process-flag">Environment-only Process Flag</h2>
 <h3 id="pi_subagent_child"><code>PI_SUBAGENT_CHILD</code></h3>
 <table>
@@ -1178,6 +1244,11 @@
 <li><a href="#dream_interval_hours">dream_interval_hours</a></li>
 <li><a href="#async_llm_provider">async_llm_provider</a></li>
 <li><a href="#async_llm_model">async_llm_model</a></li>
+<li><a href="#background_virtual_model_enable">background_virtual_model_enable</a></li>
+</ul>
+</li>
+<li><a href="#provider-stream-logging">Provider Stream Logging</a><ul>
+<li><a href="#log_providers">log_providers</a></li>
 </ul>
 </li>
 <li><a href="#environment-only-process-flag">Environment-only Process Flag</a><ul>
