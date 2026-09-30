@@ -189,14 +189,23 @@ def _find_uv_workspace_members(root: Path) -> list[Path]:
     try:
         with pyproject.open("rb") as fh:
             data = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        # Not fatal: the other scans still run. Say so, because a silently
+        # skipped uv workspace is how a member's version stopped tracking a
+        # release in the first place.
+        print(f"Could not read {pyproject} for uv workspace members: {exc}", file=sys.stderr)
         return []
     members = data.get("tool", {}).get("uv", {}).get("workspace", {}).get("members", [])
     if not isinstance(members, list):
+        print(
+            f"Ignoring [tool.uv.workspace] members in {pyproject}: expected a list, got {type(members).__name__}",
+            file=sys.stderr,
+        )
         return []
     found: list[Path] = []
     for pattern in members:
         if not isinstance(pattern, str):
+            print(f"Ignoring non-string uv workspace member in {pyproject}: {pattern!r}", file=sys.stderr)
             continue
         for match in sorted(glob.glob(str(root / pattern))):
             if Path(match).is_dir():
