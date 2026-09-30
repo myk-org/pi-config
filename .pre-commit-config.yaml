@@ -1,10 +1,11 @@
 ---
-# Python 3.13 for the hook environments. The project requires >= 3.14, but
-# scripts/install.py is the bootstrap installer and declares >= 3.10, and the
-# published pi-sidecar-client has its own floor; both must stay parseable on
-# older interpreters, which is also why ruff's target-version is py313.
+# Build hook environments with whatever `python3` is on PATH. Naming an exact
+# minor (python3.13) makes env creation fail on any machine that does not have
+# that exact interpreter. Pinning a version is unnecessary anyway: ruff's
+# target-version is py313, so nothing the hooks read can use syntax that needs
+# more than an older interpreter to parse.
 default_language_version:
-  python: python3.13
+  python: python3
 
 ci:
   autofix_prs: false

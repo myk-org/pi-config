@@ -33,6 +33,10 @@
       indexError = err;
       console.error('[docs] search index unavailable:', err,
         '— serve the site over HTTP, or build it with the search index inlined.');
+      // Same reason as the success path: a query typed while the request was
+      // pending would otherwise stay on "Loading search index..." forever, now
+      // that the request has failed.
+      if (typeof render === 'function' && input.value.trim()) render();
     });
   }
 

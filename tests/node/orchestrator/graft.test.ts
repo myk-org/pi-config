@@ -545,19 +545,33 @@ describe("Graft paths and status", () => {
     assert.deepEqual(command.calls, []);
   });
 
-  it("stays fully inert outside a worktree: no tools, no subprocess", async () => {
+  it("stays fully inert outside a worktree", async () => {
+    const r = await startInert();
+    assert.deepEqual(r.ctx.status.at(-1), { key: "4b-graft", text: "◤ graft · n/a" });
+  });
+
+  it("registers no graft tools outside a worktree", async () => {
+    // With state.enabled set before the worktree check, the
+    // resolveWorktreeRoot===state.root guards pass (both are the cwd) and the
+    // integration stays live, so these tools exist and answer.
+    const r = await startInert();
+    assert.equal(r.mock.tools.size, 0, "no graft tools may be registered");
+  });
+
+  it("runs no graft subprocess outside a worktree", async () => {
+    // A prompt in a plain directory otherwise spawned a graft check every turn.
+    const r = await startInert();
+    assert.deepEqual(r.command.calls, [], "no graft subprocess may run");
+  });
+
+  /** Session start in a cwd that is not a git worktree. */
+  async function startInert() {
     const mock = mockPi(); const command = runner([]);
     graft.createGraftIntegration({ enabled: true, worktree: () => null, run: command.run }).register(mock.pi as any);
     const c = ctx();
     await mock.handlers.get("session_start")![0]({ reason: "startup" }, c);
-
-    assert.deepEqual(c.status.at(-1), { key: "4b-graft", text: "◤ graft · n/a" });
-    // The tools must not exist at all: with state.enabled set before the
-    // worktree check, the resolveWorktreeRoot===state.root guards pass (both are
-    // the cwd) and a read could flip the footer to "synced" and spawn graft.
-    assert.equal(mock.tools.size, 0, "no graft tools may be registered");
-    assert.deepEqual(command.calls, [], "no graft subprocess may run");
-  });
+    return { mock, command, ctx: c };
+  }
 
   it("treats a repo with no graph yet as absent rather than failed", async () => {
     const r = register({ graph: async () => "absent", executable: async () => true });

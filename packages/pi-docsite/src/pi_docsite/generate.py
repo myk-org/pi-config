@@ -56,6 +56,32 @@ def _discover_repo_url(docs_dir: Path) -> str:
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
+def _web_url(remote: str) -> str:
+    """Turn a git remote into a URL a browser can open.
+
+    Most remotes are SSH -- ``git@github.com:owner/repo.git`` -- which is not a
+    web URL. It also passed the renderer's scheme-less allowance, so the badge
+    rendered ``href="git@github.com:owner/repo.git"`` and the repository link
+    with it. Convert to https; return "" for anything unrecognised so the caller
+    falls back rather than emitting something broken.
+    """
+    remote = remote.strip()
+    if not remote:
+        return ""
+    scp = re.match(r"^(?:[\w.-]+@)?([\w.-]+):(?!\d)(.+)$", remote)
+    if scp and "://" not in remote:
+        host, path = scp.group(1), scp.group(2)
+        return f"https://{host}/{path.removesuffix('.git')}"
+    if "://" in remote:
+        scheme, rest = remote.split("://", 1)
+        if scheme in {"http", "https", "git", "ssh"}:
+            # Drop any userinfo (git@) and force https: a browser cannot use
+            # git:// or ssh://, and neither is a web URL.
+            rest = rest.rsplit("@", 1)[-1]
+            return f"https://{rest.removesuffix('.git')}"
+    return ""
+
+
 def _project_name_from_url(url: str, docs_dir: Path) -> str:
     if url:
         name = url.rstrip("/").removesuffix(".git").rsplit("/", 1)[-1]
@@ -266,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"No docs directory at {DOCS_DIR}")
     # Identity follows --docs-dir, not the script's own location: when vendored,
     # or when docs live outside the repo, the docs directory is the truth.
-    REPO_URL = args.repo_url if args.repo_url is not None else _discover_repo_url(DOCS_DIR)
+    REPO_URL = args.repo_url if args.repo_url is not None else _web_url(_discover_repo_url(DOCS_DIR))
     PROJECT_NAME = args.project_name or _project_name_from_url(REPO_URL, DOCS_DIR)
     TAGLINE = args.tagline
 
