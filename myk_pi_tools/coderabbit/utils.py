@@ -58,7 +58,7 @@ def find_summary_comment(owner_repo: str, pr_number: int) -> tuple[int | None, s
         if comment_id is None or body is None:
             return None, None, None, "No CodeRabbit summary comment found on this PR"
         return comment_id, body, updated_at, ""
-    except (json.JSONDecodeError, KeyError):
+    except json.JSONDecodeError, KeyError:
         return None, None, None, "Failed to parse CodeRabbit comment data"
 
 

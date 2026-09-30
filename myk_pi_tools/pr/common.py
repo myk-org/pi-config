@@ -98,7 +98,7 @@ def parse_args(args: list[str], command_name: str, docstring: str | None = None)
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            except (subprocess.CalledProcessError, ValueError):
+            except subprocess.CalledProcessError, ValueError:
                 print(
                     "Error: Could not determine repository. Run from a git repo or provide full URL.",
                     file=sys.stderr,

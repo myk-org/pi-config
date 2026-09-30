@@ -150,7 +150,7 @@ def _load_scores(topics_dir: Path) -> dict:
         return {}
     try:
         data = json.loads(scores_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {}
     entries = data.get("entries")
     return entries if isinstance(entries, dict) else {}

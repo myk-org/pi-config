@@ -385,7 +385,7 @@ def lookup_thread_id_from_node_id(node_id: str) -> str | None:
     try:
         thread_id = result["data"]["node"]["pullRequestReviewThread"]["id"]
         return thread_id if thread_id else None
-    except (KeyError, TypeError):
+    except KeyError, TypeError:
         return None
 
 
@@ -678,7 +678,7 @@ def run(json_path: str) -> None:
     try:
         with open(json_path_obj, encoding="utf-8") as f:
             data = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         eprint(f"Error: Invalid JSON file: {json_path}")
         sys.exit(1)
 

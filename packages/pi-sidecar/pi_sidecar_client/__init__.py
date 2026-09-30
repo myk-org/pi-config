@@ -315,7 +315,7 @@ class SidecarClient:
                 "models": data["models"],
                 "modelListingSupported": data["modelListingSupported"],
             }
-        except (ValueError, KeyError, TypeError):
+        except ValueError, KeyError, TypeError:
             logger.error("API key model discovery returned invalid response")
             raise RuntimeError("Sidecar API key model discovery returned invalid response") from None
         logger.debug(
@@ -343,7 +343,7 @@ class SidecarClient:
         logger.info("Model refresh complete: %d models available", len(models))
         return models
 
-    async def get_model_provider_status(self: "SidecarClient", provider: str) -> dict:
+    async def get_model_provider_status(self: SidecarClient, provider: str) -> dict:
         """Get registration, model count, and auth status for a single provider.
 
         Args:
@@ -551,7 +551,7 @@ class SidecarClient:
         resp.raise_for_status()
         logger.debug("Session deleted: %s", session_id)
 
-    async def __aenter__(self) -> "SidecarClient":
+    async def __aenter__(self) -> SidecarClient:
         if self._closed:
             raise RuntimeError("SidecarClient is already closed")
         return self

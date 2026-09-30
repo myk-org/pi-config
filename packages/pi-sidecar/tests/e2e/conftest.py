@@ -130,7 +130,7 @@ def _kill_build_process_tree(proc: subprocess.Popen[bytes]) -> None:
             )
         else:
             proc.kill()
-    except (ProcessLookupError, OSError):
+    except ProcessLookupError, OSError:
         logger.warning("failed to kill npm build process tree pid=%s", proc.pid, exc_info=True)
     try:
         proc.wait(timeout=5)

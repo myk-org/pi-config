@@ -129,7 +129,7 @@ def _run_command(cmd: list[str], capture_stderr: bool = False, timeout: int = 60
         if capture_stderr and result.returncode != 0:
             output = result.stderr.strip()
         return result.returncode, output
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except FileNotFoundError, subprocess.TimeoutExpired:
         return 1, ""
 
 

@@ -112,7 +112,7 @@ def _bump_setup_cfg(filepath: Path, new_version: str) -> str | None:
     try:
         config.read_string(content)
         old_version = config.get("metadata", "version")
-    except (configparser.NoSectionError, configparser.NoOptionError, configparser.Error):
+    except configparser.NoSectionError, configparser.NoOptionError, configparser.Error:
         return None
     old_version = old_version.strip().strip("\"'")
     # Skip dynamic version directives (attr:, file:)

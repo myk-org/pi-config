@@ -94,7 +94,7 @@ def post_and_wait_for_qodo_reply(
                     post_dt = datetime.fromisoformat(post_time.replace("Z", "+00:00"))
                     if created_dt <= post_dt:
                         continue
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     continue
                 body = comment.get("body", "")
                 if all(line in body for line in match_lines):
