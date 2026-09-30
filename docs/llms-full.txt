@@ -14,8 +14,10 @@ Get pi-config installed, configure your project, start the local daemons, and ru
 
 - Node.js (>= 22)
 - Git installed and configured
-- `pi` (install with `npm install -g @earendil-works/pi-coding-agent`)
+- `pi` >= 0.99.0 (install with `npm install -g @earendil-works/pi-coding-agent`)
 - `uv` (Python package manager)
+
+> **Note:** pi-config requires pi **0.99.0 or newer**. On an older version, CLI/ACPX providers stay unregistered and pi warns on session start.
 
 ## Quick Example
 
@@ -33,21 +35,26 @@ Get pi-config installed, configure your project, start the local daemons, and ru
 
 ### 1. Install pi-config and tooling
 
-Run the interactive installer from a pi-config checkout:
+Install the pi package (no git clone needed):
 
 ```bash
-    uv run scripts/install.py
+    pi install npm:pi-orchestrator-config
+    uv tool install myk-pi-tools
 ```
 
-Follow the prompts to select packages (orchestrator, CLI tools, browser automation, gitignore entries, and more).
-
-To skip prompts and install everything available:
+To get everything at once — the pi package, `myk-pi-tools`, `prek`, `acpx`, `agent-browser`, `graft`, Playwright, and the git-excludes setup — run the interactive installer instead:
 
 ```bash
-    uv run scripts/install.py --all
+    uv run https://raw.githubusercontent.com/myk-org/pi-config/main/scripts/install.py
 ```
 
-> **Note:** The installer exits if `pi` is missing. Install `@earendil-works/pi-coding-agent` globally first.
+Follow the prompts to select packages. To skip prompts and install everything available:
+
+```bash
+    uv run scripts/install.py --all   # from a pi-config checkout
+```
+
+> **Note:** The installer exits if `pi` is missing. Install `@earendil-works/pi-coding-agent` globally first. Only `myk-pi-tools` and `prek` require `uv`; the other steps require Node.js.
 
 When it finishes, start a session:
 
@@ -57,7 +64,7 @@ When it finishes, start a session:
 
 ### 2. Add project settings
 
-Create `.pi/pi-config-settings.json` in your repository root:
+Create `.pi/pi-config-settings.jsonc` in your repository root (`.json` also works; if both exist the `.jsonc` file wins):
 
 ```json
     {
@@ -71,6 +78,12 @@ Create `.pi/pi-config-settings.json` in your repository root:
 ```
 
 > **Note:** Project settings override global defaults for the current repository. See [Configuration & Settings](configuration.html) for the full option list.
+
+Prefer not to hand-edit JSON? Open the settings TUI from any session and edit the same keys with arrows and search:
+
+```text
+    /pi-config-settings
+```
 
 ### 3. Start the background daemons
 
@@ -107,6 +120,7 @@ This chains a scout pass (find relevant code) into a planner pass (implementatio
 
 | Mode | Command | Behavior |
 |------|---------|----------|
+| Pi package only | `pi install npm:pi-orchestrator-config` | Extensions, agents, prompts, skills, rules — nothing else |
 | Interactive | `uv run scripts/install.py` | Step through packages and confirm |
 | Non-interactive | `uv run scripts/install.py --all` | Auto-select every available tool |
 
@@ -116,8 +130,8 @@ The installer can also add `.pi/` and `.worktrees/` to your global git excludes 
 
 Skip the settings file when you prefer env vars. Resolution order:
 
-1. `.pi/pi-config-settings.json` (project)
-2. `~/.pi/pi-config-settings.json` (global)
+1. `.pi/pi-config-settings.jsonc` (project; `.json` is the fallback name)
+2. `~/.pi/pi-config-settings.jsonc` (global; `.json` is the fallback name)
 3. Environment variables (for example `PI_DREAM_INTERVAL_HOURS=3`, `CLI_AGENTS=claude,cursor`)
 4. Built-in defaults
 
@@ -128,13 +142,14 @@ See [Configuration & Settings](configuration.html) for keys and env var names. F
 | Method | Command |
 |--------|---------|
 | Preferred | `git config --global core.excludesfile ~/.config/git/ignore && echo ".pi/" >> ~/.config/git/ignore` |
-| Manual | Append `.pi/` (and `.worktrees/` if you use worktrees) to your global excludes file |
+| Manual | Append `.pi/` (and `.worktrees/` if you use worktrees) to whatever `git config --global core.excludesfile` points at (`~/.config/git/ignore` when unset) |
 
 > **Tip:** The installer Environment Setup step can configure these entries for you.
 
 ## Troubleshooting
 
 - **"Cannot continue without pi":** Install the coding agent globally (`npm install -g @earendil-works/pi-coding-agent`), confirm `pi` is on your `PATH`, then re-run the installer.
+- **"pi X is below minimum required version 0.99.0":** Update pi with `npm install -g @earendil-works/pi-coding-agent`, then `/reload` or restart the session.
 - **Daemon fails to start:** Confirm `pidash_enable` / `pidiff_enable` are not set to `false`. Run `/pidash status` or `/pidiff status`. For pidash failures, check `~/.pi/pidash-server.log`.
 - **pidash says TUI-only:** Start daemons from an interactive `pi` session, not a headless/CLI-only mode.
 - **Pre-commit / formatting failures:** Run `prek run --all-files` to apply fixes, then retry the commit.
@@ -154,13 +169,17 @@ Source: configuration.md
 
 # Configuration & Settings
 
+Every key below is declared in `settings-keys.json` at the repository root, which is the source of truth for types, defaults, ranges, and env var names. This page covers the common ones; `settings-keys.json` lists the rest.
+
 ## Settings Files
+
+Both settings files accept `.jsonc` (JSON with comments) or plain `.json`. If a directory contains both names, the `.jsonc` file is used and the `.json` file is ignored.
 
 ### Project settings file
 
 | Parameter | Type | Default | Description | Effect |
 |---|---|---|---|---|
-| Path | string | none | `.pi/pi-config-settings.json` in the repository root. | Highest-precedence settings source for the current project. |
+| Path | string | none | `.pi/pi-config-settings.jsonc` (or `.pi/pi-config-settings.json`) in the repository root. | Highest-precedence settings source for the current project. |
 
 ```json
     {
@@ -174,7 +193,7 @@ Source: configuration.md
 
 | Parameter | Type | Default | Description | Effect |
 |---|---|---|---|---|
-| Path | string | none | `~/.pi/pi-config-settings.json` in the current user's home directory. | Fallback settings source for all projects when a key is not set in the project file. |
+| Path | string | none | `~/.pi/pi-config-settings.jsonc` (or `~/.pi/pi-config-settings.json`) in the current user's home directory. | Fallback settings source for all projects when a key is not set in the project file. |
 
 ```json
     {
@@ -193,6 +212,18 @@ Source: configuration.md
     project file -> global file -> environment variable -> default
 ```
 
+### Editing settings without a text editor
+
+| Parameter | Type | Default | Description | Effect |
+|---|---|---|---|---|
+| `/pi-config-settings` | slash command | none | Opens an interactive settings TUI over the same keys. | Saves to the file for the scope you are editing (project or global), and shows the valid values and env var for every key. |
+
+```text
+    /pi-config-settings
+```
+
+Use it when you would rather not guess an env var name or a numeric range — the TUI shows the valid values for every key.
+
 ## Git & Workflow Keys
 
 ### `commit_trailer`
@@ -201,7 +232,7 @@ Source: configuration.md
 |---|---|---|---|---|---|
 | `commit_trailer` | string or `false` | `false` | `PI_COMMIT_TRAILER` | Commit trailer name, or a comma-separated list of trailer names. | Injects a trailer into `git commit` commands when a string value is set. |
 
-> **Note:** A comma-separated string such as `"Assisted-by, Co-authored-by"` is treated as a selectable list of trailer names.
+> **Note:** A comma-separated string such as `"Assisted-by,Co-authored-by"` is treated as a list of trailer names; the user picks one per session and the choice is reused. The injected value is `<Trailer>: PI (<model-id>) <noreply@pi.dev>`.
 
 ```json
     {
@@ -233,7 +264,7 @@ Source: configuration.md
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `use_worktrees` | boolean | `false` | `PI_USE_WORKTREES` | Forces worktree-only branch workflows. | Blocks branch-changing `git checkout` and `git switch` commands in the main worktree. |
+| `use_worktrees` | boolean | `false` | `PI_USE_WORKTREES` | Forces worktree-only branch workflows. | Blocks `git switch` and branch-changing `git checkout`; file restores such as `git checkout -- <path>` still pass. Suggests `git worktree add .worktrees/<name> -b <branch> <main>`. |
 
 ```json
     {
@@ -366,7 +397,7 @@ See [External AI Agents & CLI](external-ai-agents.html) for details.
 |---|---|---|---|---|---|
 | `acpx_agents` | string or string[] | `[]` | `ACPX_AGENTS` | List of ACPX agent names to register. | Registers `acpx-<agent>` providers in the unified provider extension. |
 
-> **Note:** Values are lowercased, deduplicated, and invalid names are filtered out.
+> **Note:** Values are lowercased, deduplicated, and any name that is not `[a-z0-9_-]+` is dropped. Unlike `cli_agents`, the name is not checked against a built-in list — it must match an agent the `acpx` binary can launch.
 
 ```json
     {
@@ -500,7 +531,7 @@ See [Using the Web Dashboard](using-the-web-dashboard.html) for details.
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `image_model` | string | `""` | `PI_IMAGE_MODEL` | Gemini image generation model name. | Enables the `generate_image` tool to call the Gemini API. |
+| `image_model` | string | `""` | `PI_IMAGE_MODEL` | Gemini image generation model name. | Enables the `generate_image` tool to call the Gemini API. Requires `GEMINI_API_KEY` or `GOOGLE_API_KEY` to be set. |
 
 ```json
     {
@@ -513,6 +544,24 @@ See [Using the Web Dashboard](using-the-web-dashboard.html) for details.
 ```
 
 See [Image Generation](image-generation.html) for details.
+
+## Code Graph Key
+
+### `graft_enable`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `graft_enable` | boolean | `false` | `PI_GRAFT_ENABLE` | Enables the local Graft repository graph integration. | Adds the `graft_*` tools to every subagent's toolset, so agents can look code up in the graph before grepping. Requires the `graft` binary on `PATH`. |
+
+```json
+    {
+      "graft_enable": true
+    }
+```
+
+```bash
+    export PI_GRAFT_ENABLE=true
+```
 
 ## Background & Async Keys
 
@@ -534,42 +583,41 @@ See [Image Generation](image-generation.html) for details.
 
 See [Background Memory Consolidation (Dreaming)](background-dreaming.html) for details.
 
-### `async_llm_provider`
+### `internal_operations_provider`
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `async_llm_provider` | string | `""` | `PI_ASYNC_LLM_PROVIDER` | Provider to use for must-async LLM work when a sidecar provider/model pair is required. | Combined with `async_llm_model` to define the sidecar provider. |
+| `internal_operations_provider` | string | `""` | `PI_INTERNAL_OPERATIONS_PROVIDER` | Provider pi-config uses for its own detached LLM work when the session provider cannot do it. | Combined with `internal_operations_model` to define the sidecar provider. Used by dreaming, cron, and fire-and-forget async agents. |
 
 ```json
     {
-      "async_llm_provider": "openai"
+      "internal_operations_provider": "openai"
     }
 ```
 
 ```bash
-    export PI_ASYNC_LLM_PROVIDER=openai
+    export PI_INTERNAL_OPERATIONS_PROVIDER=openai
 ```
 
-### `async_llm_model`
+### `internal_operations_model`
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `async_llm_model` | string | `""` | `PI_ASYNC_LLM_MODEL` | Model ID paired with `async_llm_provider` for must-async LLM work. | Combined with `async_llm_provider` to define the sidecar model. |
+| `internal_operations_model` | string | `""` | `PI_INTERNAL_OPERATIONS_MODEL` | Model ID paired with `internal_operations_provider`. | Combined with `internal_operations_provider` to define the sidecar model. |
 
 ```json
     {
-      "async_llm_model": "gpt-5.4"
+      "internal_operations_model": "gpt-5.4"
     }
 ```
 
 ```bash
-    export PI_ASYNC_LLM_MODEL=gpt-5.4
+    export PI_INTERNAL_OPERATIONS_MODEL=gpt-5.4
 ```
 
-> **Warning:** Both `async_llm_provider` and `async_llm_model` must be set together. If either is missing, must-async work is skipped.
+> **Warning:** Both `internal_operations_provider` and `internal_operations_model` must be set together. If either is missing, must-async work is skipped.
 
-
-> **Warning:** `async_llm_provider` cannot be an `acpx-*` provider ID.
+> **Warning:** `internal_operations_provider` cannot be an `acpx-*` provider ID. Non-must-async work is coerced to sync instead of using the sidecar.
 
 See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details.
 
@@ -587,7 +635,7 @@ See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) 
 
 The stream is written to `~/.pi/logs/providers/<session-id>/main.log` under a `[provider-stream]` prefix, with one line per event and credential-shaped fields redacted. Capturing every event has a real cost, so the hook only registers at `debug` and costs nothing at the default level.
 
-See [Configuration](configuration.html) for the full settings reference.
+Every other `log_<module>` key follows the same shape — `log_pidash`, `log_pidiff`, `log_coms`, `log_subagent`, `log_dreaming`, `log_enforcement`, `log_graft`, and others — with env vars `PI_LOG_<MODULE>` and default `info`.
 
 ## Environment-only Process Flag
 
@@ -660,7 +708,7 @@ Implements a task, runs parallel review passes, then performs a follow-up fix pa
     /implement-and-review Refactor the settings loader to support env overrides
 ```
 
-> **Tip:** For planning without code changes, see [Installation & Quickstart](quickstart.html) for `/scout-and-plan`.
+> **Tip:** For planning without code changes, use `/scout-and-plan <task>` (see Other Built-in Prompts below).
 
 ## Review Commands
 
@@ -864,6 +912,20 @@ Runs review analytics queries through `myk-pi-tools db`.
     /query-db query "SELECT * FROM comments WHERE status='skipped' LIMIT 10"
 ```
 
+## Other Built-in Prompts
+
+These are also shipped as prompt templates in `prompts/`, and are registered by Pi itself rather than by an extension.
+
+| Command | Purpose |
+| :--- | :--- |
+| `/scout-and-plan <task>` | Scout pass plus a plan, with no code changes. Use this when you want to review the approach before applying it. |
+| `/qodo-review [--autofix] [--fast\|--deep] [--ticket <url>] [path ...]` | Reviews local changes with Qodo before committing or opening a PR. |
+| `/review-handler [--autorabbit] [--autoqodo]` | Processes every outstanding review source (human, Qodo, CodeRabbit) for the current PR. |
+| `/review-handler-status` | Shows live status of the `/review-handler` agents. |
+| `/coderabbit-rate-limit [PR number]` | Waits out a CodeRabbit rate limit and re-triggers the review. |
+| `/external-ai <agent> [--model <model>] [--fix\|--peer\|--resume] <prompt>` | Runs a prompt against a raw AI CLI (cursor, claude, gemini) with full model access. |
+| `/create-coms-feature-manager` | Generates a coms feature-manager prompt customized for the current project. |
+
 ## Shared Command Behavior
 
 ### Argument Handling
@@ -951,8 +1013,10 @@ Run this inside Pi to start the automatic loop for the current PR. It watches bo
    - follow-up reviewer pushback on earlier fixes
 
    The loop keeps running until one of these happens:
-   - the reviewer approves the PR
-   - you explicitly stop the loop
+   - the reviewer approves the PR (`"approved": true` from `reviews poll`)
+   - you explicitly stop it (`Ctrl+C`, or `stop` / `exit` / `done` / `quit`)
+
+   Poll workers sleep 300s between checks and can run for 30+ minutes, so do not set a timeout on them.
 
    > **Tip:** The loop can run for a long time while waiting for new bot comments. See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details on monitoring long-running background work.
 
@@ -982,7 +1046,15 @@ Run this inside Pi to start the automatic loop for the current PR. It watches bo
 
 6. **Let the loop re-check after each push**
 
-   After Pi fixes comments and pushes a follow-up commit, it polls for new reviewer output again. For Qodo, that includes follow-up responses on sticky findings; for CodeRabbit, it includes re-triggered review cycles after cooldowns or pauses.
+   After Pi fixes comments and pushes a follow-up commit, it re-spawns the poll for that source. With both flags on, it spawns two parallel workers and processes whichever returns first. For Qodo, that includes follow-up responses on sticky findings and a `qodo_cleanup_response` block whose items must all be addressed; for CodeRabbit, it includes re-triggered review cycles after cooldowns or pauses.
+
+7. **Check progress without disturbing the loop**
+
+   ```bash
+   /review-handler-status
+   ```
+
+   This is a separate prompt that reports the live status of running `review-handler` agents. Use it instead of interrupting a running loop.
 
 ## Advanced Usage
 
@@ -1006,7 +1078,16 @@ Use the CLI flow when you want to script review automation outside the interacti
     myk-pi-tools reviews store .pi/tmp/pr-42-reviews.json
 ```
 
+Two more subcommands exist for staging review comments before they are posted:
+
+```bash
+    myk-pi-tools reviews pending-fetch "https://github.com/owner/repo/pull/123" --output-dir .pi/tmp/
+    myk-pi-tools reviews pending-update .pi/tmp/owner-repo-123-pending-review.json --submit
+```
+
 Use this flow when you need custom wrappers, CI experiments, or one-off tooling. See [myk_pi_tools CLI Reference](cli-reference.html) for details.
+
+> **Note:** `reviews status` requires `--output-dir`; without `--pr` it auto-detects the PR from the current branch and otherwise lists the PRs in the local reviews database.
 
 > **Warning:** `--autorabbit` and `--autoqodo` are slash-command flags for `/review-handler`. They are not CLI flags for `myk-pi-tools reviews ...`.
 
@@ -1032,7 +1113,7 @@ Use this when you want a durable summary across multiple review cycles instead o
 
 ### Run multiple PR review loops safely
 
-If you need to automate reviews for more than one PR at the same time, use separate worktrees instead of switching branches in place:
+If you need to automate reviews for more than one PR at the same time, use separate worktrees instead of switching branches in place. Keep the worktrees inside the repository (`.worktrees/`) so they inherit the same project settings and `.gitignore` rules:
 
 ```bash
     git worktree add .worktrees/pr-42 origin/fix/issue-42
@@ -1041,11 +1122,16 @@ If you need to automate reviews for more than one PR at the same time, use separ
 
 Then run `/review-handler` from each worktree independently. This avoids cross-contaminating parallel review sessions.
 
-### Understand cycle limits in auto mode
+### Understand what ends the auto loop
 
-Automated review flows use a shared review-cycle budget controlled by `review_loop_max_cycles`. Auto mode also runs in two stages: spec first, then code quality, with both stages drawing from the same cycle cap.
+Auto mode has exactly two exit conditions, and nothing else is valid (`prompts/review-handler.md`, Phase 9c):
 
-If the cycle cap is reached before approval, Pi stops re-dispatching reviewers and reports the remaining state instead of pretending the PR is clean. See [Configuration & Settings](configuration.html) for details.
+1. Every auto-approved reviewer returns `"approved": true` from `reviews poll`.
+2. You explicitly stop it — `Ctrl+C`, or sending `stop`, `exit`, `done`, or `quit`.
+
+A failing command, a reviewer that stays quiet, or "all comments addressed" are **not** exit conditions. The handler logs the error, waits five minutes, and retries.
+
+> **Note:** `review_loop_max_cycles` is a different mechanism. It caps the *commit gate* in `extensions/orchestrator/pi-config-review-state.ts` (default `3`, range `1`–`10`, env `PI_REVIEW_LOOP_MAX_CYCLES`) — when the cap is reached with no reviewers pending, commits are allowed through instead of blocking. It does not bound the `/review-handler` poll loop. See [Configuration & Settings](configuration.html).
 
 ## Troubleshooting
 
@@ -1064,7 +1150,7 @@ If the cycle cap is reached before approval, Pi stops re-dispatching reviewers a
 
 - **Qodo keeps resurfacing the same finding:** ask a follow-up question with `myk-pi-tools reviews ask-qodo "..."`, then either change the code or clarify the requirement before rerunning the loop.
 
-- **Commits are blocked even after fixes:** your review loop may still be failing tests or waiting on reviewer approval. See [Configuration & Settings](configuration.html) for the cycle cap settings, and see [Implementing Command Guards](safety-enforcements.html) for commit enforcement details.
+- **Commits are blocked even after fixes:** your review loop may still be failing tests or waiting on reviewer approval. Commit blocking comes from `extensions/orchestrator/pi-config-review-state.ts` and is capped by `review_loop_max_cycles` (default `3`, env `PI_REVIEW_LOOP_MAX_CYCLES`); it is independent of the `/review-handler` poll loop. See [Configuration & Settings](configuration.html) and [Implementing Command Guards](safety-enforcements.html).
 
 - **You want a simpler first pass:** start with `/review-handler --autorabbit` or `/review-handler --autoqodo`, then enable both once the PR is stable.
 
@@ -1249,16 +1335,9 @@ $ARGUMENTS
 
     // 2) Add the command name to `promptTemplateCommands`
     const promptTemplateCommands = new Set([
-      "external-ai",
-      "pr-review",
-      "issue-review",
-      "coderabbit-rate-limit",
-      "review-local",
-      "release",
-      "review-handler",
-      "cron",
-      "create-skill",
-      "create-coms-feature-manager",
+      "external-ai", "pr-review", "issue-review", "coderabbit-rate-limit",
+      "review-local", "release", "review-handler", "qodo-review", "create-skill",
+      "create-coms-feature-manager", "pi-config-settings",
       "pick-issue",
     ]);
 ```
@@ -1345,6 +1424,8 @@ Use these fields:
 
 You can also add optional `provider` and `model` frontmatter if you want that agent to prefer a specific backend.
 
+> **Note:** Project agents under `.pi/agents/` are confirmed with you before the first dispatch in a session. Set `confirmProjectAgents: false` on a `subagent` call to skip the prompt.
+
 > **Warning:** Give agents the fewest tools they need. If an agent can work with `read` alone, do not add write-capable tools. For shell-heavy agents, see [Implementing Command Guards](safety-enforcements.html) for details.
 
 ### 3. Keep the instructions narrow
@@ -1365,11 +1446,13 @@ A strong prompt is usually better than a long prompt. Short, opinionated instruc
 If you want Pi to pick your specialist from everyday requests, add a project rule that tells the orchestrator when to use it.
 
 ```markdown
-    # .pi/rules/custom-agents.md
+    # .pi/rules/90-custom-agents.md
 
     - When the task is to audit a third-party repository before adoption, delegate to `security-auditor`.
     - When the task is to run tests and explain failures without fixing code, delegate to `test-runner`.
 ```
+
+Files load alphabetically, so a numeric prefix keeps custom rules after the bundled ones: the package ships `00`-`69`, user rules use `70`-`89`, and project rules use `90`-`99`.
 
 Write the rule in plain language. Be specific about both the trigger and the agent name.
 
@@ -1398,6 +1481,22 @@ Some specialists should only run inside a specific flow rather than being select
 Built-in workflows already do this for review specialists such as `/issue-review`, `/pr-review`, and `/review-local`. See [Creating Slash Commands](custom-slash-commands.html) for details.
 
 ## Advanced Usage
+
+### Dispatch an agent directly with the `subagent` tool
+
+Chat routing is optional. A prompt template or any agent can call the `subagent` tool by name, which is how the bundled workflows (for example `/implement`, which chains `scout` → `planner` → `worker`) invoke specialists.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `agent` | string | — | Agent name from `name:` frontmatter. |
+| `task` | string | — | What the agent should do. |
+| `cwd` | string | session cwd | Directory the agent works in. Point it at the target path for external repos. |
+| `estimatedSeconds` | number | — | Required for sync calls. At `30` or more, the call must use `async: true`. |
+| `async` | boolean | `false` | Runs detached; the result arrives as a follow-up message. |
+| `agentScope` | `"project"`, `"user"`, or `"both"` | `"both"` | Which agent directories to search. |
+| `confirmProjectAgents` | boolean | `true` | Prompt before using a project agent. |
+
+Use `tasks` for parallel dispatch and `chain` for sequential steps that feed `{previous}` into the next agent.
 
 ### Override order
 
@@ -1464,11 +1563,12 @@ If the agent needs multiple phases, parallel reviewers, scheduled runs, or backg
 
 ## Troubleshooting
 
-- **Pi does not pick the new agent:** Start a new session, confirm the file is under `.pi/agents/` or `~/.pi/agent/agents/`, and make sure the frontmatter includes both `name:` and `description:`.
+- **Pi does not pick the new agent:** Confirm the file is a `.md` under `.pi/agents/` or `~/.pi/agent/agents/`, and that the frontmatter includes both `name:` and `description:`. Agents are discovered on every `subagent` call, so no session restart is needed — but rules are assembled at session start, so rule changes do need one.
 - **Pi picks the wrong specialist:** Make your routing rule more explicit. If the task is really workflow-only, dispatch it from a slash command instead of relying on everyday chat.
 - **The agent has too much authority:** Reduce the `tools:` list first. Many specialists only need `read` and `bash`.
 - **The agent uses the wrong model:** Check `provider:` / `model:` frontmatter and your `agent_provider`, `agent_model`, and `agent_overrides` settings. See [Configuration & Settings](configuration.html) for details.
-- **A project-level agent is not found from a subdirectory:** Put it under the repository’s `.pi/agents/` folder, then start a new session from anywhere inside that repo.
+- **A project agent is never offered:** It is listed only when `agentScope` includes `project` (the default is `both`), and the first use in a session asks for confirmation.
+- **A project-level agent is not found from a subdirectory:** Subdirectories are fine — `.pi/agents/` is resolved by walking up from the working directory. The usual causes are that no `.pi/agents/` directory exists in any ancestor, or that the file is silently skipped because its frontmatter is missing `name:` or `description:` (both are required).
 
 ## Related Pages
 
@@ -1499,16 +1599,17 @@ Start the global dashboard directly from your active TUI session:
     /pidash start
 ```
 
-Once the background server launches, the TUI status line will display a clickable `pi-dash` label and web link (e.g., `🌐 http://localhost:19190`). Click the label or open this URL in your web browser to manage your workspace.
+Once the background server launches, the TUI status line shows a clickable `pi-dash` link to `http://localhost:<pidash_port>`. Click the label or open that URL in your web browser to manage your workspace.
 
 ## Step-by-Step Guide
 
 1. **Launch the Dashboard:** Run the `/pidash start` command inside your active session. The background server will initialize and establish a WebSocket connection with your terminal.
-2. **Navigate Sessions:** Open the dashboard URL in your browser. The interface displays a list of all active sessions across your system. Clicking a session name will automatically switch your terminal's context to that project directory.
-3. **Adjust Agent Settings:** Use the dropdowns in the web UI to change the active LLM provider or adjust the thinking level dynamically. Setting changes are immediately reflected in your terminal.
-4. **Monitor Background Tasks:** View the status of asynchronous agents and scheduled cron jobs. If a background task is stuck, you can terminate it directly from the dashboard using the kill controls.
-5. **Send Prompts:** You can type prompts directly into the web UI. The dashboard forwards these commands to your terminal session as follow-up instructions for the agent.
-6. **Stop the Dashboard:** When you are finished, shut down the web server by running `/pidash stop` in your terminal.
+2. **Navigate Sessions:** Open the dashboard URL in your browser. The interface displays a list of all active sessions across your system. Clicking a session name switches the dashboard to that session's live stream; the `sessions` dropdown in the info bar additionally loads the current project's saved session files and can switch the terminal itself onto one.
+3. **Adjust Agent Settings:** The info bar at the bottom has two dropdowns. The model dropdown lists every model your `modelRegistry` reports as available (each row shows its provider) and switches the session to the one you pick. The thinking-level dropdown appears only for reasoning-capable models and sets the level directly. Both changes are applied to the running terminal session immediately. The same bar also shows token counts, context-window usage, the git branch, and links to the project's diff viewer.
+4. **Monitor Background Tasks:** The `⏳ N async` and `⏰ N crons` popovers list running async agents and scheduled cron jobs with per-item **Kill** buttons, plus **Kill All** when more than one is present.
+5. **Send Prompts:** You can type prompts directly into the web UI, including images. The dashboard forwards them to the watched session as follow-up instructions for the agent. Slash commands registered by extensions show up in the input bar's command palette, `ask_user` prompts render inline and accept answers, and queued prompts wait for the current turn to finish. **Stop** (or the `abort` keybinding) interrupts the running turn.
+6. **Rename a Session:** Hover a session in the sidebar and click the pencil icon to rename it in place (`Enter` to save, `Esc` to cancel).
+7. **Stop the Dashboard:** When you are finished, shut down the web server by running `/pidash stop` in your terminal.
 
 ## Advanced Usage
 
@@ -1520,8 +1621,8 @@ The project uses two distinct web interfaces depending on what you need to accom
 |---------|---------------------------|-------------------------|
 | **Scope** | Global (sees all active sessions) | Local (tied to the current project) |
 | **Port Mapping** | Fixed (`19190` by default) | Dynamic (allocates a random free port) |
-| **Primary Use** | Session switching, agent config, background task monitoring | Visualizing git diffs, publishing inline code review comments |
-| **Commands** | `/pidash start\|stop\|restart\|status` | `/pidiff start\|stop\|restart\|status` |
+| **Primary Use** | Session switching, model/thinking config, background task monitoring | Visualizing git diffs, publishing inline code review comments |
+| **Commands** | `/pidash start`, `/pidash stop`, `/pidash restart`, `/pidash status` | `/pidiff start`, `/pidiff stop`, `/pidiff restart`, `/pidiff status` |
 
 ### Using the Project Diff Viewer
 
@@ -1533,7 +1634,7 @@ Launch the diff viewer from your project session:
     /pidiff start
 ```
 
-1. The TUI status line will display a clickable `pi-diff` label and dynamically allocated port for this specific project's diff viewer.
+1. The TUI status line will display a clickable `pi-diff` label and dynamically allocated port for this specific project's diff viewer (`http://localhost:<port>`).
 2. Click the `pi-diff` label or open the URL to inspect local git diffs side-by-side and annotate specific lines of code.
 3. Once you publish review comments from the web UI, they are automatically injected into your TUI session as formatted instructions. The active agent will read the comments and begin resolving them.
 
@@ -1547,8 +1648,8 @@ To check the health and port of your active diff server at any time, run:
 
 ### Running in Containers
 
-The web dashboard automatically detects if your session is running inside a Docker or Podman container. Ensure you expose the necessary ports when launching your container so your host machine's browser can connect:
-- Map port `19190` for the global dashboard.
+The pidash extension detects whether a session is running inside a container (it checks for `/.dockerenv` and `/run/.containerenv`) and shows a 📦 marker on that session in the dashboard. Ensure you expose the necessary ports when launching your container so your host machine's browser can connect:
+- Map port `19190` for the global dashboard. Note that the daemon itself listens on `0.0.0.0`, so the mapping is what makes it reachable from the host.
 - If using the diff viewer, map a specific port range and ensure your environment is configured to allow dynamic port allocation.
 
 > **Note:** To disable the web dashboard extensions entirely in headless environments or CI pipelines, set `PI_PIDASH_ENABLE=false` and `PI_PIDIFF_ENABLE=false` in your environment variables (or set `pidash_enable: false` and `pidiff_enable: false` in `pi-config-settings.json`).
@@ -1557,7 +1658,8 @@ The web dashboard automatically detects if your session is running inside a Dock
 
 - **Dashboard fails to start:** Check if another application is using port `19190`. You can change the port by setting the `PI_PIDASH_PORT` environment variable (or `pidash_port` in `pi-config-settings.json`) before starting your session.
 - **Session not showing in UI:** Ensure your terminal is running in TUI mode. The web interface relies on the TUI's event hooks to synchronize state.
-- **Cannot connect to diff viewer:** The `pidiff` server uses local lockfiles in your project's `.pi/tmp/` directory to track active ports. If the server becomes unresponsive or port conflicts occur, run `/pidiff stop` to clear the lockfiles before starting it again.
+- **Cannot connect to diff viewer:** The `pidiff` server uses local lockfiles in your project's `.pi/tmp/` directory (`pidiff.port`, `pidiff.pid`) to track the active port. If the server becomes unresponsive or port conflicts occur, run `/pidiff stop` to clear the lockfiles before starting it again. If a crashed run left a `pidiff.spawning` guard behind, it is cleared automatically after `pidiff_stale_lock_timeout_ms` (default 60s).
+- **Session controls greyed out:** a session that is not active is shown dimmed, and the info-bar controls are disabled. Start or activate the session in Pi first.
 
 See [Installation & Quickstart](quickstart.html) to learn more about basic chat commands, or read [Managing Custom Agents](managing-custom-agents.html) to understand how background async tasks operate.
 
@@ -1583,7 +1685,7 @@ Run long tasks without blocking your main session, and schedule recurring work s
 - A running Pi session in your project repository
 - A TUI session if you want to use the fullscreen status overlays
 - `git` available if your background task depends on repository state
-- If you use ACPX-backed models for detached work, `async_llm_provider` and `async_llm_model` may be required. See [Configuration & Settings](configuration.html) for details.
+- If you use ACPX-backed models for detached work, `internal_operations_provider` and `internal_operations_model` may be required. See [Configuration & Settings](configuration.html) for details.
 
 ## Quick Example
 
@@ -1665,7 +1767,17 @@ Remove a task by ID:
     /cron remove 1
 ```
 
-In the cron overlays, you can also press `x` to remove the selected task.
+`/cron rm <id>` and `/cron delete <id>` are accepted aliases. In the cron overlays, you can also press `x` to remove the selected task.
+
+6. Make a schedule survive a Pi restart.
+
+Prefix any `/cron` request with `--persist`:
+
+```bash
+    /cron --persist Every day at 9:00 AM, run the git-expert to generate a daily summary.
+```
+
+Persisted tasks are written to `.pi/cron/crons.json` in the project and reloaded by later sessions.
 
 ## Advanced Usage
 
@@ -1675,9 +1787,19 @@ In the cron overlays, you can also press `x` to remove the selected task.
 |---|---|---|
 | Watch async jobs | `/async-status` | Fullscreen list, live output, kill with `x` |
 | Kill async jobs | `/async-kill` | Interactive kill picker |
-| See local schedules | `/cron list` | Fullscreen list of this session’s recurring tasks |
+| Kill one job by name or id prefix | `/async-kill <name\|id-prefix>` | Direct kill without opening the picker |
+| Kill every running job | `/async-kill all` | Kills all running and queued jobs |
+| See local schedules | `/cron list` | Fullscreen list of this session's recurring tasks |
+| See only persisted schedules | `/cron --persist list` | Filters the overlay down to project-scoped crons |
 | See all session schedules | `/cron list-all` | Cross-session view of active cron files |
 | Remove a known cron | `/cron remove <id>` | Direct removal by task ID |
+
+### Pick the Model for Background Work
+
+Detached agents are resolved through the same chain as any other subagent
+(`explicit > agent_overrides[name] > agent frontmatter > agent_provider/agent_model > parent`),
+so a plain `agent_model` setting is all you need to pin background work to a specific model.
+It is a `string` setting, default `""`, meaning "inherit the parent session's model".
 
 ### Keep Background Context Between Runs
 
@@ -1697,20 +1819,38 @@ This is a good fit for housekeeping work where a completion notification is enou
 
 ### Understand Cron Lifetime
 
-Cron tasks belong to the current Pi process. They survive session refreshes inside that process, but they do not keep running after a full Pi exit.
+Cron tasks have two scopes, chosen by the `--persist` flag:
+
+| Scope | Stored in | Survives Pi exit | Runs from |
+|---|---|---|---|
+| session (default) | The session store under `.pi/tmp/` | No | That session only |
+| project (`--persist`) | `.pi/cron/crons.json` in the project | Yes | Any session opened in that project |
+
+Session-scoped tasks survive `/reload` inside the running process but are deleted on a real exit. Project-scoped tasks are reloaded by later sessions, and a leader lease in the same directory guarantees only one session executes a given task — other sessions show it as `project (waiting for leader)`.
 
 > **Note:** If you need to confirm what is still scheduled, run `/cron list` or `/cron list-all` after reconnecting instead of assuming an older schedule is still active.
 
+> **Tip:** `/cron` with free text does not schedule anything by itself. It re-enters the conversation with a request to call the `cron_manage` tool, and `persist` is set to `true` only when you passed `--persist`. Schedules must have an `interval_seconds` of at least 10, and `at_minute` is only valid together with `at_hour`.
+
 ### ACPX Compatibility
 
-Detached LLM work is more restricted when your parent session is using an `acpx-*` provider. In that case, some async work may be skipped or require a separate async LLM provider/model to be configured first.
+Detached LLM work is more restricted when your parent session is using an `acpx-*` provider. Child Pi processes launched as async agents skip ACPX provider registration, so Pi decides between three outcomes:
+
+| Case | Behavior |
+|---|---|
+| Parent is native or `cli-*` | Async work runs detached as normal. |
+| Parent is `acpx-*`, work is not must-async | The request is coerced to run synchronously instead. |
+| Parent is `acpx-*`, work is must-async (dreaming, `fireAndForget`) | Runs detached on `internal_operations_provider`/`internal_operations_model`; if those are unset, the work is skipped with a warning. |
+
+Set `internal_operations_provider` and `internal_operations_model` to cover that last case. Both are `string` settings, default `""`, and the provider must not itself be an `acpx-*` id.
 
 See [ACPX Provider Integration](acpx-provider.html) and [Configuration & Settings](configuration.html) for the exact setup.
 
 ## Troubleshooting
 
-- **Async job does not start:** If Pi complains about a missing `taskId`, the workflow is expecting the background work to be linked to a tracked task or explicitly marked as independent.
-- **Job starts but immediately skips:** If your session is using an ACPX-backed provider, configure `async_llm_provider` and `async_llm_model` before retrying.
+- **Async job does not start:** Confirm you asked for it in the background (`async: true`) and that you ended your turn — Pi delivers results automatically and does not expect a polling loop. Agents declared async-only force `async: true` on a native provider and refuse chain mode.
+- **Job starts but immediately skips:** If your session is using an ACPX-backed provider, configure `internal_operations_provider` and `internal_operations_model` before retrying.
+- **You want the result to update a task automatically:** Pass a numeric `taskId` from the task tools. It is optional; when set, the finished job marks that task `completed` for you.
 - **You want live output but nothing appears:** Use `/async-status` from a TUI session. The fullscreen overlay is the supported live-view interface.
 - **A cron task seems stuck or outdated:** Run `/cron list` or `/cron list-all`, then remove the old task and create a fresh one.
 - **You want browser-based monitoring instead of terminal overlays:** See [Using the Web Dashboard](using-the-web-dashboard.html) for details.
@@ -1749,14 +1889,14 @@ You should care because it changes what the agent remembers without requiring co
 
 | Trigger | Source | Default behavior |
 |---|---|---|
-| Automatic timer | Dreaming extension | Runs periodically while auto-dreaming is enabled. |
+| Automatic timer | Dreaming extension | Enabled by default; runs every `dream_interval_hours` (default `3`). |
 | Manual run | `/dream` | Starts a background pass immediately. |
-| Session quit | Session shutdown hook | May queue one final pass when the session exits normally. |
-| Rebuild timer | Rebuild worker | Re-scores topic files every 30 minutes. |
+| Session quit | `session_shutdown` hook | Runs one final pass, but only on `quit` — skipped for `new`/`fork`/`resume`/`reload` and in `print`/`json` mode. |
+| Rebuild timer | Rebuild worker | Re-scores topic files every 30 minutes, while auto-dreaming is enabled. |
 
 ### End-to-End Flow
 
-1. Pi decides whether a dream pass can run in the current session.
+1. Pi decides whether a dream pass can run in the current session. A pass already in flight blocks any new one.
 2. A background `worker` agent is launched with a task focused on memory maintenance.
 3. The worker reads existing topic files under `.pi/memory/topics/`.
 4. The worker scans recent session transcripts and extracts durable knowledge.
@@ -1844,7 +1984,7 @@ User-visible effect:
 
 ### Provenance Sidecar
 
-Dreaming can write pending provenance data to `.pi/memory/provenance-pending.json`.
+Dreaming can write pending provenance data to `.pi/memory/provenance-pending.jsonl`, one line of JSON per record.
 
 That sidecar can include fields such as:
 
@@ -1852,7 +1992,7 @@ That sidecar can include fields such as:
 - `derivedFrom`
 - `informs`
 
-After the dream job finishes, Pi merges that sidecar into scored memory records.
+After the dream job finishes, Pi merges that sidecar into scored memory records and deletes the file. A legacy `.pi/memory/provenance-pending.json` is still read if present.
 
 User-visible effect:
 
@@ -1919,7 +2059,7 @@ User-visible effect:
 
 | Behavior | What it means |
 |---|---|
-| A moon icon appears in the status bar | A dream pass is currently running. |
+| The dream icon in the status bar turns from dim to warning-colored | A dream pass is currently running. |
 | Pi starts following a repeated convention without being told again | Dreaming likely turned a repeated correction into stored memory. |
 | New topic entries show up under `.pi/memory/topics/` | The worker extracted durable knowledge from recent sessions. |
 | Promotion candidates appear in `.pi/memory/promotions.md` | A memory has crossed a threshold for stronger handling. |
@@ -1932,17 +2072,20 @@ User-visible effect:
 | `/dream` | Starts a manual background pass. |
 | `/dream-auto on` | Enables periodic dreaming for the current project. |
 | `/dream-auto off` | Disables the automatic timer for the current project. |
-| `dream_interval_hours` | Adjusts the automatic interval in project or global settings. |
+| `dream_interval_hours` | Adjusts the automatic interval in project or global settings. `number`, default `3`. |
 | `PI_DREAM_INTERVAL_HOURS` | Environment-variable override for the interval. |
+| `internal_operations_provider` | Sidecar provider used when the parent session is ACPX-backed. `string`, default `""`. |
+| `internal_operations_model` | Sidecar model used when the parent session is ACPX-backed. `string`, default `""`. |
+| `agent_model` | Default model for the `worker` agent. `string`, default `""` (inherit parent). |
 
 ### When Dreaming Skips Work
 
-Dreaming depends on an async-capable LLM path. In ACPX-based sessions, that usually means configuring both:
+Dreaming depends on an async-capable LLM path. A parent session on a native or `cli-*` provider supports it directly, and the `worker` agent resolves its model through the normal subagent chain (`agent_model` → parent model). When the parent is ACPX-backed, child Pi processes skip ACPX provider registration, so dreaming instead needs both of these set:
 
-- `async_llm_provider`
-- `async_llm_model`
+- `internal_operations_provider`
+- `internal_operations_model`
 
-If that path is unavailable, Pi skips the run and surfaces a warning in the UI.
+Both must be non-empty and the provider must not be an `acpx-*` id. If that path is unavailable, Pi skips the run and notifies you with "Dream skipped: set internal_operations_provider and internal_operations_model for acpx sessions".
 
 User-visible effect:
 
@@ -1958,14 +2101,6 @@ User-visible effect:
 - See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for the background execution model used by dreaming.
 - See [Implementing Command Guards](safety-enforcements.html) for how promoted memory can affect enforcement behavior.
 - See [Configuration & Settings](configuration.html) for the settings that control dream frequency and async LLM routing.
-
-## Related Pages
-
-- [Curating Project Memory](curating-project-memory.html)
-- [Memory Architecture](memory-architecture.html)
-- [Configuration & Settings](configuration.html)
-- [Implementing Command Guards](safety-enforcements.html)
-- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
 
 
 ---
@@ -1989,7 +2124,7 @@ The memory system is local, file-backed, and layered. Topic files are the source
 | Embedding store | Local vectors for semantic matching | `.pi/memory/embeddings.json` | Lets Pi retrieve related memories even when the wording changes. |
 | Situation report | Token-budgeted summary for prompt injection | Built at runtime | Determines what memory the agent actually sees during a turn. |
 | Promotion queue | Candidates for skills, enforcement, or project rules | `.pi/memory/promotions.md` | Captures repeated patterns that may deserve stronger structure. |
-| Provenance sidecar | Source-session metadata waiting to be merged | `.pi/memory/provenance-pending.json` | Preserves where a memory came from without letting background jobs edit the score file directly. |
+| Provenance sidecar | Source-session metadata waiting to be merged | `.pi/memory/provenance-pending.jsonl` | Preserves where a memory came from without letting background jobs edit the score file directly. |
 
 ### End-to-end flow
 
@@ -2144,10 +2279,13 @@ Current promotion destinations are:
 
 | Destination | What happens |
 |---|---|
-| `enforcement` | Safe, high-confidence rules can be applied automatically. |
+| `memory` | Keep as regular memory. |
 | `skill` | Multi-step patterns can be proposed as reusable skills. |
+| `enforcement` | Safe, high-confidence rules can be applied automatically. |
 | `project_rule` | Project-wide conventions are queued as proposals only. |
 | `discard` | Low-value or superseded items can be marked for removal. |
+
+Evidence thresholds are `3` for enforcement, `3` for skill, and `5` for project rule.
 
 The queue is stored in `.pi/memory/promotions.md` with statuses of `proposed`, `applied`, or `rejected`.
 
@@ -2161,7 +2299,7 @@ A few important boundaries keep this safe:
 
 ### Provenance is merged through a sidecar
 
-Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it writes a sidecar file at `.pi/memory/provenance-pending.json`. The orchestrator then merges that metadata back into `memory-scores.json` on completion.
+Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it appends a single line of JSON to `.pi/memory/provenance-pending.jsonl`. The orchestrator then merges that sidecar into `memory-scores.json` on completion and deletes it. (A `.pi/memory/provenance-pending.json` from older versions is still read for backward compatibility.)
 
 This keeps the scoring index authoritative while still preserving traceability.
 
@@ -2199,19 +2337,23 @@ That matters if you are carrying an older repo or restoring archived state: the 
 - See [myk_pi_tools CLI Reference](cli-reference.html) for the Python commands that manage topic files and perform legacy migration.
 - See [Automating Code Reviews](automating-code-reviews.html) for review-specific workflows that interact with memory, but belong to the review system rather than the core memory model.
 
-## Related Pages
-
-- [Curating Project Memory](curating-project-memory.html)
-- [Background Memory Consolidation (Dreaming)](background-dreaming.html)
-- [Implementing Command Guards](safety-enforcements.html)
-- [Configuration & Settings](configuration.html)
-
 
 ---
 
 Source: curating-project-memory.md
 
 # Curating Project Memory
+
+Project memory is what Pi carries from one session to the next. This page covers adding entries yourself, letting Pi capture them automatically, and auditing what it has learned. You should care because memory you save once stops you from repeating yourself, and memory you let accumulate becomes the basis for skills and enforced rules.
+
+## The Big Picture
+
+Memories live as plain Markdown bullets under `.pi/memory/topics/`, one file per category. Two entry points write to them:
+
+- The `myk-pi-tools memory` CLI, for entries you decide on yourself.
+- Pi's automatic capture, for preferences it notices in your messages.
+
+## Quick Example
 
 ```bash
     # Project preference
@@ -2223,6 +2365,14 @@ Source: curating-project-memory.md
     # Repeated pitfall
     myk-pi-tools memory add -c mistake -s "Buildah chown -R skips the target dir on this OS"
 ```
+
+## Step-by-Step
+
+### 1. Save a memory from the CLI
+
+Run `myk-pi-tools memory add -c <category> -s "<summary>"` from the project root. Both `-c` and `-s` are required.
+
+### 2. Choose the right category
 
 Use short, specific summaries. The CLI accepts these categories:
 
@@ -2255,11 +2405,13 @@ A good rule of thumb:
 
 ### 4. Save memories directly from chat when that is faster
 
+Inside a Pi session, just ask for it in plain language, or call the `memory_add` tool directly:
+
 ```text
-    /remember Always use uv run for Python commands in this repo
+    Remember that we always use uv run for Python commands in this repo.
 ```
 
-Use `/remember` when you are already in a Pi session and want to save something immediately without leaving chat. It stores the result as a pinned project memory.
+The `memory_add` tool takes `category`, `text`, and an optional `pinned` flag, and writes the same topic file the CLI does. Use this when you are already in a session and want to save something without leaving chat.
 
 ### 5. Audit memory quality and promotion status
 
@@ -2286,6 +2438,12 @@ You do not need to save every preference manually. During normal conversation, P
 - “never use…”
 
 When those statements are clear enough, Pi records them as project preferences and reinforces them when they show up again later.
+
+Automatic capture has three guards worth knowing:
+
+- Messages shorter than 20 characters are ignored.
+- Anything starting with `/` is skipped, so slash commands never become memories.
+- The same preference is not re-extracted within a one-hour cooldown.
 
 > **Note:** Automatic capture works best when you phrase the rule as a short, direct instruction instead of a long explanation.
 
@@ -2347,7 +2505,7 @@ See [Implementing Command Guards](safety-enforcements.html) for details.
 ## Troubleshooting
 
 - **A saved rule does not seem to affect later sessions:** Run `myk-pi-tools memory show` and confirm the entry is present. If it is critical, save it again as a pinned memory with a shorter, clearer summary.
-- **Automatic background consolidation does not run:** If you are using ACPX-backed async work, make sure `async_llm_provider` and `async_llm_model` are configured. See [Configuration & Settings](configuration.html) for details.
+- **Automatic background consolidation does not run:** If you are on an ACPX-backed provider, set both `internal_operations_provider` and `internal_operations_model` — dreaming is skipped outright otherwise. See [Configuration & Settings](configuration.html).
 - **Memory feels too noisy or repetitive:** Check `myk-pi-tools memory status`, keep entries one-line and specific, then run `/dream` to consolidate the store.
 - **You need deeper scoring and lifecycle details:** See [Memory Architecture](memory-architecture.html) for details.
 
@@ -2370,74 +2528,79 @@ Source: inter-agent-communication.md
 
 ## The Big Picture
 
-Two communication modes exist in the codebase:
+`coms` is a peer-to-peer messaging system. Each Pi session opens its own local endpoint and registers it in a project-scoped registry, so sessions in the same repository find each other directly. There is no central hub.
 
-| System | How it is activated | Transport | Tool names | Best fit |
-| :--- | :--- | :--- | :--- | :--- |
-| `coms` | `/coms start` | Direct peer-to-peer | `coms_list`, `coms_send`, `coms_get` | Simple local session-to-session messaging |
-| `coms-net` | `/coms-net start` or `/coms-net connect` | Local HTTP + SSE hub | `coms_net_list`, `coms_net_send`, `coms_net_get` | More durable multi-session coordination |
-
-This page focuses on `coms-net`, the networked mode built around a local hub server.
+| Aspect | How it works |
+| :--- | :--- |
+| Transport | Unix domain socket on POSIX, named pipe on Windows |
+| Registry | `~/.pi/coms/projects/<project>/agents/<name>.json` |
+| Sockets | `~/.pi/coms/sockets/<session-id>.sock` |
+| Heartbeat | Every 30 seconds |
+| Inactivity timeout | `coms_timeout_ms`, default 30 minutes |
+| Max relay hops | `coms_max_hops`, default 5 |
 
 ### Main Components
 
 | Component | What it does | User-visible effect |
 | :--- | :--- | :--- |
-| `/coms-net` wrapper | Starts, connects to, disconnects from, or stops the hub | You can bring the network up only when you need it |
-| Hub server | Tracks peers, queues messages, and pushes updates over SSE | Replies arrive automatically while you keep working |
-| Client in each Pi session | Registers identity, sends heartbeats, and receives inbound work | Each session can appear as a named peer |
-| Pool widget | Renders connected peers, status, queue depth, and context usage | You can see who is online and busy at a glance |
-| Messaging tools | `coms_net_list`, `coms_net_send`, `coms_net_get` | Agents can discover peers, delegate work, and inspect message state |
+| Launcher wrapper | Registers a session with its name, purpose, model, color, and cwd | Each session appears as a named peer |
+| Registry files | One JSON entry per live session, grouped by project | Peers from other repos stay invisible |
+| Pool widget | Renders connected peers, queue depth, and context usage | You can see who is online and busy at a glance |
+| Messaging tools | `coms_list`, `coms_send`, `coms_get` | Agents can discover peers, delegate work, and inspect message state |
+| Queue and task tools | `coms_queue_*` and `coms_task_*` | Queued messages and delegated tasks can be inspected and edited |
 
 ### Message Flow
 
-1. A session activates `coms-net` and registers with the hub.
-2. The hub assigns that session a project-scoped identity and opens an SSE stream.
-3. Another session calls `coms_net_send` with a peer name and prompt.
-4. The hub either delivers the message immediately or queues it if the target is busy.
+1. A session starts and registers itself under `~/.pi/coms/projects/<project>/agents/`.
+2. It opens a local socket and begins sending heartbeats.
+3. Another session calls `coms_send` with a target peer name and a prompt.
+4. The message is delivered over the target's socket, or queued if the target is mid-turn.
 5. The receiving session gets the prompt as a follow-up turn in Pi.
 6. The receiver answers normally in chat.
-7. The extension captures that final assistant reply and posts it back to the hub.
+7. The extension captures that final assistant reply and sends it back over the socket.
 8. The original sender receives the result as a follow-up message automatically.
 
-> **Tip:** In normal use, you send with `coms_net_send`, then end the turn. You do not need a polling loop unless you explicitly want a non-blocking status check with `coms_net_get`.
+> **Tip:** In normal use, you send with `coms_send`, then end the turn. You do not need a polling loop unless you explicitly want a non-blocking status check with `coms_get`.
 
 ## Key Concepts
 
 ### Project-Scoped Peer Discovery
 
-`coms-net` isolates peers by project namespace. If you do not pass `--project`, the wrapper derives one from the current working directory, so sessions in different repos do not accidentally see each other.
+`coms` isolates peers by project namespace. If you do not pass `--project`, the wrapper derives one from the current working directory, so sessions in different repos do not accidentally see each other.
 
-That is why `/coms-net` only shows peers from the same project group by default. The effect for users is simple: start multiple Pi sessions in one repo, and they naturally discover one another.
+That is why the pool only shows peers from the same project group by default. The effect for users is simple: start multiple Pi sessions in one repo, and they naturally discover one another. Use `coms_list` with `project: "*"` to see across all projects.
 
 ### Named Identities
 
-Each session registers with a peer identity: name, purpose, model, color, cwd, and status. The wrapper uses `--cname` for peer naming so it does not conflict with Pi's own `--name` behavior.
+Each session registers with a peer identity: name, purpose, model, color, and cwd. The wrapper uses `--cname` for peer naming so it does not conflict with Pi's own `--name` behavior; passing `--name` is rejected with a "use --cname instead of --name" error.
 
 This is what makes peer lists readable instead of showing only opaque session IDs. A user can target `planner`, `worker`, or another named peer directly rather than guessing which terminal to message.
 
 ### Heartbeats and Presence
 
-Every connected session sends heartbeat updates on a fixed interval. Those updates include context-window usage, queue depth, and optional task summary data.
+Every connected session sends heartbeat updates every 30 seconds. Those updates include context-window usage, queue depth, and optional task summary data.
+
+Dead peers are removed from the registry in two phases. A newly registered entry gets a grace period (`coms_entry_grace_period_ms`, default 30 seconds) so a just-booted session is never pruned early. After that, the entry is probed by connecting to its socket: peers that respond are kept, peers that do not are removed from the registry. Timestamp staleness alone never prunes an entry, which is what keeps laptop suspend/resume from wiping out live peers.
 
 For users, that turns into a live presence model:
-- `online` means the peer is healthy and actively reporting
-- `stale` means heartbeats stopped recently
-- `offline` means the peer was removed from the active registry
+- a peer in the list answered a probe and is reachable
+- a peer missing from the list was pruned or never registered in this project
 
-The pool widget and peer list output reflect those states, so you can avoid delegating work to a dead or overloaded session.
+The pool widget and peer list output reflect that, so you can avoid delegating work to a dead or overloaded session.
 
 ### Automatic Reply Capture
 
 Inbound messages are delivered into Pi as follow-up turns. The important rule is that the receiver should answer normally in chat, because the extension captures that reply automatically and returns it to the sender.
 
-> **Warning:** Do not use `coms_net_send` to reply to an inbound `coms-net` message. That starts a brand-new outbound conversation and can create a ping-pong loop.
+If a user message lands in the same turn as an inbound peer message, the reply cannot be attributed. Pi re-injects the inbound message for a clean dedicated turn, up to two times, before giving up and erroring back to the sender.
+
+> **Warning:** Do not use `coms_send` to reply to an inbound `coms` message. That starts a brand-new outbound conversation and can create a ping-pong loop.
 
 This behavior matters because it keeps the experience conversational. To the user, cross-session messaging feels like asking a peer for help and getting a normal reply back in the same session.
 
 ### Structured Task Delegation
 
-`coms_net_send` supports a `tasks` array alongside the prompt. Those task objects are shown to the receiving peer as structured work items instead of a loose prose blob.
+`coms_send` supports a `tasks` array alongside the prompt. Each task object has a `subject` and a `description`, and is shown to the receiving peer as structured work items instead of a loose prose blob.
 
 This makes delegation clearer and easier to track when the receiving session uses the task system. For users, it means you can send a prompt plus a checklist, not just a paragraph.
 
@@ -2447,25 +2610,25 @@ Peers launched with `--explicit` stay off the default discovery list. They still
 
 This is useful when a helper session should not clutter the shared pool. Users see a cleaner peer list by default, while advanced workflows can still reveal explicit peers when needed.
 
-### Local Server Discovery and Authentication
+### On-Disk Layout and Cleanup
 
-The hub writes project-local connection details under `~/.pi/coms-net/projects/<project>/`. That includes `server.json`, and for local loopback setups, a `server.secret.json` bearer token file with restricted permissions.
+Sessions write two kinds of files under `~/.pi/coms/`, overridable with the `coms_dir` setting (`PI_COMS_DIR`):
 
-The user-visible effect is convenience with reasonable safety:
-- local sessions can auto-discover the hub
-- the wrapper can reconnect after reloads
-- tokens are kept out of normal command output
+- `projects/<project>/agents/<name>.json` — the registry, one file per live session
+- `sockets/<session-id>.sock` — the per-session endpoint
 
-> **Note:** By default, the hub is a local service. The wrapper starts it on loopback unless you intentionally change the bind settings.
+Directory creation is restricted to the owner (`0o700`). Because each peer owns its own socket, a peer that is pruned from the registry does not have its socket deleted by anyone else; the owning process is responsible for that.
+
+> **Note:** The whole registry is local to your machine and your user account. There is no shared server, no bearer token, and no network listener — peers are reached over a local socket or named pipe only.
 
 ### Queueing and Hop Limits
 
-The hub enforces queue depth and hop limits. Queueing prevents dropped messages when a peer is busy, while hop limits stop agents from forwarding work forever.
+Queueing prevents dropped messages when a peer is busy, while hop limits stop agents from forwarding work forever. The hop ceiling is the `coms_max_hops` setting (`PI_COMS_MAX_HOPS`, integer, default `5`, range 1–50).
 
 For users, that shows up as more predictable behavior:
 - busy peers do not lose messages
 - runaway agent-to-agent loops stop instead of spiraling forever
-- queue depth is visible in pool output and peer listings
+- queue depth is visible in pool output and peer listings, and can be managed with `/coms-queue`
 
 ## How It Affects the User
 
@@ -2473,18 +2636,24 @@ The internals mostly stay out of your way, but they explain several behaviors yo
 
 | What you see | What is happening underneath |
 | :--- | :--- |
-| `/coms-net start` brings peers online | The wrapper starts or reuses the local hub, then registers the current session |
-| A live peer pool appears in the TUI | The client receives SSE updates and re-renders the widget from hub snapshots |
-| A reply shows up later without polling | The receiver's normal assistant reply was captured and pushed back over the hub |
-| A peer shows `stale` instead of disappearing immediately | Heartbeats stopped, but the server has not yet fully expired that peer |
+| A live peer pool appears in the TUI | The session registered a registry entry and opened its socket |
+| A reply shows up later without polling | The receiver's normal assistant reply was captured and sent back over the socket |
+| A peer disappeared from the list | Its registry entry was removed after failing a socket probe |
 | A delegated task arrives with structure | The sender included `tasks`, and the receiver rendered them as assigned work |
-| Reconnecting after reload feels automatic | The wrapper persists activation state and re-registers on reload |
+| `/coms` shows a different set of peers | You toggled `include_explicit` or switched the displayed project |
 
 A few practical implications are worth remembering:
 
-- `coms-net` is best when you want named peer sessions that stay coordinated over time.
-- It is especially useful when one session should keep coding while another handles planning, review, or background work.
-- If you only need a lightweight direct link, the older `coms` mode is still available alongside `coms-net`.
+- Start sessions with `--cname` so peers are addressable by a readable name instead of a session id.
+- The pool is project-scoped, so open every coordinating session in the same repository.
+- `--explicit` keeps a helper session out of the default discovery list without making it unreachable.
+
+## Commands
+
+| Command | What it does |
+| :--- | :--- |
+| `/coms` | Force-refresh the pool widget. `--all` toggles `include_explicit`; `--project <name>` switches the displayed project. |
+| `/coms-queue` | View and manage queued inbound messages, including killing them. |
 
 ## Related Pages
 
@@ -2492,14 +2661,7 @@ A few practical implications are worth remembering:
 - See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details.
 - See [Daemon & Websocket Networking](daemon-and-websockets.html) for details.
 - See [Creating Slash Commands](custom-slash-commands.html) for details.
-
-## Related Pages
-
-- [Managing Custom Agents](managing-custom-agents.html)
-- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
-- [Daemon & Websocket Networking](daemon-and-websockets.html)
-- [Using the Web Dashboard](using-the-web-dashboard.html)
-- [Built-in Workflow Commands](built-in-workflows.html)
+- See [Using the Web Dashboard](using-the-web-dashboard.html) for details.
 
 
 ---
@@ -2534,6 +2696,8 @@ Inside a Pi session:
     /external-ai cursor explain the authentication flow
 ```
 
+`/external-ai` is a prompt template (`prompts/external-ai.md`), not an extension command. It parses the arguments you give it, then shells out to `myk-pi-tools ai-cli run`.
+
 ## Step-by-Step Guide
 
 ### 1. Pick a provider and model
@@ -2545,6 +2709,8 @@ Supported providers: `cursor`, `claude`, `gemini`.
 | `cursor` | `composer-2-fast` |
 | `claude` | `claude-sonnet-4-6` |
 | `gemini` | `gemini-2.5-flash` |
+
+`ai-cli models <provider>` prints a JSON array of model ids to stdout (progress lines go to stderr), so it can be piped or read directly by Pi when it asks you to pick a model.
 
 ```bash
     myk-pi-tools ai-cli models cursor
@@ -2571,6 +2737,8 @@ By default, `/external-ai` and `ai-cli run` are read-only — the external agent
 ```text
     /external-ai claude --fix rewrite the error handling in database.ts
 ```
+
+`--fix` and `--peer` are flags of the `/external-ai` prompt template only — the underlying `ai-cli run` command has no such options. `/external-ai` implements them by changing the prompt it sends (adding a "you have full permission to modify files" instruction and a follow-up diff report).
 
 > **Note:** In a dirty git worktree, Pi asks whether to create a checkpoint commit (`chore: checkpoint before ai-cli changes`) or continue anyway before applying changes.
 
@@ -2627,6 +2795,14 @@ Then omit the provider:
     /external-ai --peer review this
 ```
 
+### Refresh cached models
+
+Pi caches the model list per provider. If newly released models do not show up, clear the cache:
+
+```text
+    /external-ai-models-refresh
+```
+
 ### Extra CLI flags
 
 Pass through flags the underlying binary understands:
@@ -2634,6 +2810,8 @@ Pass through flags the underlying binary understands:
 ```bash
     myk-pi-tools ai-cli run "Review auth" --provider cursor --cli-flags=--trust
 ```
+
+`--cli-flags` is repeatable. Pi adds `--force` automatically for `cursor` so non-interactive `--print` runs skip the workspace trust prompt. `ai-cli run` also accepts `--cwd <dir>` to run the agent somewhere other than the current directory.
 
 ### Other providers
 
@@ -2648,6 +2826,7 @@ For registering `cli-*` providers inside Pi sessions, see [Configuration & Setti
 - **`agent` / `claude` / `gemini` not found:** Install and authenticate that provider’s CLI separately, then confirm it is on your `PATH`.
 - **Long-running or “stuck” agents:** Multi-step tool use can take several minutes. Do not cancel early — execution commands intentionally run without strict timeouts.
 - **`--resume` and `--peer` together:** Not allowed; drop one of the flags.
+- **A new model does not appear in the picker:** Run `/external-ai-models-refresh` to clear the cached model list for every provider.
 
 ## Related Pages
 
@@ -2665,6 +2844,8 @@ Source: image-generation.md
 # Image Generation
 
 Set up Gemini once, then ask Pi to create images directly in chat so you can produce mockups, concept art, and visual assets without leaving your development session. You should be able to go from API key to saved image in a minute.
+
+Images are produced by the `generate_image` tool registered in `extensions/image-gen/`. It calls the Gemini `generateContent` REST endpoint directly (`https://generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`) with `responseModalities: ["IMAGE"]`. There is no slash command to learn — you just ask for an image in plain language.
 
 ## Prerequisites
 
@@ -2689,7 +2870,15 @@ Pi replies with the saved file path under your project's `.pi/tmp/` directory. I
 
 1. **Set the model**
 
-   For the current shell:
+   The easiest way is the settings picker, which filters to Google/Gemini models that can output images:
+
+   ```text
+   /pi-config-settings
+   ```
+
+   Set `image_model` there, save, and reload Pi.
+
+   Or for the current shell:
 
    ```bash
    export PI_IMAGE_MODEL="gemini-3-pro-image"
@@ -2704,6 +2893,8 @@ Pi replies with the saved file path under your project's `.pi/tmp/` directory. I
    ```
 
    Save that JSON in `.pi/pi-config-settings.json`.
+
+   > **Note:** The model id must look like a Gemini image model. Pi refuses ids that contain none of `imagen`, `image-generation`, or `image` as a delimited token — for example `gemini-3-pro-image`, `gemini-2.0-flash-preview-image-generation`, or `imagen-3.0-generate-002` are accepted, while a text-only model such as `gemini-2.5-pro` is rejected before any API call.
 
 2. **Set the API key**
 
@@ -2743,18 +2934,18 @@ When you want tighter control over composition, ask with named fields:
     Generate an image. Subject: A coffee cup. Action: spilling over. Scene: A busy futuristic desk. Composition: close-up. Lighting: neon glow. Style: photorealistic. Text: "ERROR 404". Aspect ratio: 16:9.
 ```
 
-These fields are supported:
+These map one-to-one onto the `generate_image` tool parameters. `subject` is required; the rest are optional:
 
-- `Subject`
-- `Action`
-- `Scene`
-- `Composition`
-- `Lighting`
-- `Style`
-- `Text`
-- `Aspect ratio`
+- `subject` (required)
+- `action`
+- `scene`
+- `composition`
+- `lighting`
+- `style`
+- `text`
+- `aspect_ratio`
 
-Use this format when a short natural-language prompt is not specific enough.
+Use this format when a short natural-language prompt is not specific enough. Pi joins the supplied fields into a single prose prompt and appends `Text: <text>` on its own line when `Text` is set.
 
 ### Supported aspect ratios
 
@@ -2772,34 +2963,48 @@ If you omit `Aspect ratio`, Pi sends the request without one and lets the model 
 
 ### Know what file types to expect
 
-Pi saves whatever image format Gemini returns. Current output formats include:
+Pi saves whatever image format Gemini returns, mapping the response MIME type to an extension:
 
-- `.png`
-- `.jpg`
-- `.gif`
-- `.webp`
+| MIME type | Extension |
+|---|---|
+| `image/png` | `.png` |
+| `image/jpeg` | `.jpg` |
+| `image/gif` | `.gif` |
+| `image/webp` | `.webp` |
+| anything else | `.png` (fallback) |
 
-If a request returns multiple images, Pi lists every saved path in the response.
+Files are named `pi-image-<epoch-ms>-<6-char-random>.<ext>` under `<cwd>/.pi/tmp/`. If a request returns multiple images, Pi lists every saved path in the response. A part with empty or undecodable base64 is skipped rather than failing the whole call.
 
 ### Work smoothly in containers
 
-In Docker or Podman-style sessions, Pi automatically serves generated images over HTTP so you can open them outside the container. You do not need to start a separate preview command.
+In Docker or Podman-style sessions (detected via `/.dockerenv`, `/run/.containerenv`, or a `docker`/`containerd` cgroup), Pi automatically serves generated images over HTTP so you can open them outside the container. You do not need to start a separate preview command.
+
+The preview needs `uv` on `PATH`, because it runs `scripts/httpd.py` from the installed package. One server is started per call and serves the whole `.pi/tmp/` directory, so every saved path in the response gets its own `Preview:` line. Outside a container no preview server is started and only the file path is returned.
 
 See [Configuration & Settings](configuration.html) for the full settings reference and [Installation & Quickstart](quickstart.html) for general setup.
 
 ## Troubleshooting
 
-- **"Model not configured"**
+- **"image model is not set"**
   Set `PI_IMAGE_MODEL` or add `"image_model": "gemini-3-pro-image"` to `.pi/pi-config-settings.json`, then restart Pi.
 
+- **"image_model '&lt;id&gt;' is not an image-generation model"**
+  The id does not look like a Gemini image model. Pick one from `/pi-config-settings`, which only lists Google image-capable models for this setting.
+
 - **"No API key found"**
-  Export `GEMINI_API_KEY` or `GOOGLE_API_KEY` before starting Pi.
+  Export `GEMINI_API_KEY` or `GOOGLE_API_KEY` before starting Pi. Keys are read from the process environment only and never from settings files.
 
 - **"Image generation blocked by safety filter"**
-  Rephrase the prompt to remove unsafe or explicit content.
+  Gemini returned a `promptFeedback.blockReason`. Rephrase the prompt to remove unsafe or explicit content.
 
 - **"No image data returned from Gemini"**
-  Retry with a simpler prompt or switch to a different image-capable Gemini model.
+  The call succeeded but carried no `inlineData` part. Retry with a simpler prompt, or switch to a different image-capable Gemini model.
+
+- **"Gemini image request failed (4xx/5xx)"**
+  Check that the key is valid and the Generative Language API is enabled. `401`/`403` means the key is wrong or lacks access; `404` usually means the model id does not exist for that key.
+
+- **The request hangs**
+  When Pi passes no abort signal, the request carries a 3-minute timeout. Very complex prompts at large aspect ratios can hit it; simplify and retry.
 
 > **Warning:** Pi reads the API key from the current session environment, so export it before launching Pi.
 
@@ -2878,7 +3083,7 @@ Pi collects changed files from the current repository and sends them to Neovim's
     :cprev
 ```
 
-Each quickfix item points to a changed file and includes its git status such as `modified`, `added`, `deleted`, or `renamed`.
+Each quickfix item points at the absolute path of a changed file, jumps to line 1, and carries its git status as the quickfix text: `modified`, `added`, `deleted`, `renamed`, or `copied`. The list is titled `pi: changed files` and the quickfix window opens automatically.
 
 5. Re-run the command after new edits or commits.
 
@@ -2896,20 +3101,24 @@ This refreshes quickfix with the latest set of changed files for the current bra
 
 | Current branch | What Pi includes |
 |---|---|
-| `main` or `master` | Changes in your current working tree compared to `HEAD` |
-| Any other branch | Branch changes compared to `origin/main` if it exists, otherwise `origin/master`, plus current uncommitted changes |
+| `main` or `master` | Changes in your current working tree compared to `HEAD` (uncommitted only) |
+| Any other branch | Committed branch changes versus `origin/main` if that ref exists, otherwise `origin/master`, plus current uncommitted changes |
+
+A file that appears in both the committed and uncommitted diffs is listed once, using the first status seen.
 
 > **Tip:** On feature branches, this makes quickfix useful for both local edits and the branch-level diff you are preparing for review.
 
 ### Run Remote Lua in Your Current Neovim Session
 
-Because Pi inherits the `$NVIM` socket when started from a Neovim terminal, you can trigger editor actions from commands, scripts, or prompts.
+Because Pi inherits the `$NVIM` socket when started from a Neovim terminal, you can trigger editor actions from commands, scripts, or prompts. Pi itself talks to Neovim this way: it writes a Lua file to `.pi/tmp/`, then calls `nvim --server "$NVIM" --remote-expr 'luaeval("dofile(...)")'` with a 5s timeout.
+
+The same call works by hand — for example, notifying yourself after a long-running command finishes:
 
 ```bash
-    nvim --server "$NVIM" --remote-expr 'luaeval("vim.notify(\"Task complete from Pi!\")")'
+    nvim --server "$NVIM" --remote-expr 'luaeval([[vim.notify("Task complete from Pi!")]])'
 ```
 
-A simple use case is sending yourself a notification after a long-running command or test finishes.
+Use `[[…]]` for the Lua string, or single quotes inside the `luaeval` string. Escaping with `\"` does not work — Lua does not treat a backslash as an escape inside `"…"`, so the expression fails to parse.
 
 ### Use Neovim for Review, Browser UI for Diff Publishing
 
@@ -2917,11 +3126,11 @@ If you want keyboard-first navigation, Neovim quickfix is the fastest path. If y
 
 ## Troubleshooting
 
-- **`/nvim-changed-files` does not appear:** Start Pi from inside Neovim, not from tmux or a separate terminal window.
-- **Quickfix does not open or update:** Make sure the `nvim` CLI can talk to the current editor session through `$NVIM`.
+- **`/nvim-changed-files` does not appear:** Start Pi from inside Neovim, not from tmux or a separate terminal window. The command only registers when `$NVIM` is set.
+- **Quickfix does not open or update:** Make sure the `nvim` CLI can talk to the current editor session through `$NVIM`. Pi gives the remote call 5 seconds before giving up.
 - **No files are listed:** Check that your repository actually has changed files. On feature branches, also make sure `origin/main` or `origin/master` is available locally.
-- **Remote Lua command fails:** Verify that `$NVIM` is set in the shell where you run the command.
-- **You are using a background subagent:** Neovim integration is only available from your main interactive session, not background child sessions.
+- **Remote Lua command fails:** Verify that `$NVIM` is set in the shell where you run the command, and check the Lua string quoting (see above).
+- **You are using a background subagent:** Neovim integration is only available from your main interactive session, not background child sessions (`PI_SUBAGENT_CHILD=1`).
 
 See [Installation & Quickstart](quickstart.html) for basic Pi setup.
 
@@ -2937,155 +3146,174 @@ See [Installation & Quickstart](quickstart.html) for basic Pi setup.
 
 Source: discord-bot.md
 
-# ~/.pi/discord.env
-DISCORD_BOT_TOKEN=MTE...your.token.here...
-DISCORD_ALLOWED_USERS=123456789012345678
-```
+# Discord Bot Notifications
 
-    Start the dashboard daemon from Pi:
+The pidash daemon can log in to Discord and act as a remote control for your Pi sessions. Watch a session from a slash command, then send prompts and answer agent questions from a DM — including images and small text files.
 
-```text
-/pidash start
-```
+There is no separate Discord service. The bot runs inside the pidash daemon (`scripts/pidash-discord.ts`) and is off unless a bot token is present.
 
-    Then, in Discord, run `/sessions`, pick a session, and continue the conversation in a DM with the bot.
+## Prerequisites
 
-    ## Step-by-Step
+- A running pidash daemon (`/pidash start`) — see [Using the Web Dashboard](using-the-web-dashboard.html)
+- A Discord bot application with a token, and the **Message Content Intent** enabled
+- The bot invited to your server with the `application.commands` scope, if you want slash commands in a server (DM control works without it)
 
-    ### 1. Create the Discord credentials file
+## Quick Example
 
-```env
-# ~/.pi/discord.env
-DISCORD_BOT_TOKEN=MTE...your.token.here...
-DISCORD_ALLOWED_USERS=123456789012345678
-```
-
-    `DISCORD_BOT_TOKEN` enables the bot. `DISCORD_ALLOWED_USERS` is optional, but recommended, and accepts a comma-separated list of Discord user IDs.
-
-    ### 2. Create and configure the Discord bot
-
-    Set up your bot in the Discord Developer Portal, then:
-
-    - copy the bot token
-    - enable **Message Content Intent**
-    - invite the bot to your server with the `application.commands` scope if you want slash commands there
-
-    If you only want DM-based control, the bot can still work without using server chat for prompts.
-
-    ### 3. Start or restart the pidash daemon
-
-```text
-/pidash start
-```
-
-    If pidash is already running, restart it so it reloads the Discord credentials:
-
-```text
-/pidash restart
-```
-
-    The Discord integration is attached to the pidash daemon, so the bot logs in when pidash starts.
-
-    > **Note:** If you are already using the web dashboard, you do not need a separate Discord-specific service. The same pidash daemon handles both.
-
-    ### 4. Choose a session from Discord
-
-    Use these slash commands in a Discord server where the bot is present:
-
-    | Command | What it does |
-    |---|---|
-    | `/sessions` | Lists active Pi sessions and shows buttons to connect or disconnect |
-    | `/status` | Shows the currently watched session, model, branch, and current state |
-    | `/stop` | Sends an interrupt to the watched session |
-
-    A typical flow is:
-
-    1. Run `/sessions`
-    2. Click the session you want to watch
-    3. Open a DM with the bot
-    4. Send prompts there
-
-    ### 5. Send prompts from Discord DMs
-
-    Once you are watching a session, send a DM to the bot just like you would type into Pi.
-
-    - Plain text messages are forwarded as prompts
-    - If the agent asks a question, reply in the same DM
-    - `/stop` also works as a DM message
-
-    Use this split to stay oriented:
-
-    | Use Discord server slash commands for | Use Discord DMs for |
-    |---|---|
-    | picking a session | sending prompts |
-    | checking status | replying to agent questions |
-    | sending stop signals | uploading files or images |
-
-    ### 6. Send attachments when needed
-
-    You can DM attachments to the bot along with your prompt.
-
-    Supported behavior:
-
-    - text-like files under 100KB are inlined into the prompt
-    - images are forwarded for the agent to inspect
-    - larger or binary files are only mentioned, not embedded
-
-    This is useful for quick log review, screenshots, small configs, or error snippets.
-
-    > **Tip:** If you want the agent to focus on an uploaded file, include a short instruction in the same DM, such as “Review this log and summarize the failure.”
-
-    ## Advanced Usage
-
-    ### Authorize multiple people
+Create the credentials file, then start the dashboard daemon:
 
 ```env
-# ~/.pi/discord.env
-DISCORD_ALLOWED_USERS=111111111111111111,222222222222222222,333333333333333333
+    # ~/.pi/discord.env
+    DISCORD_BOT_TOKEN=MTE...your.token.here...
+    DISCORD_ALLOWED_USERS=123456789012345678
 ```
 
-    Use this when a small team needs access to the same running sessions.
+Start the dashboard daemon from Pi:
 
-    > **Warning:** If `DISCORD_ALLOWED_USERS` is omitted, the bot accepts DMs from any user who can reach it. Set this variable unless you intentionally want open access.
+```text
+    /pidash start
+```
 
-    ### Understand how “watching” works
+Then, in Discord, run `/sessions`, pick a session, and continue the conversation in a DM with the bot.
 
-    The bot only forwards prompts to the session you are currently watching. If you switch sessions in Discord, new prompts go to the newly selected one.
+## Step-by-Step
 
-    This makes it easy to keep one DM thread per active task without guessing where your next message will land.
+### 1. Create the Discord credentials file
 
-    ### Use the bot with agent questions
+```env
+    # ~/.pi/discord.env
+    DISCORD_BOT_TOKEN=MTE...your.token.here...
+    DISCORD_ALLOWED_USERS=123456789012345678
+```
 
-    If the running agent triggers an interactive choice, the bot forwards that prompt into your DM and waits for your reply. You can respond with either:
+`DISCORD_BOT_TOKEN` enables the bot. `DISCORD_ALLOWED_USERS` is optional, but recommended, and accepts a comma-separated list of Discord user IDs. It gates **both** DMs and slash commands — an unauthorized user gets an ephemeral `Not authorized.` reply.
 
-    - a number, when options are listed
-    - free text, when the prompt expects a typed answer
+> **Note:** pidash reads this file at startup only. If pidash is already running, use `/pidash restart` after any change here.
 
-    ### Change the pidash port if needed
+### 2. Create and configure the Discord bot
 
-    If port `19190` is already taken, configure pidash with either:
+Set up your bot in the Discord Developer Portal, then:
 
-    - `PI_PIDASH_PORT`
-    - `pidash_port` in project settings
+- copy the bot token
+- enable **Message Content Intent**
+- invite the bot to your server with the `application.commands` scope if you want slash commands there
 
-    Then start pidash again. See [Using the Web Dashboard](using-the-web-dashboard.html) and [Configuration & Settings](configuration.html) for details.
+If you only want DM-based control, the bot can still work without using server chat for prompts. Commands are registered **per guild** when the bot connects, so they appear immediately in an already-joined server rather than after Discord's global propagation delay.
 
-    ## Troubleshooting
+### 3. Start or restart the pidash daemon
 
-    - **Bot does not come online:** Make sure `DISCORD_BOT_TOKEN` is present in `~/.pi/discord.env`, then run `/pidash restart`.
-    - **Slash commands do not appear:** Confirm the bot was invited with the `application.commands` scope, then restart pidash so commands are registered again.
-    - **Your DM gets “Not watching any session”:** Run `/sessions` first and click a session button before sending prompts.
-    - **Another user cannot control the bot:** Add their Discord user ID to `DISCORD_ALLOWED_USERS`, comma-separated, then restart pidash.
-    - **Uploaded file does not seem to reach the agent:** Keep text files under 100KB for inline forwarding. Very large or binary files are only referenced, not embedded.
+```text
+    /pidash start
+```
 
-    See [Using the Web Dashboard](using-the-web-dashboard.html) for details on starting and managing pidash. See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details on the kinds of long-running work you can monitor from Discord.
+If pidash is already running, restart it so it reloads the Discord credentials:
 
-    ## Related Pages
+```text
+    /pidash restart
+```
 
-    - [Using the Web Dashboard](using-the-web-dashboard.html)
-    - [Daemon & Websocket Networking](daemon-and-websockets.html)
-    - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
-    - [Inter-Agent Communication Network](inter-agent-communication.html)
+The Discord integration is attached to the pidash daemon, so the bot logs in when pidash starts.
+
+> **Note:** If you are already using the web dashboard, you do not need a separate Discord-specific service. The same pidash daemon handles both.
+
+### 4. Choose a session from Discord
+
+Use these slash commands in a Discord server where the bot is present:
+
+| Command | What it does |
+|---|---|
+| `/sessions` | Lists active Pi sessions and shows buttons to connect or disconnect |
+| `/status` | Shows the currently watched session, model, branch, and current state |
+| `/stop` | Sends an interrupt to the watched session |
+
+A typical flow is:
+
+1. Run `/sessions`
+2. Click the session you want to watch
+3. Open a DM with the bot
+4. Send prompts there
+
+### 5. Send prompts from Discord DMs
+
+Once you are watching a session, send a DM to the bot just like you would type into Pi.
+
+- Plain text messages are forwarded as prompts
+- If the agent asks a question, reply in the same DM
+- `/stop` also works as a DM message
+
+Use this split to stay oriented:
+
+| Use Discord server slash commands for | Use Discord DMs for |
+|---|---|
+| picking a session | sending prompts |
+| checking status | replying to agent questions |
+| sending stop signals | uploading files or images |
+
+### 6. Send attachments when needed
+
+You can DM attachments to the bot along with your prompt.
+
+Supported behavior:
+
+- text-like files under 100KB are inlined into the prompt
+- images are forwarded for the agent to inspect
+- larger or binary files are only mentioned, not embedded
+
+This is useful for quick log review, screenshots, small configs, or error snippets.
+
+> **Tip:** If you want the agent to focus on an uploaded file, include a short instruction in the same DM, such as “Review this log and summarize the failure.”
+
+## Advanced Usage
+
+### Authorize multiple people
+
+```env
+    # ~/.pi/discord.env
+    DISCORD_ALLOWED_USERS=111111111111111111,222222222222222222,333333333333333333
+```
+
+Use this when a small team needs access to the same running sessions.
+
+> **Warning:** If `DISCORD_ALLOWED_USERS` is omitted, the bot accepts DMs from any user who can reach it. Set this variable unless you intentionally want open access.
+
+### Understand how “watching” works
+
+The bot only forwards prompts to the session you are currently watching. If you switch sessions in Discord, new prompts go to the newly selected one.
+
+This makes it easy to keep one DM thread per active task without guessing where your next message will land.
+
+### Use the bot with agent questions
+
+If the running agent triggers an interactive choice, the bot forwards that prompt into your DM and waits for your reply. You can respond with either:
+
+- a number, when options are listed
+- free text, when the prompt expects a typed answer
+
+### Change the pidash port if needed
+
+If port `19190` is already taken, configure pidash with either:
+
+- `PI_PIDASH_PORT`
+- `pidash_port` in project settings
+
+Then start pidash again. See [Using the Web Dashboard](using-the-web-dashboard.html) and [Configuration & Settings](configuration.html) for details.
+
+## Troubleshooting
+
+- **Bot does not come online:** Make sure `DISCORD_BOT_TOKEN` is present in `~/.pi/discord.env`, then run `/pidash restart`.
+- **Slash commands do not appear:** Confirm the bot was invited with the `application.commands` scope, then restart pidash so commands are registered again.
+- **Your DM gets “Not watching any session”:** Run `/sessions` first and click a session button before sending prompts.
+- **Another user cannot control the bot:** Add their Discord user ID to `DISCORD_ALLOWED_USERS`, comma-separated, then restart pidash.
+- **Uploaded file does not seem to reach the agent:** Keep text files under 100KB for inline forwarding. Very large or binary files are only referenced, not embedded.
+
+See [Using the Web Dashboard](using-the-web-dashboard.html) for details on starting and managing pidash. See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details on the kinds of long-running work you can monitor from Discord.
+
+## Related Pages
+
+- [Using the Web Dashboard](using-the-web-dashboard.html)
+- [Daemon & Websocket Networking](daemon-and-websockets.html)
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
+- [Inter-Agent Communication Network](inter-agent-communication.html)
 
 
 ---
@@ -3106,7 +3334,7 @@ Agents registered as ACPX providers at session start.
 
 **Resolution order:** project settings → global settings → `ACPX_AGENTS` env → `[]`.
 
-**Driver mapping (`ACPX_AGENT_TO_DRIVER`):** `cursor` → `acpx`. Any other listed name falls back to driver kind `acpx` with `config.agent` set to that name.
+**Driver mapping (`ACPX_AGENT_TO_DRIVER`, `extensions/providers/built-in-drivers.ts`):** `cursor`, `claude`, and `gemini` all map to driver kind `acpx`, with `config.agent` set to the agent name. An agent that is **not** in the map is skipped with a `no driver mapping in ACPX_AGENT_TO_DRIVER` warning — it does not fall back to `acpx`.
 
 ```json
     {
@@ -3120,7 +3348,7 @@ Agents registered as ACPX providers at session start.
 
 **Effect:** For each agent, `extensions/providers/` creates a `ProviderInstance`, registers provider id `acpx-<agent>`, and exposes models under that provider.
 
-> **Note:** During extension startup, each agent races `registry.createInstance` against `DISCOVERY_TIMEOUT_MS` (`30000`). Timed-out creates are torn down if they finish later.
+> **Note:** During extension startup, each agent races `registry.createInstance` against `DISCOVERY_TIMEOUT_MS` (`30000`). Timed-out creates are torn down if they finish later. Discovery is skipped entirely inside subagent children (`discoverAndRegisterAcpx` returns early when `isSubagent`), so ACPX providers only exist in the main session.
 
 ## `loadAcpxRuntime()`
 
@@ -3138,6 +3366,8 @@ Resolves the `acpx/runtime` module. Memoized across calls; failed loads clear th
 1. Global npm root (`npm root -g`) package `acpx` → `dist/runtime.js`
 2. Candidate roots: `/usr/local/lib/node_modules`, `~/.npm-global/lib/node_modules`
 3. Package import `acpx/runtime`
+
+A test helper, `clearAcpxRuntimeCache()`, resets both the root list and the memoized promise.
 
 ```typescript
     import { loadAcpxRuntime } from "./load-runtime.js";
@@ -3188,6 +3418,7 @@ Maps raw model id strings to pi-ai runtime `Model` objects for provider registra
 | :--- | :--- | :--- | :--- |
 | `agent` | `string` | (required) | Agent id used in model/provider ids. |
 | `modelIds` | `readonly string[]` | (required) | Raw ids from ACPX status / snapshot. |
+| `catalog` | `ModelsDevCatalog \| null` | `null` | Optional models.dev catalog used to fill in context window, pricing, and capability fields on each model. |
 
 **Returns:** `Model[]` with `api: "acpx"` and `provider: "acpx-<agent>"`.
 
@@ -3260,7 +3491,12 @@ Built-in `ProviderDriver` (`driverKind: "acpx"`) in `extensions/providers/acpx-d
 | :--- | :--- | :--- | :--- |
 | `config` | `AcpxConfig` | (required) | Passed by the registry; availability checks `loadAcpxRuntime()` only. |
 
-**Returns:** `{ available: true }` if `loadAcpxRuntime()` resolves; otherwise `{ available: false, reason: string }`.
+**Returns:** `{ available: true }` when both checks pass; otherwise `{ available: false, reason: string }`.
+
+Probe performs **two** checks:
+
+1. **Agent CLI on `PATH`** — resolves the binary named `agent` for `agent: "cursor"`, otherwise the agent name itself (`claude`, `gemini`). Missing binary → unavailable with a `CLI binary ... not found on PATH` reason.
+2. **ACPX runtime** — `loadAcpxRuntime()` must resolve, otherwise unavailable with an `acpx runtime not available` reason.
 
 ### `AcpxDriver.create(input)`
 
@@ -3378,16 +3614,33 @@ ACPX runtime API used by discovery and the driver adapter.
 
 | Hook | Effect |
 | :--- | :--- |
-| `session_shutdown` | Stops CLI session reaper; `registry.teardownAll()` (each ACPX instance `dispose` → `adapter.stopAll()`); clears `cliInstances` and `acpxInstances`. |
+| `session_shutdown` | Stops CLI session reaper; `registry.teardownAll()` (each ACPX instance `dispose` → `adapter.stopAll()`); clears `cliInstances` and `acpxInstances`; calls `resetProvidersInitialized()`. |
+
+**Module:** `extensions/providers/session-shutdown.ts` (`teardownProvidersOnSessionShutdown`)
 
 ```typescript
-    pi.on("session_shutdown", async () => {
-      stopCliSessionReaper();
-      await registry.teardownAll();
-      cliInstances.clear();
-      acpxInstances.clear();
-    });
+    export async function teardownProvidersOnSessionShutdown(
+      registry: ProviderDriverRegistry,
+      cliInstances: Map<string, unknown>,
+      acpxInstances: Map<string, unknown>,
+    ): Promise<void> {
+      try {
+        stopCliSessionReaper();
+        await registry.teardownAll();
+      } catch (err) {
+        log.error("session_shutdown teardown failed", ...);
+        throw err;
+      } finally {
+        // Always clear maps + init guard so a teardown failure cannot leave
+        // initialized stuck true (would skip registerProvider on /new|/resume|/fork).
+        cliInstances.clear();
+        acpxInstances.clear();
+        resetProvidersInitialized();
+      }
+    }
 ```
+
+> **Note:** Clearing the initialized guard is what lets providers re-register after `/new`, `/resume`, or `/fork`. It runs in a `finally` block, so it happens even when teardown throws.
 
 ## Related Pages
 
@@ -3418,7 +3671,7 @@ Run Claude through your Google Cloud project so usage stays on Vertex AI billing
     gcloud auth application-default login
     export GOOGLE_CLOUD_PROJECT=your-project-id
 
-    pi install git:github.com/myk-org/pi-vertex-claude
+    pi install npm:@myk-org/pi-vertex-claude
 
     pi --provider google-vertex-claude --model claude-sonnet-4-6
 ```
@@ -3436,11 +3689,11 @@ Interactive installer (choose **pi-vertex-claude** under Pi Packages):
 Or install / update directly:
 
 ```bash
-    pi install git:github.com/myk-org/pi-vertex-claude
-    pi update git:github.com/myk-org/pi-vertex-claude
+    pi install npm:@myk-org/pi-vertex-claude
+    pi update npm:@myk-org/pi-vertex-claude
 ```
 
-npm package name: `@myk-org/pi-vertex-claude`.
+The npm package name is `@myk-org/pi-vertex-claude`. The container entrypoint registers it from the same npm source and actively migrates away from the older `git:github.com/myk-org/pi-config/packages/pi-vertex-claude` source (see `entrypoint.sh`).
 
 ### 2. Authenticate
 
@@ -3448,7 +3701,7 @@ npm package name: `@myk-org/pi-vertex-claude`.
     gcloud auth application-default login
 ```
 
-Credentials are read from `GOOGLE_APPLICATION_CREDENTIALS` when set; otherwise from the default ADC file under your home directory.
+Credentials are read from `GOOGLE_APPLICATION_CREDENTIALS` when set; otherwise from the default ADC file at `~/.config/gcloud/application_default_credentials.json`.
 
 > **Tip:** In CI, set `GOOGLE_APPLICATION_CREDENTIALS` to a service account JSON key instead of using interactive login.
 
@@ -3489,6 +3742,7 @@ One of these must be set (priority order):
 
 | Model id | Context | Max output | Reasoning |
 | :--- | ---: | ---: | :---: |
+| `claude-opus-4-8` | 1M | 128K | yes |
 | `claude-opus-4-6` | 200K | 128K | yes |
 | `claude-sonnet-4-6` | 200K | 64K | yes |
 | `claude-opus-4-5@20251101` | 200K | 32K | yes |
@@ -3503,13 +3757,15 @@ One of these must be set (priority order):
 
 All of these accept text and image input.
 
+> **Note:** "Max output" is the model's ceiling, not the default request size. When you do not pass an explicit `maxTokens`, the provider sends one third of the ceiling (for example 64K of the 128K Opus ceiling).
+
 For async agents, dreaming, and other settings that take provider/model pairs, use `google-vertex-claude` with one of the ids above. See [Configuration & Settings](configuration.html) and [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html).
 
 ## Advanced Usage
 
 ### 1M context variants
 
-Enable extra catalog entries for Opus 4.6 and Sonnet 4.6:
+Enable extra catalog entries for Opus 4.6 and Sonnet 4.6 (Opus 4.8 already has 1M context natively, so it needs no variant):
 
 ```bash
     export VERTEX_CLAUDE_1M=true
@@ -3728,255 +3984,288 @@ not `hidden`, and take the widest exposure among them.
 
 Source: pi-sidecar.md
 
-# or: pip install pi-sidecar-client
-```
+# Pi Sidecar HTTP API
 
-    CLIs after install: `pi-sidecar` (server) and `pi-sidecar-start` (dev start script).
+`@myk-org/pi-sidecar` wraps the Pi SDK in a small HTTP service. Your app sends prompts over HTTP; the sidecar creates a Pi session, streams the turn, and returns the result. A Python client (`pi-sidecar-client`) and a Node client are both published from the same package, so both sides always agree on the wire format.
 
-    ### 2. Start the sidecar
+Use it when you want model calls from a non-Pi process — a backend service, a script, or a bot — with Pi's session handling, project context, and tool execution, without embedding the whole TUI agent.
 
-    **Production-style (default port 9100):**
+## Prerequisites
 
-```bash
-npx pi-sidecar
-# or: node dist/server.js
-```
+| Requirement | Value | Source |
+| :--- | :--- | :--- |
+| Node.js | `>=22.19.0` | `packages/pi-sidecar/package.json` `engines.node` |
+| `@earendil-works/pi-coding-agent` | `>=0.99.0` | `MIN_PI_VERSION` in `packages/pi-sidecar/src/pi-version.ts` |
+| `@earendil-works/pi-ai` | `>=0.99.0` | peer dependency in `packages/pi-sidecar/package.json` |
+| Python (client only) | `>=3.10` | `requires-python` in `packages/pi-sidecar/pyproject.toml` |
 
-    **Local dev helper (default port 9201):**
+The sidecar enforces the Pi SDK floor at startup and **exits** if the installed `@earendil-works/pi-coding-agent` is older than `0.99.0` or cannot be resolved. A stale global `pi` on `PATH` only produces a warning, but subagent calls spawn that binary and may still fail.
 
-```bash
-npx pi-sidecar-start
-# foreground: npx pi-sidecar-start --foreground
-# stop:       npx pi-sidecar-start --stop
-```
+## Getting Started
 
-    | Variable | Default (`pi-sidecar`) | Default (`pi-sidecar-start`) | Effect |
-    | :--- | :--- | :--- | :--- |
-    | `SIDECAR_PORT` | `9100` | `9201` | Listen port |
-    | `SIDECAR_HOST` | `127.0.0.1` | `127.0.0.1` | Bind address (`DEV_MODE=true` → `0.0.0.0` if host unset) |
-    | `SIDECAR_URL` | — | — | Client base URL (Python default `http://127.0.0.1:9100`) |
-    | `PI_SIDECAR_LOG_LEVEL` | `info` | `info` | Server / client log level |
+### 1. Install
 
-    > **Tip:** Point the client at the port you actually started. Dev script uses **9201**; the Node server and Python client default to **9100**.
+The npm package and the Python client share one version number and are released together. Bump both, and use a range rather than an exact pin so upstream fixes can reach you.
 
 ```bash
-export SIDECAR_URL=http://127.0.0.1:9201   # when using pi-sidecar-start
+    npm install @myk-org/pi-sidecar
+    # or: pip install pi-sidecar-client
 ```
 
-    ### 3. Wait until healthy
+CLIs after install: `pi-sidecar` (server) and `pi-sidecar-start` (dev start script).
+
+### 2. Start the sidecar
+
+**Production-style (default port 9100):**
 
 ```bash
-curl -s http://127.0.0.1:9100/health
+    npx pi-sidecar
+    # or: node dist/server.js
 ```
 
-    | `status` | Meaning |
-    | :--- | :--- |
-    | `ok` | Ready (model discovery finished) |
-    | `starting` | Discovery still running (HTTP 503) |
-    | `degraded` | Discovery failed; sessions may still work for already-known models |
+**Local dev helper (default port 9201):**
+
+```bash
+    npx pi-sidecar-start
+    # foreground: npx pi-sidecar-start --foreground
+    # stop:       npx pi-sidecar-start --stop
+```
+
+| Variable | Default (`pi-sidecar`) | Default (`pi-sidecar-start`) | Effect |
+| :--- | :--- | :--- | :--- |
+| `SIDECAR_PORT` | `9100` | `9201` | Listen port |
+| `SIDECAR_HOST` | `127.0.0.1` | `127.0.0.1` | Bind address (`DEV_MODE=true` → `0.0.0.0` if host unset) |
+| `SIDECAR_URL` | — | — | Client base URL (Python default `http://127.0.0.1:9100`) |
+| `PI_SIDECAR_LOG_LEVEL` | `info` | `info` | Server / client log level |
+
+> **Tip:** Point the client at the port you actually started. Dev script uses **9201**; the Node server and Python client default to **9100**.
+
+```bash
+    export SIDECAR_URL=http://127.0.0.1:9201   # when using pi-sidecar-start
+```
+
+### 3. Wait until healthy
+
+```bash
+    curl -s http://127.0.0.1:9100/health
+```
+
+| `status` | Meaning |
+| :--- | :--- |
+| `ok` | Ready (model discovery finished) |
+| `starting` | Discovery still running (HTTP 503) |
+| `degraded` | Discovery failed; sessions may still work for already-known models |
 
 ```python
-from pi_sidecar_client import check_sidecar_available
+    from pi_sidecar_client import check_sidecar_available
 
-ok, msg = await check_sidecar_available()
-print(ok, msg)
+    ok, msg = await check_sidecar_available()
+    print(ok, msg)
 ```
 
-    ### 4. Discover models
+### 4. Discover models
 
 ```python
-from pi_sidecar_client import list_models
+    from pi_sidecar_client import list_models
 
-all_models = await list_models()
-gemini = await list_models(provider="gemini")
+    all_models = await list_models()
+    gemini = await list_models(provider="gemini")
 ```
 
-    Friendly Python provider aliases map to sidecar ids:
+Friendly Python provider aliases map to sidecar ids:
 
-    | Client alias | Sidecar provider |
-    | :--- | :--- |
-    | `gemini` | `google` |
-    | `cursor` | `acpx-cursor` (model prefixed with `cursor:` if needed) |
-    | `claude` | `google-vertex-claude` |
+| Client alias | Sidecar provider |
+| :--- | :--- |
+| `gemini` | `google` |
+| `cursor` | `acpx-cursor` (model prefixed with `cursor:` if needed) |
+| `claude` | `google-vertex-claude` |
 
-    Refresh after changing agents or auth:
+Refresh after changing agents or auth:
 
 ```bash
-curl -X POST http://127.0.0.1:9100/models/refresh
+    curl -X POST http://127.0.0.1:9100/models/refresh
 ```
 
-    Diagnose a single provider:
+Diagnose a single provider:
 
 ```python
-from pi_sidecar_client import get_sidecar_client
+    from pi_sidecar_client import get_sidecar_client
 
-client = get_sidecar_client()
-status = await client.get_model_provider_status("google")
-print(status["registered"], status["modelCount"])
+    client = get_sidecar_client()
+    status = await client.get_model_provider_status("google")
+    print(status["registered"], status["modelCount"])
 ```
 
-    > **Note:** On non-loopback binds, auth fields on provider status are redacted. Prefer `127.0.0.1` for local diagnostics. For Vertex auth setup, see [Google Vertex Claude Provider](vertex-claude-provider.html).
-
-    ### 5. Run a session
-
-    **Single-shot (auto cleanup):** use `call_ai_once` as in the Quick Example.
-
-    **Multi-turn:**
+List registered providers even when they expose no models or credentials yet:
 
 ```python
-from pi_sidecar_client import call_ai, get_sidecar_client
-
-result = await call_ai(
-    "I'm building a REST API in Python. What framework should I use?",
-    ai_provider="gemini",
-    ai_model="gemini-2.5-flash",
-    system_prompt="You are a senior Python developer. Be concise.",
-)
-session_id = result.session_id
-
-result = await call_ai(
-    "Show me a minimal example with that framework.",
-    ai_provider="gemini",
-    ai_model="gemini-2.5-flash",
-    session_id=session_id,
-)
-
-await get_sidecar_client().delete_session(session_id)
+    providers = await get_sidecar_client().get_providers()
 ```
 
-    Session lifecycle:
+> **Note:** On non-loopback binds, auth fields on provider status are redacted. Prefer `127.0.0.1` for local diagnostics. For Vertex auth setup, see [Google Vertex Claude Provider](vertex-claude-provider.html).
 
-    1. Create session (`POST /sessions`) with provider, model, system prompt, cwd.
-    2. Prompt (`POST /sessions/:id/prompt`) — one in-flight prompt per session.
-    3. Optional abort (`POST /sessions/:id/abort`).
-    4. Delete (`DELETE /sessions/:id`) when finished.
+### 5. Run a session
 
-    Default built-in tools when you omit `tools`: `read`, `grep`, `find`, `ls`, `bash`.
+**Single-shot (auto cleanup):** use `call_ai_once` as in the Quick Example.
 
-    `cwd` loads project resources from `{cwd}/.pi/` and `AGENTS.md`. Optional `agent_dir` points at a global agent directory (e.g. `~/.pi/agent`); it is rejected on non-loopback binds unless `DEV_MODE=true` (then ignored).
-
-    ## Advanced Usage
-
-    ### HTTP API surface
-
-    | Method | Path | Effect |
-    | :--- | :--- | :--- |
-    | `GET` | `/health` | Readiness (`ok` / `starting` / `degraded`) |
-    | `GET` | `/models` | List discovered models |
-    | `POST` | `/models/refresh` | Re-run discovery |
-    | `GET` | `/models/:provider/status` | Registration, model count, auth (redacted off-loopback) |
-    | `POST` | `/sessions` | Create session → `{ session_id }` |
-    | `POST` | `/sessions/:id/prompt` | Send `{ "message": "..." }` |
-    | `POST` | `/sessions/:id/abort` | Cancel in-flight prompt |
-    | `DELETE` | `/sessions/:id` | Destroy session |
-
-    Body size limit: 1 MiB. Concurrent prompts on the same session return conflict (busy).
-
-    ### Custom HTTP-backed tools
-
-    Pass `custom_tools` when creating a session. Entries with an `http` block are executed as outbound HTTP; `{param}` placeholders interpolate from tool args.
+**Multi-turn:**
 
 ```python
-result = await call_ai_once(
-    "Look up user 42",
-    ai_provider="gemini",
-    ai_model="gemini-2.5-flash",
-    custom_tools=[{
-        "name": "fetch_data",
-        "description": "Fetch user data by ID",
-        "parameters": {
-            "type": "object",
-            "properties": {"userId": {"type": "string"}},
-        },
-        "http": {
-            "method": "GET",
-            "url": "https://api.example.com/users/{userId}",
-        },
-    }],
-)
+    from pi_sidecar_client import call_ai, get_sidecar_client
+
+    result = await call_ai(
+        "I'm building a REST API in Python. What framework should I use?",
+        ai_provider="gemini",
+        ai_model="gemini-2.5-flash",
+        system_prompt="You are a senior Python developer. Be concise.",
+    )
+    session_id = result.session_id
+
+    result = await call_ai(
+        "Show me a minimal example with that framework.",
+        ai_provider="gemini",
+        ai_model="gemini-2.5-flash",
+        session_id=session_id,
+    )
+
+    await get_sidecar_client().delete_session(session_id)
 ```
 
-    | `http` field | Type | Default | Effect |
-    | :--- | :--- | :--- | :--- |
-    | `method` | `GET` \| `POST` \| `PUT` \| `DELETE` \| `PATCH` | (required) | HTTP method |
-    | `url` | string | (required) | URL template with `{params}` |
-    | `headers` | object | — | Header templates |
-    | `query_params` / `queryParams` | object | — | Query templates |
-    | `body_template` / `bodyTemplate` | object \| string | — | Body template |
-    | `timeout_ms` / `timeoutMs` | number | `30000` | Request timeout |
+Session lifecycle:
 
-    Restrict the built-in tool allowlist with `tools=["read", "grep"]` (or `[]` for none).
+1. Create session (`POST /sessions`) with provider, model, system prompt, cwd.
+2. Prompt (`POST /sessions/:id/prompt`) — one in-flight prompt per session.
+3. Optional abort (`POST /sessions/:id/abort`).
+4. Delete (`DELETE /sessions/:id`) when finished.
 
-    ### ACPX and CLI model sources
+Default built-in tools when you omit `tools`: `read`, `grep`, `find`, `ls`, `bash`.
+
+`cwd` loads project resources from `{cwd}/.pi/` and `AGENTS.md`. Optional `agent_dir` points at a global agent directory (e.g. `~/.pi/agent`); it is rejected on non-loopback binds unless `DEV_MODE=true` (then ignored).
+
+## Advanced Usage
+
+### HTTP API surface
+
+| Method | Path | Effect |
+| :--- | :--- | :--- |
+| `GET` | `/health` | Readiness (`ok` / `starting` / `degraded`) |
+| `GET` | `/providers` | Registered providers, even with no models or credentials |
+| `GET` | `/models` | List discovered models |
+| `POST` | `/models/refresh` | Re-run discovery |
+| `POST` | `/models/for-api-key` | Discover models for a caller-supplied `api_key` |
+| `GET` | `/models/:provider/status` | Registration, model count, auth (redacted off-loopback) |
+| `POST` | `/sessions` | Create session → `{ session_id }` |
+| `POST` | `/sessions/:id/prompt` | Send `{ "message": "..." }` |
+| `POST` | `/sessions/:id/abort` | Cancel in-flight prompt |
+| `DELETE` | `/sessions/:id` | Destroy session |
+
+Body size limit: 1 MiB. Concurrent prompts on the same session return conflict (busy).
+
+### Custom HTTP-backed tools
+
+Pass `custom_tools` when creating a session. Entries with an `http` block are executed as outbound HTTP; `{param}` placeholders interpolate from tool args.
+
+```python
+    result = await call_ai_once(
+        "Look up user 42",
+        ai_provider="gemini",
+        ai_model="gemini-2.5-flash",
+        custom_tools=[{
+            "name": "fetch_data",
+            "description": "Fetch user data by ID",
+            "parameters": {
+                "type": "object",
+                "properties": {"userId": {"type": "string"}},
+            },
+            "http": {
+                "method": "GET",
+                "url": "https://api.example.com/users/{userId}",
+            },
+        }],
+    )
+```
+
+| `http` field | Type | Default | Effect |
+| :--- | :--- | :--- | :--- |
+| `method` | `GET` \| `POST` \| `PUT` \| `DELETE` \| `PATCH` | (required) | HTTP method |
+| `url` | string | (required) | URL template with `{params}` |
+| `headers` | object | — | Header templates |
+| `query_params` / `queryParams` | object | — | Query templates |
+| `body_template` / `bodyTemplate` | object \| string | — | Body template |
+| `timeout_ms` / `timeoutMs` | number | `30000` | Request timeout |
+
+Restrict the built-in tool allowlist with `tools=["read", "grep"]` (or `[]` for none).
+
+### ACPX and CLI model sources
 
 ```bash
-export ACPX_AGENTS=cursor
-export CLI_AGENTS=claude,gemini
-npx pi-sidecar
+    export ACPX_AGENTS=cursor
+    export CLI_AGENTS=claude,gemini
+    npx pi-sidecar
 ```
 
-    Then use providers such as `acpx-cursor` / `cli-claude` (or Python aliases `cursor` / mapped names). Refresh with `POST /models/refresh` after changing env. See [Configuration & Settings](configuration.html) for project-level agent lists used by interactive Pi.
+Then use providers such as `acpx-cursor` / `cli-claude` (or Python aliases `cursor` / mapped names). Refresh with `POST /models/refresh` after changing env. See [Configuration & Settings](configuration.html) for project-level agent lists used by interactive Pi.
 
-    ### Watchdog (companion process)
+### Watchdog (companion process)
 
 ```bash
-export SIDECAR_WATCHDOG_URL=http://127.0.0.1:8000/health
-npx pi-sidecar
+    export SIDECAR_WATCHDOG_URL=http://127.0.0.1:8000/health
+    npx pi-sidecar
 ```
 
-    When set, the sidecar polls that URL and shuts itself down after consecutive failures (default: 60s grace, 30s interval, 10s timeout, 6 failures).
+When set, the sidecar polls that URL and shuts itself down after consecutive failures (default: 60s grace, 30s interval, 10s timeout, 6 failures).
 
-    ### Docker / process coupling
+### Docker / process coupling
 
-    Start the sidecar, wait for `/health`, then start your app and trap cleanup — see the package `entrypoint.example.sh` pattern (`SIDECAR_PORT` default `9100`).
+Start the sidecar, wait for `/health`, then start your app and trap cleanup — see the package `entrypoint.example.sh` pattern (`SIDECAR_PORT` default `9100`).
 
-    ### Using vs extending
+### Using vs extending
 
-    | Goal | What you do |
-    | :--- | :--- |
-    | **Use** | Run `pi-sidecar`, call `call_ai_once` / `SidecarClient`, pass `custom_tools` / `tools` |
-    | **Extend** | Call `startSidecar({ port, host, watchdogUrl, watchdogOptions })` from Node, or override extension paths with `SIDECAR_ACPX_EXTENSION_PATH`, `SIDECAR_CLI_PROVIDER_EXTENSION_PATH`, `SIDECAR_PROVIDER_EXTENSION_PATH`, `SIDECAR_VERTEX_EXTENSION_PATH`, `SIDECAR_SUBAGENT_EXTENSION_PATH` |
+| Goal | What you do |
+| :--- | :--- |
+| **Use** | Run `pi-sidecar`, call `call_ai_once` / `SidecarClient`, pass `custom_tools` / `tools` |
+| **Extend** | Call `startSidecar({ port, host, watchdogUrl, watchdogOptions })` from Node, or override extension paths with `SIDECAR_ACPX_EXTENSION_PATH`, `SIDECAR_CLI_PROVIDER_EXTENSION_PATH`, `SIDECAR_PROVIDER_EXTENSION_PATH`, `SIDECAR_VERTEX_EXTENSION_PATH`, `SIDECAR_SUBAGENT_EXTENSION_PATH` |
 
-    Startup lifecycle:
+Startup lifecycle:
 
-    1. Assert Pi SDK version ≥ 0.81.1.
-    2. Listen on host/port.
-    3. Optionally start watchdog.
-    4. Async model discovery — `/health` is `starting` until ready.
-    5. Serve session/prompt routes; idle sessions cleaned after 1 hour.
+1. Assert Pi SDK version ≥ 0.99.0 (`MIN_PI_VERSION`).
+2. Listen on host/port.
+3. Optionally start watchdog.
+4. Async model discovery — `/health` is `starting` until ready.
+5. Serve session/prompt routes; idle sessions cleaned after 1 hour.
 
-    ### Parallel calls and usage hooks
+### Parallel calls and usage hooks
 
 ```python
-from pi_sidecar_client import run_parallel_with_limit, set_usage_recorder
+    from pi_sidecar_client import run_parallel_with_limit, set_usage_recorder
 
-set_usage_recorder(my_recorder)  # sync or async; kwargs: request_id, result, call_type, ...
-results = await run_parallel_with_limit(tasks, max_concurrency=5)
+    set_usage_recorder(my_recorder)  # sync or async; kwargs: request_id, result, call_type, ...
+    results = await run_parallel_with_limit(tasks, max_concurrency=5)
 ```
 
-    `ai_call_timeout` on `call_ai` / `call_ai_once` is in **minutes** (converted to HTTP timeout seconds).
+`ai_call_timeout` on `call_ai` / `call_ai_once` is in **minutes** (converted to HTTP timeout seconds).
 
-    ## Troubleshooting
+## Troubleshooting
 
-    | Problem | Fix |
-    | :--- | :--- |
-    | Client connection errors | Align `SIDECAR_URL` with the server port (`9100` vs `9201`). |
-    | `/health` stuck on `starting` / 503 | Wait for discovery; check logs (`PI_SIDECAR_LOG_LEVEL=debug`). |
-    | Empty model list | Auth providers; set `ACPX_AGENTS` / `CLI_AGENTS`; `POST /models/refresh`; check `GET /models/:provider/status`. |
-    | Session create rejects model | Use an id from `GET /models`; interactive OAuth-only providers are blocked in this headless service. |
-    | `409` / session busy | Wait for the current prompt or `POST .../abort`. |
-    | `agent_dir` rejected | Bind on loopback, or use `DEV_MODE=true` (value discarded). |
-    | Pi version error at startup | Upgrade `@earendil-works/pi-coding-agent` to ≥ 0.81.1. |
+| Problem | Fix |
+| :--- | :--- |
+| Client connection errors | Align `SIDECAR_URL` with the server port (`9100` vs `9201`). |
+| `/health` stuck on `starting` / 503 | Wait for discovery; check logs (`PI_SIDECAR_LOG_LEVEL=debug`). |
+| Empty model list | Auth providers; set `ACPX_AGENTS` / `CLI_AGENTS`; `POST /models/refresh`; check `GET /models/:provider/status`. |
+| Session create rejects model | Use an id from `GET /models`; interactive OAuth-only providers are blocked in this headless service. |
+| `409` / session busy | Wait for the current prompt or `POST .../abort`. |
+| `agent_dir` rejected | Bind on loopback, or use `DEV_MODE=true` (value discarded). |
+| Pi version error at startup | Upgrade `@earendil-works/pi-coding-agent` (and `pi-ai`) to ≥ 0.99.0. |
 
-    > **Warning:** Default bind is loopback-only. Binding to `0.0.0.0` exposes an unauthenticated AI API on the network — use only behind a trusted boundary.
+> **Warning:** Default bind is loopback-only. Binding to `0.0.0.0` exposes an unauthenticated AI API on the network — use only behind a trusted boundary.
 
-    ## Related Pages
+## Related Pages
 
-    - [Google Vertex Claude Provider](vertex-claude-provider.html)
-    - [ACPX Provider Integration](acpx-provider.html)
-    - [External AI Agents & CLI](external-ai-agents.html)
-    - [Configuration & Settings](configuration.html)
-    - [Daemon & Websocket Networking](daemon-and-websockets.html)
+- [Google Vertex Claude Provider](vertex-claude-provider.html)
+- [ACPX Provider Integration](acpx-provider.html)
+- [External AI Agents & CLI](external-ai-agents.html)
+- [Configuration & Settings](configuration.html)
+- [Daemon & Websocket Networking](daemon-and-websockets.html)
 
 
 ---
@@ -3984,6 +4273,27 @@ results = await run_parallel_with_limit(tasks, max_concurrency=5)
 Source: cli-reference.md
 
 # myk_pi_tools CLI Reference
+
+`myk-pi-tools` is installed with `uv tool install myk-pi-tools`. It exposes eight command groups: `ai-cli`, `coderabbit`, `db`, `memory`, `pr`, `release`, `reviews`, and `settings`. This page documents `db`, `reviews`, and `memory`; the rest are covered on their own pages.
+
+- `ai-cli` — run prompts through external agent CLIs. See [External AI Agents & CLI](external-ai-agents.html).
+- `coderabbit`, `pr`, `reviews` — PR review automation. See [Automating Code Reviews](automating-code-reviews.html).
+- `memory` — project memory topic files. See [Curating Project Memory](curating-project-memory.html).
+
+Unless a command says otherwise, the SQLite review database is auto-detected at `<git-root>/.pi/data/reviews.db` and can be overridden with `--db-path`.
+
+## Review Database (`myk-pi-tools db`)
+
+### `db stats`
+
+Aggregates review comment counts from the reviews database.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--by-source` | Flag | `False` | Group by reviewer source (`human` / `qodo` / `coderabbit`). |
+| `--by-reviewer` | Flag | `False` | Group by reviewer author. |
+| `--json` | Flag | `False` | Output JSON instead of a formatted table. |
+| `--db-path` | String | auto-detected | Path to the SQLite database file. |
 
 ```bash
     # Default grouping (by source)
@@ -3996,6 +4306,8 @@ Source: cli-reference.md
 **Return value / effect**
 
 - Prints a table or JSON array to stdout.
+- Source grouping is the default when neither grouping flag is passed; its columns are `source`, `total`, `addressed`, `not_addressed`, `skipped`, `addressed_rate`.
+- Reviewer grouping columns are `author`, `total`, `addressed`, `not_addressed`, `skipped`.
 - Exits with an error if both `--by-source` and `--by-reviewer` are passed.
 
 ### `db patterns`
@@ -4411,6 +4723,7 @@ Prints the memory enforcement-honesty inventory.
 - [Built-in Workflow Commands](built-in-workflows.html)
 - [Automating Code Reviews](automating-code-reviews.html)
 - [Curating Project Memory](curating-project-memory.html)
+- [External AI Agents & CLI](external-ai-agents.html)
 - [Configuration & Settings](configuration.html)
 
 
@@ -4457,7 +4770,7 @@ Use this when a command has multiple spellings and you need one rule to catch al
 
 This blocks both `git push --force` and `git push --force-with-lease`. Use `bash_regex` when a simple substring is too broad or would miss important variants.
 
-> **Tip:** Keep regexes short and targeted. This matcher is for command guards, not full shell parsing.
+> **Tip:** Keep regexes short and targeted. This matcher is for command guards, not full shell parsing. Patterns longer than 200 characters are ignored, an invalid pattern is skipped silently, and only the first 4000 characters of a command are tested.
 
 ## Warn when editing secret files
 
@@ -4491,7 +4804,7 @@ Use this when a command is allowed only after another tool has run in the same t
 
 This adds a semantic verifier instead of a trigger/action pair. If Pi runs `gh pr merge` without calling `ask_user` first, the turn is flagged as a violation.
 
-> **Note:** This checks ordering inside a single turn: `ask_user` must happen before the merge command.
+> **Note:** This checks ordering inside a single turn: `ask_user` must happen before the merge command. The second half is a plain substring matched against `bash` command strings only, and verifiers are evaluated at turn end — they report a violation rather than blocking the call.
 
 ## Make the repo read-only for direct edits
 
@@ -4523,10 +4836,6 @@ These rules block tool calls by exact tool name rather than by shell text. Use `
 Use this when you want Pi to perform a tightly controlled check right after a successful change.
 
 ```text
-    # In your shell before starting pi
-    export PI_ENFORCEMENT_ALLOWED_COMMANDS="git diff -- Dockerfile"
-
-    # In pi chat
     memory_add(
       text="Show the Dockerfile diff after every edit",
       category="pattern",
@@ -4535,13 +4844,21 @@ Use this when you want Pi to perform a tightly controlled check right after a su
     )
 ```
 
-This runs `git diff -- Dockerfile` immediately after a matching `write` or `edit` succeeds, and only because the command is allowlisted exactly. Use this for short, deterministic checks that you want attached to a specific kind of edit.
+This runs `git diff -- Dockerfile` immediately after a matching `write` or `edit` succeeds. Use this for short, deterministic checks that you want attached to a specific kind of edit.
 
-> **Warning:** Allowlist entries must match exactly, character for character.
+Unlike `block` and `warn`, `run_after` actually executes a shell command, so it is gated. Without configuration the command runs as written. To restrict it, set the `enforcement_allowed_commands` allowlist — this is the only allowlist in the enforcement path:
 
-- To allow more than one follow-up command, use a colon-separated list:
-  `export PI_ENFORCEMENT_ALLOWED_COMMANDS="git diff -- Dockerfile:git status --short"`
-- Keep follow-up commands fast so they do not slow down normal edits
+```bash
+    # In your shell before starting pi
+    export PI_ENFORCEMENT_ALLOWED_COMMANDS="git diff -- Dockerfile:git status --short"
+```
+
+Or set `enforcement_allowed_commands` in `pi-config-settings.json`. Once the setting is non-empty, a `run_after` command not in the allowlist is refused with `Blocked: command not in enforcement_allowed_commands allowlist` and does not execute.
+
+> **Warning:** Allowlist entries are colon-separated and matched exactly, character for character, after trimming — no prefix matching, so `git diff` in the list does not permit `git diff -- Dockerfile`. An empty allowlist (the default) allows everything.
+
+- Independently of the allowlist, `run_after` still refuses commands matching `curl`/`wget` piped into a shell, `rm -rf /`-style paths, `sudo`, and world-writable `chmod`
+- Each command runs with a 60s timeout; keep follow-up commands fast so they do not slow down normal edits
 
 ## Related Pages
 
@@ -4581,7 +4898,7 @@ Two complementary servers handle real-time UI and IPC. They share the same WebSo
 2. The extension checks whether a healthy daemon already answers `/api/health`.
 3. If not, it spawns the server script and waits until health checks succeed.
 4. The terminal connects on `/ws/pi` and begins forwarding session events.
-5. The browser connects on `/ws/browser` and receives the same live stream (plus buffered catch-up when needed).
+5. The browser connects on `/ws/browser` and receives the same live stream (plus buffered catch-up when needed). Background agent and cron status arrive on a separate `/ws/async` socket.
 
 > **Tip:** Check daemon health with `/pidash status` or `/pidiff status`. See [Using the Web Dashboard](using-the-web-dashboard.html) for day-to-day UI usage.
 
@@ -4589,9 +4906,9 @@ Two complementary servers handle real-time UI and IPC. They share the same WebSo
 
 ### Shared dashboard vs per-project diff server
 
-**pidash** listens on a configured port (`pidash_port`, default `19190`). Every project session can attach to the same daemon, so one browser window can switch across terminals. Logs for spawn failures live under `~/.pi/pidash-server.log`.
+**pidash** listens on a configured port (`pidash_port`, default `19190`, env `PI_PIDASH_PORT`). Every project session can attach to the same daemon, so one browser window can switch across terminals. Logs for spawn failures live under `~/.pi/pidash-server.log`.
 
-**pidiff** binds a free local port for the current project and records that port (and PID when known) under the project’s `.pi/tmp/` directory as `pidiff.port` / `pidiff.pid`. That avoids collisions when several projects run diffs at once.
+**pidiff** binds a free local port for the current project and records that port (and PID when known) under the project’s `.pi/tmp/` directory as `pidiff.port` / `pidiff.pid`. That avoids collisions when several projects run diffs at once. A concurrent-spawn guard uses a separate `pidiff.spawning` lock, cleared after `pidiff_stale_lock_timeout_ms` (default `60000`).
 
 > **Note:** Toggle either server with `pidash_enable` / `pidiff_enable` (or their env vars). See [Configuration & Settings](configuration.html).
 
@@ -4626,15 +4943,9 @@ Token streams and tool activity originate inside the `pi` session. Extensions fo
 - [Using the Web Dashboard](using-the-web-dashboard.html) — Start, stop, and use pidash / pidiff day to day.
 - [Configuration & Settings](configuration.html) — `pidash_port`, enable flags, and related env vars.
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) — Spawn, monitor, and kill async agents that use this IPC path.
-- [Installation & Quickstart](quickstart.html) — First-time install and daemon startup.
-
-## Related Pages
-
-- [Using the Web Dashboard](using-the-web-dashboard.html)
-- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
-- [Installation & Quickstart](quickstart.html)
 - [Discord Bot Notifications](discord-bot.html)
 - [Inter-Agent Communication Network](inter-agent-communication.html)
+- [Installation & Quickstart](quickstart.html) — First-time install and daemon startup.
 
 
 ---
@@ -4675,7 +4986,7 @@ This opens a temporary answer view instead of adding a new turn to the main conv
     /btw What was the final scope of the refactor?
 ```
 
-**Effect:** Starts a temporary side-question flow. If the question is empty, Pi shows `Usage: /btw <question>`.
+**Effect:** Starts a temporary side-question flow. If the question is empty, Pi shows `Usage: /btw <question>`. If no model is selected, Pi shows `No model selected. Use /model to select one first.` and stops.
 
 ### 2. Wait for the temporary answer
 
@@ -4707,8 +5018,10 @@ The result appears in a scrollable overlay with the original question and the ge
 | `Ctrl+C` | Close the overlay |
 | `↑` or `k` | Scroll up |
 | `↓` or `j` | Scroll down |
-| `PgUp` | Scroll up faster |
-| `PgDn` | Scroll down faster |
+| `PgUp` | Scroll up 10 lines |
+| `PgDn` | Scroll down 10 lines |
+
+The footer repeats these hints as `Esc/Space/q dismiss · ↑↓/j/k scroll · PgUp/PgDn`, and when the answer is longer than the terminal the box shows a `[start-end/total]` line counter.
 
 ```text
     /btw Which part of the plan is still unresolved?
@@ -4783,6 +5096,7 @@ For creating related commands, see [Creating Slash Commands](custom-slash-comman
 | Problem | What it means | What to do |
 | :--- | :--- | :--- |
 | `Usage: /btw <question>` | No question was provided | Run `/btw` with text after it |
+| `No model selected. Use /model to select one first.` | No active model in the session | Run `/model` to pick one, then retry |
 | `Cancelled` | The request was aborted | Run the command again |
 | `No answer received` | The model returned no usable text | Retry with a clearer question |
 | The answer is too vague | The current session does not contain enough context | Ask a more specific question or continue with a normal prompt |

@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -365,7 +365,7 @@
 </code></pre></div>
 
 <blockquote>
-<p><strong>Tip:</strong> For planning without code changes, see <a href="quickstart.html">Installation &amp; Quickstart</a> for <code>/scout-and-plan</code>.</p>
+<p><strong>Tip:</strong> For planning without code changes, use <code>/scout-and-plan &lt;task&gt;</code> (see Other Built-in Prompts below).</p>
 </blockquote>
 <h2 id="review-commands">Review Commands</h2>
 <h3 id="issue-review"><code>/issue-review</code></h3>
@@ -764,6 +764,46 @@
 /query-db query "SELECT * FROM comments WHERE status='skipped' LIMIT 10"
 </code></pre></div>
 
+<h2 id="other-built-in-prompts">Other Built-in Prompts</h2>
+<p>These are also shipped as prompt templates in <code>prompts/</code>, and are registered by Pi itself rather than by an extension.</p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/scout-and-plan &lt;task&gt;</code></td>
+<td>Scout pass plus a plan, with no code changes. Use this when you want to review the approach before applying it.</td>
+</tr>
+<tr>
+<td><code>/qodo-review [--autofix] [--fast\|--deep] [--ticket &lt;url&gt;] [path ...]</code></td>
+<td>Reviews local changes with Qodo before committing or opening a PR.</td>
+</tr>
+<tr>
+<td><code>/review-handler [--autorabbit] [--autoqodo]</code></td>
+<td>Processes every outstanding review source (human, Qodo, CodeRabbit) for the current PR.</td>
+</tr>
+<tr>
+<td><code>/review-handler-status</code></td>
+<td>Shows live status of the <code>/review-handler</code> agents.</td>
+</tr>
+<tr>
+<td><code>/coderabbit-rate-limit [PR number]</code></td>
+<td>Waits out a CodeRabbit rate limit and re-triggers the review.</td>
+</tr>
+<tr>
+<td><code>/external-ai &lt;agent&gt; [--model &lt;model&gt;] [--fix\|--peer\|--resume] &lt;prompt&gt;</code></td>
+<td>Runs a prompt against a raw AI CLI (cursor, claude, gemini) with full model access.</td>
+</tr>
+<tr>
+<td><code>/create-coms-feature-manager</code></td>
+<td>Generates a coms feature-manager prompt customized for the current project.</td>
+</tr>
+</tbody>
+</table>
 <h2 id="shared-command-behavior">Shared Command Behavior</h2>
 <h3 id="argument-handling">Argument Handling</h3>
 <table>
@@ -882,6 +922,7 @@
 <li><a href="#query-db">/query-db</a></li>
 </ul>
 </li>
+<li><a href="#other-built-in-prompts">Other Built-in Prompts</a></li>
 <li><a href="#shared-command-behavior">Shared Command Behavior</a><ul>
 <li><a href="#argument-handling">Argument Handling</a></li>
 <li><a href="#side-effects">Side Effects</a></li>

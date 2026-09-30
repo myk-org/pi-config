@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -302,6 +302,7 @@ myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class
 <div class="highlight"><pre><span></span><code>/external-ai cursor explain the authentication flow
 </code></pre></div>
 
+<p><code>/external-ai</code> is a prompt template (<code>prompts/external-ai.md</code>), not an extension command. It parses the arguments you give it, then shells out to <code>myk-pi-tools ai-cli run</code>.</p>
 <h2 id="step-by-step-guide">Step-by-Step Guide</h2>
 <h3 id="1-pick-a-provider-and-model">1. Pick a provider and model</h3>
 <p>Supported providers: <code>cursor</code>, <code>claude</code>, <code>gemini</code>.</p>
@@ -327,6 +328,7 @@ myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class
 </tr>
 </tbody>
 </table>
+<p><code>ai-cli models &lt;provider&gt;</code> prints a JSON array of model ids to stdout (progress lines go to stderr), so it can be piped or read directly by Pi when it asks you to pick a model.</p>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>models<span class="w"> </span>cursor
 </code></pre></div>
 
@@ -345,6 +347,7 @@ myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class
 <div class="highlight"><pre><span></span><code>/external-ai claude --fix rewrite the error handling in database.ts
 </code></pre></div>
 
+<p><code>--fix</code> and <code>--peer</code> are flags of the <code>/external-ai</code> prompt template only — the underlying <code>ai-cli run</code> command has no such options. <code>/external-ai</code> implements them by changing the prompt it sends (adding a "you have full permission to modify files" instruction and a follow-up diff report).</p>
 <blockquote>
 <p><strong>Note:</strong> In a dirty git worktree, Pi asks whether to create a checkpoint commit (<code>chore: checkpoint before ai-cli changes</code>) or continue anyway before applying changes.</p>
 <p><strong>Warning:</strong> <code>--fix</code> works with a single provider only. It cannot be combined with <code>--peer</code> or a comma-separated provider list.</p>
@@ -402,11 +405,17 @@ myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>save-config<sp
 /external-ai --peer review this
 </code></pre></div>
 
+<h3 id="refresh-cached-models">Refresh cached models</h3>
+<p>Pi caches the model list per provider. If newly released models do not show up, clear the cache:</p>
+<div class="highlight"><pre><span></span><code>/external-ai-models-refresh
+</code></pre></div>
+
 <h3 id="extra-cli-flags">Extra CLI flags</h3>
 <p>Pass through flags the underlying binary understands:</p>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>run<span class="w"> </span><span class="s2">"Review auth"</span><span class="w"> </span>--provider<span class="w"> </span>cursor<span class="w"> </span>--cli-flags<span class="o">=</span>--trust
 </code></pre></div>
 
+<p><code>--cli-flags</code> is repeatable. Pi adds <code>--force</code> automatically for <code>cursor</code> so non-interactive <code>--print</code> runs skip the workspace trust prompt. <code>ai-cli run</code> also accepts <code>--cwd &lt;dir&gt;</code> to run the agent somewhere other than the current directory.</p>
 <h3 id="other-providers">Other providers</h3>
 <p>For agents outside <code>cursor</code> / <code>claude</code> / <code>gemini</code> (for example Codex or Copilot), use ACPX instead of <code>/external-ai</code>. See <a href="acpx-provider.html">ACPX Provider Integration</a>.</p>
 <p>For registering <code>cli-*</code> providers inside Pi sessions, see <a href="configuration.html">Configuration &amp; Settings</a>. To customize slash-command behavior, see <a href="custom-slash-commands.html">Creating Slash Commands</a>.</p>
@@ -417,6 +426,7 @@ myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>save-config<sp
 <li><strong><code>agent</code> / <code>claude</code> / <code>gemini</code> not found:</strong> Install and authenticate that provider’s CLI separately, then confirm it is on your <code>PATH</code>.</li>
 <li><strong>Long-running or “stuck” agents:</strong> Multi-step tool use can take several minutes. Do not cancel early — execution commands intentionally run without strict timeouts.</li>
 <li><strong><code>--resume</code> and <code>--peer</code> together:</strong> Not allowed; drop one of the flags.</li>
+<li><strong>A new model does not appear in the picker:</strong> Run <code>/external-ai-models-refresh</code> to clear the cached model list for every provider.</li>
 </ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
@@ -460,6 +470,7 @@ myk-pi-tools<span class="w"> </span>ai-cli<span class="w"> </span>save-config<sp
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
 <li><a href="#peer-review-loops">Peer review loops</a></li>
 <li><a href="#persist-defaults">Persist defaults</a></li>
+<li><a href="#refresh-cached-models">Refresh cached models</a></li>
 <li><a href="#extra-cli-flags">Extra CLI flags</a></li>
 <li><a href="#other-providers">Other providers</a></li>
 </ul>

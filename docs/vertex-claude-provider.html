@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -292,7 +292,7 @@
 <div class="highlight"><pre><span></span><code>gcloud<span class="w"> </span>auth<span class="w"> </span>application-default<span class="w"> </span>login
 <span class="nb">export</span><span class="w"> </span><span class="nv">GOOGLE_CLOUD_PROJECT</span><span class="o">=</span>your-project-id
 
-pi<span class="w"> </span>install<span class="w"> </span>git:github.com/myk-org/pi-vertex-claude
+pi<span class="w"> </span>install<span class="w"> </span>npm:@myk-org/pi-vertex-claude
 
 pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude<span class="w"> </span>--model<span class="w"> </span>claude-sonnet-4-6
 </code></pre></div>
@@ -304,16 +304,16 @@ pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude
 </code></pre></div>
 
 <p>Or install / update directly:</p>
-<div class="highlight"><pre><span></span><code>pi<span class="w"> </span>install<span class="w"> </span>git:github.com/myk-org/pi-vertex-claude
-pi<span class="w"> </span>update<span class="w"> </span>git:github.com/myk-org/pi-vertex-claude
+<div class="highlight"><pre><span></span><code>pi<span class="w"> </span>install<span class="w"> </span>npm:@myk-org/pi-vertex-claude
+pi<span class="w"> </span>update<span class="w"> </span>npm:@myk-org/pi-vertex-claude
 </code></pre></div>
 
-<p>npm package name: <code>@myk-org/pi-vertex-claude</code>.</p>
+<p>The npm package name is <code>@myk-org/pi-vertex-claude</code>. The container entrypoint registers it from the same npm source and actively migrates away from the older <code>git:github.com/myk-org/pi-config/packages/pi-vertex-claude</code> source (see <code>entrypoint.sh</code>).</p>
 <h3 id="2-authenticate">2. Authenticate</h3>
 <div class="highlight"><pre><span></span><code>gcloud<span class="w"> </span>auth<span class="w"> </span>application-default<span class="w"> </span>login
 </code></pre></div>
 
-<p>Credentials are read from <code>GOOGLE_APPLICATION_CREDENTIALS</code> when set; otherwise from the default ADC file under your home directory.</p>
+<p>Credentials are read from <code>GOOGLE_APPLICATION_CREDENTIALS</code> when set; otherwise from the default ADC file at <code>~/.config/gcloud/application_default_credentials.json</code>.</p>
 <blockquote>
 <p><strong>Tip:</strong> In CI, set <code>GOOGLE_APPLICATION_CREDENTIALS</code> to a service account JSON key instead of using interactive login.</p>
 </blockquote>
@@ -388,6 +388,12 @@ pi<span class="w"> </span>update<span class="w"> </span>git:github.com/myk-org/p
 </thead>
 <tbody>
 <tr>
+<td><code>claude-opus-4-8</code></td>
+<td>1M</td>
+<td>128K</td>
+<td>yes</td>
+</tr>
+<tr>
 <td><code>claude-opus-4-6</code></td>
 <td>200K</td>
 <td>128K</td>
@@ -456,10 +462,13 @@ pi<span class="w"> </span>update<span class="w"> </span>git:github.com/myk-org/p
 </tbody>
 </table>
 <p>All of these accept text and image input.</p>
+<blockquote>
+<p><strong>Note:</strong> "Max output" is the model's ceiling, not the default request size. When you do not pass an explicit <code>maxTokens</code>, the provider sends one third of the ceiling (for example 64K of the 128K Opus ceiling).</p>
+</blockquote>
 <p>For async agents, dreaming, and other settings that take provider/model pairs, use <code>google-vertex-claude</code> with one of the ids above. See <a href="configuration.html">Configuration &amp; Settings</a> and <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a>.</p>
 <h2 id="advanced-usage">Advanced Usage</h2>
 <h3 id="1m-context-variants">1M context variants</h3>
-<p>Enable extra catalog entries for Opus 4.6 and Sonnet 4.6:</p>
+<p>Enable extra catalog entries for Opus 4.6 and Sonnet 4.6 (Opus 4.8 already has 1M context natively, so it needs no variant):</p>
 <div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">VERTEX_CLAUDE_1M</span><span class="o">=</span><span class="nb">true</span>
 pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude<span class="w"> </span>--model<span class="w"> </span>claude-opus-4-6-1m
 </code></pre></div>

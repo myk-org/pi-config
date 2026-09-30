@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -286,9 +286,12 @@
 <ul>
 <li>Node.js (&gt;= 22)</li>
 <li>Git installed and configured</li>
-<li><code>pi</code> (install with <code>npm install -g @earendil-works/pi-coding-agent</code>)</li>
+<li><code>pi</code> &gt;= 0.99.0 (install with <code>npm install -g @earendil-works/pi-coding-agent</code>)</li>
 <li><code>uv</code> (Python package manager)</li>
 </ul>
+<blockquote>
+<p><strong>Note:</strong> pi-config requires pi <strong>0.99.0 or newer</strong>. On an older version, CLI/ACPX providers stay unregistered and pi warns on session start.</p>
+</blockquote>
 <h2 id="quick-example">Quick Example</h2>
 <div class="highlight"><pre><span></span><code><span class="c1"># Install everything non-interactively</span>
 uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py<span class="w"> </span>--all
@@ -301,24 +304,28 @@ uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py<span cla
 
 <h2 id="step-by-step-guide">Step-by-Step Guide</h2>
 <h3 id="1-install-pi-config-and-tooling">1. Install pi-config and tooling</h3>
-<p>Run the interactive installer from a pi-config checkout:</p>
-<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py
+<p>Install the pi package (no git clone needed):</p>
+<div class="highlight"><pre><span></span><code>pi<span class="w"> </span>install<span class="w"> </span>npm:pi-orchestrator-config
+uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>myk-pi-tools
 </code></pre></div>
 
-<p>Follow the prompts to select packages (orchestrator, CLI tools, browser automation, gitignore entries, and more).</p>
-<p>To skip prompts and install everything available:</p>
-<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py<span class="w"> </span>--all
+<p>To get everything at once — the pi package, <code>myk-pi-tools</code>, <code>prek</code>, <code>acpx</code>, <code>agent-browser</code>, <code>graft</code>, Playwright, and the git-excludes setup — run the interactive installer instead:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>https://raw.githubusercontent.com/myk-org/pi-config/main/scripts/install.py
+</code></pre></div>
+
+<p>Follow the prompts to select packages. To skip prompts and install everything available:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py<span class="w"> </span>--all<span class="w">   </span><span class="c1"># from a pi-config checkout</span>
 </code></pre></div>
 
 <blockquote>
-<p><strong>Note:</strong> The installer exits if <code>pi</code> is missing. Install <code>@earendil-works/pi-coding-agent</code> globally first.</p>
+<p><strong>Note:</strong> The installer exits if <code>pi</code> is missing. Install <code>@earendil-works/pi-coding-agent</code> globally first. Only <code>myk-pi-tools</code> and <code>prek</code> require <code>uv</code>; the other steps require Node.js.</p>
 </blockquote>
 <p>When it finishes, start a session:</p>
 <div class="highlight"><pre><span></span><code>pi
 </code></pre></div>
 
 <h3 id="2-add-project-settings">2. Add project settings</h3>
-<p>Create <code>.pi/pi-config-settings.json</code> in your repository root:</p>
+<p>Create <code>.pi/pi-config-settings.jsonc</code> in your repository root (<code>.json</code> also works; if both exist the <code>.jsonc</code> file wins):</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"commit_trailer"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Assisted-by"</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">"dco"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
@@ -332,6 +339,10 @@ uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py<span cla
 <blockquote>
 <p><strong>Note:</strong> Project settings override global defaults for the current repository. See <a href="configuration.html">Configuration &amp; Settings</a> for the full option list.</p>
 </blockquote>
+<p>Prefer not to hand-edit JSON? Open the settings TUI from any session and edit the same keys with arrows and search:</p>
+<div class="highlight"><pre><span></span><code>/pi-config-settings
+</code></pre></div>
+
 <h3 id="3-start-the-background-daemons">3. Start the background daemons</h3>
 <p>Inside an active <code>pi</code> TUI session:</p>
 <div class="highlight"><pre><span></span><code>/pidash start
@@ -367,6 +378,11 @@ uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py<span cla
 </thead>
 <tbody>
 <tr>
+<td>Pi package only</td>
+<td><code>pi install npm:pi-orchestrator-config</code></td>
+<td>Extensions, agents, prompts, skills, rules — nothing else</td>
+</tr>
+<tr>
 <td>Interactive</td>
 <td><code>uv run scripts/install.py</code></td>
 <td>Step through packages and confirm</td>
@@ -382,8 +398,8 @@ uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py<span cla
 <h3 id="configure-via-environment-variables">Configure via environment variables</h3>
 <p>Skip the settings file when you prefer env vars. Resolution order:</p>
 <ol>
-<li><code>.pi/pi-config-settings.json</code> (project)</li>
-<li><code>~/.pi/pi-config-settings.json</code> (global)</li>
+<li><code>.pi/pi-config-settings.jsonc</code> (project; <code>.json</code> is the fallback name)</li>
+<li><code>~/.pi/pi-config-settings.jsonc</code> (global; <code>.json</code> is the fallback name)</li>
 <li>Environment variables (for example <code>PI_DREAM_INTERVAL_HOURS=3</code>, <code>CLI_AGENTS=claude,cursor</code>)</li>
 <li>Built-in defaults</li>
 </ol>
@@ -403,7 +419,7 @@ uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py<span cla
 </tr>
 <tr>
 <td>Manual</td>
-<td>Append <code>.pi/</code> (and <code>.worktrees/</code> if you use worktrees) to your global excludes file</td>
+<td>Append <code>.pi/</code> (and <code>.worktrees/</code> if you use worktrees) to whatever <code>git config --global core.excludesfile</code> points at (<code>~/.config/git/ignore</code> when unset)</td>
 </tr>
 </tbody>
 </table>
@@ -413,6 +429,7 @@ uv<span class="w"> </span>run<span class="w"> </span>scripts/install.py<span cla
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
 <li><strong>"Cannot continue without pi":</strong> Install the coding agent globally (<code>npm install -g @earendil-works/pi-coding-agent</code>), confirm <code>pi</code> is on your <code>PATH</code>, then re-run the installer.</li>
+<li><strong>"pi X is below minimum required version 0.99.0":</strong> Update pi with <code>npm install -g @earendil-works/pi-coding-agent</code>, then <code>/reload</code> or restart the session.</li>
 <li><strong>Daemon fails to start:</strong> Confirm <code>pidash_enable</code> / <code>pidiff_enable</code> are not set to <code>false</code>. Run <code>/pidash status</code> or <code>/pidiff status</code>. For pidash failures, check <code>~/.pi/pidash-server.log</code>.</li>
 <li><strong>pidash says TUI-only:</strong> Start daemons from an interactive <code>pi</code> session, not a headless/CLI-only mode.</li>
 <li><strong>Pre-commit / formatting failures:</strong> Run <code>prek run --all-files</code> to apply fixes, then retry the commit.</li>

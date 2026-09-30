@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -331,7 +331,7 @@
 <span class="p">:</span>cprev
 </code></pre></div>
 
-<p>Each quickfix item points to a changed file and includes its git status such as <code>modified</code>, <code>added</code>, <code>deleted</code>, or <code>renamed</code>.</p>
+<p>Each quickfix item points at the absolute path of a changed file, jumps to line 1, and carries its git status as the quickfix text: <code>modified</code>, <code>added</code>, <code>deleted</code>, <code>renamed</code>, or <code>copied</code>. The list is titled <code>pi: changed files</code> and the quickfix window opens automatically.</p>
 <ol>
 <li>Re-run the command after new edits or commits.</li>
 </ol>
@@ -352,32 +352,34 @@
 <tbody>
 <tr>
 <td><code>main</code> or <code>master</code></td>
-<td>Changes in your current working tree compared to <code>HEAD</code></td>
+<td>Changes in your current working tree compared to <code>HEAD</code> (uncommitted only)</td>
 </tr>
 <tr>
 <td>Any other branch</td>
-<td>Branch changes compared to <code>origin/main</code> if it exists, otherwise <code>origin/master</code>, plus current uncommitted changes</td>
+<td>Committed branch changes versus <code>origin/main</code> if that ref exists, otherwise <code>origin/master</code>, plus current uncommitted changes</td>
 </tr>
 </tbody>
 </table>
+<p>A file that appears in both the committed and uncommitted diffs is listed once, using the first status seen.</p>
 <blockquote>
 <p><strong>Tip:</strong> On feature branches, this makes quickfix useful for both local edits and the branch-level diff you are preparing for review.</p>
 </blockquote>
 <h3 id="run-remote-lua-in-your-current-neovim-session">Run Remote Lua in Your Current Neovim Session</h3>
-<p>Because Pi inherits the <code>$NVIM</code> socket when started from a Neovim terminal, you can trigger editor actions from commands, scripts, or prompts.</p>
-<div class="highlight"><pre><span></span><code>nvim<span class="w"> </span>--server<span class="w"> </span><span class="s2">"</span><span class="nv">$NVIM</span><span class="s2">"</span><span class="w"> </span>--remote-expr<span class="w"> </span><span class="s1">'luaeval("vim.notify(\"Task complete from Pi!\")")'</span>
+<p>Because Pi inherits the <code>$NVIM</code> socket when started from a Neovim terminal, you can trigger editor actions from commands, scripts, or prompts. Pi itself talks to Neovim this way: it writes a Lua file to <code>.pi/tmp/</code>, then calls <code>nvim --server "$NVIM" --remote-expr 'luaeval("dofile(...)")'</code> with a 5s timeout.</p>
+<p>The same call works by hand — for example, notifying yourself after a long-running command finishes:</p>
+<div class="highlight"><pre><span></span><code>nvim<span class="w"> </span>--server<span class="w"> </span><span class="s2">"</span><span class="nv">$NVIM</span><span class="s2">"</span><span class="w"> </span>--remote-expr<span class="w"> </span><span class="s1">'luaeval([[vim.notify("Task complete from Pi!")]])'</span>
 </code></pre></div>
 
-<p>A simple use case is sending yourself a notification after a long-running command or test finishes.</p>
+<p>Use <code>[[…]]</code> for the Lua string, or single quotes inside the <code>luaeval</code> string. Escaping with <code>\"</code> does not work — Lua does not treat a backslash as an escape inside <code>"…"</code>, so the expression fails to parse.</p>
 <h3 id="use-neovim-for-review-browser-ui-for-diff-publishing">Use Neovim for Review, Browser UI for Diff Publishing</h3>
 <p>If you want keyboard-first navigation, Neovim quickfix is the fastest path. If you want a browser diff viewer with inline comment publishing, see <a href="using-the-web-dashboard.html">Using the Web Dashboard</a> for details.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
-<li><strong><code>/nvim-changed-files</code> does not appear:</strong> Start Pi from inside Neovim, not from tmux or a separate terminal window.</li>
-<li><strong>Quickfix does not open or update:</strong> Make sure the <code>nvim</code> CLI can talk to the current editor session through <code>$NVIM</code>.</li>
+<li><strong><code>/nvim-changed-files</code> does not appear:</strong> Start Pi from inside Neovim, not from tmux or a separate terminal window. The command only registers when <code>$NVIM</code> is set.</li>
+<li><strong>Quickfix does not open or update:</strong> Make sure the <code>nvim</code> CLI can talk to the current editor session through <code>$NVIM</code>. Pi gives the remote call 5 seconds before giving up.</li>
 <li><strong>No files are listed:</strong> Check that your repository actually has changed files. On feature branches, also make sure <code>origin/main</code> or <code>origin/master</code> is available locally.</li>
-<li><strong>Remote Lua command fails:</strong> Verify that <code>$NVIM</code> is set in the shell where you run the command.</li>
-<li><strong>You are using a background subagent:</strong> Neovim integration is only available from your main interactive session, not background child sessions.</li>
+<li><strong>Remote Lua command fails:</strong> Verify that <code>$NVIM</code> is set in the shell where you run the command, and check the Lua string quoting (see above).</li>
+<li><strong>You are using a background subagent:</strong> Neovim integration is only available from your main interactive session, not background child sessions (<code>PI_SUBAGENT_CHILD=1</code>).</li>
 </ul>
 <p>See <a href="quickstart.html">Installation &amp; Quickstart</a> for basic Pi setup.</p>
 <h2 id="related-pages">Related Pages</h2>
@@ -399,7 +401,7 @@
 
                 <a href="discord-bot.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">~/.pi/discord.env</span>
+                    <span class="page-nav-title">Discord Bot Notifications</span>
                 </a>
 
             </nav>

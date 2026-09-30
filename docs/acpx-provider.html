@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -305,7 +305,7 @@
 </tbody>
 </table>
 <p><strong>Resolution order:</strong> project settings → global settings → <code>ACPX_AGENTS</code> env → <code>[]</code>.</p>
-<p><strong>Driver mapping (<code>ACPX_AGENT_TO_DRIVER</code>):</strong> <code>cursor</code> → <code>acpx</code>. Any other listed name falls back to driver kind <code>acpx</code> with <code>config.agent</code> set to that name.</p>
+<p><strong>Driver mapping (<code>ACPX_AGENT_TO_DRIVER</code>, <code>extensions/providers/built-in-drivers.ts</code>):</strong> <code>cursor</code>, <code>claude</code>, and <code>gemini</code> all map to driver kind <code>acpx</code>, with <code>config.agent</code> set to the agent name. An agent that is <strong>not</strong> in the map is skipped with a <code>no driver mapping in ACPX_AGENT_TO_DRIVER</code> warning — it does not fall back to <code>acpx</code>.</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"acpx_agents"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"cursor"</span><span class="p">]</span>
 <span class="p">}</span>
@@ -316,7 +316,7 @@
 
 <p><strong>Effect:</strong> For each agent, <code>extensions/providers/</code> creates a <code>ProviderInstance</code>, registers provider id <code>acpx-&lt;agent&gt;</code>, and exposes models under that provider.</p>
 <blockquote>
-<p><strong>Note:</strong> During extension startup, each agent races <code>registry.createInstance</code> against <code>DISCOVERY_TIMEOUT_MS</code> (<code>30000</code>). Timed-out creates are torn down if they finish later.</p>
+<p><strong>Note:</strong> During extension startup, each agent races <code>registry.createInstance</code> against <code>DISCOVERY_TIMEOUT_MS</code> (<code>30000</code>). Timed-out creates are torn down if they finish later. Discovery is skipped entirely inside subagent children (<code>discoverAndRegisterAcpx</code> returns early when <code>isSubagent</code>), so ACPX providers only exist in the main session.</p>
 </blockquote>
 <h2 id="loadacpxruntime"><code>loadAcpxRuntime()</code></h2>
 <p>Resolves the <code>acpx/runtime</code> module. Memoized across calls; failed loads clear the cache.</p>
@@ -353,6 +353,7 @@
 <li>Candidate roots: <code>/usr/local/lib/node_modules</code>, <code>~/.npm-global/lib/node_modules</code></li>
 <li>Package import <code>acpx/runtime</code></li>
 </ol>
+<p>A test helper, <code>clearAcpxRuntimeCache()</code>, resets both the root list and the memoized promise.</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadAcpxRuntime</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"./load-runtime.js"</span><span class="p">;</span>
 
 <span class="kd">const</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">createAcpRuntime</span><span class="p">,</span><span class="w"> </span><span class="nx">createFileSessionStore</span><span class="p">,</span><span class="w"> </span><span class="nx">createAgentRegistry</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="o">=</span>
@@ -444,6 +445,12 @@
 <td><code>readonly string[]</code></td>
 <td>(required)</td>
 <td>Raw ids from ACPX status / snapshot.</td>
+</tr>
+<tr>
+<td><code>catalog</code></td>
+<td><code>ModelsDevCatalog \| null</code></td>
+<td><code>null</code></td>
+<td>Optional models.dev catalog used to fill in context window, pricing, and capability fields on each model.</td>
 </tr>
 </tbody>
 </table>
@@ -588,7 +595,12 @@
 </tr>
 </tbody>
 </table>
-<p><strong>Returns:</strong> <code>{ available: true }</code> if <code>loadAcpxRuntime()</code> resolves; otherwise <code>{ available: false, reason: string }</code>.</p>
+<p><strong>Returns:</strong> <code>{ available: true }</code> when both checks pass; otherwise <code>{ available: false, reason: string }</code>.</p>
+<p>Probe performs <strong>two</strong> checks:</p>
+<ol>
+<li><strong>Agent CLI on <code>PATH</code></strong> — resolves the binary named <code>agent</code> for <code>agent: "cursor"</code>, otherwise the agent name itself (<code>claude</code>, <code>gemini</code>). Missing binary → unavailable with a <code>CLI binary ... not found on PATH</code> reason.</li>
+<li><strong>ACPX runtime</strong> — <code>loadAcpxRuntime()</code> must resolve, otherwise unavailable with an <code>acpx runtime not available</code> reason.</li>
+</ol>
 <h3 id="acpxdrivercreateinput"><code>AcpxDriver.create(input)</code></h3>
 <table>
 <thead>
@@ -858,18 +870,35 @@
 <tbody>
 <tr>
 <td><code>session_shutdown</code></td>
-<td>Stops CLI session reaper; <code>registry.teardownAll()</code> (each ACPX instance <code>dispose</code> → <code>adapter.stopAll()</code>); clears <code>cliInstances</code> and <code>acpxInstances</code>.</td>
+<td>Stops CLI session reaper; <code>registry.teardownAll()</code> (each ACPX instance <code>dispose</code> → <code>adapter.stopAll()</code>); clears <code>cliInstances</code> and <code>acpxInstances</code>; calls <code>resetProvidersInitialized()</code>.</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><span class="nx">pi</span><span class="p">.</span><span class="nx">on</span><span class="p">(</span><span class="s2">"session_shutdown"</span><span class="p">,</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="nx">stopCliSessionReaper</span><span class="p">();</span>
-<span class="w">  </span><span class="k">await</span><span class="w"> </span><span class="nx">registry</span><span class="p">.</span><span class="nx">teardownAll</span><span class="p">();</span>
-<span class="w">  </span><span class="nx">cliInstances</span><span class="p">.</span><span class="nx">clear</span><span class="p">();</span>
-<span class="w">  </span><span class="nx">acpxInstances</span><span class="p">.</span><span class="nx">clear</span><span class="p">();</span>
-<span class="p">});</span>
+<p><strong>Module:</strong> <code>extensions/providers/session-shutdown.ts</code> (<code>teardownProvidersOnSessionShutdown</code>)</p>
+<div class="highlight"><pre><span></span><code><span class="k">export</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="kd">function</span><span class="w"> </span><span class="nx">teardownProvidersOnSessionShutdown</span><span class="p">(</span>
+<span class="w">  </span><span class="nx">registry</span><span class="o">:</span><span class="w"> </span><span class="kt">ProviderDriverRegistry</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">cliInstances</span><span class="o">:</span><span class="w"> </span><span class="kt">Map</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="nx">unknown</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">acpxInstances</span><span class="o">:</span><span class="w"> </span><span class="kt">Map</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="nx">unknown</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">try</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">stopCliSessionReaper</span><span class="p">();</span>
+<span class="w">    </span><span class="k">await</span><span class="w"> </span><span class="nx">registry</span><span class="p">.</span><span class="nx">teardownAll</span><span class="p">();</span>
+<span class="w">  </span><span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="nx">err</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">log</span><span class="p">.</span><span class="nx">error</span><span class="p">(</span><span class="s2">"session_shutdown teardown failed"</span><span class="p">,</span><span class="w"> </span><span class="p">...);</span>
+<span class="w">    </span><span class="k">throw</span><span class="w"> </span><span class="nx">err</span><span class="p">;</span>
+<span class="w">  </span><span class="p">}</span><span class="w"> </span><span class="k">finally</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// Always clear maps + init guard so a teardown failure cannot leave</span>
+<span class="w">    </span><span class="c1">// initialized stuck true (would skip registerProvider on /new|/resume|/fork).</span>
+<span class="w">    </span><span class="nx">cliInstances</span><span class="p">.</span><span class="nx">clear</span><span class="p">();</span>
+<span class="w">    </span><span class="nx">acpxInstances</span><span class="p">.</span><span class="nx">clear</span><span class="p">();</span>
+<span class="w">    </span><span class="nx">resetProvidersInitialized</span><span class="p">();</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
 </code></pre></div>
 
+<blockquote>
+<p><strong>Note:</strong> Clearing the initialized guard is what lets providers re-register after <code>/new</code>, <code>/resume</code>, or <code>/fork</code>. It runs in a <code>finally</code> block, so it happens even when teardown throws.</p>
+</blockquote>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
 <li><a href="external-ai-agents.html">External AI Agents &amp; CLI</a></li>
@@ -884,7 +913,7 @@
 
                 <a href="discord-bot.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">~/.pi/discord.env</span>
+                    <span class="page-nav-title">Discord Bot Notifications</span>
                 </a>
 
 

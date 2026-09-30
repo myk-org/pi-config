@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -329,7 +329,7 @@
 <tr>
 <td>Automatic timer</td>
 <td>Dreaming extension</td>
-<td>Runs periodically while auto-dreaming is enabled.</td>
+<td>Enabled by default; runs every <code>dream_interval_hours</code> (default <code>3</code>).</td>
 </tr>
 <tr>
 <td>Manual run</td>
@@ -338,19 +338,19 @@
 </tr>
 <tr>
 <td>Session quit</td>
-<td>Session shutdown hook</td>
-<td>May queue one final pass when the session exits normally.</td>
+<td><code>session_shutdown</code> hook</td>
+<td>Runs one final pass, but only on <code>quit</code> — skipped for <code>new</code>/<code>fork</code>/<code>resume</code>/<code>reload</code> and in <code>print</code>/<code>json</code> mode.</td>
 </tr>
 <tr>
 <td>Rebuild timer</td>
 <td>Rebuild worker</td>
-<td>Re-scores topic files every 30 minutes.</td>
+<td>Re-scores topic files every 30 minutes, while auto-dreaming is enabled.</td>
 </tr>
 </tbody>
 </table>
 <h3 id="end-to-end-flow">End-to-End Flow</h3>
 <ol>
-<li>Pi decides whether a dream pass can run in the current session.</li>
+<li>Pi decides whether a dream pass can run in the current session. A pass already in flight blocks any new one.</li>
 <li>A background <code>worker</code> agent is launched with a task focused on memory maintenance.</li>
 <li>The worker reads existing topic files under <code>.pi/memory/topics/</code>.</li>
 <li>The worker scans recent session transcripts and extracts durable knowledge.</li>
@@ -449,14 +449,14 @@
 <li>Topic ordering can shift as some memories become “hotter” than others.</li>
 </ul>
 <h3 id="provenance-sidecar">Provenance Sidecar</h3>
-<p>Dreaming can write pending provenance data to <code>.pi/memory/provenance-pending.json</code>.</p>
+<p>Dreaming can write pending provenance data to <code>.pi/memory/provenance-pending.jsonl</code>, one line of JSON per record.</p>
 <p>That sidecar can include fields such as:</p>
 <ul>
 <li><code>sourceSession</code></li>
 <li><code>derivedFrom</code></li>
 <li><code>informs</code></li>
 </ul>
-<p>After the dream job finishes, Pi merges that sidecar into scored memory records.</p>
+<p>After the dream job finishes, Pi merges that sidecar into scored memory records and deletes the file. A legacy <code>.pi/memory/provenance-pending.json</code> is still read if present.</p>
 <p>User-visible effect:</p>
 <ul>
 <li>Some memories can retain a trace back to where they came from.</li>
@@ -557,7 +557,7 @@
 </thead>
 <tbody>
 <tr>
-<td>A moon icon appears in the status bar</td>
+<td>The dream icon in the status bar turns from dim to warning-colored</td>
 <td>A dream pass is currently running.</td>
 </tr>
 <tr>
@@ -601,21 +601,33 @@
 </tr>
 <tr>
 <td><code>dream_interval_hours</code></td>
-<td>Adjusts the automatic interval in project or global settings.</td>
+<td>Adjusts the automatic interval in project or global settings. <code>number</code>, default <code>3</code>.</td>
 </tr>
 <tr>
 <td><code>PI_DREAM_INTERVAL_HOURS</code></td>
 <td>Environment-variable override for the interval.</td>
 </tr>
+<tr>
+<td><code>internal_operations_provider</code></td>
+<td>Sidecar provider used when the parent session is ACPX-backed. <code>string</code>, default <code>""</code>.</td>
+</tr>
+<tr>
+<td><code>internal_operations_model</code></td>
+<td>Sidecar model used when the parent session is ACPX-backed. <code>string</code>, default <code>""</code>.</td>
+</tr>
+<tr>
+<td><code>agent_model</code></td>
+<td>Default model for the <code>worker</code> agent. <code>string</code>, default <code>""</code> (inherit parent).</td>
+</tr>
 </tbody>
 </table>
 <h3 id="when-dreaming-skips-work">When Dreaming Skips Work</h3>
-<p>Dreaming depends on an async-capable LLM path. In ACPX-based sessions, that usually means configuring both:</p>
+<p>Dreaming depends on an async-capable LLM path. A parent session on a native or <code>cli-*</code> provider supports it directly, and the <code>worker</code> agent resolves its model through the normal subagent chain (<code>agent_model</code> → parent model). When the parent is ACPX-backed, child Pi processes skip ACPX provider registration, so dreaming instead needs both of these set:</p>
 <ul>
-<li><code>async_llm_provider</code></li>
-<li><code>async_llm_model</code></li>
+<li><code>internal_operations_provider</code></li>
+<li><code>internal_operations_model</code></li>
 </ul>
-<p>If that path is unavailable, Pi skips the run and surfaces a warning in the UI.</p>
+<p>Both must be non-empty and the provider must not be an <code>acpx-*</code> id. If that path is unavailable, Pi skips the run and notifies you with "Dream skipped: set internal_operations_provider and internal_operations_model for acpx sessions".</p>
 <p>User-visible effect:</p>
 <ul>
 <li>Manual <code>/dream</code> may appear to do nothing except show a warning.</li>
@@ -631,14 +643,6 @@
 <li>See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for the background execution model used by dreaming.</li>
 <li>See <a href="safety-enforcements.html">Implementing Command Guards</a> for how promoted memory can affect enforcement behavior.</li>
 <li>See <a href="configuration.html">Configuration &amp; Settings</a> for the settings that control dream frequency and async LLM routing.</li>
-</ul>
-<h2 id="related-pages_1">Related Pages</h2>
-<ul>
-<li><a href="curating-project-memory.html">Curating Project Memory</a></li>
-<li><a href="memory-architecture.html">Memory Architecture</a></li>
-<li><a href="configuration.html">Configuration &amp; Settings</a></li>
-<li><a href="safety-enforcements.html">Implementing Command Guards</a></li>
-<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
 </ul>
                 </div>
             </article>
@@ -686,7 +690,6 @@
 </ul>
 </li>
 <li><a href="#related-pages">Related Pages</a></li>
-<li><a href="#related-pages_1">Related Pages</a></li>
 </ul>
 </div>
 

@@ -32,7 +32,7 @@ This opens a temporary answer view instead of adding a new turn to the main conv
 /btw What was the final scope of the refactor?
 ```
 
-**Effect:** Starts a temporary side-question flow. If the question is empty, Pi shows `Usage: /btw <question>`.
+**Effect:** Starts a temporary side-question flow. If the question is empty, Pi shows `Usage: /btw <question>`. If no model is selected, Pi shows `No model selected. Use /model to select one first.` and stops.
 
 ### 2. Wait for the temporary answer
 
@@ -64,8 +64,10 @@ The result appears in a scrollable overlay with the original question and the ge
 | `Ctrl+C` | Close the overlay |
 | `↑` or `k` | Scroll up |
 | `↓` or `j` | Scroll down |
-| `PgUp` | Scroll up faster |
-| `PgDn` | Scroll down faster |
+| `PgUp` | Scroll up 10 lines |
+| `PgDn` | Scroll down 10 lines |
+
+The footer repeats these hints as `Esc/Space/q dismiss · ↑↓/j/k scroll · PgUp/PgDn`, and when the answer is longer than the terminal the box shows a `[start-end/total]` line counter.
 
 ```text
 /btw Which part of the plan is still unresolved?
@@ -140,6 +142,7 @@ For creating related commands, see [Creating Slash Commands](custom-slash-comman
 | Problem | What it means | What to do |
 | :--- | :--- | :--- |
 | `Usage: /btw <question>` | No question was provided | Run `/btw` with text after it |
+| `No model selected. Use /model to select one first.` | No active model in the session | Run `/model` to pick one, then retry |
 | `Cancelled` | The request was aborted | Run the command again |
 | `No answer received` | The model returned no usable text | Retry with a clearer question |
 | The answer is too vague | The current session does not contain enough context | Ask a more specific question or continue with a normal prompt |

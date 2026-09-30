@@ -19,14 +19,14 @@ You should care because it changes what the agent remembers without requiring co
 
 | Trigger | Source | Default behavior |
 |---|---|---|
-| Automatic timer | Dreaming extension | Runs periodically while auto-dreaming is enabled. |
+| Automatic timer | Dreaming extension | Enabled by default; runs every `dream_interval_hours` (default `3`). |
 | Manual run | `/dream` | Starts a background pass immediately. |
-| Session quit | Session shutdown hook | May queue one final pass when the session exits normally. |
-| Rebuild timer | Rebuild worker | Re-scores topic files every 30 minutes. |
+| Session quit | `session_shutdown` hook | Runs one final pass, but only on `quit` — skipped for `new`/`fork`/`resume`/`reload` and in `print`/`json` mode. |
+| Rebuild timer | Rebuild worker | Re-scores topic files every 30 minutes, while auto-dreaming is enabled. |
 
 ### End-to-End Flow
 
-1. Pi decides whether a dream pass can run in the current session.
+1. Pi decides whether a dream pass can run in the current session. A pass already in flight blocks any new one.
 2. A background `worker` agent is launched with a task focused on memory maintenance.
 3. The worker reads existing topic files under `.pi/memory/topics/`.
 4. The worker scans recent session transcripts and extracts durable knowledge.
@@ -114,7 +114,7 @@ User-visible effect:
 
 ### Provenance Sidecar
 
-Dreaming can write pending provenance data to `.pi/memory/provenance-pending.json`.
+Dreaming can write pending provenance data to `.pi/memory/provenance-pending.jsonl`, one line of JSON per record.
 
 That sidecar can include fields such as:
 
@@ -122,7 +122,7 @@ That sidecar can include fields such as:
 - `derivedFrom`
 - `informs`
 
-After the dream job finishes, Pi merges that sidecar into scored memory records.
+After the dream job finishes, Pi merges that sidecar into scored memory records and deletes the file. A legacy `.pi/memory/provenance-pending.json` is still read if present.
 
 User-visible effect:
 
@@ -189,7 +189,7 @@ User-visible effect:
 
 | Behavior | What it means |
 |---|---|
-| A moon icon appears in the status bar | A dream pass is currently running. |
+| The dream icon in the status bar turns from dim to warning-colored | A dream pass is currently running. |
 | Pi starts following a repeated convention without being told again | Dreaming likely turned a repeated correction into stored memory. |
 | New topic entries show up under `.pi/memory/topics/` | The worker extracted durable knowledge from recent sessions. |
 | Promotion candidates appear in `.pi/memory/promotions.md` | A memory has crossed a threshold for stronger handling. |
@@ -202,17 +202,20 @@ User-visible effect:
 | `/dream` | Starts a manual background pass. |
 | `/dream-auto on` | Enables periodic dreaming for the current project. |
 | `/dream-auto off` | Disables the automatic timer for the current project. |
-| `dream_interval_hours` | Adjusts the automatic interval in project or global settings. |
+| `dream_interval_hours` | Adjusts the automatic interval in project or global settings. `number`, default `3`. |
 | `PI_DREAM_INTERVAL_HOURS` | Environment-variable override for the interval. |
+| `internal_operations_provider` | Sidecar provider used when the parent session is ACPX-backed. `string`, default `""`. |
+| `internal_operations_model` | Sidecar model used when the parent session is ACPX-backed. `string`, default `""`. |
+| `agent_model` | Default model for the `worker` agent. `string`, default `""` (inherit parent). |
 
 ### When Dreaming Skips Work
 
-Dreaming depends on an async-capable LLM path. In ACPX-based sessions, that usually means configuring both:
+Dreaming depends on an async-capable LLM path. A parent session on a native or `cli-*` provider supports it directly, and the `worker` agent resolves its model through the normal subagent chain (`agent_model` → parent model). When the parent is ACPX-backed, child Pi processes skip ACPX provider registration, so dreaming instead needs both of these set:
 
-- `async_llm_provider`
-- `async_llm_model`
+- `internal_operations_provider`
+- `internal_operations_model`
 
-If that path is unavailable, Pi skips the run and surfaces a warning in the UI.
+Both must be non-empty and the provider must not be an `acpx-*` id. If that path is unavailable, Pi skips the run and notifies you with "Dream skipped: set internal_operations_provider and internal_operations_model for acpx sessions".
 
 User-visible effect:
 
@@ -228,11 +231,3 @@ User-visible effect:
 - See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for the background execution model used by dreaming.
 - See [Implementing Command Guards](safety-enforcements.html) for how promoted memory can affect enforcement behavior.
 - See [Configuration & Settings](configuration.html) for the settings that control dream frequency and async LLM routing.
-
-## Related Pages
-
-- [Curating Project Memory](curating-project-memory.html)
-- [Memory Architecture](memory-architecture.html)
-- [Configuration & Settings](configuration.html)
-- [Implementing Command Guards](safety-enforcements.html)
-- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)

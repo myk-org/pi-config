@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -281,6 +281,52 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="myk_pi_tools-cli-reference">myk_pi_tools CLI Reference</h1>
+<p><code>myk-pi-tools</code> is installed with <code>uv tool install myk-pi-tools</code>. It exposes eight command groups: <code>ai-cli</code>, <code>coderabbit</code>, <code>db</code>, <code>memory</code>, <code>pr</code>, <code>release</code>, <code>reviews</code>, and <code>settings</code>. This page documents <code>db</code>, <code>reviews</code>, and <code>memory</code>; the rest are covered on their own pages.</p>
+<ul>
+<li><code>ai-cli</code> — run prompts through external agent CLIs. See <a href="external-ai-agents.html">External AI Agents &amp; CLI</a>.</li>
+<li><code>coderabbit</code>, <code>pr</code>, <code>reviews</code> — PR review automation. See <a href="automating-code-reviews.html">Automating Code Reviews</a>.</li>
+<li><code>memory</code> — project memory topic files. See <a href="curating-project-memory.html">Curating Project Memory</a>.</li>
+</ul>
+<p>Unless a command says otherwise, the SQLite review database is auto-detected at <code>&lt;git-root&gt;/.pi/data/reviews.db</code> and can be overridden with <code>--db-path</code>.</p>
+<h2 id="review-database-myk-pi-tools-db">Review Database (<code>myk-pi-tools db</code>)</h2>
+<h3 id="db-stats"><code>db stats</code></h3>
+<p>Aggregates review comment counts from the reviews database.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--by-source</code></td>
+<td>Flag</td>
+<td><code>False</code></td>
+<td>Group by reviewer source (<code>human</code> / <code>qodo</code> / <code>coderabbit</code>).</td>
+</tr>
+<tr>
+<td><code>--by-reviewer</code></td>
+<td>Flag</td>
+<td><code>False</code></td>
+<td>Group by reviewer author.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>Flag</td>
+<td><code>False</code></td>
+<td>Output JSON instead of a formatted table.</td>
+</tr>
+<tr>
+<td><code>--db-path</code></td>
+<td>String</td>
+<td>auto-detected</td>
+<td>Path to the SQLite database file.</td>
+</tr>
+</tbody>
+</table>
 <div class="highlight"><pre><span></span><code><span class="c1"># Default grouping (by source)</span>
 myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats
 
@@ -291,6 +337,8 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats<span class="
 <p><strong>Return value / effect</strong></p>
 <ul>
 <li>Prints a table or JSON array to stdout.</li>
+<li>Source grouping is the default when neither grouping flag is passed; its columns are <code>source</code>, <code>total</code>, <code>addressed</code>, <code>not_addressed</code>, <code>skipped</code>, <code>addressed_rate</code>.</li>
+<li>Reviewer grouping columns are <code>author</code>, <code>total</code>, <code>addressed</code>, <code>not_addressed</code>, <code>skipped</code>.</li>
 <li>Exits with an error if both <code>--by-source</code> and <code>--by-reviewer</code> are passed.</li>
 </ul>
 <h3 id="db-patterns"><code>db patterns</code></h3>
@@ -1032,6 +1080,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <li><a href="built-in-workflows.html">Built-in Workflow Commands</a></li>
 <li><a href="automating-code-reviews.html">Automating Code Reviews</a></li>
 <li><a href="curating-project-memory.html">Curating Project Memory</a></li>
+<li><a href="external-ai-agents.html">External AI Agents &amp; CLI</a></li>
 <li><a href="configuration.html">Configuration &amp; Settings</a></li>
 </ul>
                 </div>
@@ -1040,7 +1089,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 
                 <a href="pi-sidecar.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">or: pip install pi-sidecar-client</span>
+                    <span class="page-nav-title">Pi Sidecar HTTP API</span>
                 </a>
 
 
@@ -1056,10 +1105,14 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
+<li><a href="#review-database-myk-pi-tools-db">Review Database (myk-pi-tools db)</a><ul>
+<li><a href="#db-stats">db stats</a></li>
 <li><a href="#db-patterns">db patterns</a></li>
 <li><a href="#db-dismissed">db dismissed</a></li>
 <li><a href="#db-query">db query</a></li>
 <li><a href="#db-find-similar">db find-similar</a></li>
+</ul>
+</li>
 <li><a href="#review-handling-myk-pi-tools-reviews">Review Handling (myk-pi-tools reviews)</a><ul>
 <li><a href="#reviews-fetch">reviews fetch</a></li>
 <li><a href="#reviews-poll">reviews poll</a></li>

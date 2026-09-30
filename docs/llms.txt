@@ -28,7 +28,7 @@
 - [External AI Agents & CLI](external-ai-agents.md)
 - [Image Generation](image-generation.md)
 - [Neovim Integration](neovim-integration.md)
-- [~/.pi/discord.env](discord-bot.md)
+- [Discord Bot Notifications](discord-bot.md)
 
 ## Providers
 
@@ -38,7 +38,7 @@
 ## Reference
 
 - [MCP Servers](mcp-servers.md)
-- [or: pip install pi-sidecar-client](pi-sidecar.md)
+- [Pi Sidecar HTTP API](pi-sidecar.md)
 - [myk_pi_tools CLI Reference](cli-reference.md)
 - [Implementing Command Guards](safety-enforcements.md)
 - [Daemon & Websocket Networking](daemon-and-websockets.md)

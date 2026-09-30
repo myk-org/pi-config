@@ -1,3 +1,28 @@
+# Pi Sidecar HTTP API
+
+`@myk-org/pi-sidecar` wraps the Pi SDK in a small HTTP service. Your app sends prompts over HTTP; the sidecar creates a Pi session, streams the turn, and returns the result. A Python client (`pi-sidecar-client`) and a Node client are both published from the same package, so both sides always agree on the wire format.
+
+Use it when you want model calls from a non-Pi process — a backend service, a script, or a bot — with Pi's session handling, project context, and tool execution, without embedding the whole TUI agent.
+
+## Prerequisites
+
+| Requirement | Value | Source |
+| :--- | :--- | :--- |
+| Node.js | `>=22.19.0` | `packages/pi-sidecar/package.json` `engines.node` |
+| `@earendil-works/pi-coding-agent` | `>=0.99.0` | `MIN_PI_VERSION` in `packages/pi-sidecar/src/pi-version.ts` |
+| `@earendil-works/pi-ai` | `>=0.99.0` | peer dependency in `packages/pi-sidecar/package.json` |
+| Python (client only) | `>=3.10` | `requires-python` in `packages/pi-sidecar/pyproject.toml` |
+
+The sidecar enforces the Pi SDK floor at startup and **exits** if the installed `@earendil-works/pi-coding-agent` is older than `0.99.0` or cannot be resolved. A stale global `pi` on `PATH` only produces a warning, but subagent calls spawn that binary and may still fail.
+
+## Getting Started
+
+### 1. Install
+
+The npm package and the Python client share one version number and are released together. Bump both, and use a range rather than an exact pin so upstream fixes can reach you.
+
+```bash
+npm install @myk-org/pi-sidecar
 # or: pip install pi-sidecar-client
 ```
 
@@ -85,6 +110,12 @@ status = await client.get_model_provider_status("google")
 print(status["registered"], status["modelCount"])
 ```
 
+List registered providers even when they expose no models or credentials yet:
+
+```python
+providers = await get_sidecar_client().get_providers()
+```
+
 > **Note:** On non-loopback binds, auth fields on provider status are redacted. Prefer `127.0.0.1` for local diagnostics. For Vertex auth setup, see [Google Vertex Claude Provider](vertex-claude-provider.html).
 
 ### 5. Run a session
@@ -132,8 +163,10 @@ Default built-in tools when you omit `tools`: `read`, `grep`, `find`, `ls`, `bas
 | Method | Path | Effect |
 | :--- | :--- | :--- |
 | `GET` | `/health` | Readiness (`ok` / `starting` / `degraded`) |
+| `GET` | `/providers` | Registered providers, even with no models or credentials |
 | `GET` | `/models` | List discovered models |
 | `POST` | `/models/refresh` | Re-run discovery |
+| `POST` | `/models/for-api-key` | Discover models for a caller-supplied `api_key` |
 | `GET` | `/models/:provider/status` | Registration, model count, auth (redacted off-loopback) |
 | `POST` | `/sessions` | Create session → `{ session_id }` |
 | `POST` | `/sessions/:id/prompt` | Send `{ "message": "..." }` |
@@ -209,7 +242,7 @@ Start the sidecar, wait for `/health`, then start your app and trap cleanup — 
 
 Startup lifecycle:
 
-1. Assert Pi SDK version ≥ 0.81.1.
+1. Assert Pi SDK version ≥ 0.99.0 (`MIN_PI_VERSION`).
 2. Listen on host/port.
 3. Optionally start watchdog.
 4. Async model discovery — `/health` is `starting` until ready.
@@ -236,7 +269,7 @@ results = await run_parallel_with_limit(tasks, max_concurrency=5)
 | Session create rejects model | Use an id from `GET /models`; interactive OAuth-only providers are blocked in this headless service. |
 | `409` / session busy | Wait for the current prompt or `POST .../abort`. |
 | `agent_dir` rejected | Bind on loopback, or use `DEV_MODE=true` (value discarded). |
-| Pi version error at startup | Upgrade `@earendil-works/pi-coding-agent` to ≥ 0.81.1. |
+| Pi version error at startup | Upgrade `@earendil-works/pi-coding-agent` (and `pi-ai`) to ≥ 0.99.0. |
 
 > **Warning:** Default bind is loopback-only. Binding to `0.0.0.0` exposes an unauthenticated AI API on the network — use only behind a trusted boundary.
 

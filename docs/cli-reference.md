@@ -1,5 +1,26 @@
 # myk_pi_tools CLI Reference
 
+`myk-pi-tools` is installed with `uv tool install myk-pi-tools`. It exposes eight command groups: `ai-cli`, `coderabbit`, `db`, `memory`, `pr`, `release`, `reviews`, and `settings`. This page documents `db`, `reviews`, and `memory`; the rest are covered on their own pages.
+
+- `ai-cli` — run prompts through external agent CLIs. See [External AI Agents & CLI](external-ai-agents.html).
+- `coderabbit`, `pr`, `reviews` — PR review automation. See [Automating Code Reviews](automating-code-reviews.html).
+- `memory` — project memory topic files. See [Curating Project Memory](curating-project-memory.html).
+
+Unless a command says otherwise, the SQLite review database is auto-detected at `<git-root>/.pi/data/reviews.db` and can be overridden with `--db-path`.
+
+## Review Database (`myk-pi-tools db`)
+
+### `db stats`
+
+Aggregates review comment counts from the reviews database.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--by-source` | Flag | `False` | Group by reviewer source (`human` / `qodo` / `coderabbit`). |
+| `--by-reviewer` | Flag | `False` | Group by reviewer author. |
+| `--json` | Flag | `False` | Output JSON instead of a formatted table. |
+| `--db-path` | String | auto-detected | Path to the SQLite database file. |
+
 ```bash
 # Default grouping (by source)
 myk-pi-tools db stats
@@ -11,6 +32,8 @@ myk-pi-tools db stats --by-reviewer --json
 **Return value / effect**
 
 - Prints a table or JSON array to stdout.
+- Source grouping is the default when neither grouping flag is passed; its columns are `source`, `total`, `addressed`, `not_addressed`, `skipped`, `addressed_rate`.
+- Reviewer grouping columns are `author`, `total`, `addressed`, `not_addressed`, `skipped`.
 - Exits with an error if both `--by-source` and `--by-reviewer` are passed.
 
 ### `db patterns`
@@ -426,4 +449,5 @@ myk-pi-tools memory status
 - [Built-in Workflow Commands](built-in-workflows.html)
 - [Automating Code Reviews](automating-code-reviews.html)
 - [Curating Project Memory](curating-project-memory.html)
+- [External AI Agents & CLI](external-ai-agents.html)
 - [Configuration & Settings](configuration.html)

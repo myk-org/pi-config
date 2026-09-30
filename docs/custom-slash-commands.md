@@ -166,16 +166,9 @@ Summarize issue #$ARGUMENTS in 5 bullets:
 
 // 2) Add the command name to `promptTemplateCommands`
 const promptTemplateCommands = new Set([
-  "external-ai",
-  "pr-review",
-  "issue-review",
-  "coderabbit-rate-limit",
-  "review-local",
-  "release",
-  "review-handler",
-  "cron",
-  "create-skill",
-  "create-coms-feature-manager",
+  "external-ai", "pr-review", "issue-review", "coderabbit-rate-limit",
+  "review-local", "release", "review-handler", "qodo-review", "create-skill",
+  "create-coms-feature-manager", "pi-config-settings",
   "pick-issue",
 ]);
 ```

@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -347,6 +347,7 @@ You are a security auditor specializing in evaluating external repositories for 
 </ul>
 <p>You can also add optional <code>provider</code> and <code>model</code> frontmatter if you want that agent to prefer a specific backend.</p>
 <blockquote>
+<p><strong>Note:</strong> Project agents under <code>.pi/agents/</code> are confirmed with you before the first dispatch in a session. Set <code>confirmProjectAgents: false</code> on a <code>subagent</code> call to skip the prompt.</p>
 <p><strong>Warning:</strong> Give agents the fewest tools they need. If an agent can work with <code>read</code> alone, do not add write-capable tools. For shell-heavy agents, see <a href="safety-enforcements.html">Implementing Command Guards</a> for details.</p>
 </blockquote>
 <h3 id="3-keep-the-instructions-narrow">3. Keep the instructions narrow</h3>
@@ -361,12 +362,13 @@ You are a security auditor specializing in evaluating external repositories for 
 <p>A strong prompt is usually better than a long prompt. Short, opinionated instructions are easier for Pi to follow reliably.</p>
 <h3 id="4-route-the-agent-from-normal-chat">4. Route the agent from normal chat</h3>
 <p>If you want Pi to pick your specialist from everyday requests, add a project rule that tells the orchestrator when to use it.</p>
-<div class="highlight"><pre><span></span><code><span class="gh"># .pi/rules/custom-agents.md</span>
+<div class="highlight"><pre><span></span><code><span class="gh"># .pi/rules/90-custom-agents.md</span>
 
 <span class="k">-</span><span class="w"> </span>When the task is to audit a third-party repository before adoption, delegate to <span class="sb">`security-auditor`</span>.
 <span class="k">-</span><span class="w"> </span>When the task is to run tests and explain failures without fixing code, delegate to <span class="sb">`test-runner`</span>.
 </code></pre></div>
 
+<p>Files load alphabetically, so a numeric prefix keeps custom rules after the bundled ones: the package ships <code>00</code>-<code>69</code>, user rules use <code>70</code>-<code>89</code>, and project rules use <code>90</code>-<code>99</code>.</p>
 <p>Write the rule in plain language. Be specific about both the trigger and the agent name.</p>
 <blockquote>
 <p><strong>Note:</strong> Project rules are loaded automatically for that repository. Start a new session after adding or changing them.</p>
@@ -385,6 +387,63 @@ You are a security auditor specializing in evaluating external repositories for 
 <p>Some specialists should only run inside a specific flow rather than being selected from general chat. In that case, keep them out of your chat-routing rules and dispatch them from a prompt template or slash command instead.</p>
 <p>Built-in workflows already do this for review specialists such as <code>/issue-review</code>, <code>/pr-review</code>, and <code>/review-local</code>. See <a href="custom-slash-commands.html">Creating Slash Commands</a> for details.</p>
 <h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="dispatch-an-agent-directly-with-the-subagent-tool">Dispatch an agent directly with the <code>subagent</code> tool</h3>
+<p>Chat routing is optional. A prompt template or any agent can call the <code>subagent</code> tool by name, which is how the bundled workflows (for example <code>/implement</code>, which chains <code>scout</code> → <code>planner</code> → <code>worker</code>) invoke specialists.</p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent</code></td>
+<td>string</td>
+<td>—</td>
+<td>Agent name from <code>name:</code> frontmatter.</td>
+</tr>
+<tr>
+<td><code>task</code></td>
+<td>string</td>
+<td>—</td>
+<td>What the agent should do.</td>
+</tr>
+<tr>
+<td><code>cwd</code></td>
+<td>string</td>
+<td>session cwd</td>
+<td>Directory the agent works in. Point it at the target path for external repos.</td>
+</tr>
+<tr>
+<td><code>estimatedSeconds</code></td>
+<td>number</td>
+<td>—</td>
+<td>Required for sync calls. At <code>30</code> or more, the call must use <code>async: true</code>.</td>
+</tr>
+<tr>
+<td><code>async</code></td>
+<td>boolean</td>
+<td><code>false</code></td>
+<td>Runs detached; the result arrives as a follow-up message.</td>
+</tr>
+<tr>
+<td><code>agentScope</code></td>
+<td><code>"project"</code>, <code>"user"</code>, or <code>"both"</code></td>
+<td><code>"both"</code></td>
+<td>Which agent directories to search.</td>
+</tr>
+<tr>
+<td><code>confirmProjectAgents</code></td>
+<td>boolean</td>
+<td><code>true</code></td>
+<td>Prompt before using a project agent.</td>
+</tr>
+</tbody>
+</table>
+<p>Use <code>tasks</code> for parallel dispatch and <code>chain</code> for sequential steps that feed <code>{previous}</code> into the next agent.</p>
 <h3 id="override-order">Override order</h3>
 <p>When two agents use the same <code>name:</code>, Pi resolves them in this order:</p>
 <table>
@@ -451,11 +510,12 @@ You are a security auditor specializing in evaluating external repositories for 
 <p>If the agent needs multiple phases, parallel reviewers, scheduled runs, or background execution, put it behind a workflow instead of normal chat routing. See <a href="custom-slash-commands.html">Creating Slash Commands</a> and <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
-<li><strong>Pi does not pick the new agent:</strong> Start a new session, confirm the file is under <code>.pi/agents/</code> or <code>~/.pi/agent/agents/</code>, and make sure the frontmatter includes both <code>name:</code> and <code>description:</code>.</li>
+<li><strong>Pi does not pick the new agent:</strong> Confirm the file is a <code>.md</code> under <code>.pi/agents/</code> or <code>~/.pi/agent/agents/</code>, and that the frontmatter includes both <code>name:</code> and <code>description:</code>. Agents are discovered on every <code>subagent</code> call, so no session restart is needed — but rules are assembled at session start, so rule changes do need one.</li>
 <li><strong>Pi picks the wrong specialist:</strong> Make your routing rule more explicit. If the task is really workflow-only, dispatch it from a slash command instead of relying on everyday chat.</li>
 <li><strong>The agent has too much authority:</strong> Reduce the <code>tools:</code> list first. Many specialists only need <code>read</code> and <code>bash</code>.</li>
 <li><strong>The agent uses the wrong model:</strong> Check <code>provider:</code> / <code>model:</code> frontmatter and your <code>agent_provider</code>, <code>agent_model</code>, and <code>agent_overrides</code> settings. See <a href="configuration.html">Configuration &amp; Settings</a> for details.</li>
-<li><strong>A project-level agent is not found from a subdirectory:</strong> Put it under the repository’s <code>.pi/agents/</code> folder, then start a new session from anywhere inside that repo.</li>
+<li><strong>A project agent is never offered:</strong> It is listed only when <code>agentScope</code> includes <code>project</code> (the default is <code>both</code>), and the first use in a session asks for confirmation.</li>
+<li><strong>A project-level agent is not found from a subdirectory:</strong> Subdirectories are fine — <code>.pi/agents/</code> is resolved by walking up from the working directory. The usual causes are that no <code>.pi/agents/</code> directory exists in any ancestor, or that the file is silently skipped because its frontmatter is missing <code>name:</code> or <code>description:</code> (both are required).</li>
 </ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
@@ -497,6 +557,7 @@ You are a security auditor specializing in evaluating external repositories for 
 </ul>
 </li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#dispatch-an-agent-directly-with-the-subagent-tool">Dispatch an agent directly with the subagent tool</a></li>
 <li><a href="#override-order">Override order</a></li>
 <li><a href="#reuse-a-built-in-pattern-instead-of-starting-from-scratch">Reuse a built-in pattern instead of starting from scratch</a></li>
 <li><a href="#pin-a-provider-or-model-for-one-agent">Pin a provider or model for one agent</a></li>

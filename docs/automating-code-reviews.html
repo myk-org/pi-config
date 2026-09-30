@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -340,8 +340,9 @@
    - Qodo findings
    - follow-up reviewer pushback on earlier fixes</p>
 <p>The loop keeps running until one of these happens:
-   - the reviewer approves the PR
-   - you explicitly stop the loop</p>
+   - the reviewer approves the PR (<code>"approved": true</code> from <code>reviews poll</code>)
+   - you explicitly stop it (<code>Ctrl+C</code>, or <code>stop</code> / <code>exit</code> / <code>done</code> / <code>quit</code>)</p>
+<p>Poll workers sleep 300s between checks and can run for 30+ minutes, so do not set a timeout on them.</p>
 <blockquote>
 <p><strong>Tip:</strong> The loop can run for a long time while waiting for new bot comments. See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details on monitoring long-running background work.</p>
 </blockquote>
@@ -364,7 +365,13 @@
 <ol>
 <li><strong>Let the loop re-check after each push</strong></li>
 </ol>
-<p>After Pi fixes comments and pushes a follow-up commit, it polls for new reviewer output again. For Qodo, that includes follow-up responses on sticky findings; for CodeRabbit, it includes re-triggered review cycles after cooldowns or pauses.</p>
+<p>After Pi fixes comments and pushes a follow-up commit, it re-spawns the poll for that source. With both flags on, it spawns two parallel workers and processes whichever returns first. For Qodo, that includes follow-up responses on sticky findings and a <code>qodo_cleanup_response</code> block whose items must all be addressed; for CodeRabbit, it includes re-triggered review cycles after cooldowns or pauses.</p>
+<ol>
+<li><strong>Check progress without disturbing the loop</strong></li>
+</ol>
+<p><code>bash
+   /review-handler-status</code></p>
+<p>This is a separate prompt that reports the live status of running <code>review-handler</code> agents. Use it instead of interrupting a running loop.</p>
 <h2 id="advanced-usage">Advanced Usage</h2>
 <h3 id="review-with-the-cli-instead-of-the-slash-command">Review with the CLI instead of the slash command</h3>
 <p>Use the CLI flow when you want to script review automation outside the interactive handler:</p>
@@ -380,8 +387,14 @@
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>store<span class="w"> </span>.pi/tmp/pr-42-reviews.json
 </code></pre></div>
 
+<p>Two more subcommands exist for staging review comments before they are posted:</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-fetch<span class="w"> </span><span class="s2">"https://github.com/owner/repo/pull/123"</span><span class="w"> </span>--output-dir<span class="w"> </span>.pi/tmp/
+myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-update<span class="w"> </span>.pi/tmp/owner-repo-123-pending-review.json<span class="w"> </span>--submit
+</code></pre></div>
+
 <p>Use this flow when you need custom wrappers, CI experiments, or one-off tooling. See <a href="cli-reference.html">myk_pi_tools CLI Reference</a> for details.</p>
 <blockquote>
+<p><strong>Note:</strong> <code>reviews status</code> requires <code>--output-dir</code>; without <code>--pr</code> it auto-detects the PR from the current branch and otherwise lists the PRs in the local reviews database.</p>
 <p><strong>Warning:</strong> <code>--autorabbit</code> and <code>--autoqodo</code> are slash-command flags for <code>/review-handler</code>. They are not CLI flags for <code>myk-pi-tools reviews ...</code>.</p>
 </blockquote>
 <h3 id="ask-qodo-follow-up-questions">Ask Qodo follow-up questions</h3>
@@ -397,15 +410,22 @@
 
 <p>Use this when you want a durable summary across multiple review cycles instead of only the latest comment thread state.</p>
 <h3 id="run-multiple-pr-review-loops-safely">Run multiple PR review loops safely</h3>
-<p>If you need to automate reviews for more than one PR at the same time, use separate worktrees instead of switching branches in place:</p>
+<p>If you need to automate reviews for more than one PR at the same time, use separate worktrees instead of switching branches in place. Keep the worktrees inside the repository (<code>.worktrees/</code>) so they inherit the same project settings and <code>.gitignore</code> rules:</p>
 <div class="highlight"><pre><span></span><code>git<span class="w"> </span>worktree<span class="w"> </span>add<span class="w"> </span>.worktrees/pr-42<span class="w"> </span>origin/fix/issue-42
 git<span class="w"> </span>worktree<span class="w"> </span>add<span class="w"> </span>.worktrees/pr-43<span class="w"> </span>origin/feat/issue-43
 </code></pre></div>
 
 <p>Then run <code>/review-handler</code> from each worktree independently. This avoids cross-contaminating parallel review sessions.</p>
-<h3 id="understand-cycle-limits-in-auto-mode">Understand cycle limits in auto mode</h3>
-<p>Automated review flows use a shared review-cycle budget controlled by <code>review_loop_max_cycles</code>. Auto mode also runs in two stages: spec first, then code quality, with both stages drawing from the same cycle cap.</p>
-<p>If the cycle cap is reached before approval, Pi stops re-dispatching reviewers and reports the remaining state instead of pretending the PR is clean. See <a href="configuration.html">Configuration &amp; Settings</a> for details.</p>
+<h3 id="understand-what-ends-the-auto-loop">Understand what ends the auto loop</h3>
+<p>Auto mode has exactly two exit conditions, and nothing else is valid (<code>prompts/review-handler.md</code>, Phase 9c):</p>
+<ol>
+<li>Every auto-approved reviewer returns <code>"approved": true</code> from <code>reviews poll</code>.</li>
+<li>You explicitly stop it — <code>Ctrl+C</code>, or sending <code>stop</code>, <code>exit</code>, <code>done</code>, or <code>quit</code>.</li>
+</ol>
+<p>A failing command, a reviewer that stays quiet, or "all comments addressed" are <strong>not</strong> exit conditions. The handler logs the error, waits five minutes, and retries.</p>
+<blockquote>
+<p><strong>Note:</strong> <code>review_loop_max_cycles</code> is a different mechanism. It caps the <em>commit gate</em> in <code>extensions/orchestrator/pi-config-review-state.ts</code> (default <code>3</code>, range <code>1</code>–<code>10</code>, env <code>PI_REVIEW_LOOP_MAX_CYCLES</code>) — when the cap is reached with no reviewers pending, commits are allowed through instead of blocking. It does not bound the <code>/review-handler</code> poll loop. See <a href="configuration.html">Configuration &amp; Settings</a>.</p>
+</blockquote>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
 <li>
@@ -425,7 +445,7 @@ git<span class="w"> </span>worktree<span class="w"> </span>add<span class="w"> <
 <p><strong>Qodo keeps resurfacing the same finding:</strong> ask a follow-up question with <code>myk-pi-tools reviews ask-qodo "..."</code>, then either change the code or clarify the requirement before rerunning the loop.</p>
 </li>
 <li>
-<p><strong>Commits are blocked even after fixes:</strong> your review loop may still be failing tests or waiting on reviewer approval. See <a href="configuration.html">Configuration &amp; Settings</a> for the cycle cap settings, and see <a href="safety-enforcements.html">Implementing Command Guards</a> for commit enforcement details.</p>
+<p><strong>Commits are blocked even after fixes:</strong> your review loop may still be failing tests or waiting on reviewer approval. Commit blocking comes from <code>extensions/orchestrator/pi-config-review-state.ts</code> and is capped by <code>review_loop_max_cycles</code> (default <code>3</code>, env <code>PI_REVIEW_LOOP_MAX_CYCLES</code>); it is independent of the <code>/review-handler</code> poll loop. See <a href="configuration.html">Configuration &amp; Settings</a> and <a href="safety-enforcements.html">Implementing Command Guards</a>.</p>
 </li>
 <li>
 <p><strong>You want a simpler first pass:</strong> start with <code>/review-handler --autorabbit</code> or <code>/review-handler --autoqodo</code>, then enable both once the PR is stable.</p>
@@ -469,7 +489,7 @@ git<span class="w"> </span>worktree<span class="w"> </span>add<span class="w"> <
 <li><a href="#ask-qodo-follow-up-questions">Ask Qodo follow-up questions</a></li>
 <li><a href="#generate-a-review-status-report">Generate a review status report</a></li>
 <li><a href="#run-multiple-pr-review-loops-safely">Run multiple PR review loops safely</a></li>
-<li><a href="#understand-cycle-limits-in-auto-mode">Understand cycle limits in auto mode</a></li>
+<li><a href="#understand-what-ends-the-auto-loop">Understand what ends the auto loop</a></li>
 </ul>
 </li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>

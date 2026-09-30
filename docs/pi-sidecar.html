@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>or: pip install pi-sidecar-client - pi-config</title>
+    <title>Pi Sidecar HTTP API - pi-config</title>
     <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link active" aria-current="page">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -280,16 +280,54 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="or-pip-install-pi-sidecar-client">or: pip install pi-sidecar-client</h1>
-<div class="highlight"><pre><span></span><code>CLIs after install: `pi-sidecar` (server) and `pi-sidecar-start` (dev start script).
+                    <h1 id="pi-sidecar-http-api">Pi Sidecar HTTP API</h1>
+<p><code>@myk-org/pi-sidecar</code> wraps the Pi SDK in a small HTTP service. Your app sends prompts over HTTP; the sidecar creates a Pi session, streams the turn, and returns the result. A Python client (<code>pi-sidecar-client</code>) and a Node client are both published from the same package, so both sides always agree on the wire format.</p>
+<p>Use it when you want model calls from a non-Pi process — a backend service, a script, or a bot — with Pi's session handling, project context, and tool execution, without embedding the whole TUI agent.</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<table>
+<thead>
+<tr>
+<th>Requirement</th>
+<th>Value</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Node.js</td>
+<td><code>&gt;=22.19.0</code></td>
+<td><code>packages/pi-sidecar/package.json</code> <code>engines.node</code></td>
+</tr>
+<tr>
+<td><code>@earendil-works/pi-coding-agent</code></td>
+<td><code>&gt;=0.99.0</code></td>
+<td><code>MIN_PI_VERSION</code> in <code>packages/pi-sidecar/src/pi-version.ts</code></td>
+</tr>
+<tr>
+<td><code>@earendil-works/pi-ai</code></td>
+<td><code>&gt;=0.99.0</code></td>
+<td>peer dependency in <code>packages/pi-sidecar/package.json</code></td>
+</tr>
+<tr>
+<td>Python (client only)</td>
+<td><code>&gt;=3.10</code></td>
+<td><code>requires-python</code> in <code>packages/pi-sidecar/pyproject.toml</code></td>
+</tr>
+</tbody>
+</table>
+<p>The sidecar enforces the Pi SDK floor at startup and <strong>exits</strong> if the installed <code>@earendil-works/pi-coding-agent</code> is older than <code>0.99.0</code> or cannot be resolved. A stale global <code>pi</code> on <code>PATH</code> only produces a warning, but subagent calls spawn that binary and may still fail.</p>
+<h2 id="getting-started">Getting Started</h2>
+<h3 id="1-install">1. Install</h3>
+<p>The npm package and the Python client share one version number and are released together. Bump both, and use a range rather than an exact pin so upstream fixes can reach you.</p>
+<div class="highlight"><pre><span></span><code>npm<span class="w"> </span>install<span class="w"> </span>@myk-org/pi-sidecar
+<span class="c1"># or: pip install pi-sidecar-client</span>
+</code></pre></div>
 
-### 2. Start the sidecar
-
-**Production-style (default port 9100):**
-
-```bash
-npx pi-sidecar
-# or: node dist/server.js
+<p>CLIs after install: <code>pi-sidecar</code> (server) and <code>pi-sidecar-start</code> (dev start script).</p>
+<h3 id="2-start-the-sidecar">2. Start the sidecar</h3>
+<p><strong>Production-style (default port 9100):</strong></p>
+<div class="highlight"><pre><span></span><code>npx<span class="w"> </span>pi-sidecar
+<span class="c1"># or: node dist/server.js</span>
 </code></pre></div>
 
 <p><strong>Local dev helper (default port 9201):</strong></p>
@@ -414,6 +452,10 @@ npx pi-sidecar
 <span class="nb">print</span><span class="p">(</span><span class="n">status</span><span class="p">[</span><span class="s2">"registered"</span><span class="p">],</span> <span class="n">status</span><span class="p">[</span><span class="s2">"modelCount"</span><span class="p">])</span>
 </code></pre></div>
 
+<p>List registered providers even when they expose no models or credentials yet:</p>
+<div class="highlight"><pre><span></span><code><span class="n">providers</span> <span class="o">=</span> <span class="k">await</span> <span class="n">get_sidecar_client</span><span class="p">()</span><span class="o">.</span><span class="n">get_providers</span><span class="p">()</span>
+</code></pre></div>
+
 <blockquote>
 <p><strong>Note:</strong> On non-loopback binds, auth fields on provider status are redacted. Prefer <code>127.0.0.1</code> for local diagnostics. For Vertex auth setup, see <a href="vertex-claude-provider.html">Google Vertex Claude Provider</a>.</p>
 </blockquote>
@@ -467,6 +509,11 @@ npx pi-sidecar
 </tr>
 <tr>
 <td><code>GET</code></td>
+<td><code>/providers</code></td>
+<td>Registered providers, even with no models or credentials</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
 <td><code>/models</code></td>
 <td>List discovered models</td>
 </tr>
@@ -474,6 +521,11 @@ npx pi-sidecar
 <td><code>POST</code></td>
 <td><code>/models/refresh</code></td>
 <td>Re-run discovery</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/models/for-api-key</code></td>
+<td>Discover models for a caller-supplied <code>api_key</code></td>
 </tr>
 <tr>
 <td><code>GET</code></td>
@@ -609,7 +661,7 @@ npx<span class="w"> </span>pi-sidecar
 </table>
 <p>Startup lifecycle:</p>
 <ol>
-<li>Assert Pi SDK version ≥ 0.81.1.</li>
+<li>Assert Pi SDK version ≥ 0.99.0 (<code>MIN_PI_VERSION</code>).</li>
 <li>Listen on host/port.</li>
 <li>Optionally start watchdog.</li>
 <li>Async model discovery — <code>/health</code> is <code>starting</code> until ready.</li>
@@ -658,7 +710,7 @@ npx<span class="w"> </span>pi-sidecar
 </tr>
 <tr>
 <td>Pi version error at startup</td>
-<td>Upgrade <code>@earendil-works/pi-coding-agent</code> to ≥ 0.81.1.</td>
+<td>Upgrade <code>@earendil-works/pi-coding-agent</code> (and <code>pi-ai</code>) to ≥ 0.99.0.</td>
 </tr>
 </tbody>
 </table>
@@ -695,9 +747,15 @@ npx<span class="w"> </span>pi-sidecar
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#getting-started">Getting Started</a><ul>
+<li><a href="#1-install">1. Install</a></li>
+<li><a href="#2-start-the-sidecar">2. Start the sidecar</a></li>
 <li><a href="#3-wait-until-healthy">3. Wait until healthy</a></li>
 <li><a href="#4-discover-models">4. Discover models</a></li>
 <li><a href="#5-run-a-session">5. Run a session</a></li>
+</ul>
+</li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
 <li><a href="#http-api-surface">HTTP API surface</a></li>
 <li><a href="#custom-http-backed-tools">Custom HTTP-backed tools</a></li>

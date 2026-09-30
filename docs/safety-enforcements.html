@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -312,7 +312,7 @@
 
 <p>This blocks both <code>git push --force</code> and <code>git push --force-with-lease</code>. Use <code>bash_regex</code> when a simple substring is too broad or would miss important variants.</p>
 <blockquote>
-<p><strong>Tip:</strong> Keep regexes short and targeted. This matcher is for command guards, not full shell parsing.</p>
+<p><strong>Tip:</strong> Keep regexes short and targeted. This matcher is for command guards, not full shell parsing. Patterns longer than 200 characters are ignored, an invalid pattern is skipped silently, and only the first 4000 characters of a command are tested.</p>
 </blockquote>
 <h2 id="warn-when-editing-secret-files">Warn when editing secret files</h2>
 <p>Use this when a file should stay editable, but every edit deserves an extra reminder.</p>
@@ -340,7 +340,7 @@
 
 <p>This adds a semantic verifier instead of a trigger/action pair. If Pi runs <code>gh pr merge</code> without calling <code>ask_user</code> first, the turn is flagged as a violation.</p>
 <blockquote>
-<p><strong>Note:</strong> This checks ordering inside a single turn: <code>ask_user</code> must happen before the merge command.</p>
+<p><strong>Note:</strong> This checks ordering inside a single turn: <code>ask_user</code> must happen before the merge command. The second half is a plain substring matched against <code>bash</code> command strings only, and verifiers are evaluated at turn end — they report a violation rather than blocking the call.</p>
 </blockquote>
 <h2 id="make-the-repo-read-only-for-direct-edits">Make the repo read-only for direct edits</h2>
 <p>Use this when you want Pi to inspect and plan, but never modify files directly.</p>
@@ -366,11 +366,7 @@ memory_add(
 </ul>
 <h2 id="run-one-safe-follow-up-command-after-a-file-edit">Run one safe follow-up command after a file edit</h2>
 <p>Use this when you want Pi to perform a tightly controlled check right after a successful change.</p>
-<div class="highlight"><pre><span></span><code># In your shell before starting pi
-export PI_ENFORCEMENT_ALLOWED_COMMANDS="git diff -- Dockerfile"
-
-# In pi chat
-memory_add(
+<div class="highlight"><pre><span></span><code>memory_add(
   text="Show the Dockerfile diff after every edit",
   category="pattern",
   trigger="file_modified Dockerfile",
@@ -378,18 +374,19 @@ memory_add(
 )
 </code></pre></div>
 
-<p>This runs <code>git diff -- Dockerfile</code> immediately after a matching <code>write</code> or <code>edit</code> succeeds, and only because the command is allowlisted exactly. Use this for short, deterministic checks that you want attached to a specific kind of edit.</p>
+<p>This runs <code>git diff -- Dockerfile</code> immediately after a matching <code>write</code> or <code>edit</code> succeeds. Use this for short, deterministic checks that you want attached to a specific kind of edit.</p>
+<p>Unlike <code>block</code> and <code>warn</code>, <code>run_after</code> actually executes a shell command, so it is gated. Without configuration the command runs as written. To restrict it, set the <code>enforcement_allowed_commands</code> allowlist — this is the only allowlist in the enforcement path:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># In your shell before starting pi</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_ENFORCEMENT_ALLOWED_COMMANDS</span><span class="o">=</span><span class="s2">"git diff -- Dockerfile:git status --short"</span>
+</code></pre></div>
+
+<p>Or set <code>enforcement_allowed_commands</code> in <code>pi-config-settings.json</code>. Once the setting is non-empty, a <code>run_after</code> command not in the allowlist is refused with <code>Blocked: command not in enforcement_allowed_commands allowlist</code> and does not execute.</p>
 <blockquote>
-<p><strong>Warning:</strong> Allowlist entries must match exactly, character for character.</p>
+<p><strong>Warning:</strong> Allowlist entries are colon-separated and matched exactly, character for character, after trimming — no prefix matching, so <code>git diff</code> in the list does not permit <code>git diff -- Dockerfile</code>. An empty allowlist (the default) allows everything.</p>
 </blockquote>
 <ul>
-<li>
-<p>To allow more than one follow-up command, use a colon-separated list:
-  <code>export PI_ENFORCEMENT_ALLOWED_COMMANDS="git diff -- Dockerfile:git status --short"</code></p>
-</li>
-<li>
-<p>Keep follow-up commands fast so they do not slow down normal edits</p>
-</li>
+<li>Independently of the allowlist, <code>run_after</code> still refuses commands matching <code>curl</code>/<code>wget</code> piped into a shell, <code>rm -rf /</code>-style paths, <code>sudo</code>, and world-writable <code>chmod</code></li>
+<li>Each command runs with a 60s timeout; keep follow-up commands fast so they do not slow down normal edits</li>
 </ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>

@@ -1,12 +1,16 @@
 # Configuration & Settings
 
+Every key below is declared in `settings-keys.json` at the repository root, which is the source of truth for types, defaults, ranges, and env var names. This page covers the common ones; `settings-keys.json` lists the rest.
+
 ## Settings Files
+
+Both settings files accept `.jsonc` (JSON with comments) or plain `.json`. If a directory contains both names, the `.jsonc` file is used and the `.json` file is ignored.
 
 ### Project settings file
 
 | Parameter | Type | Default | Description | Effect |
 |---|---|---|---|---|
-| Path | string | none | `.pi/pi-config-settings.json` in the repository root. | Highest-precedence settings source for the current project. |
+| Path | string | none | `.pi/pi-config-settings.jsonc` (or `.pi/pi-config-settings.json`) in the repository root. | Highest-precedence settings source for the current project. |
 
 ```json
 {
@@ -20,7 +24,7 @@
 
 | Parameter | Type | Default | Description | Effect |
 |---|---|---|---|---|
-| Path | string | none | `~/.pi/pi-config-settings.json` in the current user's home directory. | Fallback settings source for all projects when a key is not set in the project file. |
+| Path | string | none | `~/.pi/pi-config-settings.jsonc` (or `~/.pi/pi-config-settings.json`) in the current user's home directory. | Fallback settings source for all projects when a key is not set in the project file. |
 
 ```json
 {
@@ -39,6 +43,18 @@
 project file -> global file -> environment variable -> default
 ```
 
+### Editing settings without a text editor
+
+| Parameter | Type | Default | Description | Effect |
+|---|---|---|---|---|
+| `/pi-config-settings` | slash command | none | Opens an interactive settings TUI over the same keys. | Saves to the file for the scope you are editing (project or global), and shows the valid values and env var for every key. |
+
+```text
+/pi-config-settings
+```
+
+Use it when you would rather not guess an env var name or a numeric range — the TUI shows the valid values for every key.
+
 ## Git & Workflow Keys
 
 ### `commit_trailer`
@@ -47,7 +63,7 @@ project file -> global file -> environment variable -> default
 |---|---|---|---|---|---|
 | `commit_trailer` | string or `false` | `false` | `PI_COMMIT_TRAILER` | Commit trailer name, or a comma-separated list of trailer names. | Injects a trailer into `git commit` commands when a string value is set. |
 
-> **Note:** A comma-separated string such as `"Assisted-by, Co-authored-by"` is treated as a selectable list of trailer names.
+> **Note:** A comma-separated string such as `"Assisted-by,Co-authored-by"` is treated as a list of trailer names; the user picks one per session and the choice is reused. The injected value is `<Trailer>: PI (<model-id>) <noreply@pi.dev>`.
 
 ```json
 {
@@ -79,7 +95,7 @@ export PI_ALLOW_PUSH_TO_PROTECTED_BRANCHES=true
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `use_worktrees` | boolean | `false` | `PI_USE_WORKTREES` | Forces worktree-only branch workflows. | Blocks branch-changing `git checkout` and `git switch` commands in the main worktree. |
+| `use_worktrees` | boolean | `false` | `PI_USE_WORKTREES` | Forces worktree-only branch workflows. | Blocks `git switch` and branch-changing `git checkout`; file restores such as `git checkout -- <path>` still pass. Suggests `git worktree add .worktrees/<name> -b <branch> <main>`. |
 
 ```json
 {
@@ -212,7 +228,7 @@ See [External AI Agents & CLI](external-ai-agents.html) for details.
 |---|---|---|---|---|---|
 | `acpx_agents` | string or string[] | `[]` | `ACPX_AGENTS` | List of ACPX agent names to register. | Registers `acpx-<agent>` providers in the unified provider extension. |
 
-> **Note:** Values are lowercased, deduplicated, and invalid names are filtered out.
+> **Note:** Values are lowercased, deduplicated, and any name that is not `[a-z0-9_-]+` is dropped. Unlike `cli_agents`, the name is not checked against a built-in list — it must match an agent the `acpx` binary can launch.
 
 ```json
 {
@@ -346,7 +362,7 @@ See [Using the Web Dashboard](using-the-web-dashboard.html) for details.
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `image_model` | string | `""` | `PI_IMAGE_MODEL` | Gemini image generation model name. | Enables the `generate_image` tool to call the Gemini API. |
+| `image_model` | string | `""` | `PI_IMAGE_MODEL` | Gemini image generation model name. | Enables the `generate_image` tool to call the Gemini API. Requires `GEMINI_API_KEY` or `GOOGLE_API_KEY` to be set. |
 
 ```json
 {
@@ -359,6 +375,24 @@ export PI_IMAGE_MODEL=gemini-3-pro-image
 ```
 
 See [Image Generation](image-generation.html) for details.
+
+## Code Graph Key
+
+### `graft_enable`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `graft_enable` | boolean | `false` | `PI_GRAFT_ENABLE` | Enables the local Graft repository graph integration. | Adds the `graft_*` tools to every subagent's toolset, so agents can look code up in the graph before grepping. Requires the `graft` binary on `PATH`. |
+
+```json
+{
+  "graft_enable": true
+}
+```
+
+```bash
+export PI_GRAFT_ENABLE=true
+```
 
 ## Background & Async Keys
 
@@ -380,42 +414,41 @@ export PI_DREAM_INTERVAL_HOURS=6
 
 See [Background Memory Consolidation (Dreaming)](background-dreaming.html) for details.
 
-### `async_llm_provider`
+### `internal_operations_provider`
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `async_llm_provider` | string | `""` | `PI_ASYNC_LLM_PROVIDER` | Provider to use for must-async LLM work when a sidecar provider/model pair is required. | Combined with `async_llm_model` to define the sidecar provider. |
+| `internal_operations_provider` | string | `""` | `PI_INTERNAL_OPERATIONS_PROVIDER` | Provider pi-config uses for its own detached LLM work when the session provider cannot do it. | Combined with `internal_operations_model` to define the sidecar provider. Used by dreaming, cron, and fire-and-forget async agents. |
 
 ```json
 {
-  "async_llm_provider": "openai"
+  "internal_operations_provider": "openai"
 }
 ```
 
 ```bash
-export PI_ASYNC_LLM_PROVIDER=openai
+export PI_INTERNAL_OPERATIONS_PROVIDER=openai
 ```
 
-### `async_llm_model`
+### `internal_operations_model`
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `async_llm_model` | string | `""` | `PI_ASYNC_LLM_MODEL` | Model ID paired with `async_llm_provider` for must-async LLM work. | Combined with `async_llm_provider` to define the sidecar model. |
+| `internal_operations_model` | string | `""` | `PI_INTERNAL_OPERATIONS_MODEL` | Model ID paired with `internal_operations_provider`. | Combined with `internal_operations_provider` to define the sidecar model. |
 
 ```json
 {
-  "async_llm_model": "gpt-5.4"
+  "internal_operations_model": "gpt-5.4"
 }
 ```
 
 ```bash
-export PI_ASYNC_LLM_MODEL=gpt-5.4
+export PI_INTERNAL_OPERATIONS_MODEL=gpt-5.4
 ```
 
-> **Warning:** Both `async_llm_provider` and `async_llm_model` must be set together. If either is missing, must-async work is skipped.
+> **Warning:** Both `internal_operations_provider` and `internal_operations_model` must be set together. If either is missing, must-async work is skipped.
 
-
-> **Warning:** `async_llm_provider` cannot be an `acpx-*` provider ID.
+> **Warning:** `internal_operations_provider` cannot be an `acpx-*` provider ID. Non-must-async work is coerced to sync instead of using the sidecar.
 
 See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details.
 
@@ -433,7 +466,7 @@ export PI_LOG_PROVIDERS=debug
 
 The stream is written to `~/.pi/logs/providers/<session-id>/main.log` under a `[provider-stream]` prefix, with one line per event and credential-shaped fields redacted. Capturing every event has a real cost, so the hook only registers at `debug` and costs nothing at the default level.
 
-See [Configuration](configuration.html) for the full settings reference.
+Every other `log_<module>` key follows the same shape — `log_pidash`, `log_pidiff`, `log_coms`, `log_subagent`, `log_dreaming`, `log_enforcement`, `log_graft`, and others — with env vars `PI_LOG_<MODULE>` and default `info`.
 
 ## Environment-only Process Flag
 

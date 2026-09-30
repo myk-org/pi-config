@@ -23,7 +23,7 @@ Two complementary servers handle real-time UI and IPC. They share the same WebSo
 2. The extension checks whether a healthy daemon already answers `/api/health`.
 3. If not, it spawns the server script and waits until health checks succeed.
 4. The terminal connects on `/ws/pi` and begins forwarding session events.
-5. The browser connects on `/ws/browser` and receives the same live stream (plus buffered catch-up when needed).
+5. The browser connects on `/ws/browser` and receives the same live stream (plus buffered catch-up when needed). Background agent and cron status arrive on a separate `/ws/async` socket.
 
 > **Tip:** Check daemon health with `/pidash status` or `/pidiff status`. See [Using the Web Dashboard](using-the-web-dashboard.html) for day-to-day UI usage.
 
@@ -31,9 +31,9 @@ Two complementary servers handle real-time UI and IPC. They share the same WebSo
 
 ### Shared dashboard vs per-project diff server
 
-**pidash** listens on a configured port (`pidash_port`, default `19190`). Every project session can attach to the same daemon, so one browser window can switch across terminals. Logs for spawn failures live under `~/.pi/pidash-server.log`.
+**pidash** listens on a configured port (`pidash_port`, default `19190`, env `PI_PIDASH_PORT`). Every project session can attach to the same daemon, so one browser window can switch across terminals. Logs for spawn failures live under `~/.pi/pidash-server.log`.
 
-**pidiff** binds a free local port for the current project and records that port (and PID when known) under the project’s `.pi/tmp/` directory as `pidiff.port` / `pidiff.pid`. That avoids collisions when several projects run diffs at once.
+**pidiff** binds a free local port for the current project and records that port (and PID when known) under the project’s `.pi/tmp/` directory as `pidiff.port` / `pidiff.pid`. That avoids collisions when several projects run diffs at once. A concurrent-spawn guard uses a separate `pidiff.spawning` lock, cleared after `pidiff_stale_lock_timeout_ms` (default `60000`).
 
 > **Note:** Toggle either server with `pidash_enable` / `pidiff_enable` (or their env vars). See [Configuration & Settings](configuration.html).
 
@@ -68,12 +68,6 @@ Token streams and tool activity originate inside the `pi` session. Extensions fo
 - [Using the Web Dashboard](using-the-web-dashboard.html) — Start, stop, and use pidash / pidiff day to day.
 - [Configuration & Settings](configuration.html) — `pidash_port`, enable flags, and related env vars.
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) — Spawn, monitor, and kill async agents that use this IPC path.
-- [Installation & Quickstart](quickstart.html) — First-time install and daemon startup.
-
-## Related Pages
-
-- [Using the Web Dashboard](using-the-web-dashboard.html)
-- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
-- [Installation & Quickstart](quickstart.html)
 - [Discord Bot Notifications](discord-bot.html)
 - [Inter-Agent Communication Network](inter-agent-communication.html)
+- [Installation & Quickstart](quickstart.html) — First-time install and daemon startup.

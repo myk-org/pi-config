@@ -1,3 +1,20 @@
+# Discord Bot Notifications
+
+The pidash daemon can log in to Discord and act as a remote control for your Pi sessions. Watch a session from a slash command, then send prompts and answer agent questions from a DM — including images and small text files.
+
+There is no separate Discord service. The bot runs inside the pidash daemon (`scripts/pidash-discord.ts`) and is off unless a bot token is present.
+
+## Prerequisites
+
+- A running pidash daemon (`/pidash start`) — see [Using the Web Dashboard](using-the-web-dashboard.html)
+- A Discord bot application with a token, and the **Message Content Intent** enabled
+- The bot invited to your server with the `application.commands` scope, if you want slash commands in a server (DM control works without it)
+
+## Quick Example
+
+Create the credentials file, then start the dashboard daemon:
+
+```env
 # ~/.pi/discord.env
 DISCORD_BOT_TOKEN=MTE...your.token.here...
 DISCORD_ALLOWED_USERS=123456789012345678
@@ -21,7 +38,9 @@ DISCORD_BOT_TOKEN=MTE...your.token.here...
 DISCORD_ALLOWED_USERS=123456789012345678
 ```
 
-`DISCORD_BOT_TOKEN` enables the bot. `DISCORD_ALLOWED_USERS` is optional, but recommended, and accepts a comma-separated list of Discord user IDs.
+`DISCORD_BOT_TOKEN` enables the bot. `DISCORD_ALLOWED_USERS` is optional, but recommended, and accepts a comma-separated list of Discord user IDs. It gates **both** DMs and slash commands — an unauthorized user gets an ephemeral `Not authorized.` reply.
+
+> **Note:** pidash reads this file at startup only. If pidash is already running, use `/pidash restart` after any change here.
 
 ### 2. Create and configure the Discord bot
 
@@ -31,7 +50,7 @@ Set up your bot in the Discord Developer Portal, then:
 - enable **Message Content Intent**
 - invite the bot to your server with the `application.commands` scope if you want slash commands there
 
-If you only want DM-based control, the bot can still work without using server chat for prompts.
+If you only want DM-based control, the bot can still work without using server chat for prompts. Commands are registered **per guild** when the bot connects, so they appear immediately in an already-joined server rather than after Discord's global propagation delay.
 
 ### 3. Start or restart the pidash daemon
 

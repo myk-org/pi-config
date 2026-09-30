@@ -14,7 +14,7 @@ Run Claude through your Google Cloud project so usage stays on Vertex AI billing
 gcloud auth application-default login
 export GOOGLE_CLOUD_PROJECT=your-project-id
 
-pi install git:github.com/myk-org/pi-vertex-claude
+pi install npm:@myk-org/pi-vertex-claude
 
 pi --provider google-vertex-claude --model claude-sonnet-4-6
 ```
@@ -32,11 +32,11 @@ uv run scripts/install.py
 Or install / update directly:
 
 ```bash
-pi install git:github.com/myk-org/pi-vertex-claude
-pi update git:github.com/myk-org/pi-vertex-claude
+pi install npm:@myk-org/pi-vertex-claude
+pi update npm:@myk-org/pi-vertex-claude
 ```
 
-npm package name: `@myk-org/pi-vertex-claude`.
+The npm package name is `@myk-org/pi-vertex-claude`. The container entrypoint registers it from the same npm source and actively migrates away from the older `git:github.com/myk-org/pi-config/packages/pi-vertex-claude` source (see `entrypoint.sh`).
 
 ### 2. Authenticate
 
@@ -44,7 +44,7 @@ npm package name: `@myk-org/pi-vertex-claude`.
 gcloud auth application-default login
 ```
 
-Credentials are read from `GOOGLE_APPLICATION_CREDENTIALS` when set; otherwise from the default ADC file under your home directory.
+Credentials are read from `GOOGLE_APPLICATION_CREDENTIALS` when set; otherwise from the default ADC file at `~/.config/gcloud/application_default_credentials.json`.
 
 > **Tip:** In CI, set `GOOGLE_APPLICATION_CREDENTIALS` to a service account JSON key instead of using interactive login.
 
@@ -85,6 +85,7 @@ pi --provider google-vertex-claude --model claude-sonnet-4-6
 
 | Model id | Context | Max output | Reasoning |
 | :--- | ---: | ---: | :---: |
+| `claude-opus-4-8` | 1M | 128K | yes |
 | `claude-opus-4-6` | 200K | 128K | yes |
 | `claude-sonnet-4-6` | 200K | 64K | yes |
 | `claude-opus-4-5@20251101` | 200K | 32K | yes |
@@ -99,13 +100,15 @@ pi --provider google-vertex-claude --model claude-sonnet-4-6
 
 All of these accept text and image input.
 
+> **Note:** "Max output" is the model's ceiling, not the default request size. When you do not pass an explicit `maxTokens`, the provider sends one third of the ceiling (for example 64K of the 128K Opus ceiling).
+
 For async agents, dreaming, and other settings that take provider/model pairs, use `google-vertex-claude` with one of the ids above. See [Configuration & Settings](configuration.html) and [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html).
 
 ## Advanced Usage
 
 ### 1M context variants
 
-Enable extra catalog entries for Opus 4.6 and Sonnet 4.6:
+Enable extra catalog entries for Opus 4.6 and Sonnet 4.6 (Opus 4.8 already has 1M context natively, so it needs no variant):
 
 ```bash
 export VERTEX_CLAUDE_1M=true

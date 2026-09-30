@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -328,7 +328,7 @@
 <tr>
 <td>Provenance sidecar</td>
 <td>Source-session metadata waiting to be merged</td>
-<td><code>.pi/memory/provenance-pending.json</code></td>
+<td><code>.pi/memory/provenance-pending.jsonl</code></td>
 <td>Preserves where a memory came from without letting background jobs edit the score file directly.</td>
 </tr>
 </tbody>
@@ -564,12 +564,16 @@
 </thead>
 <tbody>
 <tr>
-<td><code>enforcement</code></td>
-<td>Safe, high-confidence rules can be applied automatically.</td>
+<td><code>memory</code></td>
+<td>Keep as regular memory.</td>
 </tr>
 <tr>
 <td><code>skill</code></td>
 <td>Multi-step patterns can be proposed as reusable skills.</td>
+</tr>
+<tr>
+<td><code>enforcement</code></td>
+<td>Safe, high-confidence rules can be applied automatically.</td>
 </tr>
 <tr>
 <td><code>project_rule</code></td>
@@ -581,6 +585,7 @@
 </tr>
 </tbody>
 </table>
+<p>Evidence thresholds are <code>3</code> for enforcement, <code>3</code> for skill, and <code>5</code> for project rule.</p>
 <p>The queue is stored in <code>.pi/memory/promotions.md</code> with statuses of <code>proposed</code>, <code>applied</code>, or <code>rejected</code>.</p>
 <p>A few important boundaries keep this safe:</p>
 <ul>
@@ -592,7 +597,7 @@
 <p><strong>Warning:</strong> Enforced memories are text-hash keyed. If background maintenance rewrites the text of an enforced entry, the binding would break, so the system explicitly protects those entries.</p>
 </blockquote>
 <h3 id="provenance-is-merged-through-a-sidecar">Provenance is merged through a sidecar</h3>
-<p>Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it writes a sidecar file at <code>.pi/memory/provenance-pending.json</code>. The orchestrator then merges that metadata back into <code>memory-scores.json</code> on completion.</p>
+<p>Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it appends a single line of JSON to <code>.pi/memory/provenance-pending.jsonl</code>. The orchestrator then merges that sidecar into <code>memory-scores.json</code> on completion and deletes it. (A <code>.pi/memory/provenance-pending.json</code> from older versions is still read for backward compatibility.)</p>
 <p>This keeps the scoring index authoritative while still preserving traceability.</p>
 <p>User-visible effect: a memory can later explain where it came from without forcing every background worker to edit the score file itself.</p>
 <h3 id="legacy-memory-migration-still-exists">Legacy memory migration still exists</h3>
@@ -620,13 +625,6 @@
 <li>See <a href="configuration.html">Configuration &amp; Settings</a> for the knobs that affect memory timing and runtime behavior.</li>
 <li>See <a href="cli-reference.html">myk_pi_tools CLI Reference</a> for the Python commands that manage topic files and perform legacy migration.</li>
 <li>See <a href="automating-code-reviews.html">Automating Code Reviews</a> for review-specific workflows that interact with memory, but belong to the review system rather than the core memory model.</li>
-</ul>
-<h2 id="related-pages_1">Related Pages</h2>
-<ul>
-<li><a href="curating-project-memory.html">Curating Project Memory</a></li>
-<li><a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a></li>
-<li><a href="safety-enforcements.html">Implementing Command Guards</a></li>
-<li><a href="configuration.html">Configuration &amp; Settings</a></li>
 </ul>
                 </div>
             </article>
@@ -668,7 +666,6 @@
 </li>
 <li><a href="#how-it-affects-the-user">How It Affects the User</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
-<li><a href="#related-pages_1">Related Pages</a></li>
 </ul>
 </div>
 

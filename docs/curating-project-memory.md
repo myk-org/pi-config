@@ -1,5 +1,16 @@
 # Curating Project Memory
 
+Project memory is what Pi carries from one session to the next. This page covers adding entries yourself, letting Pi capture them automatically, and auditing what it has learned. You should care because memory you save once stops you from repeating yourself, and memory you let accumulate becomes the basis for skills and enforced rules.
+
+## The Big Picture
+
+Memories live as plain Markdown bullets under `.pi/memory/topics/`, one file per category. Two entry points write to them:
+
+- The `myk-pi-tools memory` CLI, for entries you decide on yourself.
+- Pi's automatic capture, for preferences it notices in your messages.
+
+## Quick Example
+
 ```bash
 # Project preference
 myk-pi-tools memory add -c preference -s "Always use uv run" --pinned
@@ -10,6 +21,14 @@ myk-pi-tools memory add -c decision -s "Use Redis for shared caching"
 # Repeated pitfall
 myk-pi-tools memory add -c mistake -s "Buildah chown -R skips the target dir on this OS"
 ```
+
+## Step-by-Step
+
+### 1. Save a memory from the CLI
+
+Run `myk-pi-tools memory add -c <category> -s "<summary>"` from the project root. Both `-c` and `-s` are required.
+
+### 2. Choose the right category
 
 Use short, specific summaries. The CLI accepts these categories:
 
@@ -42,11 +61,13 @@ A good rule of thumb:
 
 ### 4. Save memories directly from chat when that is faster
 
+Inside a Pi session, just ask for it in plain language, or call the `memory_add` tool directly:
+
 ```text
-/remember Always use uv run for Python commands in this repo
+Remember that we always use uv run for Python commands in this repo.
 ```
 
-Use `/remember` when you are already in a Pi session and want to save something immediately without leaving chat. It stores the result as a pinned project memory.
+The `memory_add` tool takes `category`, `text`, and an optional `pinned` flag, and writes the same topic file the CLI does. Use this when you are already in a session and want to save something without leaving chat.
 
 ### 5. Audit memory quality and promotion status
 
@@ -73,6 +94,12 @@ You do not need to save every preference manually. During normal conversation, P
 - “never use…”
 
 When those statements are clear enough, Pi records them as project preferences and reinforces them when they show up again later.
+
+Automatic capture has three guards worth knowing:
+
+- Messages shorter than 20 characters are ignored.
+- Anything starting with `/` is skipped, so slash commands never become memories.
+- The same preference is not re-extracted within a one-hour cooldown.
 
 > **Note:** Automatic capture works best when you phrase the rule as a short, direct instruction instead of a long explanation.
 
@@ -134,7 +161,7 @@ See [Implementing Command Guards](safety-enforcements.html) for details.
 ## Troubleshooting
 
 - **A saved rule does not seem to affect later sessions:** Run `myk-pi-tools memory show` and confirm the entry is present. If it is critical, save it again as a pinned memory with a shorter, clearer summary.
-- **Automatic background consolidation does not run:** If you are using ACPX-backed async work, make sure `async_llm_provider` and `async_llm_model` are configured. See [Configuration & Settings](configuration.html) for details.
+- **Automatic background consolidation does not run:** If you are on an ACPX-backed provider, set both `internal_operations_provider` and `internal_operations_model` — dreaming is skipped outright otherwise. See [Configuration & Settings](configuration.html).
 - **Memory feels too noisy or repetitive:** Check `myk-pi-tools memory status`, keep entries one-line and specific, then run `/dream` to consolidate the store.
 - **You need deeper scoring and lifecycle details:** See [Memory Architecture](memory-architecture.html) for details.
 

@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -283,35 +283,41 @@
                     <h1 id="inter-agent-communication-network">Inter-Agent Communication Network</h1>
 <p><code>pi-config</code> includes an on-demand inter-agent messaging system so multiple Pi sessions can discover each other, exchange prompts, and hand work back and forth without leaving the terminal. You should care because this is what makes peer review loops, planner/worker splits, and background helper sessions feel like one coordinated workspace instead of a pile of disconnected terminals.</p>
 <h2 id="the-big-picture">The Big Picture</h2>
-<p>Two communication modes exist in the codebase:</p>
+<p><code>coms</code> is a peer-to-peer messaging system. Each Pi session opens its own local endpoint and registers it in a project-scoped registry, so sessions in the same repository find each other directly. There is no central hub.</p>
 <table>
 <thead>
 <tr>
-<th>System</th>
-<th>How it is activated</th>
-<th>Transport</th>
-<th>Tool names</th>
-<th>Best fit</th>
+<th>Aspect</th>
+<th>How it works</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>coms</code></td>
-<td><code>/coms start</code></td>
-<td>Direct peer-to-peer</td>
-<td><code>coms_list</code>, <code>coms_send</code>, <code>coms_get</code></td>
-<td>Simple local session-to-session messaging</td>
+<td>Transport</td>
+<td>Unix domain socket on POSIX, named pipe on Windows</td>
 </tr>
 <tr>
-<td><code>coms-net</code></td>
-<td><code>/coms-net start</code> or <code>/coms-net connect</code></td>
-<td>Local HTTP + SSE hub</td>
-<td><code>coms_net_list</code>, <code>coms_net_send</code>, <code>coms_net_get</code></td>
-<td>More durable multi-session coordination</td>
+<td>Registry</td>
+<td><code>~/.pi/coms/projects/&lt;project&gt;/agents/&lt;name&gt;.json</code></td>
+</tr>
+<tr>
+<td>Sockets</td>
+<td><code>~/.pi/coms/sockets/&lt;session-id&gt;.sock</code></td>
+</tr>
+<tr>
+<td>Heartbeat</td>
+<td>Every 30 seconds</td>
+</tr>
+<tr>
+<td>Inactivity timeout</td>
+<td><code>coms_timeout_ms</code>, default 30 minutes</td>
+</tr>
+<tr>
+<td>Max relay hops</td>
+<td><code>coms_max_hops</code>, default 5</td>
 </tr>
 </tbody>
 </table>
-<p>This page focuses on <code>coms-net</code>, the networked mode built around a local hub server.</p>
 <h3 id="main-components">Main Components</h3>
 <table>
 <thead>
@@ -323,92 +329,92 @@
 </thead>
 <tbody>
 <tr>
-<td><code>/coms-net</code> wrapper</td>
-<td>Starts, connects to, disconnects from, or stops the hub</td>
-<td>You can bring the network up only when you need it</td>
+<td>Launcher wrapper</td>
+<td>Registers a session with its name, purpose, model, color, and cwd</td>
+<td>Each session appears as a named peer</td>
 </tr>
 <tr>
-<td>Hub server</td>
-<td>Tracks peers, queues messages, and pushes updates over SSE</td>
-<td>Replies arrive automatically while you keep working</td>
-</tr>
-<tr>
-<td>Client in each Pi session</td>
-<td>Registers identity, sends heartbeats, and receives inbound work</td>
-<td>Each session can appear as a named peer</td>
+<td>Registry files</td>
+<td>One JSON entry per live session, grouped by project</td>
+<td>Peers from other repos stay invisible</td>
 </tr>
 <tr>
 <td>Pool widget</td>
-<td>Renders connected peers, status, queue depth, and context usage</td>
+<td>Renders connected peers, queue depth, and context usage</td>
 <td>You can see who is online and busy at a glance</td>
 </tr>
 <tr>
 <td>Messaging tools</td>
-<td><code>coms_net_list</code>, <code>coms_net_send</code>, <code>coms_net_get</code></td>
+<td><code>coms_list</code>, <code>coms_send</code>, <code>coms_get</code></td>
 <td>Agents can discover peers, delegate work, and inspect message state</td>
+</tr>
+<tr>
+<td>Queue and task tools</td>
+<td><code>coms_queue_*</code> and <code>coms_task_*</code></td>
+<td>Queued messages and delegated tasks can be inspected and edited</td>
 </tr>
 </tbody>
 </table>
 <h3 id="message-flow">Message Flow</h3>
 <ol>
-<li>A session activates <code>coms-net</code> and registers with the hub.</li>
-<li>The hub assigns that session a project-scoped identity and opens an SSE stream.</li>
-<li>Another session calls <code>coms_net_send</code> with a peer name and prompt.</li>
-<li>The hub either delivers the message immediately or queues it if the target is busy.</li>
+<li>A session starts and registers itself under <code>~/.pi/coms/projects/&lt;project&gt;/agents/</code>.</li>
+<li>It opens a local socket and begins sending heartbeats.</li>
+<li>Another session calls <code>coms_send</code> with a target peer name and a prompt.</li>
+<li>The message is delivered over the target's socket, or queued if the target is mid-turn.</li>
 <li>The receiving session gets the prompt as a follow-up turn in Pi.</li>
 <li>The receiver answers normally in chat.</li>
-<li>The extension captures that final assistant reply and posts it back to the hub.</li>
+<li>The extension captures that final assistant reply and sends it back over the socket.</li>
 <li>The original sender receives the result as a follow-up message automatically.</li>
 </ol>
 <blockquote>
-<p><strong>Tip:</strong> In normal use, you send with <code>coms_net_send</code>, then end the turn. You do not need a polling loop unless you explicitly want a non-blocking status check with <code>coms_net_get</code>.</p>
+<p><strong>Tip:</strong> In normal use, you send with <code>coms_send</code>, then end the turn. You do not need a polling loop unless you explicitly want a non-blocking status check with <code>coms_get</code>.</p>
 </blockquote>
 <h2 id="key-concepts">Key Concepts</h2>
 <h3 id="project-scoped-peer-discovery">Project-Scoped Peer Discovery</h3>
-<p><code>coms-net</code> isolates peers by project namespace. If you do not pass <code>--project</code>, the wrapper derives one from the current working directory, so sessions in different repos do not accidentally see each other.</p>
-<p>That is why <code>/coms-net</code> only shows peers from the same project group by default. The effect for users is simple: start multiple Pi sessions in one repo, and they naturally discover one another.</p>
+<p><code>coms</code> isolates peers by project namespace. If you do not pass <code>--project</code>, the wrapper derives one from the current working directory, so sessions in different repos do not accidentally see each other.</p>
+<p>That is why the pool only shows peers from the same project group by default. The effect for users is simple: start multiple Pi sessions in one repo, and they naturally discover one another. Use <code>coms_list</code> with <code>project: "*"</code> to see across all projects.</p>
 <h3 id="named-identities">Named Identities</h3>
-<p>Each session registers with a peer identity: name, purpose, model, color, cwd, and status. The wrapper uses <code>--cname</code> for peer naming so it does not conflict with Pi's own <code>--name</code> behavior.</p>
+<p>Each session registers with a peer identity: name, purpose, model, color, and cwd. The wrapper uses <code>--cname</code> for peer naming so it does not conflict with Pi's own <code>--name</code> behavior; passing <code>--name</code> is rejected with a "use --cname instead of --name" error.</p>
 <p>This is what makes peer lists readable instead of showing only opaque session IDs. A user can target <code>planner</code>, <code>worker</code>, or another named peer directly rather than guessing which terminal to message.</p>
 <h3 id="heartbeats-and-presence">Heartbeats and Presence</h3>
-<p>Every connected session sends heartbeat updates on a fixed interval. Those updates include context-window usage, queue depth, and optional task summary data.</p>
+<p>Every connected session sends heartbeat updates every 30 seconds. Those updates include context-window usage, queue depth, and optional task summary data.</p>
+<p>Dead peers are removed from the registry in two phases. A newly registered entry gets a grace period (<code>coms_entry_grace_period_ms</code>, default 30 seconds) so a just-booted session is never pruned early. After that, the entry is probed by connecting to its socket: peers that respond are kept, peers that do not are removed from the registry. Timestamp staleness alone never prunes an entry, which is what keeps laptop suspend/resume from wiping out live peers.</p>
 <p>For users, that turns into a live presence model:</p>
 <ul>
-<li><code>online</code> means the peer is healthy and actively reporting</li>
-<li><code>stale</code> means heartbeats stopped recently</li>
-<li><code>offline</code> means the peer was removed from the active registry</li>
+<li>a peer in the list answered a probe and is reachable</li>
+<li>a peer missing from the list was pruned or never registered in this project</li>
 </ul>
-<p>The pool widget and peer list output reflect those states, so you can avoid delegating work to a dead or overloaded session.</p>
+<p>The pool widget and peer list output reflect that, so you can avoid delegating work to a dead or overloaded session.</p>
 <h3 id="automatic-reply-capture">Automatic Reply Capture</h3>
 <p>Inbound messages are delivered into Pi as follow-up turns. The important rule is that the receiver should answer normally in chat, because the extension captures that reply automatically and returns it to the sender.</p>
+<p>If a user message lands in the same turn as an inbound peer message, the reply cannot be attributed. Pi re-injects the inbound message for a clean dedicated turn, up to two times, before giving up and erroring back to the sender.</p>
 <blockquote>
-<p><strong>Warning:</strong> Do not use <code>coms_net_send</code> to reply to an inbound <code>coms-net</code> message. That starts a brand-new outbound conversation and can create a ping-pong loop.</p>
+<p><strong>Warning:</strong> Do not use <code>coms_send</code> to reply to an inbound <code>coms</code> message. That starts a brand-new outbound conversation and can create a ping-pong loop.</p>
 </blockquote>
 <p>This behavior matters because it keeps the experience conversational. To the user, cross-session messaging feels like asking a peer for help and getting a normal reply back in the same session.</p>
 <h3 id="structured-task-delegation">Structured Task Delegation</h3>
-<p><code>coms_net_send</code> supports a <code>tasks</code> array alongside the prompt. Those task objects are shown to the receiving peer as structured work items instead of a loose prose blob.</p>
+<p><code>coms_send</code> supports a <code>tasks</code> array alongside the prompt. Each task object has a <code>subject</code> and a <code>description</code>, and is shown to the receiving peer as structured work items instead of a loose prose blob.</p>
 <p>This makes delegation clearer and easier to track when the receiving session uses the task system. For users, it means you can send a prompt plus a checklist, not just a paragraph.</p>
 <h3 id="hidden-vs-discoverable-peers">Hidden vs Discoverable Peers</h3>
 <p>Peers launched with <code>--explicit</code> stay off the default discovery list. They still exist, but they are meant to be contacted intentionally rather than advertised broadly.</p>
 <p>This is useful when a helper session should not clutter the shared pool. Users see a cleaner peer list by default, while advanced workflows can still reveal explicit peers when needed.</p>
-<h3 id="local-server-discovery-and-authentication">Local Server Discovery and Authentication</h3>
-<p>The hub writes project-local connection details under <code>~/.pi/coms-net/projects/&lt;project&gt;/</code>. That includes <code>server.json</code>, and for local loopback setups, a <code>server.secret.json</code> bearer token file with restricted permissions.</p>
-<p>The user-visible effect is convenience with reasonable safety:</p>
+<h3 id="on-disk-layout-and-cleanup">On-Disk Layout and Cleanup</h3>
+<p>Sessions write two kinds of files under <code>~/.pi/coms/</code>, overridable with the <code>coms_dir</code> setting (<code>PI_COMS_DIR</code>):</p>
 <ul>
-<li>local sessions can auto-discover the hub</li>
-<li>the wrapper can reconnect after reloads</li>
-<li>tokens are kept out of normal command output</li>
+<li><code>projects/&lt;project&gt;/agents/&lt;name&gt;.json</code> — the registry, one file per live session</li>
+<li><code>sockets/&lt;session-id&gt;.sock</code> — the per-session endpoint</li>
 </ul>
+<p>Directory creation is restricted to the owner (<code>0o700</code>). Because each peer owns its own socket, a peer that is pruned from the registry does not have its socket deleted by anyone else; the owning process is responsible for that.</p>
 <blockquote>
-<p><strong>Note:</strong> By default, the hub is a local service. The wrapper starts it on loopback unless you intentionally change the bind settings.</p>
+<p><strong>Note:</strong> The whole registry is local to your machine and your user account. There is no shared server, no bearer token, and no network listener — peers are reached over a local socket or named pipe only.</p>
 </blockquote>
 <h3 id="queueing-and-hop-limits">Queueing and Hop Limits</h3>
-<p>The hub enforces queue depth and hop limits. Queueing prevents dropped messages when a peer is busy, while hop limits stop agents from forwarding work forever.</p>
+<p>Queueing prevents dropped messages when a peer is busy, while hop limits stop agents from forwarding work forever. The hop ceiling is the <code>coms_max_hops</code> setting (<code>PI_COMS_MAX_HOPS</code>, integer, default <code>5</code>, range 1–50).</p>
 <p>For users, that shows up as more predictable behavior:</p>
 <ul>
 <li>busy peers do not lose messages</li>
 <li>runaway agent-to-agent loops stop instead of spiraling forever</li>
-<li>queue depth is visible in pool output and peer listings</li>
+<li>queue depth is visible in pool output and peer listings, and can be managed with <code>/coms-queue</code></li>
 </ul>
 <h2 id="how-it-affects-the-user">How It Affects the User</h2>
 <p>The internals mostly stay out of your way, but they explain several behaviors you will notice in daily use.</p>
@@ -421,51 +427,59 @@
 </thead>
 <tbody>
 <tr>
-<td><code>/coms-net start</code> brings peers online</td>
-<td>The wrapper starts or reuses the local hub, then registers the current session</td>
-</tr>
-<tr>
 <td>A live peer pool appears in the TUI</td>
-<td>The client receives SSE updates and re-renders the widget from hub snapshots</td>
+<td>The session registered a registry entry and opened its socket</td>
 </tr>
 <tr>
 <td>A reply shows up later without polling</td>
-<td>The receiver's normal assistant reply was captured and pushed back over the hub</td>
+<td>The receiver's normal assistant reply was captured and sent back over the socket</td>
 </tr>
 <tr>
-<td>A peer shows <code>stale</code> instead of disappearing immediately</td>
-<td>Heartbeats stopped, but the server has not yet fully expired that peer</td>
+<td>A peer disappeared from the list</td>
+<td>Its registry entry was removed after failing a socket probe</td>
 </tr>
 <tr>
 <td>A delegated task arrives with structure</td>
 <td>The sender included <code>tasks</code>, and the receiver rendered them as assigned work</td>
 </tr>
 <tr>
-<td>Reconnecting after reload feels automatic</td>
-<td>The wrapper persists activation state and re-registers on reload</td>
+<td><code>/coms</code> shows a different set of peers</td>
+<td>You toggled <code>include_explicit</code> or switched the displayed project</td>
 </tr>
 </tbody>
 </table>
 <p>A few practical implications are worth remembering:</p>
 <ul>
-<li><code>coms-net</code> is best when you want named peer sessions that stay coordinated over time.</li>
-<li>It is especially useful when one session should keep coding while another handles planning, review, or background work.</li>
-<li>If you only need a lightweight direct link, the older <code>coms</code> mode is still available alongside <code>coms-net</code>.</li>
+<li>Start sessions with <code>--cname</code> so peers are addressable by a readable name instead of a session id.</li>
+<li>The pool is project-scoped, so open every coordinating session in the same repository.</li>
+<li><code>--explicit</code> keeps a helper session out of the default discovery list without making it unreachable.</li>
 </ul>
+<h2 id="commands">Commands</h2>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/coms</code></td>
+<td>Force-refresh the pool widget. <code>--all</code> toggles <code>include_explicit</code>; <code>--project &lt;name&gt;</code> switches the displayed project.</td>
+</tr>
+<tr>
+<td><code>/coms-queue</code></td>
+<td>View and manage queued inbound messages, including killing them.</td>
+</tr>
+</tbody>
+</table>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
 <li>See <a href="managing-custom-agents.html">Managing Custom Agents</a> for details.</li>
 <li>See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details.</li>
 <li>See <a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a> for details.</li>
 <li>See <a href="custom-slash-commands.html">Creating Slash Commands</a> for details.</li>
-</ul>
-<h2 id="related-pages_1">Related Pages</h2>
-<ul>
-<li><a href="managing-custom-agents.html">Managing Custom Agents</a></li>
-<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
-<li><a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a></li>
-<li><a href="using-the-web-dashboard.html">Using the Web Dashboard</a></li>
-<li><a href="built-in-workflows.html">Built-in Workflow Commands</a></li>
+<li>See <a href="using-the-web-dashboard.html">Using the Web Dashboard</a> for details.</li>
 </ul>
                 </div>
             </article>
@@ -501,13 +515,13 @@
 <li><a href="#automatic-reply-capture">Automatic Reply Capture</a></li>
 <li><a href="#structured-task-delegation">Structured Task Delegation</a></li>
 <li><a href="#hidden-vs-discoverable-peers">Hidden vs Discoverable Peers</a></li>
-<li><a href="#local-server-discovery-and-authentication">Local Server Discovery and Authentication</a></li>
+<li><a href="#on-disk-layout-and-cleanup">On-Disk Layout and Cleanup</a></li>
 <li><a href="#queueing-and-hop-limits">Queueing and Hop Limits</a></li>
 </ul>
 </li>
 <li><a href="#how-it-affects-the-user">How It Affects the User</a></li>
+<li><a href="#commands">Commands</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
-<li><a href="#related-pages_1">Related Pages</a></li>
 </ul>
 </div>
 

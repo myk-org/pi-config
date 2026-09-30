@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -281,6 +281,14 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="curating-project-memory">Curating Project Memory</h1>
+<p>Project memory is what Pi carries from one session to the next. This page covers adding entries yourself, letting Pi capture them automatically, and auditing what it has learned. You should care because memory you save once stops you from repeating yourself, and memory you let accumulate becomes the basis for skills and enforced rules.</p>
+<h2 id="the-big-picture">The Big Picture</h2>
+<p>Memories live as plain Markdown bullets under <code>.pi/memory/topics/</code>, one file per category. Two entry points write to them:</p>
+<ul>
+<li>The <code>myk-pi-tools memory</code> CLI, for entries you decide on yourself.</li>
+<li>Pi's automatic capture, for preferences it notices in your messages.</li>
+</ul>
+<h2 id="quick-example">Quick Example</h2>
 <div class="highlight"><pre><span></span><code><span class="c1"># Project preference</span>
 myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>preference<span class="w"> </span>-s<span class="w"> </span><span class="s2">"Always use uv run"</span><span class="w"> </span>--pinned
 
@@ -291,6 +299,10 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>mistake<span class="w"> </span>-s<span class="w"> </span><span class="s2">"Buildah chown -R skips the target dir on this OS"</span>
 </code></pre></div>
 
+<h2 id="step-by-step">Step-by-Step</h2>
+<h3 id="1-save-a-memory-from-the-cli">1. Save a memory from the CLI</h3>
+<p>Run <code>myk-pi-tools memory add -c &lt;category&gt; -s "&lt;summary&gt;"</code> from the project root. Both <code>-c</code> and <code>-s</code> are required.</p>
+<h3 id="2-choose-the-right-category">2. Choose the right category</h3>
 <p>Use short, specific summaries. The CLI accepts these categories:</p>
 <table>
 <thead>
@@ -358,10 +370,11 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 </tbody>
 </table>
 <h3 id="4-save-memories-directly-from-chat-when-that-is-faster">4. Save memories directly from chat when that is faster</h3>
-<div class="highlight"><pre><span></span><code>/remember Always use uv run for Python commands in this repo
+<p>Inside a Pi session, just ask for it in plain language, or call the <code>memory_add</code> tool directly:</p>
+<div class="highlight"><pre><span></span><code>Remember that we always use uv run for Python commands in this repo.
 </code></pre></div>
 
-<p>Use <code>/remember</code> when you are already in a Pi session and want to save something immediately without leaving chat. It stores the result as a pinned project memory.</p>
+<p>The <code>memory_add</code> tool takes <code>category</code>, <code>text</code>, and an optional <code>pinned</code> flag, and writes the same topic file the CLI does. Use this when you are already in a session and want to save something without leaving chat.</p>
 <h3 id="5-audit-memory-quality-and-promotion-status">5. Audit memory quality and promotion status</h3>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>status
 </code></pre></div>
@@ -382,6 +395,12 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <li>“never use…”</li>
 </ul>
 <p>When those statements are clear enough, Pi records them as project preferences and reinforces them when they show up again later.</p>
+<p>Automatic capture has three guards worth knowing:</p>
+<ul>
+<li>Messages shorter than 20 characters are ignored.</li>
+<li>Anything starting with <code>/</code> is skipped, so slash commands never become memories.</li>
+<li>The same preference is not re-extracted within a one-hour cooldown.</li>
+</ul>
 <blockquote>
 <p><strong>Note:</strong> Automatic capture works best when you phrase the rule as a short, direct instruction instead of a long explanation.</p>
 </blockquote>
@@ -445,7 +464,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
 <li><strong>A saved rule does not seem to affect later sessions:</strong> Run <code>myk-pi-tools memory show</code> and confirm the entry is present. If it is critical, save it again as a pinned memory with a shorter, clearer summary.</li>
-<li><strong>Automatic background consolidation does not run:</strong> If you are using ACPX-backed async work, make sure <code>async_llm_provider</code> and <code>async_llm_model</code> are configured. See <a href="configuration.html">Configuration &amp; Settings</a> for details.</li>
+<li><strong>Automatic background consolidation does not run:</strong> If you are on an ACPX-backed provider, set both <code>internal_operations_provider</code> and <code>internal_operations_model</code> — dreaming is skipped outright otherwise. See <a href="configuration.html">Configuration &amp; Settings</a>.</li>
 <li><strong>Memory feels too noisy or repetitive:</strong> Check <code>myk-pi-tools memory status</code>, keep entries one-line and specific, then run <code>/dream</code> to consolidate the store.</li>
 <li><strong>You need deeper scoring and lifecycle details:</strong> See <a href="memory-architecture.html">Memory Architecture</a> for details.</li>
 </ul>
@@ -479,9 +498,16 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
+<li><a href="#the-big-picture">The Big Picture</a></li>
+<li><a href="#quick-example">Quick Example</a></li>
+<li><a href="#step-by-step">Step-by-Step</a><ul>
+<li><a href="#1-save-a-memory-from-the-cli">1. Save a memory from the CLI</a></li>
+<li><a href="#2-choose-the-right-category">2. Choose the right category</a></li>
 <li><a href="#3-pin-rules-that-should-not-fade">3. Pin rules that should not fade</a></li>
 <li><a href="#4-save-memories-directly-from-chat-when-that-is-faster">4. Save memories directly from chat when that is faster</a></li>
 <li><a href="#5-audit-memory-quality-and-promotion-status">5. Audit memory quality and promotion status</a></li>
+</ul>
+</li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
 <li><a href="#let-pi-capture-preferences-automatically">Let Pi capture preferences automatically</a></li>
 <li><a href="#inspect-where-memory-is-stored">Inspect where memory is stored</a></li>

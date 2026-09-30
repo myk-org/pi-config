@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -340,15 +340,15 @@
 <li>The extension checks whether a healthy daemon already answers <code>/api/health</code>.</li>
 <li>If not, it spawns the server script and waits until health checks succeed.</li>
 <li>The terminal connects on <code>/ws/pi</code> and begins forwarding session events.</li>
-<li>The browser connects on <code>/ws/browser</code> and receives the same live stream (plus buffered catch-up when needed).</li>
+<li>The browser connects on <code>/ws/browser</code> and receives the same live stream (plus buffered catch-up when needed). Background agent and cron status arrive on a separate <code>/ws/async</code> socket.</li>
 </ol>
 <blockquote>
 <p><strong>Tip:</strong> Check daemon health with <code>/pidash status</code> or <code>/pidiff status</code>. See <a href="using-the-web-dashboard.html">Using the Web Dashboard</a> for day-to-day UI usage.</p>
 </blockquote>
 <h2 id="key-concepts">Key Concepts</h2>
 <h3 id="shared-dashboard-vs-per-project-diff-server">Shared dashboard vs per-project diff server</h3>
-<p><strong>pidash</strong> listens on a configured port (<code>pidash_port</code>, default <code>19190</code>). Every project session can attach to the same daemon, so one browser window can switch across terminals. Logs for spawn failures live under <code>~/.pi/pidash-server.log</code>.</p>
-<p><strong>pidiff</strong> binds a free local port for the current project and records that port (and PID when known) under the project’s <code>.pi/tmp/</code> directory as <code>pidiff.port</code> / <code>pidiff.pid</code>. That avoids collisions when several projects run diffs at once.</p>
+<p><strong>pidash</strong> listens on a configured port (<code>pidash_port</code>, default <code>19190</code>, env <code>PI_PIDASH_PORT</code>). Every project session can attach to the same daemon, so one browser window can switch across terminals. Logs for spawn failures live under <code>~/.pi/pidash-server.log</code>.</p>
+<p><strong>pidiff</strong> binds a free local port for the current project and records that port (and PID when known) under the project’s <code>.pi/tmp/</code> directory as <code>pidiff.port</code> / <code>pidiff.pid</code>. That avoids collisions when several projects run diffs at once. A concurrent-spawn guard uses a separate <code>pidiff.spawning</code> lock, cleared after <code>pidiff_stale_lock_timeout_ms</code> (default <code>60000</code>).</p>
 <blockquote>
 <p><strong>Note:</strong> Toggle either server with <code>pidash_enable</code> / <code>pidiff_enable</code> (or their env vars). See <a href="configuration.html">Configuration &amp; Settings</a>.</p>
 </blockquote>
@@ -376,15 +376,9 @@
 <li><a href="using-the-web-dashboard.html">Using the Web Dashboard</a> — Start, stop, and use pidash / pidiff day to day.</li>
 <li><a href="configuration.html">Configuration &amp; Settings</a> — <code>pidash_port</code>, enable flags, and related env vars.</li>
 <li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> — Spawn, monitor, and kill async agents that use this IPC path.</li>
-<li><a href="quickstart.html">Installation &amp; Quickstart</a> — First-time install and daemon startup.</li>
-</ul>
-<h2 id="related-pages_1">Related Pages</h2>
-<ul>
-<li><a href="using-the-web-dashboard.html">Using the Web Dashboard</a></li>
-<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
-<li><a href="quickstart.html">Installation &amp; Quickstart</a></li>
 <li><a href="discord-bot.html">Discord Bot Notifications</a></li>
 <li><a href="inter-agent-communication.html">Inter-Agent Communication Network</a></li>
+<li><a href="quickstart.html">Installation &amp; Quickstart</a> — First-time install and daemon startup.</li>
 </ul>
                 </div>
             </article>
@@ -418,7 +412,6 @@
 </li>
 <li><a href="#how-it-affects-the-user">How it Affects the User</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
-<li><a href="#related-pages_1">Related Pages</a></li>
 </ul>
 </div>
 

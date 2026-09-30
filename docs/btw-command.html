@@ -157,7 +157,7 @@
                     <li>
                         <a href="discord-bot.html"
                            class="nav-link">
-                            ~/.pi/discord.env
+                            Discord Bot Notifications
                         </a>
                     </li>
 
@@ -199,7 +199,7 @@
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
-                            or: pip install pi-sidecar-client
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
@@ -319,7 +319,7 @@
 <div class="highlight"><pre><span></span><code>/btw What was the final scope of the refactor?
 </code></pre></div>
 
-<p><strong>Effect:</strong> Starts a temporary side-question flow. If the question is empty, Pi shows <code>Usage: /btw &lt;question&gt;</code>.</p>
+<p><strong>Effect:</strong> Starts a temporary side-question flow. If the question is empty, Pi shows <code>Usage: /btw &lt;question&gt;</code>. If no model is selected, Pi shows <code>No model selected. Use /model to select one first.</code> and stops.</p>
 <h3 id="2-wait-for-the-temporary-answer">2. Wait for the temporary answer</h3>
 <p>While the answer is being generated, Pi shows a loading box with the active model id:</p>
 <div class="highlight"><pre><span></span><code>Thinking (&lt;model-id&gt;)...
@@ -386,14 +386,15 @@
 </tr>
 <tr>
 <td><code>PgUp</code></td>
-<td>Scroll up faster</td>
+<td>Scroll up 10 lines</td>
 </tr>
 <tr>
 <td><code>PgDn</code></td>
-<td>Scroll down faster</td>
+<td>Scroll down 10 lines</td>
 </tr>
 </tbody>
 </table>
+<p>The footer repeats these hints as <code>Esc/Space/q dismiss · ↑↓/j/k scroll · PgUp/PgDn</code>, and when the answer is longer than the terminal the box shows a <code>[start-end/total]</code> line counter.</p>
 <div class="highlight"><pre><span></span><code>/btw Which part of the plan is still unresolved?
 </code></pre></div>
 
@@ -525,6 +526,11 @@
 <td><code>Usage: /btw &lt;question&gt;</code></td>
 <td>No question was provided</td>
 <td>Run <code>/btw</code> with text after it</td>
+</tr>
+<tr>
+<td><code>No model selected. Use /model to select one first.</code></td>
+<td>No active model in the session</td>
+<td>Run <code>/model</code> to pick one, then retry</td>
 </tr>
 <tr>
 <td><code>Cancelled</code></td>
