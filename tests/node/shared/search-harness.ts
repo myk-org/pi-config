@@ -31,7 +31,10 @@ class El {
     if (this.children.length) return this.children.map((c) => c.textContent).join("");
     return this._text;
   }
+  /** Observers, used by the harness to count assignments to this element. */
+  onInnerHTMLSet: ((el: El) => void) | null = null;
   set innerHTML(v: string) {
+    this.onInnerHTMLSet?.(this);
     this._text = v;
     this.children = [];
     // Tiny markup pass: the search script builds its modal by assigning markup
@@ -98,6 +101,12 @@ export interface Harness {
   type(query: string): void;
   /** Current results-panel text. */
   results(): string;
+  /**
+   * How many times render() ran. render() begins with
+   * `results.innerHTML = ''`, so this is observable. Asserting only on panel
+   * text cannot distinguish "did not render" from "rendered nothing".
+   */
+  renderCount(): number;
   /** Resolve the pending index fetch (or its rejection) and flush timers. */
   settle(): Promise<void>;
 }
@@ -146,6 +155,11 @@ export function loadSearchScript(source: string, options: Options): Harness {
   if (!input.parent) body.appendChild(input);
   if (!results.parent) body.appendChild(results);
 
+  let renders = 0;
+  // Count only the script's own assignments; the harness pre-seeded the panel
+  // before wiring this up, so the count starts at zero.
+  results.onInnerHTMLSet = () => { renders += 1; };
+
   const flush = () => new Promise((r) => setImmediate(r));
 
   return {
@@ -154,6 +168,7 @@ export function loadSearchScript(source: string, options: Options): Harness {
       input.dispatch("input", { target: input });
     },
     results: () => results.textContent,
+    renderCount: () => renders,
     async settle() {
       if (options.indexPayload === null) resolveIndex.rej(new Error("HTTP 0"));
       else resolveIndex.res({ ok: true, json: async () => options.indexPayload });

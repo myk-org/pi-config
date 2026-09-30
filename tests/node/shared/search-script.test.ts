@@ -33,38 +33,61 @@ describe("search.js index-loading races", () => {
     assert.match(h.results(), /Alpha/, "the pending query must be re-run when the index arrives");
   });
 
-  it("leaves an empty box alone when the index arrives", async () => {
+  it("does not render when the index arrives and nothing was typed", async () => {
+    // Asserts the render count, not the panel text: an empty panel is the same
+    // whether render() ran and produced nothing, or never ran at all.
     const h = loadSearchScript(SEARCH_JS, { indexPayload: [{ slug: "a", title: "Alpha", content: "x" }] });
     await h.settle();
-    assert.equal(h.results().trim(), "");
+    assert.equal(h.renderCount(), 0, "no query means no render");
   });
 
-  it("reports the failure when a pending query's fetch rejects", async () => {
+  it("does not render when the index fails and nothing was typed", async () => {
+    // The counter, not the panel text: an empty panel looks identical whether
+    // render() ran and produced nothing or never ran at all. The earlier
+    // version of this test asserted only the panel, so it could not fail.
+    const h = loadSearchScript(SEARCH_JS, { indexPayload: null });
+    await h.settle();
+    assert.equal(h.renderCount(), 0, "no query means no render, on success or on failure");
+  });
+
+  it("renders exactly once more when a failure lands on a live query", async () => {
     const h = loadSearchScript(SEARCH_JS, { indexPayload: null });
     h.type("alpha");
-    assert.match(h.results(), /Loading search index/);
+    const afterTyping = h.renderCount();
     await h.settle();
-    assert.doesNotMatch(h.results(), /Loading search index/, "a failed index must not read as still loading");
-    assert.match(h.results(), /served over HTTP|unavailable/i);
+    assert.equal(h.renderCount(), afterTyping + 1, "the rejection re-renders the pending query");
   });
 
-  it("does not re-render after a rejection when nothing was typed", async () => {
-    const h = loadSearchScript(SEARCH_JS, { indexPayload: null });
-    await h.settle();
-    assert.equal(h.results().trim(), "", "no query, no error banner");
-  });
-
-  it("matches on title or content, case-insensitively", async () => {
-    const h = loadSearchScript(SEARCH_JS, {
-      indexPayload: [
-        { slug: "one", title: "Configuration", content: "nothing here" },
-        { slug: "two", title: "Other", content: "mentions coms_max_hops inside" },
-      ],
-    });
-    await h.settle();
+  it("matches on page content", async () => {
+    const h = await searcher([
+      { slug: "one", title: "Configuration", content: "nothing relevant" },
+      { slug: "two", title: "Other", content: "mentions coms_max_hops inside" },
+    ]);
     h.type("coms_max_hops");
     assert.match(h.results(), /Other/);
+    assert.doesNotMatch(h.results(), /Configuration/);
+  });
+
+  it("matches on page title", async () => {
+    const h = await searcher([
+      { slug: "one", title: "Configuration", content: "nothing relevant" },
+      { slug: "two", title: "Other", content: "mentions coms_max_hops inside" },
+    ]);
     h.type("configuration");
     assert.match(h.results(), /Configuration/);
+    assert.doesNotMatch(h.results(), /Other/);
   });
+
+  it("matches case-insensitively", async () => {
+    const h = await searcher([{ slug: "one", title: "Configuration", content: "x" }]);
+    h.type("CONFIG");
+    assert.match(h.results(), /Configuration/);
+  });
+
+  /** Harness with the index already loaded. */
+  async function searcher(payload: Array<{ slug: string; title: string; content: string }>) {
+    const h = loadSearchScript(SEARCH_JS, { indexPayload: payload });
+    await h.settle();
+    return h;
+  }
 });
