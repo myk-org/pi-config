@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Asking Side Questions with /btw - pi-config</title>
     <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
-    <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href="assets/style.css?v=4faedb9938">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -57,6 +57,13 @@
                     </li>
 
                     <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
@@ -74,6 +81,20 @@
                         <a href="managing-custom-agents.html"
                            class="nav-link">
                             Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
                         </a>
                     </li>
 
@@ -190,16 +211,23 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="mcp-servers.html"
+                        <a href="pi-sidecar.html"
                            class="nav-link">
-                            MCP Servers
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
                     <li>
-                        <a href="pi-sidecar.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            Pi Sidecar HTTP API
+                            pi-docsite
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
                         </a>
                     </li>
 
@@ -252,13 +280,8 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                <a href="" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
                     ⚡ pi<span class="brand-accent">-config</span>
-                </a>
-
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
 
                 <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
@@ -298,7 +321,7 @@
 <div class="highlight"><pre><span></span><code>/btw &lt;question&gt;
 </code></pre></div>
 
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -315,7 +338,7 @@
 <td>The short question to answer from the current conversation context.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>/btw What was the final scope of the refactor?
 </code></pre></div>
 
@@ -325,7 +348,7 @@
 <div class="highlight"><pre><span></span><code>Thinking (&lt;model-id&gt;)...
 </code></pre></div>
 
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Item</th>
@@ -346,13 +369,13 @@
 <td>Shows <code>No answer received</code></td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>/btw Summarize the decision we made about caching in one sentence.
 </code></pre></div>
 
 <h3 id="3-read-the-answer-in-the-overlay">3. Read the answer in the overlay</h3>
 <p>The result appears in a scrollable overlay with the original question and the generated answer.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Key</th>
@@ -393,7 +416,7 @@
 <td>Scroll down 10 lines</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>The footer repeats these hints as <code>Esc/Space/q dismiss · ↑↓/j/k scroll · PgUp/PgDn</code>, and when the answer is longer than the terminal the box shows a <code>[start-end/total]</code> line counter.</p>
 <div class="highlight"><pre><span></span><code>/btw Which part of the plan is still unresolved?
 </code></pre></div>
@@ -401,7 +424,7 @@
 <p><strong>Effect:</strong> Displays the answer in a temporary view and returns you to the same session after dismissal.</p>
 <h3 id="4-continue-your-main-task">4. Continue your main task</h3>
 <p><code>/btw</code> does not append the side exchange to the main conversation branch.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Behavior</th>
@@ -431,7 +454,7 @@
 <td>Yes</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>/btw Remind me which file we said owns the retry logic.
 </code></pre></div>
 
@@ -440,7 +463,7 @@
 </blockquote>
 <h2 id="advanced-usage">Advanced Usage</h2>
 <h3 id="best-use-cases">Best use cases</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Use case</th>
@@ -469,7 +492,7 @@
 <td>No</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>/btw Give me the shortest version of the migration plan.
 </code></pre></div>
 
@@ -493,7 +516,7 @@
 </code></pre></div>
 
 <h3 id="using-and-extending">Using and extending</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Goal</th>
@@ -510,10 +533,10 @@
 <td>Add your own slash commands with custom behavior</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>For creating related commands, see <a href="custom-slash-commands.html">Creating Slash Commands</a> for details.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Problem</th>
@@ -548,7 +571,7 @@
 <td>Ask a more specific question or continue with a normal prompt</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Warning:</strong> <code>/btw</code> has no tool access, so it cannot verify files, run commands, or inspect new code while answering.</p>
 </blockquote>
@@ -614,13 +637,14 @@
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=4faedb9938"></script>
+
+    <script src="assets/search.js?v=4faedb9938"></script>
+    <script src="assets/copy.js?v=4faedb9938"></script>
+    <script src="assets/callouts.js?v=4faedb9938"></script>
+    <script src="assets/scrollspy.js?v=4faedb9938"></script>
+    <script src="assets/codelabels.js?v=4faedb9938"></script>
+    <script src="assets/github.js?v=4faedb9938"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');

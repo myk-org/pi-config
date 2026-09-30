@@ -469,6 +469,24 @@ See [ACPX Provider Integration](acpx-provider.html) for details.
 
 See [Managing Custom Agents](managing-custom-agents.html) for details.
 
+### `vertex_claude_1m`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `vertex_claude_1m` | boolean | `false` | `VERTEX_CLAUDE_1M` | Registers the Vertex AI Claude models with their 1M-token context window. | Sets `VERTEX_CLAUDE_1M=true` in the process environment on session start, so the Vertex Claude provider advertises the extended context instead of the standard one. |
+
+```json
+    {
+      "vertex_claude_1m": true
+    }
+```
+
+```bash
+    export VERTEX_CLAUDE_1M=true
+```
+
+See [Vertex Claude Provider](vertex-claude-provider.html) for details.
+
 ## Dashboard & UI Keys
 
 ### `pidash_enable`
@@ -526,6 +544,40 @@ See [Managing Custom Agents](managing-custom-agents.html) for details.
 ```
 
 See [Using the Web Dashboard](using-the-web-dashboard.html) for details.
+
+### `pidiff_daemon_startup_timeout_s`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `pidiff_daemon_startup_timeout_s` | integer `10`-`300` | `60` | `PI_PIDIFF_DAEMON_STARTUP_TIMEOUT_S` | Seconds to wait for the pidiff diff server to accept connections. | Bounds the startup probe after a spawn or reconnect; once it elapses, pidiff gives up on that attempt instead of hanging the caller. Raise it on slow machines or busy containers. |
+
+> **Warning:** Only integer values in the range `10`-`300` are accepted. Invalid values fall back to the next resolution layer or the default.
+
+```json
+    {
+      "pidiff_daemon_startup_timeout_s": 120
+    }
+```
+
+```bash
+    export PI_PIDIFF_DAEMON_STARTUP_TIMEOUT_S=120
+```
+
+### `pidiff_stale_lock_timeout_ms`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `pidiff_stale_lock_timeout_ms` | integer | `60000` | `PI_PIDIFF_STALE_LOCK_TIMEOUT_MS` | Timeout for a stale pidiff spawning lockfile (ms). | If a previous pidiff process died while holding the spawn lock, the lock is treated as abandoned after this long and the next spawn may proceed. 60 seconds. |
+
+```json
+    {
+      "pidiff_stale_lock_timeout_ms": 60000
+    }
+```
+
+```bash
+    export PI_PIDIFF_STALE_LOCK_TIMEOUT_MS=60000
+```
 
 ### `image_model`
 
@@ -621,6 +673,62 @@ See [Background Memory Consolidation (Dreaming)](background-dreaming.html) for d
 
 See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details.
 
+### `sync_agent_max_seconds`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `sync_agent_max_seconds` | integer `10`-`300` | `60` | `PI_SYNC_AGENT_MAX_SECONDS` | Estimated runtime at which a subagent must be dispatched asynchronously. | A `subagent` call whose `estimatedSeconds` meets or exceeds this limit is rejected with "Use async: true instead." The same limit scales the parallel and chain fan-out timeouts. |
+
+> **Warning:** Only integer values in the range `10`-`300` are accepted. Invalid values fall back to the next resolution layer or the default.
+
+```json
+    {
+      "sync_agent_max_seconds": 120
+    }
+```
+
+```bash
+    export PI_SYNC_AGENT_MAX_SECONDS=120
+```
+
+### `async_poll_interval_ms`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `async_poll_interval_ms` | integer `500`-`30000` | `3000` | `PI_ASYNC_POLL_INTERVAL_MS` | How often the async agent poller re-reads job state. | Sets the cadence of the status sweep that refreshes the async widget, delivers completed results, and drops finished jobs older than 30 seconds. Lower values track jobs more closely at the cost of more frequent settings reads. |
+
+> **Warning:** Only integer values in the range `500`-`30000` are accepted. Invalid values fall back to the next resolution layer or the default.
+
+```json
+    {
+      "async_poll_interval_ms": 5000
+    }
+```
+
+```bash
+    export PI_ASYNC_POLL_INTERVAL_MS=5000
+```
+
+### `async_phantom_timeout_ms`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `async_phantom_timeout_ms` | integer `5000`-`120000` | `30000` | `PI_ASYNC_PHANTOM_TIMEOUT_MS` | Grace period before an async job with no status file is declared dead. | Once it elapses the job is failed with "Agent process timed out — no status file", the failure is delivered, and any group it belonged to is settled. While the worker PID is still alive, the same window suppresses the failure. |
+
+> **Warning:** Only integer values in the range `5000`-`120000` are accepted. Invalid values fall back to the next resolution layer or the default.
+
+```json
+    {
+      "async_phantom_timeout_ms": 60000
+    }
+```
+
+```bash
+    export PI_ASYNC_PHANTOM_TIMEOUT_MS=60000
+```
+
+See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details.
+
 ## Provider Stream Logging
 
 ### `log_providers`
@@ -635,7 +743,309 @@ See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) 
 
 The stream is written to `~/.pi/logs/providers/<session-id>/main.log` under a `[provider-stream]` prefix, with one line per event and credential-shaped fields redacted. Capturing every event has a real cost, so the hook only registers at `debug` and costs nothing at the default level.
 
-Every other `log_<module>` key follows the same shape — `log_pidash`, `log_pidiff`, `log_coms`, `log_subagent`, `log_dreaming`, `log_enforcement`, `log_graft`, and others — with env vars `PI_LOG_<MODULE>` and default `info`.
+Every other `log_<module>` key follows the same shape — `log_pidash`, `log_pidiff`, `log_coms`, `log_subagent`, `log_dreaming`, `log_enforcement`, `log_graft`, and others — with env vars `PI_LOG_<MODULE>` and default `info`. The remaining module log levels are listed in [Module File Logging](#module-file-logging) below.
+
+## Safety Enforcement Keys
+
+### `enforcement_sleep_threshold_s`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `enforcement_sleep_threshold_s` | integer `1`-`300` | `60` | `PI_ENFORCEMENT_SLEEP_THRESHOLD_S` | Longest `sleep` allowed in a single foreground command. | A standalone `bash` command sleeping longer than this is blocked with a message pointing at `async: true`. Only enforced when the parent session provider supports async LLM calls. |
+
+```json
+    {
+      "enforcement_sleep_threshold_s": 30
+    }
+```
+
+```bash
+    export PI_ENFORCEMENT_SLEEP_THRESHOLD_S=30
+```
+
+### `enforcement_loop_sleep_threshold_s`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `enforcement_loop_sleep_threshold_s` | integer `1`-`300` | `60` | `PI_ENFORCEMENT_LOOP_SLEEP_THRESHOLD_S` | Longest `sleep` allowed inside a `while`/`for`/`until` loop. | A polling loop whose `sleep` exceeds this is blocked, forcing polling and monitoring work into an async subagent instead of tying up the session. Only enforced when the parent session provider supports async LLM calls. |
+
+```json
+    {
+      "enforcement_loop_sleep_threshold_s": 10
+    }
+```
+
+```bash
+    export PI_ENFORCEMENT_LOOP_SLEEP_THRESHOLD_S=10
+```
+
+### `enforcement_allowed_commands`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `enforcement_allowed_commands` | string | `""` | `PI_ENFORCEMENT_ALLOWED_COMMANDS` | Comma-separated bash commands exempt from enforcement blocking. | A listed command bypasses the guards that would otherwise block it. Empty means no exemptions. |
+
+```json
+    {
+      "enforcement_allowed_commands": "sleep 5, ls -la"
+    }
+```
+
+```bash
+    export PI_ENFORCEMENT_ALLOWED_COMMANDS="sleep 5,ls -la"
+```
+
+> **Warning:** this is an exemption list for the enforcement guards. Anything added here runs past them, so keep it as narrow as the task allows.
+
+See [Safety Enforcements](safety-enforcements.html) for details.
+
+## Inter-Agent Communication Keys
+
+### `coms_task_heartbeat_ms`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `coms_task_heartbeat_ms` | integer (min `10000`) | `300000` | `PI_COMS_TASK_HEARTBEAT_MS` | How often a joined coms session re-announces its task state. | Sets the timer interval for the periodic task-status broadcast to peers, so the shared task board stays fresh while the session is open. |
+
+```json
+    {
+      "coms_task_heartbeat_ms": 60000
+    }
+```
+
+```bash
+    export PI_COMS_TASK_HEARTBEAT_MS=60000
+```
+
+### `coms_probe_timeout_ms`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `coms_probe_timeout_ms` | integer `100`-`10000` | `1000` | `PI_COMS_PROBE_TIMEOUT_MS` | How long to wait when probing a peer's socket for liveness. | If the socket does not connect within this window it is reported stale and its registry entry becomes prunable. Only `ECONNREFUSED`/`ENOENT` count as stale, so transient errors are treated as live. |
+
+```json
+    {
+      "coms_probe_timeout_ms": 500
+    }
+```
+
+```bash
+    export PI_COMS_PROBE_TIMEOUT_MS=500
+```
+
+### `coms_timeout_ms`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `coms_timeout_ms` | integer | `1800000` | `PI_COMS_TIMEOUT_MS` | Coms session inactivity timeout before cleanup. | A session that has been idle this long is torn down and its socket and registry entry are released. 30 minutes. |
+
+```json
+    {
+      "coms_timeout_ms": 1800000
+    }
+```
+
+```bash
+    export PI_COMS_TIMEOUT_MS=1800000
+```
+
+### `coms_max_hops`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `coms_max_hops` | integer | `5` | `PI_COMS_MAX_HOPS` | Maximum message relay hops between peers. | Caps how many times a message may be relayed across the network, which bounds routing loops when peers cannot reach each other directly. |
+
+```json
+    {
+      "coms_max_hops": 5
+    }
+```
+
+```bash
+    export PI_COMS_MAX_HOPS=5
+```
+
+### `coms_entry_grace_period_ms`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `coms_entry_grace_period_ms` | integer | `30000` | `PI_COMS_ENTRY_GRACE_PERIOD_MS` | Grace period for new registry entries before a stale check applies. | A freshly announced peer is not probed for staleness during this window, so a slow start cannot get its entry pruned before it is reachable. 30 seconds. |
+
+```json
+    {
+      "coms_entry_grace_period_ms": 30000
+    }
+```
+
+```bash
+    export PI_COMS_ENTRY_GRACE_PERIOD_MS=30000
+```
+
+### `coms_dir`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `coms_dir` | string | `""` | `PI_COMS_DIR` | Override the default coms registry directory. | Relocates the peer registry and sockets from the default under `~/.pi/coms/`. Empty means auto-detect. |
+
+```json
+    {
+      "coms_dir": "/run/user/1000/coms"
+    }
+```
+
+```bash
+    export PI_COMS_DIR=/run/user/1000/coms
+```
+
+See [Inter-Agent Communication](inter-agent-communication.html) for details.
+
+## Sidecar Server Logging
+
+### `sidecar_log_level`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `sidecar_log_level` | string | `info` | `PI_SIDECAR_LOG_LEVEL` | Log level for the pi-sidecar server. | The resolved value is written into the process environment on session start, where both the Node sidecar and the Python client read it. An empty value clears the variable and lets the sidecar fall back to its own default. |
+
+```json
+    {
+      "sidecar_log_level": "debug"
+    }
+```
+
+```bash
+    export PI_SIDECAR_LOG_LEVEL=debug
+```
+
+See [Pi-Sidecar](pi-sidecar.html) for details.
+
+## Module File Logging
+
+Each key below is a **level string**, not a boolean. Accepted values are `off`, `debug`, `info`, `warn`, and `error`; anything else is ignored and the next resolution layer is used. `off` disables the module's file log entirely.
+
+A module resolves its level in this order: the `log_<module>` setting → the `PI_LOG_<MODULE>` environment variable → `info`. Lines below that level are dropped before the file is touched, and the resolved level is cached for 30 seconds.
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `log_pitasks` | string | `info` | `PI_LOG_PITASKS` | Log level for the pitasks module. | Controls the verbosity of `~/.pi/logs/pitasks/<session-id>/main.log` — task list operations and reminder fires. |
+| `log_cli_provider` | string | `info` | `PI_LOG_CLI_PROVIDER` | Log level for the cli-provider module. | Controls the verbosity of `~/.pi/logs/cli_provider/<session-id>/main.log` — CLI agent spawn, discovery, and handshake events. |
+| `log_acpx_provider` | string | `info` | `PI_LOG_ACPX_PROVIDER` | Log level for the acpx-provider module. | Controls the verbosity of `~/.pi/logs/acpx-provider/<session-id>/main.log` — ACPX session lifecycle, model discovery, and shutdown. |
+| `log_orchestrator` | string | `info` | `PI_LOG_ORCHESTRATOR` | Log level for the orchestrator module. | Controls the verbosity of `~/.pi/logs/orchestrator/<session-id>/main.log` — delegation, settings resolution, and enforcement decisions. |
+| `log_async_agents` | string | `info` | `PI_LOG_ASYNC_AGENTS` | Log level for the async-agents module. | Controls the verbosity of `~/.pi/logs/async_agents/<parent-session-id>/<job-id>.log` — spawn, poll, and delivery events for background agents. |
+| `log_rules` | string | `info` | `PI_LOG_RULES` | Log level for the rules module. | Controls the verbosity of `~/.pi/logs/rules/<session-id>/main.log` — rule loading, placeholder substitution, and rule-matched events. |
+| `log_memory` | string | `info` | `PI_LOG_MEMORY` | Log level for the memory module. | Controls the verbosity of `~/.pi/logs/memory/<session-id>/main.log` — memory capture, scoring, and promotion decisions. |
+| `log_settings_tui` | string | `info` | `PI_LOG_SETTINGS_TUI` | Log level for the settings-tui module. | Controls the verbosity of `~/.pi/logs/settings_tui/<session-id>/main.log` — `/pi-config-settings` reads and writes. |
+| `log_cron` | string | `info` | `PI_LOG_CRON` | Log level for the cron module. | Controls the verbosity of `~/.pi/logs/cron/<session-id>/main.log` — scheduled job registration and fires. |
+| `log_oneshot` | string | `info` | `PI_LOG_ONESHOT` | Log level for the oneshot argv helpers. | Controls the verbosity of `~/.pi/logs/oneshot/<session-id>/main.log` — one-shot runs of `pi -p` and `--mode json`. |
+
+> **Note:** Async agent logs nest under the parent pi session directory, not the subagent's own session id, so a whole job tree stays in one place. Subagent and child-process logs use the same `<name>/<parent-session-id>/<file>` layout.
+
+```json
+    {
+      "log_orchestrator": "debug",
+      "log_async_agents": "debug"
+    }
+```
+
+```bash
+    export PI_LOG_ORCHESTRATOR=debug
+```
+
+> **Tip:** The Settings TUI renders each of these as a select list from the schema enum, so the valid values never have to be remembered.
+
+## Task Lifecycle Keys
+
+### `task_auto_clear_enabled`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `task_auto_clear_enabled` | boolean | `true` | `PI_TASK_AUTO_CLEAR_ENABLED` | Enables time-based removal of completed tasks. | When on, a one-minute sweep deletes completed tasks older than `task_auto_clear_minutes` and refreshes the task widget. Set to `false` to keep the history. |
+
+```json
+    {
+      "task_auto_clear_enabled": false
+    }
+```
+
+```bash
+    export PI_TASK_AUTO_CLEAR_ENABLED=false
+```
+
+### `task_auto_clear_minutes`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `task_auto_clear_minutes` | integer `1`-`1440` | `10` | `PI_TASK_AUTO_CLEAR_MINUTES` | How long a completed task is kept before removal. | Measured from the task's `completed_at` timestamp, not from session start. Only used while `task_auto_clear_enabled` is on. |
+
+> **Warning:** Only integer values in the range `1`-`1440` are accepted. Invalid values fall back to the next resolution layer or the default.
+
+```json
+    {
+      "task_auto_clear_minutes": 60
+    }
+```
+
+### `task_reminder_enabled`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `task_reminder_enabled` | boolean | `true` | `PI_TASK_REMINDER_ENABLED` | Enables the periodic nudge when tasks are pending but none is in progress. | When on, a `task-focus-reminder` message is injected to restart the turn. Requires at least one active task, no `in_progress` task, and an idle agent. Set to `false` to silence it. |
+
+```json
+    {
+      "task_reminder_enabled": false
+    }
+```
+
+```bash
+    export PI_TASK_REMINDER_ENABLED=false
+```
+
+### `task_reminder_interval_minutes`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `task_reminder_interval_minutes` | integer `1`-`60` | `10` | `PI_TASK_REMINDER_INTERVAL_MINUTES` | Minimum gap between two pending-task reminders. | The sweep itself runs every minute; this key is the throttle that decides when a reminder is actually delivered. Only used while `task_reminder_enabled` is on. |
+
+> **Warning:** Only integer values in the range `1`-`60` are accepted. Invalid values fall back to the next resolution layer or the default.
+
+```json
+    {
+      "task_reminder_interval_minutes": 30
+    }
+```
+
+### `task_stale_in_progress_enabled`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `task_stale_in_progress_enabled` | boolean | `true` | `PI_TASK_STALE_IN_PROGRESS_ENABLED` | Enables reminders for tasks stuck `in_progress` for too long. | When on, a stale reminder fires for every task whose `in_progress_at` is older than `task_stale_in_progress_minutes`. Set to `false` to disable the stale check. |
+
+```json
+    {
+      "task_stale_in_progress_enabled": false
+    }
+```
+
+```bash
+    export PI_TASK_STALE_IN_PROGRESS_ENABLED=false
+```
+
+### `task_stale_in_progress_minutes`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `task_stale_in_progress_minutes` | integer `5`-`1440` | `30` | `PI_TASK_STALE_IN_PROGRESS_MINUTES` | How long a task may stay `in_progress` before it counts as stale. | Acts as both the staleness threshold and the cooldown between stale reminders. Only used while `task_stale_in_progress_enabled` is on. |
+
+> **Warning:** Only integer values in the range `5`-`1440` are accepted. Invalid values fall back to the next resolution layer or the default.
+
+```json
+    {
+      "task_stale_in_progress_minutes": 60
+    }
+```
+
+See [Managing Custom Agents](managing-custom-agents.html) for details.
 
 ## Environment-only Process Flag
 
@@ -957,6 +1367,351 @@ See [Creating Slash Commands](custom-slash-commands.html) for custom prompt comm
 - [Automating Code Reviews](automating-code-reviews.html)
 - [Managing Custom Agents](managing-custom-agents.html)
 - [Curating Project Memory](curating-project-memory.html)
+
+
+---
+
+Source: commands-and-tools.md
+
+# Commands and Tools Reference
+
+Every user-facing slash command and every tool that pi-config registers, in one place. Each entry lists the exact name as it appears in source, what it does, its arguments, and an example invocation.
+
+Commands and tools are different things: a **command** is something you type (`/cron`), while a **tool** is something the model calls. Both come from the extensions in `extensions/`, so anything missing here is missing from the product too.
+
+## At a glance
+
+| Kind | Count | Where they come from |
+|---|---|---|
+| Slash commands | 17 | `registerCommand(...)` across `extensions/` |
+| Always-registered tools | 38 | `registerTool(...)` across `extensions/` |
+| Opt-in tools | 7 | `graft.ts`, only when `graft_enable` is on (default: off) |
+
+Counts verified against source. Two names are registered in more than one place — see [Duplicate registrations](#duplicate-registrations).
+
+## Slash commands
+
+### /async-status
+
+Full-screen overlay listing running and queued async agents, with live output per agent.
+
+- **Arguments:** none
+- **Keys in the overlay:** `↑↓`/`jk` select, `Enter` view output, `x` kill, `Esc` close
+
+```
+    /async-status
+```
+
+### /async-kill
+
+Kill async agent(s) by name, by id prefix, or all at once. With no argument it opens the same overlay as `/async-status` in kill mode.
+
+- **Arguments:** `[<name> | <id-prefix> | all]` — optional
+
+```
+    /async-kill all
+    /async-kill code-review
+```
+
+### /btw
+
+Ask a quick side question that is answered from the current conversation without adding the answer to the main chat history. Requires a selected model (`/model`) and a TUI session.
+
+- **Arguments:** `<question>` — required; missing argument prints `Usage: /btw <question>`
+
+```
+    /btw what name did we give that retry helper?
+```
+
+More detail: [Asking Side Questions with /btw](btw-command.html).
+
+### /coms
+
+Start, stop, or inspect P2P inter-agent communication. Coms is off by default and is activated explicitly with `/coms start`; all `coms_*` tools return "coms not active" until then.
+
+- **Arguments:** `start | stop | status` (no argument is treated as an error with a usage hint)
+
+```
+    /coms start
+    /coms status
+    /coms stop
+```
+
+See [Inter-Agent Communication](inter-agent-communication.html) for the peer protocol and message semantics.
+
+### /coms-queue
+
+Overlay of your queued inbound messages on a peer. Selecting a message shows the full prompt.
+
+- **Arguments:** none
+- **Keys in the overlay:** `↑↓`/`jk` select, `Enter` view, `x` kill, `Esc` close
+- **Requires active coms** — otherwise it notifies `📡 coms not active — no queue. Run /coms start first.`
+
+```
+    /coms-queue
+```
+
+### /cron
+
+Schedule, list, and remove cron tasks. `add` is not handled directly: anything that is not a listing or removal verb is forwarded to the model as a `cron_manage` request, so you describe the schedule in natural language.
+
+- **Arguments:** `list | list-all | remove <id>` (also `rm` / `delete`), plus the `--persist` flag
+- **Flags:** `--persist` scope the task to the project (`.pi/cron/crons.json`) instead of the session. `--scope` and `--project` are rejected with an error pointing at `--persist`.
+- **Listing:** `list` opens a cron status overlay; `list-all` shows every scope instead of just project-scoped tasks
+
+```
+    /cron list
+    /cron list-all
+    /cron --persist every weekday at 09:00, summarize yesterday's PR comments
+    /cron remove 3f2a1c
+```
+
+More detail: [Async Agents and Cron](async-agents-and-cron.html).
+
+### /dream
+
+Run memory consolidation (dreaming) now, in the background, non-blocking. If a dream is already running you get a warning instead of a second run.
+
+- **Arguments:** none
+
+```
+    /dream
+```
+
+More detail: [Background Memory Consolidation (Dreaming)](background-dreaming.html).
+
+### /dream-auto
+
+Toggle automatic memory dreaming, which otherwise runs every 3 hours and at session end.
+
+- **Arguments:** `on | off` (no argument reports the current state)
+
+```
+    /dream-auto on
+    /dream-auto off
+```
+
+### /external-ai-models-refresh
+
+Clear the cached model lists and re-fetch models for the AI CLI providers (cursor, claude, gemini).
+
+- **Arguments:** none
+
+```
+    /external-ai-models-refresh
+```
+
+### /nvim-changed-files
+
+Open the git-changed files in Neovim's quickfix list. Registered only when Pi is running inside Neovim.
+
+- **Arguments:** none
+- **Note:** on `main`/`master` it diffs against `HEAD`; on any other branch it diffs against `origin/main` (or `origin/master`) plus the working tree.
+
+```
+    /nvim-changed-files
+```
+
+More detail: [Neovim Integration](neovim-integration.html).
+
+### /pi-config-settings
+
+Full-screen interactive settings editor: category tabs, per-key editing, project/global scope, and delete.
+
+- **Arguments:** `[project | global]` — optional, selects the initial scope; `Tab` also toggles scope inside the TUI
+- **Keys in the TUI:** `←→` category, `Tab` scope, `↑↓` navigate, `Enter` edit, `Del` remove, `Esc` close
+
+```
+    /pi-config-settings
+    /pi-config-settings global
+```
+
+More detail: [Configuration & Settings](configuration.html).
+
+### /pidash
+
+Manage the web dashboard server.
+
+- **Arguments:** `start | stop | restart | status` — no argument is equivalent to `status`
+- **Note:** when the dashboard is disabled in settings, the command registers a stub that only notifies; it is a no-op elsewhere.
+
+```
+    /pidash start
+    /pidash status
+```
+
+More detail: [Using the Web Dashboard](using-the-web-dashboard.html).
+
+### /pidiff
+
+Manage the diff-viewer server (the `8-diff` status widget).
+
+- **Arguments:** `start | stop | restart | status`
+
+```
+    /pidiff restart
+```
+
+### /repair
+
+Repair the current session file by fixing orphaned tool calls — assistant `toolCall` entries on the active branch that never received a matching `toolResult`. Those orphans make the provider reject the next request with an API error.
+
+- **Arguments:** none
+- **What it does:**
+  1. Reads the session file from `ctx.sessionManager.getSessionFile()`
+  2. Walks the **active branch only** (leaf back to root via `parentId`), ignoring tool results that live on dead branches
+  3. For each orphaned call, inserts a synthetic `toolResult` entry with the text `Error: session interrupted — tool call did not complete` and `isError: true`
+  4. Re-parents the next entry on the branch to the last synthetic result, preserving the chain
+  5. Rewrites the session file
+- **Output:** a per-tool list of repaired calls, or `Session is clean — no orphaned tool calls found` when there is nothing to fix. Warns `No session file found` or `Session file is empty` when applicable.
+- **Note:** edits the on-disk session file in place; run it as soon as you see a malformed-request error.
+
+```
+    /repair
+```
+
+### /review-status
+
+Show the current review-loop enforcement state: enforcement on/off, status, cycle number, findings, pending reviewers, whether the diff was edited during the cycle, and test status.
+
+- **Arguments:** `[<worktree-path>]` — optional, checks a worktree instead of the main repo
+
+```
+    /review-status
+    /review-status .worktrees/issue-42
+```
+
+More detail: [Automating Code Reviews](automating-code-reviews.html).
+
+### /status
+
+Unified session status in one notification: async agents, cron tasks, git branch and dirty state, container flag, and how many context files, skills, tools, and guidelines are loaded.
+
+- **Arguments:** none
+
+```
+    /status
+```
+
+### /tasks
+
+Interactive task manager for the current session's task list.
+
+- **Arguments:** none — the command opens a menu
+- **Menu:** `View all tasks (N)`, `Create task`, `Clear completed (N)` (only when completed tasks exist), `Clear all (N)` (only when tasks exist)
+- **Task list view:** `✔` completed, `◼` in progress, `◻` pending; select a task to open its detail actions: `▸ Start (in_progress)`, `✓ Complete`, `✗ Delete`
+- **Note:** when the task scope is `session` and the list becomes empty, the backing file is deleted.
+
+```
+    /tasks
+```
+
+More detail: [Daemon and WebSockets](daemon-and-websockets.html) for how task state is persisted and shared.
+
+## Tools
+
+### coms_* (14 tools)
+
+All require active coms (`/coms start`); while inactive every one of them returns the same "coms not active" text. See [Inter-Agent Communication](inter-agent-communication.html) for the protocol, peer discovery, and queue semantics.
+
+| Tool | Purpose | Key parameters |
+|---|---|---|
+| `coms_list` | List discoverable peer agents with model and live context-window usage; no network ping needed | `project` (name or `"*"` for all, defaults to caller's project), `include_explicit` (include `--explicit` agents, default false) |
+| `coms_send` | Send a prompt to a peer; returns a `msg_id` on ack and the reply auto-delivers as a followUp | `target` (peer name or session_id), `prompt`, `conversation_id`, `response_schema` (JSON Schema), `tasks[]` (`subject`, `description`) to create on the peer. Rejected: `clearPrevious` |
+| `coms_get` | Non-blocking poll of a pending `coms_send` reply: `pending`, `complete`, or `error` | `msg_id` (from `coms_send`) |
+| `coms_queue_inspect` | Preview your queued inbound messages on a peer before any destructive recovery; shows ids, sender, age, FIFO position, delivery state — never message bodies | `target` |
+| `coms_queue_clear` | Irreversibly clear exactly the messages in a given inspect preview; ownership enforced by the peer | `target`, `preview_id` (from `coms_queue_inspect`) |
+| `coms_queue_delete` | Irreversibly delete one specific queued message of yours | `target`, `msg_id`, `preview_id` |
+| `coms_queue_edit` | Replace the content of one of your pending queued messages | `target`, `msg_id`, `new_content` |
+| `coms_queue_prioritize` | Move one of your pending messages to the front of the peer's queue | `target`, `msg_id` |
+| `coms_tasks_create` | Create several tasks on a peer's task list, auto-add a "Report completion to sender" task blocked by all of them, and message the peer to start work | `target`, `tasks[]` (`subject`, `description`, at least one) |
+| `coms_task_list` | List a peer's tasks without sending it a message | `target` |
+| `coms_task_get` | Fetch one peer task with status, owner, description, and blocker state | `target`, `task_id` |
+| `coms_task_update` | Update a peer task you created (`createdBy` must match) | `target`, `task_id`, `status` (`pending`/`in_progress`/`completed`/`deleted`), `subject`, `description`, `activeForm`, `owner`, `metadata` (merge; `null` deletes), `addBlocks[]`, `addBlockedBy[]` |
+| `coms_task_delete` | Delete a peer task you created; refused while the task is `in_progress` | `target`, `task_id` |
+
+`coms_send`'s description carries an explicit anti-loop warning: do not call it to reply to an inbound `[from <peer>]` message — the extension auto-captures your final assistant text as the reply.
+
+### memory_* (8 tools)
+
+Project memory, backed by topic files under `.pi/memory/topics/`. See [Memory Architecture](memory-architecture.html) for the layering and scoring, [Curating Project Memory](curating-project-memory.html) for hands-on curation, and [Safety Enforcements](safety-enforcements.html) for the enforcement fields.
+
+| Tool | Purpose | Key parameters |
+|---|---|---|
+| `memory_search` | Keyword/vector search over project memories, with scores and categories | `query`, `category` (optional filter: `preference`, `lesson`, `pattern`, `decision`, `done`, `mistake`) |
+| `memory_reflect` | Answer a question from long-term memory as a coherent summary instead of raw entries | `query` |
+| `memory_topics` | List topic files with entry counts, hotness, and token estimates | none |
+| `memory_add` | Add a new entry; keep it to one specific actionable line | `text`, `category`, `pinned` (never decays; only on explicit "remember this"), `trigger` + `action` + `verifier` (turn a memory into a code-enforced rule) |
+| `memory_edit` | Update, invalidate (supersede), or annotate an entry in place — preserves scoring history, unlike remove+add | `op` (`update` or `invalidate`), `text`, `category`, `newText`, `supersededBy`, `sourceSession`, `derivedFrom`, `informs[]` |
+| `memory_remove` | Delete an entry that is wrong, outdated, or superseded | `text`, `category` |
+| `memory_reinforce` | Bump evidence and last-reinforced time on an existing entry, raising its stability score; may trigger promotion | `entryText` (exact text without category prefix), `category` |
+| `memory_consolidate` | Produce a consolidation report: patterns, contradictions, merge candidates, and skills derived from recurring workflows | none |
+
+### Task* (7 tools)
+
+The session task list behind `/tasks` and the task widget. Statuses are `pending`, `in_progress`, `completed`, `deleted` (deleted is a status, not a hard delete, except through `TaskBulkDelete`).
+
+| Tool | Purpose | Key parameters |
+|---|---|---|
+| `TaskCreate` | Create one task | `subject`, `description`, `activeForm` (spinner text), `agentType` (descriptive metadata only — it does not dispatch an agent), `metadata` |
+| `TaskList` | List all tasks as `id`, `subject`, `status`, `owner`, `blockedBy` | none |
+| `TaskGet` | Full task detail including `blocks` and `blockedBy` | `taskId` |
+| `TaskUpdate` | Update a task; `in_progress` sets it as the widget's active task | `taskId`, `status`, `subject`, `description`, `activeForm`, `owner`, `metadata` (merge, `null` deletes), `addBlocks[]`, `addBlockedBy[]` |
+| `TaskBulkCreate` | Create several tasks in one call | `tasks[]` (`subject`, `description`, `blockedBy[]`) |
+| `TaskBulkUpdate` | Update several tasks in one call | `updates[]` (`taskId`, `status`, `subject`, `description`, `addBlockedBy[]`, `addBlocks[]`) |
+| `TaskBulkDelete` | Hard-delete several tasks by id | `taskIds[]` |
+
+### Core tools (9 tools)
+
+| Tool | Purpose | Key parameters |
+|---|---|---|
+| `cron_manage` | Manage scheduled tasks; `persist=true` keeps a task across Pi sessions in the project | `action` (`add`, `list`, `remove`), `persist`, `description`, `task`, `interval_seconds` (min 10), `at_hour` (0–23), `at_minute` (0–59, requires `at_hour`), `id` |
+| `subagent` | Delegate to a subagent with isolated context; modes are single (`agent`+`task`), parallel (`tasks[]`), and chain (`chain[]` with a `{previous}` placeholder) | `agent`, `task`, `tasks[]`, `chain[]`, `agentScope`, `confirmProjectAgents`, `cwd`, `estimatedSeconds` (required for sync; `>= 30` forces async), `async`, `fireAndForget`, `name`, `taskId` (`-1` if unlinked), `asyncKill`, `persistSession`, `model` (`provider/model-id`) |
+| `session_search` | Search past conversation summaries by keyword — zero LLM cost | `query`, `limit` (default 10) |
+| `review_status` | Read the review-loop enforcement state before committing | `worktree_path` (optional) |
+| `ask_user` | Ask the user a question with selectable options; returns the choice or free text. Its prompt guidelines require it instead of plain-text questions | `question`, `options[]` (optional) |
+| `list_models` | List available provider/model pairs for `subagent(model=...)`; filters out `acpx-*` providers, which cannot run in subagent children | `provider` (optional filter) |
+| `generate_image` | Generate an image from a structured description via Gemini; returns the file path. Needs `image_model` in `pi-config-settings.json` (or `PI_IMAGE_MODEL`) plus `GEMINI_API_KEY`/`GOOGLE_API_KEY` | `subject` (required), `action`, `scene`, `composition`, `lighting`, `style`, `text`, `aspect_ratio` (`1:1`, `3:4`, `4:3`, `9:16`, `16:9`) |
+
+More detail: [Managing Custom Agents](managing-custom-agents.html) for `subagent`, [Automating Code Reviews](automating-code-reviews.html) for `review_status`, [Image Generation](image-generation.html) for `generate_image`.
+
+### graft_* (7 tools, opt-in)
+
+Registered by `extensions/orchestrator/graft.ts` only when the `graft_enable` setting is on, and only in a trusted session. The default for `graft_enable` is **false**, so these tools are absent in a default install. `graft_refresh` and `graft_blast_radius` are additionally omitted in subagent children.
+
+| Tool | Purpose | Key parameters |
+|---|---|---|
+| `graft_find_code` | Find compact ranked code references in the local Graft graph | `query`, `limit` (1–20), `path` (project-relative) |
+| `graft_find_all` | Search indexed project files | `pattern`, `path`, `fixed` (literal, not regex) |
+| `graft_file_api` | Signatures-only API view of a file | `path` |
+| `graft_trace_calls` | Trace callers or callees of a symbol | `symbol`, `direction` (`in`/`out`), `depth` (1–10) |
+| `graft_repo_map` | Compact graph-based repository map | `max_dirs` (1–30) |
+| `graft_refresh` | Rebuild the local Graft graph | none |
+| `graft_blast_radius` | Dependencies affected by the local diff | `depth` (1–10) |
+
+## Duplicate registrations
+
+Three names are registered twice in source. The second registration is either a stub or is swallowed, so there is no user-visible conflict — but it is worth knowing if you grep the code.
+
+| Name | Registrations | Which one you get |
+|---|---|---|
+| `/coms` | `coms-wrapper.ts` (`start \| stop \| status`) and `coms-p2p.ts` (force-refresh the pool widget, `--all` / `--project <name>`) | The wrapper's version. `coms-wrapper` loads `coms-p2p` through a proxy that explicitly swallows the upstream `/coms` registration ("Upstream /coms is owned by the wrapper"). The widget-refresh handler and its `--all` / `--project` flags are therefore dead in the default wrapper setup. |
+| `/pidash` | `pidash.ts` twice | Two mutually exclusive branches: one registered when the dashboard is disabled (notify-only stub), one when it is enabled. Exactly one is live. |
+| `/pidiff` | `pidiff.ts` twice | Same pattern as `/pidash`: disabled-branch stub, or the full server management command. |
+
+## Verifying this page
+
+The lists here were produced from source, not from documentation:
+
+```bash
+    # Slash commands
+    grep -rn 'registerCommand("' extensions/ --include=*.ts
+
+    # Tools — note graft.ts registers its tools through a tool() helper loop
+    grep -rn 'registerTool' extensions/ --include=*.ts
+```
+
+When you add a command or a tool, add it to this page in the same change.
 
 
 ---
@@ -1577,6 +2332,368 @@ If the agent needs multiple phases, parallel reviewers, scheduled runs, or backg
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
 - [Inter-Agent Communication Network](inter-agent-communication.html)
 - [Implementing Command Guards](safety-enforcements.html)
+
+
+---
+
+Source: agents-reference.md
+
+# Agent Reference
+
+Pi ships 29 specialist agents in `agents/`. Each one is a markdown file with YAML frontmatter (`name`, `description`, `tools`) followed by a system prompt. This page lists every bundled agent, what its description says, and how the orchestrator decides which one to use.
+
+Specialists are meant to be **delegated to, not imitated**. The orchestrator reads the routing rules, spawns the matching specialist through the `subagent` tool, and merges the result — it does not do the specialist's job inline.
+
+> **Note:** None of the bundled agents pin a `model` or `provider` in their frontmatter. Every agent runs on whatever model the session resolves to, unless you override it per call or through `agent_overrides` in settings.
+
+## How routing works
+
+Routing is defined in `rules/10-agent-routing.md`, not by the model guessing from agent names. Three layers:
+
+1. **Domain-to-agent table.** File types and tools map to a named agent — `.py` → `python-expert`, `.go` → `go-expert`, JS/TS/React/Vue/Angular → `ts-expert`, `.java` → `java-expert`, `.sh` → `bash-expert`, `.md` → `technical-documentation-writer`, Docker → `docker-expert`, Kubernetes/OpenShift → `kubernetes-expert`, Jenkins/CI/Groovy → `jenkins-expert`, local git → `git-expert`, GitHub (PRs, issues, releases, workflows) → `github-expert`, external library docs → `docs-fetcher`, running or analyzing tests → `test-runner`, writing tests → `test-automator`, debugging → `debugger`, API docs → `api-documenter`, external-repo security audit → `security-auditor`.
+
+2. **Intent overrides the tool.** The same file type routes differently by goal: running existing Python tests → `test-runner`; fixing Python production code after failures → `python-expert`; creating or changing Python tests → `test-automator`; editing Python production files → `python-expert` even via `sed`/`awk`; creating a PR → `github-expert`, never `git-expert`.
+
+3. **Fallback.** If no specialist matches, the orchestrator uses `worker`, which has full tool access.
+
+Two hard rules live in the same file:
+
+- **Documentation is delegated, never fetched inline.** The orchestrator must not fetch external library or framework docs itself — it spawns `docs-fetcher`, which tries `llms.txt` first and extracts only the relevant sections. Skip it when the task is standard-library only, or when the docs were already fetched earlier in the conversation.
+- **Model overrides are explicit.** When you ask for a specific model, the orchestrator calls `list_models` to discover valid `provider/model-id` pairs and passes `model` to `subagent`. An explicit `model` argument beats `agent_overrides`, agent frontmatter, and settings. In parallel task arrays, a per-task `model` wins over the top-level fallback; chain steps share the top-level `model`.
+
+A few agents are deliberately **not** in the chat routing table. The five `code-reviewer-*` agents and `test-runner` are dispatched by the review loop in `rules/20-code-review-loop.md` — all six run in parallel after every code change, and the first review is never skipped. The three `issue-reviewer-*` agents are dispatched together by the `/issue-review` prompt template. Use chat routing rules, prompt templates, or slash commands deliberately; see [Managing Custom Agents](managing-custom-agents.html) for how the two styles differ.
+
+## Language specialists
+
+Full `read, write, edit, bash` — they implement, not just advise.
+
+| Agent | Description | Tools |
+| :--- | :--- | :--- |
+| [`python-expert`](#python-expert) | Python code creation, modification, refactoring, and fixes. Specializes in idiomatic Python, async/await, testing, and modern Python development. | `read, write, edit, bash` |
+| [`go-expert`](#go-expert) | Go code creation, modification, refactoring, and fixes. Specializes in goroutines, channels, modules, testing, and high-performance Go. | `read, write, edit, bash` |
+| [`ts-expert`](#ts-expert) | TypeScript, JavaScript, and frontend framework development (React/Vue/Angular/CSS). UI design, component creation, and modern web technologies. | `read, write, edit, bash` |
+| [`java-expert`](#java-expert) | Java code creation, modification, refactoring, and fixes. Specializes in Spring Boot, Maven, Gradle, JUnit testing, and enterprise applications. | `read, write, edit, bash` |
+| [`bash-expert`](#bash-expert) | Bash and shell scripting creation, modification, refactoring, and fixes. Specializes in Bash, Zsh, POSIX shell, automation scripts, and system administration. | `read, write, edit, bash` |
+
+## Infrastructure and CI
+
+| Agent | Description | Tools |
+| :--- | :--- | :--- |
+| [`docker-expert`](#docker-expert) | Docker and container-related tasks including Dockerfile creation, container orchestration, image optimization, and containerization workflows. | `read, write, edit, bash` |
+| [`kubernetes-expert`](#kubernetes-expert) | Kubernetes-related tasks including cluster management, workload deployment, service mesh, and cloud-native orchestration. Specializes in K8s, OpenShift, Helm, and GitOps. | `read, write, edit, bash` |
+| [`jenkins-expert`](#jenkins-expert) | Jenkins-related code including CI/CD pipelines, Jenkinsfiles, Groovy scripts, and build automation. | `read, write, edit, bash` |
+
+## Version control and forges
+
+These two are split deliberately: `git-expert` is local repository work, `github-expert` is everything that talks to the GitHub API through `gh`.
+
+| Agent | Description | Tools |
+| :--- | :--- | :--- |
+| [`git-expert`](#git-expert) | Local git operations including commits, branching, merging, rebasing, stash, and resolving git issues. Never uses --no-verify. For GitHub platform operations (PRs, issues, releases), use github-expert instead. | `read, bash` |
+| [`github-expert`](#github-expert) | GitHub platform operations including PRs, issues, releases, repos, and workflows. Uses the gh CLI for all GitHub API interactions. | `read, bash` |
+
+Both are read-only on the file system, but `bash` is enough to mutate branches and open PRs.
+
+## Testing
+
+Running tests and writing tests are separate agents. `test-runner` is analysis-only; a completed `test-runner` or `test-automator` subagent does not prove the test command passed — the exit status does.
+
+| Agent | Description | Tools |
+| :--- | :--- | :--- |
+| [`test-runner`](#test-runner) | Run tests and analyze failures. Returns detailed failure analysis without making fixes. | `bash, read` |
+| [`test-automator`](#test-automator) | Create comprehensive test suites with unit, integration, and e2e tests. Sets up CI pipelines, mocking strategies, and test data. | `read, write, edit, bash` |
+
+## Documentation
+
+| Agent | Description | Tools |
+| :--- | :--- | :--- |
+| [`api-documenter`](#api-documenter) | Create OpenAPI/Swagger specs, generate SDKs, and write developer documentation. Handles versioning, examples, and interactive docs. | `read, write, edit, bash` |
+| [`docs-fetcher`](#docs-fetcher) | Fetches current documentation for external libraries and frameworks. Prioritizes llms.txt when available, falls back to web parsing. | `read, bash` |
+| [`technical-documentation-writer`](#technical-documentation-writer) | Comprehensive, user-focused technical documentation for projects, features, or systems. | `read, write, edit, bash` |
+
+`docs-fetcher` is the mandatory delegate for external docs. The other two write docs into your project.
+
+## Security
+
+| Agent | Description | Tools |
+| :--- | :--- | :--- |
+| [`security-auditor`](#security-auditor) | Audits external repositories for security risks before adoption — checks for malicious code, data exfiltration, supply chain risks, and trust signals. | `read, bash` |
+
+Scoped to third-party repositories you are considering adopting, not to auditing your own code — that is `code-reviewer-security`'s job.
+
+## Code review
+
+The five `code-reviewer-*` agents are dispatched by the review loop, not by chat routing. After any code change, all five plus `test-runner` run in parallel as async subagents, and the loop repeats until the state is clean (capped by `review_loop_max_cycles`). `reviewer` is the general-purpose single-agent review.
+
+| Agent | Description | Tools |
+| :--- | :--- | :--- |
+| [`code-reviewer-quality`](#code-reviewer-quality) | Code review focused on general code quality and maintainability. Reviews for clean code, proper abstractions, DRY, and readability. | `read, bash` |
+| [`code-reviewer-guidelines`](#code-reviewer-guidelines) | Code review focused on project guidelines and style adherence. Reviews for AGENTS.md compliance, naming conventions, and project patterns. | `read, bash` |
+| [`code-reviewer-security`](#code-reviewer-security) | Code review focused on bugs, logic errors, and security vulnerabilities. Reviews for correctness, edge cases, and potential exploits. | `read, bash` |
+| [`code-reviewer-docs`](#code-reviewer-docs) | Code review focused on documentation quality, completeness, accuracy, missing docs, stale content, AGENTS.md best practices, and cross-file consistency. | `read, bash` |
+| [`code-reviewer-spec`](#code-reviewer-spec) | Code review focused on alignment between code changes, PR description, and issue deliverables. | `read, bash` |
+| [`reviewer`](#reviewer) | General code review agent. Reviews code changes for quality, correctness, and style. | `read, bash` |
+
+All six reviewers are read-only. Spec findings are never deduplicated against non-spec findings.
+
+## Issue review
+
+Spawned together by `/issue-review`, all read-only, all returning JSON findings that the template merges and deduplicates.
+
+| Agent | Description | Tools |
+| :--- | :--- | :--- |
+| [`issue-reviewer-spec`](#issue-reviewer-spec) | Issue review focused on spec completeness — problem statement, Done checklist, acceptance criteria, reproducibility, labels. | `read, bash` |
+| [`issue-reviewer-feasibility`](#issue-reviewer-feasibility) | Issue review focused on codebase feasibility — verifying referenced files/functions exist, approach viability, and identifying blockers. | `read, bash` |
+| [`issue-reviewer-scope`](#issue-reviewer-scope) | Issue review focused on scope hygiene — single concern, no scope creep, duplicate detection against open issues. | `read, bash` |
+
+## Orchestration and general work
+
+`scout` → `planner` → `worker` is the chain behind `/implement`; `/scout-and-plan` stops after the first two. `worker` is also the routing-table fallback for anything with no specialist.
+
+| Agent | Description | Tools |
+| :--- | :--- | :--- |
+| [`scout`](#scout) | Fast codebase reconnaissance. Finds relevant files, functions, and dependencies for a given task. | `read, bash` |
+| [`planner`](#planner) | Creates detailed implementation plans from codebase context. Does not write code. | `read, bash` |
+| [`worker`](#worker) | General-purpose agent for tasks that don't match any specialist. Full capabilities. | `read, write, edit, bash` |
+| [`debugger`](#debugger) | Debugging specialist for errors, test failures, and unexpected behavior. Diagnoses only — does not modify files. | `read, bash` |
+
+`planner` and `debugger` deliberately cannot write. `worker` is the only one in this group that can.
+
+## Tool access at a glance
+
+- **Full access** (`read, write, edit, bash`) — 12 agents: the five language specialists, `docker-expert`, `kubernetes-expert`, `jenkins-expert`, `api-documenter`, `technical-documentation-writer`, `test-automator`, `worker`.
+- **Read-only** (`read, bash`) — the other 17: every reviewer, every issue reviewer, `git-expert`, `github-expert`, `test-runner`, `debugger`, `planner`, `scout`, `docs-fetcher`, `security-auditor`.
+
+Restricting `tools:` is the first lever when a bundled specialist has more authority than you want; see [Managing Custom Agents](managing-custom-agents.html).
+
+## Related Pages
+
+- [Managing Custom Agents](managing-custom-agents.html)
+- [Built-in Workflow Commands](built-in-workflows.html)
+- [Automating Code Reviews](automating-code-reviews.html)
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
+- [Inter-Agent Communication](inter-agent-communication.html)
+- [Configuration & Settings](configuration.html)
+
+
+---
+
+Source: rules-and-layers.md
+
+# Rules and Layers
+
+Rules are markdown files injected into the orchestrator's system prompt at the start of every agent turn. They are the behavioural contract: what the orchestrator is allowed to do, which specialist agent to route work to, when to run a review loop, when to write documentation.
+
+Rules are **not** documentation for you to read. They are instructions for the model. This page explains how they load, how you add or override them, and what happens when a setting they depend on is missing.
+
+## The three layers
+
+The orchestrator scans three directories, in this order:
+
+| Layer | Path | Scope |
+| --- | --- | --- |
+| Package | `<pi-config>/rules/` | All users, all projects (shipped with pi-config) |
+| User | `~/.pi/agent/rules/` | All projects for this user |
+| Project | `<project>/.pi/rules/` | The current project only |
+
+Later layers override earlier ones. **The override is by filename, not by content.**
+
+The loader builds a map from filename to the list of paths that provided it, walking the layers in order so the project path ends up last. For each filename it then tries candidates from last to first — project, then user, then package — and takes the first one it can read.
+
+The consequence that matters in practice:
+
+- If `~/.pi/agent/rules/40-critical-rules.md` and the package `rules/40-critical-rules.md` both exist, **only the user copy is loaded.** The package one is not merged in, appended, or diffed. Your file is a complete replacement.
+- If the user layer has `70-my-rule.md` and the project layer has `80-my-other-rule.md`, **both are loaded**, alongside every package rule. Layering does not shadow across different filenames.
+
+So a layer "wins" per file, and the only way to remove a package rule is to shadow its exact filename.
+
+### Numeric prefixes
+
+The project convention is to number files so that ordering is obvious and layers stay separate in the listing:
+
+| Layer | Conventional range |
+| --- | --- |
+| Package | `00-69` |
+| User | `70-89` |
+| Project | `90-99` |
+
+Two things to be clear about, because this is easy to get wrong:
+
+1. **The ranges are a convention, not enforced behaviour.** The loader contains no numeric range check whatsoever. Nothing rejects a `05-*.md` file in the user directory or a `30-*.md` file in the project directory. The ranges appear in `README.md`, `AGENTS.md`, and `dev-docs/enforcement-honesty-map.md`; they are a naming discipline, not a mechanism.
+2. **Ordering comes from the filename, sorted alphabetically.** After override resolution, the surviving files are sorted with `localeCompare` and joined in that order. The numeric prefixes are what make that alphabetical order match the intended reading order. This is why `00-` before `60-` works: the zero-padded numbers sort lexicographically.
+
+### Other loading details
+
+- Only files ending in `.md` are considered. Directories are skipped; symlinks to files are followed.
+- A missing directory is ignored silently (`ENOENT`). Any other read error is logged at debug level and that layer contributes nothing.
+- Files larger than **128 KB** are skipped with a debug log. Note the subtlety: an oversized file is treated as *handled*, so the loader does **not** fall back to a lower-precedence copy of the same filename. An oversized override silently shadows the package rule rather than deferring to it.
+- If, after all layers, **no** rule file loads successfully, the orchestrator falls back to a single hardcoded line: `[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.` This is the only guaranteed behaviour if rules are broken.
+- Rules are injected only for the orchestrator. When `PI_SUBAGENT_CHILD === "1"`, the entire rules block is skipped. Several rule files open with a "if you are a specialist agent, ignore this" scope note for the same reason.
+
+## The twelve package rules
+
+| File | What it is for |
+| --- | --- |
+| `00-orchestrator-core.md` | The core contract: the delegation model (orchestrator delegates, never implements directly), the allowed direct actions, and a mandatory pre-implementation checklist. Most of the file is gated behind `orchestrator_edit_write_block`. |
+| `05-issue-first-workflow.md` | The pre-implementation checklist for any code change: root-cause investigation first, then branch and issue creation, a defined issue format, and a "Done" definition. Includes the SKIP list for work that does not need the workflow, and edge cases. |
+| `10-agent-routing.md` | The domain-to-agent routing table (Python, Go, TS, Java, shell, Markdown, Docker, Kubernetes, Jenkins, Git, GitHub, tests, debugging). Also covers routing by intent rather than by tool, documentation routing, which agents are dispatched internally rather than by the table, the `worker` fallback, and how to pass a model override to `subagent`. |
+| `20-code-review-loop.md` | The mandatory review loop: six reviewers plus `test-runner` in parallel after any code change, the cycle definition and max-cycles budget, review agent list, finding deduplication, responding to findings, test tracking, and baseline test comparison. Entirely gated on `review_loop_enforcement`. |
+| `25-documentation-updates.md` | A table mapping change types to the files that must be updated (`README.md`, `dev-docs/repo-structure.md`, the routing table, `Dockerfile`, `DEVELOPMENT.md`), ending with "documentation drift is a bug". |
+| `30-prompt-templates.md` | What happens when a `/command` prompt template is invoked: the prompt is the authority, the orchestrator executes it, and sub-steps are delegated only when the prompt says so. |
+| `35-memory.md` | The project memory system: the mandatory memory tools (`memory_search`, `memory_reinforce`, `memory_add`, `memory_remove`, `memory_topics`, `session_search`), the three auto-injection mechanisms (situation report, vector recall above 0.65 similarity, session history recall), storage layout, the scoring system, and the capacity signal. |
+| `40-critical-rules.md` | Cross-cutting mandates: questions are not instructions, task focus on multi-step workflows, parallel execution, async agent and sync agent time estimates, subagent cwd, multi-PR/multi-branch work, user interaction, technical honesty, web access tooling, and the external code security audit gate. |
+| `45-file-preview.md` | How to make generated HTML or frontend output viewable: save under the project dir, find a free port, launch `httpd.py`, report the URL. |
+| `50-agent-bug-reporting.md` | What to do when the orchestrator finds a logic flaw in an agent defined in this repo: the workflow for filing a bug, the required issue format, and the agents it covers. |
+| `55-coms-protocol.md` | Peer-to-peer inter-agent communication: activation via `/coms start`, the `coms_` tool prefix, inbound and outbound messaging, the message queue, and structured task delegation. Gated by `requires: coms_active` frontmatter, so it is absent unless coms is running. |
+| `60-task-tracking.md` | Mandatory task list for workflows of 3+ steps: when to create tasks, granularity, lifecycle, side questions, and the async agent `taskId` requirement. |
+
+Note that `25-documentation-updates.md` and `45-file-preview.md` contain little or no conditional syntax — the list of settings the rules actually branch on is much smaller than the number of rules.
+
+## Conditional assembly
+
+Rules are assembled per file: frontmatter gate first, then conditional blocks, then join, then placeholder substitution. Conditionals are evaluated **per file, before the join**, specifically so that an unclosed `{{IF}}` in one rule cannot match a `{{/IF}}` in another and silently strip the rules in between.
+
+### `{{IF:}}` and `{{IFNOT:}}`
+
+Wrap a block in markers to keep or drop it based on a setting:
+
+```markdown
+    {{IF:use_worktrees}}
+    Worktree-based branch operations are mandatory.
+    {{/IF}}
+
+    {{IFNOT:review_loop_enforcement}}
+    Reviews are advisory in this project.
+    {{/IFNOT}}
+```
+
+Opening and closing markers must match kind: `{{IF}}` closes with `{{/IF}}`, `{{IFNOT}}` with `{{/IFNOT}}`.
+
+Nesting is supported and tracked with a stack, so an inner block inside an outer block is fine.
+
+### Comparisons
+
+The key may be compared to a literal instead of being tested for truthiness:
+
+```markdown
+    {{IF:review_loop_enforcement==true}}
+    {{IF:commit_trailer!=Assisted-by}}
+```
+
+Supported operators are `==` and `!=`. Supported literals are `true`, `false`, `null`, numbers, and single- or double-quoted strings. A bare, unquoted non-matching token is kept as a plain string.
+
+Truthiness follows one helper: `false`, `null`, `undefined`, `""`, `0`, an empty array, and an empty object are falsy. Everything else — including non-empty strings like `"false"` — is truthy.
+
+### Fail-closed behaviour
+
+This is the part worth knowing, because it is stricter than "if in doubt, show the content".
+
+**An unknown or malformed condition drops the block, and warns.**
+
+`conditionHolds` checks the key against the known settings keys. If the key is not a known setting, it emits a warning and returns `false` *before* the inversion for `IFNOT` is applied. So a typo fails closed in both directions:
+
+- `{{IF:review_loop_enforcment}}` → block removed. You lose the content you wanted.
+- `{{IFNOT:review_loop_enforcment}}` → block **also** removed. The negation does not rescue it.
+
+A malformed condition expression (empty, or not matching the key/operator/literal grammar) behaves the same way: warn, drop, no inversion.
+
+Warnings go to the extension log at warn level under the `rule assembly:` prefix. If a rule you expected is silently absent, check the logs for that prefix before assuming the setting is off.
+
+**Unbalanced markers are the exception.** They do not drop content. If a closer is missing, or the closer kind does not match the opener, the text from the open marker to the end is left in place verbatim, markers included, with a warning. A stray closer is also passed through with a warning. This is deliberately non-destructive, but it does mean a typo in a marker can leak literal `{{IF:...}}` text into the prompt.
+
+**Table repair.** After conditionals run, blank lines between consecutive markdown table rows are collapsed to a single newline, so removing a conditional row does not break table adjacency. This applies within a file and across join boundaries.
+
+### Feature predicates
+
+Two keys are not settings but act like them, and are only available in the **truthy** form:
+
+| Key | True when |
+| --- | --- |
+| `coms_active` | A coms session is active (`/coms start` has been run). |
+| `external_ai_agents` | Either `acpx_agents` or `cli_agents` resolves to a non-empty list. |
+
+Feature predicates are consulted only for a bare `{{IF:key}}`. Writing `{{IF:coms_active==true}}` falls through to the settings lookup, where `coms_active` is not a known key, and therefore fails closed with a warning — the block is dropped. Use the bare form.
+
+### Frontmatter gate
+
+A rule file can be excluded entirely with a frontmatter block:
+
+```markdown
+    ---
+    requires_setting: pidash_enable
+    ---
+```
+
+`requires_setting` names a settings key; the file loads only when that setting is truthy. `requires` names a feature predicate; the file loads only when that predicate is true. If both are present, both must pass (AND). If neither is present, the file always loads.
+
+An unknown key in `requires_setting`, or an unknown name in `requires`, warns and excludes the file.
+
+`rules/55-coms-protocol.md` uses `requires: coms_active`, which is why the coms protocol only appears in the prompt once coms is running.
+
+Note the frontmatter parser is deliberately simple: `key: value` lines between `---` fences, blank lines and `#` comments ignored. It is not YAML.
+
+## Placeholders in rules
+
+`{{REVIEW_LOOP_MAX_CYCLES}}` is replaced with the numeric value of the `review_loop_max_cycles` setting. Substitution runs **after** the conditional blocks are joined, so a placeholder inside a conditional block is only substituted if that block survived.
+
+## `{{SETTINGS:key}}` is a different mechanism
+
+`{{SETTINGS:key}}` looks similar and is **not** part of rule assembly.
+
+- **Where it runs.** Agent prompt text, not rules. It is applied when a subagent prompt is dispatched (`subagent-tool.ts`) and when an async agent prompt is dispatched (`async-agents.ts`). Rules never see it — the rule assembler does not call it.
+- **What it does.** It performs a straight textual substitution: `{{SETTINGS:dco,commit_trailer}}` is replaced with a JSON object of the resolved values, for example `{"dco":false,"commit_trailer":false}`. Bare `{{SETTINGS}}` resolves every known key.
+- **Unknown keys are silently dropped**, not warned. A key that is not a known setting is skipped and simply absent from the resulting JSON object. This is the opposite of the conditional path, which warns and fails closed.
+- **No gating.** It cannot include or exclude text. It only substitutes a value into text that is always present.
+
+The practical distinction: rule conditionals decide *whether a section exists at all*, fail closed on unknown keys, and only work in `rules/*.md`. `{{SETTINGS:}}` decides *what value gets interpolated*, is silent on unknown keys, and only works in agent prompt text.
+
+## Adding or overriding a rule
+
+Create a markdown file in the appropriate directory. For a user-level rule that applies everywhere:
+
+```bash
+    mkdir -p ~/.pi/agent/rules
+    cat > ~/.pi/agent/rules/75-my-rule.md << 'EOF'
+    # My Rule
+
+    Instructions for the orchestrator.
+    EOF
+```
+
+For a project-scoped rule:
+
+```bash
+    mkdir -p /path/to/project/.pi/rules
+    cat > /path/to/project/.pi/rules/95-my-project-rule.md << 'EOF'
+    # My Project Rule
+
+    Instructions for the orchestrator in this project only.
+    EOF
+```
+
+To **override** a package rule, use its exact filename in the higher layer:
+
+```bash
+    cp <pi-config>/rules/40-critical-rules.md ~/.pi/agent/rules/40-critical-rules.md
+    # edit to taste — the package copy is now ignored entirely
+```
+
+Copy the original rather than writing a stub. There is no merge: the file you place is the entire rule, and if it is too short the orchestrator loses the behaviour the original described.
+
+A few constraints from the loader worth keeping in mind:
+
+- Keep the file under 128 KB.
+- Use a numeric prefix in the range for your layer so ordering stays sensible. The convention is not enforced, but ordering is by filename.
+- If you use conditionals, spell the settings key exactly and check it against `settings-keys.json` at the repository root — a typo fails closed and the block silently disappears.
+- Prefer the bare `{{IF:key}}` form for feature predicates.
+
+### When changes take effect
+
+Rule files are read from disk on every `before_agent_start` hook, so **editing a rule file does not require a new pi session** — the next agent start picks up the new content.
+
+Settings are cached in memory, but the cache is invalidated by an `mtime` check on the settings files at most once every 30 seconds. So a settings change that gates a rule can take up to roughly 30 seconds to be reflected, and an immediate check may still see the old value. If a rule you just toggled on does not appear, wait and retry rather than restarting.
+
+What genuinely does require a new session: `/reload` is not sufficient for extension *code* changes, since the extension module is loaded once at startup.
 
 
 ---
@@ -3854,134 +4971,6 @@ For ACPX/CLI backends (separate from Vertex), see [ACPX Provider Integration](ac
 
 ---
 
-Source: mcp-servers.md
-
-# MCP Servers
-
-pi-config does not ship an MCP client. Since pi 0.99.0, MCP is built into pi itself
-(`builtin:mcp`), so servers are configured in `mcp.json` and managed with `/mcp`.
-
-There is no external MCP binary to install and no separate bridge process.
-
-## Configuration
-
-Servers live in `mcp.json` under a `mcpServers` key. pi reads the user-level file at
-`~/.pi/agent/mcp.json` and a project-level `mcp.json` once the project is trusted.
-
-```json
-    {
-      "mcpServers": {
-        "local-jenkins": {
-          "command": "npx",
-          "args": ["-y", "mcp-jenkins"],
-          "env": { "JENKINS_URL": "https://jenkins.internal" }
-        },
-        "docs": {
-          "url": "https://mcp.example.com/mcp",
-          "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" }
-        }
-      }
-    }
-```
-
-pi infers the transport from the keys present: `command`/`args`/`env`/`cwd` means stdio,
-`url`/`headers`/`oauth` means streamable HTTP. The legacy SSE transport is not supported.
-`${VAR}` in a value expands from the environment.
-
-After editing `mcp.json`, run `/mcp` to reconnect, or restart pi.
-
-### Upgrading from the `mcpc` bridge
-
-Before pi 0.99, pi-config reached MCP through the external `mcpc` binary, which read
-`~/.pi/pi-config/mcp.json`. `builtin:mcp` reads `~/.pi/agent/mcp.json` instead, so an
-existing install would upgrade to a pi that finds no servers at all — silently, with no
-error to look for.
-
-pi-config copies the file across for you at startup, and only when
-`~/.pi/agent/mcp.json` does not already exist. Your existing `~/.pi/agent/mcp.json` is
-never overwritten, and the old file is left in place for you to delete whenever you
-like. The copy is logged to `~/.pi/logs/mcp-config-migration/`; if it fails, the reason
-is in there and you can copy the file by hand.
-
-## Managing servers
-
-| Command | Purpose |
-|---|---|
-| `/mcp` | Interactive manager: state, tool count, exposure, and the config file each server came from |
-| `/mcp reconnect` | Reconnect after editing `mcp.json` |
-| `/mcp login` / `/mcp logout` | Manage OAuth for a server |
-| `pi mcp list` | List configured servers from the shell |
-| `pi mcp add` / `pi mcp remove` | Add or remove a server from the shell |
-
-Outside the TUI, `/mcp` prints status.
-
-## How tools reach the model
-
-An MCP server can expose dozens of tools. Declaring all of them on every request would
-bloat the context window, so each server has an **exposure** that decides when its tools
-become visible. The default is `codemode`, and it is the right choice for almost every
-server.
-
-| Exposure | Behaviour | Cost when unused |
-|---|---|---|
-| `codemode` (default) | Not declared to the model. Reached from `codemode` scripts, which find tools with `searchTools()`. | 0 |
-| `codemode-deferred` | As above, and the tool list is not even in the `codemode` description — only the server name and tool count. | 0 |
-| `deferred` | Not declared until the `tool_search` tool loads them, then called directly. | 0 |
-| `direct` | Declared to the model like built-in tools. | Full schema, every request |
-| `hidden` | Registered but not callable. | 0 |
-
-The `codemode` description has its own budget, `codemode.inlineBudget` (default 3000
-tokens). Tools that do not fit are found with `searchTools()`, so the cost of a large
-server is bounded rather than proportional to its tool count.
-
-Set a server's exposure, and per-tool overrides, in the same `mcp.json`:
-
-```json
-    {
-      "mcpServers": {
-        "jira": {
-          "command": "npx",
-          "args": ["-y", "mcp-jira"],
-          "exposure": "codemode"
-        },
-        "github": {
-          "url": "https://mcp.githubcopilot.com/mcp/",
-          "exposure": "deferred",
-          "toolExposure": {
-            "search_code": "direct",
-            "delete_*": "hidden"
-          }
-        }
-      }
-    }
-```
-
-`toolExposure` keys are tool names as the server offers them, or patterns where `*`
-matches any characters. An exact name beats a pattern; among patterns the first match
-wins. `pi mcp list` marks tools whose exposure differs from their server's.
-
-Reserve `direct` for the one or two tools you reach for constantly. A server set to
-`direct` costs tokens whether or not the task needs it.
-
-## Calling a tool
-
-With `codemode` or `deferred` exposure, the agent writes a `codemode` script or lets
-`tool_search` load the tool — there is no shell round-trip and no separate discovery
-step. Tools loaded by `tool_search` are recorded in the transcript and stay declared on
-that branch.
-
-To confirm a server is healthy, run `/mcp` and check its state and tool count. pi logs
-MCP activity to `~/.pi/agent/mcp.log`.
-
-## Resources
-
-Servers offering MCP resources gain `list_mcp_resources`, `read_mcp_resource`, and
-`list_mcp_resource_templates` automatically. They reach every server whose exposure is
-not `hidden`, and take the widest exposure among them.
-
-
----
-
 Source: pi-sidecar.md
 
 # Pi Sidecar HTTP API
@@ -4266,6 +5255,302 @@ Startup lifecycle:
 - [External AI Agents & CLI](external-ai-agents.html)
 - [Configuration & Settings](configuration.html)
 - [Daemon & Websocket Networking](daemon-and-websockets.html)
+
+
+---
+
+Source: pi-docsite.md
+
+# pi-docsite
+
+The docs site you are reading is generated by `pi-docsite`, a package in this
+monorepo. It is also a standalone product — you can use it in any project that keeps
+its documentation as Markdown.
+
+It renders a directory of `*.md` into a static site: sidebar navigation, full-text
+search, `llms.txt` / `llms-full.txt` for LLM consumption, and a search index. No config
+file, no build framework, no docsfy.
+
+## Run it
+
+No install step — `uvx` runs it in an ephemeral environment:
+
+```bash
+    uvx pi-docsite --docs-dir docs --tagline "One line describing this project"
+```
+
+From this repository, where it is a workspace package:
+
+```bash
+    uv run --group docs pi-docsite --docs-dir docs --tagline "..."
+```
+
+To add it to a project that depends on it:
+
+```bash
+    uv add pi-docsite
+```
+
+Every value is a flag with a derived default, so the same command works in any repo:
+
+| Flag | Default |
+|---|---|
+| `--docs-dir` | `docs/` next to the script |
+| `--project-name` | the git remote's repo name |
+| `--repo-url` | git remote `origin` |
+| `--tagline` | empty |
+
+Identity follows `--docs-dir` rather than the script's own location, so pointing it at
+another project's docs directory renders that project's site with that project's name.
+
+## Regenerating this site
+
+```bash
+    uv run --group docs pi-docsite --docs-dir docs --tagline "Agent orchestration for pi: ..."
+```
+
+The output is committed. Edit the Markdown and rebuild — never hand-edit the generated
+`.html`, `llms.txt`, `llms-full.txt`, or `search-index.json`.
+
+## Adding a page
+
+**Write the `.md` file, add one line to `docs/nav.json`, rebuild.** Nothing in the
+generator needs editing, and a page cannot be silently invisible.
+
+Each page needs exactly one H1 — that is its title and its sidebar entry. Headings
+inside fenced code blocks do not count.
+
+### Layout: `docs/nav.json`
+
+The sidebar structure lives in one reviewable file. Array order is display order, for
+groups and for pages within a group:
+
+```json
+    {
+      "groups": [
+        { "name": "Getting Started", "pages": ["quickstart", "configuration"] },
+        { "name": "Reference", "pages": ["cli-reference", "safety-enforcements"] }
+      ]
+    }
+```
+
+Two rules make it safe to let an LLM drive this:
+
+- A slug in `nav.json` with **no** `.md` behind it is a **build error**. That is a
+  renamed or deleted page, and ignoring it would leave a dead sidebar link.
+- A `.md` **not** listed in `nav.json` is still built and listed under a fallback
+  group, and the generator prints a note naming it. A forgotten page is visible, never
+  missing.
+
+Reorder by reordering the array. Renaming files to reorder churns git history and
+breaks links to the old path.
+
+### Per-page override
+
+Frontmatter overrides the layout for a single page:
+
+```markdown
+    ---
+    nav_group: Reference
+    nav_order: 30
+    ---
+
+    # My Page Title
+```
+
+Precedence, highest first: frontmatter, `nav.json`, then the fallback group.
+
+## What gets generated
+
+Written into `--docs-dir` next to the sources:
+
+| Output | Purpose |
+|---|---|
+| `<slug>.html` | one page per `.md` |
+| `index.html` | landing page with the grouped sidebar |
+| `search-index.json` | search data, also inlined into every page |
+| `llms.txt` | short page index for LLM consumption |
+| `llms-full.txt` | full page text for LLM consumption |
+| `assets/` | CSS and JS |
+
+Stale `<slug>.html` files with no matching `.md` are removed. `*.md` sources and
+`.nojekyll` are never touched.
+
+## Determinism
+
+The same Markdown always produces the same bytes. Rendering twice and diffing is empty,
+so a docs change is reviewable and **unrelated churn is a reliable signal that
+something actually changed** — not a timestamp or a reordering.
+
+## Search works offline
+
+The search index is inlined into every page instead of being fetched. That keeps search
+working when the site is opened straight off disk over `file://`, where `fetch()` of a
+JSON file is blocked by CORS in most browsers. It also removes a round trip and a race
+between page load and first keystroke.
+
+## Ask your LLM
+
+A ready-made skill ships inside the package at `skill/SKILL.md`, with the commands,
+the `nav.json` contract, and the failure modes. Copy it where your agent looks for
+skills so the model can drive the generator without being told the details:
+
+```bash
+    uv run --package pi-docsite python -c "
+    import pi_docsite, pathlib, shutil
+    src = pathlib.Path(pi_docsite.__file__).parent.parent / 'skill' / 'SKILL.md'
+    dst = pathlib.Path.home() / '.pi/agent/skills/pi-docsite'
+    dst.mkdir(parents=True, exist_ok=True)
+    shutil.copy(src, dst / 'SKILL.md')
+    print('installed to', dst)
+    "
+```
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `nav.json lists 'x' but docs/x.md does not exist` | The page was renamed or deleted. Fix `nav.json`. |
+| `note: N page(s) not in nav.json` | The page built fine but has no curated sidebar position. Add it to `nav.json`. |
+| `docs/<slug>.md has N H1 headings, expected 1` | Add exactly one real H1, or close the code fence swallowing it. |
+| Search returns nothing | Open the browser console; `search index unavailable` means the inline index is missing from that page. |
+| Rebuild shows unrelated diffs | That is a determinism bug, not a stale build. |
+
+## Requirements
+
+Python 3.14+, with `markdown`, `jinja2`, and `pygments`.
+
+## Related Pages
+
+- [Installation & Quickstart](quickstart.html)
+- [Configuration](configuration.html)
+
+---
+
+Source: mcp-servers.md
+
+# MCP Servers
+
+pi-config does not ship an MCP client. Since pi 0.99.0, MCP is built into pi itself
+(`builtin:mcp`), so servers are configured in `mcp.json` and managed with `/mcp`.
+
+There is no external MCP binary to install and no separate bridge process.
+
+## Configuration
+
+Servers live in `mcp.json` under a `mcpServers` key. pi reads the user-level file at
+`~/.pi/agent/mcp.json` and a project-level `mcp.json` once the project is trusted.
+
+```json
+    {
+      "mcpServers": {
+        "local-jenkins": {
+          "command": "npx",
+          "args": ["-y", "mcp-jenkins"],
+          "env": { "JENKINS_URL": "https://jenkins.internal" }
+        },
+        "docs": {
+          "url": "https://mcp.example.com/mcp",
+          "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" }
+        }
+      }
+    }
+```
+
+pi infers the transport from the keys present: `command`/`args`/`env`/`cwd` means stdio,
+`url`/`headers`/`oauth` means streamable HTTP. The legacy SSE transport is not supported.
+`${VAR}` in a value expands from the environment.
+
+After editing `mcp.json`, run `/mcp` to reconnect, or restart pi.
+
+### Upgrading from the `mcpc` bridge
+
+Before pi 0.99, pi-config reached MCP through the external `mcpc` binary, which read
+`~/.pi/pi-config/mcp.json`. `builtin:mcp` reads `~/.pi/agent/mcp.json` instead, so an
+existing install would upgrade to a pi that finds no servers at all — silently, with no
+error to look for.
+
+pi-config copies the file across for you at startup, and only when
+`~/.pi/agent/mcp.json` does not already exist. Your existing `~/.pi/agent/mcp.json` is
+never overwritten, and the old file is left in place for you to delete whenever you
+like. The copy is logged to `~/.pi/logs/mcp-config-migration/`; if it fails, the reason
+is in there and you can copy the file by hand.
+
+## Managing servers
+
+| Command | Purpose |
+|---|---|
+| `/mcp` | Interactive manager: state, tool count, exposure, and the config file each server came from |
+| `/mcp reconnect` | Reconnect after editing `mcp.json` |
+| `/mcp login` / `/mcp logout` | Manage OAuth for a server |
+| `pi mcp list` | List configured servers from the shell |
+| `pi mcp add` / `pi mcp remove` | Add or remove a server from the shell |
+
+Outside the TUI, `/mcp` prints status.
+
+## How tools reach the model
+
+An MCP server can expose dozens of tools. Declaring all of them on every request would
+bloat the context window, so each server has an **exposure** that decides when its tools
+become visible. The default is `codemode`, and it is the right choice for almost every
+server.
+
+| Exposure | Behaviour | Cost when unused |
+|---|---|---|
+| `codemode` (default) | Not declared to the model. Reached from `codemode` scripts, which find tools with `searchTools()`. | 0 |
+| `codemode-deferred` | As above, and the tool list is not even in the `codemode` description — only the server name and tool count. | 0 |
+| `deferred` | Not declared until the `tool_search` tool loads them, then called directly. | 0 |
+| `direct` | Declared to the model like built-in tools. | Full schema, every request |
+| `hidden` | Registered but not callable. | 0 |
+
+The `codemode` description has its own budget, `codemode.inlineBudget` (default 3000
+tokens). Tools that do not fit are found with `searchTools()`, so the cost of a large
+server is bounded rather than proportional to its tool count.
+
+Set a server's exposure, and per-tool overrides, in the same `mcp.json`:
+
+```json
+    {
+      "mcpServers": {
+        "jira": {
+          "command": "npx",
+          "args": ["-y", "mcp-jira"],
+          "exposure": "codemode"
+        },
+        "github": {
+          "url": "https://mcp.githubcopilot.com/mcp/",
+          "exposure": "deferred",
+          "toolExposure": {
+            "search_code": "direct",
+            "delete_*": "hidden"
+          }
+        }
+      }
+    }
+```
+
+`toolExposure` keys are tool names as the server offers them, or patterns where `*`
+matches any characters. An exact name beats a pattern; among patterns the first match
+wins. `pi mcp list` marks tools whose exposure differs from their server's.
+
+Reserve `direct` for the one or two tools you reach for constantly. A server set to
+`direct` costs tokens whether or not the task needs it.
+
+## Calling a tool
+
+With `codemode` or `deferred` exposure, the agent writes a `codemode` script or lets
+`tool_search` load the tool — there is no shell round-trip and no separate discovery
+step. Tools loaded by `tool_search` are recorded in the transcript and stay declared on
+that branch.
+
+To confirm a server is healthy, run `/mcp` and check its state and tool count. pi logs
+MCP activity to `~/.pi/agent/mcp.log`.
+
+## Resources
+
+Servers offering MCP resources gain `list_mcp_resources`, `read_mcp_resource`, and
+`list_mcp_resource_templates` automatically. They reach every server whose exposure is
+not `hidden`, and take the widest exposure among them.
 
 
 ---

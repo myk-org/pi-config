@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pi-docsite"
+version = "4.6.5"
+description = "Deterministic static documentation site generator for Markdown projects"
+license = "Apache-2.0"
+requires-python = ">=3.14"
+dependencies = ["markdown>=3.11", "jinja2>=3.1.6", "pygments>=2.21.0"]
+
+[project.urls]
+Repository = "https://github.com/myk-org/pi-config"
+
+[project.scripts]
+pi-docsite = "pi_docsite.generate:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "types-markdown>=3.5"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"pi_docsite.renderer" = ["templates/*.html", "static/*"]

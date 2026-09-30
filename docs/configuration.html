@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Configuration &amp; Settings - pi-config</title>
     <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
-    <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href="assets/style.css?v=4faedb9938">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -57,6 +57,13 @@
                     </li>
 
                     <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
@@ -74,6 +81,20 @@
                         <a href="managing-custom-agents.html"
                            class="nav-link">
                             Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
                         </a>
                     </li>
 
@@ -190,16 +211,23 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="mcp-servers.html"
+                        <a href="pi-sidecar.html"
                            class="nav-link">
-                            MCP Servers
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
                     <li>
-                        <a href="pi-sidecar.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            Pi Sidecar HTTP API
+                            pi-docsite
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
                         </a>
                     </li>
 
@@ -252,13 +280,8 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                <a href="" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
                     ⚡ pi<span class="brand-accent">-config</span>
-                </a>
-
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
 
                 <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
@@ -285,7 +308,7 @@
 <h2 id="settings-files">Settings Files</h2>
 <p>Both settings files accept <code>.jsonc</code> (JSON with comments) or plain <code>.json</code>. If a directory contains both names, the <code>.jsonc</code> file is used and the <code>.json</code> file is ignored.</p>
 <h3 id="project-settings-file">Project settings file</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -304,7 +327,7 @@
 <td>Highest-precedence settings source for the current project.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"pidash_enable"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">"pidash_port"</span><span class="p">:</span><span class="w"> </span><span class="mi">19190</span><span class="p">,</span>
@@ -313,7 +336,7 @@
 </code></pre></div>
 
 <h3 id="global-settings-file">Global settings file</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -332,7 +355,7 @@
 <td>Fallback settings source for all projects when a key is not set in the project file.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"dream_interval_hours"</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">"review_loop_enforcement"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
@@ -340,7 +363,7 @@
 </code></pre></div>
 
 <h3 id="resolution-order">Resolution order</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -359,12 +382,12 @@
 <td>Determines which value is used when the same key appears in multiple places.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>project file -&gt; global file -&gt; environment variable -&gt; default
 </code></pre></div>
 
 <h3 id="editing-settings-without-a-text-editor">Editing settings without a text editor</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -383,14 +406,14 @@
 <td>Saves to the file for the scope you are editing (project or global), and shows the valid values and env var for every key.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>/pi-config-settings
 </code></pre></div>
 
 <p>Use it when you would rather not guess an env var name or a numeric range — the TUI shows the valid values for every key.</p>
 <h2 id="git-workflow-keys">Git &amp; Workflow Keys</h2>
 <h3 id="commit_trailer"><code>commit_trailer</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -411,7 +434,7 @@
 <td>Injects a trailer into <code>git commit</code> commands when a string value is set.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Note:</strong> A comma-separated string such as <code>"Assisted-by,Co-authored-by"</code> is treated as a list of trailer names; the user picks one per session and the choice is reused. The injected value is <code>&lt;Trailer&gt;: PI (&lt;model-id&gt;) &lt;noreply@pi.dev&gt;</code>.</p>
 </blockquote>
@@ -424,7 +447,7 @@
 </code></pre></div>
 
 <h3 id="allow_push_to_protected_branches"><code>allow_push_to_protected_branches</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -445,7 +468,7 @@
 <td>Disables the protected-branch block in git enforcement.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"allow_push_to_protected_branches"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
 <span class="p">}</span>
@@ -455,7 +478,7 @@
 </code></pre></div>
 
 <h3 id="use_worktrees"><code>use_worktrees</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -476,7 +499,7 @@
 <td>Blocks <code>git switch</code> and branch-changing <code>git checkout</code>; file restores such as <code>git checkout -- &lt;path&gt;</code> still pass. Suggests <code>git worktree add .worktrees/&lt;name&gt; -b &lt;branch&gt; &lt;main&gt;</code>.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"use_worktrees"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
 <span class="p">}</span>
@@ -486,7 +509,7 @@
 </code></pre></div>
 
 <h3 id="dco"><code>dco</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -507,7 +530,7 @@
 <td>Adds <code>--signoff</code> to <code>git commit</code> when the flag is not already present.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"dco"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
 <span class="p">}</span>
@@ -517,7 +540,7 @@
 </code></pre></div>
 
 <h3 id="orchestrator_edit_write_block"><code>orchestrator_edit_write_block</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -538,7 +561,7 @@
 <td>File changes must be delegated through the <code>subagent</code> tool. Subagent child processes are not blocked by this key.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"orchestrator_edit_write_block"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
 <span class="p">}</span>
@@ -547,7 +570,7 @@
 <p>See <a href="managing-custom-agents.html">Managing Custom Agents</a> for details.</p>
 <h2 id="review-pr-keys">Review &amp; PR Keys</h2>
 <h3 id="comment_signature"><code>comment_signature</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -568,7 +591,7 @@
 <td>Sets the <code>PI_COMMENT_SIGNATURE</code> process variable on session start for review tooling to read.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"comment_signature"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
 <span class="p">}</span>
@@ -576,7 +599,7 @@
 
 <p>See <a href="automating-code-reviews.html">Automating Code Reviews</a> for details.</p>
 <h3 id="review_loop_enforcement"><code>review_loop_enforcement</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -597,7 +620,7 @@
 <td>Blocks <code>git commit</code> until the review state is clean and tests have passed. Also enables the review status UI slot.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"review_loop_enforcement"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
 <span class="p">}</span>
@@ -608,7 +631,7 @@
 
 <p>See <a href="automating-code-reviews.html">Automating Code Reviews</a> for details.</p>
 <h3 id="review_loop_max_cycles"><code>review_loop_max_cycles</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -629,7 +652,7 @@
 <td>Caps reviewer re-dispatch count. Invalid values fall through to the next resolution layer or the default.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Warning:</strong> Accepted values are integers <code>1</code> through <code>10</code>, or digit strings <code>"1"</code> through <code>"10"</code>. Values such as <code>0</code>, <code>11</code>, <code>"01"</code>, <code>"10.0"</code>, <code>"1e1"</code>, and <code>"inf"</code> are ignored.</p>
 </blockquote>
@@ -644,7 +667,7 @@
 <p>See <a href="automating-code-reviews.html">Automating Code Reviews</a> for details.</p>
 <h2 id="provider-registration-model-routing">Provider Registration &amp; Model Routing</h2>
 <h3 id="cli_agents"><code>cli_agents</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -665,8 +688,8 @@
 <td>Registers <code>cli-&lt;agent&gt;</code> providers in the unified provider extension.</td>
 </tr>
 </tbody>
-</table>
-<table>
+</table></div>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Supported built-in value</th>
@@ -687,7 +710,7 @@
 <td><code>cli-cursor</code></td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Note:</strong> Values are lowercased, deduplicated, and invalid names are filtered out.</p>
 <p><strong>Tip:</strong> Set an explicit empty array (<code>[]</code>) in the project file to override inherited global or environment values.</p>
@@ -702,7 +725,7 @@
 
 <p>See <a href="external-ai-agents.html">External AI Agents &amp; CLI</a> for details.</p>
 <h3 id="acpx_agents"><code>acpx_agents</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -723,7 +746,7 @@
 <td>Registers <code>acpx-&lt;agent&gt;</code> providers in the unified provider extension.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Note:</strong> Values are lowercased, deduplicated, and any name that is not <code>[a-z0-9_-]+</code> is dropped. Unlike <code>cli_agents</code>, the name is not checked against a built-in list — it must match an agent the <code>acpx</code> binary can launch.</p>
 </blockquote>
@@ -737,7 +760,7 @@
 
 <p>See <a href="acpx-provider.html">ACPX Provider Integration</a> for details.</p>
 <h3 id="agent_provider"><code>agent_provider</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -758,14 +781,14 @@
 <td>Used when a per-agent override and agent frontmatter do not provide a provider.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"agent_provider"</span><span class="p">:</span><span class="w"> </span><span class="s2">"cli-cursor"</span>
 <span class="p">}</span>
 </code></pre></div>
 
 <h3 id="agent_model"><code>agent_model</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -786,14 +809,14 @@
 <td>Used when a per-agent override and agent frontmatter do not provide a model.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"agent_model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"cursor:cursor-grok-4.5-high-fast"</span>
 <span class="p">}</span>
 </code></pre></div>
 
 <h3 id="agent_overrides"><code>agent_overrides</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -830,8 +853,8 @@
 <td><code>null</code> means inherit the parent model directly.</td>
 </tr>
 </tbody>
-</table>
-<table>
+</table></div>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Resolution priority</th>
@@ -856,7 +879,7 @@
 <td>Parent session provider/model</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"agent_provider"</span><span class="p">:</span><span class="w"> </span><span class="s2">"cli-cursor"</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">"agent_model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"cursor:cursor-grok-4.5-high-fast"</span><span class="p">,</span>
@@ -874,9 +897,41 @@
 </code></pre></div>
 
 <p>See <a href="managing-custom-agents.html">Managing Custom Agents</a> for details.</p>
+<h3 id="vertex_claude_1m"><code>vertex_claude_1m</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>vertex_claude_1m</code></td>
+<td>boolean</td>
+<td><code>false</code></td>
+<td><code>VERTEX_CLAUDE_1M</code></td>
+<td>Registers the Vertex AI Claude models with their 1M-token context window.</td>
+<td>Sets <code>VERTEX_CLAUDE_1M=true</code> in the process environment on session start, so the Vertex Claude provider advertises the extended context instead of the standard one.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"vertex_claude_1m"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">VERTEX_CLAUDE_1M</span><span class="o">=</span><span class="nb">true</span>
+</code></pre></div>
+
+<p>See <a href="vertex-claude-provider.html">Vertex Claude Provider</a> for details.</p>
 <h2 id="dashboard-ui-keys">Dashboard &amp; UI Keys</h2>
 <h3 id="pidash_enable"><code>pidash_enable</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -897,7 +952,7 @@
 <td>Controls <code>/pidash</code> availability and daemon connection behavior.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Note:</strong> Environment values <code>false</code>, <code>0</code>, <code>no</code>, and <code>off</code> disable pidash.</p>
 </blockquote>
@@ -910,7 +965,7 @@
 </code></pre></div>
 
 <h3 id="pidiff_enable"><code>pidiff_enable</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -931,7 +986,7 @@
 <td>Controls <code>/pidiff</code> availability and per-project diff server startup.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Note:</strong> Environment values <code>false</code>, <code>0</code>, <code>no</code>, and <code>off</code> disable pidiff.</p>
 </blockquote>
@@ -944,7 +999,7 @@
 </code></pre></div>
 
 <h3 id="pidash_port"><code>pidash_port</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -965,7 +1020,7 @@
 <td>Sets the port used when spawning or reconnecting to the pidash daemon.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Warning:</strong> Only integer values in the range <code>1</code>-<code>65535</code> are accepted. Invalid values fall back to the next resolution layer or the default.</p>
 </blockquote>
@@ -978,8 +1033,73 @@
 </code></pre></div>
 
 <p>See <a href="using-the-web-dashboard.html">Using the Web Dashboard</a> for details.</p>
+<h3 id="pidiff_daemon_startup_timeout_s"><code>pidiff_daemon_startup_timeout_s</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pidiff_daemon_startup_timeout_s</code></td>
+<td>integer <code>10</code>-<code>300</code></td>
+<td><code>60</code></td>
+<td><code>PI_PIDIFF_DAEMON_STARTUP_TIMEOUT_S</code></td>
+<td>Seconds to wait for the pidiff diff server to accept connections.</td>
+<td>Bounds the startup probe after a spawn or reconnect; once it elapses, pidiff gives up on that attempt instead of hanging the caller. Raise it on slow machines or busy containers.</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>Warning:</strong> Only integer values in the range <code>10</code>-<code>300</code> are accepted. Invalid values fall back to the next resolution layer or the default.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"pidiff_daemon_startup_timeout_s"</span><span class="p">:</span><span class="w"> </span><span class="mi">120</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_PIDIFF_DAEMON_STARTUP_TIMEOUT_S</span><span class="o">=</span><span class="m">120</span>
+</code></pre></div>
+
+<h3 id="pidiff_stale_lock_timeout_ms"><code>pidiff_stale_lock_timeout_ms</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pidiff_stale_lock_timeout_ms</code></td>
+<td>integer</td>
+<td><code>60000</code></td>
+<td><code>PI_PIDIFF_STALE_LOCK_TIMEOUT_MS</code></td>
+<td>Timeout for a stale pidiff spawning lockfile (ms).</td>
+<td>If a previous pidiff process died while holding the spawn lock, the lock is treated as abandoned after this long and the next spawn may proceed. 60 seconds.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"pidiff_stale_lock_timeout_ms"</span><span class="p">:</span><span class="w"> </span><span class="mi">60000</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_PIDIFF_STALE_LOCK_TIMEOUT_MS</span><span class="o">=</span><span class="m">60000</span>
+</code></pre></div>
+
 <h3 id="image_model"><code>image_model</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -1000,7 +1120,7 @@
 <td>Enables the <code>generate_image</code> tool to call the Gemini API. Requires <code>GEMINI_API_KEY</code> or <code>GOOGLE_API_KEY</code> to be set.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"image_model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"gemini-3-pro-image"</span>
 <span class="p">}</span>
@@ -1012,7 +1132,7 @@
 <p>See <a href="image-generation.html">Image Generation</a> for details.</p>
 <h2 id="code-graph-key">Code Graph Key</h2>
 <h3 id="graft_enable"><code>graft_enable</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -1033,7 +1153,7 @@
 <td>Adds the <code>graft_*</code> tools to every subagent's toolset, so agents can look code up in the graph before grepping. Requires the <code>graft</code> binary on <code>PATH</code>.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"graft_enable"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
 <span class="p">}</span>
@@ -1044,7 +1164,7 @@
 
 <h2 id="background-async-keys">Background &amp; Async Keys</h2>
 <h3 id="dream_interval_hours"><code>dream_interval_hours</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -1065,7 +1185,7 @@
 <td>Controls how frequently background memory consolidation is scheduled.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"dream_interval_hours"</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span>
 <span class="p">}</span>
@@ -1076,7 +1196,7 @@
 
 <p>See <a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a> for details.</p>
 <h3 id="internal_operations_provider"><code>internal_operations_provider</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -1097,7 +1217,7 @@
 <td>Combined with <code>internal_operations_model</code> to define the sidecar provider. Used by dreaming, cron, and fire-and-forget async agents.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"internal_operations_provider"</span><span class="p">:</span><span class="w"> </span><span class="s2">"openai"</span>
 <span class="p">}</span>
@@ -1107,7 +1227,7 @@
 </code></pre></div>
 
 <h3 id="internal_operations_model"><code>internal_operations_model</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -1128,7 +1248,7 @@
 <td>Combined with <code>internal_operations_provider</code> to define the sidecar model.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">"internal_operations_model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"gpt-5.4"</span>
 <span class="p">}</span>
@@ -1142,9 +1262,112 @@
 <p><strong>Warning:</strong> <code>internal_operations_provider</code> cannot be an <code>acpx-*</code> provider ID. Non-must-async work is coerced to sync instead of using the sidecar.</p>
 </blockquote>
 <p>See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details.</p>
+<h3 id="sync_agent_max_seconds"><code>sync_agent_max_seconds</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sync_agent_max_seconds</code></td>
+<td>integer <code>10</code>-<code>300</code></td>
+<td><code>60</code></td>
+<td><code>PI_SYNC_AGENT_MAX_SECONDS</code></td>
+<td>Estimated runtime at which a subagent must be dispatched asynchronously.</td>
+<td>A <code>subagent</code> call whose <code>estimatedSeconds</code> meets or exceeds this limit is rejected with "Use async: true instead." The same limit scales the parallel and chain fan-out timeouts.</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>Warning:</strong> Only integer values in the range <code>10</code>-<code>300</code> are accepted. Invalid values fall back to the next resolution layer or the default.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"sync_agent_max_seconds"</span><span class="p">:</span><span class="w"> </span><span class="mi">120</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_SYNC_AGENT_MAX_SECONDS</span><span class="o">=</span><span class="m">120</span>
+</code></pre></div>
+
+<h3 id="async_poll_interval_ms"><code>async_poll_interval_ms</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>async_poll_interval_ms</code></td>
+<td>integer <code>500</code>-<code>30000</code></td>
+<td><code>3000</code></td>
+<td><code>PI_ASYNC_POLL_INTERVAL_MS</code></td>
+<td>How often the async agent poller re-reads job state.</td>
+<td>Sets the cadence of the status sweep that refreshes the async widget, delivers completed results, and drops finished jobs older than 30 seconds. Lower values track jobs more closely at the cost of more frequent settings reads.</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>Warning:</strong> Only integer values in the range <code>500</code>-<code>30000</code> are accepted. Invalid values fall back to the next resolution layer or the default.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"async_poll_interval_ms"</span><span class="p">:</span><span class="w"> </span><span class="mi">5000</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_ASYNC_POLL_INTERVAL_MS</span><span class="o">=</span><span class="m">5000</span>
+</code></pre></div>
+
+<h3 id="async_phantom_timeout_ms"><code>async_phantom_timeout_ms</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>async_phantom_timeout_ms</code></td>
+<td>integer <code>5000</code>-<code>120000</code></td>
+<td><code>30000</code></td>
+<td><code>PI_ASYNC_PHANTOM_TIMEOUT_MS</code></td>
+<td>Grace period before an async job with no status file is declared dead.</td>
+<td>Once it elapses the job is failed with "Agent process timed out — no status file", the failure is delivered, and any group it belonged to is settled. While the worker PID is still alive, the same window suppresses the failure.</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>Warning:</strong> Only integer values in the range <code>5000</code>-<code>120000</code> are accepted. Invalid values fall back to the next resolution layer or the default.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"async_phantom_timeout_ms"</span><span class="p">:</span><span class="w"> </span><span class="mi">60000</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_ASYNC_PHANTOM_TIMEOUT_MS</span><span class="o">=</span><span class="m">60000</span>
+</code></pre></div>
+
+<p>See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details.</p>
 <h2 id="provider-stream-logging">Provider Stream Logging</h2>
 <h3 id="log_providers"><code>log_providers</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -1165,15 +1388,634 @@
 <td>Set to <code>debug</code> to capture every parsed provider stream event, which is how a misbehaving provider is diagnosed from the stream rather than reconstructed from rendered output.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_LOG_PROVIDERS</span><span class="o">=</span>debug
 </code></pre></div>
 
 <p>The stream is written to <code>~/.pi/logs/providers/&lt;session-id&gt;/main.log</code> under a <code>[provider-stream]</code> prefix, with one line per event and credential-shaped fields redacted. Capturing every event has a real cost, so the hook only registers at <code>debug</code> and costs nothing at the default level.</p>
-<p>Every other <code>log_&lt;module&gt;</code> key follows the same shape — <code>log_pidash</code>, <code>log_pidiff</code>, <code>log_coms</code>, <code>log_subagent</code>, <code>log_dreaming</code>, <code>log_enforcement</code>, <code>log_graft</code>, and others — with env vars <code>PI_LOG_&lt;MODULE&gt;</code> and default <code>info</code>.</p>
+<p>Every other <code>log_&lt;module&gt;</code> key follows the same shape — <code>log_pidash</code>, <code>log_pidiff</code>, <code>log_coms</code>, <code>log_subagent</code>, <code>log_dreaming</code>, <code>log_enforcement</code>, <code>log_graft</code>, and others — with env vars <code>PI_LOG_&lt;MODULE&gt;</code> and default <code>info</code>. The remaining module log levels are listed in <a href="#module-file-logging">Module File Logging</a> below.</p>
+<h2 id="safety-enforcement-keys">Safety Enforcement Keys</h2>
+<h3 id="enforcement_sleep_threshold_s"><code>enforcement_sleep_threshold_s</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enforcement_sleep_threshold_s</code></td>
+<td>integer <code>1</code>-<code>300</code></td>
+<td><code>60</code></td>
+<td><code>PI_ENFORCEMENT_SLEEP_THRESHOLD_S</code></td>
+<td>Longest <code>sleep</code> allowed in a single foreground command.</td>
+<td>A standalone <code>bash</code> command sleeping longer than this is blocked with a message pointing at <code>async: true</code>. Only enforced when the parent session provider supports async LLM calls.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"enforcement_sleep_threshold_s"</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_ENFORCEMENT_SLEEP_THRESHOLD_S</span><span class="o">=</span><span class="m">30</span>
+</code></pre></div>
+
+<h3 id="enforcement_loop_sleep_threshold_s"><code>enforcement_loop_sleep_threshold_s</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enforcement_loop_sleep_threshold_s</code></td>
+<td>integer <code>1</code>-<code>300</code></td>
+<td><code>60</code></td>
+<td><code>PI_ENFORCEMENT_LOOP_SLEEP_THRESHOLD_S</code></td>
+<td>Longest <code>sleep</code> allowed inside a <code>while</code>/<code>for</code>/<code>until</code> loop.</td>
+<td>A polling loop whose <code>sleep</code> exceeds this is blocked, forcing polling and monitoring work into an async subagent instead of tying up the session. Only enforced when the parent session provider supports async LLM calls.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"enforcement_loop_sleep_threshold_s"</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_ENFORCEMENT_LOOP_SLEEP_THRESHOLD_S</span><span class="o">=</span><span class="m">10</span>
+</code></pre></div>
+
+<h3 id="enforcement_allowed_commands"><code>enforcement_allowed_commands</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enforcement_allowed_commands</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td><code>PI_ENFORCEMENT_ALLOWED_COMMANDS</code></td>
+<td>Comma-separated bash commands exempt from enforcement blocking.</td>
+<td>A listed command bypasses the guards that would otherwise block it. Empty means no exemptions.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"enforcement_allowed_commands"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sleep 5, ls -la"</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_ENFORCEMENT_ALLOWED_COMMANDS</span><span class="o">=</span><span class="s2">"sleep 5,ls -la"</span>
+</code></pre></div>
+
+<blockquote>
+<p><strong>Warning:</strong> this is an exemption list for the enforcement guards. Anything added here runs past them, so keep it as narrow as the task allows.</p>
+</blockquote>
+<p>See <a href="safety-enforcements.html">Safety Enforcements</a> for details.</p>
+<h2 id="inter-agent-communication-keys">Inter-Agent Communication Keys</h2>
+<h3 id="coms_task_heartbeat_ms"><code>coms_task_heartbeat_ms</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>coms_task_heartbeat_ms</code></td>
+<td>integer (min <code>10000</code>)</td>
+<td><code>300000</code></td>
+<td><code>PI_COMS_TASK_HEARTBEAT_MS</code></td>
+<td>How often a joined coms session re-announces its task state.</td>
+<td>Sets the timer interval for the periodic task-status broadcast to peers, so the shared task board stays fresh while the session is open.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"coms_task_heartbeat_ms"</span><span class="p">:</span><span class="w"> </span><span class="mi">60000</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_COMS_TASK_HEARTBEAT_MS</span><span class="o">=</span><span class="m">60000</span>
+</code></pre></div>
+
+<h3 id="coms_probe_timeout_ms"><code>coms_probe_timeout_ms</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>coms_probe_timeout_ms</code></td>
+<td>integer <code>100</code>-<code>10000</code></td>
+<td><code>1000</code></td>
+<td><code>PI_COMS_PROBE_TIMEOUT_MS</code></td>
+<td>How long to wait when probing a peer's socket for liveness.</td>
+<td>If the socket does not connect within this window it is reported stale and its registry entry becomes prunable. Only <code>ECONNREFUSED</code>/<code>ENOENT</code> count as stale, so transient errors are treated as live.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"coms_probe_timeout_ms"</span><span class="p">:</span><span class="w"> </span><span class="mi">500</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_COMS_PROBE_TIMEOUT_MS</span><span class="o">=</span><span class="m">500</span>
+</code></pre></div>
+
+<h3 id="coms_timeout_ms"><code>coms_timeout_ms</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>coms_timeout_ms</code></td>
+<td>integer</td>
+<td><code>1800000</code></td>
+<td><code>PI_COMS_TIMEOUT_MS</code></td>
+<td>Coms session inactivity timeout before cleanup.</td>
+<td>A session that has been idle this long is torn down and its socket and registry entry are released. 30 minutes.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"coms_timeout_ms"</span><span class="p">:</span><span class="w"> </span><span class="mi">1800000</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_COMS_TIMEOUT_MS</span><span class="o">=</span><span class="m">1800000</span>
+</code></pre></div>
+
+<h3 id="coms_max_hops"><code>coms_max_hops</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>coms_max_hops</code></td>
+<td>integer</td>
+<td><code>5</code></td>
+<td><code>PI_COMS_MAX_HOPS</code></td>
+<td>Maximum message relay hops between peers.</td>
+<td>Caps how many times a message may be relayed across the network, which bounds routing loops when peers cannot reach each other directly.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"coms_max_hops"</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_COMS_MAX_HOPS</span><span class="o">=</span><span class="m">5</span>
+</code></pre></div>
+
+<h3 id="coms_entry_grace_period_ms"><code>coms_entry_grace_period_ms</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>coms_entry_grace_period_ms</code></td>
+<td>integer</td>
+<td><code>30000</code></td>
+<td><code>PI_COMS_ENTRY_GRACE_PERIOD_MS</code></td>
+<td>Grace period for new registry entries before a stale check applies.</td>
+<td>A freshly announced peer is not probed for staleness during this window, so a slow start cannot get its entry pruned before it is reachable. 30 seconds.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"coms_entry_grace_period_ms"</span><span class="p">:</span><span class="w"> </span><span class="mi">30000</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_COMS_ENTRY_GRACE_PERIOD_MS</span><span class="o">=</span><span class="m">30000</span>
+</code></pre></div>
+
+<h3 id="coms_dir"><code>coms_dir</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>coms_dir</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td><code>PI_COMS_DIR</code></td>
+<td>Override the default coms registry directory.</td>
+<td>Relocates the peer registry and sockets from the default under <code>~/.pi/coms/</code>. Empty means auto-detect.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"coms_dir"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/run/user/1000/coms"</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_COMS_DIR</span><span class="o">=</span>/run/user/1000/coms
+</code></pre></div>
+
+<p>See <a href="inter-agent-communication.html">Inter-Agent Communication</a> for details.</p>
+<h2 id="sidecar-server-logging">Sidecar Server Logging</h2>
+<h3 id="sidecar_log_level"><code>sidecar_log_level</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sidecar_log_level</code></td>
+<td>string</td>
+<td><code>info</code></td>
+<td><code>PI_SIDECAR_LOG_LEVEL</code></td>
+<td>Log level for the pi-sidecar server.</td>
+<td>The resolved value is written into the process environment on session start, where both the Node sidecar and the Python client read it. An empty value clears the variable and lets the sidecar fall back to its own default.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"sidecar_log_level"</span><span class="p">:</span><span class="w"> </span><span class="s2">"debug"</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_SIDECAR_LOG_LEVEL</span><span class="o">=</span>debug
+</code></pre></div>
+
+<p>See <a href="pi-sidecar.html">Pi-Sidecar</a> for details.</p>
+<h2 id="module-file-logging">Module File Logging</h2>
+<p>Each key below is a <strong>level string</strong>, not a boolean. Accepted values are <code>off</code>, <code>debug</code>, <code>info</code>, <code>warn</code>, and <code>error</code>; anything else is ignored and the next resolution layer is used. <code>off</code> disables the module's file log entirely.</p>
+<p>A module resolves its level in this order: the <code>log_&lt;module&gt;</code> setting → the <code>PI_LOG_&lt;MODULE&gt;</code> environment variable → <code>info</code>. Lines below that level are dropped before the file is touched, and the resolved level is cached for 30 seconds.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>log_pitasks</code></td>
+<td>string</td>
+<td><code>info</code></td>
+<td><code>PI_LOG_PITASKS</code></td>
+<td>Log level for the pitasks module.</td>
+<td>Controls the verbosity of <code>~/.pi/logs/pitasks/&lt;session-id&gt;/main.log</code> — task list operations and reminder fires.</td>
+</tr>
+<tr>
+<td><code>log_cli_provider</code></td>
+<td>string</td>
+<td><code>info</code></td>
+<td><code>PI_LOG_CLI_PROVIDER</code></td>
+<td>Log level for the cli-provider module.</td>
+<td>Controls the verbosity of <code>~/.pi/logs/cli_provider/&lt;session-id&gt;/main.log</code> — CLI agent spawn, discovery, and handshake events.</td>
+</tr>
+<tr>
+<td><code>log_acpx_provider</code></td>
+<td>string</td>
+<td><code>info</code></td>
+<td><code>PI_LOG_ACPX_PROVIDER</code></td>
+<td>Log level for the acpx-provider module.</td>
+<td>Controls the verbosity of <code>~/.pi/logs/acpx-provider/&lt;session-id&gt;/main.log</code> — ACPX session lifecycle, model discovery, and shutdown.</td>
+</tr>
+<tr>
+<td><code>log_orchestrator</code></td>
+<td>string</td>
+<td><code>info</code></td>
+<td><code>PI_LOG_ORCHESTRATOR</code></td>
+<td>Log level for the orchestrator module.</td>
+<td>Controls the verbosity of <code>~/.pi/logs/orchestrator/&lt;session-id&gt;/main.log</code> — delegation, settings resolution, and enforcement decisions.</td>
+</tr>
+<tr>
+<td><code>log_async_agents</code></td>
+<td>string</td>
+<td><code>info</code></td>
+<td><code>PI_LOG_ASYNC_AGENTS</code></td>
+<td>Log level for the async-agents module.</td>
+<td>Controls the verbosity of <code>~/.pi/logs/async_agents/&lt;parent-session-id&gt;/&lt;job-id&gt;.log</code> — spawn, poll, and delivery events for background agents.</td>
+</tr>
+<tr>
+<td><code>log_rules</code></td>
+<td>string</td>
+<td><code>info</code></td>
+<td><code>PI_LOG_RULES</code></td>
+<td>Log level for the rules module.</td>
+<td>Controls the verbosity of <code>~/.pi/logs/rules/&lt;session-id&gt;/main.log</code> — rule loading, placeholder substitution, and rule-matched events.</td>
+</tr>
+<tr>
+<td><code>log_memory</code></td>
+<td>string</td>
+<td><code>info</code></td>
+<td><code>PI_LOG_MEMORY</code></td>
+<td>Log level for the memory module.</td>
+<td>Controls the verbosity of <code>~/.pi/logs/memory/&lt;session-id&gt;/main.log</code> — memory capture, scoring, and promotion decisions.</td>
+</tr>
+<tr>
+<td><code>log_settings_tui</code></td>
+<td>string</td>
+<td><code>info</code></td>
+<td><code>PI_LOG_SETTINGS_TUI</code></td>
+<td>Log level for the settings-tui module.</td>
+<td>Controls the verbosity of <code>~/.pi/logs/settings_tui/&lt;session-id&gt;/main.log</code> — <code>/pi-config-settings</code> reads and writes.</td>
+</tr>
+<tr>
+<td><code>log_cron</code></td>
+<td>string</td>
+<td><code>info</code></td>
+<td><code>PI_LOG_CRON</code></td>
+<td>Log level for the cron module.</td>
+<td>Controls the verbosity of <code>~/.pi/logs/cron/&lt;session-id&gt;/main.log</code> — scheduled job registration and fires.</td>
+</tr>
+<tr>
+<td><code>log_oneshot</code></td>
+<td>string</td>
+<td><code>info</code></td>
+<td><code>PI_LOG_ONESHOT</code></td>
+<td>Log level for the oneshot argv helpers.</td>
+<td>Controls the verbosity of <code>~/.pi/logs/oneshot/&lt;session-id&gt;/main.log</code> — one-shot runs of <code>pi -p</code> and <code>--mode json</code>.</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>Note:</strong> Async agent logs nest under the parent pi session directory, not the subagent's own session id, so a whole job tree stays in one place. Subagent and child-process logs use the same <code>&lt;name&gt;/&lt;parent-session-id&gt;/&lt;file&gt;</code> layout.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"log_orchestrator"</span><span class="p">:</span><span class="w"> </span><span class="s2">"debug"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"log_async_agents"</span><span class="p">:</span><span class="w"> </span><span class="s2">"debug"</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_LOG_ORCHESTRATOR</span><span class="o">=</span>debug
+</code></pre></div>
+
+<blockquote>
+<p><strong>Tip:</strong> The Settings TUI renders each of these as a select list from the schema enum, so the valid values never have to be remembered.</p>
+</blockquote>
+<h2 id="task-lifecycle-keys">Task Lifecycle Keys</h2>
+<h3 id="task_auto_clear_enabled"><code>task_auto_clear_enabled</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task_auto_clear_enabled</code></td>
+<td>boolean</td>
+<td><code>true</code></td>
+<td><code>PI_TASK_AUTO_CLEAR_ENABLED</code></td>
+<td>Enables time-based removal of completed tasks.</td>
+<td>When on, a one-minute sweep deletes completed tasks older than <code>task_auto_clear_minutes</code> and refreshes the task widget. Set to <code>false</code> to keep the history.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"task_auto_clear_enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_TASK_AUTO_CLEAR_ENABLED</span><span class="o">=</span><span class="nb">false</span>
+</code></pre></div>
+
+<h3 id="task_auto_clear_minutes"><code>task_auto_clear_minutes</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task_auto_clear_minutes</code></td>
+<td>integer <code>1</code>-<code>1440</code></td>
+<td><code>10</code></td>
+<td><code>PI_TASK_AUTO_CLEAR_MINUTES</code></td>
+<td>How long a completed task is kept before removal.</td>
+<td>Measured from the task's <code>completed_at</code> timestamp, not from session start. Only used while <code>task_auto_clear_enabled</code> is on.</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>Warning:</strong> Only integer values in the range <code>1</code>-<code>1440</code> are accepted. Invalid values fall back to the next resolution layer or the default.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"task_auto_clear_minutes"</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="task_reminder_enabled"><code>task_reminder_enabled</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task_reminder_enabled</code></td>
+<td>boolean</td>
+<td><code>true</code></td>
+<td><code>PI_TASK_REMINDER_ENABLED</code></td>
+<td>Enables the periodic nudge when tasks are pending but none is in progress.</td>
+<td>When on, a <code>task-focus-reminder</code> message is injected to restart the turn. Requires at least one active task, no <code>in_progress</code> task, and an idle agent. Set to <code>false</code> to silence it.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"task_reminder_enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_TASK_REMINDER_ENABLED</span><span class="o">=</span><span class="nb">false</span>
+</code></pre></div>
+
+<h3 id="task_reminder_interval_minutes"><code>task_reminder_interval_minutes</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task_reminder_interval_minutes</code></td>
+<td>integer <code>1</code>-<code>60</code></td>
+<td><code>10</code></td>
+<td><code>PI_TASK_REMINDER_INTERVAL_MINUTES</code></td>
+<td>Minimum gap between two pending-task reminders.</td>
+<td>The sweep itself runs every minute; this key is the throttle that decides when a reminder is actually delivered. Only used while <code>task_reminder_enabled</code> is on.</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>Warning:</strong> Only integer values in the range <code>1</code>-<code>60</code> are accepted. Invalid values fall back to the next resolution layer or the default.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"task_reminder_interval_minutes"</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="task_stale_in_progress_enabled"><code>task_stale_in_progress_enabled</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task_stale_in_progress_enabled</code></td>
+<td>boolean</td>
+<td><code>true</code></td>
+<td><code>PI_TASK_STALE_IN_PROGRESS_ENABLED</code></td>
+<td>Enables reminders for tasks stuck <code>in_progress</code> for too long.</td>
+<td>When on, a stale reminder fires for every task whose <code>in_progress_at</code> is older than <code>task_stale_in_progress_minutes</code>. Set to <code>false</code> to disable the stale check.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"task_stale_in_progress_enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_TASK_STALE_IN_PROGRESS_ENABLED</span><span class="o">=</span><span class="nb">false</span>
+</code></pre></div>
+
+<h3 id="task_stale_in_progress_minutes"><code>task_stale_in_progress_minutes</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task_stale_in_progress_minutes</code></td>
+<td>integer <code>5</code>-<code>1440</code></td>
+<td><code>30</code></td>
+<td><code>PI_TASK_STALE_IN_PROGRESS_MINUTES</code></td>
+<td>How long a task may stay <code>in_progress</code> before it counts as stale.</td>
+<td>Acts as both the staleness threshold and the cooldown between stale reminders. Only used while <code>task_stale_in_progress_enabled</code> is on.</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>Warning:</strong> Only integer values in the range <code>5</code>-<code>1440</code> are accepted. Invalid values fall back to the next resolution layer or the default.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"task_stale_in_progress_minutes"</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>See <a href="managing-custom-agents.html">Managing Custom Agents</a> for details.</p>
 <h2 id="environment-only-process-flag">Environment-only Process Flag</h2>
 <h3 id="pi_subagent_child"><code>PI_SUBAGENT_CHILD</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -1192,7 +2034,7 @@
 <td>Disables parent-session-only startup behavior such as pidash/pidiff registration and settings cache reset hooks in child processes.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="nv">PI_SUBAGENT_CHILD</span><span class="o">=</span><span class="m">1</span>
 </code></pre></div>
 
@@ -1254,12 +2096,15 @@
 <li><a href="#agent_provider">agent_provider</a></li>
 <li><a href="#agent_model">agent_model</a></li>
 <li><a href="#agent_overrides">agent_overrides</a></li>
+<li><a href="#vertex_claude_1m">vertex_claude_1m</a></li>
 </ul>
 </li>
 <li><a href="#dashboard-ui-keys">Dashboard &amp; UI Keys</a><ul>
 <li><a href="#pidash_enable">pidash_enable</a></li>
 <li><a href="#pidiff_enable">pidiff_enable</a></li>
 <li><a href="#pidash_port">pidash_port</a></li>
+<li><a href="#pidiff_daemon_startup_timeout_s">pidiff_daemon_startup_timeout_s</a></li>
+<li><a href="#pidiff_stale_lock_timeout_ms">pidiff_stale_lock_timeout_ms</a></li>
 <li><a href="#image_model">image_model</a></li>
 </ul>
 </li>
@@ -1271,10 +2116,42 @@
 <li><a href="#dream_interval_hours">dream_interval_hours</a></li>
 <li><a href="#internal_operations_provider">internal_operations_provider</a></li>
 <li><a href="#internal_operations_model">internal_operations_model</a></li>
+<li><a href="#sync_agent_max_seconds">sync_agent_max_seconds</a></li>
+<li><a href="#async_poll_interval_ms">async_poll_interval_ms</a></li>
+<li><a href="#async_phantom_timeout_ms">async_phantom_timeout_ms</a></li>
 </ul>
 </li>
 <li><a href="#provider-stream-logging">Provider Stream Logging</a><ul>
 <li><a href="#log_providers">log_providers</a></li>
+</ul>
+</li>
+<li><a href="#safety-enforcement-keys">Safety Enforcement Keys</a><ul>
+<li><a href="#enforcement_sleep_threshold_s">enforcement_sleep_threshold_s</a></li>
+<li><a href="#enforcement_loop_sleep_threshold_s">enforcement_loop_sleep_threshold_s</a></li>
+<li><a href="#enforcement_allowed_commands">enforcement_allowed_commands</a></li>
+</ul>
+</li>
+<li><a href="#inter-agent-communication-keys">Inter-Agent Communication Keys</a><ul>
+<li><a href="#coms_task_heartbeat_ms">coms_task_heartbeat_ms</a></li>
+<li><a href="#coms_probe_timeout_ms">coms_probe_timeout_ms</a></li>
+<li><a href="#coms_timeout_ms">coms_timeout_ms</a></li>
+<li><a href="#coms_max_hops">coms_max_hops</a></li>
+<li><a href="#coms_entry_grace_period_ms">coms_entry_grace_period_ms</a></li>
+<li><a href="#coms_dir">coms_dir</a></li>
+</ul>
+</li>
+<li><a href="#sidecar-server-logging">Sidecar Server Logging</a><ul>
+<li><a href="#sidecar_log_level">sidecar_log_level</a></li>
+</ul>
+</li>
+<li><a href="#module-file-logging">Module File Logging</a></li>
+<li><a href="#task-lifecycle-keys">Task Lifecycle Keys</a><ul>
+<li><a href="#task_auto_clear_enabled">task_auto_clear_enabled</a></li>
+<li><a href="#task_auto_clear_minutes">task_auto_clear_minutes</a></li>
+<li><a href="#task_reminder_enabled">task_reminder_enabled</a></li>
+<li><a href="#task_reminder_interval_minutes">task_reminder_interval_minutes</a></li>
+<li><a href="#task_stale_in_progress_enabled">task_stale_in_progress_enabled</a></li>
+<li><a href="#task_stale_in_progress_minutes">task_stale_in_progress_minutes</a></li>
 </ul>
 </li>
 <li><a href="#environment-only-process-flag">Environment-only Process Flag</a><ul>
@@ -1301,13 +2178,14 @@
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=4faedb9938"></script>
+
+    <script src="assets/search.js?v=4faedb9938"></script>
+    <script src="assets/copy.js?v=4faedb9938"></script>
+    <script src="assets/callouts.js?v=4faedb9938"></script>
+    <script src="assets/scrollspy.js?v=4faedb9938"></script>
+    <script src="assets/codelabels.js?v=4faedb9938"></script>
+    <script src="assets/github.js?v=4faedb9938"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');

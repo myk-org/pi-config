@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Reference - pi-config</title>
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=4faedb9938">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Installation &amp; Quickstart
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Core Workflows</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="automating-code-reviews.html"
+                           class="nav-link">
+                            Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="managing-custom-agents.html"
+                           class="nav-link">
+                            Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link active" aria-current="page">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="using-the-web-dashboard.html"
+                           class="nav-link">
+                            Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="curating-project-memory.html"
+                           class="nav-link">
+                            Curating Project Memory
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Inter-Agent Communication Network
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="external-ai-agents.html"
+                           class="nav-link">
+                            External AI Agents &amp; CLI
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Discord Bot Notifications
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            ACPX Provider Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-docsite.html"
+                           class="nav-link">
+                            pi-docsite
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk_pi_tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="agent-reference">Agent Reference</h1>
+<p>Pi ships 29 specialist agents in <code>agents/</code>. Each one is a markdown file with YAML frontmatter (<code>name</code>, <code>description</code>, <code>tools</code>) followed by a system prompt. This page lists every bundled agent, what its description says, and how the orchestrator decides which one to use.</p>
+<p>Specialists are meant to be <strong>delegated to, not imitated</strong>. The orchestrator reads the routing rules, spawns the matching specialist through the <code>subagent</code> tool, and merges the result — it does not do the specialist's job inline.</p>
+<blockquote>
+<p><strong>Note:</strong> None of the bundled agents pin a <code>model</code> or <code>provider</code> in their frontmatter. Every agent runs on whatever model the session resolves to, unless you override it per call or through <code>agent_overrides</code> in settings.</p>
+</blockquote>
+<h2 id="how-routing-works">How routing works</h2>
+<p>Routing is defined in <code>rules/10-agent-routing.md</code>, not by the model guessing from agent names. Three layers:</p>
+<ol>
+<li>
+<p><strong>Domain-to-agent table.</strong> File types and tools map to a named agent — <code>.py</code> → <code>python-expert</code>, <code>.go</code> → <code>go-expert</code>, JS/TS/React/Vue/Angular → <code>ts-expert</code>, <code>.java</code> → <code>java-expert</code>, <code>.sh</code> → <code>bash-expert</code>, <code>.md</code> → <code>technical-documentation-writer</code>, Docker → <code>docker-expert</code>, Kubernetes/OpenShift → <code>kubernetes-expert</code>, Jenkins/CI/Groovy → <code>jenkins-expert</code>, local git → <code>git-expert</code>, GitHub (PRs, issues, releases, workflows) → <code>github-expert</code>, external library docs → <code>docs-fetcher</code>, running or analyzing tests → <code>test-runner</code>, writing tests → <code>test-automator</code>, debugging → <code>debugger</code>, API docs → <code>api-documenter</code>, external-repo security audit → <code>security-auditor</code>.</p>
+</li>
+<li>
+<p><strong>Intent overrides the tool.</strong> The same file type routes differently by goal: running existing Python tests → <code>test-runner</code>; fixing Python production code after failures → <code>python-expert</code>; creating or changing Python tests → <code>test-automator</code>; editing Python production files → <code>python-expert</code> even via <code>sed</code>/<code>awk</code>; creating a PR → <code>github-expert</code>, never <code>git-expert</code>.</p>
+</li>
+<li>
+<p><strong>Fallback.</strong> If no specialist matches, the orchestrator uses <code>worker</code>, which has full tool access.</p>
+</li>
+</ol>
+<p>Two hard rules live in the same file:</p>
+<ul>
+<li><strong>Documentation is delegated, never fetched inline.</strong> The orchestrator must not fetch external library or framework docs itself — it spawns <code>docs-fetcher</code>, which tries <code>llms.txt</code> first and extracts only the relevant sections. Skip it when the task is standard-library only, or when the docs were already fetched earlier in the conversation.</li>
+<li><strong>Model overrides are explicit.</strong> When you ask for a specific model, the orchestrator calls <code>list_models</code> to discover valid <code>provider/model-id</code> pairs and passes <code>model</code> to <code>subagent</code>. An explicit <code>model</code> argument beats <code>agent_overrides</code>, agent frontmatter, and settings. In parallel task arrays, a per-task <code>model</code> wins over the top-level fallback; chain steps share the top-level <code>model</code>.</li>
+</ul>
+<p>A few agents are deliberately <strong>not</strong> in the chat routing table. The five <code>code-reviewer-*</code> agents and <code>test-runner</code> are dispatched by the review loop in <code>rules/20-code-review-loop.md</code> — all six run in parallel after every code change, and the first review is never skipped. The three <code>issue-reviewer-*</code> agents are dispatched together by the <code>/issue-review</code> prompt template. Use chat routing rules, prompt templates, or slash commands deliberately; see <a href="managing-custom-agents.html">Managing Custom Agents</a> for how the two styles differ.</p>
+<h2 id="language-specialists">Language specialists</h2>
+<p>Full <code>read, write, edit, bash</code> — they implement, not just advise.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Description</th>
+<th>Tools</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#python-expert"><code>python-expert</code></a></td>
+<td>Python code creation, modification, refactoring, and fixes. Specializes in idiomatic Python, async/await, testing, and modern Python development.</td>
+<td><code>read, write, edit, bash</code></td>
+</tr>
+<tr>
+<td><a href="#go-expert"><code>go-expert</code></a></td>
+<td>Go code creation, modification, refactoring, and fixes. Specializes in goroutines, channels, modules, testing, and high-performance Go.</td>
+<td><code>read, write, edit, bash</code></td>
+</tr>
+<tr>
+<td><a href="#ts-expert"><code>ts-expert</code></a></td>
+<td>TypeScript, JavaScript, and frontend framework development (React/Vue/Angular/CSS). UI design, component creation, and modern web technologies.</td>
+<td><code>read, write, edit, bash</code></td>
+</tr>
+<tr>
+<td><a href="#java-expert"><code>java-expert</code></a></td>
+<td>Java code creation, modification, refactoring, and fixes. Specializes in Spring Boot, Maven, Gradle, JUnit testing, and enterprise applications.</td>
+<td><code>read, write, edit, bash</code></td>
+</tr>
+<tr>
+<td><a href="#bash-expert"><code>bash-expert</code></a></td>
+<td>Bash and shell scripting creation, modification, refactoring, and fixes. Specializes in Bash, Zsh, POSIX shell, automation scripts, and system administration.</td>
+<td><code>read, write, edit, bash</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="infrastructure-and-ci">Infrastructure and CI</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Description</th>
+<th>Tools</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#docker-expert"><code>docker-expert</code></a></td>
+<td>Docker and container-related tasks including Dockerfile creation, container orchestration, image optimization, and containerization workflows.</td>
+<td><code>read, write, edit, bash</code></td>
+</tr>
+<tr>
+<td><a href="#kubernetes-expert"><code>kubernetes-expert</code></a></td>
+<td>Kubernetes-related tasks including cluster management, workload deployment, service mesh, and cloud-native orchestration. Specializes in K8s, OpenShift, Helm, and GitOps.</td>
+<td><code>read, write, edit, bash</code></td>
+</tr>
+<tr>
+<td><a href="#jenkins-expert"><code>jenkins-expert</code></a></td>
+<td>Jenkins-related code including CI/CD pipelines, Jenkinsfiles, Groovy scripts, and build automation.</td>
+<td><code>read, write, edit, bash</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="version-control-and-forges">Version control and forges</h2>
+<p>These two are split deliberately: <code>git-expert</code> is local repository work, <code>github-expert</code> is everything that talks to the GitHub API through <code>gh</code>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Description</th>
+<th>Tools</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#git-expert"><code>git-expert</code></a></td>
+<td>Local git operations including commits, branching, merging, rebasing, stash, and resolving git issues. Never uses --no-verify. For GitHub platform operations (PRs, issues, releases), use github-expert instead.</td>
+<td><code>read, bash</code></td>
+</tr>
+<tr>
+<td><a href="#github-expert"><code>github-expert</code></a></td>
+<td>GitHub platform operations including PRs, issues, releases, repos, and workflows. Uses the gh CLI for all GitHub API interactions.</td>
+<td><code>read, bash</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Both are read-only on the file system, but <code>bash</code> is enough to mutate branches and open PRs.</p>
+<h2 id="testing">Testing</h2>
+<p>Running tests and writing tests are separate agents. <code>test-runner</code> is analysis-only; a completed <code>test-runner</code> or <code>test-automator</code> subagent does not prove the test command passed — the exit status does.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Description</th>
+<th>Tools</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#test-runner"><code>test-runner</code></a></td>
+<td>Run tests and analyze failures. Returns detailed failure analysis without making fixes.</td>
+<td><code>bash, read</code></td>
+</tr>
+<tr>
+<td><a href="#test-automator"><code>test-automator</code></a></td>
+<td>Create comprehensive test suites with unit, integration, and e2e tests. Sets up CI pipelines, mocking strategies, and test data.</td>
+<td><code>read, write, edit, bash</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="documentation">Documentation</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Description</th>
+<th>Tools</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#api-documenter"><code>api-documenter</code></a></td>
+<td>Create OpenAPI/Swagger specs, generate SDKs, and write developer documentation. Handles versioning, examples, and interactive docs.</td>
+<td><code>read, write, edit, bash</code></td>
+</tr>
+<tr>
+<td><a href="#docs-fetcher"><code>docs-fetcher</code></a></td>
+<td>Fetches current documentation for external libraries and frameworks. Prioritizes llms.txt when available, falls back to web parsing.</td>
+<td><code>read, bash</code></td>
+</tr>
+<tr>
+<td><a href="#technical-documentation-writer"><code>technical-documentation-writer</code></a></td>
+<td>Comprehensive, user-focused technical documentation for projects, features, or systems.</td>
+<td><code>read, write, edit, bash</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><code>docs-fetcher</code> is the mandatory delegate for external docs. The other two write docs into your project.</p>
+<h2 id="security">Security</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Description</th>
+<th>Tools</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#security-auditor"><code>security-auditor</code></a></td>
+<td>Audits external repositories for security risks before adoption — checks for malicious code, data exfiltration, supply chain risks, and trust signals.</td>
+<td><code>read, bash</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Scoped to third-party repositories you are considering adopting, not to auditing your own code — that is <code>code-reviewer-security</code>'s job.</p>
+<h2 id="code-review">Code review</h2>
+<p>The five <code>code-reviewer-*</code> agents are dispatched by the review loop, not by chat routing. After any code change, all five plus <code>test-runner</code> run in parallel as async subagents, and the loop repeats until the state is clean (capped by <code>review_loop_max_cycles</code>). <code>reviewer</code> is the general-purpose single-agent review.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Description</th>
+<th>Tools</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#code-reviewer-quality"><code>code-reviewer-quality</code></a></td>
+<td>Code review focused on general code quality and maintainability. Reviews for clean code, proper abstractions, DRY, and readability.</td>
+<td><code>read, bash</code></td>
+</tr>
+<tr>
+<td><a href="#code-reviewer-guidelines"><code>code-reviewer-guidelines</code></a></td>
+<td>Code review focused on project guidelines and style adherence. Reviews for AGENTS.md compliance, naming conventions, and project patterns.</td>
+<td><code>read, bash</code></td>
+</tr>
+<tr>
+<td><a href="#code-reviewer-security"><code>code-reviewer-security</code></a></td>
+<td>Code review focused on bugs, logic errors, and security vulnerabilities. Reviews for correctness, edge cases, and potential exploits.</td>
+<td><code>read, bash</code></td>
+</tr>
+<tr>
+<td><a href="#code-reviewer-docs"><code>code-reviewer-docs</code></a></td>
+<td>Code review focused on documentation quality, completeness, accuracy, missing docs, stale content, AGENTS.md best practices, and cross-file consistency.</td>
+<td><code>read, bash</code></td>
+</tr>
+<tr>
+<td><a href="#code-reviewer-spec"><code>code-reviewer-spec</code></a></td>
+<td>Code review focused on alignment between code changes, PR description, and issue deliverables.</td>
+<td><code>read, bash</code></td>
+</tr>
+<tr>
+<td><a href="#reviewer"><code>reviewer</code></a></td>
+<td>General code review agent. Reviews code changes for quality, correctness, and style.</td>
+<td><code>read, bash</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>All six reviewers are read-only. Spec findings are never deduplicated against non-spec findings.</p>
+<h2 id="issue-review">Issue review</h2>
+<p>Spawned together by <code>/issue-review</code>, all read-only, all returning JSON findings that the template merges and deduplicates.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Description</th>
+<th>Tools</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#issue-reviewer-spec"><code>issue-reviewer-spec</code></a></td>
+<td>Issue review focused on spec completeness — problem statement, Done checklist, acceptance criteria, reproducibility, labels.</td>
+<td><code>read, bash</code></td>
+</tr>
+<tr>
+<td><a href="#issue-reviewer-feasibility"><code>issue-reviewer-feasibility</code></a></td>
+<td>Issue review focused on codebase feasibility — verifying referenced files/functions exist, approach viability, and identifying blockers.</td>
+<td><code>read, bash</code></td>
+</tr>
+<tr>
+<td><a href="#issue-reviewer-scope"><code>issue-reviewer-scope</code></a></td>
+<td>Issue review focused on scope hygiene — single concern, no scope creep, duplicate detection against open issues.</td>
+<td><code>read, bash</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="orchestration-and-general-work">Orchestration and general work</h2>
+<p><code>scout</code> → <code>planner</code> → <code>worker</code> is the chain behind <code>/implement</code>; <code>/scout-and-plan</code> stops after the first two. <code>worker</code> is also the routing-table fallback for anything with no specialist.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Description</th>
+<th>Tools</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#scout"><code>scout</code></a></td>
+<td>Fast codebase reconnaissance. Finds relevant files, functions, and dependencies for a given task.</td>
+<td><code>read, bash</code></td>
+</tr>
+<tr>
+<td><a href="#planner"><code>planner</code></a></td>
+<td>Creates detailed implementation plans from codebase context. Does not write code.</td>
+<td><code>read, bash</code></td>
+</tr>
+<tr>
+<td><a href="#worker"><code>worker</code></a></td>
+<td>General-purpose agent for tasks that don't match any specialist. Full capabilities.</td>
+<td><code>read, write, edit, bash</code></td>
+</tr>
+<tr>
+<td><a href="#debugger"><code>debugger</code></a></td>
+<td>Debugging specialist for errors, test failures, and unexpected behavior. Diagnoses only — does not modify files.</td>
+<td><code>read, bash</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><code>planner</code> and <code>debugger</code> deliberately cannot write. <code>worker</code> is the only one in this group that can.</p>
+<h2 id="tool-access-at-a-glance">Tool access at a glance</h2>
+<ul>
+<li><strong>Full access</strong> (<code>read, write, edit, bash</code>) — 12 agents: the five language specialists, <code>docker-expert</code>, <code>kubernetes-expert</code>, <code>jenkins-expert</code>, <code>api-documenter</code>, <code>technical-documentation-writer</code>, <code>test-automator</code>, <code>worker</code>.</li>
+<li><strong>Read-only</strong> (<code>read, bash</code>) — the other 17: every reviewer, every issue reviewer, <code>git-expert</code>, <code>github-expert</code>, <code>test-runner</code>, <code>debugger</code>, <code>planner</code>, <code>scout</code>, <code>docs-fetcher</code>, <code>security-auditor</code>.</li>
+</ul>
+<p>Restricting <code>tools:</code> is the first lever when a bundled specialist has more authority than you want; see <a href="managing-custom-agents.html">Managing Custom Agents</a>.</p>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="managing-custom-agents.html">Managing Custom Agents</a></li>
+<li><a href="built-in-workflows.html">Built-in Workflow Commands</a></li>
+<li><a href="automating-code-reviews.html">Automating Code Reviews</a></li>
+<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
+<li><a href="inter-agent-communication.html">Inter-Agent Communication</a></li>
+<li><a href="configuration.html">Configuration &amp; Settings</a></li>
+</ul>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="managing-custom-agents.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Managing Custom Agents</span>
+                </a>
+
+
+                <a href="rules-and-layers.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Rules and Layers</span>
+                </a>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#how-routing-works">How routing works</a></li>
+<li><a href="#language-specialists">Language specialists</a></li>
+<li><a href="#infrastructure-and-ci">Infrastructure and CI</a></li>
+<li><a href="#version-control-and-forges">Version control and forges</a></li>
+<li><a href="#testing">Testing</a></li>
+<li><a href="#documentation">Documentation</a></li>
+<li><a href="#security">Security</a></li>
+<li><a href="#code-review">Code review</a></li>
+<li><a href="#issue-review">Issue review</a></li>
+<li><a href="#orchestration-and-general-work">Orchestration and general work</a></li>
+<li><a href="#tool-access-at-a-glance">Tool access at a glance</a></li>
+<li><a href="#related-pages">Related Pages</a></li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            Built from <code>docs/*.md</code> by <code>scripts/generate_docs.py</code>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js?v=4faedb9938"></script>
+
+    <script src="assets/search.js?v=4faedb9938"></script>
+    <script src="assets/copy.js?v=4faedb9938"></script>
+    <script src="assets/callouts.js?v=4faedb9938"></script>
+    <script src="assets/scrollspy.js?v=4faedb9938"></script>
+    <script src="assets/codelabels.js?v=4faedb9938"></script>
+    <script src="assets/github.js?v=4faedb9938"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+</body>
+</html>

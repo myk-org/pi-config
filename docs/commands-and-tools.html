@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Commands and Tools Reference - pi-config</title>
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=4faedb9938">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Installation &amp; Quickstart
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Core Workflows</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link active" aria-current="page">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="automating-code-reviews.html"
+                           class="nav-link">
+                            Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="managing-custom-agents.html"
+                           class="nav-link">
+                            Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="using-the-web-dashboard.html"
+                           class="nav-link">
+                            Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="curating-project-memory.html"
+                           class="nav-link">
+                            Curating Project Memory
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Inter-Agent Communication Network
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="external-ai-agents.html"
+                           class="nav-link">
+                            External AI Agents &amp; CLI
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Discord Bot Notifications
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            ACPX Provider Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-docsite.html"
+                           class="nav-link">
+                            pi-docsite
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk_pi_tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="commands-and-tools-reference">Commands and Tools Reference</h1>
+<p>Every user-facing slash command and every tool that pi-config registers, in one place. Each entry lists the exact name as it appears in source, what it does, its arguments, and an example invocation.</p>
+<p>Commands and tools are different things: a <strong>command</strong> is something you type (<code>/cron</code>), while a <strong>tool</strong> is something the model calls. Both come from the extensions in <code>extensions/</code>, so anything missing here is missing from the product too.</p>
+<h2 id="at-a-glance">At a glance</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Count</th>
+<th>Where they come from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Slash commands</td>
+<td>17</td>
+<td><code>registerCommand(...)</code> across <code>extensions/</code></td>
+</tr>
+<tr>
+<td>Always-registered tools</td>
+<td>38</td>
+<td><code>registerTool(...)</code> across <code>extensions/</code></td>
+</tr>
+<tr>
+<td>Opt-in tools</td>
+<td>7</td>
+<td><code>graft.ts</code>, only when <code>graft_enable</code> is on (default: off)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Counts verified against source. Two names are registered in more than one place — see <a href="#duplicate-registrations">Duplicate registrations</a>.</p>
+<h2 id="slash-commands">Slash commands</h2>
+<h3 id="async-status">/async-status</h3>
+<p>Full-screen overlay listing running and queued async agents, with live output per agent.</p>
+<ul>
+<li><strong>Arguments:</strong> none</li>
+<li><strong>Keys in the overlay:</strong> <code>↑↓</code>/<code>jk</code> select, <code>Enter</code> view output, <code>x</code> kill, <code>Esc</code> close</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/async-status
+</code></pre></div>
+
+<h3 id="async-kill">/async-kill</h3>
+<p>Kill async agent(s) by name, by id prefix, or all at once. With no argument it opens the same overlay as <code>/async-status</code> in kill mode.</p>
+<ul>
+<li><strong>Arguments:</strong> <code>[&lt;name&gt; | &lt;id-prefix&gt; | all]</code> — optional</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/async-kill all
+/async-kill code-review
+</code></pre></div>
+
+<h3 id="btw">/btw</h3>
+<p>Ask a quick side question that is answered from the current conversation without adding the answer to the main chat history. Requires a selected model (<code>/model</code>) and a TUI session.</p>
+<ul>
+<li><strong>Arguments:</strong> <code>&lt;question&gt;</code> — required; missing argument prints <code>Usage: /btw &lt;question&gt;</code></li>
+</ul>
+<div class="highlight"><pre><span></span><code>/btw what name did we give that retry helper?
+</code></pre></div>
+
+<p>More detail: <a href="btw-command.html">Asking Side Questions with /btw</a>.</p>
+<h3 id="coms">/coms</h3>
+<p>Start, stop, or inspect P2P inter-agent communication. Coms is off by default and is activated explicitly with <code>/coms start</code>; all <code>coms_*</code> tools return "coms not active" until then.</p>
+<ul>
+<li><strong>Arguments:</strong> <code>start | stop | status</code> (no argument is treated as an error with a usage hint)</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/coms start
+/coms status
+/coms stop
+</code></pre></div>
+
+<p>See <a href="inter-agent-communication.html">Inter-Agent Communication</a> for the peer protocol and message semantics.</p>
+<h3 id="coms-queue">/coms-queue</h3>
+<p>Overlay of your queued inbound messages on a peer. Selecting a message shows the full prompt.</p>
+<ul>
+<li><strong>Arguments:</strong> none</li>
+<li><strong>Keys in the overlay:</strong> <code>↑↓</code>/<code>jk</code> select, <code>Enter</code> view, <code>x</code> kill, <code>Esc</code> close</li>
+<li><strong>Requires active coms</strong> — otherwise it notifies <code>📡 coms not active — no queue. Run /coms start first.</code></li>
+</ul>
+<div class="highlight"><pre><span></span><code>/coms-queue
+</code></pre></div>
+
+<h3 id="cron">/cron</h3>
+<p>Schedule, list, and remove cron tasks. <code>add</code> is not handled directly: anything that is not a listing or removal verb is forwarded to the model as a <code>cron_manage</code> request, so you describe the schedule in natural language.</p>
+<ul>
+<li><strong>Arguments:</strong> <code>list | list-all | remove &lt;id&gt;</code> (also <code>rm</code> / <code>delete</code>), plus the <code>--persist</code> flag</li>
+<li><strong>Flags:</strong> <code>--persist</code> scope the task to the project (<code>.pi/cron/crons.json</code>) instead of the session. <code>--scope</code> and <code>--project</code> are rejected with an error pointing at <code>--persist</code>.</li>
+<li><strong>Listing:</strong> <code>list</code> opens a cron status overlay; <code>list-all</code> shows every scope instead of just project-scoped tasks</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/cron list
+/cron list-all
+/cron --persist every weekday at 09:00, summarize yesterday's PR comments
+/cron remove 3f2a1c
+</code></pre></div>
+
+<p>More detail: <a href="async-agents-and-cron.html">Async Agents and Cron</a>.</p>
+<h3 id="dream">/dream</h3>
+<p>Run memory consolidation (dreaming) now, in the background, non-blocking. If a dream is already running you get a warning instead of a second run.</p>
+<ul>
+<li><strong>Arguments:</strong> none</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/dream
+</code></pre></div>
+
+<p>More detail: <a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a>.</p>
+<h3 id="dream-auto">/dream-auto</h3>
+<p>Toggle automatic memory dreaming, which otherwise runs every 3 hours and at session end.</p>
+<ul>
+<li><strong>Arguments:</strong> <code>on | off</code> (no argument reports the current state)</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/dream-auto on
+/dream-auto off
+</code></pre></div>
+
+<h3 id="external-ai-models-refresh">/external-ai-models-refresh</h3>
+<p>Clear the cached model lists and re-fetch models for the AI CLI providers (cursor, claude, gemini).</p>
+<ul>
+<li><strong>Arguments:</strong> none</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/external-ai-models-refresh
+</code></pre></div>
+
+<h3 id="nvim-changed-files">/nvim-changed-files</h3>
+<p>Open the git-changed files in Neovim's quickfix list. Registered only when Pi is running inside Neovim.</p>
+<ul>
+<li><strong>Arguments:</strong> none</li>
+<li><strong>Note:</strong> on <code>main</code>/<code>master</code> it diffs against <code>HEAD</code>; on any other branch it diffs against <code>origin/main</code> (or <code>origin/master</code>) plus the working tree.</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/nvim-changed-files
+</code></pre></div>
+
+<p>More detail: <a href="neovim-integration.html">Neovim Integration</a>.</p>
+<h3 id="pi-config-settings">/pi-config-settings</h3>
+<p>Full-screen interactive settings editor: category tabs, per-key editing, project/global scope, and delete.</p>
+<ul>
+<li><strong>Arguments:</strong> <code>[project | global]</code> — optional, selects the initial scope; <code>Tab</code> also toggles scope inside the TUI</li>
+<li><strong>Keys in the TUI:</strong> <code>←→</code> category, <code>Tab</code> scope, <code>↑↓</code> navigate, <code>Enter</code> edit, <code>Del</code> remove, <code>Esc</code> close</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/pi-config-settings
+/pi-config-settings global
+</code></pre></div>
+
+<p>More detail: <a href="configuration.html">Configuration &amp; Settings</a>.</p>
+<h3 id="pidash">/pidash</h3>
+<p>Manage the web dashboard server.</p>
+<ul>
+<li><strong>Arguments:</strong> <code>start | stop | restart | status</code> — no argument is equivalent to <code>status</code></li>
+<li><strong>Note:</strong> when the dashboard is disabled in settings, the command registers a stub that only notifies; it is a no-op elsewhere.</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/pidash start
+/pidash status
+</code></pre></div>
+
+<p>More detail: <a href="using-the-web-dashboard.html">Using the Web Dashboard</a>.</p>
+<h3 id="pidiff">/pidiff</h3>
+<p>Manage the diff-viewer server (the <code>8-diff</code> status widget).</p>
+<ul>
+<li><strong>Arguments:</strong> <code>start | stop | restart | status</code></li>
+</ul>
+<div class="highlight"><pre><span></span><code>/pidiff restart
+</code></pre></div>
+
+<h3 id="repair">/repair</h3>
+<p>Repair the current session file by fixing orphaned tool calls — assistant <code>toolCall</code> entries on the active branch that never received a matching <code>toolResult</code>. Those orphans make the provider reject the next request with an API error.</p>
+<ul>
+<li><strong>Arguments:</strong> none</li>
+<li><strong>What it does:</strong></li>
+<li>Reads the session file from <code>ctx.sessionManager.getSessionFile()</code></li>
+<li>Walks the <strong>active branch only</strong> (leaf back to root via <code>parentId</code>), ignoring tool results that live on dead branches</li>
+<li>For each orphaned call, inserts a synthetic <code>toolResult</code> entry with the text <code>Error: session interrupted — tool call did not complete</code> and <code>isError: true</code></li>
+<li>Re-parents the next entry on the branch to the last synthetic result, preserving the chain</li>
+<li>
+<p>Rewrites the session file</p>
+</li>
+<li>
+<p><strong>Output:</strong> a per-tool list of repaired calls, or <code>Session is clean — no orphaned tool calls found</code> when there is nothing to fix. Warns <code>No session file found</code> or <code>Session file is empty</code> when applicable.</p>
+</li>
+<li><strong>Note:</strong> edits the on-disk session file in place; run it as soon as you see a malformed-request error.</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/repair
+</code></pre></div>
+
+<h3 id="review-status">/review-status</h3>
+<p>Show the current review-loop enforcement state: enforcement on/off, status, cycle number, findings, pending reviewers, whether the diff was edited during the cycle, and test status.</p>
+<ul>
+<li><strong>Arguments:</strong> <code>[&lt;worktree-path&gt;]</code> — optional, checks a worktree instead of the main repo</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/review-status
+/review-status .worktrees/issue-42
+</code></pre></div>
+
+<p>More detail: <a href="automating-code-reviews.html">Automating Code Reviews</a>.</p>
+<h3 id="status">/status</h3>
+<p>Unified session status in one notification: async agents, cron tasks, git branch and dirty state, container flag, and how many context files, skills, tools, and guidelines are loaded.</p>
+<ul>
+<li><strong>Arguments:</strong> none</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/status
+</code></pre></div>
+
+<h3 id="tasks">/tasks</h3>
+<p>Interactive task manager for the current session's task list.</p>
+<ul>
+<li><strong>Arguments:</strong> none — the command opens a menu</li>
+<li><strong>Menu:</strong> <code>View all tasks (N)</code>, <code>Create task</code>, <code>Clear completed (N)</code> (only when completed tasks exist), <code>Clear all (N)</code> (only when tasks exist)</li>
+<li><strong>Task list view:</strong> <code>✔</code> completed, <code>◼</code> in progress, <code>◻</code> pending; select a task to open its detail actions: <code>▸ Start (in_progress)</code>, <code>✓ Complete</code>, <code>✗ Delete</code></li>
+<li><strong>Note:</strong> when the task scope is <code>session</code> and the list becomes empty, the backing file is deleted.</li>
+</ul>
+<div class="highlight"><pre><span></span><code>/tasks
+</code></pre></div>
+
+<p>More detail: <a href="daemon-and-websockets.html">Daemon and WebSockets</a> for how task state is persisted and shared.</p>
+<h2 id="tools">Tools</h2>
+<h3 id="coms_-14-tools">coms_* (14 tools)</h3>
+<p>All require active coms (<code>/coms start</code>); while inactive every one of them returns the same "coms not active" text. See <a href="inter-agent-communication.html">Inter-Agent Communication</a> for the protocol, peer discovery, and queue semantics.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+<th>Key parameters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>coms_list</code></td>
+<td>List discoverable peer agents with model and live context-window usage; no network ping needed</td>
+<td><code>project</code> (name or <code>"*"</code> for all, defaults to caller's project), <code>include_explicit</code> (include <code>--explicit</code> agents, default false)</td>
+</tr>
+<tr>
+<td><code>coms_send</code></td>
+<td>Send a prompt to a peer; returns a <code>msg_id</code> on ack and the reply auto-delivers as a followUp</td>
+<td><code>target</code> (peer name or session_id), <code>prompt</code>, <code>conversation_id</code>, <code>response_schema</code> (JSON Schema), <code>tasks[]</code> (<code>subject</code>, <code>description</code>) to create on the peer. Rejected: <code>clearPrevious</code></td>
+</tr>
+<tr>
+<td><code>coms_get</code></td>
+<td>Non-blocking poll of a pending <code>coms_send</code> reply: <code>pending</code>, <code>complete</code>, or <code>error</code></td>
+<td><code>msg_id</code> (from <code>coms_send</code>)</td>
+</tr>
+<tr>
+<td><code>coms_queue_inspect</code></td>
+<td>Preview your queued inbound messages on a peer before any destructive recovery; shows ids, sender, age, FIFO position, delivery state — never message bodies</td>
+<td><code>target</code></td>
+</tr>
+<tr>
+<td><code>coms_queue_clear</code></td>
+<td>Irreversibly clear exactly the messages in a given inspect preview; ownership enforced by the peer</td>
+<td><code>target</code>, <code>preview_id</code> (from <code>coms_queue_inspect</code>)</td>
+</tr>
+<tr>
+<td><code>coms_queue_delete</code></td>
+<td>Irreversibly delete one specific queued message of yours</td>
+<td><code>target</code>, <code>msg_id</code>, <code>preview_id</code></td>
+</tr>
+<tr>
+<td><code>coms_queue_edit</code></td>
+<td>Replace the content of one of your pending queued messages</td>
+<td><code>target</code>, <code>msg_id</code>, <code>new_content</code></td>
+</tr>
+<tr>
+<td><code>coms_queue_prioritize</code></td>
+<td>Move one of your pending messages to the front of the peer's queue</td>
+<td><code>target</code>, <code>msg_id</code></td>
+</tr>
+<tr>
+<td><code>coms_tasks_create</code></td>
+<td>Create several tasks on a peer's task list, auto-add a "Report completion to sender" task blocked by all of them, and message the peer to start work</td>
+<td><code>target</code>, <code>tasks[]</code> (<code>subject</code>, <code>description</code>, at least one)</td>
+</tr>
+<tr>
+<td><code>coms_task_list</code></td>
+<td>List a peer's tasks without sending it a message</td>
+<td><code>target</code></td>
+</tr>
+<tr>
+<td><code>coms_task_get</code></td>
+<td>Fetch one peer task with status, owner, description, and blocker state</td>
+<td><code>target</code>, <code>task_id</code></td>
+</tr>
+<tr>
+<td><code>coms_task_update</code></td>
+<td>Update a peer task you created (<code>createdBy</code> must match)</td>
+<td><code>target</code>, <code>task_id</code>, <code>status</code> (<code>pending</code>/<code>in_progress</code>/<code>completed</code>/<code>deleted</code>), <code>subject</code>, <code>description</code>, <code>activeForm</code>, <code>owner</code>, <code>metadata</code> (merge; <code>null</code> deletes), <code>addBlocks[]</code>, <code>addBlockedBy[]</code></td>
+</tr>
+<tr>
+<td><code>coms_task_delete</code></td>
+<td>Delete a peer task you created; refused while the task is <code>in_progress</code></td>
+<td><code>target</code>, <code>task_id</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><code>coms_send</code>'s description carries an explicit anti-loop warning: do not call it to reply to an inbound <code>[from &lt;peer&gt;]</code> message — the extension auto-captures your final assistant text as the reply.</p>
+<h3 id="memory_-8-tools">memory_* (8 tools)</h3>
+<p>Project memory, backed by topic files under <code>.pi/memory/topics/</code>. See <a href="memory-architecture.html">Memory Architecture</a> for the layering and scoring, <a href="curating-project-memory.html">Curating Project Memory</a> for hands-on curation, and <a href="safety-enforcements.html">Safety Enforcements</a> for the enforcement fields.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+<th>Key parameters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>memory_search</code></td>
+<td>Keyword/vector search over project memories, with scores and categories</td>
+<td><code>query</code>, <code>category</code> (optional filter: <code>preference</code>, <code>lesson</code>, <code>pattern</code>, <code>decision</code>, <code>done</code>, <code>mistake</code>)</td>
+</tr>
+<tr>
+<td><code>memory_reflect</code></td>
+<td>Answer a question from long-term memory as a coherent summary instead of raw entries</td>
+<td><code>query</code></td>
+</tr>
+<tr>
+<td><code>memory_topics</code></td>
+<td>List topic files with entry counts, hotness, and token estimates</td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>memory_add</code></td>
+<td>Add a new entry; keep it to one specific actionable line</td>
+<td><code>text</code>, <code>category</code>, <code>pinned</code> (never decays; only on explicit "remember this"), <code>trigger</code> + <code>action</code> + <code>verifier</code> (turn a memory into a code-enforced rule)</td>
+</tr>
+<tr>
+<td><code>memory_edit</code></td>
+<td>Update, invalidate (supersede), or annotate an entry in place — preserves scoring history, unlike remove+add</td>
+<td><code>op</code> (<code>update</code> or <code>invalidate</code>), <code>text</code>, <code>category</code>, <code>newText</code>, <code>supersededBy</code>, <code>sourceSession</code>, <code>derivedFrom</code>, <code>informs[]</code></td>
+</tr>
+<tr>
+<td><code>memory_remove</code></td>
+<td>Delete an entry that is wrong, outdated, or superseded</td>
+<td><code>text</code>, <code>category</code></td>
+</tr>
+<tr>
+<td><code>memory_reinforce</code></td>
+<td>Bump evidence and last-reinforced time on an existing entry, raising its stability score; may trigger promotion</td>
+<td><code>entryText</code> (exact text without category prefix), <code>category</code></td>
+</tr>
+<tr>
+<td><code>memory_consolidate</code></td>
+<td>Produce a consolidation report: patterns, contradictions, merge candidates, and skills derived from recurring workflows</td>
+<td>none</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="task-7-tools">Task* (7 tools)</h3>
+<p>The session task list behind <code>/tasks</code> and the task widget. Statuses are <code>pending</code>, <code>in_progress</code>, <code>completed</code>, <code>deleted</code> (deleted is a status, not a hard delete, except through <code>TaskBulkDelete</code>).</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+<th>Key parameters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TaskCreate</code></td>
+<td>Create one task</td>
+<td><code>subject</code>, <code>description</code>, <code>activeForm</code> (spinner text), <code>agentType</code> (descriptive metadata only — it does not dispatch an agent), <code>metadata</code></td>
+</tr>
+<tr>
+<td><code>TaskList</code></td>
+<td>List all tasks as <code>id</code>, <code>subject</code>, <code>status</code>, <code>owner</code>, <code>blockedBy</code></td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>TaskGet</code></td>
+<td>Full task detail including <code>blocks</code> and <code>blockedBy</code></td>
+<td><code>taskId</code></td>
+</tr>
+<tr>
+<td><code>TaskUpdate</code></td>
+<td>Update a task; <code>in_progress</code> sets it as the widget's active task</td>
+<td><code>taskId</code>, <code>status</code>, <code>subject</code>, <code>description</code>, <code>activeForm</code>, <code>owner</code>, <code>metadata</code> (merge, <code>null</code> deletes), <code>addBlocks[]</code>, <code>addBlockedBy[]</code></td>
+</tr>
+<tr>
+<td><code>TaskBulkCreate</code></td>
+<td>Create several tasks in one call</td>
+<td><code>tasks[]</code> (<code>subject</code>, <code>description</code>, <code>blockedBy[]</code>)</td>
+</tr>
+<tr>
+<td><code>TaskBulkUpdate</code></td>
+<td>Update several tasks in one call</td>
+<td><code>updates[]</code> (<code>taskId</code>, <code>status</code>, <code>subject</code>, <code>description</code>, <code>addBlockedBy[]</code>, <code>addBlocks[]</code>)</td>
+</tr>
+<tr>
+<td><code>TaskBulkDelete</code></td>
+<td>Hard-delete several tasks by id</td>
+<td><code>taskIds[]</code></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="core-tools-9-tools">Core tools (9 tools)</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+<th>Key parameters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cron_manage</code></td>
+<td>Manage scheduled tasks; <code>persist=true</code> keeps a task across Pi sessions in the project</td>
+<td><code>action</code> (<code>add</code>, <code>list</code>, <code>remove</code>), <code>persist</code>, <code>description</code>, <code>task</code>, <code>interval_seconds</code> (min 10), <code>at_hour</code> (0–23), <code>at_minute</code> (0–59, requires <code>at_hour</code>), <code>id</code></td>
+</tr>
+<tr>
+<td><code>subagent</code></td>
+<td>Delegate to a subagent with isolated context; modes are single (<code>agent</code>+<code>task</code>), parallel (<code>tasks[]</code>), and chain (<code>chain[]</code> with a <code>{previous}</code> placeholder)</td>
+<td><code>agent</code>, <code>task</code>, <code>tasks[]</code>, <code>chain[]</code>, <code>agentScope</code>, <code>confirmProjectAgents</code>, <code>cwd</code>, <code>estimatedSeconds</code> (required for sync; <code>&gt;= 30</code> forces async), <code>async</code>, <code>fireAndForget</code>, <code>name</code>, <code>taskId</code> (<code>-1</code> if unlinked), <code>asyncKill</code>, <code>persistSession</code>, <code>model</code> (<code>provider/model-id</code>)</td>
+</tr>
+<tr>
+<td><code>session_search</code></td>
+<td>Search past conversation summaries by keyword — zero LLM cost</td>
+<td><code>query</code>, <code>limit</code> (default 10)</td>
+</tr>
+<tr>
+<td><code>review_status</code></td>
+<td>Read the review-loop enforcement state before committing</td>
+<td><code>worktree_path</code> (optional)</td>
+</tr>
+<tr>
+<td><code>ask_user</code></td>
+<td>Ask the user a question with selectable options; returns the choice or free text. Its prompt guidelines require it instead of plain-text questions</td>
+<td><code>question</code>, <code>options[]</code> (optional)</td>
+</tr>
+<tr>
+<td><code>list_models</code></td>
+<td>List available provider/model pairs for <code>subagent(model=...)</code>; filters out <code>acpx-*</code> providers, which cannot run in subagent children</td>
+<td><code>provider</code> (optional filter)</td>
+</tr>
+<tr>
+<td><code>generate_image</code></td>
+<td>Generate an image from a structured description via Gemini; returns the file path. Needs <code>image_model</code> in <code>pi-config-settings.json</code> (or <code>PI_IMAGE_MODEL</code>) plus <code>GEMINI_API_KEY</code>/<code>GOOGLE_API_KEY</code></td>
+<td><code>subject</code> (required), <code>action</code>, <code>scene</code>, <code>composition</code>, <code>lighting</code>, <code>style</code>, <code>text</code>, <code>aspect_ratio</code> (<code>1:1</code>, <code>3:4</code>, <code>4:3</code>, <code>9:16</code>, <code>16:9</code>)</td>
+</tr>
+</tbody>
+</table></div>
+<p>More detail: <a href="managing-custom-agents.html">Managing Custom Agents</a> for <code>subagent</code>, <a href="automating-code-reviews.html">Automating Code Reviews</a> for <code>review_status</code>, <a href="image-generation.html">Image Generation</a> for <code>generate_image</code>.</p>
+<h3 id="graft_-7-tools-opt-in">graft_* (7 tools, opt-in)</h3>
+<p>Registered by <code>extensions/orchestrator/graft.ts</code> only when the <code>graft_enable</code> setting is on, and only in a trusted session. The default for <code>graft_enable</code> is <strong>false</strong>, so these tools are absent in a default install. <code>graft_refresh</code> and <code>graft_blast_radius</code> are additionally omitted in subagent children.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+<th>Key parameters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>graft_find_code</code></td>
+<td>Find compact ranked code references in the local Graft graph</td>
+<td><code>query</code>, <code>limit</code> (1–20), <code>path</code> (project-relative)</td>
+</tr>
+<tr>
+<td><code>graft_find_all</code></td>
+<td>Search indexed project files</td>
+<td><code>pattern</code>, <code>path</code>, <code>fixed</code> (literal, not regex)</td>
+</tr>
+<tr>
+<td><code>graft_file_api</code></td>
+<td>Signatures-only API view of a file</td>
+<td><code>path</code></td>
+</tr>
+<tr>
+<td><code>graft_trace_calls</code></td>
+<td>Trace callers or callees of a symbol</td>
+<td><code>symbol</code>, <code>direction</code> (<code>in</code>/<code>out</code>), <code>depth</code> (1–10)</td>
+</tr>
+<tr>
+<td><code>graft_repo_map</code></td>
+<td>Compact graph-based repository map</td>
+<td><code>max_dirs</code> (1–30)</td>
+</tr>
+<tr>
+<td><code>graft_refresh</code></td>
+<td>Rebuild the local Graft graph</td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>graft_blast_radius</code></td>
+<td>Dependencies affected by the local diff</td>
+<td><code>depth</code> (1–10)</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="duplicate-registrations">Duplicate registrations</h2>
+<p>Three names are registered twice in source. The second registration is either a stub or is swallowed, so there is no user-visible conflict — but it is worth knowing if you grep the code.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Registrations</th>
+<th>Which one you get</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/coms</code></td>
+<td><code>coms-wrapper.ts</code> (<code>start \| stop \| status</code>) and <code>coms-p2p.ts</code> (force-refresh the pool widget, <code>--all</code> / <code>--project &lt;name&gt;</code>)</td>
+<td>The wrapper's version. <code>coms-wrapper</code> loads <code>coms-p2p</code> through a proxy that explicitly swallows the upstream <code>/coms</code> registration ("Upstream /coms is owned by the wrapper"). The widget-refresh handler and its <code>--all</code> / <code>--project</code> flags are therefore dead in the default wrapper setup.</td>
+</tr>
+<tr>
+<td><code>/pidash</code></td>
+<td><code>pidash.ts</code> twice</td>
+<td>Two mutually exclusive branches: one registered when the dashboard is disabled (notify-only stub), one when it is enabled. Exactly one is live.</td>
+</tr>
+<tr>
+<td><code>/pidiff</code></td>
+<td><code>pidiff.ts</code> twice</td>
+<td>Same pattern as <code>/pidash</code>: disabled-branch stub, or the full server management command.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="verifying-this-page">Verifying this page</h2>
+<p>The lists here were produced from source, not from documentation:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Slash commands</span>
+grep<span class="w"> </span>-rn<span class="w"> </span><span class="s1">'registerCommand("'</span><span class="w"> </span>extensions/<span class="w"> </span>--include<span class="o">=</span>*.ts
+
+<span class="c1"># Tools — note graft.ts registers its tools through a tool() helper loop</span>
+grep<span class="w"> </span>-rn<span class="w"> </span><span class="s1">'registerTool'</span><span class="w"> </span>extensions/<span class="w"> </span>--include<span class="o">=</span>*.ts
+</code></pre></div>
+
+<p>When you add a command or a tool, add it to this page in the same change.</p>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="built-in-workflows.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Built-in Workflow Commands</span>
+                </a>
+
+
+                <a href="automating-code-reviews.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Automating Code Reviews</span>
+                </a>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#at-a-glance">At a glance</a></li>
+<li><a href="#slash-commands">Slash commands</a><ul>
+<li><a href="#async-status">/async-status</a></li>
+<li><a href="#async-kill">/async-kill</a></li>
+<li><a href="#btw">/btw</a></li>
+<li><a href="#coms">/coms</a></li>
+<li><a href="#coms-queue">/coms-queue</a></li>
+<li><a href="#cron">/cron</a></li>
+<li><a href="#dream">/dream</a></li>
+<li><a href="#dream-auto">/dream-auto</a></li>
+<li><a href="#external-ai-models-refresh">/external-ai-models-refresh</a></li>
+<li><a href="#nvim-changed-files">/nvim-changed-files</a></li>
+<li><a href="#pi-config-settings">/pi-config-settings</a></li>
+<li><a href="#pidash">/pidash</a></li>
+<li><a href="#pidiff">/pidiff</a></li>
+<li><a href="#repair">/repair</a></li>
+<li><a href="#review-status">/review-status</a></li>
+<li><a href="#status">/status</a></li>
+<li><a href="#tasks">/tasks</a></li>
+</ul>
+</li>
+<li><a href="#tools">Tools</a><ul>
+<li><a href="#coms_-14-tools">coms_* (14 tools)</a></li>
+<li><a href="#memory_-8-tools">memory_* (8 tools)</a></li>
+<li><a href="#task-7-tools">Task* (7 tools)</a></li>
+<li><a href="#core-tools-9-tools">Core tools (9 tools)</a></li>
+<li><a href="#graft_-7-tools-opt-in">graft_* (7 tools, opt-in)</a></li>
+</ul>
+</li>
+<li><a href="#duplicate-registrations">Duplicate registrations</a></li>
+<li><a href="#verifying-this-page">Verifying this page</a></li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            Built from <code>docs/*.md</code> by <code>scripts/generate_docs.py</code>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js?v=4faedb9938"></script>
+
+    <script src="assets/search.js?v=4faedb9938"></script>
+    <script src="assets/copy.js?v=4faedb9938"></script>
+    <script src="assets/callouts.js?v=4faedb9938"></script>
+    <script src="assets/scrollspy.js?v=4faedb9938"></script>
+    <script src="assets/codelabels.js?v=4faedb9938"></script>
+    <script src="assets/github.js?v=4faedb9938"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+</body>
+</html>

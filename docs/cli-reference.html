@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>myk_pi_tools CLI Reference - pi-config</title>
     <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
-    <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href="assets/style.css?v=4faedb9938">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -57,6 +57,13 @@
                     </li>
 
                     <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
@@ -74,6 +81,20 @@
                         <a href="managing-custom-agents.html"
                            class="nav-link">
                             Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
                         </a>
                     </li>
 
@@ -190,16 +211,23 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="mcp-servers.html"
+                        <a href="pi-sidecar.html"
                            class="nav-link">
-                            MCP Servers
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
                     <li>
-                        <a href="pi-sidecar.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            Pi Sidecar HTTP API
+                            pi-docsite
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
                         </a>
                     </li>
 
@@ -252,13 +280,8 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                <a href="" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
                     ⚡ pi<span class="brand-accent">-config</span>
-                </a>
-
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
 
                 <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
@@ -291,7 +314,7 @@
 <h2 id="review-database-myk-pi-tools-db">Review Database (<code>myk-pi-tools db</code>)</h2>
 <h3 id="db-stats"><code>db stats</code></h3>
 <p>Aggregates review comment counts from the reviews database.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -326,7 +349,7 @@
 <td>Path to the SQLite database file.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="c1"># Default grouping (by source)</span>
 myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats
 
@@ -343,7 +366,7 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats<span class="
 </ul>
 <h3 id="db-patterns"><code>db patterns</code></h3>
 <p>Finds recurring dismissed comment patterns grouped by file path and body similarity.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -372,7 +395,7 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats<span class="
 <td>Path to the SQLite database file.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="c1"># Show recurring dismissed patterns with at least 3 occurrences</span>
 myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns<span class="w"> </span>--min<span class="w"> </span><span class="m">3</span>
 </code></pre></div>
@@ -384,7 +407,7 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns<span clas
 </ul>
 <h3 id="db-dismissed"><code>db dismissed</code></h3>
 <p>Returns stored dismissed comments for a repository.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -419,7 +442,7 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns<span clas
 <td>Path to the SQLite database file.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>db<span class="w"> </span>dismissed<span class="w"> </span>--owner<span class="w"> </span>myk-org<span class="w"> </span>--repo<span class="w"> </span>pi-config<span class="w"> </span>--json
 </code></pre></div>
 
@@ -431,7 +454,7 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns<span clas
 </ul>
 <h3 id="db-query"><code>db query</code></h3>
 <p>Runs a read-only SQL query against the reviews database.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter / Option</th>
@@ -460,7 +483,7 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns<span clas
 <td>Path to the SQLite database file.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Warning:</strong> Only <code>SELECT</code> and <code>WITH</code> (CTE) queries are accepted. Multiple statements and write-oriented keywords are rejected.</p>
 </blockquote>
@@ -479,7 +502,7 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="
 </ul>
 <h3 id="db-find-similar"><code>db find-similar</code></h3>
 <p>Reads a candidate comment from stdin and finds a previously dismissed comment with the same path and similar body text.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -520,7 +543,7 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="
 <td>Path to the SQLite database file.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="nb">echo</span><span class="w"> </span><span class="s1">'{"path":"src/main.py","body":"Add error handling for edge cases"}'</span><span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>myk-pi-tools<span class="w"> </span>db<span class="w"> </span>find-similar<span class="w"> </span>--owner<span class="w"> </span>myk-org<span class="w"> </span>--repo<span class="w"> </span>pi-config<span class="w"> </span>--json
 </code></pre></div>
@@ -534,7 +557,7 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="
 <h2 id="review-handling-myk-pi-tools-reviews">Review Handling (<code>myk-pi-tools reviews</code>)</h2>
 <h3 id="reviews-fetch"><code>reviews fetch</code></h3>
 <p>Fetches review threads for the current PR and writes a normalized review JSON file.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter / Option</th>
@@ -569,7 +592,7 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="
 <td>Directory for the output JSON file.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>fetch<span class="w"> </span>--output-dir<span class="w"> </span>.pi/tmp/
 </code></pre></div>
 
@@ -581,7 +604,7 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="
 </ul>
 <h3 id="reviews-poll"><code>reviews poll</code></h3>
 <p>Polls for new review activity until actionable feedback or approval is detected.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter / Option</th>
@@ -610,7 +633,7 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="
 <td>Directory for the review JSON file.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="c1"># Poll CodeRabbit</span>
 myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span class="w"> </span>--output-dir<span class="w"> </span>.pi/tmp/
 
@@ -630,7 +653,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 </ul>
 <h3 id="reviews-post"><code>reviews post</code></h3>
 <p>Posts replies and resolves review threads from a processed reviews JSON file.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -647,7 +670,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 <td>Path to the processed review JSON file.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>post<span class="w"> </span>.pi/tmp/pr-42-reviews.json
 </code></pre></div>
 
@@ -663,7 +686,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 </blockquote>
 <h3 id="reviews-pending-fetch"><code>reviews pending-fetch</code></h3>
 <p>Fetches the authenticated user’s pending PR review and writes a pending-review JSON file.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter / Option</th>
@@ -686,7 +709,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 <td>Directory for the output JSON file.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-fetch<span class="w"> </span><span class="s2">"https://github.com/owner/repo/pull/123"</span><span class="w"> </span>--output-dir<span class="w"> </span>.pi/tmp/
 </code></pre></div>
 
@@ -698,7 +721,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 </ul>
 <h3 id="reviews-pending-update"><code>reviews pending-update</code></h3>
 <p>Updates accepted pending-review comment bodies, and optionally submits the review.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter / Option</th>
@@ -721,7 +744,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 <td>Submit the review after updating comments. Submission only occurs if the JSON metadata also includes a valid <code>submit_action</code>.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-update<span class="w"> </span>.pi/tmp/pr-owner-repo-123-pending-review.json<span class="w"> </span>--submit
 </code></pre></div>
 
@@ -734,7 +757,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 </ul>
 <h3 id="reviews-status"><code>reviews status</code></h3>
 <p>Shows stored review status for a PR and generates an HTML report.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -757,7 +780,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 <td>Directory for the generated HTML report.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>status<span class="w"> </span>--output-dir<span class="w"> </span>.pi/reports/
 
 myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>status<span class="w"> </span>--pr<span class="w"> </span><span class="m">42</span><span class="w"> </span>--output-dir<span class="w"> </span>.pi/reports/
@@ -774,7 +797,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>status<span c
 </blockquote>
 <h3 id="reviews-ask-qodo"><code>reviews ask-qodo</code></h3>
 <p>Posts a <code>/qodo</code> comment on a PR and waits for a matching reply.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -791,7 +814,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>status<span c
 <td>Question text, or <code>--pr owner/repo &lt;pr_number&gt; &lt;question&gt;</code> to target a specific PR.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="c1"># Auto-detect the current PR</span>
 myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span class="w"> </span><span class="s2">"What edge cases are missing?"</span>
 
@@ -807,7 +830,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span
 </ul>
 <h3 id="reviews-store"><code>reviews store</code></h3>
 <p>Stores a completed review JSON payload in the local SQLite database.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -824,7 +847,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span
 <td>Path to the completed review JSON file.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>store<span class="w"> </span>.pi/tmp/pr-42-reviews.json
 </code></pre></div>
 
@@ -837,7 +860,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span
 <h2 id="memory-management-myk-pi-tools-memory">Memory Management (<code>myk-pi-tools memory</code>)</h2>
 <h3 id="global-option-memory-group">Global Option (<code>memory</code> group)</h3>
 <p>This option applies to every <code>memory</code> subcommand.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -854,7 +877,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span
 <td>Path to the memory topics directory. If omitted, uses <code>&lt;git-root&gt;/.pi/memory/topics/</code>.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>--file-path<span class="w"> </span>/tmp/topics<span class="w"> </span>show
 </code></pre></div>
 
@@ -864,7 +887,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span
 </ul>
 <h3 id="memory-add"><code>memory add</code></h3>
 <p>Adds a memory entry to a topic file.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -893,7 +916,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span
 <td>Store the entry as pinned.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="c1"># Learned memory</span>
 myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>lesson<span class="w"> </span>-s<span class="w"> </span><span class="s2">"Cache mounts need uid"</span>
 
@@ -915,7 +938,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 </ul>
 <h3 id="memory-show"><code>memory show</code></h3>
 <p>Prints all topic files as merged markdown.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -932,7 +955,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <td>Global <code>memory</code> option.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>show
 </code></pre></div>
 
@@ -943,7 +966,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 </ul>
 <h3 id="memory-migrate"><code>memory migrate</code></h3>
 <p>Migrates legacy SQLite memory data into topic files.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -960,7 +983,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <td>Global <code>memory</code> option.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>migrate
 </code></pre></div>
 
@@ -973,7 +996,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 </ul>
 <h3 id="memory-forget"><code>memory forget</code></h3>
 <p>Removes a matching memory entry.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -1002,7 +1025,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <td>Global <code>memory</code> option.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>forget<span class="w"> </span>-c<span class="w"> </span>mistake<span class="w"> </span>-s<span class="w"> </span><span class="s2">"Used sleep for polling"</span>
 </code></pre></div>
 
@@ -1014,7 +1037,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 </ul>
 <h3 id="memory-path"><code>memory path</code></h3>
 <p>Prints the active memory topics directory.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -1031,7 +1054,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <td>Global <code>memory</code> option.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>path
 </code></pre></div>
 
@@ -1041,7 +1064,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 </ul>
 <h3 id="memory-status"><code>memory status</code></h3>
 <p>Prints the memory enforcement-honesty inventory.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -1058,7 +1081,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <td>Global <code>memory</code> option.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>status
 </code></pre></div>
 
@@ -1087,9 +1110,9 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
             </article>
             <nav class="page-nav">
 
-                <a href="pi-sidecar.html" class="page-nav-link page-nav-prev">
+                <a href="mcp-servers.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Pi Sidecar HTTP API</span>
+                    <span class="page-nav-title">MCP Servers</span>
                 </a>
 
 
@@ -1154,13 +1177,14 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=4faedb9938"></script>
+
+    <script src="assets/search.js?v=4faedb9938"></script>
+    <script src="assets/copy.js?v=4faedb9938"></script>
+    <script src="assets/callouts.js?v=4faedb9938"></script>
+    <script src="assets/scrollspy.js?v=4faedb9938"></script>
+    <script src="assets/codelabels.js?v=4faedb9938"></script>
+    <script src="assets/github.js?v=4faedb9938"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');

@@ -360,7 +360,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
 
     try:
         settings_text = (HOME / ".pi/agent/settings.json").read_text()
-    except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError):
+    except FileNotFoundError, OSError, UnicodeDecodeError, ValueError:
         settings_text = ""
 
     pi_cfg = is_pi_pkg_installed(settings_text, PI_CONFIG_NPM) and not should_migrate_pi_config_to_npm(settings_text)

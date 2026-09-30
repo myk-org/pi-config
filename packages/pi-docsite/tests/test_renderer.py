@@ -5,9 +5,7 @@ from __future__ import annotations
 import logging
 
 import pytest
-
-from docs_render import renderer
-from docs_render.renderer import (
+from pi_docsite.renderer.renderer import (
     _clean_code_fence_annotations,
     _ensure_blank_lines,
     _indent_fenced_blocks,
@@ -387,9 +385,10 @@ def test_escaped_entities_in_text_are_not_double_decoded() -> None:
 
 
 def test_uses_plain_stdlib_logger() -> None:
-    """This repo builds docs from a bare checkout, so the renderer takes no
-    project config and uses the stdlib logger directly."""
-    assert renderer.logger is logging.getLogger(renderer.__name__)
+    """The renderer takes no project config, so it uses the stdlib logger directly."""
+    from pi_docsite.renderer import renderer as renderer_module
+
+    assert renderer_module.logger is logging.getLogger(renderer_module.__name__)
 
 
 def test_safe_urls_survive() -> None:

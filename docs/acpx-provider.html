@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ACPX Provider Integration - pi-config</title>
     <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
-    <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href="assets/style.css?v=4faedb9938">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -57,6 +57,13 @@
                     </li>
 
                     <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
@@ -74,6 +81,20 @@
                         <a href="managing-custom-agents.html"
                            class="nav-link">
                             Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
                         </a>
                     </li>
 
@@ -190,16 +211,23 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="mcp-servers.html"
+                        <a href="pi-sidecar.html"
                            class="nav-link">
-                            MCP Servers
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
                     <li>
-                        <a href="pi-sidecar.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            Pi Sidecar HTTP API
+                            pi-docsite
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
                         </a>
                     </li>
 
@@ -252,13 +280,8 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                <a href="" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
                     ⚡ pi<span class="brand-accent">-config</span>
-                </a>
-
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
 
                 <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
@@ -286,7 +309,7 @@
 </blockquote>
 <h2 id="acpx_agents"><code>acpx_agents</code></h2>
 <p>Agents registered as ACPX providers at session start.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -303,7 +326,7 @@
 <td>Agent identifiers to create via <code>AcpxDriver</code>. Accepts a JSON array or a comma-separated string. Names are trimmed, lowercased, and filtered to <code>/^[a-z0-9_-]+$/</code>.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p><strong>Resolution order:</strong> project settings → global settings → <code>ACPX_AGENTS</code> env → <code>[]</code>.</p>
 <p><strong>Driver mapping (<code>ACPX_AGENT_TO_DRIVER</code>, <code>extensions/providers/built-in-drivers.ts</code>):</strong> <code>cursor</code>, <code>claude</code>, and <code>gemini</code> all map to driver kind <code>acpx</code>, with <code>config.agent</code> set to the agent name. An agent that is <strong>not</strong> in the map is skipped with a <code>no driver mapping in ACPX_AGENT_TO_DRIVER</code> warning — it does not fall back to <code>acpx</code>.</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
@@ -321,7 +344,7 @@
 <h2 id="loadacpxruntime"><code>loadAcpxRuntime()</code></h2>
 <p>Resolves the <code>acpx/runtime</code> module. Memoized across calls; failed loads clear the cache.</p>
 <p><strong>Module:</strong> <code>extensions/acpx-provider/load-runtime.ts</code></p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Return field</th>
@@ -346,7 +369,7 @@
 <td>ACPX agent registry factory.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p><strong>Resolution order:</strong></p>
 <ol>
 <li>Global npm root (<code>npm root -g</code>) package <code>acpx</code> → <code>dist/runtime.js</code></li>
@@ -364,7 +387,7 @@
 <h2 id="discoveracpxmodelsagent-cwd"><code>discoverAcpxModels(agent, cwd?)</code></h2>
 <p>Async discovery of available model ids for one ACPX agent. Creates a temporary oneshot session, reads <code>getStatus().models.availableModelIds</code>, closes the session, and deletes the temp state dir.</p>
 <p><strong>Module:</strong> <code>extensions/acpx-provider/index.ts</code></p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -387,9 +410,9 @@
 <td>Working directory for the discovery session.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p><strong>Returns:</strong> <code>Promise&lt;Array&lt;{ id: string; name: string; provider: string }&gt;&gt;</code></p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Field</th>
@@ -410,7 +433,7 @@
 <td><code>acpx-&lt;agent&gt;</code></td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>On discovery failure, returns <code>[]</code> (does not throw). Invalid <code>agent</code> throws <code>Error</code>.</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">discoverAcpxModels</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"pi-orchestrator-config/extensions/acpx-provider"</span><span class="p">;</span>
 
@@ -424,7 +447,7 @@
 <h2 id="mapacpxdiscoveredmodelsagent-modelids"><code>mapAcpxDiscoveredModels(agent, modelIds)</code></h2>
 <p>Maps raw model id strings to pi-ai runtime <code>Model</code> objects for provider registration.</p>
 <p><strong>Module:</strong> <code>extensions/acpx-provider/runtime-models.ts</code></p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -453,9 +476,9 @@
 <td>Optional models.dev catalog used to fill in context window, pricing, and capability fields on each model.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p><strong>Returns:</strong> <code>Model[]</code> with <code>api: "acpx"</code> and <code>provider: "acpx-&lt;agent&gt;"</code>.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Condition</th>
@@ -472,7 +495,7 @@
 <td>One model per id: <code>{ id: "&lt;agent&gt;:&lt;m&gt;", name: "&lt;Display&gt; (&lt;agent&gt;)" }</code></td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">mapAcpxDiscoveredModels</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"pi-orchestrator-config/extensions/acpx-provider"</span><span class="p">;</span>
 
 <span class="kd">const</span><span class="w"> </span><span class="nx">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mapAcpxDiscoveredModels</span><span class="p">(</span><span class="s2">"cursor"</span><span class="p">,</span><span class="w"> </span><span class="p">[</span><span class="s2">"gpt-5.4[context=272k]"</span><span class="p">]);</span>
@@ -480,7 +503,7 @@
 </code></pre></div>
 
 <h2 id="modelidtodisplaynamemodelid"><code>modelIdToDisplayName(modelId)</code></h2>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -497,7 +520,7 @@
 <td>Raw ACPX model id.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p><strong>Returns:</strong> <code>string</code> — bracket suffix stripped, hyphens → spaces, title-cased.</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">modelIdToDisplayName</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"pi-orchestrator-config/extensions/acpx-provider"</span><span class="p">;</span>
 
@@ -508,7 +531,7 @@
 <p>Builds <code>/login</code> api-key auth that stores a configured marker when <code>isConfigured()</code> is true.</p>
 <p><strong>Module:</strong> <code>extensions/shared/create-runtime-provider.ts</code><br>
 <strong>Wired by:</strong> <code>registerAcpxAgent()</code> in <code>extensions/providers/index.ts</code></p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -537,7 +560,7 @@
 <td>Auth source string (e.g. <code>"cursor acpx runtime"</code>).</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p><strong>Returns:</strong> <code>ProviderAuth["apiKey"]</code> for <code>createRuntimeProvider()</code> / <code>createProvider()</code>.</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">buildAmbientLoginAuth</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"../shared/create-runtime-provider.js"</span><span class="p">;</span>
 
@@ -552,7 +575,7 @@
 <h2 id="acpxdriver"><code>AcpxDriver</code></h2>
 <p>Built-in <code>ProviderDriver</code> (<code>driverKind: "acpx"</code>) in <code>extensions/providers/acpx-driver.ts</code>. Listed in <code>BUILT_IN_DRIVERS</code> and created through <code>ProviderDriverRegistry</code> in <code>extensions/providers/index.ts</code>.</p>
 <h3 id="config-acpxconfig">Config (<code>AcpxConfig</code>)</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Field</th>
@@ -575,9 +598,9 @@
 <td>Instance enabled flag.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <h3 id="acpxdriverprobeconfig"><code>AcpxDriver.probe(config)</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -594,7 +617,7 @@
 <td>Passed by the registry; availability checks <code>loadAcpxRuntime()</code> only.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p><strong>Returns:</strong> <code>{ available: true }</code> when both checks pass; otherwise <code>{ available: false, reason: string }</code>.</p>
 <p>Probe performs <strong>two</strong> checks:</p>
 <ol>
@@ -602,7 +625,7 @@
 <li><strong>ACPX runtime</strong> — <code>loadAcpxRuntime()</code> must resolve, otherwise unavailable with an <code>acpx runtime not available</code> reason.</li>
 </ol>
 <h3 id="acpxdrivercreateinput"><code>AcpxDriver.create(input)</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -643,7 +666,7 @@
 <td>Instance enabled flag.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p><strong>Returns:</strong> <code>ProviderInstance</code> with managed model snapshot, adapter, and <code>dispose</code> → <code>adapter.stopAll()</code>.</p>
 <p><strong>Create side effects:</strong></p>
 <ul>
@@ -660,7 +683,7 @@
 </code></pre></div>
 
 <h3 id="adapter-startsessionopts">Adapter: <code>startSession(opts)</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Option</th>
@@ -689,10 +712,10 @@
 <td>Project cwd (adapter already bound at create).</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p><strong>Returns:</strong> <code>{ sessionId, model }</code> where <code>sessionId</code> is <code>pi-&lt;agent&gt;[-&lt;sanitizedModel&gt;]-&lt;cwdSlug&gt;</code>.</p>
 <h3 id="adapter-sendturnhandle-prompt-opts">Adapter: <code>sendTurn(handle, prompt, opts?)</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -727,7 +750,7 @@
 <td>Receives <code>{ kind: "text_delta" \| "thinking_delta", text }</code>.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p><strong>Returns:</strong> <code>TurnResult</code> — <code>{ text, thinking?, stopReason?, usage? }</code>.</p>
 <p><strong>Stream mapping:</strong> ACPX <code>text_delta</code> with <code>stream === "thought"</code> → <code>thinking_delta</code>; other <code>text_delta</code> → <code>text_delta</code>.</p>
 <div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">turn</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">runtime</span><span class="p">.</span><span class="nx">startTurn</span><span class="p">({</span>
@@ -749,7 +772,7 @@
 <p><strong>Warning:</strong> Only the latest user message is sent each turn. Full historical message arrays are not forwarded to the ACPX runtime.</p>
 </blockquote>
 <h3 id="adapter-stopsession-stopall">Adapter: <code>stopSession</code> / <code>stopAll</code></h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Method</th>
@@ -766,10 +789,10 @@
 <td>Closes all handles; clears handle maps. Called from instance <code>dispose</code>.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <h2 id="stream-bridge-streamassembler">Stream bridge (<code>StreamAssembler</code>)</h2>
 <p><code>extensions/providers/index.ts</code> wraps <code>adapter.sendTurn</code> and feeds driver events into <code>StreamAssembler</code> (<code>extensions/shared/stream-builder.ts</code>) for native pi assistant streams.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Step</th>
@@ -802,10 +825,10 @@
 <td><code>assembler.finalize({ finalText, finalThinking, stopReason, usage })</code></td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <h2 id="runtimeensuresessionoptions"><code>runtime.ensureSession(options)</code></h2>
 <p>ACPX runtime API used by discovery and the driver adapter.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Parameter</th>
@@ -846,7 +869,7 @@
 <td>Optional <code>{ model?, systemPrompt? }</code>.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">handle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">runtime</span><span class="p">.</span><span class="nx">ensureSession</span><span class="p">({</span>
 <span class="w">  </span><span class="nx">sessionKey</span><span class="o">:</span><span class="w"> </span><span class="s2">"pi-cursor-gpt-4-a1b2c3d4e5f6"</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">agent</span><span class="o">:</span><span class="w"> </span><span class="s2">"cursor"</span><span class="p">,</span>
@@ -860,7 +883,7 @@
 </code></pre></div>
 
 <h2 id="session-shutdown">Session shutdown</h2>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Hook</th>
@@ -873,7 +896,7 @@
 <td>Stops CLI session reaper; <code>registry.teardownAll()</code> (each ACPX instance <code>dispose</code> → <code>adapter.stopAll()</code>); clears <code>cliInstances</code> and <code>acpxInstances</code>; calls <code>resetProvidersInitialized()</code>.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p><strong>Module:</strong> <code>extensions/providers/session-shutdown.ts</code> (<code>teardownProvidersOnSessionShutdown</code>)</p>
 <div class="highlight"><pre><span></span><code><span class="k">export</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="kd">function</span><span class="w"> </span><span class="nx">teardownProvidersOnSessionShutdown</span><span class="p">(</span>
 <span class="w">  </span><span class="nx">registry</span><span class="o">:</span><span class="w"> </span><span class="kt">ProviderDriverRegistry</span><span class="p">,</span>
@@ -967,13 +990,14 @@
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=4faedb9938"></script>
+
+    <script src="assets/search.js?v=4faedb9938"></script>
+    <script src="assets/copy.js?v=4faedb9938"></script>
+    <script src="assets/callouts.js?v=4faedb9938"></script>
+    <script src="assets/scrollspy.js?v=4faedb9938"></script>
+    <script src="assets/codelabels.js?v=4faedb9938"></script>
+    <script src="assets/github.js?v=4faedb9938"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');

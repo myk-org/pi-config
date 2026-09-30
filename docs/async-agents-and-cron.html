@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Running Background Agents and Scheduled Tasks - pi-config</title>
     <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
-    <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href="assets/style.css?v=4faedb9938">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -57,6 +57,13 @@
                     </li>
 
                     <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
@@ -74,6 +81,20 @@
                         <a href="managing-custom-agents.html"
                            class="nav-link">
                             Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
                         </a>
                     </li>
 
@@ -190,16 +211,23 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="mcp-servers.html"
+                        <a href="pi-sidecar.html"
                            class="nav-link">
-                            MCP Servers
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
                     <li>
-                        <a href="pi-sidecar.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            Pi Sidecar HTTP API
+                            pi-docsite
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
                         </a>
                     </li>
 
@@ -252,13 +280,8 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                <a href="" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
                     ⚡ pi<span class="brand-accent">-config</span>
-                </a>
-
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
 
                 <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
@@ -364,7 +387,7 @@
 <p>Persisted tasks are written to <code>.pi/cron/crons.json</code> in the project and reloaded by later sessions.</p>
 <h2 id="advanced-usage">Advanced Usage</h2>
 <h3 id="pick-the-right-monitoring-command">Pick the Right Monitoring Command</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Goal</th>
@@ -414,7 +437,7 @@
 <td>Direct removal by task ID</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <h3 id="pick-the-model-for-background-work">Pick the Model for Background Work</h3>
 <p>Detached agents are resolved through the same chain as any other subagent
 (<code>explicit &gt; agent_overrides[name] &gt; agent frontmatter &gt; agent_provider/agent_model &gt; parent</code>),
@@ -434,7 +457,7 @@ It is a <code>string</code> setting, default <code>""</code>, meaning "inherit t
 <p>This is a good fit for housekeeping work where a completion notification is enough. See <a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a> for a concrete example.</p>
 <h3 id="understand-cron-lifetime">Understand Cron Lifetime</h3>
 <p>Cron tasks have two scopes, chosen by the <code>--persist</code> flag:</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Scope</th>
@@ -457,7 +480,7 @@ It is a <code>string</code> setting, default <code>""</code>, meaning "inherit t
 <td>Any session opened in that project</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>Session-scoped tasks survive <code>/reload</code> inside the running process but are deleted on a real exit. Project-scoped tasks are reloaded by later sessions, and a leader lease in the same directory guarantees only one session executes a given task — other sessions show it as <code>project (waiting for leader)</code>.</p>
 <blockquote>
 <p><strong>Note:</strong> If you need to confirm what is still scheduled, run <code>/cron list</code> or <code>/cron list-all</code> after reconnecting instead of assuming an older schedule is still active.</p>
@@ -465,7 +488,7 @@ It is a <code>string</code> setting, default <code>""</code>, meaning "inherit t
 </blockquote>
 <h3 id="acpx-compatibility">ACPX Compatibility</h3>
 <p>Detached LLM work is more restricted when your parent session is using an <code>acpx-*</code> provider. Child Pi processes launched as async agents skip ACPX provider registration, so Pi decides between three outcomes:</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Case</th>
@@ -486,7 +509,7 @@ It is a <code>string</code> setting, default <code>""</code>, meaning "inherit t
 <td>Runs detached on <code>internal_operations_provider</code>/<code>internal_operations_model</code>; if those are unset, the work is skipped with a warning.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>Set <code>internal_operations_provider</code> and <code>internal_operations_model</code> to cover that last case. Both are <code>string</code> settings, default <code>""</code>, and the provider must not itself be an <code>acpx-*</code> id.</p>
 <p>See <a href="acpx-provider.html">ACPX Provider Integration</a> and <a href="configuration.html">Configuration &amp; Settings</a> for the exact setup.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
@@ -561,13 +584,14 @@ It is a <code>string</code> setting, default <code>""</code>, meaning "inherit t
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=4faedb9938"></script>
+
+    <script src="assets/search.js?v=4faedb9938"></script>
+    <script src="assets/copy.js?v=4faedb9938"></script>
+    <script src="assets/callouts.js?v=4faedb9938"></script>
+    <script src="assets/scrollspy.js?v=4faedb9938"></script>
+    <script src="assets/codelabels.js?v=4faedb9938"></script>
+    <script src="assets/github.js?v=4faedb9938"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');

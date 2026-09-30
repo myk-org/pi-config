@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Google Vertex Claude Provider - pi-config</title>
     <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
-    <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href="assets/style.css?v=4faedb9938">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -57,6 +57,13 @@
                     </li>
 
                     <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
@@ -74,6 +81,20 @@
                         <a href="managing-custom-agents.html"
                            class="nav-link">
                             Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
                         </a>
                     </li>
 
@@ -190,16 +211,23 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="mcp-servers.html"
+                        <a href="pi-sidecar.html"
                            class="nav-link">
-                            MCP Servers
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
                     <li>
-                        <a href="pi-sidecar.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            Pi Sidecar HTTP API
+                            pi-docsite
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
                         </a>
                     </li>
 
@@ -252,13 +280,8 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                <a href="" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
                     ⚡ pi<span class="brand-accent">-config</span>
-                </a>
-
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
 
                 <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
@@ -319,7 +342,7 @@ pi<span class="w"> </span>update<span class="w"> </span>npm:@myk-org/pi-vertex-c
 </blockquote>
 <h3 id="3-set-the-gcp-project">3. Set the GCP project</h3>
 <p>One of these must be set (priority order):</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Variable</th>
@@ -340,7 +363,7 @@ pi<span class="w"> </span>update<span class="w"> </span>npm:@myk-org/pi-vertex-c
 <td>Compatible alternate</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">GOOGLE_CLOUD_PROJECT</span><span class="o">=</span>your-project-id
 </code></pre></div>
 
@@ -348,7 +371,7 @@ pi<span class="w"> </span>update<span class="w"> </span>npm:@myk-org/pi-vertex-c
 <div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">GOOGLE_CLOUD_LOCATION</span><span class="o">=</span>us-east5
 </code></pre></div>
 
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Variable</th>
@@ -368,7 +391,7 @@ pi<span class="w"> </span>update<span class="w"> </span>npm:@myk-org/pi-vertex-c
 <td>Used only if <code>GOOGLE_CLOUD_LOCATION</code> is unset</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <h3 id="5-start-pi">5. Start Pi</h3>
 <div class="highlight"><pre><span></span><code>pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude<span class="w"> </span>--model<span class="w"> </span>claude-sonnet-4-6
 </code></pre></div>
@@ -377,7 +400,7 @@ pi<span class="w"> </span>update<span class="w"> </span>npm:@myk-org/pi-vertex-c
 <p><strong>Note:</strong> The provider appears only when a project id <strong>and</strong> ADC credentials exist before <code>pi</code> starts. Export them in the same shell (or your profile), then launch Pi.</p>
 </blockquote>
 <h3 id="6-choose-a-model">6. Choose a model</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Model id</th>
@@ -460,7 +483,7 @@ pi<span class="w"> </span>update<span class="w"> </span>npm:@myk-org/pi-vertex-c
 <td>no</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>All of these accept text and image input.</p>
 <blockquote>
 <p><strong>Note:</strong> "Max output" is the model's ceiling, not the default request size. When you do not pass an explicit <code>maxTokens</code>, the provider sends one third of the ceiling (for example 64K of the 128K Opus ceiling).</p>
@@ -473,7 +496,7 @@ pi<span class="w"> </span>update<span class="w"> </span>npm:@myk-org/pi-vertex-c
 pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude<span class="w"> </span>--model<span class="w"> </span>claude-opus-4-6-1m
 </code></pre></div>
 
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Model id</th>
@@ -493,7 +516,7 @@ pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude
 <td>64K</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Warning:</strong> Only the string <code>true</code> enables these models. Other values leave the <code>-1m</code> ids unregistered.</p>
 </blockquote>
@@ -515,7 +538,7 @@ pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude
 </code></pre></div>
 
 <h3 id="environment-reference">Environment reference</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Variable</th>
@@ -576,10 +599,10 @@ pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude
 <td>When <code>"true"</code>, registers <code>-1m</code> models</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>*Set exactly one project id variable for the provider to load and stream.</p>
 <h3 id="using-vs-extending">Using vs extending</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Goal</th>
@@ -596,7 +619,7 @@ pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude
 <td>Publish another pi package that registers its own provider id with a custom stream handler; this package registers <code>google-vertex-claude</code> only when project id and ADC are available at load time</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>Lifecycle when you start <code>pi</code>:</p>
 <ol>
 <li>Extension loads.</li>
@@ -606,7 +629,7 @@ pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude
 </ol>
 <p>For ACPX/CLI backends (separate from Vertex), see <a href="acpx-provider.html">ACPX Provider Integration</a> and <a href="external-ai-agents.html">External AI Agents &amp; CLI</a>.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Problem</th>
@@ -635,7 +658,7 @@ pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude
 <td>Set <code>GOOGLE_CLOUD_LOCATION</code> to a region where Claude on Vertex is enabled.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Tip:</strong> Env changes apply only after you start a new <code>pi</code> process so the provider can re-register.</p>
 </blockquote>
@@ -657,9 +680,9 @@ pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude
                 </a>
 
 
-                <a href="mcp-servers.html" class="page-nav-link page-nav-next">
+                <a href="pi-sidecar.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">MCP Servers</span>
+                    <span class="page-nav-title">Pi Sidecar HTTP API</span>
                 </a>
 
             </nav>
@@ -708,13 +731,14 @@ pi<span class="w"> </span>--provider<span class="w"> </span>google-vertex-claude
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=4faedb9938"></script>
+
+    <script src="assets/search.js?v=4faedb9938"></script>
+    <script src="assets/copy.js?v=4faedb9938"></script>
+    <script src="assets/callouts.js?v=4faedb9938"></script>
+    <script src="assets/scrollspy.js?v=4faedb9938"></script>
+    <script src="assets/codelabels.js?v=4faedb9938"></script>
+    <script src="assets/github.js?v=4faedb9938"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');

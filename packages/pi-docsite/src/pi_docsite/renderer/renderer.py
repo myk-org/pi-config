@@ -19,6 +19,7 @@ byte-identical to upstream.
 
 from __future__ import annotations
 
+import hashlib
 import html as _html_mod
 import logging
 import re
@@ -32,10 +33,10 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 logger = logging.getLogger(__name__)
 
-# Attribution link shown in the docs footer. The renderer was vendored from
-# docsfy, so the original pointed at docsfy; this repo now builds its own
-# static site from the committed ``docs/*.md`` sources.
-RENDERER_REPO_URL = "https://github.com/myk-org/pi-config"
+# Fallback link for the header badge when no repo URL is known. Not a
+# hardcoded project: it was pinned to one repo's URL, which leaked that repo's
+# name into every other project that vendored this package.
+DEFAULT_BADGE_URL = "https://example.invalid"
 
 # Vendored from docsfy.generator. Deliberately NOT re.DOTALL, and the title is
 # restricted to a single line ([^\n]+ rather than .+). Without these
@@ -502,6 +503,22 @@ def _ensure_blank_lines(md_text: str) -> str:
     return "\n".join(result)
 
 
+def _wrap_tables(content_html: str) -> str:
+    """Wrap each table in a horizontally scrollable div.
+
+    A wide table (the six-column settings reference is ~1045px) otherwise pushes
+    the whole page wider than the viewport, which puts a horizontal scrollbar on
+    the document and shifts every other element. Scrolling the table alone keeps
+    the page width fixed and is what most documentation sites do.
+    """
+    return re.sub(
+        r"(<table\b[^>]*>.*?</table>)",
+        r'<div class="table-wrap">\1</div>',
+        content_html,
+        flags=re.DOTALL,
+    )
+
+
 def _md_to_html(md_text: str) -> tuple[str, str]:
     """Convert markdown to HTML. Returns (content_html, toc_html)."""
     md = markdown.Markdown(
@@ -514,11 +531,28 @@ def _md_to_html(md_text: str) -> tuple[str, str]:
     md_text = _clean_code_fence_annotations(md_text)
     md_text = _ensure_blank_lines(md_text)
     content_html = _sanitize_html(md.convert(md_text))
+    content_html = _wrap_tables(content_html)
     # The TOC is separately generated and reaches the page through ``|safe``,
     # so it needs the same allowlist as the body. Its ``<a href="#id">`` links
     # and the body heading ``id``s they point at both survive the allowlist.
     toc_html = _sanitize_html(getattr(md, "toc", ""))
     return content_html, toc_html
+
+
+def _asset_version() -> str:
+    """Short content hash of the static assets, for cache-busting URLs.
+
+    Without this the asset URLs never change, so a browser that cached
+    assets/copy.js keeps the old one across a rebuild and renders stale
+    behaviour. Derived from file contents, so it is stable for an unchanged
+    tree and only moves when an asset actually changes.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(STATIC_DIR.iterdir()):
+        if path.is_file():
+            digest.update(path.name.encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:10]
 
 
 def render_page(
@@ -532,6 +566,7 @@ def render_page(
     next_page: dict[str, str] | None = None,
     repo_url: str = "",
     version: str | None = None,
+    search_index: str | None = None,
 ) -> str:
     env = _get_jinja_env()
     template = env.get_template("page.html")
@@ -547,7 +582,8 @@ def render_page(
         prev_page=prev_page,
         next_page=next_page,
         repo_url=repo_url,
-        docsfy_repo_url=RENDERER_REPO_URL,
+        search_index=search_index,
+        asset_version=_asset_version(),
         version=version,
     )
 
@@ -558,6 +594,7 @@ def render_index(
     navigation: list[dict[str, Any]],
     repo_url: str = "",
     version: str | None = None,
+    search_index: str | None = None,
 ) -> str:
     env = _get_jinja_env()
     template = env.get_template("index.html")
@@ -568,7 +605,9 @@ def render_index(
         navigation=navigation,
         repo_url=repo_url,
         current_slug="",
-        docsfy_repo_url=RENDERER_REPO_URL,
+        badge_url=repo_url or DEFAULT_BADGE_URL,
+        asset_version=_asset_version(),
+        search_index=search_index,
         version=version,
     )
 
@@ -583,7 +622,12 @@ def _build_search_index(pages: dict[str, str], plan: dict[str, Any]) -> list[dic
         index.append({
             "slug": slug,
             "title": title_map.get(slug, slug),
-            "content": content[:2000],
+            # Full page text: search-index.json is fetched once and shared by every
+            # page, so there is no reason to cap what is searchable. An earlier
+            # 2000-char cap meant anything past that point in a long page was
+            # unsearchable -- searching a term in the "Determinism" section of a
+            # 6 KB page returned nothing.
+            "content": content,
         })
     return index
 

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pi Sidecar HTTP API - pi-config</title>
     <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
-    <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href="assets/style.css?v=4faedb9938">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -57,6 +57,13 @@
                     </li>
 
                     <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
@@ -74,6 +81,20 @@
                         <a href="managing-custom-agents.html"
                            class="nav-link">
                             Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
                         </a>
                     </li>
 
@@ -190,16 +211,23 @@
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="mcp-servers.html"
-                           class="nav-link">
-                            MCP Servers
+                        <a href="pi-sidecar.html"
+                           class="nav-link active" aria-current="page">
+                            Pi Sidecar HTTP API
                         </a>
                     </li>
 
                     <li>
-                        <a href="pi-sidecar.html"
-                           class="nav-link active" aria-current="page">
-                            Pi Sidecar HTTP API
+                        <a href="pi-docsite.html"
+                           class="nav-link">
+                            pi-docsite
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
                         </a>
                     </li>
 
@@ -252,13 +280,8 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                <a href="" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
                     ⚡ pi<span class="brand-accent">-config</span>
-                </a>
-
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
 
                 <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
@@ -284,7 +307,7 @@
 <p><code>@myk-org/pi-sidecar</code> wraps the Pi SDK in a small HTTP service. Your app sends prompts over HTTP; the sidecar creates a Pi session, streams the turn, and returns the result. A Python client (<code>pi-sidecar-client</code>) and a Node client are both published from the same package, so both sides always agree on the wire format.</p>
 <p>Use it when you want model calls from a non-Pi process — a backend service, a script, or a bot — with Pi's session handling, project context, and tool execution, without embedding the whole TUI agent.</p>
 <h2 id="prerequisites">Prerequisites</h2>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Requirement</th>
@@ -314,7 +337,7 @@
 <td><code>requires-python</code> in <code>packages/pi-sidecar/pyproject.toml</code></td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>The sidecar enforces the Pi SDK floor at startup and <strong>exits</strong> if the installed <code>@earendil-works/pi-coding-agent</code> is older than <code>0.99.0</code> or cannot be resolved. A stale global <code>pi</code> on <code>PATH</code> only produces a warning, but subagent calls spawn that binary and may still fail.</p>
 <h2 id="getting-started">Getting Started</h2>
 <h3 id="1-install">1. Install</h3>
@@ -336,7 +359,7 @@
 <span class="c1"># stop:       npx pi-sidecar-start --stop</span>
 </code></pre></div>
 
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Variable</th>
@@ -371,7 +394,7 @@
 <td>Server / client log level</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Tip:</strong> Point the client at the port you actually started. Dev script uses <strong>9201</strong>; the Node server and Python client default to <strong>9100</strong>.</p>
 </blockquote>
@@ -382,7 +405,7 @@
 <div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:9100/health
 </code></pre></div>
 
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th><code>status</code></th>
@@ -403,7 +426,7 @@
 <td>Discovery failed; sessions may still work for already-known models</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">pi_sidecar_client</span><span class="w"> </span><span class="kn">import</span> <span class="n">check_sidecar_available</span>
 
 <span class="n">ok</span><span class="p">,</span> <span class="n">msg</span> <span class="o">=</span> <span class="k">await</span> <span class="n">check_sidecar_available</span><span class="p">()</span>
@@ -418,7 +441,7 @@
 </code></pre></div>
 
 <p>Friendly Python provider aliases map to sidecar ids:</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Client alias</th>
@@ -439,7 +462,7 @@
 <td><code>google-vertex-claude</code></td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>Refresh after changing agents or auth:</p>
 <div class="highlight"><pre><span></span><code>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:9100/models/refresh
 </code></pre></div>
@@ -493,7 +516,7 @@
 <p><code>cwd</code> loads project resources from <code>{cwd}/.pi/</code> and <code>AGENTS.md</code>. Optional <code>agent_dir</code> points at a global agent directory (e.g. <code>~/.pi/agent</code>); it is rejected on non-loopback binds unless <code>DEV_MODE=true</code> (then ignored).</p>
 <h2 id="advanced-usage">Advanced Usage</h2>
 <h3 id="http-api-surface">HTTP API surface</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Method</th>
@@ -553,7 +576,7 @@
 <td>Destroy session</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>Body size limit: 1 MiB. Concurrent prompts on the same session return conflict (busy).</p>
 <h3 id="custom-http-backed-tools">Custom HTTP-backed tools</h3>
 <p>Pass <code>custom_tools</code> when creating a session. Entries with an <code>http</code> block are executed as outbound HTTP; <code>{param}</code> placeholders interpolate from tool args.</p>
@@ -576,7 +599,7 @@
 <span class="p">)</span>
 </code></pre></div>
 
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th><code>http</code> field</th>
@@ -623,7 +646,7 @@
 <td>Request timeout</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>Restrict the built-in tool allowlist with <code>tools=["read", "grep"]</code> (or <code>[]</code> for none).</p>
 <h3 id="acpx-and-cli-model-sources">ACPX and CLI model sources</h3>
 <div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">ACPX_AGENTS</span><span class="o">=</span>cursor
@@ -641,7 +664,7 @@ npx<span class="w"> </span>pi-sidecar
 <h3 id="docker-process-coupling">Docker / process coupling</h3>
 <p>Start the sidecar, wait for <code>/health</code>, then start your app and trap cleanup — see the package <code>entrypoint.example.sh</code> pattern (<code>SIDECAR_PORT</code> default <code>9100</code>).</p>
 <h3 id="using-vs-extending">Using vs extending</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Goal</th>
@@ -658,7 +681,7 @@ npx<span class="w"> </span>pi-sidecar
 <td>Call <code>startSidecar({ port, host, watchdogUrl, watchdogOptions })</code> from Node, or override extension paths with <code>SIDECAR_ACPX_EXTENSION_PATH</code>, <code>SIDECAR_CLI_PROVIDER_EXTENSION_PATH</code>, <code>SIDECAR_PROVIDER_EXTENSION_PATH</code>, <code>SIDECAR_VERTEX_EXTENSION_PATH</code>, <code>SIDECAR_SUBAGENT_EXTENSION_PATH</code></td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>Startup lifecycle:</p>
 <ol>
 <li>Assert Pi SDK version ≥ 0.99.0 (<code>MIN_PI_VERSION</code>).</li>
@@ -676,7 +699,7 @@ npx<span class="w"> </span>pi-sidecar
 
 <p><code>ai_call_timeout</code> on <code>call_ai</code> / <code>call_ai_once</code> is in <strong>minutes</strong> (converted to HTTP timeout seconds).</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Problem</th>
@@ -713,7 +736,7 @@ npx<span class="w"> </span>pi-sidecar
 <td>Upgrade <code>@earendil-works/pi-coding-agent</code> (and <code>pi-ai</code>) to ≥ 0.99.0.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Warning:</strong> Default bind is loopback-only. Binding to <code>0.0.0.0</code> exposes an unauthenticated AI API on the network — use only behind a trusted boundary.</p>
 </blockquote>
@@ -729,15 +752,15 @@ npx<span class="w"> </span>pi-sidecar
             </article>
             <nav class="page-nav">
 
-                <a href="mcp-servers.html" class="page-nav-link page-nav-prev">
+                <a href="vertex-claude-provider.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">MCP Servers</span>
+                    <span class="page-nav-title">Google Vertex Claude Provider</span>
                 </a>
 
 
-                <a href="cli-reference.html" class="page-nav-link page-nav-next">
+                <a href="pi-docsite.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">myk_pi_tools CLI Reference</span>
+                    <span class="page-nav-title">pi-docsite</span>
                 </a>
 
             </nav>
@@ -787,13 +810,14 @@ npx<span class="w"> </span>pi-sidecar
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=4faedb9938"></script>
+
+    <script src="assets/search.js?v=4faedb9938"></script>
+    <script src="assets/copy.js?v=4faedb9938"></script>
+    <script src="assets/callouts.js?v=4faedb9938"></script>
+    <script src="assets/scrollspy.js?v=4faedb9938"></script>
+    <script src="assets/codelabels.js?v=4faedb9938"></script>
+    <script src="assets/github.js?v=4faedb9938"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');

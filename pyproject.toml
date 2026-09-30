@@ -4,7 +4,7 @@ version = "4.6.5"
 description = "CLI utilities for pi orchestrator plugins"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 authors = [{ name = "myk-org" }]
 keywords = ["pi", "cli", "github", "code-review"]
 classifiers = [
@@ -63,6 +63,10 @@ exclude = [
 
 [tool.ruff]
 preview = true
+# Pinned explicitly rather than inferred from requires-python: this repo requires
+# Python >= 3.14 and uses 3.14-only syntax (PEP 758 unparenthesised `except`).
+# Without this, ruff could format to a syntax the project does not target.
+target-version = "py314"
 line-length = 120
 fix = true
 output-format = "grouped"
@@ -89,8 +93,15 @@ warn_redundant_casts = true
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
 
+[tool.uv.workspace]
+members = ["packages/pi-docsite"]
+
+[tool.uv.sources]
+# The docs generator is a workspace package; see packages/pi-docsite.
+pi-docsite = { workspace = true }
+
 [dependency-groups]
 tests = ["pytest>=9.0.2"]
-# Static docs site generator (scripts/generate_docs.py) — renders docs/*.md to
-# committed HTML. Only needed when regenerating docs, never at runtime.
-docs = ["markdown>=3.11", "pygments>=2.21.0", "jinja2>=3.1.6", "types-markdown>=3.5"]
+# Regenerating docs/ — only needed when docs change, never at runtime.
+# The generator itself is a workspace package: packages/pi-docsite.
+docs = ["pi-docsite", "types-markdown>=3.5"]

@@ -1,6 +1,11 @@
 ---
+# This repo requires Python >= 3.14 and uses 3.14-only syntax (PEP 758,
+# unparenthesised `except`). The pre-commit-hooks environments default to
+# whatever CPython they were built against, which was 3.13, so every hook from
+# that repo failed with "Could not parse ast" on scripts/install.py. Pinning the
+# interpreter here fixes the whole family at once instead of deleting checks.
 default_language_version:
-  python: python3
+  python: python3.14
 
 ci:
   autofix_prs: false

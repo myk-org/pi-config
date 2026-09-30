@@ -11,12 +11,24 @@
 
   var input = overlay.querySelector('.search-modal-input');
   var results = overlay.querySelector('.search-modal-results');
-  var index = [];
   var selectedIdx = -1;
-
-  // Load index
-  fetch('search-index.json').then(function(r) { return r.json(); })
-    .then(function(data) { index = data; }).catch(function() {});
+  // Load index. Normally fetched once and shared by every page, so nothing is
+  // inlined and the pages stay small. An inline copy is used when the generator
+  // was asked to embed it. Note: fetch() of a local file is blocked by CORS on
+  // file:// in most browsers, so opening the site straight off disk needs the
+  // inline mode; served over HTTP this is not an issue.
+  var index = Array.isArray(window.__DOCS_SEARCH_INDEX__) ? window.__DOCS_SEARCH_INDEX__ : null;
+  var indexError = null;
+  if (!index) {
+    fetch('search-index.json').then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function(data) { index = data; }).catch(function(err) {
+      indexError = err;
+      console.error('[docs] search index unavailable:', err,
+        '— serve the site over HTTP, or build it with the search index inlined.');
+    });
+  }
 
   // Open/close
   function openModal() {
@@ -70,6 +82,16 @@
     results.innerHTML = '';
     selectedIdx = -1;
     if (!q) return;
+
+    if (!index) {
+      var err = document.createElement('div');
+      err.className = 'search-no-results';
+      err.textContent = indexError
+        ? 'Search needs the site served over HTTP (opening the file directly blocks it).'
+        : 'Loading search index...';
+      results.appendChild(err);
+      return;
+    }
 
     var matches = index.filter(function(item) {
       return item.title.toLowerCase().includes(q) || item.content.toLowerCase().includes(q);
