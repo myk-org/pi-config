@@ -19,7 +19,6 @@ Both extensions supported; `.jsonc` allows comments. Per-project settings overri
 | `pidash_enable` | boolean | `true` | `PI_PIDASH_ENABLE` | Enable pidash web dashboard (`false`/`0`/`no`/`off` disables) |
 | `pidiff_enable` | boolean | `true` | `PI_PIDIFF_ENABLE` | Enable pidiff diff viewer (`false`/`0`/`no`/`off` disables) |
 | `graft_enable` | boolean | `false` | — | Enable Graft-first retrieval for main agents and subagents. Children only query existing graphs. Stale graphs remain usable and failures fall back to raw navigation; main processes own locked rebuilds. |
-| `background_virtual_model_enable` | boolean | `false` | `PI_BACKGROUND_VIRTUAL_MODEL_ENABLE` | Register the `pi-bg/auto` virtual model (pi ≥ 0.99.0) and route background work (async subagents, dreaming, cron) through it. Needs `internal_operations_provider` + `internal_operations_model`; without them nothing is registered. No-op on older pi. |
 | `pidash_port` | number | `19190` | `PI_PIDASH_PORT` | pidash HTTP/WebSocket port |
 | `image_model` | string | disabled | `PI_IMAGE_MODEL` | Gemini/Google image model for `generate_image` (Settings TUI: google + image-capable picker; empty = disabled) |
 | `internal_operations_provider` | string | unset | `PI_INTERNAL_OPERATIONS_PROVIDER` | Provider for detached LLM async children when parent is acpx (dream/cron/fireAndForget). Both this and `internal_operations_model` required. |

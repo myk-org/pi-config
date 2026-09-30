@@ -48,8 +48,6 @@ interface ProjectSettings {
   pidiff_enable?: boolean;
   /** Enable local Graft repository graph integration. Default: false. */
   graft_enable?: boolean;
-  /** Route background work through the pi-bg/auto virtual model. Default: false. */
-  background_virtual_model_enable?: boolean;
   pidash_port?: number;
   task_auto_clear_enabled?: boolean;
   task_auto_clear_minutes?: number;
@@ -122,7 +120,6 @@ const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [
   "pidash_enable",
   "pidiff_enable",
   "graft_enable",
-  "background_virtual_model_enable",
   "pidash_port",
   "task_auto_clear_enabled",
   "task_auto_clear_minutes",
@@ -455,7 +452,6 @@ export function getSetting(cwd: string, key: "cli_agents"): string[];
 export function getSetting(cwd: string, key: "pidash_enable"): boolean;
 export function getSetting(cwd: string, key: "pidiff_enable"): boolean;
 export function getSetting(cwd: string, key: "graft_enable"): boolean;
-export function getSetting(cwd: string, key: "background_virtual_model_enable"): boolean;
 export function getSetting(cwd: string, key: "pidash_port"): number;
 export function getSetting(cwd: string, key: "task_auto_clear_enabled"): boolean;
 export function getSetting(cwd: string, key: "task_auto_clear_minutes"): number;

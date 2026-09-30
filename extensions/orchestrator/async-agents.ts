@@ -15,7 +15,6 @@ const require = createRequire(import.meta.url);
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig, AgentDiscoveryResult } from "./agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
-import { backgroundModelRef } from "../shared/background-model.js";
 import { withGraftTools } from "./graft.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
 import { addReviewerPending, recordReviewerResult, countFindings, readReviewState } from "./pi-config-review-state.js";
@@ -888,16 +887,6 @@ export function registerAsyncAgents(
       log.warn("async-spawn: could not read /proc/self/stat starttime after 3 attempts");
     }
     let { model: effectiveModel, provider: effectiveProvider } = resolveAgentModelProvider(agentName, agent, options?.parentModelId, options?.parentProvider, cwd, options?.explicit);
-    // Background routing (#848): when nothing explicit picked a model the spawn would
-    // inherit the parent's interactive model. Swap in the virtual model, which routes
-    // the first turn to internal_operations_* and stays sticky after. Re-resolving
-    // without the parent is how we know the model would have been inherited.
-    const backgroundRef = backgroundModelRef(cwd);
-    if (backgroundRef && !resolveAgentModelProvider(agentName, agent, undefined, undefined, cwd, options?.explicit).model) {
-      effectiveModel = backgroundRef.model;
-      effectiveProvider = backgroundRef.provider;
-      log.info("async-spawn: background virtual model", { agent: agentName, ...backgroundRef });
-    }
     fs.writeFileSync(path.join(workerDir, "session.json"), JSON.stringify({
       resultsDir: ASYNC_RESULTS_DIR,
       fireAndForget: options?.fireAndForget || false,

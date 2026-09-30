@@ -39,7 +39,6 @@ import { registerMarkdownTransformer } from "./markdown-transformer.js";
 import { registerGraft } from "./graft.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
-import { registerBackgroundModel } from "../shared/background-model.js";
 import { registerProviderStreamLog } from "../shared/provider-stream-log.js";
 import { migrateMcpConfig } from "../shared/mcp-config-migration.js";
 import { setGlobalSessionId } from "../shared/file-logger.js";
@@ -99,9 +98,6 @@ export default function (pi: ExtensionAPI) {
   registerSubagentTool(pi, spawnAsyncAgent, killAsyncAgent);
   registerProjectSettings(pi);
   registerGraft(pi);
-  // pi-bg/auto virtual model for background work — gated on `background_virtual_model_enable` (#848).
-  // Registers nothing when off or on pi < 0.99; backgroundModelRef reads the result.
-  registerBackgroundModel(pi);
   registerEnforcement(pi, IN_CONTAINER);
   registerReviewUI(pi);
   registerRules(pi, getAsyncJobs);
