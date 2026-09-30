@@ -100,6 +100,7 @@ pi-config/
 │   │   └── index.ts                 # Augments the source provider in Pi's ordinary model picker
 │   ├── shared/                      # Shared extension utilities
 │   │   ├── oneshot.ts               # Argv oneshot helpers (`pi -p` / `--mode json` skip register)
+│   │   ├── provider-stream-log.ts   # Shared provider_stream_event hook (#848; gated on log_providers=debug)
 │   │   ├── resolve-binary.ts        # In-process PATH binary resolution (used by CLI + ACPX drivers)
 │   │   ├── create-runtime-provider.ts # createProvider helpers for cli/acpx (auth/fetch/filter)
 │   │   ├── models-dev.ts            # models.dev api.json cache (~/.pi/pi-config) + CLI/ACPX metadata fill
@@ -160,7 +161,6 @@ pi-config/
 │   ├── 00-orchestrator-core.md
 │   ├── 05-issue-first-workflow.md
 │   ├── 10-agent-routing.md
-│   ├── 15-mcpc.md
 │   ├── 20-code-review-loop.md
 │   ├── 25-documentation-updates.md
 │   ├── 30-prompt-templates.md

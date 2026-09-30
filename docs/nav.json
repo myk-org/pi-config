@@ -1,0 +1,57 @@
+{
+  "_comment": "Sidebar layout for the docs site. Array order is display order, for groups and for pages within a group. A page listed here but missing on disk is a build error; a page on disk but missing here is placed automatically under 'More' and reported in the generator's output. Per-page frontmatter (nav_group / nav_order) overrides this file.",
+  "groups": [
+    {
+      "name": "Getting Started",
+      "pages": ["quickstart", "configuration"]
+    },
+    {
+      "name": "Core Workflows",
+      "pages": [
+        "built-in-workflows",
+        "commands-and-tools",
+        "automating-code-reviews",
+        "custom-slash-commands",
+        "managing-custom-agents",
+        "agents-reference",
+        "rules-and-layers",
+        "using-the-web-dashboard"
+      ]
+    },
+    {
+      "name": "Background & Memory",
+      "pages": [
+        "async-agents-and-cron",
+        "background-dreaming",
+        "memory-architecture",
+        "curating-project-memory"
+      ]
+    },
+    {
+      "name": "Agents & Integrations",
+      "pages": [
+        "inter-agent-communication",
+        "external-ai-agents",
+        "image-generation",
+        "neovim-integration",
+        "discord-bot"
+      ]
+    },
+    {
+      "name": "Providers",
+      "pages": ["acpx-provider", "vertex-claude-provider"]
+    },
+    {
+      "name": "Reference",
+      "pages": [
+        "pi-sidecar",
+        "pi-docsite",
+        "mcp-servers",
+        "cli-reference",
+        "safety-enforcements",
+        "daemon-and-websockets",
+        "btw-command"
+      ]
+    }
+  ]
+}

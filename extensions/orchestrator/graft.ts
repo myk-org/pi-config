@@ -10,7 +10,7 @@ import { createLogger } from "../shared/logger.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
 import { getSetting } from "./project-settings.js";
 import { clearSlot, setSlot } from "./status-bar.js";
-import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
+import { getProjectTmpDir, resolveWorktreeRoot, tryResolveWorktreeRoot } from "./utils.js";
 import { formatCompactTotal } from "../shared/format-total.js";
 
 const exec = promisify(execFile);
@@ -24,10 +24,10 @@ export function withGraftTools(tools: readonly string[] | undefined, enabled: bo
   if (!tools?.length || !enabled) return tools ? [...tools] : undefined;
   return [...new Set([...tools, ...GRAFT_QUERY_TOOLS])];
 }
-export type GraftState = "syncing" | "ready" | "stale" | "failed";
+export type GraftState = "syncing" | "ready" | "stale" | "absent" | "failed";
 export type GraftRun = (args: readonly string[], options: { cwd: string; timeoutMs?: number }) => Promise<{ stdout: string; stderr: string; code: number }>;
 type GraphStatus = "fresh" | "stale" | "absent";
-type Options = { enabled: boolean; setting?: (cwd: string) => boolean; executable?: () => Promise<boolean>; graph?: (cwd: string) => Promise<GraphStatus>; retrieve?: (query: string, cwd: string) => Promise<{ pointers: string[] }>; run?: GraftRun; interactiveTimeoutMs?: number };
+type Options = { enabled: boolean; setting?: (cwd: string) => boolean; executable?: () => Promise<boolean>; graph?: (cwd: string) => Promise<GraphStatus>; retrieve?: (query: string, cwd: string) => Promise<{ pointers: string[] }>; worktree?: (cwd: string) => string | null; run?: GraftRun; interactiveTimeoutMs?: number };
 type StatusTheme = { fg: (color: string, value: string) => string };
 type Hit = { title?: string; pointer?: string; snippet?: string };
 type Ask = { coverage?: number; coverageStrong?: number; hits?: Hit[] };
@@ -35,7 +35,11 @@ type Ask = { coverage?: number; coverageStrong?: number; hits?: Hit[] };
 /** Graft's statusline shape, adapted to Pi's theme API. */
 export function formatGraftFooter({ state, nodeCount, tokenSavings }: { state: GraftState; nodeCount: number; tokenSavings: number }, theme?: StatusTheme): string {
   const fg = (color: string, value: string) => theme?.fg(color, value) ?? value;
-  const freshness = state === "syncing" ? fg("warning", "syncing…") : state === "stale" ? fg("warning", "⚠ stale") : state === "failed" ? fg("error", "failed") : fg("success", "✓ synced");
+  // "absent" is deliberately dim, not error-red: the cwd is not a git worktree,
+  // so no graph is possible. Reporting that as "failed" made an ordinary
+  // directory look like a broken install.
+  const freshness = state === "syncing" ? fg("warning", "syncing…") : state === "stale" ? fg("warning", "⚠ stale") : state === "failed" ? fg("error", "failed") : state === "absent" ? fg("dim", "n/a") : fg("success", "✓ synced");
+  if (state === "absent") return fg("dim", "◤ graft · n/a");
   const parts = [fg("dim", "◤ ") + fg("accent", "graft"), fg("dim", `${nodeCount} nodes`), freshness];
   if (tokenSavings > 0) parts.push(fg("success", `~${formatCompactTotal(tokenSavings)} tok saved`));
   return parts.join(fg("dim", " · "));
@@ -172,6 +176,7 @@ export function createGraftIntegration(options: Options) {
     return result;
   };
   const available = options.executable ?? (async () => (await run(["--version"], { cwd: state.root })).code === 0);
+  const worktree = options.worktree ?? tryResolveWorktreeRoot;
   const graph = options.graph ?? (async cwd => (await run(["check", "--json"], { cwd })).code === 0 ? "fresh" : nodes(cwd) ? "stale" : "absent");
   const refresh = async (): Promise<boolean> => {
     if (child) return false;
@@ -235,15 +240,25 @@ export function createGraftIntegration(options: Options) {
       if (!trusted(ctx)) { invalidate(ctx, "untrusted"); log.info("session_start_exit", { decision: "untrusted" }); return; }
       const enabled = options.setting?.(ctx.cwd) ?? options.enabled;
       if (!enabled) { invalidate(ctx, "disabled"); log.info("session_start_exit", { decision: "disabled" }); return; }
-      registerTools(); const generation = ++state.generation; state.enabled = true; state.refresh = undefined; state.dirty = false; state.root = resolveWorktreeRoot(ctx.cwd); const root = state.root; state.nodeCount = nodes(root); state.value = "failed"; state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
+      // Check for a worktree BEFORE anything goes live. This has to sit above
+      // registerTools() and `state.enabled = true`: with those already set, the
+      // guards compare resolveWorktreeRoot(cwd) against state.root (both the
+      // cwd, since resolution falls back to it) and pass, so the integration
+      // stayed live outside a repo -- a read flipped the footer to "synced" and
+      // every prompt ran a graft check subprocess in a plain directory.
+      if (!worktree(ctx.cwd)) { invalidate(ctx, "not_a_worktree"); setState("absent"); log.info("session_start_exit", { decision: "not_a_worktree", cwd: ctx.cwd }); return; }
+      registerTools(); const generation = ++state.generation; state.enabled = true; state.refresh = undefined; state.dirty = false; state.root = resolveWorktreeRoot(ctx.cwd); const root = state.root; state.nodeCount = nodes(root); state.value = "syncing"; state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
       try { state.store = savingsStore(ctx, root); state.dirtySignal = state.store ? `${state.store}.dirty` : ""; if (state.dirtySignal) { mkdirSync(state.dirtySignal, { recursive: true, mode: 0o700 }); chmodSync(state.dirtySignal, 0o700); } state.tokenSavings = readSavings(state.store); } catch (error: any) { state.store = ""; state.dirtySignal = ""; state.tokenSavings = 0; log.warn("savings_restore_failed", { code: error?.code }); }
-      setState("failed");
+      // Provisional state while we probe. This used to be "failed", which made
+      // every session start — including healthy ones — flash the error-red state
+      // for a moment before settling.
+      setState("syncing");
       if (!child && !isEligibleGraftStartup(event, ctx) && !["new", "reload", "resume", "fork"].includes(event?.reason)) { log.info("session_start_exit", { decision: "ineligible" }); return; }
       if (!child) { const executable = await available(); if (state.generation !== generation || state.root !== root) return; if (!executable) { setState("failed"); log.info("session_start_exit", { decision: "unavailable" }); return; } }
       const status = await graph(root);
       if (state.generation !== generation || state.root !== root) return;
       if (status === "fresh") setState("ready");
-      else { setState(state.nodeCount ? "stale" : "failed"); if (!child) void refresh(); }
+      else { setState(state.nodeCount ? "stale" : "absent"); if (!child) void refresh(); }
       log.info("session_start_exit", { decision: status, nodes: state.nodeCount });
     });
     pi.on("tool_call", (event: any, ctx: any) => {

@@ -151,7 +151,9 @@ Summarize issue #$ARGUMENTS in 5 bullets:
 - missing acceptance criteria
 - likely owner
 - first implementation step
+```
 
+```ts
 # extensions/orchestrator/extended-autocomplete.ts
 
 // 1) Add a completion entry inside the `completions` record
@@ -164,16 +166,9 @@ Summarize issue #$ARGUMENTS in 5 bullets:
 
 // 2) Add the command name to `promptTemplateCommands`
 const promptTemplateCommands = new Set([
-  "external-ai",
-  "pr-review",
-  "issue-review",
-  "coderabbit-rate-limit",
-  "review-local",
-  "release",
-  "review-handler",
-  "cron",
-  "create-skill",
-  "create-coms-feature-manager",
+  "external-ai", "pr-review", "issue-review", "coderabbit-rate-limit",
+  "review-local", "release", "review-handler", "qodo-review", "create-skill",
+  "create-coms-feature-manager", "pi-config-settings",
   "pick-issue",
 ]);
 ```

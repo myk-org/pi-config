@@ -4,7 +4,7 @@ version = "4.6.5"
 description = "CLI utilities for pi orchestrator plugins"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 authors = [{ name = "myk-org" }]
 keywords = ["pi", "cli", "github", "code-review"]
 classifiers = [
@@ -63,6 +63,15 @@ exclude = [
 
 [tool.ruff]
 preview = true
+# Pinned explicitly rather than inferred from requires-python. The project
+# requires Python >= 3.14, but the ruff target is deliberately one lower: PEP 758
+# (unparenthesised `except`) is 3.14-only, and ruff was rewriting scripts/install.py
+# -- the bootstrap installer, which declares >= 3.10 and is run from a raw GitHub
+# URL before anything is installed -- into syntax that fails to parse on 3.10-3.13.
+# The same syntax reached the published pi-sidecar-client 4.6.5, whose floor cannot
+# change without a version bump. We run on 3.14 but only emit <= 3.13 syntax, so
+# portable entry points stay portable.
+target-version = "py313"
 line-length = 120
 fix = true
 output-format = "grouped"
@@ -89,5 +98,15 @@ warn_redundant_casts = true
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
 
+[tool.uv.workspace]
+members = ["packages/pi-docsite"]
+
+[tool.uv.sources]
+# The docs generator is a workspace package; see packages/pi-docsite.
+pi-docsite = { workspace = true }
+
 [dependency-groups]
 tests = ["pytest>=9.0.2"]
+# Regenerating docs/ — only needed when docs change, never at runtime.
+# The generator itself is a workspace package: packages/pi-docsite.
+docs = ["pi-docsite", "types-markdown>=3.5"]

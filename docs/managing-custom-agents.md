@@ -1,3 +1,6 @@
+# Managing Custom Agents
+
+```markdown
 # .pi/agents/security-auditor.md
 ---
 name: security-auditor
@@ -56,6 +59,8 @@ Use these fields:
 
 You can also add optional `provider` and `model` frontmatter if you want that agent to prefer a specific backend.
 
+> **Note:** Project agents under `.pi/agents/` are confirmed with you before the first dispatch in a session. Set `confirmProjectAgents: false` on a `subagent` call to skip the prompt.
+
 > **Warning:** Give agents the fewest tools they need. If an agent can work with `read` alone, do not add write-capable tools. For shell-heavy agents, see [Implementing Command Guards](safety-enforcements.html) for details.
 
 ### 3. Keep the instructions narrow
@@ -76,11 +81,13 @@ A strong prompt is usually better than a long prompt. Short, opinionated instruc
 If you want Pi to pick your specialist from everyday requests, add a project rule that tells the orchestrator when to use it.
 
 ```markdown
-# .pi/rules/custom-agents.md
+# .pi/rules/90-custom-agents.md
 
 - When the task is to audit a third-party repository before adoption, delegate to `security-auditor`.
 - When the task is to run tests and explain failures without fixing code, delegate to `test-runner`.
 ```
+
+Files load alphabetically, so a numeric prefix keeps custom rules after the bundled ones: the package ships `00`-`69`, user rules use `70`-`89`, and project rules use `90`-`99`.
 
 Write the rule in plain language. Be specific about both the trigger and the agent name.
 
@@ -109,6 +116,22 @@ Some specialists should only run inside a specific flow rather than being select
 Built-in workflows already do this for review specialists such as `/issue-review`, `/pr-review`, and `/review-local`. See [Creating Slash Commands](custom-slash-commands.html) for details.
 
 ## Advanced Usage
+
+### Dispatch an agent directly with the `subagent` tool
+
+Chat routing is optional. A prompt template or any agent can call the `subagent` tool by name, which is how the bundled workflows (for example `/implement`, which chains `scout` → `planner` → `worker`) invoke specialists.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `agent` | string | — | Agent name from `name:` frontmatter. |
+| `task` | string | — | What the agent should do. |
+| `cwd` | string | session cwd | Directory the agent works in. Point it at the target path for external repos. |
+| `estimatedSeconds` | number | — | Required for sync calls. At `30` or more, the call must use `async: true`. |
+| `async` | boolean | `false` | Runs detached; the result arrives as a follow-up message. |
+| `agentScope` | `"project"`, `"user"`, or `"both"` | `"both"` | Which agent directories to search. |
+| `confirmProjectAgents` | boolean | `true` | Prompt before using a project agent. |
+
+Use `tasks` for parallel dispatch and `chain` for sequential steps that feed `{previous}` into the next agent.
 
 ### Override order
 
@@ -175,11 +198,12 @@ If the agent needs multiple phases, parallel reviewers, scheduled runs, or backg
 
 ## Troubleshooting
 
-- **Pi does not pick the new agent:** Start a new session, confirm the file is under `.pi/agents/` or `~/.pi/agent/agents/`, and make sure the frontmatter includes both `name:` and `description:`.
+- **Pi does not pick the new agent:** Confirm the file is a `.md` under `.pi/agents/` or `~/.pi/agent/agents/`, and that the frontmatter includes both `name:` and `description:`. Agents are discovered on every `subagent` call, so no session restart is needed — but rules are assembled at session start, so rule changes do need one.
 - **Pi picks the wrong specialist:** Make your routing rule more explicit. If the task is really workflow-only, dispatch it from a slash command instead of relying on everyday chat.
 - **The agent has too much authority:** Reduce the `tools:` list first. Many specialists only need `read` and `bash`.
 - **The agent uses the wrong model:** Check `provider:` / `model:` frontmatter and your `agent_provider`, `agent_model`, and `agent_overrides` settings. See [Configuration & Settings](configuration.html) for details.
-- **A project-level agent is not found from a subdirectory:** Put it under the repository’s `.pi/agents/` folder, then start a new session from anywhere inside that repo.
+- **A project agent is never offered:** It is listed only when `agentScope` includes `project` (the default is `both`), and the first use in a session asks for confirmation.
+- **A project-level agent is not found from a subdirectory:** Subdirectories are fine — `.pi/agents/` is resolved by walking up from the working directory. The usual causes are that no `.pi/agents/` directory exists in any ancestor, or that the file is silently skipped because its frontmatter is missing `name:` or `description:` (both are required).
 
 ## Related Pages
 

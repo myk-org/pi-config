@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>pi-docsite - pi-config</title>
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=e7c0b4379e">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Installation &amp; Quickstart
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Core Workflows</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="automating-code-reviews.html"
+                           class="nav-link">
+                            Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="managing-custom-agents.html"
+                           class="nav-link">
+                            Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="using-the-web-dashboard.html"
+                           class="nav-link">
+                            Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="curating-project-memory.html"
+                           class="nav-link">
+                            Curating Project Memory
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Inter-Agent Communication Network
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="external-ai-agents.html"
+                           class="nav-link">
+                            External AI Agents &amp; CLI
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Discord Bot Notifications
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            ACPX Provider Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-docsite.html"
+                           class="nav-link active" aria-current="page">
+                            pi-docsite
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk_pi_tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
+                </a>
+
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="pi-docsite">pi-docsite</h1>
+<p>The docs site you are reading is generated by <code>pi-docsite</code>, a package in this
+monorepo. It is also a standalone product — you can use it in any project that keeps
+its documentation as Markdown.</p>
+<p>It renders a directory of <code>*.md</code> into a static site: sidebar navigation, full-text
+search, <code>llms.txt</code> / <code>llms-full.txt</code> for LLM consumption, and a search index. No config
+file, no build framework, no docsfy.</p>
+<h2 id="run-it">Run it</h2>
+<p>No install step — <code>uvx</code> runs it in an ephemeral environment:</p>
+<div class="highlight"><pre><span></span><code>uvx<span class="w"> </span>pi-docsite<span class="w"> </span>--docs-dir<span class="w"> </span>docs<span class="w"> </span>--tagline<span class="w"> </span><span class="s2">"One line describing this project"</span>
+</code></pre></div>
+
+<p>From this repository, where it is a workspace package:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>--group<span class="w"> </span>docs<span class="w"> </span>pi-docsite<span class="w"> </span>--docs-dir<span class="w"> </span>docs<span class="w"> </span>--tagline<span class="w"> </span><span class="s2">"..."</span>
+</code></pre></div>
+
+<p>To add it to a project that depends on it:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>add<span class="w"> </span>pi-docsite
+</code></pre></div>
+
+<p>Every value is a flag with a derived default, so the same command works in any repo:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--docs-dir</code></td>
+<td><code>docs/</code> next to the script</td>
+</tr>
+<tr>
+<td><code>--project-name</code></td>
+<td>the git remote's repo name</td>
+</tr>
+<tr>
+<td><code>--repo-url</code></td>
+<td>git remote <code>origin</code></td>
+</tr>
+<tr>
+<td><code>--tagline</code></td>
+<td>empty</td>
+</tr>
+</tbody>
+</table></div>
+<p>Identity follows <code>--docs-dir</code> rather than the script's own location, so pointing it at
+another project's docs directory renders that project's site with that project's name.</p>
+<h2 id="regenerating-this-site">Regenerating this site</h2>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>--group<span class="w"> </span>docs<span class="w"> </span>pi-docsite<span class="w"> </span>--docs-dir<span class="w"> </span>docs<span class="w"> </span>--tagline<span class="w"> </span><span class="s2">"Agent orchestration for pi: ..."</span>
+</code></pre></div>
+
+<p>The output is committed. Edit the Markdown and rebuild — never hand-edit the generated
+<code>.html</code>, <code>llms.txt</code>, <code>llms-full.txt</code>, or <code>search-index.json</code>.</p>
+<h2 id="adding-a-page">Adding a page</h2>
+<p><strong>Write the <code>.md</code> file, add one line to <code>docs/nav.json</code>, rebuild.</strong> Nothing in the
+generator needs editing, and a page cannot be silently invisible.</p>
+<p>Each page needs exactly one H1 — that is its title and its sidebar entry. Headings
+inside fenced code blocks do not count.</p>
+<h3 id="layout-docsnavjson">Layout: <code>docs/nav.json</code></h3>
+<p>The sidebar structure lives in one reviewable file. Array order is display order, for
+groups and for pages within a group:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"groups"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Getting Started"</span><span class="p">,</span><span class="w"> </span><span class="nt">"pages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"quickstart"</span><span class="p">,</span><span class="w"> </span><span class="s2">"configuration"</span><span class="p">]</span><span class="w"> </span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Reference"</span><span class="p">,</span><span class="w"> </span><span class="nt">"pages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"cli-reference"</span><span class="p">,</span><span class="w"> </span><span class="s2">"safety-enforcements"</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Two rules make it safe to let an LLM drive this:</p>
+<ul>
+<li>
+<p>A slug in <code>nav.json</code> with <strong>no</strong> <code>.md</code> behind it is a <strong>build error</strong>. That is a
+  renamed or deleted page, and ignoring it would leave a dead sidebar link.</p>
+</li>
+<li>
+<p>A <code>.md</code> <strong>not</strong> listed in <code>nav.json</code> is still built and listed under a fallback
+  group, and the generator prints a note naming it. A forgotten page is visible, never
+  missing.</p>
+</li>
+</ul>
+<p>Reorder by reordering the array. Renaming files to reorder churns git history and
+breaks links to the old path.</p>
+<h3 id="per-page-override">Per-page override</h3>
+<p>Frontmatter overrides the layout for a single page:</p>
+<div class="highlight"><pre><span></span><code>---
+nav_group: Reference
+<span class="gu">nav_order: 30</span>
+<span class="gu">---</span>
+
+<span class="gh"># My Page Title</span>
+</code></pre></div>
+
+<p>Precedence, highest first: frontmatter, <code>nav.json</code>, then the fallback group.</p>
+<h2 id="what-gets-generated">What gets generated</h2>
+<p>Written into <code>--docs-dir</code> next to the sources:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Output</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>&lt;slug&gt;.html</code></td>
+<td>one page per <code>.md</code></td>
+</tr>
+<tr>
+<td><code>index.html</code></td>
+<td>landing page with the grouped sidebar</td>
+</tr>
+<tr>
+<td><code>search-index.json</code></td>
+<td>full page text for search, fetched once by every page</td>
+</tr>
+<tr>
+<td><code>llms.txt</code></td>
+<td>short page index for LLM consumption</td>
+</tr>
+<tr>
+<td><code>llms-full.txt</code></td>
+<td>full page text for LLM consumption</td>
+</tr>
+<tr>
+<td><code>assets/</code></td>
+<td>CSS and JS</td>
+</tr>
+</tbody>
+</table></div>
+<p>Stale <code>&lt;slug&gt;.html</code> files with no matching <code>.md</code> are removed. <code>*.md</code> sources and
+<code>.nojekyll</code> are never touched.</p>
+<h2 id="determinism">Determinism</h2>
+<p>The same Markdown always produces the same bytes. Rendering twice and diffing is empty,
+so a docs change is reviewable and <strong>unrelated churn is a reliable signal that
+something actually changed</strong> — not a timestamp or a reordering.</p>
+<h2 id="search-works-offline">Search works offline</h2>
+<p>The search index is written once and <strong>fetched</strong> by every page rather than inlined,
+which keeps each page small. Browsers block <code>fetch()</code> of a local file over <code>file://</code>, so
+serve the site over HTTP for search to work.</p>
+<h2 id="ask-your-llm">Ask your LLM</h2>
+<p>A ready-made skill ships inside the package at <code>skill/SKILL.md</code>, with the commands,
+the <code>nav.json</code> contract, and the failure modes. Copy it where your agent looks for
+skills so the model can drive the generator without being told the details:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>--package<span class="w"> </span>pi-docsite<span class="w"> </span>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">"</span>
+<span class="s2">import pi_docsite, pathlib, shutil</span>
+<span class="s2">src = pathlib.Path(pi_docsite.__file__).parent / 'skill' / 'SKILL.md'</span>
+<span class="s2">dst = pathlib.Path.home() / '.pi/agent/skills/pi-docsite'</span>
+<span class="s2">dst.mkdir(parents=True, exist_ok=True)</span>
+<span class="s2">shutil.copy(src, dst / 'SKILL.md')</span>
+<span class="s2">print('installed to', dst)</span>
+<span class="s2">"</span>
+</code></pre></div>
+
+<h2 id="troubleshooting">Troubleshooting</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Cause and fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>nav.json lists 'x' but docs/x.md does not exist</code></td>
+<td>The page was renamed or deleted. Fix <code>nav.json</code>.</td>
+</tr>
+<tr>
+<td><code>note: N page(s) not in nav.json</code></td>
+<td>The page built fine but has no curated sidebar position. Add it to <code>nav.json</code>.</td>
+</tr>
+<tr>
+<td><code>docs/&lt;slug&gt;.md has N H1 headings, expected 1</code></td>
+<td>Add exactly one real H1, or close the code fence swallowing it.</td>
+</tr>
+<tr>
+<td>Search returns nothing</td>
+<td>Open the browser console. <code>search index unavailable</code> means the page was opened over <code>file://</code>, where the fetch is blocked. Serve it over HTTP.</td>
+</tr>
+<tr>
+<td>Rebuild shows unrelated diffs</td>
+<td>That is a determinism bug, not a stale build.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="requirements">Requirements</h2>
+<p>Python 3.14+, with <code>markdown</code>, <code>jinja2</code>, and <code>pygments</code>.</p>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="quickstart.html">Installation &amp; Quickstart</a></li>
+<li><a href="configuration.html">Configuration</a></li>
+</ul>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="pi-sidecar.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Pi Sidecar HTTP API</span>
+                </a>
+
+
+                <a href="mcp-servers.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">MCP Servers</span>
+                </a>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#run-it">Run it</a></li>
+<li><a href="#regenerating-this-site">Regenerating this site</a></li>
+<li><a href="#adding-a-page">Adding a page</a><ul>
+<li><a href="#layout-docsnavjson">Layout: docs/nav.json</a></li>
+<li><a href="#per-page-override">Per-page override</a></li>
+</ul>
+</li>
+<li><a href="#what-gets-generated">What gets generated</a></li>
+<li><a href="#determinism">Determinism</a></li>
+<li><a href="#search-works-offline">Search works offline</a></li>
+<li><a href="#ask-your-llm">Ask your LLM</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#requirements">Requirements</a></li>
+<li><a href="#related-pages">Related Pages</a></li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            Built from <code>docs/*.md</code> by <code>pi-docsite</code>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js?v=e7c0b4379e"></script>
+
+    <script src="assets/search.js?v=e7c0b4379e"></script>
+    <script src="assets/copy.js?v=e7c0b4379e"></script>
+    <script src="assets/callouts.js?v=e7c0b4379e"></script>
+    <script src="assets/scrollspy.js?v=e7c0b4379e"></script>
+    <script src="assets/codelabels.js?v=e7c0b4379e"></script>
+    <script src="assets/github.js?v=e7c0b4379e"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+<!-- generated by pi-docsite -->
+</body>
+</html>

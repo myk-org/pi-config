@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Curating Project Memory - pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
-    <link rel="stylesheet" href="assets/style.css">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=e7c0b4379e">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,45 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -57,9 +85,51 @@
                     </li>
 
                     <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="using-the-web-dashboard.html"
                            class="nav-link">
                             Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
                         </a>
                     </li>
 
@@ -70,89 +140,33 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Creating Slash Commands
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Implementing Command Guards
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
-                           class="nav-link">
-                            myk_pi_tools CLI Reference
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration.html"
+                        <a href="image-generation.html"
                            class="nav-link">
-                            Configuration &amp; Settings
+                            Image Generation
                         </a>
                     </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="memory-architecture.html"
-                           class="nav-link">
-                            Memory Architecture
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="daemon-and-websockets.html"
-                           class="nav-link">
-                            Daemon &amp; Websocket Networking
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="neovim-integration.html"
@@ -168,10 +182,17 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
                     <li>
-                        <a href="image-generation.html"
+                        <a href="acpx-provider.html"
                            class="nav-link">
-                            Image Generation
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -182,6 +203,13 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
@@ -189,66 +217,45 @@
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="external-ai-agents.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
+                            pi-docsite
                         </a>
                     </li>
 
                     <li>
-                        <a href="inter-agent-communication.html"
+                        <a href="mcp-servers.html"
                            class="nav-link">
-                            Inter-Agent Communication Network
+                            MCP Servers
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="background-dreaming.html"
+                        <a href="cli-reference.html"
                            class="nav-link">
-                            Background Memory Consolidation (Dreaming)
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
-                <ul class="nav-group-pages">
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="daemon-and-websockets.html"
                            class="nav-link">
-                            ACPX Provider Integration
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +280,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -301,34 +308,74 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="project-preference">Project preference</h1>
-<p>myk-pi-tools memory add -c preference -s "Always use uv run" --pinned</p>
-<h1 id="architectural-decision">Architectural decision</h1>
-<p>myk-pi-tools memory add -c decision -s "Use Redis for shared caching"</p>
-<h1 id="repeated-pitfall">Repeated pitfall</h1>
-<p>myk-pi-tools memory add -c mistake -s "Buildah chown -R skips the target dir on this OS"</p>
-<div class="highlight"><pre><span></span><code>Use short, specific summaries. The CLI accepts these categories:
+                    <h1 id="curating-project-memory">Curating Project Memory</h1>
+<p>Project memory is what Pi carries from one session to the next. This page covers adding entries yourself, letting Pi capture them automatically, and auditing what it has learned. You should care because memory you save once stops you from repeating yourself, and memory you let accumulate becomes the basis for skills and enforced rules.</p>
+<h2 id="the-big-picture">The Big Picture</h2>
+<p>Memories live as plain Markdown bullets under <code>.pi/memory/topics/</code>, one file per category. Two entry points write to them:</p>
+<ul>
+<li>The <code>myk-pi-tools memory</code> CLI, for entries you decide on yourself.</li>
+<li>Pi's automatic capture, for preferences it notices in your messages.</li>
+</ul>
+<h2 id="quick-example">Quick Example</h2>
+<div class="highlight"><pre><span></span><code><span class="c1"># Project preference</span>
+myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>preference<span class="w"> </span>-s<span class="w"> </span><span class="s2">"Always use uv run"</span><span class="w"> </span>--pinned
 
-| Category | Use it for |
-|---|---|
-| `preference` | How you want work done |
-| `decision` | A project choice that should stay consistent |
-| `mistake` | A failure mode worth avoiding |
-| `pattern` | A recurring convention or approach |
-| `lesson` | A correction or practical takeaway |
-| `done` | A completed milestone worth remembering |
+<span class="c1"># Architectural decision</span>
+myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>decision<span class="w"> </span>-s<span class="w"> </span><span class="s2">"Use Redis for shared caching"</span>
 
-&gt; **Tip:** Keep each memory to one line. Short, concrete entries are easier for Pi to reuse well.
+<span class="c1"># Repeated pitfall</span>
+myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>mistake<span class="w"> </span>-s<span class="w"> </span><span class="s2">"Buildah chown -R skips the target dir on this OS"</span>
+</code></pre></div>
 
-### 3. Pin rules that should not fade
-
-```bash
-myk-pi-tools memory add -c preference -s &quot;Always use uv run&quot; --pinned
+<h2 id="step-by-step">Step-by-Step</h2>
+<h3 id="1-save-a-memory-from-the-cli">1. Save a memory from the CLI</h3>
+<p>Run <code>myk-pi-tools memory add -c &lt;category&gt; -s "&lt;summary&gt;"</code> from the project root. Both <code>-c</code> and <code>-s</code> are required.</p>
+<h3 id="2-choose-the-right-category">2. Choose the right category</h3>
+<p>Use short, specific summaries. The CLI accepts these categories:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Use it for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>preference</code></td>
+<td>How you want work done</td>
+</tr>
+<tr>
+<td><code>decision</code></td>
+<td>A project choice that should stay consistent</td>
+</tr>
+<tr>
+<td><code>mistake</code></td>
+<td>A failure mode worth avoiding</td>
+</tr>
+<tr>
+<td><code>pattern</code></td>
+<td>A recurring convention or approach</td>
+</tr>
+<tr>
+<td><code>lesson</code></td>
+<td>A correction or practical takeaway</td>
+</tr>
+<tr>
+<td><code>done</code></td>
+<td>A completed milestone worth remembering</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>Tip:</strong> Keep each memory to one line. Short, concrete entries are easier for Pi to reuse well.</p>
+</blockquote>
+<h3 id="3-pin-rules-that-should-not-fade">3. Pin rules that should not fade</h3>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>preference<span class="w"> </span>-s<span class="w"> </span><span class="s2">"Always use uv run"</span><span class="w"> </span>--pinned
 </code></pre></div>
 
 <p>Use <code>--pinned</code> for rules you want to keep stable over time. Pinned entries are protected during background cleanup and consolidation.</p>
 <p>A good rule of thumb:</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>If the memory is...</th>
@@ -349,12 +396,13 @@ myk-pi-tools memory add -c preference -s &quot;Always use uv run&quot; --pinned
 <td>regular memory, only if it will matter again</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <h3 id="4-save-memories-directly-from-chat-when-that-is-faster">4. Save memories directly from chat when that is faster</h3>
-<div class="highlight"><pre><span></span><code>/remember Always use uv run for Python commands in this repo
+<p>Inside a Pi session, just ask for it in plain language, or call the <code>memory_add</code> tool directly:</p>
+<div class="highlight"><pre><span></span><code>Remember that we always use uv run for Python commands in this repo.
 </code></pre></div>
 
-<p>Use <code>/remember</code> when you are already in a Pi session and want to save something immediately without leaving chat. It stores the result as a pinned project memory.</p>
+<p>The <code>memory_add</code> tool takes <code>category</code>, <code>text</code>, and an optional <code>pinned</code> flag, and writes the same topic file the CLI does. Use this when you are already in a session and want to save something without leaving chat.</p>
 <h3 id="5-audit-memory-quality-and-promotion-status">5. Audit memory quality and promotion status</h3>
 <div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>status
 </code></pre></div>
@@ -375,6 +423,12 @@ myk-pi-tools memory add -c preference -s &quot;Always use uv run&quot; --pinned
 <li>“never use…”</li>
 </ul>
 <p>When those statements are clear enough, Pi records them as project preferences and reinforces them when they show up again later.</p>
+<p>Automatic capture has three guards worth knowing:</p>
+<ul>
+<li>Messages shorter than 20 characters are ignored.</li>
+<li>Anything starting with <code>/</code> is skipped, so slash commands never become memories.</li>
+<li>The same preference is not re-extracted within a one-hour cooldown.</li>
+</ul>
 <blockquote>
 <p><strong>Note:</strong> Automatic capture works best when you phrase the rule as a short, direct instruction instead of a long explanation.</p>
 </blockquote>
@@ -408,7 +462,7 @@ myk-pi-tools memory add -c preference -s &quot;Always use uv run&quot; --pinned
 <h3 id="know-when-to-use-memory-versus-hard-guards">Know when to use memory versus hard guards</h3>
 <p>Use memory for guidance such as preferences, patterns, and decisions. Use a command guard when a rule must be enforced mechanically, not just remembered.</p>
 <p>Examples:</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Need</th>
@@ -433,12 +487,12 @@ myk-pi-tools memory add -c preference -s &quot;Always use uv run&quot; --pinned
 <td>Command guard</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>See <a href="safety-enforcements.html">Implementing Command Guards</a> for details.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
 <li><strong>A saved rule does not seem to affect later sessions:</strong> Run <code>myk-pi-tools memory show</code> and confirm the entry is present. If it is critical, save it again as a pinned memory with a shorter, clearer summary.</li>
-<li><strong>Automatic background consolidation does not run:</strong> If you are using ACPX-backed async work, make sure <code>async_llm_provider</code> and <code>async_llm_model</code> are configured. See <a href="configuration.html">Configuration &amp; Settings</a> for details.</li>
+<li><strong>Automatic background consolidation does not run:</strong> If you are on an ACPX-backed provider, set both <code>internal_operations_provider</code> and <code>internal_operations_model</code> — dreaming is skipped outright otherwise. See <a href="configuration.html">Configuration &amp; Settings</a>.</li>
 <li><strong>Memory feels too noisy or repetitive:</strong> Check <code>myk-pi-tools memory status</code>, keep entries one-line and specific, then run <code>/dream</code> to consolidate the store.</li>
 <li><strong>You need deeper scoring and lifecycle details:</strong> See <a href="memory-architecture.html">Memory Architecture</a> for details.</li>
 </ul>
@@ -454,15 +508,15 @@ myk-pi-tools memory add -c preference -s &quot;Always use uv run&quot; --pinned
             </article>
             <nav class="page-nav">
 
-                <a href="using-the-web-dashboard.html" class="page-nav-link page-nav-prev">
+                <a href="memory-architecture.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Using the Web Dashboard</span>
+                    <span class="page-nav-title">Memory Architecture</span>
                 </a>
 
 
-                <a href="btw-command.html" class="page-nav-link page-nav-next">
+                <a href="inter-agent-communication.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Asking Side Questions with /btw</span>
+                    <span class="page-nav-title">Inter-Agent Communication Network</span>
                 </a>
 
             </nav>
@@ -472,8 +526,16 @@ myk-pi-tools memory add -c preference -s &quot;Always use uv run&quot; --pinned
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
+<li><a href="#the-big-picture">The Big Picture</a></li>
+<li><a href="#quick-example">Quick Example</a></li>
+<li><a href="#step-by-step">Step-by-Step</a><ul>
+<li><a href="#1-save-a-memory-from-the-cli">1. Save a memory from the CLI</a></li>
+<li><a href="#2-choose-the-right-category">2. Choose the right category</a></li>
+<li><a href="#3-pin-rules-that-should-not-fade">3. Pin rules that should not fade</a></li>
 <li><a href="#4-save-memories-directly-from-chat-when-that-is-faster">4. Save memories directly from chat when that is faster</a></li>
 <li><a href="#5-audit-memory-quality-and-promotion-status">5. Audit memory quality and promotion status</a></li>
+</ul>
+</li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
 <li><a href="#let-pi-capture-preferences-automatically">Let Pi capture preferences automatically</a></li>
 <li><a href="#inspect-where-memory-is-stored">Inspect where memory is stored</a></li>
@@ -496,10 +558,7 @@ myk-pi-tools memory add -c preference -s &quot;Always use uv run&quot; --pinned
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>pi-docsite</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>
@@ -507,13 +566,14 @@ myk-pi-tools memory add -c preference -s &quot;Always use uv run&quot; --pinned
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=e7c0b4379e"></script>
+
+    <script src="assets/search.js?v=e7c0b4379e"></script>
+    <script src="assets/copy.js?v=e7c0b4379e"></script>
+    <script src="assets/callouts.js?v=e7c0b4379e"></script>
+    <script src="assets/scrollspy.js?v=e7c0b4379e"></script>
+    <script src="assets/codelabels.js?v=e7c0b4379e"></script>
+    <script src="assets/github.js?v=e7c0b4379e"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');
@@ -559,5 +619,6 @@ myk-pi-tools memory add -c preference -s &quot;Always use uv run&quot; --pinned
     }
 })();
 </script>
+<!-- generated by pi-docsite -->
 </body>
 </html>

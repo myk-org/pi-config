@@ -37,7 +37,7 @@ memory_add(
 
 This blocks both `git push --force` and `git push --force-with-lease`. Use `bash_regex` when a simple substring is too broad or would miss important variants.
 
-> **Tip:** Keep regexes short and targeted. This matcher is for command guards, not full shell parsing.
+> **Tip:** Keep regexes short and targeted. This matcher is for command guards, not full shell parsing. Patterns longer than 200 characters are ignored, an invalid pattern is skipped silently, and only the first 4000 characters of a command are tested.
 
 ## Warn when editing secret files
 
@@ -71,7 +71,7 @@ memory_add(
 
 This adds a semantic verifier instead of a trigger/action pair. If Pi runs `gh pr merge` without calling `ask_user` first, the turn is flagged as a violation.
 
-> **Note:** This checks ordering inside a single turn: `ask_user` must happen before the merge command.
+> **Note:** This checks ordering inside a single turn: `ask_user` must happen before the merge command. The second half is a plain substring matched against `bash` command strings only, and verifiers are evaluated at turn end — they report a violation rather than blocking the call.
 
 ## Make the repo read-only for direct edits
 
@@ -103,10 +103,6 @@ These rules block tool calls by exact tool name rather than by shell text. Use `
 Use this when you want Pi to perform a tightly controlled check right after a successful change.
 
 ```text
-# In your shell before starting pi
-export PI_ENFORCEMENT_ALLOWED_COMMANDS="git diff -- Dockerfile"
-
-# In pi chat
 memory_add(
   text="Show the Dockerfile diff after every edit",
   category="pattern",
@@ -115,13 +111,21 @@ memory_add(
 )
 ```
 
-This runs `git diff -- Dockerfile` immediately after a matching `write` or `edit` succeeds, and only because the command is allowlisted exactly. Use this for short, deterministic checks that you want attached to a specific kind of edit.
+This runs `git diff -- Dockerfile` immediately after a matching `write` or `edit` succeeds. Use this for short, deterministic checks that you want attached to a specific kind of edit.
 
-> **Warning:** Allowlist entries must match exactly, character for character.
+Unlike `block` and `warn`, `run_after` actually executes a shell command, so it is gated. Without configuration the command runs as written. To restrict it, set the `enforcement_allowed_commands` allowlist — this is the only allowlist in the enforcement path:
 
-- To allow more than one follow-up command, use a colon-separated list:
-  `export PI_ENFORCEMENT_ALLOWED_COMMANDS="git diff -- Dockerfile:git status --short"`
-- Keep follow-up commands fast so they do not slow down normal edits
+```bash
+# In your shell before starting pi
+export PI_ENFORCEMENT_ALLOWED_COMMANDS="git diff -- Dockerfile:git status --short"
+```
+
+Or set `enforcement_allowed_commands` in `pi-config-settings.json`. Once the setting is non-empty, a `run_after` command not in the allowlist is refused with `Blocked: command not in enforcement_allowed_commands allowlist` and does not execute.
+
+> **Warning:** Allowlist entries are colon-separated and matched exactly, character for character, after trimming — no prefix matching, so `git diff` in the list does not permit `git diff -- Dockerfile`. An empty allowlist (the default) allows everything.
+
+- Independently of the allowlist, `run_after` still refuses commands matching `curl`/`wget` piped into a shell, `rm -rf /`-style paths, `sudo`, and world-writable `chmod`
+- Each command runs with a 60s timeout; keep follow-up commands fast so they do not slow down normal edits
 
 ## Related Pages
 

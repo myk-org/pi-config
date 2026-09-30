@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Inter-Agent Communication Network - pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
-    <link rel="stylesheet" href="assets/style.css">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=e7c0b4379e">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,45 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -57,9 +85,51 @@
                     </li>
 
                     <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="using-the-web-dashboard.html"
                            class="nav-link">
                             Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
                         </a>
                     </li>
 
@@ -70,89 +140,33 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
-                           class="nav-link">
-                            Creating Slash Commands
+                        <a href="inter-agent-communication.html"
+                           class="nav-link active" aria-current="page">
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Implementing Command Guards
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
-                           class="nav-link">
-                            myk_pi_tools CLI Reference
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration.html"
+                        <a href="image-generation.html"
                            class="nav-link">
-                            Configuration &amp; Settings
+                            Image Generation
                         </a>
                     </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="memory-architecture.html"
-                           class="nav-link">
-                            Memory Architecture
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="daemon-and-websockets.html"
-                           class="nav-link">
-                            Daemon &amp; Websocket Networking
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="neovim-integration.html"
@@ -168,10 +182,17 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
                     <li>
-                        <a href="image-generation.html"
+                        <a href="acpx-provider.html"
                            class="nav-link">
-                            Image Generation
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -182,6 +203,13 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
@@ -189,66 +217,45 @@
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="external-ai-agents.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
+                            pi-docsite
                         </a>
                     </li>
 
                     <li>
-                        <a href="inter-agent-communication.html"
-                           class="nav-link active" aria-current="page">
-                            Inter-Agent Communication Network
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="background-dreaming.html"
+                        <a href="cli-reference.html"
                            class="nav-link">
-                            Background Memory Consolidation (Dreaming)
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
-                <ul class="nav-group-pages">
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="daemon-and-websockets.html"
                            class="nav-link">
-                            ACPX Provider Integration
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +280,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -304,203 +311,217 @@
                     <h1 id="inter-agent-communication-network">Inter-Agent Communication Network</h1>
 <p><code>pi-config</code> includes an on-demand inter-agent messaging system so multiple Pi sessions can discover each other, exchange prompts, and hand work back and forth without leaving the terminal. You should care because this is what makes peer review loops, planner/worker splits, and background helper sessions feel like one coordinated workspace instead of a pile of disconnected terminals.</p>
 <h2 id="the-big-picture">The Big Picture</h2>
-<p>Two communication modes exist in the codebase:</p>
-<table>
+<p><code>coms</code> is a peer-to-peer messaging system. Each Pi session opens its own local endpoint and registers it in a project-scoped registry, so sessions in the same repository find each other directly. There is no central hub.</p>
+<div class="table-wrap"><table>
 <thead>
 <tr>
-<th style="text-align: left;">System</th>
-<th style="text-align: left;">How it is activated</th>
-<th style="text-align: left;">Transport</th>
-<th style="text-align: left;">Tool names</th>
-<th style="text-align: left;">Best fit</th>
+<th>Aspect</th>
+<th>How it works</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>coms</code></td>
-<td style="text-align: left;"><code>/coms start</code></td>
-<td style="text-align: left;">Direct peer-to-peer</td>
-<td style="text-align: left;"><code>coms_list</code>, <code>coms_send</code>, <code>coms_get</code></td>
-<td style="text-align: left;">Simple local session-to-session messaging</td>
+<td>Transport</td>
+<td>Unix domain socket on POSIX, named pipe on Windows</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>coms-net</code></td>
-<td style="text-align: left;"><code>/coms-net start</code> or <code>/coms-net connect</code></td>
-<td style="text-align: left;">Local HTTP + SSE hub</td>
-<td style="text-align: left;"><code>coms_net_list</code>, <code>coms_net_send</code>, <code>coms_net_get</code></td>
-<td style="text-align: left;">More durable multi-session coordination</td>
+<td>Registry</td>
+<td><code>~/.pi/coms/projects/&lt;project&gt;/agents/&lt;name&gt;.json</code></td>
+</tr>
+<tr>
+<td>Sockets</td>
+<td><code>~/.pi/coms/sockets/&lt;session-id&gt;.sock</code></td>
+</tr>
+<tr>
+<td>Heartbeat</td>
+<td>Every 30 seconds</td>
+</tr>
+<tr>
+<td>Inactivity timeout</td>
+<td><code>coms_timeout_ms</code>, default 30 minutes</td>
+</tr>
+<tr>
+<td>Max relay hops</td>
+<td><code>coms_max_hops</code>, default 5</td>
 </tr>
 </tbody>
-</table>
-<p>This page focuses on <code>coms-net</code>, the networked mode built around a local hub server.</p>
+</table></div>
 <h3 id="main-components">Main Components</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
-<th style="text-align: left;">Component</th>
-<th style="text-align: left;">What it does</th>
-<th style="text-align: left;">User-visible effect</th>
+<th>Component</th>
+<th>What it does</th>
+<th>User-visible effect</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>/coms-net</code> wrapper</td>
-<td style="text-align: left;">Starts, connects to, disconnects from, or stops the hub</td>
-<td style="text-align: left;">You can bring the network up only when you need it</td>
+<td>Launcher wrapper</td>
+<td>Registers a session with its name, purpose, model, color, and cwd</td>
+<td>Each session appears as a named peer</td>
 </tr>
 <tr>
-<td style="text-align: left;">Hub server</td>
-<td style="text-align: left;">Tracks peers, queues messages, and pushes updates over SSE</td>
-<td style="text-align: left;">Replies arrive automatically while you keep working</td>
+<td>Registry files</td>
+<td>One JSON entry per live session, grouped by project</td>
+<td>Peers from other repos stay invisible</td>
 </tr>
 <tr>
-<td style="text-align: left;">Client in each Pi session</td>
-<td style="text-align: left;">Registers identity, sends heartbeats, and receives inbound work</td>
-<td style="text-align: left;">Each session can appear as a named peer</td>
+<td>Pool widget</td>
+<td>Renders connected peers, queue depth, and context usage</td>
+<td>You can see who is online and busy at a glance</td>
 </tr>
 <tr>
-<td style="text-align: left;">Pool widget</td>
-<td style="text-align: left;">Renders connected peers, status, queue depth, and context usage</td>
-<td style="text-align: left;">You can see who is online and busy at a glance</td>
+<td>Messaging tools</td>
+<td><code>coms_list</code>, <code>coms_send</code>, <code>coms_get</code></td>
+<td>Agents can discover peers, delegate work, and inspect message state</td>
 </tr>
 <tr>
-<td style="text-align: left;">Messaging tools</td>
-<td style="text-align: left;"><code>coms_net_list</code>, <code>coms_net_send</code>, <code>coms_net_get</code></td>
-<td style="text-align: left;">Agents can discover peers, delegate work, and inspect message state</td>
+<td>Queue and task tools</td>
+<td><code>coms_queue_*</code> and <code>coms_task_*</code></td>
+<td>Queued messages and delegated tasks can be inspected and edited</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <h3 id="message-flow">Message Flow</h3>
 <ol>
-<li>A session activates <code>coms-net</code> and registers with the hub.</li>
-<li>The hub assigns that session a project-scoped identity and opens an SSE stream.</li>
-<li>Another session calls <code>coms_net_send</code> with a peer name and prompt.</li>
-<li>The hub either delivers the message immediately or queues it if the target is busy.</li>
+<li>A session starts and registers itself under <code>~/.pi/coms/projects/&lt;project&gt;/agents/</code>.</li>
+<li>It opens a local socket and begins sending heartbeats.</li>
+<li>Another session calls <code>coms_send</code> with a target peer name and a prompt.</li>
+<li>The message is delivered over the target's socket, or queued if the target is mid-turn.</li>
 <li>The receiving session gets the prompt as a follow-up turn in Pi.</li>
 <li>The receiver answers normally in chat.</li>
-<li>The extension captures that final assistant reply and posts it back to the hub.</li>
+<li>The extension captures that final assistant reply and sends it back over the socket.</li>
 <li>The original sender receives the result as a follow-up message automatically.</li>
 </ol>
 <blockquote>
-<p><strong>Tip:</strong> In normal use, you send with <code>coms_net_send</code>, then end the turn. You do not need a polling loop unless you explicitly want a non-blocking status check with <code>coms_net_get</code>.</p>
+<p><strong>Tip:</strong> In normal use, you send with <code>coms_send</code>, then end the turn. You do not need a polling loop unless you explicitly want a non-blocking status check with <code>coms_get</code>.</p>
 </blockquote>
 <h2 id="key-concepts">Key Concepts</h2>
 <h3 id="project-scoped-peer-discovery">Project-Scoped Peer Discovery</h3>
-<p><code>coms-net</code> isolates peers by project namespace. If you do not pass <code>--project</code>, the wrapper derives one from the current working directory, so sessions in different repos do not accidentally see each other.</p>
-<p>That is why <code>/coms-net</code> only shows peers from the same project group by default. The effect for users is simple: start multiple Pi sessions in one repo, and they naturally discover one another.</p>
+<p><code>coms</code> isolates peers by project namespace. If you do not pass <code>--project</code>, the wrapper derives one from the current working directory, so sessions in different repos do not accidentally see each other.</p>
+<p>That is why the pool only shows peers from the same project group by default. The effect for users is simple: start multiple Pi sessions in one repo, and they naturally discover one another. Use <code>coms_list</code> with <code>project: "*"</code> to see across all projects.</p>
 <h3 id="named-identities">Named Identities</h3>
-<p>Each session registers with a peer identity: name, purpose, model, color, cwd, and status. The wrapper uses <code>--cname</code> for peer naming so it does not conflict with Pi's own <code>--name</code> behavior.</p>
+<p>Each session registers with a peer identity: name, purpose, model, color, and cwd. The wrapper uses <code>--cname</code> for peer naming so it does not conflict with Pi's own <code>--name</code> behavior; passing <code>--name</code> is rejected with a "use --cname instead of --name" error.</p>
 <p>This is what makes peer lists readable instead of showing only opaque session IDs. A user can target <code>planner</code>, <code>worker</code>, or another named peer directly rather than guessing which terminal to message.</p>
 <h3 id="heartbeats-and-presence">Heartbeats and Presence</h3>
-<p>Every connected session sends heartbeat updates on a fixed interval. Those updates include context-window usage, queue depth, and optional task summary data.</p>
+<p>Every connected session sends heartbeat updates every 30 seconds. Those updates include context-window usage, queue depth, and optional task summary data.</p>
+<p>Dead peers are removed from the registry in two phases. A newly registered entry gets a grace period (<code>coms_entry_grace_period_ms</code>, default 30 seconds) so a just-booted session is never pruned early. After that, the entry is probed by connecting to its socket: peers that respond are kept, peers that do not are removed from the registry. Timestamp staleness alone never prunes an entry, which is what keeps laptop suspend/resume from wiping out live peers.</p>
 <p>For users, that turns into a live presence model:</p>
 <ul>
-<li><code>online</code> means the peer is healthy and actively reporting</li>
-<li><code>stale</code> means heartbeats stopped recently</li>
-<li><code>offline</code> means the peer was removed from the active registry</li>
+<li>a peer in the list answered a probe and is reachable</li>
+<li>a peer missing from the list was pruned or never registered in this project</li>
 </ul>
-<p>The pool widget and peer list output reflect those states, so you can avoid delegating work to a dead or overloaded session.</p>
+<p>The pool widget and peer list output reflect that, so you can avoid delegating work to a dead or overloaded session.</p>
 <h3 id="automatic-reply-capture">Automatic Reply Capture</h3>
 <p>Inbound messages are delivered into Pi as follow-up turns. The important rule is that the receiver should answer normally in chat, because the extension captures that reply automatically and returns it to the sender.</p>
+<p>If a user message lands in the same turn as an inbound peer message, the reply cannot be attributed. Pi re-injects the inbound message for a clean dedicated turn, up to two times, before giving up and erroring back to the sender.</p>
 <blockquote>
-<p><strong>Warning:</strong> Do not use <code>coms_net_send</code> to reply to an inbound <code>coms-net</code> message. That starts a brand-new outbound conversation and can create a ping-pong loop.</p>
+<p><strong>Warning:</strong> Do not use <code>coms_send</code> to reply to an inbound <code>coms</code> message. That starts a brand-new outbound conversation and can create a ping-pong loop.</p>
 </blockquote>
 <p>This behavior matters because it keeps the experience conversational. To the user, cross-session messaging feels like asking a peer for help and getting a normal reply back in the same session.</p>
 <h3 id="structured-task-delegation">Structured Task Delegation</h3>
-<p><code>coms_net_send</code> supports a <code>tasks</code> array alongside the prompt. Those task objects are shown to the receiving peer as structured work items instead of a loose prose blob.</p>
+<p><code>coms_send</code> supports a <code>tasks</code> array alongside the prompt. Each task object has a <code>subject</code> and a <code>description</code>, and is shown to the receiving peer as structured work items instead of a loose prose blob.</p>
 <p>This makes delegation clearer and easier to track when the receiving session uses the task system. For users, it means you can send a prompt plus a checklist, not just a paragraph.</p>
 <h3 id="hidden-vs-discoverable-peers">Hidden vs Discoverable Peers</h3>
 <p>Peers launched with <code>--explicit</code> stay off the default discovery list. They still exist, but they are meant to be contacted intentionally rather than advertised broadly.</p>
 <p>This is useful when a helper session should not clutter the shared pool. Users see a cleaner peer list by default, while advanced workflows can still reveal explicit peers when needed.</p>
-<h3 id="local-server-discovery-and-authentication">Local Server Discovery and Authentication</h3>
-<p>The hub writes project-local connection details under <code>~/.pi/coms-net/projects/&lt;project&gt;/</code>. That includes <code>server.json</code>, and for local loopback setups, a <code>server.secret.json</code> bearer token file with restricted permissions.</p>
-<p>The user-visible effect is convenience with reasonable safety:</p>
+<h3 id="on-disk-layout-and-cleanup">On-Disk Layout and Cleanup</h3>
+<p>Sessions write two kinds of files under <code>~/.pi/coms/</code>, overridable with the <code>coms_dir</code> setting (<code>PI_COMS_DIR</code>):</p>
 <ul>
-<li>local sessions can auto-discover the hub</li>
-<li>the wrapper can reconnect after reloads</li>
-<li>tokens are kept out of normal command output</li>
+<li><code>projects/&lt;project&gt;/agents/&lt;name&gt;.json</code> — the registry, one file per live session</li>
+<li><code>sockets/&lt;session-id&gt;.sock</code> — the per-session endpoint</li>
 </ul>
+<p>Directory creation is restricted to the owner (<code>0o700</code>). Because each peer owns its own socket, a peer that is pruned from the registry does not have its socket deleted by anyone else; the owning process is responsible for that.</p>
 <blockquote>
-<p><strong>Note:</strong> By default, the hub is a local service. The wrapper starts it on loopback unless you intentionally change the bind settings.</p>
+<p><strong>Note:</strong> The whole registry is local to your machine and your user account. There is no shared server, no bearer token, and no network listener — peers are reached over a local socket or named pipe only.</p>
 </blockquote>
 <h3 id="queueing-and-hop-limits">Queueing and Hop Limits</h3>
-<p>The hub enforces queue depth and hop limits. Queueing prevents dropped messages when a peer is busy, while hop limits stop agents from forwarding work forever.</p>
+<p>Queueing prevents dropped messages when a peer is busy, while hop limits stop agents from forwarding work forever. The hop ceiling is the <code>coms_max_hops</code> setting (<code>PI_COMS_MAX_HOPS</code>, integer, default <code>5</code>, range 1–50).</p>
 <p>For users, that shows up as more predictable behavior:</p>
 <ul>
 <li>busy peers do not lose messages</li>
 <li>runaway agent-to-agent loops stop instead of spiraling forever</li>
-<li>queue depth is visible in pool output and peer listings</li>
+<li>queue depth is visible in pool output and peer listings, and can be managed with <code>/coms-queue</code></li>
 </ul>
 <h2 id="how-it-affects-the-user">How It Affects the User</h2>
 <p>The internals mostly stay out of your way, but they explain several behaviors you will notice in daily use.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
-<th style="text-align: left;">What you see</th>
-<th style="text-align: left;">What is happening underneath</th>
+<th>What you see</th>
+<th>What is happening underneath</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>/coms-net start</code> brings peers online</td>
-<td style="text-align: left;">The wrapper starts or reuses the local hub, then registers the current session</td>
+<td>A live peer pool appears in the TUI</td>
+<td>The session registered a registry entry and opened its socket</td>
 </tr>
 <tr>
-<td style="text-align: left;">A live peer pool appears in the TUI</td>
-<td style="text-align: left;">The client receives SSE updates and re-renders the widget from hub snapshots</td>
+<td>A reply shows up later without polling</td>
+<td>The receiver's normal assistant reply was captured and sent back over the socket</td>
 </tr>
 <tr>
-<td style="text-align: left;">A reply shows up later without polling</td>
-<td style="text-align: left;">The receiver's normal assistant reply was captured and pushed back over the hub</td>
+<td>A peer disappeared from the list</td>
+<td>Its registry entry was removed after failing a socket probe</td>
 </tr>
 <tr>
-<td style="text-align: left;">A peer shows <code>stale</code> instead of disappearing immediately</td>
-<td style="text-align: left;">Heartbeats stopped, but the server has not yet fully expired that peer</td>
+<td>A delegated task arrives with structure</td>
+<td>The sender included <code>tasks</code>, and the receiver rendered them as assigned work</td>
 </tr>
 <tr>
-<td style="text-align: left;">A delegated task arrives with structure</td>
-<td style="text-align: left;">The sender included <code>tasks</code>, and the receiver rendered them as assigned work</td>
-</tr>
-<tr>
-<td style="text-align: left;">Reconnecting after reload feels automatic</td>
-<td style="text-align: left;">The wrapper persists activation state and re-registers on reload</td>
+<td><code>/coms</code> shows a different set of peers</td>
+<td>You toggled <code>include_explicit</code> or switched the displayed project</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>A few practical implications are worth remembering:</p>
 <ul>
-<li><code>coms-net</code> is best when you want named peer sessions that stay coordinated over time.</li>
-<li>It is especially useful when one session should keep coding while another handles planning, review, or background work.</li>
-<li>If you only need a lightweight direct link, the older <code>coms</code> mode is still available alongside <code>coms-net</code>.</li>
+<li>Start sessions with <code>--cname</code> so peers are addressable by a readable name instead of a session id.</li>
+<li>The pool is project-scoped, so open every coordinating session in the same repository.</li>
+<li><code>--explicit</code> keeps a helper session out of the default discovery list without making it unreachable.</li>
 </ul>
+<h2 id="commands">Commands</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Command</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/coms</code></td>
+<td>Force-refresh the pool widget. <code>--all</code> toggles <code>include_explicit</code>; <code>--project &lt;name&gt;</code> switches the displayed project.</td>
+</tr>
+<tr>
+<td><code>/coms-queue</code></td>
+<td>View and manage queued inbound messages, including killing them.</td>
+</tr>
+</tbody>
+</table></div>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
 <li>See <a href="managing-custom-agents.html">Managing Custom Agents</a> for details.</li>
 <li>See <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details.</li>
 <li>See <a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a> for details.</li>
 <li>See <a href="custom-slash-commands.html">Creating Slash Commands</a> for details.</li>
-</ul>
-<h2 id="related-pages_1">Related Pages</h2>
-<ul>
-<li><a href="managing-custom-agents.html">Managing Custom Agents</a></li>
-<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
-<li><a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a></li>
-<li><a href="using-the-web-dashboard.html">Using the Web Dashboard</a></li>
-<li><a href="built-in-workflows.html">Built-in Workflow Commands</a></li>
+<li>See <a href="using-the-web-dashboard.html">Using the Web Dashboard</a> for details.</li>
 </ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="async-agents-and-cron.html" class="page-nav-link page-nav-prev">
+                <a href="curating-project-memory.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Running Background Agents and Scheduled Tasks</span>
+                    <span class="page-nav-title">Curating Project Memory</span>
                 </a>
 
 
-                <a href="background-dreaming.html" class="page-nav-link page-nav-next">
+                <a href="external-ai-agents.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Background Memory Consolidation (Dreaming)</span>
+                    <span class="page-nav-title">External AI Agents &amp; CLI</span>
                 </a>
 
             </nav>
@@ -522,13 +543,13 @@
 <li><a href="#automatic-reply-capture">Automatic Reply Capture</a></li>
 <li><a href="#structured-task-delegation">Structured Task Delegation</a></li>
 <li><a href="#hidden-vs-discoverable-peers">Hidden vs Discoverable Peers</a></li>
-<li><a href="#local-server-discovery-and-authentication">Local Server Discovery and Authentication</a></li>
+<li><a href="#on-disk-layout-and-cleanup">On-Disk Layout and Cleanup</a></li>
 <li><a href="#queueing-and-hop-limits">Queueing and Hop Limits</a></li>
 </ul>
 </li>
 <li><a href="#how-it-affects-the-user">How It Affects the User</a></li>
+<li><a href="#commands">Commands</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
-<li><a href="#related-pages_1">Related Pages</a></li>
 </ul>
 </div>
 
@@ -540,10 +561,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>pi-docsite</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>
@@ -551,13 +569,14 @@
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=e7c0b4379e"></script>
+
+    <script src="assets/search.js?v=e7c0b4379e"></script>
+    <script src="assets/copy.js?v=e7c0b4379e"></script>
+    <script src="assets/callouts.js?v=e7c0b4379e"></script>
+    <script src="assets/scrollspy.js?v=e7c0b4379e"></script>
+    <script src="assets/codelabels.js?v=e7c0b4379e"></script>
+    <script src="assets/github.js?v=e7c0b4379e"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');
@@ -603,5 +622,6 @@
     }
 })();
 </script>
+<!-- generated by pi-docsite -->
 </body>
 </html>

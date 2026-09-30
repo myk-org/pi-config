@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Managing Custom Agents - pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
-    <link rel="stylesheet" href="assets/style.css">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=e7c0b4379e">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,45 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -57,9 +85,51 @@
                     </li>
 
                     <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="using-the-web-dashboard.html"
                            class="nav-link">
                             Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
                         </a>
                     </li>
 
@@ -70,89 +140,33 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Creating Slash Commands
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Implementing Command Guards
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
-                           class="nav-link">
-                            myk_pi_tools CLI Reference
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration.html"
+                        <a href="image-generation.html"
                            class="nav-link">
-                            Configuration &amp; Settings
+                            Image Generation
                         </a>
                     </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="memory-architecture.html"
-                           class="nav-link">
-                            Memory Architecture
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="daemon-and-websockets.html"
-                           class="nav-link">
-                            Daemon &amp; Websocket Networking
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="neovim-integration.html"
@@ -168,10 +182,17 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
                     <li>
-                        <a href="image-generation.html"
+                        <a href="acpx-provider.html"
                            class="nav-link">
-                            Image Generation
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -182,6 +203,13 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
@@ -189,66 +217,45 @@
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="external-ai-agents.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
+                            pi-docsite
                         </a>
                     </li>
 
                     <li>
-                        <a href="inter-agent-communication.html"
+                        <a href="mcp-servers.html"
                            class="nav-link">
-                            Inter-Agent Communication Network
+                            MCP Servers
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="background-dreaming.html"
+                        <a href="cli-reference.html"
                            class="nav-link">
-                            Background Memory Consolidation (Dreaming)
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
-                <ul class="nav-group-pages">
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="daemon-and-websockets.html"
                            class="nav-link">
-                            ACPX Provider Integration
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +280,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -301,26 +308,29 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="piagentssecurity-auditormd">.pi/agents/security-auditor.md</h1>
-<hr />
-<p>name: security-auditor
+                    <h1 id="managing-custom-agents">Managing Custom Agents</h1>
+<div class="highlight"><pre><span></span><code><span class="gh"># .pi/agents/security-auditor.md</span>
+---
+name: security-auditor
 description: Audits external repositories for security risks before adoption — checks for malicious code, data exfiltration, supply chain risks, and trust signals.
-tools: read, bash</p>
-<hr />
-<h1 id="security-auditor">Security Auditor</h1>
-<p>You are a security auditor specializing in evaluating external repositories for safe adoption.
-Your job is to determine: <strong>Is this repo safe for us to use?</strong></p>
-<div class="highlight"><pre><span></span><code>Then start a new Pi session and ask:
+<span class="gu">tools: read, bash</span>
+<span class="gu">---</span>
 
-```text
-Audit this GitHub repository before we adopt it.
+<span class="gh"># Security Auditor</span>
+
+You are a security auditor specializing in evaluating external repositories for safe adoption.
+Your job is to determine: <span class="gs">**Is this repo safe for us to use?**</span>
+</code></pre></div>
+
+<p>Then start a new Pi session and ask:</p>
+<div class="highlight"><pre><span></span><code>Audit this GitHub repository before we adopt it.
 </code></pre></div>
 
 <p>Because the agent keeps the same <code>name: security-auditor</code>, your project version takes precedence for this repo.</p>
 <h2 id="step-by-step">Step-by-Step</h2>
 <h3 id="1-choose-the-right-scope">1. Choose the right scope</h3>
 <p>Use the smallest scope that matches how broadly you want the agent to apply.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Scope</th>
@@ -340,7 +350,7 @@ Audit this GitHub repository before we adopt it.
 <td>The same specialist across all repositories</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <blockquote>
 <p><strong>Tip:</strong> Project-local agents win over global agents when both use the same <code>name:</code>.</p>
 </blockquote>
@@ -365,6 +375,7 @@ You are a security auditor specializing in evaluating external repositories for 
 </ul>
 <p>You can also add optional <code>provider</code> and <code>model</code> frontmatter if you want that agent to prefer a specific backend.</p>
 <blockquote>
+<p><strong>Note:</strong> Project agents under <code>.pi/agents/</code> are confirmed with you before the first dispatch in a session. Set <code>confirmProjectAgents: false</code> on a <code>subagent</code> call to skip the prompt.</p>
 <p><strong>Warning:</strong> Give agents the fewest tools they need. If an agent can work with <code>read</code> alone, do not add write-capable tools. For shell-heavy agents, see <a href="safety-enforcements.html">Implementing Command Guards</a> for details.</p>
 </blockquote>
 <h3 id="3-keep-the-instructions-narrow">3. Keep the instructions narrow</h3>
@@ -379,12 +390,13 @@ You are a security auditor specializing in evaluating external repositories for 
 <p>A strong prompt is usually better than a long prompt. Short, opinionated instructions are easier for Pi to follow reliably.</p>
 <h3 id="4-route-the-agent-from-normal-chat">4. Route the agent from normal chat</h3>
 <p>If you want Pi to pick your specialist from everyday requests, add a project rule that tells the orchestrator when to use it.</p>
-<div class="highlight"><pre><span></span><code><span class="gh"># .pi/rules/custom-agents.md</span>
+<div class="highlight"><pre><span></span><code><span class="gh"># .pi/rules/90-custom-agents.md</span>
 
 <span class="k">-</span><span class="w"> </span>When the task is to audit a third-party repository before adoption, delegate to <span class="sb">`security-auditor`</span>.
 <span class="k">-</span><span class="w"> </span>When the task is to run tests and explain failures without fixing code, delegate to <span class="sb">`test-runner`</span>.
 </code></pre></div>
 
+<p>Files load alphabetically, so a numeric prefix keeps custom rules after the bundled ones: the package ships <code>00</code>-<code>69</code>, user rules use <code>70</code>-<code>89</code>, and project rules use <code>90</code>-<code>99</code>.</p>
 <p>Write the rule in plain language. Be specific about both the trigger and the agent name.</p>
 <blockquote>
 <p><strong>Note:</strong> Project rules are loaded automatically for that repository. Start a new session after adding or changing them.</p>
@@ -403,9 +415,66 @@ You are a security auditor specializing in evaluating external repositories for 
 <p>Some specialists should only run inside a specific flow rather than being selected from general chat. In that case, keep them out of your chat-routing rules and dispatch them from a prompt template or slash command instead.</p>
 <p>Built-in workflows already do this for review specialists such as <code>/issue-review</code>, <code>/pr-review</code>, and <code>/review-local</code>. See <a href="custom-slash-commands.html">Creating Slash Commands</a> for details.</p>
 <h2 id="advanced-usage">Advanced Usage</h2>
+<h3 id="dispatch-an-agent-directly-with-the-subagent-tool">Dispatch an agent directly with the <code>subagent</code> tool</h3>
+<p>Chat routing is optional. A prompt template or any agent can call the <code>subagent</code> tool by name, which is how the bundled workflows (for example <code>/implement</code>, which chains <code>scout</code> → <code>planner</code> → <code>worker</code>) invoke specialists.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent</code></td>
+<td>string</td>
+<td>—</td>
+<td>Agent name from <code>name:</code> frontmatter.</td>
+</tr>
+<tr>
+<td><code>task</code></td>
+<td>string</td>
+<td>—</td>
+<td>What the agent should do.</td>
+</tr>
+<tr>
+<td><code>cwd</code></td>
+<td>string</td>
+<td>session cwd</td>
+<td>Directory the agent works in. Point it at the target path for external repos.</td>
+</tr>
+<tr>
+<td><code>estimatedSeconds</code></td>
+<td>number</td>
+<td>—</td>
+<td>Required for sync calls. At <code>30</code> or more, the call must use <code>async: true</code>.</td>
+</tr>
+<tr>
+<td><code>async</code></td>
+<td>boolean</td>
+<td><code>false</code></td>
+<td>Runs detached; the result arrives as a follow-up message.</td>
+</tr>
+<tr>
+<td><code>agentScope</code></td>
+<td><code>"project"</code>, <code>"user"</code>, or <code>"both"</code></td>
+<td><code>"both"</code></td>
+<td>Which agent directories to search.</td>
+</tr>
+<tr>
+<td><code>confirmProjectAgents</code></td>
+<td>boolean</td>
+<td><code>true</code></td>
+<td>Prompt before using a project agent.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Use <code>tasks</code> for parallel dispatch and <code>chain</code> for sequential steps that feed <code>{previous}</code> into the next agent.</p>
 <h3 id="override-order">Override order</h3>
 <p>When two agents use the same <code>name:</code>, Pi resolves them in this order:</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Highest precedence</th>
@@ -426,7 +495,7 @@ You are a security auditor specializing in evaluating external repositories for 
 <td>Fallback when you have not overridden anything</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>This is the easiest way to customize a built-in agent for one repo without affecting your other work.</p>
 <h3 id="reuse-a-built-in-pattern-instead-of-starting-from-scratch">Reuse a built-in pattern instead of starting from scratch</h3>
 <p>If your new agent is “like the existing one, but stricter,” copy the shape of a bundled specialist and change only what matters:</p>
@@ -440,12 +509,12 @@ You are a security auditor specializing in evaluating external repositories for 
 <h3 id="pin-a-provider-or-model-for-one-agent">Pin a provider or model for one agent</h3>
 <p>If one specialist works better on a specific backend, set defaults in project settings:</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;agent_provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cli-cursor&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;agent_model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cursor:cursor-grok-4.5-high-fast&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;agent_overrides&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;test-runner&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">      </span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cli-claude&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;claude-3-5-sonnet&quot;</span>
+<span class="w">  </span><span class="nt">"agent_provider"</span><span class="p">:</span><span class="w"> </span><span class="s2">"cli-cursor"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"agent_model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"cursor:cursor-grok-4.5-high-fast"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"agent_overrides"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"test-runner"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"provider"</span><span class="p">:</span><span class="w"> </span><span class="s2">"cli-claude"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"claude-3-5-sonnet"</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
@@ -455,10 +524,10 @@ You are a security auditor specializing in evaluating external repositories for 
 <h3 id="force-an-agent-to-inherit-the-parent-session-model">Force an agent to inherit the parent session model</h3>
 <p>You can explicitly clear an override with <code>null</code>:</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;agent_overrides&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;reviewer&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">      </span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
+<span class="w">  </span><span class="nt">"agent_overrides"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"reviewer"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"provider"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"model"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
@@ -469,11 +538,12 @@ You are a security auditor specializing in evaluating external repositories for 
 <p>If the agent needs multiple phases, parallel reviewers, scheduled runs, or background execution, put it behind a workflow instead of normal chat routing. See <a href="custom-slash-commands.html">Creating Slash Commands</a> and <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> for details.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
-<li><strong>Pi does not pick the new agent:</strong> Start a new session, confirm the file is under <code>.pi/agents/</code> or <code>~/.pi/agent/agents/</code>, and make sure the frontmatter includes both <code>name:</code> and <code>description:</code>.</li>
+<li><strong>Pi does not pick the new agent:</strong> Confirm the file is a <code>.md</code> under <code>.pi/agents/</code> or <code>~/.pi/agent/agents/</code>, and that the frontmatter includes both <code>name:</code> and <code>description:</code>. Agents are discovered on every <code>subagent</code> call, so no session restart is needed — but rules are assembled at session start, so rule changes do need one.</li>
 <li><strong>Pi picks the wrong specialist:</strong> Make your routing rule more explicit. If the task is really workflow-only, dispatch it from a slash command instead of relying on everyday chat.</li>
 <li><strong>The agent has too much authority:</strong> Reduce the <code>tools:</code> list first. Many specialists only need <code>read</code> and <code>bash</code>.</li>
 <li><strong>The agent uses the wrong model:</strong> Check <code>provider:</code> / <code>model:</code> frontmatter and your <code>agent_provider</code>, <code>agent_model</code>, and <code>agent_overrides</code> settings. See <a href="configuration.html">Configuration &amp; Settings</a> for details.</li>
-<li><strong>A project-level agent is not found from a subdirectory:</strong> Put it under the repository’s <code>.pi/agents/</code> folder, then start a new session from anywhere inside that repo.</li>
+<li><strong>A project agent is never offered:</strong> It is listed only when <code>agentScope</code> includes <code>project</code> (the default is <code>both</code>), and the first use in a session asks for confirmation.</li>
+<li><strong>A project-level agent is not found from a subdirectory:</strong> Subdirectories are fine — <code>.pi/agents/</code> is resolved by walking up from the working directory. The usual causes are that no <code>.pi/agents/</code> directory exists in any ancestor, or that the file is silently skipped because its frontmatter is missing <code>name:</code> or <code>description:</code> (both are required).</li>
 </ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
@@ -487,15 +557,15 @@ You are a security auditor specializing in evaluating external repositories for 
             </article>
             <nav class="page-nav">
 
-                <a href="automating-code-reviews.html" class="page-nav-link page-nav-prev">
+                <a href="custom-slash-commands.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Automating Code Reviews</span>
+                    <span class="page-nav-title">Creating Slash Commands</span>
                 </a>
 
 
-                <a href="using-the-web-dashboard.html" class="page-nav-link page-nav-next">
+                <a href="agents-reference.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Using the Web Dashboard</span>
+                    <span class="page-nav-title">Agent Reference</span>
                 </a>
 
             </nav>
@@ -515,6 +585,7 @@ You are a security auditor specializing in evaluating external repositories for 
 </ul>
 </li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
+<li><a href="#dispatch-an-agent-directly-with-the-subagent-tool">Dispatch an agent directly with the subagent tool</a></li>
 <li><a href="#override-order">Override order</a></li>
 <li><a href="#reuse-a-built-in-pattern-instead-of-starting-from-scratch">Reuse a built-in pattern instead of starting from scratch</a></li>
 <li><a href="#pin-a-provider-or-model-for-one-agent">Pin a provider or model for one agent</a></li>
@@ -535,10 +606,7 @@ You are a security auditor specializing in evaluating external repositories for 
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>pi-docsite</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>
@@ -546,13 +614,14 @@ You are a security auditor specializing in evaluating external repositories for 
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=e7c0b4379e"></script>
+
+    <script src="assets/search.js?v=e7c0b4379e"></script>
+    <script src="assets/copy.js?v=e7c0b4379e"></script>
+    <script src="assets/callouts.js?v=e7c0b4379e"></script>
+    <script src="assets/scrollspy.js?v=e7c0b4379e"></script>
+    <script src="assets/codelabels.js?v=e7c0b4379e"></script>
+    <script src="assets/github.js?v=e7c0b4379e"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');
@@ -598,5 +667,6 @@ You are a security auditor specializing in evaluating external repositories for 
     }
 })();
 </script>
+<!-- generated by pi-docsite -->
 </body>
 </html>

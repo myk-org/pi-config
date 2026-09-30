@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Background Memory Consolidation (Dreaming) - pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
-    <link rel="stylesheet" href="assets/style.css">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=e7c0b4379e">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,45 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -57,9 +85,51 @@
                     </li>
 
                     <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="using-the-web-dashboard.html"
                            class="nav-link">
                             Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link active" aria-current="page">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
                         </a>
                     </li>
 
@@ -70,89 +140,33 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Creating Slash Commands
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Implementing Command Guards
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
-                           class="nav-link">
-                            myk_pi_tools CLI Reference
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration.html"
+                        <a href="image-generation.html"
                            class="nav-link">
-                            Configuration &amp; Settings
+                            Image Generation
                         </a>
                     </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="memory-architecture.html"
-                           class="nav-link">
-                            Memory Architecture
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="daemon-and-websockets.html"
-                           class="nav-link">
-                            Daemon &amp; Websocket Networking
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="neovim-integration.html"
@@ -168,10 +182,17 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
                     <li>
-                        <a href="image-generation.html"
+                        <a href="acpx-provider.html"
                            class="nav-link">
-                            Image Generation
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -182,6 +203,13 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
@@ -189,66 +217,45 @@
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="external-ai-agents.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
+                            pi-docsite
                         </a>
                     </li>
 
                     <li>
-                        <a href="inter-agent-communication.html"
+                        <a href="mcp-servers.html"
                            class="nav-link">
-                            Inter-Agent Communication Network
+                            MCP Servers
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="background-dreaming.html"
-                           class="nav-link active" aria-current="page">
-                            Background Memory Consolidation (Dreaming)
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
-                <ul class="nav-group-pages">
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="daemon-and-websockets.html"
                            class="nav-link">
-                            ACPX Provider Integration
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +280,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -306,7 +313,7 @@
 <p>You should care because it changes what the agent remembers without requiring constant manual cleanup. Over time, recurring decisions, conventions, and corrections become easier for Pi to reuse, while stale or low-value memory is less likely to keep polluting future sessions.</p>
 <h2 id="the-big-picture">The Big Picture</h2>
 <h3 id="what-runs">What Runs</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Component</th>
@@ -336,9 +343,9 @@
 <td>Repeated patterns can turn into stronger guardrails or skill candidates.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <h3 id="trigger-points">Trigger Points</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Trigger</th>
@@ -350,7 +357,7 @@
 <tr>
 <td>Automatic timer</td>
 <td>Dreaming extension</td>
-<td>Runs periodically while auto-dreaming is enabled.</td>
+<td>Enabled by default; runs every <code>dream_interval_hours</code> (default <code>3</code>).</td>
 </tr>
 <tr>
 <td>Manual run</td>
@@ -359,19 +366,19 @@
 </tr>
 <tr>
 <td>Session quit</td>
-<td>Session shutdown hook</td>
-<td>May queue one final pass when the session exits normally.</td>
+<td><code>session_shutdown</code> hook</td>
+<td>Runs one final pass, but only on <code>quit</code> — skipped for <code>new</code>/<code>fork</code>/<code>resume</code>/<code>reload</code> and in <code>print</code>/<code>json</code> mode.</td>
 </tr>
 <tr>
 <td>Rebuild timer</td>
 <td>Rebuild worker</td>
-<td>Re-scores topic files every 30 minutes.</td>
+<td>Re-scores topic files every 30 minutes, while auto-dreaming is enabled.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <h3 id="end-to-end-flow">End-to-End Flow</h3>
 <ol>
-<li>Pi decides whether a dream pass can run in the current session.</li>
+<li>Pi decides whether a dream pass can run in the current session. A pass already in flight blocks any new one.</li>
 <li>A background <code>worker</code> agent is launched with a task focused on memory maintenance.</li>
 <li>The worker reads existing topic files under <code>.pi/memory/topics/</code>.</li>
 <li>The worker scans recent session transcripts and extracts durable knowledge.</li>
@@ -388,7 +395,7 @@
 <h3 id="topic-files">Topic Files</h3>
 <p>Dreaming treats the topic files in <code>.pi/memory/topics/</code> as the source of truth for project memory.</p>
 <p>Current categories map to these files:</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Category</th>
@@ -421,7 +428,7 @@
 <td><code>mistakes.md</code></td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>Each entry is a single markdown bullet such as:</p>
 <div class="highlight"><pre><span></span><code><span class="k">-</span><span class="w"> </span>[lesson] Use uv run for Python commands
 <span class="k">-</span><span class="w"> </span>[preference] Keep commit messages short <span class="ge">*(pinned)*</span>
@@ -470,14 +477,14 @@
 <li>Topic ordering can shift as some memories become “hotter” than others.</li>
 </ul>
 <h3 id="provenance-sidecar">Provenance Sidecar</h3>
-<p>Dreaming can write pending provenance data to <code>.pi/memory/provenance-pending.json</code>.</p>
+<p>Dreaming can write pending provenance data to <code>.pi/memory/provenance-pending.jsonl</code>, one line of JSON per record.</p>
 <p>That sidecar can include fields such as:</p>
 <ul>
 <li><code>sourceSession</code></li>
 <li><code>derivedFrom</code></li>
 <li><code>informs</code></li>
 </ul>
-<p>After the dream job finishes, Pi merges that sidecar into scored memory records.</p>
+<p>After the dream job finishes, Pi merges that sidecar into scored memory records and deletes the file. A legacy <code>.pi/memory/provenance-pending.json</code> is still read if present.</p>
 <p>User-visible effect:</p>
 <ul>
 <li>Some memories can retain a trace back to where they came from.</li>
@@ -486,7 +493,7 @@
 <h3 id="promotion-queue">Promotion Queue</h3>
 <p>Dreaming and related memory logic can append candidates to <code>.pi/memory/promotions.md</code>.</p>
 <p>Promotion destinations currently include:</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Destination</th>
@@ -515,9 +522,9 @@
 <td>Not worth keeping</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>Important promotion thresholds in the current code:</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Promotion type</th>
@@ -538,7 +545,7 @@
 <td><code>5</code></td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>User-visible effect:</p>
 <ul>
 <li>Repeated, strong patterns can graduate into stricter behavior.</li>
@@ -569,7 +576,7 @@
 </ul>
 <h2 id="how-it-affects-the-user">How It Affects the User</h2>
 <h3 id="what-you-will-notice">What You Will Notice</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Behavior</th>
@@ -578,7 +585,7 @@
 </thead>
 <tbody>
 <tr>
-<td>A moon icon appears in the status bar</td>
+<td>The dream icon in the status bar turns from dim to warning-colored</td>
 <td>A dream pass is currently running.</td>
 </tr>
 <tr>
@@ -598,9 +605,9 @@
 <td>Dreaming recognized a repeatable multi-step workflow.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <h3 id="controls-you-can-use">Controls You Can Use</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Control</th>
@@ -622,21 +629,33 @@
 </tr>
 <tr>
 <td><code>dream_interval_hours</code></td>
-<td>Adjusts the automatic interval in project or global settings.</td>
+<td>Adjusts the automatic interval in project or global settings. <code>number</code>, default <code>3</code>.</td>
 </tr>
 <tr>
 <td><code>PI_DREAM_INTERVAL_HOURS</code></td>
 <td>Environment-variable override for the interval.</td>
 </tr>
+<tr>
+<td><code>internal_operations_provider</code></td>
+<td>Sidecar provider used when the parent session is ACPX-backed. <code>string</code>, default <code>""</code>.</td>
+</tr>
+<tr>
+<td><code>internal_operations_model</code></td>
+<td>Sidecar model used when the parent session is ACPX-backed. <code>string</code>, default <code>""</code>.</td>
+</tr>
+<tr>
+<td><code>agent_model</code></td>
+<td>Default model for the <code>worker</code> agent. <code>string</code>, default <code>""</code> (inherit parent).</td>
+</tr>
 </tbody>
-</table>
+</table></div>
 <h3 id="when-dreaming-skips-work">When Dreaming Skips Work</h3>
-<p>Dreaming depends on an async-capable LLM path. In ACPX-based sessions, that usually means configuring both:</p>
+<p>Dreaming depends on an async-capable LLM path. A parent session on a native or <code>cli-*</code> provider supports it directly, and the <code>worker</code> agent resolves its model through the normal subagent chain (<code>agent_model</code> → parent model). When the parent is ACPX-backed, child Pi processes skip ACPX provider registration, so dreaming instead needs both of these set:</p>
 <ul>
-<li><code>async_llm_provider</code></li>
-<li><code>async_llm_model</code></li>
+<li><code>internal_operations_provider</code></li>
+<li><code>internal_operations_model</code></li>
 </ul>
-<p>If that path is unavailable, Pi skips the run and surfaces a warning in the UI.</p>
+<p>Both must be non-empty and the provider must not be an <code>acpx-*</code> id. If that path is unavailable, Pi skips the run and notifies you with "Dream skipped: set internal_operations_provider and internal_operations_model for acpx sessions".</p>
 <p>User-visible effect:</p>
 <ul>
 <li>Manual <code>/dream</code> may appear to do nothing except show a warning.</li>
@@ -653,27 +672,19 @@
 <li>See <a href="safety-enforcements.html">Implementing Command Guards</a> for how promoted memory can affect enforcement behavior.</li>
 <li>See <a href="configuration.html">Configuration &amp; Settings</a> for the settings that control dream frequency and async LLM routing.</li>
 </ul>
-<h2 id="related-pages_1">Related Pages</h2>
-<ul>
-<li><a href="curating-project-memory.html">Curating Project Memory</a></li>
-<li><a href="memory-architecture.html">Memory Architecture</a></li>
-<li><a href="configuration.html">Configuration &amp; Settings</a></li>
-<li><a href="safety-enforcements.html">Implementing Command Guards</a></li>
-<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
-</ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="inter-agent-communication.html" class="page-nav-link page-nav-prev">
+                <a href="async-agents-and-cron.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Inter-Agent Communication Network</span>
+                    <span class="page-nav-title">Running Background Agents and Scheduled Tasks</span>
                 </a>
 
 
-                <a href="acpx-provider.html" class="page-nav-link page-nav-next">
+                <a href="memory-architecture.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">ACPX Provider Integration</span>
+                    <span class="page-nav-title">Memory Architecture</span>
                 </a>
 
             </nav>
@@ -707,7 +718,6 @@
 </ul>
 </li>
 <li><a href="#related-pages">Related Pages</a></li>
-<li><a href="#related-pages_1">Related Pages</a></li>
 </ul>
 </div>
 
@@ -719,10 +729,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>pi-docsite</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>
@@ -730,13 +737,14 @@
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=e7c0b4379e"></script>
+
+    <script src="assets/search.js?v=e7c0b4379e"></script>
+    <script src="assets/copy.js?v=e7c0b4379e"></script>
+    <script src="assets/callouts.js?v=e7c0b4379e"></script>
+    <script src="assets/scrollspy.js?v=e7c0b4379e"></script>
+    <script src="assets/codelabels.js?v=e7c0b4379e"></script>
+    <script src="assets/github.js?v=e7c0b4379e"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');
@@ -782,5 +790,6 @@
     }
 })();
 </script>
+<!-- generated by pi-docsite -->
 </body>
 </html>

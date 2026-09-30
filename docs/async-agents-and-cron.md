@@ -7,7 +7,7 @@ Run long tasks without blocking your main session, and schedule recurring work s
 - A running Pi session in your project repository
 - A TUI session if you want to use the fullscreen status overlays
 - `git` available if your background task depends on repository state
-- If you use ACPX-backed models for detached work, `async_llm_provider` and `async_llm_model` may be required. See [Configuration & Settings](configuration.html) for details.
+- If you use ACPX-backed models for detached work, `internal_operations_provider` and `internal_operations_model` may be required. See [Configuration & Settings](configuration.html) for details.
 
 ## Quick Example
 
@@ -89,7 +89,17 @@ Remove a task by ID:
 /cron remove 1
 ```
 
-In the cron overlays, you can also press `x` to remove the selected task.
+`/cron rm <id>` and `/cron delete <id>` are accepted aliases. In the cron overlays, you can also press `x` to remove the selected task.
+
+6. Make a schedule survive a Pi restart.
+
+Prefix any `/cron` request with `--persist`:
+
+```bash
+/cron --persist Every day at 9:00 AM, run the git-expert to generate a daily summary.
+```
+
+Persisted tasks are written to `.pi/cron/crons.json` in the project and reloaded by later sessions.
 
 ## Advanced Usage
 
@@ -99,9 +109,19 @@ In the cron overlays, you can also press `x` to remove the selected task.
 |---|---|---|
 | Watch async jobs | `/async-status` | Fullscreen list, live output, kill with `x` |
 | Kill async jobs | `/async-kill` | Interactive kill picker |
-| See local schedules | `/cron list` | Fullscreen list of this session’s recurring tasks |
+| Kill one job by name or id prefix | `/async-kill <name\|id-prefix>` | Direct kill without opening the picker |
+| Kill every running job | `/async-kill all` | Kills all running and queued jobs |
+| See local schedules | `/cron list` | Fullscreen list of this session's recurring tasks |
+| See only persisted schedules | `/cron --persist list` | Filters the overlay down to project-scoped crons |
 | See all session schedules | `/cron list-all` | Cross-session view of active cron files |
 | Remove a known cron | `/cron remove <id>` | Direct removal by task ID |
+
+### Pick the Model for Background Work
+
+Detached agents are resolved through the same chain as any other subagent
+(`explicit > agent_overrides[name] > agent frontmatter > agent_provider/agent_model > parent`),
+so a plain `agent_model` setting is all you need to pin background work to a specific model.
+It is a `string` setting, default `""`, meaning "inherit the parent session's model".
 
 ### Keep Background Context Between Runs
 
@@ -121,20 +141,38 @@ This is a good fit for housekeeping work where a completion notification is enou
 
 ### Understand Cron Lifetime
 
-Cron tasks belong to the current Pi process. They survive session refreshes inside that process, but they do not keep running after a full Pi exit.
+Cron tasks have two scopes, chosen by the `--persist` flag:
+
+| Scope | Stored in | Survives Pi exit | Runs from |
+|---|---|---|---|
+| session (default) | The session store under `.pi/tmp/` | No | That session only |
+| project (`--persist`) | `.pi/cron/crons.json` in the project | Yes | Any session opened in that project |
+
+Session-scoped tasks survive `/reload` inside the running process but are deleted on a real exit. Project-scoped tasks are reloaded by later sessions, and a leader lease in the same directory guarantees only one session executes a given task — other sessions show it as `project (waiting for leader)`.
 
 > **Note:** If you need to confirm what is still scheduled, run `/cron list` or `/cron list-all` after reconnecting instead of assuming an older schedule is still active.
 
+> **Tip:** `/cron` with free text does not schedule anything by itself. It re-enters the conversation with a request to call the `cron_manage` tool, and `persist` is set to `true` only when you passed `--persist`. Schedules must have an `interval_seconds` of at least 10, and `at_minute` is only valid together with `at_hour`.
+
 ### ACPX Compatibility
 
-Detached LLM work is more restricted when your parent session is using an `acpx-*` provider. In that case, some async work may be skipped or require a separate async LLM provider/model to be configured first.
+Detached LLM work is more restricted when your parent session is using an `acpx-*` provider. Child Pi processes launched as async agents skip ACPX provider registration, so Pi decides between three outcomes:
+
+| Case | Behavior |
+|---|---|
+| Parent is native or `cli-*` | Async work runs detached as normal. |
+| Parent is `acpx-*`, work is not must-async | The request is coerced to run synchronously instead. |
+| Parent is `acpx-*`, work is must-async (dreaming, `fireAndForget`) | Runs detached on `internal_operations_provider`/`internal_operations_model`; if those are unset, the work is skipped with a warning. |
+
+Set `internal_operations_provider` and `internal_operations_model` to cover that last case. Both are `string` settings, default `""`, and the provider must not itself be an `acpx-*` id.
 
 See [ACPX Provider Integration](acpx-provider.html) and [Configuration & Settings](configuration.html) for the exact setup.
 
 ## Troubleshooting
 
-- **Async job does not start:** If Pi complains about a missing `taskId`, the workflow is expecting the background work to be linked to a tracked task or explicitly marked as independent.
-- **Job starts but immediately skips:** If your session is using an ACPX-backed provider, configure `async_llm_provider` and `async_llm_model` before retrying.
+- **Async job does not start:** Confirm you asked for it in the background (`async: true`) and that you ended your turn — Pi delivers results automatically and does not expect a polling loop. Agents declared async-only force `async: true` on a native provider and refuse chain mode.
+- **Job starts but immediately skips:** If your session is using an ACPX-backed provider, configure `internal_operations_provider` and `internal_operations_model` before retrying.
+- **You want the result to update a task automatically:** Pass a numeric `taskId` from the task tools. It is optional; when set, the finished job marks that task `completed` for you.
 - **You want live output but nothing appears:** Use `/async-status` from a TUI session. The fullscreen overlay is the supported live-view interface.
 - **A cron task seems stuck or outdated:** Run `/cron list` or `/cron list-all`, then remove the old task and create a fresh one.
 - **You want browser-based monitoring instead of terminal overlays:** See [Using the Web Dashboard](using-the-web-dashboard.html) for details.

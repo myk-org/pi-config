@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rules and Layers - pi-config</title>
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=e7c0b4379e">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Installation &amp; Quickstart
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Core Workflows</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="automating-code-reviews.html"
+                           class="nav-link">
+                            Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="managing-custom-agents.html"
+                           class="nav-link">
+                            Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link active" aria-current="page">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="using-the-web-dashboard.html"
+                           class="nav-link">
+                            Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="curating-project-memory.html"
+                           class="nav-link">
+                            Curating Project Memory
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Inter-Agent Communication Network
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="external-ai-agents.html"
+                           class="nav-link">
+                            External AI Agents &amp; CLI
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Discord Bot Notifications
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            ACPX Provider Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-docsite.html"
+                           class="nav-link">
+                            pi-docsite
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk_pi_tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
+                </a>
+
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="rules-and-layers">Rules and Layers</h1>
+<p>Rules are markdown files injected into the orchestrator's system prompt at the start of every agent turn. They are the behavioural contract: what the orchestrator is allowed to do, which specialist agent to route work to, when to run a review loop, when to write documentation.</p>
+<p>Rules are <strong>not</strong> documentation for you to read. They are instructions for the model. This page explains how they load, how you add or override them, and what happens when a setting they depend on is missing.</p>
+<h2 id="the-three-layers">The three layers</h2>
+<p>The orchestrator scans three directories, in this order:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Path</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Package</td>
+<td><code>&lt;pi-config&gt;/rules/</code></td>
+<td>All users, all projects (shipped with pi-config)</td>
+</tr>
+<tr>
+<td>User</td>
+<td><code>~/.pi/agent/rules/</code></td>
+<td>All projects for this user</td>
+</tr>
+<tr>
+<td>Project</td>
+<td><code>&lt;project&gt;/.pi/rules/</code></td>
+<td>The current project only</td>
+</tr>
+</tbody>
+</table></div>
+<p>Later layers override earlier ones. <strong>The override is by filename, not by content.</strong></p>
+<p>The loader builds a map from filename to the list of paths that provided it, walking the layers in order so the project path ends up last. For each filename it then tries candidates from last to first — project, then user, then package — and takes the first one it can read.</p>
+<p>The consequence that matters in practice:</p>
+<ul>
+<li>If <code>~/.pi/agent/rules/40-critical-rules.md</code> and the package <code>rules/40-critical-rules.md</code> both exist, <strong>only the user copy is loaded.</strong> The package one is not merged in, appended, or diffed. Your file is a complete replacement.</li>
+<li>If the user layer has <code>70-my-rule.md</code> and the project layer has <code>80-my-other-rule.md</code>, <strong>both are loaded</strong>, alongside every package rule. Layering does not shadow across different filenames.</li>
+</ul>
+<p>So a layer "wins" per file, and the only way to remove a package rule is to shadow its exact filename.</p>
+<h3 id="numeric-prefixes">Numeric prefixes</h3>
+<p>The project convention is to number files so that ordering is obvious and layers stay separate in the listing:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Conventional range</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Package</td>
+<td><code>00-69</code></td>
+</tr>
+<tr>
+<td>User</td>
+<td><code>70-89</code></td>
+</tr>
+<tr>
+<td>Project</td>
+<td><code>90-99</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Two things to be clear about, because this is easy to get wrong:</p>
+<ol>
+<li><strong>The ranges are a convention, not enforced behaviour.</strong> The loader contains no numeric range check whatsoever. Nothing rejects a <code>05-*.md</code> file in the user directory or a <code>30-*.md</code> file in the project directory. The ranges appear in <code>README.md</code>, <code>AGENTS.md</code>, and <code>dev-docs/enforcement-honesty-map.md</code>; they are a naming discipline, not a mechanism.</li>
+<li><strong>Ordering comes from the filename, sorted alphabetically.</strong> After override resolution, the surviving files are sorted with <code>localeCompare</code> and joined in that order. The numeric prefixes are what make that alphabetical order match the intended reading order. This is why <code>00-</code> before <code>60-</code> works: the zero-padded numbers sort lexicographically.</li>
+</ol>
+<h3 id="other-loading-details">Other loading details</h3>
+<ul>
+<li>Only files ending in <code>.md</code> are considered. Directories are skipped; symlinks to files are followed.</li>
+<li>A missing directory is ignored silently (<code>ENOENT</code>). Any other read error is logged at debug level and that layer contributes nothing.</li>
+<li>Files larger than <strong>128 KB</strong> are skipped with a debug log. Note the subtlety: an oversized file is treated as <em>handled</em>, so the loader does <strong>not</strong> fall back to a lower-precedence copy of the same filename. An oversized override silently shadows the package rule rather than deferring to it.</li>
+<li>If, after all layers, <strong>no</strong> rule file loads successfully, the orchestrator falls back to a single hardcoded line: <code>[ORCHESTRATOR RULES] You are a MANAGER. Delegate work to subagents.</code> This is the only guaranteed behaviour if rules are broken.</li>
+<li>Rules are injected only for the orchestrator. When <code>PI_SUBAGENT_CHILD === "1"</code>, the entire rules block is skipped. Several rule files open with a "if you are a specialist agent, ignore this" scope note for the same reason.</li>
+</ul>
+<h2 id="the-twelve-package-rules">The twelve package rules</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it is for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>00-orchestrator-core.md</code></td>
+<td>The core contract: the delegation model (orchestrator delegates, never implements directly), the allowed direct actions, and a mandatory pre-implementation checklist. Most of the file is gated behind <code>orchestrator_edit_write_block</code>.</td>
+</tr>
+<tr>
+<td><code>05-issue-first-workflow.md</code></td>
+<td>The pre-implementation checklist for any code change: root-cause investigation first, then branch and issue creation, a defined issue format, and a "Done" definition. Includes the SKIP list for work that does not need the workflow, and edge cases.</td>
+</tr>
+<tr>
+<td><code>10-agent-routing.md</code></td>
+<td>The domain-to-agent routing table (Python, Go, TS, Java, shell, Markdown, Docker, Kubernetes, Jenkins, Git, GitHub, tests, debugging). Also covers routing by intent rather than by tool, documentation routing, which agents are dispatched internally rather than by the table, the <code>worker</code> fallback, and how to pass a model override to <code>subagent</code>.</td>
+</tr>
+<tr>
+<td><code>20-code-review-loop.md</code></td>
+<td>The mandatory review loop: six reviewers plus <code>test-runner</code> in parallel after any code change, the cycle definition and max-cycles budget, review agent list, finding deduplication, responding to findings, test tracking, and baseline test comparison. Entirely gated on <code>review_loop_enforcement</code>.</td>
+</tr>
+<tr>
+<td><code>25-documentation-updates.md</code></td>
+<td>A table mapping change types to the files that must be updated (<code>README.md</code>, <code>dev-docs/repo-structure.md</code>, the routing table, <code>Dockerfile</code>, <code>DEVELOPMENT.md</code>), ending with "documentation drift is a bug".</td>
+</tr>
+<tr>
+<td><code>30-prompt-templates.md</code></td>
+<td>What happens when a <code>/command</code> prompt template is invoked: the prompt is the authority, the orchestrator executes it, and sub-steps are delegated only when the prompt says so.</td>
+</tr>
+<tr>
+<td><code>35-memory.md</code></td>
+<td>The project memory system: the mandatory memory tools (<code>memory_search</code>, <code>memory_reinforce</code>, <code>memory_add</code>, <code>memory_remove</code>, <code>memory_topics</code>, <code>session_search</code>), the three auto-injection mechanisms (situation report, vector recall above 0.65 similarity, session history recall), storage layout, the scoring system, and the capacity signal.</td>
+</tr>
+<tr>
+<td><code>40-critical-rules.md</code></td>
+<td>Cross-cutting mandates: questions are not instructions, task focus on multi-step workflows, parallel execution, async agent and sync agent time estimates, subagent cwd, multi-PR/multi-branch work, user interaction, technical honesty, web access tooling, and the external code security audit gate.</td>
+</tr>
+<tr>
+<td><code>45-file-preview.md</code></td>
+<td>How to make generated HTML or frontend output viewable: save under the project dir, find a free port, launch <code>httpd.py</code>, report the URL.</td>
+</tr>
+<tr>
+<td><code>50-agent-bug-reporting.md</code></td>
+<td>What to do when the orchestrator finds a logic flaw in an agent defined in this repo: the workflow for filing a bug, the required issue format, and the agents it covers.</td>
+</tr>
+<tr>
+<td><code>55-coms-protocol.md</code></td>
+<td>Peer-to-peer inter-agent communication: activation via <code>/coms start</code>, the <code>coms_</code> tool prefix, inbound and outbound messaging, the message queue, and structured task delegation. Gated by <code>requires: coms_active</code> frontmatter, so it is absent unless coms is running.</td>
+</tr>
+<tr>
+<td><code>60-task-tracking.md</code></td>
+<td>Mandatory task list for workflows of 3+ steps: when to create tasks, granularity, lifecycle, side questions, and the async agent <code>taskId</code> requirement.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Note that <code>25-documentation-updates.md</code> and <code>45-file-preview.md</code> contain little or no conditional syntax — the list of settings the rules actually branch on is much smaller than the number of rules.</p>
+<h2 id="conditional-assembly">Conditional assembly</h2>
+<p>Rules are assembled per file: frontmatter gate first, then conditional blocks, then join, then placeholder substitution. Conditionals are evaluated <strong>per file, before the join</strong>, specifically so that an unclosed <code>{{IF}}</code> in one rule cannot match a <code>{{/IF}}</code> in another and silently strip the rules in between.</p>
+<h3 id="if-and-ifnot"><code>{{IF:}}</code> and <code>{{IFNOT:}}</code></h3>
+<p>Wrap a block in markers to keep or drop it based on a setting:</p>
+<div class="highlight"><pre><span></span><code>{{IF:use_worktrees}}
+Worktree-based branch operations are mandatory.
+{{/IF}}
+
+{{IFNOT:review_loop_enforcement}}
+Reviews are advisory in this project.
+{{/IFNOT}}
+</code></pre></div>
+
+<p>Opening and closing markers must match kind: <code>{{IF}}</code> closes with <code>{{/IF}}</code>, <code>{{IFNOT}}</code> with <code>{{/IFNOT}}</code>.</p>
+<p>Nesting is supported and tracked with a stack, so an inner block inside an outer block is fine.</p>
+<h3 id="comparisons">Comparisons</h3>
+<p>The key may be compared to a literal instead of being tested for truthiness:</p>
+<div class="highlight"><pre><span></span><code>{{IF:review_loop_enforcement==true}}
+{{IF:commit_trailer!=Assisted-by}}
+</code></pre></div>
+
+<p>Supported operators are <code>==</code> and <code>!=</code>. Supported literals are <code>true</code>, <code>false</code>, <code>null</code>, numbers, and single- or double-quoted strings. A bare, unquoted non-matching token is kept as a plain string.</p>
+<p>Truthiness follows one helper: <code>false</code>, <code>null</code>, <code>undefined</code>, <code>""</code>, <code>0</code>, an empty array, and an empty object are falsy. Everything else — including non-empty strings like <code>"false"</code> — is truthy.</p>
+<h3 id="fail-closed-behaviour">Fail-closed behaviour</h3>
+<p>This is the part worth knowing, because it is stricter than "if in doubt, show the content".</p>
+<p><strong>An unknown or malformed condition drops the block, and warns.</strong></p>
+<p><code>conditionHolds</code> checks the key against the known settings keys. If the key is not a known setting, it emits a warning and returns <code>false</code> <em>before</em> the inversion for <code>IFNOT</code> is applied. So a typo fails closed in both directions:</p>
+<ul>
+<li><code>{{IF:review_loop_enforcment}}</code> → block removed. You lose the content you wanted.</li>
+<li><code>{{IFNOT:review_loop_enforcment}}</code> → block <strong>also</strong> removed. The negation does not rescue it.</li>
+</ul>
+<p>A malformed condition expression (empty, or not matching the key/operator/literal grammar) behaves the same way: warn, drop, no inversion.</p>
+<p>Warnings go to the extension log at warn level under the <code>rule assembly:</code> prefix. If a rule you expected is silently absent, check the logs for that prefix before assuming the setting is off.</p>
+<p><strong>Unbalanced markers are the exception.</strong> They do not drop content. If a closer is missing, or the closer kind does not match the opener, the text from the open marker to the end is left in place verbatim, markers included, with a warning. A stray closer is also passed through with a warning. This is deliberately non-destructive, but it does mean a typo in a marker can leak literal <code>{{IF:...}}</code> text into the prompt.</p>
+<p><strong>Table repair.</strong> After conditionals run, blank lines between consecutive markdown table rows are collapsed to a single newline, so removing a conditional row does not break table adjacency. This applies within a file and across join boundaries.</p>
+<h3 id="feature-predicates">Feature predicates</h3>
+<p>Two keys are not settings but act like them, and are only available in the <strong>truthy</strong> form:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>True when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>coms_active</code></td>
+<td>A coms session is active (<code>/coms start</code> has been run).</td>
+</tr>
+<tr>
+<td><code>external_ai_agents</code></td>
+<td>Either <code>acpx_agents</code> or <code>cli_agents</code> resolves to a non-empty list.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Feature predicates are consulted only for a bare <code>{{IF:key}}</code>. Writing <code>{{IF:coms_active==true}}</code> falls through to the settings lookup, where <code>coms_active</code> is not a known key, and therefore fails closed with a warning — the block is dropped. Use the bare form.</p>
+<h3 id="frontmatter-gate">Frontmatter gate</h3>
+<p>A rule file can be excluded entirely with a frontmatter block:</p>
+<div class="highlight"><pre><span></span><code>---
+<span class="gu">requires_setting: pidash_enable</span>
+<span class="gu">---</span>
+</code></pre></div>
+
+<p><code>requires_setting</code> names a settings key; the file loads only when that setting is truthy. <code>requires</code> names a feature predicate; the file loads only when that predicate is true. If both are present, both must pass (AND). If neither is present, the file always loads.</p>
+<p>An unknown key in <code>requires_setting</code>, or an unknown name in <code>requires</code>, warns and excludes the file.</p>
+<p><code>rules/55-coms-protocol.md</code> uses <code>requires: coms_active</code>, which is why the coms protocol only appears in the prompt once coms is running.</p>
+<p>Note the frontmatter parser is deliberately simple: <code>key: value</code> lines between <code>---</code> fences, blank lines and <code>#</code> comments ignored. It is not YAML.</p>
+<h2 id="placeholders-in-rules">Placeholders in rules</h2>
+<p><code>{{REVIEW_LOOP_MAX_CYCLES}}</code> is replaced with the numeric value of the <code>review_loop_max_cycles</code> setting. Substitution runs <strong>after</strong> the conditional blocks are joined, so a placeholder inside a conditional block is only substituted if that block survived.</p>
+<h2 id="settingskey-is-a-different-mechanism"><code>{{SETTINGS:key}}</code> is a different mechanism</h2>
+<p><code>{{SETTINGS:key}}</code> looks similar and is <strong>not</strong> part of rule assembly.</p>
+<ul>
+<li><strong>Where it runs.</strong> Agent prompt text, not rules. It is applied when a subagent prompt is dispatched (<code>subagent-tool.ts</code>) and when an async agent prompt is dispatched (<code>async-agents.ts</code>). Rules never see it — the rule assembler does not call it.</li>
+<li><strong>What it does.</strong> It performs a straight textual substitution: <code>{{SETTINGS:dco,commit_trailer}}</code> is replaced with a JSON object of the resolved values, for example <code>{"dco":false,"commit_trailer":false}</code>. Bare <code>{{SETTINGS}}</code> resolves every known key.</li>
+<li><strong>Unknown keys are silently dropped</strong>, not warned. A key that is not a known setting is skipped and simply absent from the resulting JSON object. This is the opposite of the conditional path, which warns and fails closed.</li>
+<li><strong>No gating.</strong> It cannot include or exclude text. It only substitutes a value into text that is always present.</li>
+</ul>
+<p>The practical distinction: rule conditionals decide <em>whether a section exists at all</em>, fail closed on unknown keys, and only work in <code>rules/*.md</code>. <code>{{SETTINGS:}}</code> decides <em>what value gets interpolated</em>, is silent on unknown keys, and only works in agent prompt text.</p>
+<h2 id="adding-or-overriding-a-rule">Adding or overriding a rule</h2>
+<p>Create a markdown file in the appropriate directory. For a user-level rule that applies everywhere:</p>
+<div class="highlight"><pre><span></span><code>mkdir<span class="w"> </span>-p<span class="w"> </span>~/.pi/agent/rules
+cat<span class="w"> </span>&gt;<span class="w"> </span>~/.pi/agent/rules/75-my-rule.md<span class="w"> </span><span class="s">&lt;&lt; 'EOF'</span>
+<span class="s"># My Rule</span>
+
+<span class="s">Instructions for the orchestrator.</span>
+<span class="s">EOF</span>
+</code></pre></div>
+
+<p>For a project-scoped rule:</p>
+<div class="highlight"><pre><span></span><code>mkdir<span class="w"> </span>-p<span class="w"> </span>/path/to/project/.pi/rules
+cat<span class="w"> </span>&gt;<span class="w"> </span>/path/to/project/.pi/rules/95-my-project-rule.md<span class="w"> </span><span class="s">&lt;&lt; 'EOF'</span>
+<span class="s"># My Project Rule</span>
+
+<span class="s">Instructions for the orchestrator in this project only.</span>
+<span class="s">EOF</span>
+</code></pre></div>
+
+<p>To <strong>override</strong> a package rule, use its exact filename in the higher layer:</p>
+<div class="highlight"><pre><span></span><code>cp<span class="w"> </span>&lt;pi-config&gt;/rules/40-critical-rules.md<span class="w"> </span>~/.pi/agent/rules/40-critical-rules.md
+<span class="c1"># edit to taste — the package copy is now ignored entirely</span>
+</code></pre></div>
+
+<p>Copy the original rather than writing a stub. There is no merge: the file you place is the entire rule, and if it is too short the orchestrator loses the behaviour the original described.</p>
+<p>A few constraints from the loader worth keeping in mind:</p>
+<ul>
+<li>Keep the file under 128 KB.</li>
+<li>Use a numeric prefix in the range for your layer so ordering stays sensible. The convention is not enforced, but ordering is by filename.</li>
+<li>If you use conditionals, spell the settings key exactly and check it against <code>settings-keys.json</code> at the repository root — a typo fails closed and the block silently disappears.</li>
+<li>Prefer the bare <code>{{IF:key}}</code> form for feature predicates.</li>
+</ul>
+<h3 id="when-changes-take-effect">When changes take effect</h3>
+<p>Rule files are read from disk on every <code>before_agent_start</code> hook, so <strong>editing a rule file does not require a new pi session</strong> — the next agent start picks up the new content.</p>
+<p>Settings are cached in memory, but the cache is invalidated by an <code>mtime</code> check on the settings files at most once every 30 seconds. So a settings change that gates a rule can take up to roughly 30 seconds to be reflected, and an immediate check may still see the old value. If a rule you just toggled on does not appear, wait and retry rather than restarting.</p>
+<p>What genuinely does require a new session: <code>/reload</code> is not sufficient for extension <em>code</em> changes, since the extension module is loaded once at startup.</p>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="agents-reference.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Agent Reference</span>
+                </a>
+
+
+                <a href="using-the-web-dashboard.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Using the Web Dashboard</span>
+                </a>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#the-three-layers">The three layers</a><ul>
+<li><a href="#numeric-prefixes">Numeric prefixes</a></li>
+<li><a href="#other-loading-details">Other loading details</a></li>
+</ul>
+</li>
+<li><a href="#the-twelve-package-rules">The twelve package rules</a></li>
+<li><a href="#conditional-assembly">Conditional assembly</a><ul>
+<li><a href="#if-and-ifnot">{{IF:}} and {{IFNOT:}}</a></li>
+<li><a href="#comparisons">Comparisons</a></li>
+<li><a href="#fail-closed-behaviour">Fail-closed behaviour</a></li>
+<li><a href="#feature-predicates">Feature predicates</a></li>
+<li><a href="#frontmatter-gate">Frontmatter gate</a></li>
+</ul>
+</li>
+<li><a href="#placeholders-in-rules">Placeholders in rules</a></li>
+<li><a href="#settingskey-is-a-different-mechanism">{{SETTINGS:key}} is a different mechanism</a></li>
+<li><a href="#adding-or-overriding-a-rule">Adding or overriding a rule</a><ul>
+<li><a href="#when-changes-take-effect">When changes take effect</a></li>
+</ul>
+</li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            Built from <code>docs/*.md</code> by <code>pi-docsite</code>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js?v=e7c0b4379e"></script>
+
+    <script src="assets/search.js?v=e7c0b4379e"></script>
+    <script src="assets/copy.js?v=e7c0b4379e"></script>
+    <script src="assets/callouts.js?v=e7c0b4379e"></script>
+    <script src="assets/scrollspy.js?v=e7c0b4379e"></script>
+    <script src="assets/codelabels.js?v=e7c0b4379e"></script>
+    <script src="assets/github.js?v=e7c0b4379e"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+<!-- generated by pi-docsite -->
+</body>
+</html>

@@ -22,7 +22,6 @@ the extension source files under `extensions/`. Each command uses
 | `/nvim-changed-files`                   | `nvim.ts`                                         | Send changed files to nvim quickfix                                                                                                                                                                                                                 |
 | `/coms`                                 | `coms/coms-wrapper.ts`                            | P2P agent communication (start/stop/status)                                                                                                                                                                                                         |
 | `/external-ai-models-refresh`           | `extended-autocomplete.ts`                        | Refresh AI CLI model cache                                                                                                                                                                                                                          |
-| `/mcpc connect`                         | `mcpc.ts`                                         | Connect MCP servers from `~/.pi/pi-config/mcp.json` (`mcpc connect --stdio`). Run after editing that file.                                                                                                                                          |
 
 ## Cron scopes and delivery
 

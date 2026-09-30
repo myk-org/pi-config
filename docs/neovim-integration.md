@@ -61,7 +61,7 @@ Pi collects changed files from the current repository and sends them to Neovim's
 :cprev
 ```
 
-Each quickfix item points to a changed file and includes its git status such as `modified`, `added`, `deleted`, or `renamed`.
+Each quickfix item points at the absolute path of a changed file, jumps to line 1, and carries its git status as the quickfix text: `modified`, `added`, `deleted`, `renamed`, or `copied`. The list is titled `pi: changed files` and the quickfix window opens automatically.
 
 5. Re-run the command after new edits or commits.
 
@@ -79,20 +79,24 @@ This refreshes quickfix with the latest set of changed files for the current bra
 
 | Current branch | What Pi includes |
 |---|---|
-| `main` or `master` | Changes in your current working tree compared to `HEAD` |
-| Any other branch | Branch changes compared to `origin/main` if it exists, otherwise `origin/master`, plus current uncommitted changes |
+| `main` or `master` | Changes in your current working tree compared to `HEAD` (uncommitted only) |
+| Any other branch | Committed branch changes versus `origin/main` if that ref exists, otherwise `origin/master`, plus current uncommitted changes |
+
+A file that appears in both the committed and uncommitted diffs is listed once, using the first status seen.
 
 > **Tip:** On feature branches, this makes quickfix useful for both local edits and the branch-level diff you are preparing for review.
 
 ### Run Remote Lua in Your Current Neovim Session
 
-Because Pi inherits the `$NVIM` socket when started from a Neovim terminal, you can trigger editor actions from commands, scripts, or prompts.
+Because Pi inherits the `$NVIM` socket when started from a Neovim terminal, you can trigger editor actions from commands, scripts, or prompts. Pi itself talks to Neovim this way: it writes a Lua file to `.pi/tmp/`, then calls `nvim --server "$NVIM" --remote-expr 'luaeval("dofile(...)")'` with a 5s timeout.
+
+The same call works by hand — for example, notifying yourself after a long-running command finishes:
 
 ```bash
-nvim --server "$NVIM" --remote-expr 'luaeval("vim.notify(\"Task complete from Pi!\")")'
+nvim --server "$NVIM" --remote-expr 'luaeval([[vim.notify("Task complete from Pi!")]])'
 ```
 
-A simple use case is sending yourself a notification after a long-running command or test finishes.
+Use `[[…]]` for the Lua string, or single quotes inside the `luaeval` string. Escaping with `\"` does not work — Lua does not treat a backslash as an escape inside `"…"`, so the expression fails to parse.
 
 ### Use Neovim for Review, Browser UI for Diff Publishing
 
@@ -100,11 +104,11 @@ If you want keyboard-first navigation, Neovim quickfix is the fastest path. If y
 
 ## Troubleshooting
 
-- **`/nvim-changed-files` does not appear:** Start Pi from inside Neovim, not from tmux or a separate terminal window.
-- **Quickfix does not open or update:** Make sure the `nvim` CLI can talk to the current editor session through `$NVIM`.
+- **`/nvim-changed-files` does not appear:** Start Pi from inside Neovim, not from tmux or a separate terminal window. The command only registers when `$NVIM` is set.
+- **Quickfix does not open or update:** Make sure the `nvim` CLI can talk to the current editor session through `$NVIM`. Pi gives the remote call 5 seconds before giving up.
 - **No files are listed:** Check that your repository actually has changed files. On feature branches, also make sure `origin/main` or `origin/master` is available locally.
-- **Remote Lua command fails:** Verify that `$NVIM` is set in the shell where you run the command.
-- **You are using a background subagent:** Neovim integration is only available from your main interactive session, not background child sessions.
+- **Remote Lua command fails:** Verify that `$NVIM` is set in the shell where you run the command, and check the Lua string quoting (see above).
+- **You are using a background subagent:** Neovim integration is only available from your main interactive session, not background child sessions (`PI_SUBAGENT_CHILD=1`).
 
 See [Installation & Quickstart](quickstart.html) for basic Pi setup.
 

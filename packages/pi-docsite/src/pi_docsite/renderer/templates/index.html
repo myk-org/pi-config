@@ -1,0 +1,51 @@
+{% extends "_doc_base.html" %}
+
+{% block content %}
+            <section class="index-header">
+                <h1 class="index-title">{{ project_name }}</h1>
+                <p class="index-tagline">{{ tagline }}</p>
+                {% set ns = namespace(first_page=None) %}
+                {% for group in navigation %}
+                  {% if not ns.first_page and group.pages %}
+                    {% set ns.first_page = group.pages[0] %}
+                  {% endif %}
+                {% endfor %}
+                {% if ns.first_page %}
+                <a href="{{ ns.first_page.slug }}.html" class="index-cta">Get Started →</a>
+                {% endif %}
+            </section>
+
+            <section class="card-grid">
+                {% for group in navigation %}
+                <div class="card">
+                    <h3 class="card-title">{{ group.group }}</h3>
+                    <ul class="card-pages">
+                        {% for page in group.pages %}
+                        <li>
+                            <a href="{{ page.slug }}.html">{{ page.title }}</a>
+                            {% if page.description %}
+                            <p class="card-page-desc">{{ page.description }}</p>
+                            {% endif %}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                    {% if group.pages|length > 0 %}
+                    <a href="{{ group.pages[0].slug }}.html" class="card-link">Explore →</a>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </section>
+
+            <div class="llm-docs-banner">
+                <div class="llm-docs-icon">🤖</div>
+                <div class="llm-docs-content">
+                    <strong>AI-friendly documentation</strong>
+                    <p>This documentation is optimized for AI consumption.</p>
+                    <div class="llm-docs-links">
+                        <a href="llms.txt">llms.txt</a> — structured index
+                        <span class="llm-docs-sep">·</span>
+                        <a href="llms-full.txt">llms-full.txt</a> — complete docs in one file
+                    </div>
+                </div>
+            </div>
+{% endblock %}

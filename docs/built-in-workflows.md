@@ -42,7 +42,7 @@ Implements a task, runs parallel review passes, then performs a follow-up fix pa
 /implement-and-review Refactor the settings loader to support env overrides
 ```
 
-> **Tip:** For planning without code changes, see [Installation & Quickstart](quickstart.html) for `/scout-and-plan`.
+> **Tip:** For planning without code changes, use `/scout-and-plan <task>` (see Other Built-in Prompts below).
 
 ## Review Commands
 
@@ -245,6 +245,20 @@ Runs review analytics queries through `myk-pi-tools db`.
 /query-db dismissed --owner myk-org --repo pi-config
 /query-db query "SELECT * FROM comments WHERE status='skipped' LIMIT 10"
 ```
+
+## Other Built-in Prompts
+
+These are also shipped as prompt templates in `prompts/`, and are registered by Pi itself rather than by an extension.
+
+| Command | Purpose |
+| :--- | :--- |
+| `/scout-and-plan <task>` | Scout pass plus a plan, with no code changes. Use this when you want to review the approach before applying it. |
+| `/qodo-review [--autofix] [--fast\|--deep] [--ticket <url>] [path ...]` | Reviews local changes with Qodo before committing or opening a PR. |
+| `/review-handler [--autorabbit] [--autoqodo]` | Processes every outstanding review source (human, Qodo, CodeRabbit) for the current PR. |
+| `/review-handler-status` | Shows live status of the `/review-handler` agents. |
+| `/coderabbit-rate-limit [PR number]` | Waits out a CodeRabbit rate limit and re-triggers the review. |
+| `/external-ai <agent> [--model <model>] [--fix\|--peer\|--resume] <prompt>` | Runs a prompt against a raw AI CLI (cursor, claude, gemini) with full model access. |
+| `/create-coms-feature-manager` | Generates a coms feature-manager prompt customized for the current project. |
 
 ## Shared Command Behavior
 

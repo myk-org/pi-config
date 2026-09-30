@@ -5,6 +5,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createLogger } from "../shared/logger.js";
 
 /** Whether notify-send is available (false = ENOENT, never retry) */
 let notifyAvailable: boolean | undefined;
@@ -94,22 +95,36 @@ export function resolveRepoRoot(cwd: string): string {
  *  @returns The worktree's top-level directory, or `cwd` as fallback */
 const worktreeRootCache = new Map<string, string>();
 
-export function resolveWorktreeRoot(cwd: string): string {
+const log = createLogger("utils");
+
+/**
+ * Resolve the worktree root, or null when `cwd` is not inside a git worktree.
+ *
+ * Prefer this over {@link resolveWorktreeRoot} when the difference matters: that
+ * function deliberately falls back to `cwd`, so a plain directory and a repo
+ * root are indistinguishable in its return value, and a caller cannot tell
+ * "no graph possible here" from "the graph build failed".
+ */
+export function tryResolveWorktreeRoot(cwd: string): string | null {
   const key = path.resolve(cwd);
   const cached = worktreeRootCache.get(key);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) return cached === "" ? null : cached;
+  let root: string | null = null;
   try {
     const toplevel = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim();
-    if (toplevel && !toplevel.startsWith("fatal")) {
-      const root = path.resolve(toplevel);
-      worktreeRootCache.set(key, root);
-      return root;
-    }
+    if (toplevel && !toplevel.startsWith("fatal")) root = path.resolve(toplevel);
   } catch (e: any) {
-    console.debug("[utils] resolveWorktreeRoot failed:", e?.message);
+    // Expected whenever the cwd is not a git repo, so this is a debug line in a
+    // file log — never console.*, which would dump it into the chat transcript.
+    log.debug("resolveWorktreeRoot", { cwd: key, reason: e?.message?.slice(0, 200) });
   }
-  worktreeRootCache.set(key, cwd);
-  return cwd;
+  // "" is the not-a-worktree sentinel; resolveWorktreeRoot maps it back to cwd.
+  worktreeRootCache.set(key, root ?? "");
+  return root;
+}
+
+export function resolveWorktreeRoot(cwd: string): string {
+  return tryResolveWorktreeRoot(cwd) ?? cwd;
 }
 
 /** Get project-scoped temp dir under <cwd>/.pi/tmp/ */
@@ -147,8 +162,14 @@ export function tryGetSystemPromptOptions(ctx: any): { contextFiles?: any[]; ski
   }
 }
 
-/** Minimum pi version required by this pi-config version. */
-export const MIN_PI_VERSION = "0.87.0";
+/**
+ * Minimum pi version required by this pi-config version.
+ *
+ * 0.99.0: `builtin:mcp` replaces the external `mcpc` binary (so MCP servers are
+ * read from ~/.pi/agent/mcp.json by pi itself), and the built-in MCP/codemode/
+ * tool-search extensions become the ones we must not collide with.
+ */
+export const MIN_PI_VERSION = "0.99.0";
 
 /** Get the installed pi version from its package.json. */
 export function getPiVersion(): string | null {

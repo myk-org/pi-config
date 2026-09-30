@@ -15,7 +15,7 @@ The memory system is local, file-backed, and layered. Topic files are the source
 | Embedding store | Local vectors for semantic matching | `.pi/memory/embeddings.json` | Lets Pi retrieve related memories even when the wording changes. |
 | Situation report | Token-budgeted summary for prompt injection | Built at runtime | Determines what memory the agent actually sees during a turn. |
 | Promotion queue | Candidates for skills, enforcement, or project rules | `.pi/memory/promotions.md` | Captures repeated patterns that may deserve stronger structure. |
-| Provenance sidecar | Source-session metadata waiting to be merged | `.pi/memory/provenance-pending.json` | Preserves where a memory came from without letting background jobs edit the score file directly. |
+| Provenance sidecar | Source-session metadata waiting to be merged | `.pi/memory/provenance-pending.jsonl` | Preserves where a memory came from without letting background jobs edit the score file directly. |
 
 ### End-to-end flow
 
@@ -170,10 +170,13 @@ Current promotion destinations are:
 
 | Destination | What happens |
 |---|---|
-| `enforcement` | Safe, high-confidence rules can be applied automatically. |
+| `memory` | Keep as regular memory. |
 | `skill` | Multi-step patterns can be proposed as reusable skills. |
+| `enforcement` | Safe, high-confidence rules can be applied automatically. |
 | `project_rule` | Project-wide conventions are queued as proposals only. |
 | `discard` | Low-value or superseded items can be marked for removal. |
+
+Evidence thresholds are `3` for enforcement, `3` for skill, and `5` for project rule.
 
 The queue is stored in `.pi/memory/promotions.md` with statuses of `proposed`, `applied`, or `rejected`.
 
@@ -187,7 +190,7 @@ A few important boundaries keep this safe:
 
 ### Provenance is merged through a sidecar
 
-Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it writes a sidecar file at `.pi/memory/provenance-pending.json`. The orchestrator then merges that metadata back into `memory-scores.json` on completion.
+Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it appends a single line of JSON to `.pi/memory/provenance-pending.jsonl`. The orchestrator then merges that sidecar into `memory-scores.json` on completion and deletes it. (A `.pi/memory/provenance-pending.json` from older versions is still read for backward compatibility.)
 
 This keeps the scoring index authoritative while still preserving traceability.
 
@@ -224,10 +227,3 @@ That matters if you are carrying an older repo or restoring archived state: the 
 - See [Configuration & Settings](configuration.html) for the knobs that affect memory timing and runtime behavior.
 - See [myk_pi_tools CLI Reference](cli-reference.html) for the Python commands that manage topic files and perform legacy migration.
 - See [Automating Code Reviews](automating-code-reviews.html) for review-specific workflows that interact with memory, but belong to the review system rather than the core memory model.
-
-## Related Pages
-
-- [Curating Project Memory](curating-project-memory.html)
-- [Background Memory Consolidation (Dreaming)](background-dreaming.html)
-- [Implementing Command Guards](safety-enforcements.html)
-- [Configuration & Settings](configuration.html)

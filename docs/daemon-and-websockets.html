@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Daemon &amp; Websocket Networking - pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
-    <link rel="stylesheet" href="assets/style.css">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=e7c0b4379e">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,45 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -57,9 +85,51 @@
                     </li>
 
                     <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="using-the-web-dashboard.html"
                            class="nav-link">
                             Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
                         </a>
                     </li>
 
@@ -70,89 +140,33 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Creating Slash Commands
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Implementing Command Guards
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
-                           class="nav-link">
-                            myk_pi_tools CLI Reference
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration.html"
+                        <a href="image-generation.html"
                            class="nav-link">
-                            Configuration &amp; Settings
+                            Image Generation
                         </a>
                     </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="memory-architecture.html"
-                           class="nav-link">
-                            Memory Architecture
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="daemon-and-websockets.html"
-                           class="nav-link active" aria-current="page">
-                            Daemon &amp; Websocket Networking
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="neovim-integration.html"
@@ -168,10 +182,17 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
                     <li>
-                        <a href="image-generation.html"
+                        <a href="acpx-provider.html"
                            class="nav-link">
-                            Image Generation
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -182,6 +203,13 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
@@ -189,66 +217,45 @@
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="external-ai-agents.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
+                            pi-docsite
                         </a>
                     </li>
 
                     <li>
-                        <a href="inter-agent-communication.html"
+                        <a href="mcp-servers.html"
                            class="nav-link">
-                            Inter-Agent Communication Network
+                            MCP Servers
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="background-dreaming.html"
+                        <a href="cli-reference.html"
                            class="nav-link">
-                            Background Memory Consolidation (Dreaming)
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
-                <ul class="nav-group-pages">
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link active" aria-current="page">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
                            class="nav-link">
-                            ACPX Provider Integration
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +280,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -305,7 +312,7 @@
 <p>Background daemons and WebSockets keep your terminal session, browser dashboard, and long-running agents in sync without blocking your chat. Understanding this networking model helps when ports collide, a dashboard looks empty after a refresh, or an async agent keeps running after a crash.</p>
 <h2 id="the-big-picture">The Big Picture</h2>
 <p>Two complementary servers handle real-time UI and IPC. They share the same WebSocket patterns but differ in scope and how they pick ports.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Component</th>
@@ -328,8 +335,8 @@
 <td>Project diff viewer with review comments</td>
 </tr>
 </tbody>
-</table>
-<table>
+</table></div>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Layer</th>
@@ -354,22 +361,22 @@
 <td>React app talking to <code>/ws/browser</code></td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p><strong>Typical connect flow:</strong></p>
 <ol>
 <li>You start <code>pi</code> (or run <code>/pidash start</code> / <code>/pidiff start</code>).</li>
 <li>The extension checks whether a healthy daemon already answers <code>/api/health</code>.</li>
 <li>If not, it spawns the server script and waits until health checks succeed.</li>
 <li>The terminal connects on <code>/ws/pi</code> and begins forwarding session events.</li>
-<li>The browser connects on <code>/ws/browser</code> and receives the same live stream (plus buffered catch-up when needed).</li>
+<li>The browser connects on <code>/ws/browser</code> and receives the same live stream (plus buffered catch-up when needed). Background agent and cron status arrive on a separate <code>/ws/async</code> socket.</li>
 </ol>
 <blockquote>
 <p><strong>Tip:</strong> Check daemon health with <code>/pidash status</code> or <code>/pidiff status</code>. See <a href="using-the-web-dashboard.html">Using the Web Dashboard</a> for day-to-day UI usage.</p>
 </blockquote>
 <h2 id="key-concepts">Key Concepts</h2>
 <h3 id="shared-dashboard-vs-per-project-diff-server">Shared dashboard vs per-project diff server</h3>
-<p><strong>pidash</strong> listens on a configured port (<code>pidash_port</code>, default <code>19190</code>). Every project session can attach to the same daemon, so one browser window can switch across terminals. Logs for spawn failures live under <code>~/.pi/pidash-server.log</code>.</p>
-<p><strong>pidiff</strong> binds a free local port for the current project and records that port (and PID when known) under the project’s <code>.pi/tmp/</code> directory as <code>pidiff.port</code> / <code>pidiff.pid</code>. That avoids collisions when several projects run diffs at once.</p>
+<p><strong>pidash</strong> listens on a configured port (<code>pidash_port</code>, default <code>19190</code>, env <code>PI_PIDASH_PORT</code>). Every project session can attach to the same daemon, so one browser window can switch across terminals. Logs for spawn failures live under <code>~/.pi/pidash-server.log</code>.</p>
+<p><strong>pidiff</strong> binds a free local port for the current project and records that port (and PID when known) under the project’s <code>.pi/tmp/</code> directory as <code>pidiff.port</code> / <code>pidiff.pid</code>. That avoids collisions when several projects run diffs at once. A concurrent-spawn guard uses a separate <code>pidiff.spawning</code> lock, cleared after <code>pidiff_stale_lock_timeout_ms</code> (default <code>60000</code>).</p>
 <blockquote>
 <p><strong>Note:</strong> Toggle either server with <code>pidash_enable</code> / <code>pidiff_enable</code> (or their env vars). See <a href="configuration.html">Configuration &amp; Settings</a>.</p>
 </blockquote>
@@ -397,29 +404,23 @@
 <li><a href="using-the-web-dashboard.html">Using the Web Dashboard</a> — Start, stop, and use pidash / pidiff day to day.</li>
 <li><a href="configuration.html">Configuration &amp; Settings</a> — <code>pidash_port</code>, enable flags, and related env vars.</li>
 <li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a> — Spawn, monitor, and kill async agents that use this IPC path.</li>
-<li><a href="quickstart.html">Installation &amp; Quickstart</a> — First-time install and daemon startup.</li>
-</ul>
-<h2 id="related-pages_1">Related Pages</h2>
-<ul>
-<li><a href="using-the-web-dashboard.html">Using the Web Dashboard</a></li>
-<li><a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a></li>
-<li><a href="quickstart.html">Installation &amp; Quickstart</a></li>
 <li><a href="discord-bot.html">Discord Bot Notifications</a></li>
 <li><a href="inter-agent-communication.html">Inter-Agent Communication Network</a></li>
+<li><a href="quickstart.html">Installation &amp; Quickstart</a> — First-time install and daemon startup.</li>
 </ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="memory-architecture.html" class="page-nav-link page-nav-prev">
+                <a href="safety-enforcements.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Memory Architecture</span>
+                    <span class="page-nav-title">Implementing Command Guards</span>
                 </a>
 
 
-                <a href="neovim-integration.html" class="page-nav-link page-nav-next">
+                <a href="btw-command.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Neovim Integration</span>
+                    <span class="page-nav-title">Asking Side Questions with /btw</span>
                 </a>
 
             </nav>
@@ -439,7 +440,6 @@
 </li>
 <li><a href="#how-it-affects-the-user">How it Affects the User</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
-<li><a href="#related-pages_1">Related Pages</a></li>
 </ul>
 </div>
 
@@ -451,10 +451,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>pi-docsite</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>
@@ -462,13 +459,14 @@
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=e7c0b4379e"></script>
+
+    <script src="assets/search.js?v=e7c0b4379e"></script>
+    <script src="assets/copy.js?v=e7c0b4379e"></script>
+    <script src="assets/callouts.js?v=e7c0b4379e"></script>
+    <script src="assets/scrollspy.js?v=e7c0b4379e"></script>
+    <script src="assets/codelabels.js?v=e7c0b4379e"></script>
+    <script src="assets/github.js?v=e7c0b4379e"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');
@@ -514,5 +512,6 @@
     }
 })();
 </script>
+<!-- generated by pi-docsite -->
 </body>
 </html>

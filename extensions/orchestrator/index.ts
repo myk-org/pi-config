@@ -39,6 +39,8 @@ import { registerMarkdownTransformer } from "./markdown-transformer.js";
 import { registerGraft } from "./graft.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
+import { registerProviderStreamLog } from "../shared/provider-stream-log.js";
+import { migrateMcpConfig } from "../shared/mcp-config-migration.js";
 import { setGlobalSessionId } from "../shared/file-logger.js";
 
 const IN_CONTAINER = isRunningInContainer();
@@ -113,6 +115,10 @@ export default function (pi: ExtensionAPI) {
   registerSessionSearch(pi);
   registerSettingsTui(pi);
   registerMarkdownTransformer(pi);
+  // Raw provider stream logging — gated on `log_providers=debug` (#848).
+  registerProviderStreamLog(pi);
+  // Copy a pre-#848 `~/.pi/pi-config/mcp.json` to where builtin:mcp reads it (#848).
+  migrateMcpConfig();
 
   // ── list_models tool — LLM-callable model discovery ──
   pi.registerTool({

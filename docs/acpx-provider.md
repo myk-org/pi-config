@@ -12,7 +12,7 @@ Agents registered as ACPX providers at session start.
 
 **Resolution order:** project settings → global settings → `ACPX_AGENTS` env → `[]`.
 
-**Driver mapping (`ACPX_AGENT_TO_DRIVER`):** `cursor` → `acpx`. Any other listed name falls back to driver kind `acpx` with `config.agent` set to that name.
+**Driver mapping (`ACPX_AGENT_TO_DRIVER`, `extensions/providers/built-in-drivers.ts`):** `cursor`, `claude`, and `gemini` all map to driver kind `acpx`, with `config.agent` set to the agent name. An agent that is **not** in the map is skipped with a `no driver mapping in ACPX_AGENT_TO_DRIVER` warning — it does not fall back to `acpx`.
 
 ```json
 {
@@ -26,7 +26,7 @@ export ACPX_AGENTS=cursor
 
 **Effect:** For each agent, `extensions/providers/` creates a `ProviderInstance`, registers provider id `acpx-<agent>`, and exposes models under that provider.
 
-> **Note:** During extension startup, each agent races `registry.createInstance` against `DISCOVERY_TIMEOUT_MS` (`30000`). Timed-out creates are torn down if they finish later.
+> **Note:** During extension startup, each agent races `registry.createInstance` against `DISCOVERY_TIMEOUT_MS` (`30000`). Timed-out creates are torn down if they finish later. Discovery is skipped entirely inside subagent children (`discoverAndRegisterAcpx` returns early when `isSubagent`), so ACPX providers only exist in the main session.
 
 ## `loadAcpxRuntime()`
 
@@ -44,6 +44,8 @@ Resolves the `acpx/runtime` module. Memoized across calls; failed loads clear th
 1. Global npm root (`npm root -g`) package `acpx` → `dist/runtime.js`
 2. Candidate roots: `/usr/local/lib/node_modules`, `~/.npm-global/lib/node_modules`
 3. Package import `acpx/runtime`
+
+A test helper, `clearAcpxRuntimeCache()`, resets both the root list and the memoized promise.
 
 ```typescript
 import { loadAcpxRuntime } from "./load-runtime.js";
@@ -94,6 +96,7 @@ Maps raw model id strings to pi-ai runtime `Model` objects for provider registra
 | :--- | :--- | :--- | :--- |
 | `agent` | `string` | (required) | Agent id used in model/provider ids. |
 | `modelIds` | `readonly string[]` | (required) | Raw ids from ACPX status / snapshot. |
+| `catalog` | `ModelsDevCatalog \| null` | `null` | Optional models.dev catalog used to fill in context window, pricing, and capability fields on each model. |
 
 **Returns:** `Model[]` with `api: "acpx"` and `provider: "acpx-<agent>"`.
 
@@ -166,7 +169,12 @@ Built-in `ProviderDriver` (`driverKind: "acpx"`) in `extensions/providers/acpx-d
 | :--- | :--- | :--- | :--- |
 | `config` | `AcpxConfig` | (required) | Passed by the registry; availability checks `loadAcpxRuntime()` only. |
 
-**Returns:** `{ available: true }` if `loadAcpxRuntime()` resolves; otherwise `{ available: false, reason: string }`.
+**Returns:** `{ available: true }` when both checks pass; otherwise `{ available: false, reason: string }`.
+
+Probe performs **two** checks:
+
+1. **Agent CLI on `PATH`** — resolves the binary named `agent` for `agent: "cursor"`, otherwise the agent name itself (`claude`, `gemini`). Missing binary → unavailable with a `CLI binary ... not found on PATH` reason.
+2. **ACPX runtime** — `loadAcpxRuntime()` must resolve, otherwise unavailable with an `acpx runtime not available` reason.
 
 ### `AcpxDriver.create(input)`
 
@@ -284,16 +292,33 @@ const handle = await runtime.ensureSession({
 
 | Hook | Effect |
 | :--- | :--- |
-| `session_shutdown` | Stops CLI session reaper; `registry.teardownAll()` (each ACPX instance `dispose` → `adapter.stopAll()`); clears `cliInstances` and `acpxInstances`. |
+| `session_shutdown` | Stops CLI session reaper; `registry.teardownAll()` (each ACPX instance `dispose` → `adapter.stopAll()`); clears `cliInstances` and `acpxInstances`; calls `resetProvidersInitialized()`. |
+
+**Module:** `extensions/providers/session-shutdown.ts` (`teardownProvidersOnSessionShutdown`)
 
 ```typescript
-pi.on("session_shutdown", async () => {
-  stopCliSessionReaper();
-  await registry.teardownAll();
-  cliInstances.clear();
-  acpxInstances.clear();
-});
+export async function teardownProvidersOnSessionShutdown(
+  registry: ProviderDriverRegistry,
+  cliInstances: Map<string, unknown>,
+  acpxInstances: Map<string, unknown>,
+): Promise<void> {
+  try {
+    stopCliSessionReaper();
+    await registry.teardownAll();
+  } catch (err) {
+    log.error("session_shutdown teardown failed", ...);
+    throw err;
+  } finally {
+    // Always clear maps + init guard so a teardown failure cannot leave
+    // initialized stuck true (would skip registerProvider on /new|/resume|/fork).
+    cliInstances.clear();
+    acpxInstances.clear();
+    resetProvidersInitialized();
+  }
+}
 ```
+
+> **Note:** Clearing the initialized guard is what lets providers re-register after `/new`, `/resume`, or `/fork`. It runs in a `finally` block, so it happens even when teardown throws.
 
 ## Related Pages
 

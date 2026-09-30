@@ -26,6 +26,8 @@ Inside a Pi session:
 /external-ai cursor explain the authentication flow
 ```
 
+`/external-ai` is a prompt template (`prompts/external-ai.md`), not an extension command. It parses the arguments you give it, then shells out to `myk-pi-tools ai-cli run`.
+
 ## Step-by-Step Guide
 
 ### 1. Pick a provider and model
@@ -37,6 +39,8 @@ Supported providers: `cursor`, `claude`, `gemini`.
 | `cursor` | `composer-2-fast` |
 | `claude` | `claude-sonnet-4-6` |
 | `gemini` | `gemini-2.5-flash` |
+
+`ai-cli models <provider>` prints a JSON array of model ids to stdout (progress lines go to stderr), so it can be piped or read directly by Pi when it asks you to pick a model.
 
 ```bash
 myk-pi-tools ai-cli models cursor
@@ -63,6 +67,8 @@ myk-pi-tools ai-cli run "List security concerns in the auth package" --provider 
 ```text
 /external-ai claude --fix rewrite the error handling in database.ts
 ```
+
+`--fix` and `--peer` are flags of the `/external-ai` prompt template only — the underlying `ai-cli run` command has no such options. `/external-ai` implements them by changing the prompt it sends (adding a "you have full permission to modify files" instruction and a follow-up diff report).
 
 > **Note:** In a dirty git worktree, Pi asks whether to create a checkpoint commit (`chore: checkpoint before ai-cli changes`) or continue anyway before applying changes.
 
@@ -119,6 +125,14 @@ Then omit the provider:
 /external-ai --peer review this
 ```
 
+### Refresh cached models
+
+Pi caches the model list per provider. If newly released models do not show up, clear the cache:
+
+```text
+/external-ai-models-refresh
+```
+
 ### Extra CLI flags
 
 Pass through flags the underlying binary understands:
@@ -126,6 +140,8 @@ Pass through flags the underlying binary understands:
 ```bash
 myk-pi-tools ai-cli run "Review auth" --provider cursor --cli-flags=--trust
 ```
+
+`--cli-flags` is repeatable. Pi adds `--force` automatically for `cursor` so non-interactive `--print` runs skip the workspace trust prompt. `ai-cli run` also accepts `--cwd <dir>` to run the agent somewhere other than the current directory.
 
 ### Other providers
 
@@ -140,6 +156,7 @@ For registering `cli-*` providers inside Pi sessions, see [Configuration & Setti
 - **`agent` / `claude` / `gemini` not found:** Install and authenticate that provider’s CLI separately, then confirm it is on your `PATH`.
 - **Long-running or “stuck” agents:** Multi-step tool use can take several minutes. Do not cancel early — execution commands intentionally run without strict timeouts.
 - **`--resume` and `--peer` together:** Not allowed; drop one of the flags.
+- **A new model does not appear in the picker:** Run `/external-ai-models-refresh` to clear the cached model list for every provider.
 
 ## Related Pages
 

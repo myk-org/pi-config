@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Memory Architecture - pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
-    <link rel="stylesheet" href="assets/style.css">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=e7c0b4379e">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,45 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -57,9 +85,51 @@
                     </li>
 
                     <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="using-the-web-dashboard.html"
                            class="nav-link">
                             Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link active" aria-current="page">
+                            Memory Architecture
                         </a>
                     </li>
 
@@ -70,89 +140,33 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Creating Slash Commands
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Implementing Command Guards
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
-                           class="nav-link">
-                            myk_pi_tools CLI Reference
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration.html"
+                        <a href="image-generation.html"
                            class="nav-link">
-                            Configuration &amp; Settings
+                            Image Generation
                         </a>
                     </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="memory-architecture.html"
-                           class="nav-link active" aria-current="page">
-                            Memory Architecture
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="daemon-and-websockets.html"
-                           class="nav-link">
-                            Daemon &amp; Websocket Networking
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="neovim-integration.html"
@@ -168,10 +182,17 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
                     <li>
-                        <a href="image-generation.html"
+                        <a href="acpx-provider.html"
                            class="nav-link">
-                            Image Generation
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -182,6 +203,13 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
@@ -189,66 +217,45 @@
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="external-ai-agents.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
+                            pi-docsite
                         </a>
                     </li>
 
                     <li>
-                        <a href="inter-agent-communication.html"
+                        <a href="mcp-servers.html"
                            class="nav-link">
-                            Inter-Agent Communication Network
+                            MCP Servers
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="background-dreaming.html"
+                        <a href="cli-reference.html"
                            class="nav-link">
-                            Background Memory Consolidation (Dreaming)
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
-                <ul class="nav-group-pages">
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="daemon-and-websockets.html"
                            class="nav-link">
-                            ACPX Provider Integration
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +280,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -306,7 +313,7 @@
 <p>The practical result is simple: you spend less time repeating project conventions, and the agent gets better at bringing the right context back at the right moment.</p>
 <h2 id="the-big-picture">The Big Picture</h2>
 <p>The memory system is local, file-backed, and layered. Topic files are the source of truth; everything else is derived from or built around them.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Layer</th>
@@ -349,11 +356,11 @@
 <tr>
 <td>Provenance sidecar</td>
 <td>Source-session metadata waiting to be merged</td>
-<td><code>.pi/memory/provenance-pending.json</code></td>
+<td><code>.pi/memory/provenance-pending.jsonl</code></td>
 <td>Preserves where a memory came from without letting background jobs edit the score file directly.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <h3 id="end-to-end-flow">End-to-end flow</h3>
 <ol>
 <li>A memory enters the system from a direct tool call, the Python CLI, or background consolidation.</li>
@@ -369,7 +376,7 @@
 <h2 id="key-concepts">Key Concepts</h2>
 <h3 id="topic-files-are-the-source-of-truth">Topic files are the source of truth</h3>
 <p>Pi stores memory as Markdown topic files under <code>.pi/memory/topics/</code>, not in a database-first format.</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Category</th>
@@ -402,7 +409,7 @@
 <td><code>mistakes.md</code></td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>Each line is a single memory entry. Entries can carry markers such as <code>*(pinned)*</code> or <code>*(enforced)*</code>.</p>
 <p>That design has two user-visible benefits:</p>
 <ul>
@@ -419,39 +426,39 @@
 <li><strong>Evidence count:</strong> repeated use makes a memory more stable.</li>
 </ul>
 <h4 id="cue-weights">Cue weights</h4>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Cue type</th>
-<th style="text-align: right;">Weight</th>
+<th>Weight</th>
 <th>Typical meaning</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>explicit</code></td>
-<td style="text-align: right;">1.0</td>
+<td>1.0</td>
 <td>The user stated it directly.</td>
 </tr>
 <tr>
 <td><code>structural</code></td>
-<td style="text-align: right;">0.9</td>
+<td>0.9</td>
 <td>It was inferred from durable structure.</td>
 </tr>
 <tr>
 <td><code>behavioral</code></td>
-<td style="text-align: right;">0.7</td>
+<td>0.7</td>
 <td>It came from repeated workflow behavior.</td>
 </tr>
 <tr>
 <td><code>recurrence</code></td>
-<td style="text-align: right;">0.6</td>
+<td>0.6</td>
 <td>It was seen enough times to matter.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <h4 id="half-lives-by-category">Half-lives by category</h4>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Category</th>
@@ -484,7 +491,7 @@
 <td>14 days</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>Pi then assigns each scored entry to a lifecycle state:</p>
 <ul>
 <li><code>active</code>: high-value memory that should influence current behavior</li>
@@ -540,7 +547,7 @@
 </ul>
 <h3 id="query-classes-bias-what-gets-injected">Query classes bias what gets injected</h3>
 <p>Before a turn starts, Pi classifies the prompt into one of four query classes:</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Query class</th>
@@ -565,7 +572,7 @@
 <td>no special boost</td>
 </tr>
 </tbody>
-</table>
+</table></div>
 <p>That bias changes section ordering, section budget, and how many semantic matches Pi prefers to retrieve.</p>
 <p>This is why the same project memory can feel different depending on what you are doing:</p>
 <ul>
@@ -576,7 +583,7 @@
 <h3 id="promotion-turns-repeated-memories-into-stronger-structure">Promotion turns repeated memories into stronger structure</h3>
 <p>When a memory accumulates enough evidence, Pi can promote it.</p>
 <p>Current promotion destinations are:</p>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Destination</th>
@@ -585,12 +592,16 @@
 </thead>
 <tbody>
 <tr>
-<td><code>enforcement</code></td>
-<td>Safe, high-confidence rules can be applied automatically.</td>
+<td><code>memory</code></td>
+<td>Keep as regular memory.</td>
 </tr>
 <tr>
 <td><code>skill</code></td>
 <td>Multi-step patterns can be proposed as reusable skills.</td>
+</tr>
+<tr>
+<td><code>enforcement</code></td>
+<td>Safe, high-confidence rules can be applied automatically.</td>
 </tr>
 <tr>
 <td><code>project_rule</code></td>
@@ -601,7 +612,8 @@
 <td>Low-value or superseded items can be marked for removal.</td>
 </tr>
 </tbody>
-</table>
+</table></div>
+<p>Evidence thresholds are <code>3</code> for enforcement, <code>3</code> for skill, and <code>5</code> for project rule.</p>
 <p>The queue is stored in <code>.pi/memory/promotions.md</code> with statuses of <code>proposed</code>, <code>applied</code>, or <code>rejected</code>.</p>
 <p>A few important boundaries keep this safe:</p>
 <ul>
@@ -613,7 +625,7 @@
 <p><strong>Warning:</strong> Enforced memories are text-hash keyed. If background maintenance rewrites the text of an enforced entry, the binding would break, so the system explicitly protects those entries.</p>
 </blockquote>
 <h3 id="provenance-is-merged-through-a-sidecar">Provenance is merged through a sidecar</h3>
-<p>Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it writes a sidecar file at <code>.pi/memory/provenance-pending.json</code>. The orchestrator then merges that metadata back into <code>memory-scores.json</code> on completion.</p>
+<p>Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it appends a single line of JSON to <code>.pi/memory/provenance-pending.jsonl</code>. The orchestrator then merges that sidecar into <code>memory-scores.json</code> on completion and deletes it. (A <code>.pi/memory/provenance-pending.json</code> from older versions is still read for backward compatibility.)</p>
 <p>This keeps the scoring index authoritative while still preserving traceability.</p>
 <p>User-visible effect: a memory can later explain where it came from without forcing every background worker to edit the score file itself.</p>
 <h3 id="legacy-memory-migration-still-exists">Legacy memory migration still exists</h3>
@@ -642,26 +654,19 @@
 <li>See <a href="cli-reference.html">myk_pi_tools CLI Reference</a> for the Python commands that manage topic files and perform legacy migration.</li>
 <li>See <a href="automating-code-reviews.html">Automating Code Reviews</a> for review-specific workflows that interact with memory, but belong to the review system rather than the core memory model.</li>
 </ul>
-<h2 id="related-pages_1">Related Pages</h2>
-<ul>
-<li><a href="curating-project-memory.html">Curating Project Memory</a></li>
-<li><a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a></li>
-<li><a href="safety-enforcements.html">Implementing Command Guards</a></li>
-<li><a href="configuration.html">Configuration &amp; Settings</a></li>
-</ul>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="built-in-workflows.html" class="page-nav-link page-nav-prev">
+                <a href="background-dreaming.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Built-in Workflow Commands</span>
+                    <span class="page-nav-title">Background Memory Consolidation (Dreaming)</span>
                 </a>
 
 
-                <a href="daemon-and-websockets.html" class="page-nav-link page-nav-next">
+                <a href="curating-project-memory.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Daemon &amp; Websocket Networking</span>
+                    <span class="page-nav-title">Curating Project Memory</span>
                 </a>
 
             </nav>
@@ -689,7 +694,6 @@
 </li>
 <li><a href="#how-it-affects-the-user">How It Affects the User</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
-<li><a href="#related-pages_1">Related Pages</a></li>
 </ul>
 </div>
 
@@ -701,10 +705,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>pi-docsite</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>
@@ -712,13 +713,14 @@
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=e7c0b4379e"></script>
+
+    <script src="assets/search.js?v=e7c0b4379e"></script>
+    <script src="assets/copy.js?v=e7c0b4379e"></script>
+    <script src="assets/callouts.js?v=e7c0b4379e"></script>
+    <script src="assets/scrollspy.js?v=e7c0b4379e"></script>
+    <script src="assets/codelabels.js?v=e7c0b4379e"></script>
+    <script src="assets/github.js?v=e7c0b4379e"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');
@@ -764,5 +766,6 @@
     }
 })();
 </script>
+<!-- generated by pi-docsite -->
 </body>
 </html>

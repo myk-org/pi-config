@@ -6,8 +6,10 @@ Get pi-config installed, configure your project, start the local daemons, and ru
 
 - Node.js (>= 22)
 - Git installed and configured
-- `pi` (install with `npm install -g @earendil-works/pi-coding-agent`)
+- `pi` >= 0.99.0 (install with `npm install -g @earendil-works/pi-coding-agent`)
 - `uv` (Python package manager)
+
+> **Note:** pi-config requires pi **0.99.0 or newer**. On an older version, CLI/ACPX providers stay unregistered and pi warns on session start.
 
 ## Quick Example
 
@@ -25,21 +27,26 @@ uv run scripts/install.py --all
 
 ### 1. Install pi-config and tooling
 
-Run the interactive installer from a pi-config checkout:
+Install the pi package (no git clone needed):
 
 ```bash
-uv run scripts/install.py
+pi install npm:pi-orchestrator-config
+uv tool install myk-pi-tools
 ```
 
-Follow the prompts to select packages (orchestrator, CLI tools, browser automation, gitignore entries, and more).
-
-To skip prompts and install everything available:
+To get everything at once — the pi package, `myk-pi-tools`, `prek`, `acpx`, `agent-browser`, `graft`, Playwright, and the git-excludes setup — run the interactive installer instead:
 
 ```bash
-uv run scripts/install.py --all
+uv run https://raw.githubusercontent.com/myk-org/pi-config/main/scripts/install.py
 ```
 
-> **Note:** The installer exits if `pi` is missing. Install `@earendil-works/pi-coding-agent` globally first.
+Follow the prompts to select packages. To skip prompts and install everything available:
+
+```bash
+uv run scripts/install.py --all   # from a pi-config checkout
+```
+
+> **Note:** The installer exits if `pi` is missing. Install `@earendil-works/pi-coding-agent` globally first. Only `myk-pi-tools` and `prek` require `uv`; the other steps require Node.js.
 
 When it finishes, start a session:
 
@@ -49,7 +56,7 @@ pi
 
 ### 2. Add project settings
 
-Create `.pi/pi-config-settings.json` in your repository root:
+Create `.pi/pi-config-settings.jsonc` in your repository root (`.json` also works; if both exist the `.jsonc` file wins):
 
 ```json
 {
@@ -63,6 +70,12 @@ Create `.pi/pi-config-settings.json` in your repository root:
 ```
 
 > **Note:** Project settings override global defaults for the current repository. See [Configuration & Settings](configuration.html) for the full option list.
+
+Prefer not to hand-edit JSON? Open the settings TUI from any session and edit the same keys with arrows and search:
+
+```text
+/pi-config-settings
+```
 
 ### 3. Start the background daemons
 
@@ -99,6 +112,7 @@ This chains a scout pass (find relevant code) into a planner pass (implementatio
 
 | Mode | Command | Behavior |
 |------|---------|----------|
+| Pi package only | `pi install npm:pi-orchestrator-config` | Extensions, agents, prompts, skills, rules — nothing else |
 | Interactive | `uv run scripts/install.py` | Step through packages and confirm |
 | Non-interactive | `uv run scripts/install.py --all` | Auto-select every available tool |
 
@@ -108,8 +122,8 @@ The installer can also add `.pi/` and `.worktrees/` to your global git excludes 
 
 Skip the settings file when you prefer env vars. Resolution order:
 
-1. `.pi/pi-config-settings.json` (project)
-2. `~/.pi/pi-config-settings.json` (global)
+1. `.pi/pi-config-settings.jsonc` (project; `.json` is the fallback name)
+2. `~/.pi/pi-config-settings.jsonc` (global; `.json` is the fallback name)
 3. Environment variables (for example `PI_DREAM_INTERVAL_HOURS=3`, `CLI_AGENTS=claude,cursor`)
 4. Built-in defaults
 
@@ -120,13 +134,14 @@ See [Configuration & Settings](configuration.html) for keys and env var names. F
 | Method | Command |
 |--------|---------|
 | Preferred | `git config --global core.excludesfile ~/.config/git/ignore && echo ".pi/" >> ~/.config/git/ignore` |
-| Manual | Append `.pi/` (and `.worktrees/` if you use worktrees) to your global excludes file |
+| Manual | Append `.pi/` (and `.worktrees/` if you use worktrees) to whatever `git config --global core.excludesfile` points at (`~/.config/git/ignore` when unset) |
 
 > **Tip:** The installer Environment Setup step can configure these entries for you.
 
 ## Troubleshooting
 
 - **"Cannot continue without pi":** Install the coding agent globally (`npm install -g @earendil-works/pi-coding-agent`), confirm `pi` is on your `PATH`, then re-run the installer.
+- **"pi X is below minimum required version 0.99.0":** Update pi with `npm install -g @earendil-works/pi-coding-agent`, then `/reload` or restart the session.
 - **Daemon fails to start:** Confirm `pidash_enable` / `pidiff_enable` are not set to `false`. Run `/pidash status` or `/pidiff status`. For pidash failures, check `~/.pi/pidash-server.log`.
 - **pidash says TUI-only:** Start daemons from an interactive `pi` session, not a headless/CLI-only mode.
 - **Pre-commit / formatting failures:** Run `prek run --all-files` to apply fixes, then retry the commit.

@@ -1,4 +1,9 @@
 ---
+# Build hook environments with whatever `python3` is on PATH. Naming an exact
+# minor (python3.13) makes env creation fail on any machine that does not have
+# that exact interpreter. Pinning a version is unnecessary anyway: ruff's
+# target-version is py313, so nothing the hooks read can use syntax that needs
+# more than an older interpreter to parse.
 default_language_version:
   python: python3
 
@@ -58,6 +63,7 @@ repos:
       - id: mypy
         additional_dependencies:
           - pytest
+          - types-Markdown
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.44.0

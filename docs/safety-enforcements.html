@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Implementing Command Guards - pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
-    <link rel="stylesheet" href="assets/style.css">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=e7c0b4379e">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,45 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -57,9 +85,51 @@
                     </li>
 
                     <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="using-the-web-dashboard.html"
                            class="nav-link">
                             Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
                         </a>
                     </li>
 
@@ -70,89 +140,33 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Creating Slash Commands
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
-                           class="nav-link active" aria-current="page">
-                            Implementing Command Guards
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            myk_pi_tools CLI Reference
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration.html"
+                        <a href="image-generation.html"
                            class="nav-link">
-                            Configuration &amp; Settings
+                            Image Generation
                         </a>
                     </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="memory-architecture.html"
-                           class="nav-link">
-                            Memory Architecture
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="daemon-and-websockets.html"
-                           class="nav-link">
-                            Daemon &amp; Websocket Networking
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="neovim-integration.html"
@@ -168,10 +182,17 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
                     <li>
-                        <a href="image-generation.html"
+                        <a href="acpx-provider.html"
                            class="nav-link">
-                            Image Generation
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -182,6 +203,13 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
@@ -189,66 +217,45 @@
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="external-ai-agents.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
+                            pi-docsite
                         </a>
                     </li>
 
                     <li>
-                        <a href="inter-agent-communication.html"
+                        <a href="mcp-servers.html"
                            class="nav-link">
-                            Inter-Agent Communication Network
+                            MCP Servers
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="background-dreaming.html"
+                        <a href="cli-reference.html"
                            class="nav-link">
-                            Background Memory Consolidation (Dreaming)
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
-                <ul class="nav-group-pages">
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link active" aria-current="page">
+                            Implementing Command Guards
+                        </a>
+                    </li>
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="daemon-and-websockets.html"
                            class="nav-link">
-                            ACPX Provider Integration
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +280,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -309,10 +316,10 @@
 <h2 id="block-a-destructive-cleanup-command">Block a destructive cleanup command</h2>
 <p>Use this when you want Pi to reject a specific bash command before it runs.</p>
 <div class="highlight"><pre><span></span><code>memory_add(
-  text=&quot;Never prune Docker images or containers from this repo&quot;,
-  category=&quot;lesson&quot;,
-  trigger=&quot;bash_contains docker system prune&quot;,
-  action=&quot;block&quot;
+  text="Never prune Docker images or containers from this repo",
+  category="lesson",
+  trigger="bash_contains docker system prune",
+  action="block"
 )
 </code></pre></div>
 
@@ -324,24 +331,24 @@
 <h2 id="block-force-pushes-with-a-regex">Block force-pushes with a regex</h2>
 <p>Use this when a command has multiple spellings and you need one rule to catch all of them.</p>
 <div class="highlight"><pre><span></span><code>memory_add(
-  text=&quot;Never force-push from this repo&quot;,
-  category=&quot;lesson&quot;,
-  trigger=&quot;bash_regex git\\s+push\\s+--force(?:-with-lease)?\\b&quot;,
-  action=&quot;block&quot;
+  text="Never force-push from this repo",
+  category="lesson",
+  trigger="bash_regex git\\s+push\\s+--force(?:-with-lease)?\\b",
+  action="block"
 )
 </code></pre></div>
 
 <p>This blocks both <code>git push --force</code> and <code>git push --force-with-lease</code>. Use <code>bash_regex</code> when a simple substring is too broad or would miss important variants.</p>
 <blockquote>
-<p><strong>Tip:</strong> Keep regexes short and targeted. This matcher is for command guards, not full shell parsing.</p>
+<p><strong>Tip:</strong> Keep regexes short and targeted. This matcher is for command guards, not full shell parsing. Patterns longer than 200 characters are ignored, an invalid pattern is skipped silently, and only the first 4000 characters of a command are tested.</p>
 </blockquote>
 <h2 id="warn-when-editing-secret-files">Warn when editing secret files</h2>
 <p>Use this when a file should stay editable, but every edit deserves an extra reminder.</p>
 <div class="highlight"><pre><span></span><code>memory_add(
-  text=&quot;Check for secrets before saving .env files&quot;,
-  category=&quot;pattern&quot;,
-  trigger=&quot;file_modified *.env&quot;,
-  action=&quot;warn&quot;
+  text="Check for secrets before saving .env files",
+  category="pattern",
+  trigger="file_modified *.env",
+  action="warn"
 )
 </code></pre></div>
 
@@ -353,30 +360,30 @@
 <h2 id="require-approval-before-merging-a-pr">Require approval before merging a PR</h2>
 <p>Use this when a command is allowed only after another tool has run in the same turn.</p>
 <div class="highlight"><pre><span></span><code>memory_add(
-  text=&quot;Always get explicit approval before merging a pull request&quot;,
-  category=&quot;pattern&quot;,
-  verifier=&quot;tool_called ask_user before gh pr merge&quot;
+  text="Always get explicit approval before merging a pull request",
+  category="pattern",
+  verifier="tool_called ask_user before gh pr merge"
 )
 </code></pre></div>
 
 <p>This adds a semantic verifier instead of a trigger/action pair. If Pi runs <code>gh pr merge</code> without calling <code>ask_user</code> first, the turn is flagged as a violation.</p>
 <blockquote>
-<p><strong>Note:</strong> This checks ordering inside a single turn: <code>ask_user</code> must happen before the merge command.</p>
+<p><strong>Note:</strong> This checks ordering inside a single turn: <code>ask_user</code> must happen before the merge command. The second half is a plain substring matched against <code>bash</code> command strings only, and verifiers are evaluated at turn end — they report a violation rather than blocking the call.</p>
 </blockquote>
 <h2 id="make-the-repo-read-only-for-direct-edits">Make the repo read-only for direct edits</h2>
 <p>Use this when you want Pi to inspect and plan, but never modify files directly.</p>
 <div class="highlight"><pre><span></span><code>memory_add(
-  text=&quot;Do not write files directly in this repo&quot;,
-  category=&quot;preference&quot;,
-  trigger=&quot;tool_name write&quot;,
-  action=&quot;block&quot;
+  text="Do not write files directly in this repo",
+  category="preference",
+  trigger="tool_name write",
+  action="block"
 )
 
 memory_add(
-  text=&quot;Do not edit files directly in this repo&quot;,
-  category=&quot;preference&quot;,
-  trigger=&quot;tool_name edit&quot;,
-  action=&quot;block&quot;
+  text="Do not edit files directly in this repo",
+  category="preference",
+  trigger="tool_name edit",
+  action="block"
 )
 </code></pre></div>
 
@@ -387,30 +394,27 @@ memory_add(
 </ul>
 <h2 id="run-one-safe-follow-up-command-after-a-file-edit">Run one safe follow-up command after a file edit</h2>
 <p>Use this when you want Pi to perform a tightly controlled check right after a successful change.</p>
-<div class="highlight"><pre><span></span><code># In your shell before starting pi
-export PI_ENFORCEMENT_ALLOWED_COMMANDS=&quot;git diff -- Dockerfile&quot;
-
-# In pi chat
-memory_add(
-  text=&quot;Show the Dockerfile diff after every edit&quot;,
-  category=&quot;pattern&quot;,
-  trigger=&quot;file_modified Dockerfile&quot;,
-  action=&quot;run_after git diff -- Dockerfile&quot;
+<div class="highlight"><pre><span></span><code>memory_add(
+  text="Show the Dockerfile diff after every edit",
+  category="pattern",
+  trigger="file_modified Dockerfile",
+  action="run_after git diff -- Dockerfile"
 )
 </code></pre></div>
 
-<p>This runs <code>git diff -- Dockerfile</code> immediately after a matching <code>write</code> or <code>edit</code> succeeds, and only because the command is allowlisted exactly. Use this for short, deterministic checks that you want attached to a specific kind of edit.</p>
+<p>This runs <code>git diff -- Dockerfile</code> immediately after a matching <code>write</code> or <code>edit</code> succeeds. Use this for short, deterministic checks that you want attached to a specific kind of edit.</p>
+<p>Unlike <code>block</code> and <code>warn</code>, <code>run_after</code> actually executes a shell command, so it is gated. Without configuration the command runs as written. To restrict it, set the <code>enforcement_allowed_commands</code> allowlist — this is the only allowlist in the enforcement path:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># In your shell before starting pi</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_ENFORCEMENT_ALLOWED_COMMANDS</span><span class="o">=</span><span class="s2">"git diff -- Dockerfile:git status --short"</span>
+</code></pre></div>
+
+<p>Or set <code>enforcement_allowed_commands</code> in <code>pi-config-settings.json</code>. Once the setting is non-empty, a <code>run_after</code> command not in the allowlist is refused with <code>Blocked: command not in enforcement_allowed_commands allowlist</code> and does not execute.</p>
 <blockquote>
-<p><strong>Warning:</strong> Allowlist entries must match exactly, character for character.</p>
+<p><strong>Warning:</strong> Allowlist entries are colon-separated and matched exactly, character for character, after trimming — no prefix matching, so <code>git diff</code> in the list does not permit <code>git diff -- Dockerfile</code>. An empty allowlist (the default) allows everything.</p>
 </blockquote>
 <ul>
-<li>
-<p>To allow more than one follow-up command, use a colon-separated list:
-  <code>export PI_ENFORCEMENT_ALLOWED_COMMANDS="git diff -- Dockerfile:git status --short"</code></p>
-</li>
-<li>
-<p>Keep follow-up commands fast so they do not slow down normal edits</p>
-</li>
+<li>Independently of the allowlist, <code>run_after</code> still refuses commands matching <code>curl</code>/<code>wget</code> piped into a shell, <code>rm -rf /</code>-style paths, <code>sudo</code>, and world-writable <code>chmod</code></li>
+<li>Each command runs with a 60s timeout; keep follow-up commands fast so they do not slow down normal edits</li>
 </ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
@@ -424,15 +428,15 @@ memory_add(
             </article>
             <nav class="page-nav">
 
-                <a href="custom-slash-commands.html" class="page-nav-link page-nav-prev">
+                <a href="cli-reference.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Creating Slash Commands</span>
+                    <span class="page-nav-title">myk_pi_tools CLI Reference</span>
                 </a>
 
 
-                <a href="cli-reference.html" class="page-nav-link page-nav-next">
+                <a href="daemon-and-websockets.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">myk_pi_tools CLI Reference</span>
+                    <span class="page-nav-title">Daemon &amp; Websocket Networking</span>
                 </a>
 
             </nav>
@@ -460,10 +464,7 @@ memory_add(
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>pi-docsite</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>
@@ -471,13 +472,14 @@ memory_add(
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=e7c0b4379e"></script>
+
+    <script src="assets/search.js?v=e7c0b4379e"></script>
+    <script src="assets/copy.js?v=e7c0b4379e"></script>
+    <script src="assets/callouts.js?v=e7c0b4379e"></script>
+    <script src="assets/scrollspy.js?v=e7c0b4379e"></script>
+    <script src="assets/codelabels.js?v=e7c0b4379e"></script>
+    <script src="assets/github.js?v=e7c0b4379e"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');
@@ -523,5 +525,6 @@ memory_add(
     }
 })();
 </script>
+<!-- generated by pi-docsite -->
 </body>
 </html>

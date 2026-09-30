@@ -39,7 +39,9 @@ afterEach(() => {
 });
 function register(opts: any = {}) {
   const mock = mockPi(); const command = runner(opts.results);
-  graft.createGraftIntegration({ enabled: true, executable: async () => true, graph: async () => "fresh", run: command.run, ...opts }).register(mock.pi as any);
+  // worktree defaults to a real-looking root so the fake cwd is treated as a
+  // git worktree; pass worktree: () => null to exercise the non-repo path.
+  graft.createGraftIntegration({ enabled: true, executable: async () => true, graph: async () => "fresh", worktree: () => "/repo", run: command.run, ...opts }).register(mock.pi as any);
   return { ...mock, ...command };
 }
 async function start(r: ReturnType<typeof register>, c = ctx()) { await r.handlers.get("session_start")![0]({ reason: "startup" }, c); return c; }
@@ -100,7 +102,7 @@ describe("Graft opt-in, trust, and startup", () => {
   });
   it("probes the Graft version before graph work and stops when unavailable", async () => {
     const mock = mockPi(); const command = runner([{ code: 1 }]);
-    graft.createGraftIntegration({ enabled: true, graph: async () => "absent", run: command.run }).register(mock.pi as any);
+    graft.createGraftIntegration({ enabled: true, graph: async () => "absent", worktree: () => "/repo", run: command.run }).register(mock.pi as any);
     const c = ctx(); await mock.handlers.get("session_start")![0]({ reason: "startup" }, c);
     assert.deepEqual(command.calls.map(call => call.args), [["--version"]]);
     assert.deepEqual(c.status.at(-1), { key: "4b-graft", text: "◤ graft · 0 nodes · failed" });
@@ -531,6 +533,57 @@ describe("Graft paths and status", () => {
       assert.match(result.content[0].text, /project/i); assert.equal(r.calls.length, 0);
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
   });
+  it("reports n/a, not failed, when the cwd is not a git worktree", async () => {
+    const mock = mockPi(); const command = runner([]);
+    graft.createGraftIntegration({ enabled: true, worktree: () => null, run: command.run }).register(mock.pi as any);
+    const c = ctx();
+    await mock.handlers.get("session_start")![0]({ reason: "startup" }, c);
+    // The whole point: an ordinary directory is not a broken install, so it must
+    // not be reported with the error-red "failed" state.
+    assert.deepEqual(c.status.at(-1), { key: "4b-graft", text: "◤ graft · n/a" });
+    // And it must not keep probing a build that can never succeed there.
+    assert.deepEqual(command.calls, []);
+  });
+
+  it("stays fully inert outside a worktree", async () => {
+    const r = await startInert();
+    assert.deepEqual(r.ctx.status.at(-1), { key: "4b-graft", text: "◤ graft · n/a" });
+  });
+
+  it("registers no graft tools outside a worktree", async () => {
+    // With state.enabled set before the worktree check, the
+    // resolveWorktreeRoot===state.root guards pass (both are the cwd) and the
+    // integration stays live, so these tools exist and answer.
+    const r = await startInert();
+    assert.equal(r.mock.tools.size, 0, "no graft tools may be registered");
+  });
+
+  it("runs no graft subprocess outside a worktree", async () => {
+    // A prompt in a plain directory otherwise spawned a graft check every turn.
+    const r = await startInert();
+    assert.deepEqual(r.command.calls, [], "no graft subprocess may run");
+  });
+
+  /** Session start in a cwd that is not a git worktree. */
+  async function startInert() {
+    const mock = mockPi(); const command = runner([]);
+    graft.createGraftIntegration({ enabled: true, worktree: () => null, run: command.run }).register(mock.pi as any);
+    const c = ctx();
+    await mock.handlers.get("session_start")![0]({ reason: "startup" }, c);
+    return { mock, command, ctx: c };
+  }
+
+  it("treats a repo with no graph yet as absent rather than failed", async () => {
+    const r = register({ graph: async () => "absent", executable: async () => true });
+    const c = await start(r);
+    // "absent" in a real repo means "not built yet", and refresh() builds it, so
+    // it settles on synced. The guarantee under test is that it never passes
+    // through the error-red "failed" state on the way.
+    assert.doesNotMatch(c.status.at(-1)!.text, /failed/);
+    assert.match(c.status.at(-1)!.text, /synced/);
+    assert.ok(!c.status.some(s => /failed/.test(s.text ?? "")), "no intermediate failed state");
+  });
+
   it("uses the shared graft status slot", async () => { const r = register({ executable: async () => false }); const c = await start(r); assert.deepEqual(c.status.at(-1), { key: "4b-graft", text: "◤ graft · 0 nodes · failed" }); });
   it("formats compact savings and themes positive values as success", () => {
     const theme = { fg: (color: string, value: string) => `<${color}>${value}</${color}>` };

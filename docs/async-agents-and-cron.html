@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Running Background Agents and Scheduled Tasks - pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
-    <link rel="stylesheet" href="assets/style.css">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=e7c0b4379e">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,45 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -57,9 +85,51 @@
                     </li>
 
                     <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
                         <a href="using-the-web-dashboard.html"
                            class="nav-link">
                             Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link active" aria-current="page">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
                         </a>
                     </li>
 
@@ -70,89 +140,33 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Creating Slash Commands
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Implementing Command Guards
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
-                           class="nav-link">
-                            myk_pi_tools CLI Reference
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
                     <li>
-                        <a href="configuration.html"
+                        <a href="image-generation.html"
                            class="nav-link">
-                            Configuration &amp; Settings
+                            Image Generation
                         </a>
                     </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="memory-architecture.html"
-                           class="nav-link">
-                            Memory Architecture
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="daemon-and-websockets.html"
-                           class="nav-link">
-                            Daemon &amp; Websocket Networking
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="neovim-integration.html"
@@ -168,10 +182,17 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
                     <li>
-                        <a href="image-generation.html"
+                        <a href="acpx-provider.html"
                            class="nav-link">
-                            Image Generation
+                            ACPX Provider Integration
                         </a>
                     </li>
 
@@ -182,6 +203,13 @@
                         </a>
                     </li>
 
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
                     <li>
                         <a href="pi-sidecar.html"
                            class="nav-link">
@@ -189,66 +217,45 @@
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="external-ai-agents.html"
+                        <a href="pi-docsite.html"
                            class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link active" aria-current="page">
-                            Running Background Agents and Scheduled Tasks
+                            pi-docsite
                         </a>
                     </li>
 
                     <li>
-                        <a href="inter-agent-communication.html"
+                        <a href="mcp-servers.html"
                            class="nav-link">
-                            Inter-Agent Communication Network
+                            MCP Servers
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
                     <li>
-                        <a href="background-dreaming.html"
+                        <a href="cli-reference.html"
                            class="nav-link">
-                            Background Memory Consolidation (Dreaming)
+                            myk_pi_tools CLI Reference
                         </a>
                     </li>
 
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
-                <ul class="nav-group-pages">
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
 
                     <li>
-                        <a href="acpx-provider.html"
+                        <a href="daemon-and-websockets.html"
                            class="nav-link">
-                            ACPX Provider Integration
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +280,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -308,7 +315,7 @@
 <li>A running Pi session in your project repository</li>
 <li>A TUI session if you want to use the fullscreen status overlays</li>
 <li><code>git</code> available if your background task depends on repository state</li>
-<li>If you use ACPX-backed models for detached work, <code>async_llm_provider</code> and <code>async_llm_model</code> may be required. See <a href="configuration.html">Configuration &amp; Settings</a> for details.</li>
+<li>If you use ACPX-backed models for detached work, <code>internal_operations_provider</code> and <code>internal_operations_model</code> may be required. See <a href="configuration.html">Configuration &amp; Settings</a> for details.</li>
 </ul>
 <h2 id="quick-example">Quick Example</h2>
 <p>Start a background agent with a plain-English request:</p>
@@ -374,10 +381,18 @@
 <div class="highlight"><pre><span></span><code>/cron<span class="w"> </span>remove<span class="w"> </span><span class="m">1</span>
 </code></pre></div>
 
-<p>In the cron overlays, you can also press <code>x</code> to remove the selected task.</p>
+<p><code>/cron rm &lt;id&gt;</code> and <code>/cron delete &lt;id&gt;</code> are accepted aliases. In the cron overlays, you can also press <code>x</code> to remove the selected task.</p>
+<ol>
+<li>Make a schedule survive a Pi restart.</li>
+</ol>
+<p>Prefix any <code>/cron</code> request with <code>--persist</code>:</p>
+<div class="highlight"><pre><span></span><code>/cron<span class="w"> </span>--persist<span class="w"> </span>Every<span class="w"> </span>day<span class="w"> </span>at<span class="w"> </span><span class="m">9</span>:00<span class="w"> </span>AM,<span class="w"> </span>run<span class="w"> </span>the<span class="w"> </span>git-expert<span class="w"> </span>to<span class="w"> </span>generate<span class="w"> </span>a<span class="w"> </span>daily<span class="w"> </span>summary.
+</code></pre></div>
+
+<p>Persisted tasks are written to <code>.pi/cron/crons.json</code> in the project and reloaded by later sessions.</p>
 <h2 id="advanced-usage">Advanced Usage</h2>
 <h3 id="pick-the-right-monitoring-command">Pick the Right Monitoring Command</h3>
-<table>
+<div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Goal</th>
@@ -397,9 +412,24 @@
 <td>Interactive kill picker</td>
 </tr>
 <tr>
+<td>Kill one job by name or id prefix</td>
+<td><code>/async-kill &lt;name\|id-prefix&gt;</code></td>
+<td>Direct kill without opening the picker</td>
+</tr>
+<tr>
+<td>Kill every running job</td>
+<td><code>/async-kill all</code></td>
+<td>Kills all running and queued jobs</td>
+</tr>
+<tr>
 <td>See local schedules</td>
 <td><code>/cron list</code></td>
-<td>Fullscreen list of this session’s recurring tasks</td>
+<td>Fullscreen list of this session's recurring tasks</td>
+</tr>
+<tr>
+<td>See only persisted schedules</td>
+<td><code>/cron --persist list</code></td>
+<td>Filters the overlay down to project-scoped crons</td>
 </tr>
 <tr>
 <td>See all session schedules</td>
@@ -412,7 +442,12 @@
 <td>Direct removal by task ID</td>
 </tr>
 </tbody>
-</table>
+</table></div>
+<h3 id="pick-the-model-for-background-work">Pick the Model for Background Work</h3>
+<p>Detached agents are resolved through the same chain as any other subagent
+(<code>explicit &gt; agent_overrides[name] &gt; agent frontmatter &gt; agent_provider/agent_model &gt; parent</code>),
+so a plain <code>agent_model</code> setting is all you need to pin background work to a specific model.
+It is a <code>string</code> setting, default <code>""</code>, meaning "inherit the parent session's model".</p>
 <h3 id="keep-background-context-between-runs">Keep Background Context Between Runs</h3>
 <p>If you want a background agent to remember previous work, ask Pi to persist that session:</p>
 <blockquote>
@@ -426,17 +461,67 @@
 </blockquote>
 <p>This is a good fit for housekeeping work where a completion notification is enough. See <a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a> for a concrete example.</p>
 <h3 id="understand-cron-lifetime">Understand Cron Lifetime</h3>
-<p>Cron tasks belong to the current Pi process. They survive session refreshes inside that process, but they do not keep running after a full Pi exit.</p>
+<p>Cron tasks have two scopes, chosen by the <code>--persist</code> flag:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>Stored in</th>
+<th>Survives Pi exit</th>
+<th>Runs from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>session (default)</td>
+<td>The session store under <code>.pi/tmp/</code></td>
+<td>No</td>
+<td>That session only</td>
+</tr>
+<tr>
+<td>project (<code>--persist</code>)</td>
+<td><code>.pi/cron/crons.json</code> in the project</td>
+<td>Yes</td>
+<td>Any session opened in that project</td>
+</tr>
+</tbody>
+</table></div>
+<p>Session-scoped tasks survive <code>/reload</code> inside the running process but are deleted on a real exit. Project-scoped tasks are reloaded by later sessions, and a leader lease in the same directory guarantees only one session executes a given task — other sessions show it as <code>project (waiting for leader)</code>.</p>
 <blockquote>
 <p><strong>Note:</strong> If you need to confirm what is still scheduled, run <code>/cron list</code> or <code>/cron list-all</code> after reconnecting instead of assuming an older schedule is still active.</p>
+<p><strong>Tip:</strong> <code>/cron</code> with free text does not schedule anything by itself. It re-enters the conversation with a request to call the <code>cron_manage</code> tool, and <code>persist</code> is set to <code>true</code> only when you passed <code>--persist</code>. Schedules must have an <code>interval_seconds</code> of at least 10, and <code>at_minute</code> is only valid together with <code>at_hour</code>.</p>
 </blockquote>
 <h3 id="acpx-compatibility">ACPX Compatibility</h3>
-<p>Detached LLM work is more restricted when your parent session is using an <code>acpx-*</code> provider. In that case, some async work may be skipped or require a separate async LLM provider/model to be configured first.</p>
+<p>Detached LLM work is more restricted when your parent session is using an <code>acpx-*</code> provider. Child Pi processes launched as async agents skip ACPX provider registration, so Pi decides between three outcomes:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Parent is native or <code>cli-*</code></td>
+<td>Async work runs detached as normal.</td>
+</tr>
+<tr>
+<td>Parent is <code>acpx-*</code>, work is not must-async</td>
+<td>The request is coerced to run synchronously instead.</td>
+</tr>
+<tr>
+<td>Parent is <code>acpx-*</code>, work is must-async (dreaming, <code>fireAndForget</code>)</td>
+<td>Runs detached on <code>internal_operations_provider</code>/<code>internal_operations_model</code>; if those are unset, the work is skipped with a warning.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Set <code>internal_operations_provider</code> and <code>internal_operations_model</code> to cover that last case. Both are <code>string</code> settings, default <code>""</code>, and the provider must not itself be an <code>acpx-*</code> id.</p>
 <p>See <a href="acpx-provider.html">ACPX Provider Integration</a> and <a href="configuration.html">Configuration &amp; Settings</a> for the exact setup.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
-<li><strong>Async job does not start:</strong> If Pi complains about a missing <code>taskId</code>, the workflow is expecting the background work to be linked to a tracked task or explicitly marked as independent.</li>
-<li><strong>Job starts but immediately skips:</strong> If your session is using an ACPX-backed provider, configure <code>async_llm_provider</code> and <code>async_llm_model</code> before retrying.</li>
+<li><strong>Async job does not start:</strong> Confirm you asked for it in the background (<code>async: true</code>) and that you ended your turn — Pi delivers results automatically and does not expect a polling loop. Agents declared async-only force <code>async: true</code> on a native provider and refuse chain mode.</li>
+<li><strong>Job starts but immediately skips:</strong> If your session is using an ACPX-backed provider, configure <code>internal_operations_provider</code> and <code>internal_operations_model</code> before retrying.</li>
+<li><strong>You want the result to update a task automatically:</strong> Pass a numeric <code>taskId</code> from the task tools. It is optional; when set, the finished job marks that task <code>completed</code> for you.</li>
 <li><strong>You want live output but nothing appears:</strong> Use <code>/async-status</code> from a TUI session. The fullscreen overlay is the supported live-view interface.</li>
 <li><strong>A cron task seems stuck or outdated:</strong> Run <code>/cron list</code> or <code>/cron list-all</code>, then remove the old task and create a fresh one.</li>
 <li><strong>You want browser-based monitoring instead of terminal overlays:</strong> See <a href="using-the-web-dashboard.html">Using the Web Dashboard</a> for details.</li>
@@ -453,15 +538,15 @@
             </article>
             <nav class="page-nav">
 
-                <a href="external-ai-agents.html" class="page-nav-link page-nav-prev">
+                <a href="using-the-web-dashboard.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">External AI Agents &amp; CLI</span>
+                    <span class="page-nav-title">Using the Web Dashboard</span>
                 </a>
 
 
-                <a href="inter-agent-communication.html" class="page-nav-link page-nav-next">
+                <a href="background-dreaming.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Inter-Agent Communication Network</span>
+                    <span class="page-nav-title">Background Memory Consolidation (Dreaming)</span>
                 </a>
 
             </nav>
@@ -476,6 +561,7 @@
 <li><a href="#step-by-step">Step-by-Step</a></li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
 <li><a href="#pick-the-right-monitoring-command">Pick the Right Monitoring Command</a></li>
+<li><a href="#pick-the-model-for-background-work">Pick the Model for Background Work</a></li>
 <li><a href="#keep-background-context-between-runs">Keep Background Context Between Runs</a></li>
 <li><a href="#use-fire-and-forget-for-maintenance-jobs">Use Fire-and-Forget for Maintenance Jobs</a></li>
 <li><a href="#understand-cron-lifetime">Understand Cron Lifetime</a></li>
@@ -495,10 +581,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>pi-docsite</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>
@@ -506,13 +589,14 @@
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js"></script>
-    <script src="assets/search.js"></script>
-    <script src="assets/copy.js"></script>
-    <script src="assets/callouts.js"></script>
-    <script src="assets/scrollspy.js"></script>
-    <script src="assets/codelabels.js"></script>
-    <script src="assets/github.js"></script>
+    <script src="assets/theme.js?v=e7c0b4379e"></script>
+
+    <script src="assets/search.js?v=e7c0b4379e"></script>
+    <script src="assets/copy.js?v=e7c0b4379e"></script>
+    <script src="assets/callouts.js?v=e7c0b4379e"></script>
+    <script src="assets/scrollspy.js?v=e7c0b4379e"></script>
+    <script src="assets/codelabels.js?v=e7c0b4379e"></script>
+    <script src="assets/github.js?v=e7c0b4379e"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');
@@ -558,5 +642,6 @@
     }
 })();
 </script>
+<!-- generated by pi-docsite -->
 </body>
 </html>
