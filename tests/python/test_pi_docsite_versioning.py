@@ -96,8 +96,8 @@ def test_wheel_metadata_matches_the_package() -> None:
                 if line.startswith("Version:")
             )
 
-    from pi_docsite import __version__
+    declared = _declared_version()
 
-    assert version == __version__, (
-        f"wheel says {version} but the package says {__version__} -- the two must not be able to drift"
+    assert version == declared, (
+        f"wheel says {version} but the package says {declared} -- the two must not be able to drift"
     )
