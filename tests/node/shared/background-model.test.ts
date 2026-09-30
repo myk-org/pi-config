@@ -60,6 +60,8 @@ function fakeCtx(models: Record<string, any>, hasAuth = true): ExtensionContext 
   const registry = {
     find: (provider: string, id: string) => models[`${provider}/${id}`],
     hasConfiguredAuth: (_model: any) => hasAuth,
+    // Snapshot is what the fallback scans when nothing else resolves.
+    getAvailableSnapshot: () => Object.values(models),
   };
   return { cwd, modelRegistry: registry } as unknown as ExtensionContext;
 }
@@ -234,6 +236,17 @@ describe("routeBackgroundRequest", () => {
     } as unknown as ExtensionContext;
     const route = routeBackgroundRequest(request({ previous: { model: previous } }), ctx);
     assert.equal(route.model, previous);
+  });
+
+  it("falls back to a physical model from the catalog, never the virtual one", () => {
+    // No previous response and no usable target: request.model is pi-bg/auto, which
+    // pi rejects as a route target ("which is not a physical model"). The fallback
+    // must come from the catalog instead, or this becomes an error response.
+    writeSettings({ background_virtual_model_enable: true });
+    const usable = physicalModel("anthropic", "claude-haiku-4-5");
+    const route = routeBackgroundRequest(request(), fakeCtx({ "anthropic/claude-haiku-4-5": usable }));
+    assert.equal(route.model, usable);
+    assert.notEqual(route.model.provider, BACKGROUND_PROVIDER);
   });
 
   it("never routes to another virtual model when a previous response exists", () => {

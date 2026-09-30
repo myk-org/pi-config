@@ -44,10 +44,40 @@ function settingText(cwd: string, key: "internal_operations_provider" | "interna
   return typeof value === "string" ? value.trim() : "";
 }
 
-/** Never throws: the physical model already in the conversation, else the selection itself. */
-function fallbackRoute(request: RouteRequest): ModelRoute<never> {
+/**
+ * Any physical model this session could actually use, as a last resort.
+ *
+ * Defensive by necessity: this runs inside the catch path, so throwing here would
+ * escape `routeBackgroundRequest` entirely and hand pi the error response the
+ * fallback exists to prevent.
+ */
+function anyPhysicalModel(ctx: ExtensionContext): RouteRequest["model"] | undefined {
+  try {
+    for (const model of ctx.modelRegistry.getAvailableSnapshot()) {
+      if (ctx.modelRegistry.hasConfiguredAuth(model)) return model;
+    }
+  } catch (error) {
+    log.debug("catalog scan failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return undefined;
+}
+
+/**
+ * Never throws: the physical model already in the conversation, else any physical
+ * model the session can reach.
+ *
+ * The catalog lookup is not decoration. pi rejects a non-physical route target --
+ * `model-runtime.js` throws `"...which is not a physical model."` -- and for a
+ * pi-bg/auto request `request.model` IS the virtual model, so falling back to it
+ * would turn a routing miss into an error response for the whole request.
+ * `request.model` survives only as the terminal case, when the session has no
+ * usable physical model at all and nothing could have succeeded.
+ */
+function fallbackRoute(request: RouteRequest, ctx: ExtensionContext): ModelRoute<never> {
   return {
-    model: request.previous?.model ?? request.model,
+    model: request.previous?.model ?? anyPhysicalModel(ctx) ?? request.model,
     thinkingLevel: request.previous?.thinkingLevel ?? request.thinkingLevel,
   };
 }
@@ -94,11 +124,11 @@ export function routeBackgroundRequest(
       return { model: target, thinkingLevel: request.thinkingLevel };
     }
     log.debug("route fallback: no target configured", { reason: request.reason });
-    return fallbackRoute(request);
+    return fallbackRoute(request, ctx);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     log.warn("route failed, falling back", { reason: request.reason, error: message });
-    return fallbackRoute(request);
+    return fallbackRoute(request, ctx);
   }
 }
 
