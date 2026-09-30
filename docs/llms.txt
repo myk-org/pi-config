@@ -1,56 +1,45 @@
 # pi-config
 
-> Customize and extend your AI development assistant with custom agents, rules, and memory
+> Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.
 
 ## Getting Started
 
-- [Installation & Quickstart](quickstart.md): Initialize your project configuration, spin up the background daemon, and run your first custom agent workflow in 60 seconds.
+- [Installation & Quickstart](quickstart.md)
+- [Configuration & Settings](configuration.md)
 
-## User Guides
+## Core Workflows
 
-- [Automating Code Reviews](automating-code-reviews.md): Configure the automated code review loop to use Qodo and CodeRabbit for continuous pull request feedback.
-- [Managing Custom Agents](managing-custom-agents.md): Create, route, and test new specialist agents to handle specific tasks like security auditing or test running.
-- [Using the Web Dashboard](using-the-web-dashboard.md): Monitor background tasks, inspect code diffs, and switch between sessions using the local React UI.
-- [Curating Project Memory](curating-project-memory.md): Seed, score, and organize learned topics to give your agents persistent context across sessions.
-- [Asking Side Questions with /btw](btw-command.md): Use /btw to ask a quick model question using conversation context without adding the exchange to the main session history.
+- [Built-in Workflow Commands](built-in-workflows.md)
+- [Automating Code Reviews](automating-code-reviews.md)
+- [Creating Slash Commands](custom-slash-commands.md)
+- [Managing Custom Agents](managing-custom-agents.md)
+- [Using the Web Dashboard](using-the-web-dashboard.md)
 
-## Recipes
+## Background & Memory
 
-- [Creating Slash Commands](custom-slash-commands.md): Register custom chat commands to quickly trigger specific AI scripts or automations.
-- [Implementing Command Guards](safety-enforcements.md): Add enforcement rules to intercept and block destructive bash commands or sensitive git operations.
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.md)
+- [Background Memory Consolidation (Dreaming)](background-dreaming.md)
+- [Memory Architecture](memory-architecture.md)
+- [Curating Project Memory](curating-project-memory.md)
+
+## Agents & Integrations
+
+- [Inter-Agent Communication Network](inter-agent-communication.md)
+- [External AI Agents & CLI](external-ai-agents.md)
+- [Image Generation](image-generation.md)
+- [Neovim Integration](neovim-integration.md)
+- [~/.pi/discord.env](discord-bot.md)
+
+## Providers
+
+- [ACPX Provider Integration](acpx-provider.md)
+- [Google Vertex Claude Provider](vertex-claude-provider.md)
 
 ## Reference
 
-- [myk_pi_tools CLI Reference](cli-reference.md): Complete command index for database queries, review handling, and manual memory management.
-- [Configuration & Settings](configuration.md): Comprehensive lookup for pi project settings, UI configuration, and environment variables.
-- [Built-in Workflow Commands](built-in-workflows.md): Catalog of shipped prompt commands (/implement, /implement-and-review, /issue-review, /pr-review, /review-local, /refine-review, /release, /remember, /create-skill, /domain-model, /query-db): arguments, prerequisites, and when to use each.
-
-## Internals
-
-- [Memory Architecture](memory-architecture.md): Understand the underlying vector embeddings, topic scoring algorithms, and database migrations.
-- [Daemon & Websocket Networking](daemon-and-websockets.md): Deep dive into the background task queues, async agent state handling, and inter-process communication.
-
-## Extensions & Integrations
-
-- [Neovim Integration](neovim-integration.md): How to use Pi within Neovim, populate the quickfix list with git changed files, and leverage the remote lua execution capabilities.
-- [Discord Bot Notifications](discord-bot.md): Setting up the background Discord bot to broadcast daemon events, review handler updates, and agent status notifications.
-- [Image Generation](image-generation.md): Configuring and using the agent image generation tool with Gemini, including supported aspect ratios and output handling.
-- [Google Vertex Claude Provider](vertex-claude-provider.md): Install and configure the google-vertex-claude provider, authenticate with gcloud, select models (including 1M context variants via VERTEX_CLAUDE_1M), and run pi with --provider google-vertex-claude.
-- [Pi Sidecar HTTP API](pi-sidecar.md): Run the pi-sidecar server, manage AI sessions over REST, discover models from ACPX and CLI providers, configure custom HTTP-backed tools, and integrate with the Python SidecarClient.
-
-## Advanced Usage
-
-- [External AI Agents & CLI](external-ai-agents.md): Using the External AI CLI to interact with Cursor, Claude, and Gemini from the terminal, including model configuration and prompting.
-
-## Advanced Features
-
-- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.md): How to spawn non-blocking async agents, register cron schedules for recurring workflows, and monitor background tasks via the UI.
-- [Inter-Agent Communication Network](inter-agent-communication.md): Explains how multiple agent sessions communicate, broadcast messages, and synchronize directories using the local communications server.
-
-## Memory System
-
-- [Background Memory Consolidation (Dreaming)](background-dreaming.md): Details the automated background worker that runs periodically to extract and consolidate project memories, skills, and enforcements from recent sessions.
-
-## Extensions
-
-- [ACPX Provider Integration](acpx-provider.md): Guide to the ACPX runtime modules, explaining how external agent models are discovered and executed natively.
+- [MCP Servers](mcp-servers.md)
+- [or: pip install pi-sidecar-client](pi-sidecar.md)
+- [myk_pi_tools CLI Reference](cli-reference.md)
+- [Implementing Command Guards](safety-enforcements.md)
+- [Daemon & Websocket Networking](daemon-and-websockets.md)
+- [Asking Side Questions with /btw](btw-command.md)

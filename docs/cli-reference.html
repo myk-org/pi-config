@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>myk_pi_tools CLI Reference - pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,38 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -63,75 +84,26 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="curating-project-memory.html"
-                           class="nav-link">
-                            Curating Project Memory
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
+                        <a href="async-agents-and-cron.html"
                            class="nav-link">
-                            Creating Slash Commands
+                            Running Background Agents and Scheduled Tasks
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
+                        <a href="background-dreaming.html"
                            class="nav-link">
-                            Implementing Command Guards
+                            Background Memory Consolidation (Dreaming)
                         </a>
                     </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
-                           class="nav-link active" aria-current="page">
-                            myk_pi_tools CLI Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="configuration.html"
-                           class="nav-link">
-                            Configuration &amp; Settings
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="memory-architecture.html"
@@ -141,9 +113,9 @@
                     </li>
 
                     <li>
-                        <a href="daemon-and-websockets.html"
+                        <a href="curating-project-memory.html"
                            class="nav-link">
-                            Daemon &amp; Websocket Networking
+                            Curating Project Memory
                         </a>
                     </li>
 
@@ -151,20 +123,20 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="neovim-integration.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Neovim Integration
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="discord-bot.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Discord Bot Notifications
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
@@ -176,16 +148,16 @@
                     </li>
 
                     <li>
-                        <a href="vertex-claude-provider.html"
+                        <a href="neovim-integration.html"
                            class="nav-link">
-                            Google Vertex Claude Provider
+                            Neovim Integration
                         </a>
                     </li>
 
                     <li>
-                        <a href="pi-sidecar.html"
+                        <a href="discord-bot.html"
                            class="nav-link">
-                            Pi Sidecar HTTP API
+                            ~/.pi/discord.env
                         </a>
                     </li>
 
@@ -193,62 +165,69 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="external-ai-agents.html"
-                           class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="inter-agent-communication.html"
-                           class="nav-link">
-                            Inter-Agent Communication Network
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="background-dreaming.html"
-                           class="nav-link">
-                            Background Memory Consolidation (Dreaming)
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
+                <h3 class="nav-group-title">Providers</h3>
                 <ul class="nav-group-pages">
 
                     <li>
                         <a href="acpx-provider.html"
                            class="nav-link">
                             ACPX Provider Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            or: pip install pi-sidecar-client
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link active" aria-current="page">
+                            myk_pi_tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +252,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -301,28 +280,53 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="default-grouping-by-source">Default grouping (by source)</h1>
-<p>myk-pi-tools db stats</p>
-<h1 id="group-by-reviewer-and-print-json">Group by reviewer and print JSON</h1>
-<p>myk-pi-tools db stats --by-reviewer --json</p>
-<div class="highlight"><pre><span></span><code>**Return value / effect**
+                    <h1 id="myk_pi_tools-cli-reference">myk_pi_tools CLI Reference</h1>
+<div class="highlight"><pre><span></span><code><span class="c1"># Default grouping (by source)</span>
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats
 
-- Prints a table or JSON array to stdout.
-- Exits with an error if both `--by-source` and `--by-reviewer` are passed.
+<span class="c1"># Group by reviewer and print JSON</span>
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>stats<span class="w"> </span>--by-reviewer<span class="w"> </span>--json
+</code></pre></div>
 
-### `db patterns`
-
-Finds recurring dismissed comment patterns grouped by file path and body similarity.
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `--min` | Integer | `2` | Minimum occurrence count required for a pattern to be reported. |
-| `--json` | Flag | `False` | Output JSON instead of a formatted table. |
-| `--db-path` | String | auto-detected | Path to the SQLite database file. |
-
-```bash
-# Show recurring dismissed patterns with at least 3 occurrences
-myk-pi-tools db patterns --min 3
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Prints a table or JSON array to stdout.</li>
+<li>Exits with an error if both <code>--by-source</code> and <code>--by-reviewer</code> are passed.</li>
+</ul>
+<h3 id="db-patterns"><code>db patterns</code></h3>
+<p>Finds recurring dismissed comment patterns grouped by file path and body similarity.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--min</code></td>
+<td>Integer</td>
+<td><code>2</code></td>
+<td>Minimum occurrence count required for a pattern to be reported.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>Flag</td>
+<td><code>False</code></td>
+<td>Output JSON instead of a formatted table.</td>
+</tr>
+<tr>
+<td><code>--db-path</code></td>
+<td>String</td>
+<td>auto-detected</td>
+<td>Path to the SQLite database file.</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="c1"># Show recurring dismissed patterns with at least 3 occurrences</span>
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>patterns<span class="w"> </span>--min<span class="w"> </span><span class="m">3</span>
 </code></pre></div>
 
 <p><strong>Return value / effect</strong></p>
@@ -413,10 +417,10 @@ myk-pi-tools db patterns --min 3
 <p><strong>Warning:</strong> Only <code>SELECT</code> and <code>WITH</code> (CTE) queries are accepted. Multiple statements and write-oriented keywords are rejected.</p>
 </blockquote>
 <div class="highlight"><pre><span></span><code><span class="c1"># Count comments by status</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;SELECT status, COUNT(*) AS cnt FROM comments GROUP BY status&quot;</span>
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="w"> </span><span class="s2">"SELECT status, COUNT(*) AS cnt FROM comments GROUP BY status"</span>
 
 <span class="c1"># JSON output</span>
-myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;SELECT path, line, status FROM comments LIMIT 5&quot;</span><span class="w"> </span>--json
+myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="w"> </span><span class="s2">"SELECT path, line, status FROM comments LIMIT 5"</span><span class="w"> </span>--json
 </code></pre></div>
 
 <p><strong>Return value / effect</strong></p>
@@ -469,7 +473,7 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;{&quot;path&quot;:&quot;src/main.py&quot;,&quot;body&quot;:&quot;Add error handling for edge cases&quot;}&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><span class="nb">echo</span><span class="w"> </span><span class="s1">'{"path":"src/main.py","body":"Add error handling for edge cases"}'</span><span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>myk-pi-tools<span class="w"> </span>db<span class="w"> </span>find-similar<span class="w"> </span>--owner<span class="w"> </span>myk-org<span class="w"> </span>--repo<span class="w"> </span>pi-config<span class="w"> </span>--json
 </code></pre></div>
 
@@ -635,7 +639,7 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>poll<span cla
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-fetch<span class="w"> </span><span class="s2">&quot;https://github.com/owner/repo/pull/123&quot;</span><span class="w"> </span>--output-dir<span class="w"> </span>.pi/tmp/
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-fetch<span class="w"> </span><span class="s2">"https://github.com/owner/repo/pull/123"</span><span class="w"> </span>--output-dir<span class="w"> </span>.pi/tmp/
 </code></pre></div>
 
 <p><strong>Return value / effect</strong></p>
@@ -741,10 +745,10 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>status<span c
 </tbody>
 </table>
 <div class="highlight"><pre><span></span><code><span class="c1"># Auto-detect the current PR</span>
-myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span class="w"> </span><span class="s2">&quot;What edge cases are missing?&quot;</span>
+myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span class="w"> </span><span class="s2">"What edge cases are missing?"</span>
 
 <span class="c1"># Target a specific PR</span>
-myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span class="w"> </span>--pr<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span><span class="w"> </span><span class="s2">&quot;What edge cases are missing?&quot;</span>
+myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span class="w"> </span>--pr<span class="w"> </span>myk-org/pi-config<span class="w"> </span><span class="m">42</span><span class="w"> </span><span class="s2">"What edge cases are missing?"</span>
 </code></pre></div>
 
 <p><strong>Return value / effect</strong></p>
@@ -843,10 +847,10 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>ask-qodo<span
 </tbody>
 </table>
 <div class="highlight"><pre><span></span><code><span class="c1"># Learned memory</span>
-myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>lesson<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Cache mounts need uid&quot;</span>
+myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>lesson<span class="w"> </span>-s<span class="w"> </span><span class="s2">"Cache mounts need uid"</span>
 
 <span class="c1"># Pinned memory</span>
-myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>preference<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Always use uv run&quot;</span><span class="w"> </span>--pinned
+myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class="w"> </span>-c<span class="w"> </span>preference<span class="w"> </span>-s<span class="w"> </span><span class="s2">"Always use uv run"</span><span class="w"> </span>--pinned
 </code></pre></div>
 
 <p><strong>Return value / effect</strong></p>
@@ -951,7 +955,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>forget<span class="w"> </span>-c<span class="w"> </span>mistake<span class="w"> </span>-s<span class="w"> </span><span class="s2">&quot;Used sleep for polling&quot;</span>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>forget<span class="w"> </span>-c<span class="w"> </span>mistake<span class="w"> </span>-s<span class="w"> </span><span class="s2">"Used sleep for polling"</span>
 </code></pre></div>
 
 <p><strong>Return value / effect</strong></p>
@@ -1034,15 +1038,15 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
             </article>
             <nav class="page-nav">
 
-                <a href="safety-enforcements.html" class="page-nav-link page-nav-prev">
+                <a href="pi-sidecar.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Implementing Command Guards</span>
+                    <span class="page-nav-title">or: pip install pi-sidecar-client</span>
                 </a>
 
 
-                <a href="configuration.html" class="page-nav-link page-nav-next">
+                <a href="safety-enforcements.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Configuration &amp; Settings</span>
+                    <span class="page-nav-title">Implementing Command Guards</span>
                 </a>
 
             </nav>
@@ -1052,6 +1056,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
+<li><a href="#db-patterns">db patterns</a></li>
 <li><a href="#db-dismissed">db dismissed</a></li>
 <li><a href="#db-query">db query</a></li>
 <li><a href="#db-find-similar">db find-similar</a></li>
@@ -1088,10 +1093,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>scripts/generate_docs.py</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>

@@ -1,3 +1,6 @@
+# Managing Custom Agents
+
+```markdown
 # .pi/agents/security-auditor.md
 ---
 name: security-auditor

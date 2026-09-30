@@ -151,7 +151,9 @@ Summarize issue #$ARGUMENTS in 5 bullets:
 - missing acceptance criteria
 - likely owner
 - first implementation step
+```
 
+```ts
 # extensions/orchestrator/extended-autocomplete.ts
 
 // 1) Add a completion entry inside the `completions` record

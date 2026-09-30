@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,38 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -63,75 +84,26 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="curating-project-memory.html"
-                           class="nav-link">
-                            Curating Project Memory
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
+                        <a href="async-agents-and-cron.html"
                            class="nav-link">
-                            Creating Slash Commands
+                            Running Background Agents and Scheduled Tasks
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
+                        <a href="background-dreaming.html"
                            class="nav-link">
-                            Implementing Command Guards
+                            Background Memory Consolidation (Dreaming)
                         </a>
                     </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
-                           class="nav-link">
-                            myk_pi_tools CLI Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="configuration.html"
-                           class="nav-link">
-                            Configuration &amp; Settings
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="memory-architecture.html"
@@ -141,9 +113,9 @@
                     </li>
 
                     <li>
-                        <a href="daemon-and-websockets.html"
+                        <a href="curating-project-memory.html"
                            class="nav-link">
-                            Daemon &amp; Websocket Networking
+                            Curating Project Memory
                         </a>
                     </li>
 
@@ -151,20 +123,20 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="neovim-integration.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Neovim Integration
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="discord-bot.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Discord Bot Notifications
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
@@ -176,16 +148,16 @@
                     </li>
 
                     <li>
-                        <a href="vertex-claude-provider.html"
+                        <a href="neovim-integration.html"
                            class="nav-link">
-                            Google Vertex Claude Provider
+                            Neovim Integration
                         </a>
                     </li>
 
                     <li>
-                        <a href="pi-sidecar.html"
+                        <a href="discord-bot.html"
                            class="nav-link">
-                            Pi Sidecar HTTP API
+                            ~/.pi/discord.env
                         </a>
                     </li>
 
@@ -193,62 +165,69 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="external-ai-agents.html"
-                           class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="inter-agent-communication.html"
-                           class="nav-link">
-                            Inter-Agent Communication Network
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="background-dreaming.html"
-                           class="nav-link">
-                            Background Memory Consolidation (Dreaming)
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
+                <h3 class="nav-group-title">Providers</h3>
                 <ul class="nav-group-pages">
 
                     <li>
                         <a href="acpx-provider.html"
                            class="nav-link">
                             ACPX Provider Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            or: pip install pi-sidecar-client
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk_pi_tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +252,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -297,15 +276,7 @@
 
             <section class="index-header">
                 <h1 class="index-title">pi-config</h1>
-                <p class="index-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
-
-
-
-
-
-
-
-
+                <p class="index-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
 
 
 
@@ -336,7 +307,10 @@
                         <li>
                             <a href="quickstart.html">Installation &amp; Quickstart</a>
 
-                            <p class="card-page-desc">Initialize your project configuration, spin up the background daemon, and run your first custom agent workflow in 60 seconds.</p>
+                        </li>
+
+                        <li>
+                            <a href="configuration.html">Configuration &amp; Settings</a>
 
                         </li>
 
@@ -347,206 +321,61 @@
                 </div>
 
                 <div class="card">
-                    <h3 class="card-title">User Guides</h3>
+                    <h3 class="card-title">Core Workflows</h3>
                     <ul class="card-pages">
+
+                        <li>
+                            <a href="built-in-workflows.html">Built-in Workflow Commands</a>
+
+                        </li>
 
                         <li>
                             <a href="automating-code-reviews.html">Automating Code Reviews</a>
 
-                            <p class="card-page-desc">Configure the automated code review loop to use Qodo and CodeRabbit for continuous pull request feedback.</p>
+                        </li>
+
+                        <li>
+                            <a href="custom-slash-commands.html">Creating Slash Commands</a>
 
                         </li>
 
                         <li>
                             <a href="managing-custom-agents.html">Managing Custom Agents</a>
 
-                            <p class="card-page-desc">Create, route, and test new specialist agents to handle specific tasks like security auditing or test running.</p>
-
                         </li>
 
                         <li>
                             <a href="using-the-web-dashboard.html">Using the Web Dashboard</a>
 
-                            <p class="card-page-desc">Monitor background tasks, inspect code diffs, and switch between sessions using the local React UI.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="curating-project-memory.html">Curating Project Memory</a>
-
-                            <p class="card-page-desc">Seed, score, and organize learned topics to give your agents persistent context across sessions.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="btw-command.html">Asking Side Questions with /btw</a>
-
-                            <p class="card-page-desc">Use /btw to ask a quick model question using conversation context without adding the exchange to the main session history.</p>
-
                         </li>
 
                     </ul>
 
-                    <a href="automating-code-reviews.html" class="card-link">Explore →</a>
+                    <a href="built-in-workflows.html" class="card-link">Explore →</a>
 
                 </div>
 
                 <div class="card">
-                    <h3 class="card-title">Recipes</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="custom-slash-commands.html">Creating Slash Commands</a>
-
-                            <p class="card-page-desc">Register custom chat commands to quickly trigger specific AI scripts or automations.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="safety-enforcements.html">Implementing Command Guards</a>
-
-                            <p class="card-page-desc">Add enforcement rules to intercept and block destructive bash commands or sensitive git operations.</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="custom-slash-commands.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Reference</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="cli-reference.html">myk_pi_tools CLI Reference</a>
-
-                            <p class="card-page-desc">Complete command index for database queries, review handling, and manual memory management.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="configuration.html">Configuration &amp; Settings</a>
-
-                            <p class="card-page-desc">Comprehensive lookup for pi project settings, UI configuration, and environment variables.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="built-in-workflows.html">Built-in Workflow Commands</a>
-
-                            <p class="card-page-desc">Catalog of shipped prompt commands (/implement, /implement-and-review, /issue-review, /pr-review, /review-local, /refine-review, /release, /remember, /create-skill, /domain-model, /query-db): arguments, prerequisites, and when to use each.</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="cli-reference.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Internals</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="memory-architecture.html">Memory Architecture</a>
-
-                            <p class="card-page-desc">Understand the underlying vector embeddings, topic scoring algorithms, and database migrations.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a>
-
-                            <p class="card-page-desc">Deep dive into the background task queues, async agent state handling, and inter-process communication.</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="memory-architecture.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Extensions &amp; Integrations</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="neovim-integration.html">Neovim Integration</a>
-
-                            <p class="card-page-desc">How to use Pi within Neovim, populate the quickfix list with git changed files, and leverage the remote lua execution capabilities.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="discord-bot.html">Discord Bot Notifications</a>
-
-                            <p class="card-page-desc">Setting up the background Discord bot to broadcast daemon events, review handler updates, and agent status notifications.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="image-generation.html">Image Generation</a>
-
-                            <p class="card-page-desc">Configuring and using the agent image generation tool with Gemini, including supported aspect ratios and output handling.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="vertex-claude-provider.html">Google Vertex Claude Provider</a>
-
-                            <p class="card-page-desc">Install and configure the google-vertex-claude provider, authenticate with gcloud, select models (including 1M context variants via VERTEX_CLAUDE_1M), and run pi with --provider google-vertex-claude.</p>
-
-                        </li>
-
-                        <li>
-                            <a href="pi-sidecar.html">Pi Sidecar HTTP API</a>
-
-                            <p class="card-page-desc">Run the pi-sidecar server, manage AI sessions over REST, discover models from ACPX and CLI providers, configure custom HTTP-backed tools, and integrate with the Python SidecarClient.</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="neovim-integration.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Advanced Usage</h3>
-                    <ul class="card-pages">
-
-                        <li>
-                            <a href="external-ai-agents.html">External AI Agents &amp; CLI</a>
-
-                            <p class="card-page-desc">Using the External AI CLI to interact with Cursor, Claude, and Gemini from the terminal, including model configuration and prompting.</p>
-
-                        </li>
-
-                    </ul>
-
-                    <a href="external-ai-agents.html" class="card-link">Explore →</a>
-
-                </div>
-
-                <div class="card">
-                    <h3 class="card-title">Advanced Features</h3>
+                    <h3 class="card-title">Background &amp; Memory</h3>
                     <ul class="card-pages">
 
                         <li>
                             <a href="async-agents-and-cron.html">Running Background Agents and Scheduled Tasks</a>
 
-                            <p class="card-page-desc">How to spawn non-blocking async agents, register cron schedules for recurring workflows, and monitor background tasks via the UI.</p>
+                        </li>
+
+                        <li>
+                            <a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a>
 
                         </li>
 
                         <li>
-                            <a href="inter-agent-communication.html">Inter-Agent Communication Network</a>
+                            <a href="memory-architecture.html">Memory Architecture</a>
 
-                            <p class="card-page-desc">Explains how multiple agent sessions communicate, broadcast messages, and synchronize directories using the local communications server.</p>
+                        </li>
+
+                        <li>
+                            <a href="curating-project-memory.html">Curating Project Memory</a>
 
                         </li>
 
@@ -557,36 +386,97 @@
                 </div>
 
                 <div class="card">
-                    <h3 class="card-title">Memory System</h3>
+                    <h3 class="card-title">Agents &amp; Integrations</h3>
                     <ul class="card-pages">
 
                         <li>
-                            <a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a>
+                            <a href="inter-agent-communication.html">Inter-Agent Communication Network</a>
 
-                            <p class="card-page-desc">Details the automated background worker that runs periodically to extract and consolidate project memories, skills, and enforcements from recent sessions.</p>
+                        </li>
+
+                        <li>
+                            <a href="external-ai-agents.html">External AI Agents &amp; CLI</a>
+
+                        </li>
+
+                        <li>
+                            <a href="image-generation.html">Image Generation</a>
+
+                        </li>
+
+                        <li>
+                            <a href="neovim-integration.html">Neovim Integration</a>
+
+                        </li>
+
+                        <li>
+                            <a href="discord-bot.html">~/.pi/discord.env</a>
 
                         </li>
 
                     </ul>
 
-                    <a href="background-dreaming.html" class="card-link">Explore →</a>
+                    <a href="inter-agent-communication.html" class="card-link">Explore →</a>
 
                 </div>
 
                 <div class="card">
-                    <h3 class="card-title">Extensions</h3>
+                    <h3 class="card-title">Providers</h3>
                     <ul class="card-pages">
 
                         <li>
                             <a href="acpx-provider.html">ACPX Provider Integration</a>
 
-                            <p class="card-page-desc">Guide to the ACPX runtime modules, explaining how external agent models are discovered and executed natively.</p>
+                        </li>
+
+                        <li>
+                            <a href="vertex-claude-provider.html">Google Vertex Claude Provider</a>
 
                         </li>
 
                     </ul>
 
                     <a href="acpx-provider.html" class="card-link">Explore →</a>
+
+                </div>
+
+                <div class="card">
+                    <h3 class="card-title">Reference</h3>
+                    <ul class="card-pages">
+
+                        <li>
+                            <a href="mcp-servers.html">MCP Servers</a>
+
+                        </li>
+
+                        <li>
+                            <a href="pi-sidecar.html">or: pip install pi-sidecar-client</a>
+
+                        </li>
+
+                        <li>
+                            <a href="cli-reference.html">myk_pi_tools CLI Reference</a>
+
+                        </li>
+
+                        <li>
+                            <a href="safety-enforcements.html">Implementing Command Guards</a>
+
+                        </li>
+
+                        <li>
+                            <a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a>
+
+                        </li>
+
+                        <li>
+                            <a href="btw-command.html">Asking Side Questions with /btw</a>
+
+                        </li>
+
+                    </ul>
+
+                    <a href="mcp-servers.html" class="card-link">Explore →</a>
 
                 </div>
 
@@ -609,10 +499,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>scripts/generate_docs.py</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>

@@ -1,3 +1,6 @@
+# Curating Project Memory
+
+```bash
 # Project preference
 myk-pi-tools memory add -c preference -s "Always use uv run" --pinned
 

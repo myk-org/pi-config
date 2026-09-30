@@ -1,3 +1,6 @@
+# myk_pi_tools CLI Reference
+
+```bash
 # Default grouping (by source)
 myk-pi-tools db stats
 

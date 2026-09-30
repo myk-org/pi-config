@@ -1,0 +1,41 @@
+{% extends "_doc_base.html" %}
+
+{% block head_title %}{{ title }} - {{ project_name }}{% endblock %}
+
+{% block content %}
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    {{ content | safe }}
+                </div>
+            </article>
+            <nav class="page-nav">
+                {% if prev_page %}
+                <a href="{{ prev_page.slug }}.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">{{ prev_page.title }}</span>
+                </a>
+                {% else %}
+                <div></div>
+                {% endif %}
+                {% if next_page %}
+                <a href="{{ next_page.slug }}.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">{{ next_page.title }}</span>
+                </a>
+                {% else %}
+                <div></div>
+                {% endif %}
+            </nav>
+            {% if toc %}
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    {{ toc | safe }}
+                </div>
+            </aside>
+            {% endif %}
+{% endblock %}

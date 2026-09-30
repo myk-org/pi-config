@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Built-in Workflow Commands - pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,38 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link active" aria-current="page">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -63,75 +84,26 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="curating-project-memory.html"
-                           class="nav-link">
-                            Curating Project Memory
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
+                        <a href="async-agents-and-cron.html"
                            class="nav-link">
-                            Creating Slash Commands
+                            Running Background Agents and Scheduled Tasks
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
+                        <a href="background-dreaming.html"
                            class="nav-link">
-                            Implementing Command Guards
+                            Background Memory Consolidation (Dreaming)
                         </a>
                     </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
-                           class="nav-link">
-                            myk_pi_tools CLI Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="configuration.html"
-                           class="nav-link">
-                            Configuration &amp; Settings
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link active" aria-current="page">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="memory-architecture.html"
@@ -141,9 +113,9 @@
                     </li>
 
                     <li>
-                        <a href="daemon-and-websockets.html"
+                        <a href="curating-project-memory.html"
                            class="nav-link">
-                            Daemon &amp; Websocket Networking
+                            Curating Project Memory
                         </a>
                     </li>
 
@@ -151,20 +123,20 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="neovim-integration.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Neovim Integration
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="discord-bot.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Discord Bot Notifications
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
@@ -176,16 +148,16 @@
                     </li>
 
                     <li>
-                        <a href="vertex-claude-provider.html"
+                        <a href="neovim-integration.html"
                            class="nav-link">
-                            Google Vertex Claude Provider
+                            Neovim Integration
                         </a>
                     </li>
 
                     <li>
-                        <a href="pi-sidecar.html"
+                        <a href="discord-bot.html"
                            class="nav-link">
-                            Pi Sidecar HTTP API
+                            ~/.pi/discord.env
                         </a>
                     </li>
 
@@ -193,62 +165,69 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="external-ai-agents.html"
-                           class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="inter-agent-communication.html"
-                           class="nav-link">
-                            Inter-Agent Communication Network
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="background-dreaming.html"
-                           class="nav-link">
-                            Background Memory Consolidation (Dreaming)
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
+                <h3 class="nav-group-title">Providers</h3>
                 <ul class="nav-group-pages">
 
                     <li>
                         <a href="acpx-provider.html"
                            class="nav-link">
                             ACPX Provider Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            or: pip install pi-sidecar-client
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk_pi_tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +252,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -312,18 +291,18 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>&lt;task&gt;</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Task description to explore, plan, and implement.</td>
+<td><code>&lt;task&gt;</code></td>
+<td>string</td>
+<td>(required)</td>
+<td>Task description to explore, plan, and implement.</td>
 </tr>
 </tbody>
 </table>
@@ -336,48 +315,48 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>&lt;task&gt;</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Task description for implementation and review.</td>
+<td><code>&lt;task&gt;</code></td>
+<td>string</td>
+<td>(required)</td>
+<td>Task description for implementation and review.</td>
 </tr>
 </tbody>
 </table>
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Review pass</th>
-<th style="text-align: left;">Purpose</th>
+<th>Review pass</th>
+<th>Purpose</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;">Quality</td>
-<td style="text-align: left;">Code quality review</td>
+<td>Quality</td>
+<td>Code quality review</td>
 </tr>
 <tr>
-<td style="text-align: left;">Guidelines</td>
-<td style="text-align: left;">Project guideline adherence</td>
+<td>Guidelines</td>
+<td>Project guideline adherence</td>
 </tr>
 <tr>
-<td style="text-align: left;">Security</td>
-<td style="text-align: left;">Bug and security review</td>
+<td>Security</td>
+<td>Bug and security review</td>
 </tr>
 <tr>
-<td style="text-align: left;">Docs</td>
-<td style="text-align: left;">Documentation review</td>
+<td>Docs</td>
+<td>Documentation review</td>
 </tr>
 <tr>
-<td style="text-align: left;">Spec</td>
-<td style="text-align: left;">Specification compliance review</td>
+<td>Spec</td>
+<td>Specification compliance review</td>
 </tr>
 </tbody>
 </table>
@@ -394,44 +373,44 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>[issue number or URL]</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">auto-detect</td>
-<td style="text-align: left;">Issue number, full GitHub issue URL, or empty to auto-detect.</td>
+<td><code>[issue number or URL]</code></td>
+<td>string</td>
+<td>auto-detect</td>
+<td>Issue number, full GitHub issue URL, or empty to auto-detect.</td>
 </tr>
 </tbody>
 </table>
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Auto-detect source</th>
-<th style="text-align: left;">Order</th>
-<th style="text-align: left;">Description</th>
+<th>Auto-detect source</th>
+<th>Order</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;">Branch name</td>
-<td style="text-align: left;">1</td>
-<td style="text-align: left;">Extracts issue numbers from branch names such as <code>feat/issue-42-...</code> or <code>fix/issue-42-...</code></td>
+<td>Branch name</td>
+<td>1</td>
+<td>Extracts issue numbers from branch names such as <code>feat/issue-42-...</code> or <code>fix/issue-42-...</code></td>
 </tr>
 <tr>
-<td style="text-align: left;">Assigned issues</td>
-<td style="text-align: left;">2</td>
-<td style="text-align: left;">Uses <code>gh issue list --assignee @me --state open --limit 1</code></td>
+<td>Assigned issues</td>
+<td>2</td>
+<td>Uses <code>gh issue list --assignee @me --state open --limit 1</code></td>
 </tr>
 <tr>
-<td style="text-align: left;">User input</td>
-<td style="text-align: left;">3</td>
-<td style="text-align: left;">Prompts the user if nothing is detected</td>
+<td>User input</td>
+<td>3</td>
+<td>Prompts the user if nothing is detected</td>
 </tr>
 </tbody>
 </table>
@@ -447,18 +426,18 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>[PR number or URL]</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">current branch PR</td>
-<td style="text-align: left;">Pull request number, full GitHub PR URL, or empty to auto-detect from the current branch.</td>
+<td><code>[PR number or URL]</code></td>
+<td>string</td>
+<td>current branch PR</td>
+<td>Pull request number, full GitHub PR URL, or empty to auto-detect from the current branch.</td>
 </tr>
 </tbody>
 </table>
@@ -474,18 +453,18 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>[base branch]</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">staged + unstaged changes</td>
-<td style="text-align: left;">Base branch to diff against. If omitted, reviews local staged and unstaged changes.</td>
+<td><code>[base branch]</code></td>
+<td>string</td>
+<td>staged + unstaged changes</td>
+<td>Base branch to diff against. If omitted, reviews local staged and unstaged changes.</td>
 </tr>
 </tbody>
 </table>
@@ -500,24 +479,24 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>&lt;PR URL&gt;</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Full GitHub pull request URL containing the pending review.</td>
+<td><code>&lt;PR URL&gt;</code></td>
+<td>string</td>
+<td>(required)</td>
+<td>Full GitHub pull request URL containing the pending review.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>[instructions]</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">empty</td>
-<td style="text-align: left;">Optional refinement guidance included in the command arguments.</td>
+<td><code>[instructions]</code></td>
+<td>string</td>
+<td>empty</td>
+<td>Optional refinement guidance included in the command arguments.</td>
 </tr>
 </tbody>
 </table>
@@ -533,48 +512,48 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter / Option</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter / Option</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>[version]</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">auto-detect bump</td>
-<td style="text-align: left;">Explicit version to release. If omitted, the workflow derives the release level from commit history.</td>
+<td><code>[version]</code></td>
+<td>string</td>
+<td>auto-detect bump</td>
+<td>Explicit version to release. If omitted, the workflow derives the release level from commit history.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>--dry-run</code></td>
-<td style="text-align: left;">flag</td>
-<td style="text-align: left;">off</td>
-<td style="text-align: left;">Previews the release workflow without creating the release.</td>
+<td><code>--dry-run</code></td>
+<td>flag</td>
+<td>off</td>
+<td>Previews the release workflow without creating the release.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>--prerelease</code></td>
-<td style="text-align: left;">flag</td>
-<td style="text-align: left;">off</td>
-<td style="text-align: left;">Marks the release as a prerelease.</td>
+<td><code>--prerelease</code></td>
+<td>flag</td>
+<td>off</td>
+<td>Marks the release as a prerelease.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>--draft</code></td>
-<td style="text-align: left;">flag</td>
-<td style="text-align: left;">off</td>
-<td style="text-align: left;">Creates the release as a draft.</td>
+<td><code>--draft</code></td>
+<td>flag</td>
+<td>off</td>
+<td>Creates the release as a draft.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>--target &lt;branch&gt;</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">current or auto-detected target</td>
-<td style="text-align: left;">Target branch to validate and release from.</td>
+<td><code>--target &lt;branch&gt;</code></td>
+<td>string</td>
+<td>current or auto-detected target</td>
+<td>Target branch to validate and release from.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>--tag-match &lt;pattern&gt;</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">none</td>
-<td style="text-align: left;">Tag glob used during release info lookup.</td>
+<td><code>--tag-match &lt;pattern&gt;</code></td>
+<td>string</td>
+<td>none</td>
+<td>Tag glob used during release info lookup.</td>
 </tr>
 </tbody>
 </table>
@@ -593,52 +572,52 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>&lt;what to remember&gt;</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Memory content to store.</td>
+<td><code>&lt;what to remember&gt;</code></td>
+<td>string</td>
+<td>(required)</td>
+<td>Memory content to store.</td>
 </tr>
 </tbody>
 </table>
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Category</th>
-<th style="text-align: left;">Meaning</th>
+<th>Category</th>
+<th>Meaning</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>lesson</code></td>
-<td style="text-align: left;">Something learned</td>
+<td><code>lesson</code></td>
+<td>Something learned</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>decision</code></td>
-<td style="text-align: left;">Design or architecture choice</td>
+<td><code>decision</code></td>
+<td>Design or architecture choice</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>mistake</code></td>
-<td style="text-align: left;">Something to avoid repeating</td>
+<td><code>mistake</code></td>
+<td>Something to avoid repeating</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>pattern</code></td>
-<td style="text-align: left;">Recurring convention or approach</td>
+<td><code>pattern</code></td>
+<td>Recurring convention or approach</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>done</code></td>
-<td style="text-align: left;">Completed task or milestone</td>
+<td><code>done</code></td>
+<td>Completed task or milestone</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>preference</code></td>
-<td style="text-align: left;">User preference</td>
+<td><code>preference</code></td>
+<td>User preference</td>
 </tr>
 </tbody>
 </table>
@@ -652,45 +631,45 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>[name]</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">prompt if empty</td>
-<td style="text-align: left;">Skill name. Must be lowercase, hyphenated, start with a letter, and be at most 64 characters.</td>
+<td><code>[name]</code></td>
+<td>string</td>
+<td>prompt if empty</td>
+<td>Skill name. Must be lowercase, hyphenated, start with a letter, and be at most 64 characters.</td>
 </tr>
 <tr>
-<td style="text-align: left;">Scope</td>
-<td style="text-align: left;">choice</td>
-<td style="text-align: left;">ask user</td>
-<td style="text-align: left;">Where to create the skill: <strong>Global</strong> or <strong>Project</strong>.</td>
+<td>Scope</td>
+<td>choice</td>
+<td>ask user</td>
+<td>Where to create the skill: <strong>Global</strong> or <strong>Project</strong>.</td>
 </tr>
 </tbody>
 </table>
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Scope</th>
-<th style="text-align: left;">Location</th>
-<th style="text-align: left;">Effect</th>
+<th>Scope</th>
+<th>Location</th>
+<th>Effect</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;">Global</td>
-<td style="text-align: left;"><code>~/.agents/skills/&lt;name&gt;/SKILL.md</code></td>
-<td style="text-align: left;">Skill is available across projects</td>
+<td>Global</td>
+<td><code>~/.agents/skills/&lt;name&gt;/SKILL.md</code></td>
+<td>Skill is available across projects</td>
 </tr>
 <tr>
-<td style="text-align: left;">Project</td>
-<td style="text-align: left;"><code>.pi/skills/&lt;name&gt;/SKILL.md</code></td>
-<td style="text-align: left;">Skill is available only in the current project</td>
+<td>Project</td>
+<td><code>.pi/skills/&lt;name&gt;/SKILL.md</code></td>
+<td>Skill is available only in the current project</td>
 </tr>
 </tbody>
 </table>
@@ -706,18 +685,18 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>[focus area]</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">full codebase</td>
-<td style="text-align: left;">Optional focus area to narrow the glossary scan.</td>
+<td><code>[focus area]</code></td>
+<td>string</td>
+<td>full codebase</td>
+<td>Optional focus area to narrow the glossary scan.</td>
 </tr>
 </tbody>
 </table>
@@ -732,18 +711,18 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>&lt;query&gt;</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">(required for useful output)</td>
-<td style="text-align: left;">Database subcommand and flags after <code>db</code>.</td>
+<td><code>&lt;query&gt;</code></td>
+<td>string</td>
+<td>(required for useful output)</td>
+<td>Database subcommand and flags after <code>db</code>.</td>
 </tr>
 </tbody>
 </table>
@@ -751,30 +730,30 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Example query</th>
-<th style="text-align: left;">Effect</th>
+<th>Example query</th>
+<th>Effect</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>stats --by-source</code></td>
-<td style="text-align: left;">Shows stats grouped by review source</td>
+<td><code>stats --by-source</code></td>
+<td>Shows stats grouped by review source</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>stats --by-reviewer</code></td>
-<td style="text-align: left;">Shows stats grouped by reviewer author</td>
+<td><code>stats --by-reviewer</code></td>
+<td>Shows stats grouped by reviewer author</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>patterns --min 2</code></td>
-<td style="text-align: left;">Shows recurring dismissed patterns</td>
+<td><code>patterns --min 2</code></td>
+<td>Shows recurring dismissed patterns</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>dismissed --owner X --repo Y</code></td>
-<td style="text-align: left;">Lists dismissed comments for a repository</td>
+<td><code>dismissed --owner X --repo Y</code></td>
+<td>Lists dismissed comments for a repository</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>query "SELECT * FROM comments WHERE status='skipped' LIMIT 10"</code></td>
-<td style="text-align: left;">Runs a custom SELECT query</td>
+<td><code>query "SELECT * FROM comments WHERE status='skipped' LIMIT 10"</code></td>
+<td>Runs a custom SELECT query</td>
 </tr>
 </tbody>
 </table>
@@ -782,7 +761,7 @@
 <div class="highlight"><pre><span></span><code>/query-db stats --by-source
 /query-db patterns --min 2
 /query-db dismissed --owner myk-org --repo pi-config
-/query-db query &quot;SELECT * FROM comments WHERE status=&#39;skipped&#39; LIMIT 10&quot;
+/query-db query "SELECT * FROM comments WHERE status='skipped' LIMIT 10"
 </code></pre></div>
 
 <h2 id="shared-command-behavior">Shared Command Behavior</h2>
@@ -790,22 +769,22 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Behavior</th>
-<th style="text-align: left;">Effect</th>
+<th>Behavior</th>
+<th>Effect</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;">Text after command name</td>
-<td style="text-align: left;">Passed to the command as raw arguments</td>
+<td>Text after command name</td>
+<td>Passed to the command as raw arguments</td>
 </tr>
 <tr>
-<td style="text-align: left;">Empty required argument</td>
-<td style="text-align: left;">Command aborts or prompts, depending on the workflow</td>
+<td>Empty required argument</td>
+<td>Command aborts or prompts, depending on the workflow</td>
 </tr>
 <tr>
-<td style="text-align: left;">Interactive choice needed</td>
-<td style="text-align: left;">Command asks the user through the Pi UI</td>
+<td>Interactive choice needed</td>
+<td>Command asks the user through the Pi UI</td>
 </tr>
 </tbody>
 </table>
@@ -813,30 +792,30 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Command area</th>
-<th style="text-align: left;">Possible side effect</th>
+<th>Command area</th>
+<th>Possible side effect</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;">Implementation</td>
-<td style="text-align: left;">Code changes</td>
+<td>Implementation</td>
+<td>Code changes</td>
 </tr>
 <tr>
-<td style="text-align: left;">Issue and PR review</td>
-<td style="text-align: left;">GitHub issue or PR updates</td>
+<td>Issue and PR review</td>
+<td>GitHub issue or PR updates</td>
 </tr>
 <tr>
-<td style="text-align: left;">Release</td>
-<td style="text-align: left;">Version bumps, changelog generation, GitHub release creation</td>
+<td>Release</td>
+<td>Version bumps, changelog generation, GitHub release creation</td>
 </tr>
 <tr>
-<td style="text-align: left;">Memory and skill</td>
-<td style="text-align: left;">Memory entries or <code>SKILL.md</code> files</td>
+<td>Memory and skill</td>
+<td>Memory entries or <code>SKILL.md</code> files</td>
 </tr>
 <tr>
-<td style="text-align: left;">Glossary</td>
-<td style="text-align: left;"><code>CONTEXT.md</code> creation or update</td>
+<td>Glossary</td>
+<td><code>CONTEXT.md</code> creation or update</td>
 </tr>
 </tbody>
 </table>
@@ -862,9 +841,9 @@
                 </a>
 
 
-                <a href="memory-architecture.html" class="page-nav-link page-nav-next">
+                <a href="automating-code-reviews.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Memory Architecture</span>
+                    <span class="page-nav-title">Automating Code Reviews</span>
                 </a>
 
             </nav>
@@ -920,10 +899,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>scripts/generate_docs.py</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>

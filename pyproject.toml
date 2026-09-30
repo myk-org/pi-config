@@ -91,3 +91,6 @@ testpaths = ["tests/python"]
 
 [dependency-groups]
 tests = ["pytest>=9.0.2"]
+# Static docs site generator (scripts/generate_docs.py) — renders docs/*.md to
+# committed HTML. Only needed when regenerating docs, never at runtime.
+docs = ["markdown>=3.11", "pygments>=2.21.0", "jinja2>=3.1.6", "types-markdown>=3.5"]

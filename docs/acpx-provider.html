@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ACPX Provider Integration - pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,38 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -63,75 +84,26 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="curating-project-memory.html"
-                           class="nav-link">
-                            Curating Project Memory
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
+                        <a href="async-agents-and-cron.html"
                            class="nav-link">
-                            Creating Slash Commands
+                            Running Background Agents and Scheduled Tasks
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
+                        <a href="background-dreaming.html"
                            class="nav-link">
-                            Implementing Command Guards
+                            Background Memory Consolidation (Dreaming)
                         </a>
                     </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
-                           class="nav-link">
-                            myk_pi_tools CLI Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="configuration.html"
-                           class="nav-link">
-                            Configuration &amp; Settings
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="memory-architecture.html"
@@ -141,9 +113,9 @@
                     </li>
 
                     <li>
-                        <a href="daemon-and-websockets.html"
+                        <a href="curating-project-memory.html"
                            class="nav-link">
-                            Daemon &amp; Websocket Networking
+                            Curating Project Memory
                         </a>
                     </li>
 
@@ -151,20 +123,20 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="neovim-integration.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Neovim Integration
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="discord-bot.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Discord Bot Notifications
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
@@ -176,16 +148,16 @@
                     </li>
 
                     <li>
-                        <a href="vertex-claude-provider.html"
+                        <a href="neovim-integration.html"
                            class="nav-link">
-                            Google Vertex Claude Provider
+                            Neovim Integration
                         </a>
                     </li>
 
                     <li>
-                        <a href="pi-sidecar.html"
+                        <a href="discord-bot.html"
                            class="nav-link">
-                            Pi Sidecar HTTP API
+                            ~/.pi/discord.env
                         </a>
                     </li>
 
@@ -193,62 +165,69 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="external-ai-agents.html"
-                           class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="inter-agent-communication.html"
-                           class="nav-link">
-                            Inter-Agent Communication Network
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="background-dreaming.html"
-                           class="nav-link">
-                            Background Memory Consolidation (Dreaming)
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
+                <h3 class="nav-group-title">Providers</h3>
                 <ul class="nav-group-pages">
 
                     <li>
                         <a href="acpx-provider.html"
                            class="nav-link active" aria-current="page">
                             ACPX Provider Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            or: pip install pi-sidecar-client
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk_pi_tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +252,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -310,25 +289,25 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>acpx_agents</code></td>
-<td style="text-align: left;"><code>string[]</code> | <code>string</code></td>
-<td style="text-align: left;"><code>[]</code></td>
-<td style="text-align: left;">Agent identifiers to create via <code>AcpxDriver</code>. Accepts a JSON array or a comma-separated string. Names are trimmed, lowercased, and filtered to <code>/^[a-z0-9_-]+$/</code>.</td>
+<td><code>acpx_agents</code></td>
+<td><code>string[]</code> | <code>string</code></td>
+<td><code>[]</code></td>
+<td>Agent identifiers to create via <code>AcpxDriver</code>. Accepts a JSON array or a comma-separated string. Names are trimmed, lowercased, and filtered to <code>/^[a-z0-9_-]+$/</code>.</td>
 </tr>
 </tbody>
 </table>
 <p><strong>Resolution order:</strong> project settings → global settings → <code>ACPX_AGENTS</code> env → <code>[]</code>.</p>
 <p><strong>Driver mapping (<code>ACPX_AGENT_TO_DRIVER</code>):</strong> <code>cursor</code> → <code>acpx</code>. Any other listed name falls back to driver kind <code>acpx</code> with <code>config.agent</code> set to that name.</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;acpx_agents&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;cursor&quot;</span><span class="p">]</span>
+<span class="w">  </span><span class="nt">"acpx_agents"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"cursor"</span><span class="p">]</span>
 <span class="p">}</span>
 </code></pre></div>
 
@@ -345,26 +324,26 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Return field</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Description</th>
+<th>Return field</th>
+<th>Type</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>createAcpRuntime</code></td>
-<td style="text-align: left;"><code>Function</code></td>
-<td style="text-align: left;">Builds an ACP runtime for a cwd / session store / agent registry.</td>
+<td><code>createAcpRuntime</code></td>
+<td><code>Function</code></td>
+<td>Builds an ACP runtime for a cwd / session store / agent registry.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>createFileSessionStore</code></td>
-<td style="text-align: left;"><code>Function</code></td>
-<td style="text-align: left;">Filesystem session store factory.</td>
+<td><code>createFileSessionStore</code></td>
+<td><code>Function</code></td>
+<td>Filesystem session store factory.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>createAgentRegistry</code></td>
-<td style="text-align: left;"><code>Function</code></td>
-<td style="text-align: left;">ACPX agent registry factory.</td>
+<td><code>createAgentRegistry</code></td>
+<td><code>Function</code></td>
+<td>ACPX agent registry factory.</td>
 </tr>
 </tbody>
 </table>
@@ -374,7 +353,7 @@
 <li>Candidate roots: <code>/usr/local/lib/node_modules</code>, <code>~/.npm-global/lib/node_modules</code></li>
 <li>Package import <code>acpx/runtime</code></li>
 </ol>
-<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadAcpxRuntime</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;./load-runtime.js&quot;</span><span class="p">;</span>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadAcpxRuntime</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"./load-runtime.js"</span><span class="p">;</span>
 
 <span class="kd">const</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">createAcpRuntime</span><span class="p">,</span><span class="w"> </span><span class="nx">createFileSessionStore</span><span class="p">,</span><span class="w"> </span><span class="nx">createAgentRegistry</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="o">=</span>
 <span class="w">  </span><span class="k">await</span><span class="w"> </span><span class="nx">loadAcpxRuntime</span><span class="p">();</span>
@@ -387,24 +366,24 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>agent</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Agent id. Must match <code>/^[a-z0-9_-]+$/i</code>.</td>
+<td><code>agent</code></td>
+<td><code>string</code></td>
+<td>(required)</td>
+<td>Agent id. Must match <code>/^[a-z0-9_-]+$/i</code>.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>cwd</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;"><code>process.cwd()</code></td>
-<td style="text-align: left;">Working directory for the discovery session.</td>
+<td><code>cwd</code></td>
+<td><code>string</code></td>
+<td><code>process.cwd()</code></td>
+<td>Working directory for the discovery session.</td>
 </tr>
 </tbody>
 </table>
@@ -412,30 +391,30 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Field</th>
-<th style="text-align: left;">Description</th>
+<th>Field</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>id</code></td>
-<td style="text-align: left;"><code>&lt;agent&gt;:&lt;modelId&gt;</code></td>
+<td><code>id</code></td>
+<td><code>&lt;agent&gt;:&lt;modelId&gt;</code></td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>name</code></td>
-<td style="text-align: left;">Display name from <code>modelIdToDisplayName(modelId)</code> plus <code>(&lt;agent&gt;)</code></td>
+<td><code>name</code></td>
+<td>Display name from <code>modelIdToDisplayName(modelId)</code> plus <code>(&lt;agent&gt;)</code></td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>provider</code></td>
-<td style="text-align: left;"><code>acpx-&lt;agent&gt;</code></td>
+<td><code>provider</code></td>
+<td><code>acpx-&lt;agent&gt;</code></td>
 </tr>
 </tbody>
 </table>
 <p>On discovery failure, returns <code>[]</code> (does not throw). Invalid <code>agent</code> throws <code>Error</code>.</p>
-<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">discoverAcpxModels</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;pi-orchestrator-config/extensions/acpx-provider&quot;</span><span class="p">;</span>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">discoverAcpxModels</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"pi-orchestrator-config/extensions/acpx-provider"</span><span class="p">;</span>
 
-<span class="kd">const</span><span class="w"> </span><span class="nx">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">discoverAcpxModels</span><span class="p">(</span><span class="s2">&quot;cursor&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;/path/to/project&quot;</span><span class="p">);</span>
-<span class="c1">// [{ id: &quot;cursor:gpt-5.4[...]&quot;, name: &quot;Gpt 5.4 (cursor)&quot;, provider: &quot;acpx-cursor&quot; }]</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">discoverAcpxModels</span><span class="p">(</span><span class="s2">"cursor"</span><span class="p">,</span><span class="w"> </span><span class="s2">"/path/to/project"</span><span class="p">);</span>
+<span class="c1">// [{ id: "cursor:gpt-5.4[...]", name: "Gpt 5.4 (cursor)", provider: "acpx-cursor" }]</span>
 </code></pre></div>
 
 <blockquote>
@@ -447,24 +426,24 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>agent</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Agent id used in model/provider ids.</td>
+<td><code>agent</code></td>
+<td><code>string</code></td>
+<td>(required)</td>
+<td>Agent id used in model/provider ids.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>modelIds</code></td>
-<td style="text-align: left;"><code>readonly string[]</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Raw ids from ACPX status / snapshot.</td>
+<td><code>modelIds</code></td>
+<td><code>readonly string[]</code></td>
+<td>(required)</td>
+<td>Raw ids from ACPX status / snapshot.</td>
 </tr>
 </tbody>
 </table>
@@ -472,94 +451,94 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Condition</th>
-<th style="text-align: left;">Effect</th>
+<th>Condition</th>
+<th>Effect</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>modelIds.length === 0</code></td>
-<td style="text-align: left;">Single fallback model <code>{ id: "&lt;agent&gt;:default", name: "&lt;agent&gt; (default)" }</code></td>
+<td><code>modelIds.length === 0</code></td>
+<td>Single fallback model <code>{ id: "&lt;agent&gt;:default", name: "&lt;agent&gt; (default)" }</code></td>
 </tr>
 <tr>
-<td style="text-align: left;">otherwise</td>
-<td style="text-align: left;">One model per id: <code>{ id: "&lt;agent&gt;:&lt;m&gt;", name: "&lt;Display&gt; (&lt;agent&gt;)" }</code></td>
+<td>otherwise</td>
+<td>One model per id: <code>{ id: "&lt;agent&gt;:&lt;m&gt;", name: "&lt;Display&gt; (&lt;agent&gt;)" }</code></td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">mapAcpxDiscoveredModels</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;pi-orchestrator-config/extensions/acpx-provider&quot;</span><span class="p">;</span>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">mapAcpxDiscoveredModels</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"pi-orchestrator-config/extensions/acpx-provider"</span><span class="p">;</span>
 
-<span class="kd">const</span><span class="w"> </span><span class="nx">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mapAcpxDiscoveredModels</span><span class="p">(</span><span class="s2">&quot;cursor&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;gpt-5.4[context=272k]&quot;</span><span class="p">]);</span>
-<span class="c1">// id: &quot;cursor:gpt-5.4[context=272k]&quot;, name: &quot;Gpt 5.4 (cursor)&quot;, provider: &quot;acpx-cursor&quot;</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mapAcpxDiscoveredModels</span><span class="p">(</span><span class="s2">"cursor"</span><span class="p">,</span><span class="w"> </span><span class="p">[</span><span class="s2">"gpt-5.4[context=272k]"</span><span class="p">]);</span>
+<span class="c1">// id: "cursor:gpt-5.4[context=272k]", name: "Gpt 5.4 (cursor)", provider: "acpx-cursor"</span>
 </code></pre></div>
 
 <h2 id="modelidtodisplaynamemodelid"><code>modelIdToDisplayName(modelId)</code></h2>
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>modelId</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Raw ACPX model id.</td>
+<td><code>modelId</code></td>
+<td><code>string</code></td>
+<td>(required)</td>
+<td>Raw ACPX model id.</td>
 </tr>
 </tbody>
 </table>
 <p><strong>Returns:</strong> <code>string</code> — bracket suffix stripped, hyphens → spaces, title-cased.</p>
-<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">modelIdToDisplayName</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;pi-orchestrator-config/extensions/acpx-provider&quot;</span><span class="p">;</span>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">modelIdToDisplayName</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"pi-orchestrator-config/extensions/acpx-provider"</span><span class="p">;</span>
 
-<span class="nx">modelIdToDisplayName</span><span class="p">(</span><span class="s2">&quot;gpt-5.4[context=272k]&quot;</span><span class="p">);</span><span class="w"> </span><span class="c1">// &quot;Gpt 5.4&quot;</span>
+<span class="nx">modelIdToDisplayName</span><span class="p">(</span><span class="s2">"gpt-5.4[context=272k]"</span><span class="p">);</span><span class="w"> </span><span class="c1">// "Gpt 5.4"</span>
 </code></pre></div>
 
 <h2 id="buildambientloginauthopts"><code>buildAmbientLoginAuth(opts)</code></h2>
 <p>Builds <code>/login</code> api-key auth that stores a configured marker when <code>isConfigured()</code> is true.</p>
-<p><strong>Module:</strong> <code>extensions/shared/create-runtime-provider.ts</code><br />
+<p><strong>Module:</strong> <code>extensions/shared/create-runtime-provider.ts</code><br>
 <strong>Wired by:</strong> <code>registerAcpxAgent()</code> in <code>extensions/providers/index.ts</code></p>
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Option</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Option</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>displayName</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Label in the <code>/login</code> prompt (<code>ACPX &lt;agent&gt;</code>).</td>
+<td><code>displayName</code></td>
+<td><code>string</code></td>
+<td>(required)</td>
+<td>Label in the <code>/login</code> prompt (<code>ACPX &lt;agent&gt;</code>).</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>isConfigured</code></td>
-<td style="text-align: left;"><code>() =&gt; boolean \| Promise&lt;boolean&gt;</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Gate for login/resolve/check. For ACPX: <code>acpxInstances.has(agent)</code>.</td>
+<td><code>isConfigured</code></td>
+<td><code>() =&gt; boolean \| Promise&lt;boolean&gt;</code></td>
+<td>(required)</td>
+<td>Gate for login/resolve/check. For ACPX: <code>acpxInstances.has(agent)</code>.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>sourceLabel</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Auth source string (e.g. <code>"cursor acpx runtime"</code>).</td>
+<td><code>sourceLabel</code></td>
+<td><code>string</code></td>
+<td>(required)</td>
+<td>Auth source string (e.g. <code>"cursor acpx runtime"</code>).</td>
 </tr>
 </tbody>
 </table>
 <p><strong>Returns:</strong> <code>ProviderAuth["apiKey"]</code> for <code>createRuntimeProvider()</code> / <code>createProvider()</code>.</p>
-<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">buildAmbientLoginAuth</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;../shared/create-runtime-provider.js&quot;</span><span class="p">;</span>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">buildAmbientLoginAuth</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"../shared/create-runtime-provider.js"</span><span class="p">;</span>
 
 <span class="c1">// Wired in extensions/providers/index.ts during registerAcpxAgent()</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">buildAmbientLoginAuth</span><span class="p">({</span>
-<span class="w">  </span><span class="nx">displayName</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;ACPX cursor&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">isConfigured</span><span class="o">:</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">acpxInstances</span><span class="p">.</span><span class="nx">has</span><span class="p">(</span><span class="s2">&quot;cursor&quot;</span><span class="p">),</span>
-<span class="w">  </span><span class="nx">sourceLabel</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;cursor acpx runtime&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">displayName</span><span class="o">:</span><span class="w"> </span><span class="s2">"ACPX cursor"</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">isConfigured</span><span class="o">:</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="nx">acpxInstances</span><span class="p">.</span><span class="nx">has</span><span class="p">(</span><span class="s2">"cursor"</span><span class="p">),</span>
+<span class="w">  </span><span class="nx">sourceLabel</span><span class="o">:</span><span class="w"> </span><span class="s2">"cursor acpx runtime"</span><span class="p">,</span>
 <span class="p">});</span>
 </code></pre></div>
 
@@ -569,24 +548,24 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Field</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Field</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>agent</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;"><code>"cursor"</code></td>
-<td style="text-align: left;">ACPX agent name passed to <code>ensureSession</code>.</td>
+<td><code>agent</code></td>
+<td><code>string</code></td>
+<td><code>"cursor"</code></td>
+<td>ACPX agent name passed to <code>ensureSession</code>.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>enabled</code></td>
-<td style="text-align: left;"><code>boolean</code></td>
-<td style="text-align: left;"><code>true</code></td>
-<td style="text-align: left;">Instance enabled flag.</td>
+<td><code>enabled</code></td>
+<td><code>boolean</code></td>
+<td><code>true</code></td>
+<td>Instance enabled flag.</td>
 </tr>
 </tbody>
 </table>
@@ -594,18 +573,18 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>config</code></td>
-<td style="text-align: left;"><code>AcpxConfig</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Passed by the registry; availability checks <code>loadAcpxRuntime()</code> only.</td>
+<td><code>config</code></td>
+<td><code>AcpxConfig</code></td>
+<td>(required)</td>
+<td>Passed by the registry; availability checks <code>loadAcpxRuntime()</code> only.</td>
 </tr>
 </tbody>
 </table>
@@ -614,42 +593,42 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>input.instanceId</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Registry instance id (<code>acpx-&lt;agent&gt;</code>).</td>
+<td><code>input.instanceId</code></td>
+<td><code>string</code></td>
+<td>(required)</td>
+<td>Registry instance id (<code>acpx-&lt;agent&gt;</code>).</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>input.config</code></td>
-<td style="text-align: left;"><code>AcpxConfig</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Agent + enabled.</td>
+<td><code>input.config</code></td>
+<td><code>AcpxConfig</code></td>
+<td>(required)</td>
+<td>Agent + enabled.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>input.cwd</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Project cwd; hashed to 12-char <code>cwdSlug</code> for state/session keys.</td>
+<td><code>input.cwd</code></td>
+<td><code>string</code></td>
+<td>(required)</td>
+<td>Project cwd; hashed to 12-char <code>cwdSlug</code> for state/session keys.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>input.displayName</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;"><code>`ACPX ${agent}`</code></td>
-<td style="text-align: left;">UI display name.</td>
+<td><code>input.displayName</code></td>
+<td><code>string</code></td>
+<td><code>`ACPX ${agent}`</code></td>
+<td>UI display name.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>input.enabled</code></td>
-<td style="text-align: left;"><code>boolean</code></td>
-<td style="text-align: left;">from input</td>
-<td style="text-align: left;">Instance enabled flag.</td>
+<td><code>input.enabled</code></td>
+<td><code>boolean</code></td>
+<td>from input</td>
+<td>Instance enabled flag.</td>
 </tr>
 </tbody>
 </table>
@@ -662,8 +641,8 @@
 <li>Snapshot refresh uses a separate oneshot discovery helper</li>
 </ul>
 <div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">instance</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">registry</span><span class="p">.</span><span class="nx">createInstance</span><span class="p">(</span>
-<span class="w">  </span><span class="s2">&quot;acpx-cursor&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="p">{</span><span class="w"> </span><span class="nx">driver</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;acpx&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">config</span><span class="o">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">agent</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;cursor&quot;</span><span class="w"> </span><span class="p">},</span><span class="w"> </span><span class="nx">enabled</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="s2">"acpx-cursor"</span><span class="p">,</span>
+<span class="w">  </span><span class="p">{</span><span class="w"> </span><span class="nx">driver</span><span class="o">:</span><span class="w"> </span><span class="s2">"acpx"</span><span class="p">,</span><span class="w"> </span><span class="nx">config</span><span class="o">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">agent</span><span class="o">:</span><span class="w"> </span><span class="s2">"cursor"</span><span class="w"> </span><span class="p">},</span><span class="w"> </span><span class="nx">enabled</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">},</span>
 <span class="w">  </span><span class="nx">projectCwd</span><span class="p">,</span>
 <span class="p">);</span>
 </code></pre></div>
@@ -672,30 +651,30 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Option</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Option</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>model</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;"><code>"default"</code></td>
-<td style="text-align: left;">ACPX model id (suffix of pi model id after <code>:</code>).</td>
+<td><code>model</code></td>
+<td><code>string</code></td>
+<td><code>"default"</code></td>
+<td>ACPX model id (suffix of pi model id after <code>:</code>).</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>systemPrompt</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">from <code>buildExternalSystemPrompt</code></td>
-<td style="text-align: left;">Prompt applied when the handle is first created for that model.</td>
+<td><code>systemPrompt</code></td>
+<td><code>string</code></td>
+<td>from <code>buildExternalSystemPrompt</code></td>
+<td>Prompt applied when the handle is first created for that model.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>cwd</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">(required by type)</td>
-<td style="text-align: left;">Project cwd (adapter already bound at create).</td>
+<td><code>cwd</code></td>
+<td><code>string</code></td>
+<td>(required by type)</td>
+<td>Project cwd (adapter already bound at create).</td>
 </tr>
 </tbody>
 </table>
@@ -704,36 +683,36 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>handle</code></td>
-<td style="text-align: left;"><code>SessionHandle</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">From <code>startSession</code>.</td>
+<td><code>handle</code></td>
+<td><code>SessionHandle</code></td>
+<td>(required)</td>
+<td>From <code>startSession</code>.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>prompt</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Latest user message text only.</td>
+<td><code>prompt</code></td>
+<td><code>string</code></td>
+<td>(required)</td>
+<td>Latest user message text only.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>opts.signal</code></td>
-<td style="text-align: left;"><code>AbortSignal</code></td>
-<td style="text-align: left;">—</td>
-<td style="text-align: left;">Aborts the turn.</td>
+<td><code>opts.signal</code></td>
+<td><code>AbortSignal</code></td>
+<td>—</td>
+<td>Aborts the turn.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>opts.onEvent</code></td>
-<td style="text-align: left;"><code>(event) =&gt; void</code></td>
-<td style="text-align: left;">—</td>
-<td style="text-align: left;">Receives <code>{ kind: "text_delta" \| "thinking_delta", text }</code>.</td>
+<td><code>opts.onEvent</code></td>
+<td><code>(event) =&gt; void</code></td>
+<td>—</td>
+<td>Receives <code>{ kind: "text_delta" \| "thinking_delta", text }</code>.</td>
 </tr>
 </tbody>
 </table>
@@ -742,14 +721,14 @@
 <div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">turn</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">runtime</span><span class="p">.</span><span class="nx">startTurn</span><span class="p">({</span>
 <span class="w">  </span><span class="nx">handle</span><span class="o">:</span><span class="w"> </span><span class="kt">acpxHandle</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">text</span><span class="o">:</span><span class="w"> </span><span class="kt">prompt</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">mode</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;prompt&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">mode</span><span class="o">:</span><span class="w"> </span><span class="s2">"prompt"</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">requestId</span><span class="o">:</span><span class="w"> </span><span class="sb">`pi-</span><span class="si">${</span><span class="nb">Date</span><span class="p">.</span><span class="nx">now</span><span class="p">()</span><span class="si">}</span><span class="sb">-</span><span class="si">${</span><span class="nx">randomSuffix</span><span class="si">}</span><span class="sb">`</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">signal</span><span class="o">:</span><span class="w"> </span><span class="kt">abortController.signal</span><span class="p">,</span>
 <span class="p">});</span>
 
 <span class="k">for</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="p">(</span><span class="kd">const</span><span class="w"> </span><span class="nx">event</span><span class="w"> </span><span class="k">of</span><span class="w"> </span><span class="nx">turn</span><span class="p">.</span><span class="nx">events</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nx">event</span><span class="p">.</span><span class="kr">type</span><span class="w"> </span><span class="o">===</span><span class="w"> </span><span class="s2">&quot;text_delta&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nx">event</span><span class="p">.</span><span class="nx">text</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="c1">// event.stream === &quot;thought&quot; → thinking_delta; else → text_delta</span>
+<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nx">event</span><span class="p">.</span><span class="kr">type</span><span class="w"> </span><span class="o">===</span><span class="w"> </span><span class="s2">"text_delta"</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nx">event</span><span class="p">.</span><span class="nx">text</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// event.stream === "thought" → thinking_delta; else → text_delta</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </code></pre></div>
@@ -761,18 +740,18 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Method</th>
-<th style="text-align: left;">Effect</th>
+<th>Method</th>
+<th>Effect</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>stopSession(handle)</code></td>
-<td style="text-align: left;"><code>runtime.close</code> for that model handle; clears prompt/usage tracking for the key.</td>
+<td><code>stopSession(handle)</code></td>
+<td><code>runtime.close</code> for that model handle; clears prompt/usage tracking for the key.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>stopAll()</code></td>
-<td style="text-align: left;">Closes all handles; clears handle maps. Called from instance <code>dispose</code>.</td>
+<td><code>stopAll()</code></td>
+<td>Closes all handles; clears handle maps. Called from instance <code>dispose</code>.</td>
 </tr>
 </tbody>
 </table>
@@ -781,34 +760,34 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Step</th>
-<th style="text-align: left;">Action</th>
+<th>Step</th>
+<th>Action</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;">1</td>
-<td style="text-align: left;">Resolve instance from <code>acpxInstances</code></td>
+<td>1</td>
+<td>Resolve instance from <code>acpxInstances</code></td>
 </tr>
 <tr>
-<td style="text-align: left;">2</td>
-<td style="text-align: left;">Parse model id: <code>agent:modelId</code> → driver model suffix</td>
+<td>2</td>
+<td>Parse model id: <code>agent:modelId</code> → driver model suffix</td>
 </tr>
 <tr>
-<td style="text-align: left;">3</td>
-<td style="text-align: left;"><code>adapter.startSession({ model, systemPrompt, cwd })</code></td>
+<td>3</td>
+<td><code>adapter.startSession({ model, systemPrompt, cwd })</code></td>
 </tr>
 <tr>
-<td style="text-align: left;">4</td>
-<td style="text-align: left;"><code>extractLatestUserMessage(context)</code> → prompt</td>
+<td>4</td>
+<td><code>extractLatestUserMessage(context)</code> → prompt</td>
 </tr>
 <tr>
-<td style="text-align: left;">5</td>
-<td style="text-align: left;"><code>adapter.sendTurn(..., { onEvent: assembler.handleEvent })</code></td>
+<td>5</td>
+<td><code>adapter.sendTurn(..., { onEvent: assembler.handleEvent })</code></td>
 </tr>
 <tr>
-<td style="text-align: left;">6</td>
-<td style="text-align: left;"><code>assembler.finalize({ finalText, finalThinking, stopReason, usage })</code></td>
+<td>6</td>
+<td><code>assembler.finalize({ finalText, finalThinking, stopReason, usage })</code></td>
 </tr>
 </tbody>
 </table>
@@ -817,53 +796,53 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>sessionKey</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Stable key (<code>discover-...</code> or <code>pi-&lt;agent&gt;...-&lt;cwdSlug&gt;</code>).</td>
+<td><code>sessionKey</code></td>
+<td><code>string</code></td>
+<td>(required)</td>
+<td>Stable key (<code>discover-...</code> or <code>pi-&lt;agent&gt;...-&lt;cwdSlug&gt;</code>).</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>agent</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Target agent id.</td>
+<td><code>agent</code></td>
+<td><code>string</code></td>
+<td>(required)</td>
+<td>Target agent id.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>mode</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;"><code>"oneshot"</code> for throwaway discovery; <code>"persistent"</code> for stream sessions.</td>
+<td><code>mode</code></td>
+<td><code>string</code></td>
+<td>(required)</td>
+<td><code>"oneshot"</code> for throwaway discovery; <code>"persistent"</code> for stream sessions.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>cwd</code></td>
-<td style="text-align: left;"><code>string</code></td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">Session working directory.</td>
+<td><code>cwd</code></td>
+<td><code>string</code></td>
+<td>(required)</td>
+<td>Session working directory.</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>sessionOptions</code></td>
-<td style="text-align: left;"><code>object</code></td>
-<td style="text-align: left;">omitted if empty</td>
-<td style="text-align: left;">Optional <code>{ model?, systemPrompt? }</code>.</td>
+<td><code>sessionOptions</code></td>
+<td><code>object</code></td>
+<td>omitted if empty</td>
+<td>Optional <code>{ model?, systemPrompt? }</code>.</td>
 </tr>
 </tbody>
 </table>
 <div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">handle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">runtime</span><span class="p">.</span><span class="nx">ensureSession</span><span class="p">({</span>
-<span class="w">  </span><span class="nx">sessionKey</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;pi-cursor-gpt-4-a1b2c3d4e5f6&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">agent</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;cursor&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">mode</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;persistent&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">cwd</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;/home/user/project&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">sessionKey</span><span class="o">:</span><span class="w"> </span><span class="s2">"pi-cursor-gpt-4-a1b2c3d4e5f6"</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">agent</span><span class="o">:</span><span class="w"> </span><span class="s2">"cursor"</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">mode</span><span class="o">:</span><span class="w"> </span><span class="s2">"persistent"</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">cwd</span><span class="o">:</span><span class="w"> </span><span class="s2">"/home/user/project"</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">sessionOptions</span><span class="o">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">model</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nx">systemPrompt</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;You are being used as a backend LLM...&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">model</span><span class="o">:</span><span class="w"> </span><span class="s2">"gpt-4"</span><span class="p">,</span>
+<span class="w">    </span><span class="nx">systemPrompt</span><span class="o">:</span><span class="w"> </span><span class="s2">"You are being used as a backend LLM..."</span><span class="p">,</span>
 <span class="w">  </span><span class="p">},</span>
 <span class="p">});</span>
 </code></pre></div>
@@ -872,18 +851,18 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Hook</th>
-<th style="text-align: left;">Effect</th>
+<th>Hook</th>
+<th>Effect</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>session_shutdown</code></td>
-<td style="text-align: left;">Stops CLI session reaper; <code>registry.teardownAll()</code> (each ACPX instance <code>dispose</code> → <code>adapter.stopAll()</code>); clears <code>cliInstances</code> and <code>acpxInstances</code>.</td>
+<td><code>session_shutdown</code></td>
+<td>Stops CLI session reaper; <code>registry.teardownAll()</code> (each ACPX instance <code>dispose</code> → <code>adapter.stopAll()</code>); clears <code>cliInstances</code> and <code>acpxInstances</code>.</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><span class="nx">pi</span><span class="p">.</span><span class="nx">on</span><span class="p">(</span><span class="s2">&quot;session_shutdown&quot;</span><span class="p">,</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<div class="highlight"><pre><span></span><code><span class="nx">pi</span><span class="p">.</span><span class="nx">on</span><span class="p">(</span><span class="s2">"session_shutdown"</span><span class="p">,</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">stopCliSessionReaper</span><span class="p">();</span>
 <span class="w">  </span><span class="k">await</span><span class="w"> </span><span class="nx">registry</span><span class="p">.</span><span class="nx">teardownAll</span><span class="p">();</span>
 <span class="w">  </span><span class="nx">cliInstances</span><span class="p">.</span><span class="nx">clear</span><span class="p">();</span>
@@ -903,13 +882,16 @@
             </article>
             <nav class="page-nav">
 
-                <a href="background-dreaming.html" class="page-nav-link page-nav-prev">
+                <a href="discord-bot.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Background Memory Consolidation (Dreaming)</span>
+                    <span class="page-nav-title">~/.pi/discord.env</span>
                 </a>
 
 
-                <div></div>
+                <a href="vertex-claude-provider.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Google Vertex Claude Provider</span>
+                </a>
 
             </nav>
 
@@ -948,10 +930,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>scripts/generate_docs.py</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Running Background Agents and Scheduled Tasks - pi-config</title>
+    <title>MCP Servers - pi-config</title>
     <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
@@ -93,7 +93,7 @@
 
                     <li>
                         <a href="async-agents-and-cron.html"
-                           class="nav-link active" aria-current="page">
+                           class="nav-link">
                             Running Background Agents and Scheduled Tasks
                         </a>
                     </li>
@@ -191,7 +191,7 @@
 
                     <li>
                         <a href="mcp-servers.html"
-                           class="nav-link">
+                           class="nav-link active" aria-current="page">
                             MCP Servers
                         </a>
                     </li>
@@ -280,167 +280,157 @@
                          converted to HTML server-side by the markdown library, not
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
-                    <h1 id="running-background-agents-and-scheduled-tasks">Running Background Agents and Scheduled Tasks</h1>
-<p>Run long tasks without blocking your main session, and schedule recurring work so Pi can keep checking, reviewing, or cleaning up in the background. This is useful when you want to keep coding while another agent works, or when you want a workflow to run on a timer.</p>
-<h2 id="prerequisites">Prerequisites</h2>
-<ul>
-<li>A running Pi session in your project repository</li>
-<li>A TUI session if you want to use the fullscreen status overlays</li>
-<li><code>git</code> available if your background task depends on repository state</li>
-<li>If you use ACPX-backed models for detached work, <code>async_llm_provider</code> and <code>async_llm_model</code> may be required. See <a href="configuration.html">Configuration &amp; Settings</a> for details.</li>
-</ul>
-<h2 id="quick-example">Quick Example</h2>
-<p>Start a background agent with a plain-English request:</p>
-<blockquote>
-<p>Run the <code>security-auditor</code> on the <code>src/</code> directory in the background. Let me know when it's done.</p>
-</blockquote>
-<p>Schedule a recurring task with <code>/cron</code>:</p>
-<div class="highlight"><pre><span></span><code>/cron<span class="w"> </span>Run<span class="w"> </span>the<span class="w"> </span>test-automator<span class="w"> </span>every<span class="w"> </span><span class="m">30</span><span class="w"> </span>minutes
+                    <h1 id="mcp-servers">MCP Servers</h1>
+<p>pi-config does not ship an MCP client. Since pi 0.99.0, MCP is built into pi itself
+(<code>builtin:mcp</code>), so servers are configured in <code>mcp.json</code> and managed with <code>/mcp</code>.</p>
+<p>There is no external MCP binary to install and no separate bridge process.</p>
+<h2 id="configuration">Configuration</h2>
+<p>Servers live in <code>mcp.json</code> under a <code>mcpServers</code> key. pi reads the user-level file at
+<code>~/.pi/agent/mcp.json</code> and a project-level <code>mcp.json</code> once the project is trusted.</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"mcpServers"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"local-jenkins"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"command"</span><span class="p">:</span><span class="w"> </span><span class="s2">"npx"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"args"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"-y"</span><span class="p">,</span><span class="w"> </span><span class="s2">"mcp-jenkins"</span><span class="p">],</span>
+<span class="w">      </span><span class="nt">"env"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">"JENKINS_URL"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://jenkins.internal"</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">    </span><span class="nt">"docs"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://mcp.example.com/mcp"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"headers"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">"Authorization"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Bearer ${DOCS_TOKEN}"</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
 </code></pre></div>
 
-<p>Use these when you want non-blocking work right away: one-off jobs through natural language, recurring jobs through <code>/cron</code>.</p>
-<h2 id="step-by-step">Step-by-Step</h2>
-<ol>
-<li>Start a background job.</li>
-</ol>
-<p>Ask Pi to run a specialist in the background:</p>
-<blockquote>
-<p>Run the <code>security-auditor</code> on the <code>src/</code> directory in the background. Let me know when it's done.</p>
-</blockquote>
-<p>Pi can keep your main session free while the background job runs and report back when it finishes.</p>
-<ol>
-<li>Monitor running async work.</li>
-</ol>
-<p>Open the async overlay:</p>
-<div class="highlight"><pre><span></span><code>/async-status
-</code></pre></div>
-
-<p>This shows queued and running jobs, elapsed time, and live output. Press <code>Enter</code> to inspect a job, or press <code>x</code> to kill the selected job.</p>
-<ol>
-<li>Stop async work when needed.</li>
-</ol>
-<p>Open the interactive kill picker:</p>
-<div class="highlight"><pre><span></span><code>/async-kill
-</code></pre></div>
-
-<p>Or cancel everything at once:</p>
-<div class="highlight"><pre><span></span><code>/async-kill<span class="w"> </span>all
-</code></pre></div>
-
-<blockquote>
-<p><strong>Tip:</strong> If you only need to stop one job, the interactive picker is safer because it shows the exact running entries before you kill them.</p>
-</blockquote>
-<ol>
-<li>Create a recurring schedule.</li>
-</ol>
-<p>Use <code>/cron</code> with natural language:</p>
-<div class="highlight"><pre><span></span><code>/cron<span class="w"> </span>Every<span class="w"> </span>day<span class="w"> </span>at<span class="w"> </span><span class="m">9</span>:00<span class="w"> </span>AM,<span class="w"> </span>run<span class="w"> </span>the<span class="w"> </span>git-expert<span class="w"> </span>to<span class="w"> </span>generate<span class="w"> </span>a<span class="w"> </span>daily<span class="w"> </span>summary.
-</code></pre></div>
-
-<p>Pi turns that into a recurring task for the current session.</p>
-<ol>
-<li>Review or remove scheduled tasks.</li>
-</ol>
-<p>List tasks in the current session:</p>
-<div class="highlight"><pre><span></span><code>/cron<span class="w"> </span>list
-</code></pre></div>
-
-<p>List tasks across active Pi sessions:</p>
-<div class="highlight"><pre><span></span><code>/cron<span class="w"> </span>list-all
-</code></pre></div>
-
-<p>Remove a task by ID:</p>
-<div class="highlight"><pre><span></span><code>/cron<span class="w"> </span>remove<span class="w"> </span><span class="m">1</span>
-</code></pre></div>
-
-<p>In the cron overlays, you can also press <code>x</code> to remove the selected task.</p>
-<h2 id="advanced-usage">Advanced Usage</h2>
-<h3 id="pick-the-right-monitoring-command">Pick the Right Monitoring Command</h3>
+<p>pi infers the transport from the keys present: <code>command</code>/<code>args</code>/<code>env</code>/<code>cwd</code> means stdio,
+<code>url</code>/<code>headers</code>/<code>oauth</code> means streamable HTTP. The legacy SSE transport is not supported.
+<code>${VAR}</code> in a value expands from the environment.</p>
+<p>After editing <code>mcp.json</code>, run <code>/mcp</code> to reconnect, or restart pi.</p>
+<h2 id="managing-servers">Managing servers</h2>
 <table>
 <thead>
 <tr>
-<th>Goal</th>
 <th>Command</th>
-<th>What you get</th>
+<th>Purpose</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Watch async jobs</td>
-<td><code>/async-status</code></td>
-<td>Fullscreen list, live output, kill with <code>x</code></td>
+<td><code>/mcp</code></td>
+<td>Interactive manager: state, tool count, exposure, and the config file each server came from</td>
 </tr>
 <tr>
-<td>Kill async jobs</td>
-<td><code>/async-kill</code></td>
-<td>Interactive kill picker</td>
+<td><code>/mcp reconnect</code></td>
+<td>Reconnect after editing <code>mcp.json</code></td>
 </tr>
 <tr>
-<td>See local schedules</td>
-<td><code>/cron list</code></td>
-<td>Fullscreen list of this session’s recurring tasks</td>
+<td><code>/mcp login</code> / <code>/mcp logout</code></td>
+<td>Manage OAuth for a server</td>
 </tr>
 <tr>
-<td>See all session schedules</td>
-<td><code>/cron list-all</code></td>
-<td>Cross-session view of active cron files</td>
+<td><code>pi mcp list</code></td>
+<td>List configured servers from the shell</td>
 </tr>
 <tr>
-<td>Remove a known cron</td>
-<td><code>/cron remove &lt;id&gt;</code></td>
-<td>Direct removal by task ID</td>
+<td><code>pi mcp add</code> / <code>pi mcp remove</code></td>
+<td>Add or remove a server from the shell</td>
 </tr>
 </tbody>
 </table>
-<h3 id="keep-background-context-between-runs">Keep Background Context Between Runs</h3>
-<p>If you want a background agent to remember previous work, ask Pi to persist that session:</p>
-<blockquote>
-<p>Run the code reviewer in the background and persist its session so it remembers previous feedback.</p>
-</blockquote>
-<p>This is most useful for iterative review loops and repeated follow-up work. See <a href="automating-code-reviews.html">Automating Code Reviews</a> for a full review workflow.</p>
-<h3 id="use-fire-and-forget-for-maintenance-jobs">Use Fire-and-Forget for Maintenance Jobs</h3>
-<p>For maintenance tasks where you do not want a follow-up result injected back into chat, ask for fire-and-forget behavior:</p>
-<blockquote>
-<p>Run a background memory cleanup task as fire-and-forget.</p>
-</blockquote>
-<p>This is a good fit for housekeeping work where a completion notification is enough. See <a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a> for a concrete example.</p>
-<h3 id="understand-cron-lifetime">Understand Cron Lifetime</h3>
-<p>Cron tasks belong to the current Pi process. They survive session refreshes inside that process, but they do not keep running after a full Pi exit.</p>
-<blockquote>
-<p><strong>Note:</strong> If you need to confirm what is still scheduled, run <code>/cron list</code> or <code>/cron list-all</code> after reconnecting instead of assuming an older schedule is still active.</p>
-</blockquote>
-<h3 id="acpx-compatibility">ACPX Compatibility</h3>
-<p>Detached LLM work is more restricted when your parent session is using an <code>acpx-*</code> provider. In that case, some async work may be skipped or require a separate async LLM provider/model to be configured first.</p>
-<p>See <a href="acpx-provider.html">ACPX Provider Integration</a> and <a href="configuration.html">Configuration &amp; Settings</a> for the exact setup.</p>
-<h2 id="troubleshooting">Troubleshooting</h2>
-<ul>
-<li><strong>Async job does not start:</strong> If Pi complains about a missing <code>taskId</code>, the workflow is expecting the background work to be linked to a tracked task or explicitly marked as independent.</li>
-<li><strong>Job starts but immediately skips:</strong> If your session is using an ACPX-backed provider, configure <code>async_llm_provider</code> and <code>async_llm_model</code> before retrying.</li>
-<li><strong>You want live output but nothing appears:</strong> Use <code>/async-status</code> from a TUI session. The fullscreen overlay is the supported live-view interface.</li>
-<li><strong>A cron task seems stuck or outdated:</strong> Run <code>/cron list</code> or <code>/cron list-all</code>, then remove the old task and create a fresh one.</li>
-<li><strong>You want browser-based monitoring instead of terminal overlays:</strong> See <a href="using-the-web-dashboard.html">Using the Web Dashboard</a> for details.</li>
-</ul>
-<h2 id="related-pages">Related Pages</h2>
-<ul>
-<li><a href="daemon-and-websockets.html">Daemon &amp; Websocket Networking</a></li>
-<li><a href="using-the-web-dashboard.html">Using the Web Dashboard</a></li>
-<li><a href="automating-code-reviews.html">Automating Code Reviews</a></li>
-<li><a href="managing-custom-agents.html">Managing Custom Agents</a></li>
-<li><a href="configuration.html">Configuration &amp; Settings</a></li>
-</ul>
+<p>Outside the TUI, <code>/mcp</code> prints status.</p>
+<h2 id="how-tools-reach-the-model">How tools reach the model</h2>
+<p>An MCP server can expose dozens of tools. Declaring all of them on every request would
+bloat the context window, so each server has an <strong>exposure</strong> that decides when its tools
+become visible. The default is <code>codemode</code>, and it is the right choice for almost every
+server.</p>
+<table>
+<thead>
+<tr>
+<th>Exposure</th>
+<th>Behaviour</th>
+<th>Cost when unused</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>codemode</code> (default)</td>
+<td>Not declared to the model. Reached from <code>codemode</code> scripts, which find tools with <code>searchTools()</code>.</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>codemode-deferred</code></td>
+<td>As above, and the tool list is not even in the <code>codemode</code> description — only the server name and tool count.</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>deferred</code></td>
+<td>Not declared until the <code>tool_search</code> tool loads them, then called directly.</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>direct</code></td>
+<td>Declared to the model like built-in tools.</td>
+<td>Full schema, every request</td>
+</tr>
+<tr>
+<td><code>hidden</code></td>
+<td>Registered but not callable.</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>codemode</code> description has its own budget, <code>codemode.inlineBudget</code> (default 3000
+tokens). Tools that do not fit are found with <code>searchTools()</code>, so the cost of a large
+server is bounded rather than proportional to its tool count.</p>
+<p>Set a server's exposure, and per-tool overrides, in the same <code>mcp.json</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"mcpServers"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"jira"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"command"</span><span class="p">:</span><span class="w"> </span><span class="s2">"npx"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"args"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"-y"</span><span class="p">,</span><span class="w"> </span><span class="s2">"mcp-jira"</span><span class="p">],</span>
+<span class="w">      </span><span class="nt">"exposure"</span><span class="p">:</span><span class="w"> </span><span class="s2">"codemode"</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">    </span><span class="nt">"github"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://mcp.githubcopilot.com/mcp/"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"exposure"</span><span class="p">:</span><span class="w"> </span><span class="s2">"deferred"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"toolExposure"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"search_code"</span><span class="p">:</span><span class="w"> </span><span class="s2">"direct"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"delete_*"</span><span class="p">:</span><span class="w"> </span><span class="s2">"hidden"</span>
+<span class="w">      </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><code>toolExposure</code> keys are tool names as the server offers them, or patterns where <code>*</code>
+matches any characters. An exact name beats a pattern; among patterns the first match
+wins. <code>pi mcp list</code> marks tools whose exposure differs from their server's.</p>
+<p>Reserve <code>direct</code> for the one or two tools you reach for constantly. A server set to
+<code>direct</code> costs tokens whether or not the task needs it.</p>
+<h2 id="calling-a-tool">Calling a tool</h2>
+<p>With <code>codemode</code> or <code>deferred</code> exposure, the agent writes a <code>codemode</code> script or lets
+<code>tool_search</code> load the tool — there is no shell round-trip and no separate discovery
+step. Tools loaded by <code>tool_search</code> are recorded in the transcript and stay declared on
+that branch.</p>
+<p>To confirm a server is healthy, run <code>/mcp</code> and check its state and tool count. pi logs
+MCP activity to <code>~/.pi/agent/mcp.log</code>.</p>
+<h2 id="resources">Resources</h2>
+<p>Servers offering MCP resources gain <code>list_mcp_resources</code>, <code>read_mcp_resource</code>, and
+<code>list_mcp_resource_templates</code> automatically. They reach every server whose exposure is
+not <code>hidden</code>, and take the widest exposure among them.</p>
                 </div>
             </article>
             <nav class="page-nav">
 
-                <a href="using-the-web-dashboard.html" class="page-nav-link page-nav-prev">
+                <a href="vertex-claude-provider.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Using the Web Dashboard</span>
+                    <span class="page-nav-title">Google Vertex Claude Provider</span>
                 </a>
 
 
-                <a href="background-dreaming.html" class="page-nav-link page-nav-next">
+                <a href="pi-sidecar.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Background Memory Consolidation (Dreaming)</span>
+                    <span class="page-nav-title">or: pip install pi-sidecar-client</span>
                 </a>
 
             </nav>
@@ -450,19 +440,11 @@
                     <h3>On this page</h3>
                     <div class="toc">
 <ul>
-<li><a href="#prerequisites">Prerequisites</a></li>
-<li><a href="#quick-example">Quick Example</a></li>
-<li><a href="#step-by-step">Step-by-Step</a></li>
-<li><a href="#advanced-usage">Advanced Usage</a><ul>
-<li><a href="#pick-the-right-monitoring-command">Pick the Right Monitoring Command</a></li>
-<li><a href="#keep-background-context-between-runs">Keep Background Context Between Runs</a></li>
-<li><a href="#use-fire-and-forget-for-maintenance-jobs">Use Fire-and-Forget for Maintenance Jobs</a></li>
-<li><a href="#understand-cron-lifetime">Understand Cron Lifetime</a></li>
-<li><a href="#acpx-compatibility">ACPX Compatibility</a></li>
-</ul>
-</li>
-<li><a href="#troubleshooting">Troubleshooting</a></li>
-<li><a href="#related-pages">Related Pages</a></li>
+<li><a href="#configuration">Configuration</a></li>
+<li><a href="#managing-servers">Managing servers</a></li>
+<li><a href="#how-tools-reach-the-model">How tools reach the model</a></li>
+<li><a href="#calling-a-tool">Calling a tool</a></li>
+<li><a href="#resources">Resources</a></li>
 </ul>
 </div>
 

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Creating Slash Commands - pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,38 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link active" aria-current="page">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -63,75 +84,26 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="curating-project-memory.html"
-                           class="nav-link">
-                            Curating Project Memory
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
-                           class="nav-link active" aria-current="page">
-                            Creating Slash Commands
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
+                        <a href="background-dreaming.html"
                            class="nav-link">
-                            Implementing Command Guards
+                            Background Memory Consolidation (Dreaming)
                         </a>
                     </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
-                           class="nav-link">
-                            myk_pi_tools CLI Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="configuration.html"
-                           class="nav-link">
-                            Configuration &amp; Settings
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="memory-architecture.html"
@@ -141,9 +113,9 @@
                     </li>
 
                     <li>
-                        <a href="daemon-and-websockets.html"
+                        <a href="curating-project-memory.html"
                            class="nav-link">
-                            Daemon &amp; Websocket Networking
+                            Curating Project Memory
                         </a>
                     </li>
 
@@ -151,20 +123,20 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="neovim-integration.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Neovim Integration
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="discord-bot.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Discord Bot Notifications
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
@@ -176,16 +148,16 @@
                     </li>
 
                     <li>
-                        <a href="vertex-claude-provider.html"
+                        <a href="neovim-integration.html"
                            class="nav-link">
-                            Google Vertex Claude Provider
+                            Neovim Integration
                         </a>
                     </li>
 
                     <li>
-                        <a href="pi-sidecar.html"
+                        <a href="discord-bot.html"
                            class="nav-link">
-                            Pi Sidecar HTTP API
+                            ~/.pi/discord.env
                         </a>
                     </li>
 
@@ -193,62 +165,69 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="external-ai-agents.html"
-                           class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="inter-agent-communication.html"
-                           class="nav-link">
-                            Inter-Agent Communication Network
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="background-dreaming.html"
-                           class="nav-link">
-                            Background Memory Consolidation (Dreaming)
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
+                <h3 class="nav-group-title">Providers</h3>
                 <ul class="nav-group-pages">
 
                     <li>
                         <a href="acpx-provider.html"
                            class="nav-link">
                             ACPX Provider Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            or: pip install pi-sidecar-client
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk_pi_tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +252,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -307,7 +286,7 @@
 <p>Use this when you want a reusable slash command without writing any TypeScript.</p>
 <div class="highlight"><pre><span></span><code><span class="gu">&lt;!-- prompts/security-audit.md --&gt;</span>
 <span class="gu">---</span>
-<span class="gu">description: &quot;Scan the current changes for security problems&quot;</span>
+<span class="gu">description: "Scan the current changes for security problems"</span>
 <span class="gu">---</span>
 
 Review the current git diff for security issues.
@@ -330,8 +309,8 @@ Return the findings as a short bullet list with severity labels.
 <p>Use this when the command should accept a target like a file path, branch name, or symbol.</p>
 <div class="highlight"><pre><span></span><code><span class="gu">&lt;!-- prompts/explain-file.md --&gt;</span>
 <span class="gu">---</span>
-description: &quot;Explain a file or symbol from the current project&quot;
-<span class="gu">argument-hint: &quot;&lt;path-or-symbol&gt;&quot;</span>
+description: "Explain a file or symbol from the current project"
+<span class="gu">argument-hint: "&lt;path-or-symbol&gt;"</span>
 <span class="gu">---</span>
 
 <span class="gu">## Raw Arguments</span>
@@ -356,23 +335,23 @@ Include:
 <h2 id="register-a-typescript-command">Register a TypeScript command</h2>
 <p>Use this when the command needs session context, UI notifications, or custom runtime behavior.</p>
 <div class="highlight"><pre><span></span><code><span class="c1">// extensions/orchestrator/hello.ts</span>
-<span class="k">import</span><span class="w"> </span><span class="kr">type</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">ExtensionAPI</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@earendil-works/pi-coding-agent&quot;</span><span class="p">;</span>
+<span class="k">import</span><span class="w"> </span><span class="kr">type</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">ExtensionAPI</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@earendil-works/pi-coding-agent"</span><span class="p">;</span>
 
 <span class="k">export</span><span class="w"> </span><span class="kd">function</span><span class="w"> </span><span class="nx">registerHello</span><span class="p">(</span><span class="nx">pi</span><span class="o">:</span><span class="w"> </span><span class="kt">ExtensionAPI</span><span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="nx">pi</span><span class="p">.</span><span class="nx">registerCommand</span><span class="p">(</span><span class="s2">&quot;hello&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;Show a quick greeting for the current workspace&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">pi</span><span class="p">.</span><span class="nx">registerCommand</span><span class="p">(</span><span class="s2">"hello"</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">"Show a quick greeting for the current workspace"</span><span class="p">,</span>
 <span class="w">    </span><span class="nx">handler</span><span class="o">:</span><span class="w"> </span><span class="kt">async</span><span class="w"> </span><span class="p">(</span><span class="nx">args</span><span class="p">,</span><span class="w"> </span><span class="nx">ctx</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">      </span><span class="kd">const</span><span class="w"> </span><span class="nx">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">args</span><span class="o">?</span><span class="p">.</span><span class="nx">trim</span><span class="p">()</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s2">&quot;Developer&quot;</span><span class="p">;</span>
+<span class="w">      </span><span class="kd">const</span><span class="w"> </span><span class="nx">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">args</span><span class="o">?</span><span class="p">.</span><span class="nx">trim</span><span class="p">()</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s2">"Developer"</span><span class="p">;</span>
 
 <span class="w">      </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">hasUI</span><span class="p">)</span><span class="w"> </span><span class="k">return</span><span class="p">;</span>
 
-<span class="w">      </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">ui</span><span class="p">.</span><span class="nx">notify</span><span class="p">(</span><span class="sb">`Hello, </span><span class="si">${</span><span class="nx">name</span><span class="si">}</span><span class="sb">! Workspace: </span><span class="si">${</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">cwd</span><span class="si">}</span><span class="sb">`</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;info&quot;</span><span class="p">);</span>
+<span class="w">      </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">ui</span><span class="p">.</span><span class="nx">notify</span><span class="p">(</span><span class="sb">`Hello, </span><span class="si">${</span><span class="nx">name</span><span class="si">}</span><span class="sb">! Workspace: </span><span class="si">${</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">cwd</span><span class="si">}</span><span class="sb">`</span><span class="p">,</span><span class="w"> </span><span class="s2">"info"</span><span class="p">);</span>
 <span class="w">    </span><span class="p">},</span>
 <span class="w">  </span><span class="p">});</span>
 <span class="p">}</span>
 
 <span class="c1">// extensions/orchestrator/index.ts</span>
-<span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">registerHello</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;./hello.js&quot;</span><span class="p">;</span>
+<span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">registerHello</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"./hello.js"</span><span class="p">;</span>
 
 <span class="c1">// inside the default export:</span>
 <span class="nx">registerHello</span><span class="p">(</span><span class="nx">pi</span><span class="p">);</span>
@@ -386,32 +365,32 @@ Include:
 <h2 id="add-static-argument-completions-to-an-extension-command">Add static argument completions to an extension command</h2>
 <p>Use this when an extension command has a small fixed set of subcommands or modes.</p>
 <div class="highlight"><pre><span></span><code><span class="c1">// extensions/orchestrator/deploy-check.ts</span>
-<span class="k">import</span><span class="w"> </span><span class="kr">type</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">ExtensionAPI</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@earendil-works/pi-coding-agent&quot;</span><span class="p">;</span>
+<span class="k">import</span><span class="w"> </span><span class="kr">type</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">ExtensionAPI</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@earendil-works/pi-coding-agent"</span><span class="p">;</span>
 
 <span class="k">export</span><span class="w"> </span><span class="kd">function</span><span class="w"> </span><span class="nx">registerDeployCheck</span><span class="p">(</span><span class="nx">pi</span><span class="o">:</span><span class="w"> </span><span class="kt">ExtensionAPI</span><span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="nx">pi</span><span class="p">.</span><span class="nx">registerCommand</span><span class="p">(</span><span class="s2">&quot;deploy-check&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;Run a quick pre-deploy checklist&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">pi</span><span class="p">.</span><span class="nx">registerCommand</span><span class="p">(</span><span class="s2">"deploy-check"</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">"Run a quick pre-deploy checklist"</span><span class="p">,</span>
 <span class="w">    </span><span class="nx">getArgumentCompletions</span><span class="o">:</span><span class="w"> </span><span class="p">(</span><span class="nx">prefix</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">      </span><span class="kd">const</span><span class="w"> </span><span class="nx">items</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span>
-<span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nx">value</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;staging&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">label</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;staging&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;Check staging settings&quot;</span><span class="w"> </span><span class="p">},</span>
-<span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nx">value</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;prod&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">label</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;prod&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;Check production settings&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nx">value</span><span class="o">:</span><span class="w"> </span><span class="s2">"staging"</span><span class="p">,</span><span class="w"> </span><span class="nx">label</span><span class="o">:</span><span class="w"> </span><span class="s2">"staging"</span><span class="p">,</span><span class="w"> </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">"Check staging settings"</span><span class="w"> </span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nx">value</span><span class="o">:</span><span class="w"> </span><span class="s2">"prod"</span><span class="p">,</span><span class="w"> </span><span class="nx">label</span><span class="o">:</span><span class="w"> </span><span class="s2">"prod"</span><span class="p">,</span><span class="w"> </span><span class="nx">description</span><span class="o">:</span><span class="w"> </span><span class="s2">"Check production settings"</span><span class="w"> </span><span class="p">},</span>
 <span class="w">      </span><span class="p">];</span>
 <span class="w">      </span><span class="k">return</span><span class="w"> </span><span class="nx">items</span><span class="p">.</span><span class="nx">filter</span><span class="p">((</span><span class="nx">item</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span>
 <span class="w">        </span><span class="nx">item</span><span class="p">.</span><span class="nx">value</span><span class="p">.</span><span class="nx">startsWith</span><span class="p">(</span><span class="nx">prefix</span><span class="p">.</span><span class="nx">toLowerCase</span><span class="p">()),</span>
 <span class="w">      </span><span class="p">);</span>
 <span class="w">    </span><span class="p">},</span>
 <span class="w">    </span><span class="nx">handler</span><span class="o">:</span><span class="w"> </span><span class="kt">async</span><span class="w"> </span><span class="p">(</span><span class="nx">args</span><span class="p">,</span><span class="w"> </span><span class="nx">ctx</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">      </span><span class="kd">const</span><span class="w"> </span><span class="nx">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="nx">args</span><span class="o">?</span><span class="p">.</span><span class="nx">trim</span><span class="p">()</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s2">&quot;staging&quot;</span><span class="p">).</span><span class="nx">toLowerCase</span><span class="p">();</span>
+<span class="w">      </span><span class="kd">const</span><span class="w"> </span><span class="nx">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="nx">args</span><span class="o">?</span><span class="p">.</span><span class="nx">trim</span><span class="p">()</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s2">"staging"</span><span class="p">).</span><span class="nx">toLowerCase</span><span class="p">();</span>
 
 <span class="w">      </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">hasUI</span><span class="p">)</span><span class="w"> </span><span class="k">return</span><span class="p">;</span>
 
-<span class="w">      </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">ui</span><span class="p">.</span><span class="nx">notify</span><span class="p">(</span><span class="sb">`Running deploy checks for </span><span class="si">${</span><span class="nx">target</span><span class="si">}</span><span class="sb">...`</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;info&quot;</span><span class="p">);</span>
+<span class="w">      </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">ui</span><span class="p">.</span><span class="nx">notify</span><span class="p">(</span><span class="sb">`Running deploy checks for </span><span class="si">${</span><span class="nx">target</span><span class="si">}</span><span class="sb">...`</span><span class="p">,</span><span class="w"> </span><span class="s2">"info"</span><span class="p">);</span>
 <span class="w">    </span><span class="p">},</span>
 <span class="w">  </span><span class="p">});</span>
 <span class="p">}</span>
 
 <span class="c1">// extensions/orchestrator/index.ts</span>
-<span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">registerDeployCheck</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;./deploy-check.js&quot;</span><span class="p">;</span>
+<span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">registerDeployCheck</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"./deploy-check.js"</span><span class="p">;</span>
 
 <span class="c1">// inside the default export:</span>
 <span class="nx">registerDeployCheck</span><span class="p">(</span><span class="nx">pi</span><span class="p">);</span>
@@ -426,8 +405,8 @@ Include:
 <p>Use this when a prompt template should tab-complete dynamic values like open issues, PRs, branches, or models.</p>
 <div class="highlight"><pre><span></span><code># prompts/pick-issue.md
 ---
-description: &quot;Summarize an open issue by number&quot;
-argument-hint: &quot;[issue number]&quot;
+description: "Summarize an open issue by number"
+argument-hint: "[issue number]"
 ---
 
 ## Raw Arguments
@@ -444,15 +423,18 @@ $ARGUMENTS
 <li>likely owner</li>
 <li>first implementation step</li>
 </ul>
-<h1 id="extensionsorchestratorextended-autocompletets">extensions/orchestrator/extended-autocomplete.ts</h1>
-<p>// 1) Add a completion entry inside the <code>completions</code> record
+<div class="highlight"><pre><span></span><code>```ts
+# extensions/orchestrator/extended-autocomplete.ts
+
+// 1) Add a completion entry inside the `completions` record
 "pick-issue": (prefix: string) =&gt; {
   void ctx.fetchOpenIssues(ctx.lastCwd);
   return ctx.issueCache.data
     ? filter(ctx.issueCache.data, prefix.replace(/^#/, ""))
     : null;
-},</p>
-<p>// 2) Add the command name to <code>promptTemplateCommands</code>
+},
+
+// 2) Add the command name to `promptTemplateCommands`
 const promptTemplateCommands = new Set([
   "external-ai",
   "pr-review",
@@ -465,8 +447,9 @@ const promptTemplateCommands = new Set([
   "create-skill",
   "create-coms-feature-manager",
   "pick-issue",
-]);</p>
-<p>```</p>
+]);
+</code></pre></div>
+
 <p>Prompt templates are registered by Pi itself, so they do not go through the <code>registerCommand()</code> wrapper used for extension commands. That is why prompt-template autocomplete needs both pieces: a <code>completions</code> entry and inclusion in <code>promptTemplateCommands</code>.</p>
 <blockquote>
 <p><strong>Note:</strong> <code>extensions/orchestrator/extended-autocomplete.ts</code> already includes cached fetchers such as <code>ctx.fetchOpenIssues(ctx.lastCwd)</code>, so follow that pattern instead of building a second autocomplete system.</p>
@@ -488,15 +471,15 @@ const promptTemplateCommands = new Set([
             </article>
             <nav class="page-nav">
 
-                <a href="btw-command.html" class="page-nav-link page-nav-prev">
+                <a href="automating-code-reviews.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Asking Side Questions with /btw</span>
+                    <span class="page-nav-title">Automating Code Reviews</span>
                 </a>
 
 
-                <a href="safety-enforcements.html" class="page-nav-link page-nav-next">
+                <a href="managing-custom-agents.html" class="page-nav-link page-nav-next">
                     <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Implementing Command Guards</span>
+                    <span class="page-nav-title">Managing Custom Agents</span>
                 </a>
 
             </nav>
@@ -523,10 +506,7 @@ const promptTemplateCommands = new Set([
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>scripts/generate_docs.py</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>

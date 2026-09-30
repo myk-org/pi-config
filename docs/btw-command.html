@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Asking Side Questions with /btw - pi-config</title>
-    <meta name="description" content="Customize and extend your AI development assistant with custom agents, rules, and memory">
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
     <link rel="stylesheet" href="assets/style.css">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
@@ -14,7 +14,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <a href="index.html" class="sidebar-logo">pi-config</a>
-            <p class="sidebar-tagline">Customize and extend your AI development assistant with custom agents, rules, and memory</p>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
         </div>
 
         <div class="sidebar-search">
@@ -35,17 +35,38 @@
                         </a>
                     </li>
 
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">User Guides</h3>
+                <h3 class="nav-group-title">Core Workflows</h3>
                 <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
 
                     <li>
                         <a href="automating-code-reviews.html"
                            class="nav-link">
                             Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
                         </a>
                     </li>
 
@@ -63,75 +84,26 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="curating-project-memory.html"
-                           class="nav-link">
-                            Curating Project Memory
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link active" aria-current="page">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Recipes</h3>
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="custom-slash-commands.html"
+                        <a href="async-agents-and-cron.html"
                            class="nav-link">
-                            Creating Slash Commands
+                            Running Background Agents and Scheduled Tasks
                         </a>
                     </li>
 
                     <li>
-                        <a href="safety-enforcements.html"
+                        <a href="background-dreaming.html"
                            class="nav-link">
-                            Implementing Command Guards
+                            Background Memory Consolidation (Dreaming)
                         </a>
                     </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Reference</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="cli-reference.html"
-                           class="nav-link">
-                            myk_pi_tools CLI Reference
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="configuration.html"
-                           class="nav-link">
-                            Configuration &amp; Settings
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="built-in-workflows.html"
-                           class="nav-link">
-                            Built-in Workflow Commands
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Internals</h3>
-                <ul class="nav-group-pages">
 
                     <li>
                         <a href="memory-architecture.html"
@@ -141,9 +113,9 @@
                     </li>
 
                     <li>
-                        <a href="daemon-and-websockets.html"
+                        <a href="curating-project-memory.html"
                            class="nav-link">
-                            Daemon &amp; Websocket Networking
+                            Curating Project Memory
                         </a>
                     </li>
 
@@ -151,20 +123,20 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Extensions &amp; Integrations</h3>
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
                 <ul class="nav-group-pages">
 
                     <li>
-                        <a href="neovim-integration.html"
+                        <a href="inter-agent-communication.html"
                            class="nav-link">
-                            Neovim Integration
+                            Inter-Agent Communication Network
                         </a>
                     </li>
 
                     <li>
-                        <a href="discord-bot.html"
+                        <a href="external-ai-agents.html"
                            class="nav-link">
-                            Discord Bot Notifications
+                            External AI Agents &amp; CLI
                         </a>
                     </li>
 
@@ -176,16 +148,16 @@
                     </li>
 
                     <li>
-                        <a href="vertex-claude-provider.html"
+                        <a href="neovim-integration.html"
                            class="nav-link">
-                            Google Vertex Claude Provider
+                            Neovim Integration
                         </a>
                     </li>
 
                     <li>
-                        <a href="pi-sidecar.html"
+                        <a href="discord-bot.html"
                            class="nav-link">
-                            Pi Sidecar HTTP API
+                            ~/.pi/discord.env
                         </a>
                     </li>
 
@@ -193,62 +165,69 @@
             </div>
 
             <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Usage</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="external-ai-agents.html"
-                           class="nav-link">
-                            External AI Agents &amp; CLI
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Advanced Features</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="async-agents-and-cron.html"
-                           class="nav-link">
-                            Running Background Agents and Scheduled Tasks
-                        </a>
-                    </li>
-
-                    <li>
-                        <a href="inter-agent-communication.html"
-                           class="nav-link">
-                            Inter-Agent Communication Network
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Memory System</h3>
-                <ul class="nav-group-pages">
-
-                    <li>
-                        <a href="background-dreaming.html"
-                           class="nav-link">
-                            Background Memory Consolidation (Dreaming)
-                        </a>
-                    </li>
-
-                </ul>
-            </div>
-
-            <div class="nav-group">
-                <h3 class="nav-group-title">Extensions</h3>
+                <h3 class="nav-group-title">Providers</h3>
                 <ul class="nav-group-pages">
 
                     <li>
                         <a href="acpx-provider.html"
                            class="nav-link">
                             ACPX Provider Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            or: pip install pi-sidecar-client
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk_pi_tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link active" aria-current="page">
+                            Asking Side Questions with /btw
                         </a>
                     </li>
 
@@ -273,11 +252,11 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener" class="docsfy-badge" title="Generated with docsfy">
-                    ⚡ docs<span class="brand-accent">fy</span>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                    ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
-                <a href="https://github.com/myk-org/pi-config.git" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config.git">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
                     <span class="github-stars" id="github-stars" title="GitHub stars"></span>
                 </a>
@@ -322,18 +301,18 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Parameter</th>
-<th style="text-align: left;">Type</th>
-<th style="text-align: left;">Default</th>
-<th style="text-align: left;">Description</th>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>&lt;question&gt;</code></td>
-<td style="text-align: left;">string</td>
-<td style="text-align: left;">(required)</td>
-<td style="text-align: left;">The short question to answer from the current conversation context.</td>
+<td><code>&lt;question&gt;</code></td>
+<td>string</td>
+<td>(required)</td>
+<td>The short question to answer from the current conversation context.</td>
 </tr>
 </tbody>
 </table>
@@ -349,22 +328,22 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Item</th>
-<th style="text-align: left;">Effect</th>
+<th>Item</th>
+<th>Effect</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;">Loading view</td>
-<td style="text-align: left;">Shows the request is in progress</td>
+<td>Loading view</td>
+<td>Shows the request is in progress</td>
 </tr>
 <tr>
-<td style="text-align: left;">Abort action</td>
-<td style="text-align: left;">Cancels the side question</td>
+<td>Abort action</td>
+<td>Cancels the side question</td>
 </tr>
 <tr>
-<td style="text-align: left;">Empty answer</td>
-<td style="text-align: left;">Shows <code>No answer received</code></td>
+<td>Empty answer</td>
+<td>Shows <code>No answer received</code></td>
 </tr>
 </tbody>
 </table>
@@ -376,42 +355,42 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Key</th>
-<th style="text-align: left;">Action</th>
+<th>Key</th>
+<th>Action</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>Esc</code></td>
-<td style="text-align: left;">Close the overlay</td>
+<td><code>Esc</code></td>
+<td>Close the overlay</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>Space</code></td>
-<td style="text-align: left;">Close the overlay</td>
+<td><code>Space</code></td>
+<td>Close the overlay</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>q</code></td>
-<td style="text-align: left;">Close the overlay</td>
+<td><code>q</code></td>
+<td>Close the overlay</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>Ctrl+C</code></td>
-<td style="text-align: left;">Close the overlay</td>
+<td><code>Ctrl+C</code></td>
+<td>Close the overlay</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>↑</code> or <code>k</code></td>
-<td style="text-align: left;">Scroll up</td>
+<td><code>↑</code> or <code>k</code></td>
+<td>Scroll up</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>↓</code> or <code>j</code></td>
-<td style="text-align: left;">Scroll down</td>
+<td><code>↓</code> or <code>j</code></td>
+<td>Scroll down</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>PgUp</code></td>
-<td style="text-align: left;">Scroll up faster</td>
+<td><code>PgUp</code></td>
+<td>Scroll up faster</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>PgDn</code></td>
-<td style="text-align: left;">Scroll down faster</td>
+<td><code>PgDn</code></td>
+<td>Scroll down faster</td>
 </tr>
 </tbody>
 </table>
@@ -424,31 +403,31 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Behavior</th>
-<th style="text-align: left;">Normal turn</th>
-<th style="text-align: left;"><code>/btw</code></th>
+<th>Behavior</th>
+<th>Normal turn</th>
+<th><code>/btw</code></th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;">Uses current conversation context</td>
-<td style="text-align: left;">Yes</td>
-<td style="text-align: left;">Yes</td>
+<td>Uses current conversation context</td>
+<td>Yes</td>
+<td>Yes</td>
 </tr>
 <tr>
-<td style="text-align: left;">Uses tool access</td>
-<td style="text-align: left;">Yes</td>
-<td style="text-align: left;">No</td>
+<td>Uses tool access</td>
+<td>Yes</td>
+<td>No</td>
 </tr>
 <tr>
-<td style="text-align: left;">Writes a new turn into the main history</td>
-<td style="text-align: left;">Yes</td>
-<td style="text-align: left;">No</td>
+<td>Writes a new turn into the main history</td>
+<td>Yes</td>
+<td>No</td>
 </tr>
 <tr>
-<td style="text-align: left;">Shows answer in a temporary overlay</td>
-<td style="text-align: left;">No</td>
-<td style="text-align: left;">Yes</td>
+<td>Shows answer in a temporary overlay</td>
+<td>No</td>
+<td>Yes</td>
 </tr>
 </tbody>
 </table>
@@ -463,30 +442,30 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Use case</th>
-<th style="text-align: left;">Good fit for <code>/btw</code></th>
+<th>Use case</th>
+<th>Good fit for <code>/btw</code></th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;">Clarify a recent decision</td>
-<td style="text-align: left;">Yes</td>
+<td>Clarify a recent decision</td>
+<td>Yes</td>
 </tr>
 <tr>
-<td style="text-align: left;">Ask for a one-line recap</td>
-<td style="text-align: left;">Yes</td>
+<td>Ask for a one-line recap</td>
+<td>Yes</td>
 </tr>
 <tr>
-<td style="text-align: left;">Check naming or terminology from the current session</td>
-<td style="text-align: left;">Yes</td>
+<td>Check naming or terminology from the current session</td>
+<td>Yes</td>
 </tr>
 <tr>
-<td style="text-align: left;">Ask for file inspection or command output</td>
-<td style="text-align: left;">No</td>
+<td>Ask for file inspection or command output</td>
+<td>No</td>
 </tr>
 <tr>
-<td style="text-align: left;">Make code changes</td>
-<td style="text-align: left;">No</td>
+<td>Make code changes</td>
+<td>No</td>
 </tr>
 </tbody>
 </table>
@@ -516,18 +495,18 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Goal</th>
-<th style="text-align: left;">What to do</th>
+<th>Goal</th>
+<th>What to do</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;">Use <code>/btw</code></td>
-<td style="text-align: left;">Run <code>/btw &lt;question&gt;</code> in any active session</td>
+<td>Use <code>/btw</code></td>
+<td>Run <code>/btw &lt;question&gt;</code> in any active session</td>
 </tr>
 <tr>
-<td style="text-align: left;">Create similar commands</td>
-<td style="text-align: left;">Add your own slash commands with custom behavior</td>
+<td>Create similar commands</td>
+<td>Add your own slash commands with custom behavior</td>
 </tr>
 </tbody>
 </table>
@@ -536,31 +515,31 @@
 <table>
 <thead>
 <tr>
-<th style="text-align: left;">Problem</th>
-<th style="text-align: left;">What it means</th>
-<th style="text-align: left;">What to do</th>
+<th>Problem</th>
+<th>What it means</th>
+<th>What to do</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><code>Usage: /btw &lt;question&gt;</code></td>
-<td style="text-align: left;">No question was provided</td>
-<td style="text-align: left;">Run <code>/btw</code> with text after it</td>
+<td><code>Usage: /btw &lt;question&gt;</code></td>
+<td>No question was provided</td>
+<td>Run <code>/btw</code> with text after it</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>Cancelled</code></td>
-<td style="text-align: left;">The request was aborted</td>
-<td style="text-align: left;">Run the command again</td>
+<td><code>Cancelled</code></td>
+<td>The request was aborted</td>
+<td>Run the command again</td>
 </tr>
 <tr>
-<td style="text-align: left;"><code>No answer received</code></td>
-<td style="text-align: left;">The model returned no usable text</td>
-<td style="text-align: left;">Retry with a clearer question</td>
+<td><code>No answer received</code></td>
+<td>The model returned no usable text</td>
+<td>Retry with a clearer question</td>
 </tr>
 <tr>
-<td style="text-align: left;">The answer is too vague</td>
-<td style="text-align: left;">The current session does not contain enough context</td>
-<td style="text-align: left;">Ask a more specific question or continue with a normal prompt</td>
+<td>The answer is too vague</td>
+<td>The current session does not contain enough context</td>
+<td>Ask a more specific question or continue with a normal prompt</td>
 </tr>
 </tbody>
 </table>
@@ -578,16 +557,13 @@
             </article>
             <nav class="page-nav">
 
-                <a href="curating-project-memory.html" class="page-nav-link page-nav-prev">
+                <a href="daemon-and-websockets.html" class="page-nav-link page-nav-prev">
                     <span class="page-nav-label">Previous</span>
-                    <span class="page-nav-title">Curating Project Memory</span>
+                    <span class="page-nav-title">Daemon &amp; Websocket Networking</span>
                 </a>
 
 
-                <a href="custom-slash-commands.html" class="page-nav-link page-nav-next">
-                    <span class="page-nav-label">Next</span>
-                    <span class="page-nav-title">Creating Slash Commands</span>
-                </a>
+                <div></div>
 
             </nav>
 
@@ -624,10 +600,7 @@
 
         <footer class="page-footer">
 
-            <span class="footer-version">Generated from version 4.2.0</span>
-            <span class="footer-sep">&middot;</span>
-
-            Generated with <a href="https://github.com/myk-org/docsfy" target="_blank" rel="noopener">docs<span class="brand-accent">fy</span></a>
+            Built from <code>docs/*.md</code> by <code>scripts/generate_docs.py</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>
