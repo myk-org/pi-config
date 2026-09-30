@@ -165,6 +165,13 @@
     "default": {},
     "group": "Provider"
   },
+  "background_virtual_model_enable": {
+    "description": "Route background work (async subagents, dreaming, cron) through the pi-bg/auto virtual model, which picks the physical model per request; needs internal_operations_provider and internal_operations_model",
+    "type": "bool",
+    "env": "PI_BACKGROUND_VIRTUAL_MODEL_ENABLE",
+    "default": false,
+    "group": "Subagent"
+  },
   "sync_agent_max_seconds": {
     "description": "Max seconds for sync subagent execution before requiring async",
     "type": "int",
