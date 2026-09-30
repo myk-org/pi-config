@@ -126,7 +126,7 @@ def _parse_line(item: dict[str, Any], index: int) -> int:
     """
     try:
         return int(item["line"])
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         print(
             f"Error: Comment at index {index} has non-numeric 'line' value: {item['line']!r}",
             file=sys.stderr,

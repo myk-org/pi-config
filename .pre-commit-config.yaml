@@ -1,11 +1,10 @@
 ---
-# This repo requires Python >= 3.14 and uses 3.14-only syntax (PEP 758,
-# unparenthesised `except`). The pre-commit-hooks environments default to
-# whatever CPython they were built against, which was 3.13, so every hook from
-# that repo failed with "Could not parse ast" on scripts/install.py. Pinning the
-# interpreter here fixes the whole family at once instead of deleting checks.
+# Python 3.13 for the hook environments. The project requires >= 3.14, but
+# scripts/install.py is the bootstrap installer and declares >= 3.10, and the
+# published pi-sidecar-client has its own floor; both must stay parseable on
+# older interpreters, which is also why ruff's target-version is py313.
 default_language_version:
-  python: python3.14
+  python: python3.13
 
 ci:
   autofix_prs: false

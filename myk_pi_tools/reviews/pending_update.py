@@ -100,7 +100,7 @@ def backfill_node_ids(
             continue
         try:
             cid = int(comment_id)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         if cid in id_to_node:
             comment["node_id"] = id_to_node[cid]
@@ -183,7 +183,7 @@ def update_comment_body(node_id: str | None, refined_body: str) -> str:
     # GraphQL can return 200 with errors in the response body.
     try:
         response = json.loads(result.stdout)
-    except json.JSONDecodeError, TypeError:
+    except (json.JSONDecodeError, TypeError):
         print_stderr(f"Warning: Could not parse GraphQL response for {node_id}")
         return "error"
 
@@ -269,7 +269,7 @@ def run(json_path: str, *, submit: bool = False) -> int:
     try:
         with open(json_path_obj, encoding="utf-8") as f:
             data: dict[str, Any] = json.load(f)
-    except json.JSONDecodeError, OSError:
+    except (json.JSONDecodeError, OSError):
         print_stderr(f"Error: Invalid JSON file: {json_path}")
         return 1
 
@@ -287,7 +287,7 @@ def run(json_path: str, *, submit: bool = False) -> int:
     try:
         pr_number = int(pr_number)
         review_id = int(review_id)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         print_stderr("Error: pr_number and review_id must be integers")
         return 1
 

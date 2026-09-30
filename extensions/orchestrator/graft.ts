@@ -240,11 +240,14 @@ export function createGraftIntegration(options: Options) {
       if (!trusted(ctx)) { invalidate(ctx, "untrusted"); log.info("session_start_exit", { decision: "untrusted" }); return; }
       const enabled = options.setting?.(ctx.cwd) ?? options.enabled;
       if (!enabled) { invalidate(ctx, "disabled"); log.info("session_start_exit", { decision: "disabled" }); return; }
+      // Check for a worktree BEFORE anything goes live. This has to sit above
+      // registerTools() and `state.enabled = true`: with those already set, the
+      // guards compare resolveWorktreeRoot(cwd) against state.root (both the
+      // cwd, since resolution falls back to it) and pass, so the integration
+      // stayed live outside a repo -- a read flipped the footer to "synced" and
+      // every prompt ran a graft check subprocess in a plain directory.
+      if (!worktree(ctx.cwd)) { invalidate(ctx, "not_a_worktree"); setState("absent"); log.info("session_start_exit", { decision: "not_a_worktree", cwd: ctx.cwd }); return; }
       registerTools(); const generation = ++state.generation; state.enabled = true; state.refresh = undefined; state.dirty = false; state.root = resolveWorktreeRoot(ctx.cwd); const root = state.root; state.nodeCount = nodes(root); state.value = "syncing"; state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
-      // Not a git worktree: no graph can exist, so skip the availability probe
-      // and the rebuild entirely. Retrying here only produced a red "failed" and
-      // pointless subprocess churn in ordinary directories like /tmp.
-      if (!worktree(ctx.cwd)) { setState("absent"); log.info("session_start_exit", { decision: "not_a_worktree", cwd: ctx.cwd }); return; }
       try { state.store = savingsStore(ctx, root); state.dirtySignal = state.store ? `${state.store}.dirty` : ""; if (state.dirtySignal) { mkdirSync(state.dirtySignal, { recursive: true, mode: 0o700 }); chmodSync(state.dirtySignal, 0o700); } state.tokenSavings = readSavings(state.store); } catch (error: any) { state.store = ""; state.dirtySignal = ""; state.tokenSavings = 0; log.warn("savings_restore_failed", { code: error?.code }); }
       // Provisional state while we probe. This used to be "failed", which made
       // every session start — including healthy ones — flash the error-red state

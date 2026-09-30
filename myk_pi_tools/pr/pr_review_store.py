@@ -431,7 +431,7 @@ def run_store(json_path: str) -> int:
 
     try:
         pr_number = int(pr_number_raw)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         log(f"Error: Invalid pr_number: {pr_number_raw}")
         return 1
 

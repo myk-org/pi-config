@@ -89,9 +89,14 @@ agent looks for skills so the model can drive the generator without being told t
 details:
 
 ```bash
-mkdir -p ~/.pi/agent/skills/pi-docsite
-cp "$(python -c 'import pi_docsite, pathlib; print(pathlib.Path(pi_docsite.__file__).parent)')/../skill/SKILL.md" \
-   ~/.pi/agent/skills/pi-docsite/SKILL.md
+uv run python -c "
+import pi_docsite, pathlib, shutil
+src = pathlib.Path(pi_docsite.__file__).parent / 'skill' / 'SKILL.md'
+dst = pathlib.Path.home() / '.pi/agent/skills/pi-docsite'
+dst.mkdir(parents=True, exist_ok=True)
+shutil.copy(src, dst / 'SKILL.md')
+print('installed to', dst)
+"
 ```
 
 Or point your agent at it in the repo you are working in. It documents the commands,
@@ -103,7 +108,7 @@ the frontmatter contract, what gets generated, and how to debug a failure.
 |---|---|
 | `<slug>.html` | one per `.md` |
 | `index.html` | landing page with grouped navigation |
-| `search-index.json` | search data, also inlined into every page |
+| `search-index.json` | full page text for search, fetched once by every page |
 | `llms.txt` | short page index for LLM consumption |
 | `llms-full.txt` | full page text for LLM consumption |
 | `assets/` | CSS and JS |
@@ -119,9 +124,10 @@ signal that something actually changed.
 
 ## Search works offline
 
-The search index is inlined into every page rather than fetched. That keeps search
-working when the site is opened directly from disk over `file://`, where `fetch()` of a
-JSON file is blocked by CORS in most browsers.
+The search index is written once and **fetched** by every page rather than inlined,
+which keeps each page small. Browsers block `fetch()` of a local file over `file://`, so
+**serve the site over HTTP** for search to work; opening the generated HTML directly from
+disk will report that the index is unavailable.
 
 ## Requirements
 

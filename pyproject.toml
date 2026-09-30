@@ -63,10 +63,15 @@ exclude = [
 
 [tool.ruff]
 preview = true
-# Pinned explicitly rather than inferred from requires-python: this repo requires
-# Python >= 3.14 and uses 3.14-only syntax (PEP 758 unparenthesised `except`).
-# Without this, ruff could format to a syntax the project does not target.
-target-version = "py314"
+# Pinned explicitly rather than inferred from requires-python. The project
+# requires Python >= 3.14, but the ruff target is deliberately one lower: PEP 758
+# (unparenthesised `except`) is 3.14-only, and ruff was rewriting scripts/install.py
+# -- the bootstrap installer, which declares >= 3.10 and is run from a raw GitHub
+# URL before anything is installed -- into syntax that fails to parse on 3.10-3.13.
+# The same syntax reached the published pi-sidecar-client 4.6.5, whose floor cannot
+# change without a version bump. We run on 3.14 but only emit <= 3.13 syntax, so
+# portable entry points stay portable.
+target-version = "py313"
 line-length = 120
 fix = true
 output-format = "grouped"

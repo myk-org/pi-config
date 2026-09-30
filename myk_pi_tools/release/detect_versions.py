@@ -67,11 +67,11 @@ def _parse_pyproject_toml(filepath: Path) -> str | None:
     try:
         with filepath.open("rb") as f:
             data = tomllib.load(f)
-    except OSError, tomllib.TOMLDecodeError:
+    except (OSError, tomllib.TOMLDecodeError):
         return None
     try:
         version = data["project"]["version"]
-    except KeyError, TypeError:
+    except (KeyError, TypeError):
         return None
     return version if isinstance(version, str) else None
 
@@ -80,7 +80,7 @@ def _parse_package_json(filepath: Path) -> str | None:
     """Parse version from package.json."""
     try:
         data = json.loads(filepath.read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
+    except (OSError, json.JSONDecodeError):
         return None
     version = data.get("version")
     return version if isinstance(version, str) else None
@@ -92,11 +92,11 @@ def _parse_setup_cfg(filepath: Path) -> str | None:
     try:
         content = filepath.read_text(encoding="utf-8")
         config.read_string(content)
-    except OSError, configparser.Error:
+    except (OSError, configparser.Error):
         return None
     try:
         version = config.get("metadata", "version")
-    except configparser.NoSectionError, configparser.NoOptionError:
+    except (configparser.NoSectionError, configparser.NoOptionError):
         return None
     version = version.strip().strip("\"'")
     # Skip dynamic version directives (attr:, file:)
@@ -110,11 +110,11 @@ def _parse_cargo_toml(filepath: Path) -> str | None:
     try:
         with filepath.open("rb") as f:
             data = tomllib.load(f)
-    except OSError, tomllib.TOMLDecodeError:
+    except (OSError, tomllib.TOMLDecodeError):
         return None
     try:
         version = data["package"]["version"]
-    except KeyError, TypeError:
+    except (KeyError, TypeError):
         return None
     return version if isinstance(version, str) else None
 
@@ -226,7 +226,7 @@ def detect_version_files(root: Path | None = None) -> list[VersionFile]:
                                             file_type=file_type,
                                         )
                                     )
-        except OSError, json.JSONDecodeError:
+        except (OSError, json.JSONDecodeError):
             pass
 
     results.extend(_find_python_version_files(root))

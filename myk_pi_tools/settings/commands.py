@@ -62,7 +62,7 @@ def _resolve_repo_root(cwd: Path | None = None) -> Path:
                 base = Path(work_dir) if work_dir else Path.cwd()
                 git_dir = (base / git_dir).resolve()
             return git_dir.parent
-    except OSError, subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         pass
     return Path(work_dir) if work_dir else Path.cwd()
 
@@ -163,7 +163,7 @@ def _load_settings_file(path: Path) -> dict[str, Any]:
         return {}
     try:
         raw = commentjson.loads(path.read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError, ValueError:
+    except (OSError, json.JSONDecodeError, ValueError):
         return {}
     if not isinstance(raw, dict):
         return {}
@@ -182,7 +182,7 @@ def _settings_file_has_key(path: Path, key: str) -> bool:
         return False
     try:
         raw = commentjson.loads(path.read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError, ValueError:
+    except (OSError, json.JSONDecodeError, ValueError):
         return False
     return isinstance(raw, dict) and key in raw
 
@@ -333,7 +333,7 @@ def _resolve_env_or_default(meta: dict[str, Any]) -> SettingValue:
                     return default
                 try:
                     n = int(env_val.strip(), 10)
-                except ValueError, TypeError:
+                except (ValueError, TypeError):
                     return default
                 min_val = meta.get("min", 0)
                 max_val = meta.get("max", 2**53)

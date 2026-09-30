@@ -545,6 +545,20 @@ describe("Graft paths and status", () => {
     assert.deepEqual(command.calls, []);
   });
 
+  it("stays fully inert outside a worktree: no tools, no subprocess", async () => {
+    const mock = mockPi(); const command = runner([]);
+    graft.createGraftIntegration({ enabled: true, worktree: () => null, run: command.run }).register(mock.pi as any);
+    const c = ctx();
+    await mock.handlers.get("session_start")![0]({ reason: "startup" }, c);
+
+    assert.deepEqual(c.status.at(-1), { key: "4b-graft", text: "◤ graft · n/a" });
+    // The tools must not exist at all: with state.enabled set before the
+    // worktree check, the resolveWorktreeRoot===state.root guards pass (both are
+    // the cwd) and a read could flip the footer to "synced" and spawn graft.
+    assert.equal(mock.tools.size, 0, "no graft tools may be registered");
+    assert.deepEqual(command.calls, [], "no graft subprocess may run");
+  });
+
   it("treats a repo with no graph yet as absent rather than failed", async () => {
     const r = register({ graph: async () => "absent", executable: async () => true });
     const c = await start(r);

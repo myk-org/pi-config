@@ -152,7 +152,7 @@ def _get_upstream_repo() -> str | None:
         match = re.match(r"https?://github\.com/([^/]+/[^/]+?)(?:\.git)?$", url)
         if match:
             return match.group(1)
-    except subprocess.TimeoutExpired, OSError:
+    except (subprocess.TimeoutExpired, OSError):
         pass
     return None
 
@@ -455,7 +455,7 @@ def fetch_review_threads(
             review_threads = raw_result["data"]["repository"]["pullRequest"]["reviewThreads"]
             page_info = review_threads["pageInfo"]
             nodes = review_threads.get("nodes") or []
-        except KeyError, TypeError:
+        except (KeyError, TypeError):
             print_stderr(f"Warning: Unexpected GraphQL response structure (page {page_count})")
             break
 
@@ -582,7 +582,7 @@ def _build_body_comment_threads(
 
             try:
                 line_int = int(line)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 continue
 
             end_line = comment.get("end_line")
@@ -590,7 +590,7 @@ def _build_body_comment_threads(
             if end_line is not None:
                 try:
                     end_line_int = int(end_line)
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     pass
 
             threads.append({
@@ -651,7 +651,7 @@ def fetch_coderabbit_body_comments(owner: str, repo: str, pr_number: str) -> lis
 
         try:
             review_id_int = int(review_id)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
 
         node_id = review.get("node_id")
@@ -760,7 +760,7 @@ def fetch_qodo_reply_comments(
                 if len(parts) == 2:
                     try:
                         reply_line = int(parts[1])
-                    except ValueError, TypeError:
+                    except (ValueError, TypeError):
                         pass
 
             results.append({
@@ -966,7 +966,7 @@ def process_and_categorize(
                 if cid is not None:
                     try:
                         cid = int(cid)
-                    except TypeError, ValueError:
+                    except (TypeError, ValueError):
                         pass
                     else:
                         dismissed_by_comment_id.setdefault(cid, []).append(c)
@@ -1084,7 +1084,7 @@ def process_and_categorize(
                             if cid is not None:
                                 try:
                                     cid = int(cid)
-                                except TypeError, ValueError:
+                                except (TypeError, ValueError):
                                     cid = None
                             if cid is not None:
                                 candidates = dismissed_by_comment_id.get(cid, [])
@@ -1495,7 +1495,7 @@ def run(
                             parsed = parse_review_body_comments(review_body)
                             try:
                                 review_id_int = int(review_id)
-                            except TypeError, ValueError:
+                            except (TypeError, ValueError):
                                 review_id_int = None
                             if review_id_int is not None:
                                 node_id = review_meta.get("node_id")

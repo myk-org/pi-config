@@ -74,7 +74,7 @@ def _print_poll_summary(pr_number: str, output_dir: str) -> None:
     try:
         with open(json_path, encoding="utf-8") as f:
             data = json.load(f)
-    except json.JSONDecodeError, OSError:
+    except (json.JSONDecodeError, OSError):
         return
 
     total = 0
@@ -109,7 +109,7 @@ def _has_actionable_comments(pr_number: str, output_dir: str) -> bool:
     try:
         with open(json_path, encoding="utf-8") as f:
             data = json.load(f)
-    except json.JSONDecodeError, OSError:
+    except (json.JSONDecodeError, OSError):
         return True
 
     for source in ("human", "qodo", "coderabbit"):
@@ -142,7 +142,7 @@ def _has_actionable_qodo_comments(pr_number: str, output_dir: str) -> bool:
     try:
         with open(json_path, encoding="utf-8") as f:
             data = json.load(f)
-    except json.JSONDecodeError, OSError:
+    except (json.JSONDecodeError, OSError):
         return True
 
     for comment in data.get("qodo", []):
@@ -485,7 +485,7 @@ def run(review_url: str = "", source: str = "coderabbit", *, output_dir: str) ->
                         f"[poll] Rate limit posted {int(elapsed)}s ago."
                         f" Original: {wait_seconds}s, remaining: {remaining}s"
                     )
-                except ValueError, TypeError:
+                except (ValueError, TypeError):
                     print_stderr("[poll] Warning: Could not parse comment timestamp. Using full wait time.")
 
             total_wait = remaining + _RATE_LIMIT_BUFFER_SECONDS

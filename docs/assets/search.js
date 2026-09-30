@@ -23,7 +23,13 @@
     fetch('search-index.json').then(function(r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
-    }).then(function(data) { index = data; }).catch(function(err) {
+    }).then(function(data) {
+      index = data;
+      // The user may have typed before the fetch resolved. Their first query
+      // was answered with "Loading search index..." and never re-run, so the
+      // results stayed hidden until they edited the box again.
+      if (typeof render === 'function' && input.value.trim()) render();
+    }).catch(function(err) {
       indexError = err;
       console.error('[docs] search index unavailable:', err,
         '— serve the site over HTTP, or build it with the search index inlined.');
@@ -77,8 +83,8 @@
   }
 
   // Search logic
-  input.addEventListener('input', function() {
-    var q = this.value.toLowerCase().trim();
+  function render() {
+    var q = input.value.toLowerCase().trim();
     results.innerHTML = '';
     selectedIdx = -1;
     if (!q) return;
@@ -127,7 +133,9 @@
       empty.textContent = 'No results found';
       results.appendChild(empty);
     }
-  });
+  }
+
+  input.addEventListener('input', render);
 
   // Keyboard navigation
   input.addEventListener('keydown', function(e) {

@@ -202,7 +202,7 @@ def run(pr_url: str, *, output_dir: str) -> int:
 
     try:
         pr_number_int = int(pr_number)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         print_stderr(f"Error: Invalid PR number: {pr_number!r}")
         return 1
 
@@ -234,7 +234,7 @@ def run(pr_url: str, *, output_dir: str) -> int:
 
     try:
         review_id = int(review_id)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         print_stderr(f"Error: Invalid review ID: {review_id!r}")
         return 1
     print_stderr(f"Found pending review: {review_id}")

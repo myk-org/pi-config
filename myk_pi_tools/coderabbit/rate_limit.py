@@ -143,7 +143,7 @@ def _post_coderabbit_comment(owner_repo: str, pr_number: int, command: str) -> i
         return None
     try:
         return json.loads(stdout).get("id")
-    except json.JSONDecodeError, AttributeError:
+    except (json.JSONDecodeError, AttributeError):
         return None
 
 
@@ -181,7 +181,7 @@ def _find_trigger_reply(owner_repo: str, pr_number: int, trigger_comment_id: int
         return stderr or "API request failed"
     try:
         return int(output.strip()) > 0
-    except ValueError, TypeError:
+    except (ValueError, TypeError):
         return f"Unexpected output: {output}"
 
 
@@ -222,7 +222,7 @@ def run_check(owner_repo: str, pr_number: int) -> int:
                 comment_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
                 elapsed = max(0, int((datetime.now(UTC) - comment_time).total_seconds()))
                 wait_seconds = max(0, DEFAULT_RATE_LIMIT_WINDOW - elapsed)
-            except ValueError, TypeError:
+            except (ValueError, TypeError):
                 print(
                     f"Warning: Could not parse comment timestamp '{updated_at}' — using full fallback window",
                     file=sys.stderr,
@@ -330,7 +330,7 @@ def run_retry(owner_repo: str, pr_number: int) -> int:
             comment_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
             elapsed = max(0, int((datetime.now(UTC) - comment_time).total_seconds()))
             remaining = max(0, wait_seconds - elapsed)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             print(
                 f"Warning: Could not parse comment timestamp '{updated_at}' — using full wait",
                 file=sys.stderr,

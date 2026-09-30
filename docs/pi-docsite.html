@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>pi-docsite - pi-config</title>
     <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
-    <link rel="stylesheet" href="assets/style.css?v=4faedb9938">
+    <link rel="stylesheet" href="assets/style.css?v=935b9e3bf1">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -280,7 +280,7 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="" target="_blank" rel="noopener" class="docsfy-badge" title="pi-config documentation">
+                <a href="git@github.com:myk-org/pi-config.git" target="_blank" rel="noopener" class="docsfy-badge" title="documentation">
                     ⚡ pi<span class="brand-accent">-config</span>
                 </a>
 
@@ -419,7 +419,7 @@ nav_group: Reference
 </tr>
 <tr>
 <td><code>search-index.json</code></td>
-<td>search data, also inlined into every page</td>
+<td>full page text for search, fetched once by every page</td>
 </tr>
 <tr>
 <td><code>llms.txt</code></td>
@@ -442,17 +442,16 @@ nav_group: Reference
 so a docs change is reviewable and <strong>unrelated churn is a reliable signal that
 something actually changed</strong> — not a timestamp or a reordering.</p>
 <h2 id="search-works-offline">Search works offline</h2>
-<p>The search index is inlined into every page instead of being fetched. That keeps search
-working when the site is opened straight off disk over <code>file://</code>, where <code>fetch()</code> of a
-JSON file is blocked by CORS in most browsers. It also removes a round trip and a race
-between page load and first keystroke.</p>
+<p>The search index is written once and <strong>fetched</strong> by every page rather than inlined,
+which keeps each page small. Browsers block <code>fetch()</code> of a local file over <code>file://</code>, so
+serve the site over HTTP for search to work.</p>
 <h2 id="ask-your-llm">Ask your LLM</h2>
 <p>A ready-made skill ships inside the package at <code>skill/SKILL.md</code>, with the commands,
 the <code>nav.json</code> contract, and the failure modes. Copy it where your agent looks for
 skills so the model can drive the generator without being told the details:</p>
 <div class="highlight"><pre><span></span><code>uv<span class="w"> </span>run<span class="w"> </span>--package<span class="w"> </span>pi-docsite<span class="w"> </span>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">"</span>
 <span class="s2">import pi_docsite, pathlib, shutil</span>
-<span class="s2">src = pathlib.Path(pi_docsite.__file__).parent.parent / 'skill' / 'SKILL.md'</span>
+<span class="s2">src = pathlib.Path(pi_docsite.__file__).parent / 'skill' / 'SKILL.md'</span>
 <span class="s2">dst = pathlib.Path.home() / '.pi/agent/skills/pi-docsite'</span>
 <span class="s2">dst.mkdir(parents=True, exist_ok=True)</span>
 <span class="s2">shutil.copy(src, dst / 'SKILL.md')</span>
@@ -483,7 +482,7 @@ skills so the model can drive the generator without being told the details:</p>
 </tr>
 <tr>
 <td>Search returns nothing</td>
-<td>Open the browser console; <code>search index unavailable</code> means the inline index is missing from that page.</td>
+<td>Open the browser console. <code>search index unavailable</code> means the page was opened over <code>file://</code>, where the fetch is blocked. Serve it over HTTP.</td>
 </tr>
 <tr>
 <td>Rebuild shows unrelated diffs</td>
@@ -545,7 +544,7 @@ skills so the model can drive the generator without being told the details:</p>
 
         <footer class="page-footer">
 
-            Built from <code>docs/*.md</code> by <code>scripts/generate_docs.py</code>
+            Built from <code>docs/*.md</code> by <code>pi-docsite</code>
             <span class="footer-sep">&middot;</span>
             <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
         </footer>
@@ -553,14 +552,14 @@ skills so the model can drive the generator without being told the details:</p>
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js?v=4faedb9938"></script>
+    <script src="assets/theme.js?v=935b9e3bf1"></script>
 
-    <script src="assets/search.js?v=4faedb9938"></script>
-    <script src="assets/copy.js?v=4faedb9938"></script>
-    <script src="assets/callouts.js?v=4faedb9938"></script>
-    <script src="assets/scrollspy.js?v=4faedb9938"></script>
-    <script src="assets/codelabels.js?v=4faedb9938"></script>
-    <script src="assets/github.js?v=4faedb9938"></script>
+    <script src="assets/search.js?v=935b9e3bf1"></script>
+    <script src="assets/copy.js?v=935b9e3bf1"></script>
+    <script src="assets/callouts.js?v=935b9e3bf1"></script>
+    <script src="assets/scrollspy.js?v=935b9e3bf1"></script>
+    <script src="assets/codelabels.js?v=935b9e3bf1"></script>
+    <script src="assets/github.js?v=935b9e3bf1"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');
@@ -606,5 +605,6 @@ skills so the model can drive the generator without being told the details:</p>
     }
 })();
 </script>
+<!-- generated by pi-docsite -->
 </body>
 </html>

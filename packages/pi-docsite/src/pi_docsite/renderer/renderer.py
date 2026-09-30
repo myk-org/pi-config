@@ -582,6 +582,7 @@ def render_page(
         prev_page=prev_page,
         next_page=next_page,
         repo_url=repo_url,
+        badge_url=_safe_badge_url(repo_url),
         search_index=search_index,
         asset_version=_asset_version(),
         version=version,
@@ -605,11 +606,22 @@ def render_index(
         navigation=navigation,
         repo_url=repo_url,
         current_slug="",
-        badge_url=repo_url or DEFAULT_BADGE_URL,
+        badge_url=_safe_badge_url(repo_url),
         asset_version=_asset_version(),
         search_index=search_index,
         version=version,
     )
+
+
+def _safe_badge_url(repo_url: str) -> str:
+    """Badge href, scheme-checked.
+
+    The badge is a clickable link, so an unchecked ``--repo-url javascript:...``
+    became an executable link on every generated page. Reuse the same guard the
+    repository link already uses, and fall back rather than emitting an empty or
+    dangerous href.
+    """
+    return repo_url if repo_url and _is_safe_url(repo_url) else DEFAULT_BADGE_URL
 
 
 def _build_search_index(pages: dict[str, str], plan: dict[str, Any]) -> list[dict[str, str]]:

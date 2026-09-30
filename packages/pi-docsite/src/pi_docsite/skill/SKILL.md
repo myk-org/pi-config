@@ -102,7 +102,7 @@ Written into `--docs-dir` alongside the sources:
 |---|---|
 | `<slug>.html` | one page per `.md` |
 | `index.html` | landing page with the grouped navigation |
-| `search-index.json` | search data, also inlined into every page |
+| `search-index.json` | full page text for search, fetched once by every page |
 | `llms.txt` | short index of pages for LLM consumption |
 | `llms-full.txt` | full page text for LLM consumption |
 | `assets/` | CSS, JS, images |
@@ -115,8 +115,9 @@ touched.
 - **Edit the Markdown, never the generated HTML.** Fix the source and rebuild.
 - Generated files are usually committed. Commit them together with the source change,
   or the site is out of sync.
-- Search works from `file://` as well as a web server: the index is inlined into each
-  page, so there is no fetch and no CORS problem.
+- Search requires the site to be **served over HTTP**. The index is fetched once per
+  page, and browsers block that fetch over `file://`. Opening the generated HTML
+  straight from disk will report the index as unavailable.
 
 ## Troubleshooting
 
@@ -125,5 +126,5 @@ touched.
 | `uvx: command not found` | `uv` is not installed. Install it from [docs.astral.sh/uv](https://docs.astral.sh/uv/), or fall back to `pip install pi-docsite` and say which you used. |
 | `docs/<slug>.md has N H1 headings, expected 1` | Add exactly one real H1, or close the code fence that is swallowing it. |
 | Page missing from the sidebar | It should not happen — the generator lists every `*.md`. If it does, check for a filename that does not end in `.md`. |
-| Search returns nothing | Open the browser console. A `search index unavailable` message means the inline index is missing from that page. |
+| Search returns nothing | Open the browser console. A `search index unavailable` message means the page was opened over `file://`. Serve the site over HTTP. |
 | Rebuild shows unrelated diffs | Non-deterministic output; this is a bug in pi-docsite, not a stale build. |

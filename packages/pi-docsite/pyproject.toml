@@ -24,3 +24,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "pi_docsite.renderer" = ["templates/*.html", "static/*"]
+"pi_docsite.skill" = ["*.md"]

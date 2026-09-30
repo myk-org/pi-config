@@ -105,7 +105,7 @@ Written into `--docs-dir` next to the sources:
 |---|---|
 | `<slug>.html` | one page per `.md` |
 | `index.html` | landing page with the grouped sidebar |
-| `search-index.json` | search data, also inlined into every page |
+| `search-index.json` | full page text for search, fetched once by every page |
 | `llms.txt` | short page index for LLM consumption |
 | `llms-full.txt` | full page text for LLM consumption |
 | `assets/` | CSS and JS |
@@ -121,10 +121,9 @@ something actually changed** — not a timestamp or a reordering.
 
 ## Search works offline
 
-The search index is inlined into every page instead of being fetched. That keeps search
-working when the site is opened straight off disk over `file://`, where `fetch()` of a
-JSON file is blocked by CORS in most browsers. It also removes a round trip and a race
-between page load and first keystroke.
+The search index is written once and **fetched** by every page rather than inlined,
+which keeps each page small. Browsers block `fetch()` of a local file over `file://`, so
+serve the site over HTTP for search to work.
 
 ## Ask your LLM
 
@@ -135,7 +134,7 @@ skills so the model can drive the generator without being told the details:
 ```bash
 uv run --package pi-docsite python -c "
 import pi_docsite, pathlib, shutil
-src = pathlib.Path(pi_docsite.__file__).parent.parent / 'skill' / 'SKILL.md'
+src = pathlib.Path(pi_docsite.__file__).parent / 'skill' / 'SKILL.md'
 dst = pathlib.Path.home() / '.pi/agent/skills/pi-docsite'
 dst.mkdir(parents=True, exist_ok=True)
 shutil.copy(src, dst / 'SKILL.md')
@@ -150,7 +149,7 @@ print('installed to', dst)
 | `nav.json lists 'x' but docs/x.md does not exist` | The page was renamed or deleted. Fix `nav.json`. |
 | `note: N page(s) not in nav.json` | The page built fine but has no curated sidebar position. Add it to `nav.json`. |
 | `docs/<slug>.md has N H1 headings, expected 1` | Add exactly one real H1, or close the code fence swallowing it. |
-| Search returns nothing | Open the browser console; `search index unavailable` means the inline index is missing from that page. |
+| Search returns nothing | Open the browser console. `search index unavailable` means the page was opened over `file://`, where the fetch is blocked. Serve it over HTTP. |
 | Rebuild shows unrelated diffs | That is a determinism bug, not a stale build. |
 
 ## Requirements

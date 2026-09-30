@@ -59,7 +59,7 @@ def is_current_repo(target_repo: str) -> bool:
             timeout=5,
         )
         current_remote = result.stdout.strip()
-    except subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired:
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
     # Extract owner/repo from remote URL (supports both HTTPS and SSH)

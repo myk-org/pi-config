@@ -81,7 +81,7 @@ def save_config_cmd(agents: str | None, peers: str | None) -> None:
     if config_path.exists():
         try:
             cfg = json.loads(config_path.read_text())
-        except json.JSONDecodeError, OSError:
+        except (json.JSONDecodeError, OSError):
             cfg = {}
 
     if agents is not None:
