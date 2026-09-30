@@ -176,6 +176,61 @@ _ROOT_SCANNERS: list[tuple[str, Callable[[Path], str | None], str]] = [
 ]
 
 
+def _uv_members(data: dict) -> object:
+    """Dig out tool.uv.workspace.members without assuming a shape.
+
+    A syntactically valid manifest can put a scalar at any of those levels --
+    `tool = "value"` parses fine -- and chained .get() then raises
+    AttributeError and aborts detection, losing every other scan. Return the raw
+    value and let the caller decide.
+    """
+    current: object = data
+    for key in ("tool", "uv", "workspace"):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if not isinstance(current, dict):
+        return None
+    return current.get("members")
+
+
+def _find_uv_workspace_members(root: Path) -> list[Path]:
+    """Directories declared as uv workspace members in the root pyproject.toml.
+
+    uv workspaces are separate from npm's, and this repo has one: pi-docsite is
+    a uv member and not an npm workspace, so the npm scan below never saw its
+    pyproject.toml and its version silently stopped tracking the release.
+    """
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file():
+        return []
+    try:
+        with pyproject.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        # Not fatal: the other scans still run. Say so, because a silently
+        # skipped uv workspace is how a member's version stopped tracking a
+        # release in the first place.
+        print(f"Could not read {pyproject} for uv workspace members: {exc}", file=sys.stderr)
+        return []
+    members = _uv_members(data)
+    if not isinstance(members, list):
+        print(
+            f"Ignoring [tool.uv.workspace] members in {pyproject}: expected a list, got {type(members).__name__}",
+            file=sys.stderr,
+        )
+        return []
+    found: list[Path] = []
+    for pattern in members:
+        if not isinstance(pattern, str):
+            print(f"Ignoring non-string uv workspace member in {pyproject}: {pattern!r}", file=sys.stderr)
+            continue
+        for match in sorted(glob.glob(str(root / pattern))):
+            if Path(match).is_dir():
+                found.append(Path(match))
+    return found
+
+
 def detect_version_files(root: Path | None = None) -> list[VersionFile]:
     """Detect version files in a repository.
 
@@ -228,6 +283,22 @@ def detect_version_files(root: Path | None = None) -> list[VersionFile]:
                                     )
         except (OSError, json.JSONDecodeError):
             pass
+
+    # Scan uv workspace members. A package can be in either workspace or both;
+    # a path already recorded is skipped so it is not listed twice.
+    seen_paths = {vf.path for vf in results}
+    for ws_path in _find_uv_workspace_members(root):
+        for filename, parser, file_type in _ROOT_SCANNERS:
+            filepath = ws_path / filename
+            if not filepath.is_file():
+                continue
+            rel = filepath.relative_to(root).as_posix()
+            if rel in seen_paths:
+                continue
+            version = parser(filepath)
+            if version:
+                seen_paths.add(rel)
+                results.append(VersionFile(path=rel, current_version=version, file_type=file_type))
 
     results.extend(_find_python_version_files(root))
 
