@@ -11,6 +11,7 @@ These tests assert the contract, so a later packaging change that reintroduces a
 second version source fails here rather than at release time.
 """
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -18,6 +19,20 @@ import pytest
 
 PKG = Path(__file__).resolve().parents[2] / "packages" / "pi-docsite"
 ATTR = "pi_docsite.__version__"
+
+
+def _declared_version() -> str:
+    """Read `__version__` out of the package source.
+
+    Deliberately not an import: the standard test command installs the `tests`
+    group, which does not depend on this package, so importing it here fails in
+    CI with ModuleNotFoundError before any contract is checked. The build
+    backend reads the same source file, so this is the same value.
+    """
+    source = (PKG / "src" / "pi_docsite" / "__init__.py").read_text(encoding="utf-8")
+    match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', source, re.MULTILINE)
+    assert match, "no __version__ assignment in pi_docsite/__init__.py"
+    return match.group(1)
 
 
 def _pyproject() -> dict:
@@ -40,10 +55,10 @@ def test_pyproject_reads_the_version_from_the_package() -> None:
 
 
 def test_package_exposes_a_version() -> None:
-    """The source the manifest reads has to actually exist."""
-    from pi_docsite import __version__
+    """The source the manifest reads has to actually exist, and be semver."""
+    version = _declared_version()
 
-    assert __version__.count(".") == 2, f"expected a semver, got {__version__!r}"
+    assert version.count(".") == 2, f"expected a semver, got {version!r}"
 
 
 def test_wheel_metadata_matches_the_package() -> None:
@@ -59,6 +74,9 @@ def test_wheel_metadata_matches_the_package() -> None:
 
     if shutil.which("uv") is None:
         pytest.skip("uv not available to build the wheel")
+    # Note: a nonzero build status below is a failure, not a skip. Skipping there
+    # would mean a broken wheel build passes the suite, which is the packaging
+    # break this test exists to catch.
 
     with tempfile.TemporaryDirectory() as tmp:
         result = subprocess.run(
@@ -67,8 +85,7 @@ def test_wheel_metadata_matches_the_package() -> None:
             text=True,
             check=False,
         )
-        if result.returncode != 0:
-            pytest.skip(f"wheel build unavailable: {result.stderr[-200:]}")
+        assert result.returncode == 0, f"wheel build failed:\n{result.stderr[-800:]}"
         wheels = list(Path(tmp).glob("*.whl"))
         assert wheels, "no wheel produced"
         with zipfile.ZipFile(wheels[0]) as zf:

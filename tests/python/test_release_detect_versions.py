@@ -56,7 +56,7 @@ def test_uv_workspace_member_glob(tmp_path: Path) -> None:
     assert found.get("packages/beta/pyproject.toml") == "1.1.1"
 
 
-def test_uv_and_npm_workspaces_do_not_double_report(tmp_path: Path) -> None:
+def test_member_in_both_workspaces_is_reported_once(tmp_path: Path) -> None:
     """A package in both workspaces is listed once, not twice."""
     _write(tmp_path / "pyproject.toml", _pyproject_with_uv_workspace('"packages/dual"'))
     _write(tmp_path / "package.json", json.dumps({"workspaces": ["packages/*"]}))
@@ -99,6 +99,37 @@ def test_member_without_a_version_is_skipped(tmp_path: Path) -> None:
 
 def test_missing_root_pyproject_yields_no_members(tmp_path: Path) -> None:
     assert _find_uv_workspace_members(tmp_path) == []
+
+
+def test_non_string_entry_in_a_valid_list_is_ignored(tmp_path: Path) -> None:
+    """The per-entry type check, which the invalid-whole-field cases never hit."""
+    # Written directly: the helper wraps its argument in a list, which would
+    # nest this into members = [[42, "packages/ok"]] and skip the whole entry.
+    _write(
+        tmp_path / "pyproject.toml",
+        '[project]\nname = "r"\nversion = "1.0.0"\n\n[tool.uv.workspace]\nmembers = [42, "packages/ok"]\n',
+    )
+    _write(tmp_path / "packages" / "ok" / "pyproject.toml", '[project]\nname = "ok"\nversion = "5.0.0"\n')
+
+    members = _find_uv_workspace_members(tmp_path)
+    found = {vf.path for vf in detect_version_files(tmp_path)}
+
+    # The string member still resolves; the integer one is skipped, not fatal.
+    assert [m.name for m in members] == ["ok"]
+    assert "packages/ok/pyproject.toml" in found
+
+
+def test_scalar_tool_table_does_not_abort_detection(tmp_path: Path) -> None:
+    """`tool = "value"` parses fine; chained .get() would raise AttributeError."""
+    # `tool` must come BEFORE any table header: after [project] it would belong
+    # to that table and the root `tool` would still be a table, so the test would
+    # pass without ever reaching the code path it claims to test.
+    _write(tmp_path / "pyproject.toml", 'tool = "value"\n\n[project]\nname = "r"\nversion = "1.0.0"\n')
+    _write(tmp_path / "package.json", json.dumps({"name": "root", "version": "1.0.0"}))
+
+    found = {vf.path for vf in detect_version_files(tmp_path)}
+
+    assert "package.json" in found, "the other scans must still run"
 
 
 @pytest.mark.parametrize("members", ["'not-a-list'", "42", "[]"])

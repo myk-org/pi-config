@@ -176,6 +176,24 @@ _ROOT_SCANNERS: list[tuple[str, Callable[[Path], str | None], str]] = [
 ]
 
 
+def _uv_members(data: dict) -> object:
+    """Dig out tool.uv.workspace.members without assuming a shape.
+
+    A syntactically valid manifest can put a scalar at any of those levels --
+    `tool = "value"` parses fine -- and chained .get() then raises
+    AttributeError and aborts detection, losing every other scan. Return the raw
+    value and let the caller decide.
+    """
+    current: object = data
+    for key in ("tool", "uv", "workspace"):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if not isinstance(current, dict):
+        return None
+    return current.get("members")
+
+
 def _find_uv_workspace_members(root: Path) -> list[Path]:
     """Directories declared as uv workspace members in the root pyproject.toml.
 
@@ -195,7 +213,7 @@ def _find_uv_workspace_members(root: Path) -> list[Path]:
         # release in the first place.
         print(f"Could not read {pyproject} for uv workspace members: {exc}", file=sys.stderr)
         return []
-    members = data.get("tool", {}).get("uv", {}).get("workspace", {}).get("members", [])
+    members = _uv_members(data)
     if not isinstance(members, list):
         print(
             f"Ignoring [tool.uv.workspace] members in {pyproject}: expected a list, got {type(members).__name__}",
