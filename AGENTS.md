@@ -208,6 +208,25 @@ progress. It does not commit, push, create a PR, or post results.
   `clearQueueIfSnapshot(snapshot)` operation; clients never call an unconditional clear after validating a preview.
 - Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `dev-docs/async-internals.md`
 - CLI providers (`cli-*`): see `dev-docs/cli-provider.md`
+- **MCP:** built into pi as `builtin:mcp` (#848). Servers in `mcp.json` —
+  user `~/.pi/agent/mcp.json`, project `mcp.json` once trusted. Managed with
+  `/mcp` and `pi mcp add|remove|list|login|logout`; no external binary, no
+  `mcpc` bridge, no separate OAuth store. Tools reach the model through
+  `codemode` (default) or `deferred`, so an unused server costs no context.
+  See `docs/mcp-servers.md`. Our extensions register none of the built-in
+  MCP tool or command names, and all three built-ins are `replaceable` — a
+  collision would displace the built-in silently, so keep it that way.
+- **Background model routing** (#848): `pi-bg/auto` is a virtual model
+  (`pi.registerVirtualModel`, pi >= 0.99) routing background work to
+  `internal_operations_*`, sticky after the first response. Gated on
+  `background_virtual_model_enable` (default off); a `route()` throw becomes an
+  error response for the whole request, so every failure path must return the
+  incoming model. See `extensions/shared/background-model.ts`.
+- **Provider stream logging** (#848): one shared
+  `provider_stream_event` hook (`extensions/shared/provider-stream-log.ts`)
+  replaces per-provider stream logging. The event fires per parsed chunk and
+  pi awaits handlers in stream order, so the gate is mandatory — it is
+  `log_providers` at its non-default `debug` level. Never `console.*`.
 - CLI/ACPX model metadata (context window, maxTokens, cost): cached from
   `https://models.dev/api.json` at `~/.pi/pi-config/models.dev.json` (refresh after
   1 day). Mapping is CLI/ACPX only — native pi models are untouched. Thinking
