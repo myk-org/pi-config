@@ -20,7 +20,6 @@
  *   /cron <Tab>                  → add, list, remove
  *   /dream-auto <Tab>            → on, off
  *   /async-kill <Tab>            → all (or type name / id prefix)
- *   /mcpc <Tab>                  → connect
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -30,7 +29,6 @@ import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
 import { getCronRemoveAutocompleteItems } from "./cron.js";
-import { mcpcArgumentCompletions } from "./mcpc.js";
 
 const log = createLogger("autocomplete");
 
@@ -295,7 +293,6 @@ function registerCompletions(
       }
     },
 
-    "mcpc": mcpcArgumentCompletions,
 
     "dream-auto": (prefix: string) => {
       return filter([

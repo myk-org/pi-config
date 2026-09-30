@@ -436,13 +436,6 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         "Node.js tools for agent capabilities",
         [
             Tool(
-                "mcpc",
-                "MCP CLI client (connects ~/.pi/pi-config/mcp.json)",
-                installed=bool(shutil.which("mcpc")),
-                disabled=nd,
-                install_cmd="npm install -g @apify/mcpc",
-            ),
-            Tool(
                 "acpx",
                 "Headless CLI client for Agent Client Protocol (ACP)",
                 installed=bool(shutil.which("acpx")),

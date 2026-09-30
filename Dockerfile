@@ -138,8 +138,7 @@ RUN --mount=type=cache,target=/home/node/.cache/uv,sharing=locked,uid=1000,gid=1
   uv tool install prek && \
   uv tool install mcp-proxy
 
-# MCP CLI — connects servers from ~/.pi/pi-config/mcp.json when that file exists
-RUN npm install -g @apify/mcpc
+# MCP servers are built into pi (builtin:mcp) and read ~/.pi/agent/mcp.json.
 
 # Install RTK bin https://github.com/rtk-ai/rtk
 RUN /bin/bash -o pipefail -c "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"
