@@ -253,7 +253,6 @@ wheels = [
 
 [[package]]
 name = "pi-docsite"
-version = "4.6.5"
 source = { editable = "packages/pi-docsite" }
 dependencies = [
     { name = "jinja2" },

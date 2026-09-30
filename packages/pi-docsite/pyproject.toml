@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pi-docsite"
-version = "4.6.5"
+# Single source of truth: the package __version__. Pinning the version here as
+# well created two places to keep in step, and a release that bumped only one
+# published a wheel whose metadata disagreed with its own tag.
+dynamic = ["version"]
 description = "Deterministic static documentation site generator for Markdown projects"
 license = "Apache-2.0"
 requires-python = ">=3.14"
@@ -18,6 +21,9 @@ pi-docsite = "pi_docsite.generate:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "types-markdown>=3.5"]
+
+[tool.setuptools.dynamic]
+version = { attr = "pi_docsite.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
