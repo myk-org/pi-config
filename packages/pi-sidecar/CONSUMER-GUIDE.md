@@ -5,7 +5,7 @@ Best practices for integrating `@myk-org/pi-sidecar` into your project.
 ## Prerequisites
 
 `@myk-org/pi-sidecar` package metadata requires `@earendil-works/pi-coding-agent`
-and `@earendil-works/pi-ai` version `>=0.87.0`. At startup, the sidecar checks
+and `@earendil-works/pi-ai` version `>=0.99.0`. At startup, the sidecar checks
 only the `pi-coding-agent` floor. Upgrade both dependencies before starting the
 service if either is older.
 
@@ -425,5 +425,5 @@ sidecar pulls the full set.
 
 `@myk-org/pi-vertex-claude` is standalone: it does not depend on
 `pi-orchestrator-config`. Its peer deps require
-`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` `>=0.87.0` — same
+`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` `>=0.99.0` — same
 floor as sidecar.
