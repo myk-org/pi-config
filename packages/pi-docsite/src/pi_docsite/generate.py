@@ -13,6 +13,7 @@ single source of truth: this script only ever writes HTML, ``llms*.txt``,
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -37,6 +38,59 @@ DOCS_DIR = Path.cwd() / "docs"
 PROJECT_NAME = ""
 REPO_URL = ""
 TAGLINE = ""
+# The badge identifies the generator, not the consuming project. It used to be the
+# literal "pi-config", so every vendored site rendered a badge naming this repo and
+# linking to its own — the same class of leak DEFAULT_BADGE_URL exists to stop.
+# Immutable: it is the --badge-label default, so it must never be rebound per build.
+DEFAULT_BADGE_LABEL = "pi-docsite"
+
+log = logging.getLogger("pi_docsite.generate")
+# Named, not an index into the detection list: the notice must render even when
+# that list changes shape.
+EXAMPLE_SKILL_DEST = Path.home() / ".pi" / "agent" / "skills" / "pi-docsite"
+
+
+def _agent_skill_dirs(home: Path) -> tuple[Path, ...]:
+    """Home-directory skill locations, resolved per call so `home` is injectable.
+
+    Detection only -- the copy step stays manual.
+    """
+    return (
+        home / ".agents" / "skills" / "pi-docsite",
+        home / ".pi" / "agent" / "skills" / "pi-docsite",
+        home / ".claude" / "skills" / "pi-docsite",
+        home / ".cursor" / "skills" / "pi-docsite",
+        home / ".gemini" / "skills" / "pi-docsite",
+    )
+
+
+def _skill_notice(docs_dir: Path, home: Path | None = None) -> str | None:
+    """One line advertising the shipped skill, or None once it is installed.
+
+    pip has no post-install hook, so nothing can announce the packaged
+    ``skill/SKILL.md`` at install time. This generator prints the pointer
+    instead: whoever (or whatever agent) is reading the build output sees it,
+    and the LLM driving the build can offer to install it.
+
+    Project-local ``<project>/.pi/skills/`` counts too, not just the home
+    directories -- the skill directory next to the docs being built is a
+    documented install target.
+    """
+    base = home if home is not None else Path.home()
+    candidates = (*_agent_skill_dirs(base), docs_dir.parent / ".pi" / "skills" / "pi-docsite")
+    installed = [str(d) for d in candidates if (d / "SKILL.md").is_file()]
+    # %s placeholders, not a dict as the format argument: a dict leaves the
+    # formatted message with none of these values, so a surprising notice cannot
+    # be explained from the debug log.
+    log.debug("skill_notice: candidates=%d installed=%s", len(candidates), installed)
+    if installed:
+        return None
+    return (
+        f"pi-docsite: generator skill not installed for any agent. To expose pi-docsite "
+        f"guidance to your LLM, copy {Path(__file__).parent / 'skill' / 'SKILL.md'} "
+        f"into your agent's skills directory (for example "
+        f"{EXAMPLE_SKILL_DEST / 'SKILL.md'})."
+    )
 
 
 def _discover_repo_url(docs_dir: Path) -> str:
@@ -285,6 +339,11 @@ def main(argv: list[str] | None = None) -> int:
         "--repo-url", default=None, help="repository URL for header links; defaults to git remote origin"
     )
     parser.add_argument("--tagline", default="", help="one-line description shown on the index")
+    parser.add_argument(
+        "--badge-label",
+        default=DEFAULT_BADGE_LABEL,
+        help="text of the header badge; identifies the generator, not the project (default: %(default)s)",
+    )
     args = parser.parse_args(argv)
 
     DOCS_DIR = args.docs_dir.resolve()
@@ -295,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
     REPO_URL = args.repo_url if args.repo_url is not None else _web_url(_discover_repo_url(DOCS_DIR))
     PROJECT_NAME = args.project_name or _project_name_from_url(REPO_URL, DOCS_DIR)
     TAGLINE = args.tagline
+    # Local, not a global rebound as the parser default: a custom label must not
+    # become the default for a later in-process main() call.
+    badge_label = args.badge_label.strip() or DEFAULT_BADGE_LABEL
 
     pages: dict[str, str] = {}
     for md_file in sorted(DOCS_DIR.glob("*.md")):
@@ -345,7 +407,7 @@ def main(argv: list[str] | None = None) -> int:
     # makes that fetch work; browsers block it on file:// via CORS.
     _write(
         "index.html",
-        renderer.render_index(PROJECT_NAME, TAGLINE, navigation, repo_url=REPO_URL),
+        renderer.render_index(PROJECT_NAME, TAGLINE, navigation, repo_url=REPO_URL, badge_label=badge_label),
     )
 
     for idx, page in enumerate(order):
@@ -362,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
                 prev_page=order[idx - 1] if idx > 0 else None,
                 next_page=order[idx + 1] if idx < len(order) - 1 else None,
                 repo_url=REPO_URL,
+                badge_label=badge_label,
             ),
         )
     _write(
@@ -400,6 +463,9 @@ def main(argv: list[str] | None = None) -> int:
     for name in stale:
         print(f"   removed  {name}")
     print(f"{len(order)} pages, {len(written)} files, {sum(s for _, s in written)} B total")
+    notice = _skill_notice(DOCS_DIR)
+    if notice:
+        print(notice)
     return 0
 
 

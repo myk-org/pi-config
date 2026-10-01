@@ -36,9 +36,14 @@ Everything is a flag with a derived default, so the same command works in any re
 | `--project-name` | the git remote's repo name |
 | `--repo-url` | git remote `origin` |
 | `--tagline` | empty |
+| `--badge-label` | `pi-docsite` |
 
 Identity follows `--docs-dir` rather than the script's own location, so pointing it at
 another project's docs directory renders that project's site.
+
+`--badge-label` is the header badge text. It names the generator, not the project being
+documented, so a vendored site never shows this repo's branding. The suffix after the first
+`-` keeps the accent styling; a label without a `-` renders unaccented.
 
 ## Adding a page
 
@@ -84,9 +89,24 @@ Precedence, highest first: frontmatter, then `nav.json`, then the fallback group
 
 ## Ask your LLM
 
-A ready-made skill ships with the package at `skill/SKILL.md`. Copy it where your
-agent looks for skills so the model can drive the generator without being told the
-details:
+A ready-made skill ships with the package at `skill/SKILL.md`.
+
+**The generator tells you when it is missing.** Every build prints one extra line while no
+agent has it installed:
+
+```text
+pi-docsite: generator skill not installed for any agent. To expose pi-docsite guidance to
+your LLM, copy .../pi_docsite/skill/SKILL.md into your agent's skills directory (for
+example ~/.pi/agent/skills/pi-docsite/SKILL.md).
+```
+
+That line is why an LLM driving a rebuild can offer the install instead of silently working
+from guesswork. `pip` has no post-install hook, so this build-output notice is the only
+channel that reaches whoever is actually running the tool. It disappears once `SKILL.md`
+exists under `~/.pi/agent/skills/`, `~/.claude/skills/`, `~/.cursor/skills/`, or
+`~/.gemini/skills/`.
+
+To install it yourself:
 
 ```bash
 uv run python -c "

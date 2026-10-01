@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # hardcoded project: it was pinned to one repo's URL, which leaked that repo's
 # name into every other project that vendored this package.
 DEFAULT_BADGE_URL = "https://example.invalid"
+DEFAULT_BADGE_LABEL = "pi-docsite"
 
 # Vendored from docsfy.generator. Deliberately NOT re.DOTALL, and the title is
 # restricted to a single line ([^\n]+ rather than .+). Without these
@@ -567,10 +568,12 @@ def render_page(
     repo_url: str = "",
     version: str | None = None,
     search_index: str | None = None,
+    badge_label: str = DEFAULT_BADGE_LABEL,
 ) -> str:
     env = _get_jinja_env()
     template = env.get_template("page.html")
     content_html, toc_html = _md_to_html(markdown_content)
+    BADGE_HEAD, BADGE_ACCENT = _badge_parts(badge_label)
     return template.render(
         title=page_title,
         project_name=project_name,
@@ -583,6 +586,8 @@ def render_page(
         next_page=next_page,
         repo_url=repo_url,
         badge_url=_safe_badge_url(repo_url),
+        BADGE_HEAD=BADGE_HEAD,
+        BADGE_ACCENT=BADGE_ACCENT,
         search_index=search_index,
         asset_version=_asset_version(),
         version=version,
@@ -596,9 +601,11 @@ def render_index(
     repo_url: str = "",
     version: str | None = None,
     search_index: str | None = None,
+    badge_label: str = DEFAULT_BADGE_LABEL,
 ) -> str:
     env = _get_jinja_env()
     template = env.get_template("index.html")
+    BADGE_HEAD, BADGE_ACCENT = _badge_parts(badge_label)
     return template.render(
         title=project_name,
         project_name=project_name,
@@ -607,10 +614,23 @@ def render_index(
         repo_url=repo_url,
         current_slug="",
         badge_url=_safe_badge_url(repo_url),
+        BADGE_HEAD=BADGE_HEAD,
+        BADGE_ACCENT=BADGE_ACCENT,
         asset_version=_asset_version(),
         search_index=search_index,
         version=version,
     )
+
+
+def _badge_parts(label: str) -> tuple[str, str]:
+    """Split the badge label on its first '-' so the suffix keeps the accent styling.
+
+    Returns ``(head, accent)``; ``accent`` is empty when the label has no '-'.
+    """
+    head, sep, tail = (label or DEFAULT_BADGE_LABEL).partition("-")
+    parts = (head, f"{sep}{tail}") if sep else (head, "")
+    logger.debug("badge_parts: label=%s head=%s accent=%s", label, parts[0], parts[1])
+    return parts
 
 
 def _safe_badge_url(repo_url: str) -> str:

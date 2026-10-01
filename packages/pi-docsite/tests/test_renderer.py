@@ -6,11 +6,15 @@ import logging
 
 import pytest
 from pi_docsite.renderer.renderer import (
+    DEFAULT_BADGE_LABEL,
+    _badge_parts,
     _clean_code_fence_annotations,
     _ensure_blank_lines,
     _indent_fenced_blocks,
     _md_to_html,
     _sanitize_html,
+    render_index,
+    render_page,
 )
 
 
@@ -486,3 +490,44 @@ def test_indent_does_not_close_tilde_fence_on_backticks_and_vice_versa() -> None
 
     src = "```\n~~~\n# still inside\n~~~\n```\n"
     assert _indent_fenced_blocks(src) == "```\n    ~~~\n    # still inside\n    ~~~\n```\n"
+
+
+def test_badge_parts_splits_on_first_dash() -> None:
+    assert _badge_parts("pi-docsite") == ("pi", "-docsite")
+    assert _badge_parts("docs") == ("docs", "")
+    assert _badge_parts("") == ("pi", "-docsite")  # empty falls back to the default
+
+
+def test_render_page_badge_is_not_hardcoded_to_pi_config() -> None:
+    # The label used to be the literal "pi-config", so every vendored site rendered
+    # a badge naming this repo while linking to the consumer's own repository.
+    default_html = render_page(
+        markdown_content="# T",
+        page_title="T",
+        project_name="p",
+        tagline="",
+        navigation=[],
+        current_slug="t",
+    )
+    assert DEFAULT_BADGE_LABEL in default_html
+    assert 'brand-accent">-config<' not in default_html
+    assert 'brand-accent">-docsite<' in default_html
+
+
+def test_render_page_badge_renders_a_dashless_label_unaccented() -> None:
+    custom = render_page(
+        markdown_content="# T",
+        page_title="T",
+        project_name="p",
+        tagline="",
+        navigation=[],
+        current_slug="t",
+        badge_label="webhook",
+    )
+    assert "⚡ webhook" in custom
+    assert "brand-accent" not in custom.split("docsfy-badge")[1].split("</a>")[0]
+
+
+def test_render_index_badge_honors_the_label_flag() -> None:
+    html = render_index("p", "", [], badge_label="my-docs")
+    assert '⚡ my<span class="brand-accent">-docs</span>' in html
