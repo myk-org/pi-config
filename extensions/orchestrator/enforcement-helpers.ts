@@ -7,7 +7,7 @@ import { createLogger } from "../shared/logger.js";
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
-import { DANGEROUS, executableText, getCurrentBranch, hasGitSub, tokenize } from "./git-helpers.js";
+import { DANGEROUS, executableText, getCurrentBranch, hasGitSub, segmentRunsGit, tokenize } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
 enfLog.debug("enforcement-helpers module loaded");
@@ -342,7 +342,7 @@ export function conflictCandidateDirs(
       previous = from;
       running[seg.depth] = to;
     }
-    if (/\bgit\b/.test(seg.text)) {
+    if (segmentRunsGit(seg.text)) {
       const base = running[seg.depth];
       dirs.add(base);
       // Git applies each -C in turn, each relative to the previous one.
@@ -375,7 +375,9 @@ export function resolveEffectiveCwd(command: string, sessionCwd: string): string
   // is why conflict enforcement asks conflictCandidateDirs instead of trusting
   // this function's guess.
   const segments = unquotedSegments(command);
-  const gitIndex = segments.findIndex((s) => /\bgit\b/.test(s.text));
+  // A segment only counts when it *runs* git: `cd ~/git/proj` merely contains
+  // the word, and anchoring on it would drop a real directory change.
+  const gitIndex = segments.findIndex((s) => segmentRunsGit(s.text));
   const cdSegments = segments
     .map((s, i) => ({ i, target: cdTargetIn(s.text) }))
     .filter((c) => c.target !== null);

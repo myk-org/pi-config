@@ -787,6 +787,12 @@ describe("conflict-resolution guard", () => {
     assert.equal(resolveEffectiveCwd("cd /first && cd /second && pytest", "/session"), "/first");
   });
 
+  it("anchors on the segment that runs git, not one that names it", () => {
+    // `cd ~/git/proj` contains the word without running git.
+    assert.equal(resolveEffectiveCwd("cd /tmp/git/proj && git commit --signoff -F -", "/session"), "/tmp/git/proj");
+    assert.equal(conflictCandidateDirs("cd /tmp/git/proj && git add a.txt", "/root").all.join(","), "/tmp/git/proj");
+  });
+
   it("applies repeated -C values in order, as git does", () => {
     assert.equal(resolveEffectiveCwd("git -C worktree -C nested commit", "/root"), "/root/worktree/nested");
     assert.equal(resolveEffectiveCwd("git -C /repo -C ../other add x", "/root"), "/other");

@@ -758,7 +758,35 @@ const SEGMENT_SKIP = new Set(["if", "then", "else", "elif", "fi", "do", "done", 
 const GIT_EXECUTORS = new Set([
   "xargs", "find", "-exec", "-execdir", "env", "sudo", "time", "nohup", "nice",
   "ionice", "stdbuf", "setsid", "command", "exec", "timeout",
+  // Shells run whatever their argument runs, including a subshell of the command
+  // being scanned.
+  "bash", "sh", "zsh", "dash", "ksh",
 ]);
+
+/**
+ * Does this segment run git? A segment whose *command word* is git, or one that
+ * follows a wrapper which executes the rest. Matching the text alone is wrong:
+ * `cd ~/git/proj` contains the word without running anything.
+ */
+export function segmentRunsGit(segment: string): boolean {
+  const words = tokenize(segment.trim());
+  let k = 0;
+  while (k < words.length && (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]))) k++;
+  if (k < words.length) {
+    // A segment can start mid-subshell, so `(git` is still the git command.
+    const head = words[k].replace(/^[()]+|[()]+$/g, "");
+    if (head === "git") return true;
+    if (GIT_EXECUTORS.has(head) && words.slice(k + 1).includes("git")) return true;
+  }
+  // A parenthesised group is real syntax, so a git command inside one runs even
+  // when the segment starts with something else: `printf %s ((git add x))`.
+  if (/[()]/.test(segment)) {
+    for (const inner of segment.split(/[()]+/)) {
+      if (inner.trim() && segmentRunsGit(inner)) return true;
+    }
+  }
+  return false;
+}
 
 /**
  * The word lists of every git invocation that actually runs: a git token that is
@@ -774,9 +802,11 @@ function executedGitCommands(cmd: string): string[][] {
     let k = 0;
     while (k < words.length && (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]))) k++;
     if (k >= words.length) continue;
-    if (words[k] === "git") {
+    // A segment can start mid-subshell, so `(git` is still the git command.
+    const head = words[k].replace(/^[()]+|[()]+$/g, "");
+    if (head === "git") {
       kept.push(words.slice(k));
-    } else if (GIT_EXECUTORS.has(words[k])) {
+    } else if (GIT_EXECUTORS.has(head)) {
       // The wrapper runs the rest, so any git token in the segment counts.
       for (let i = k + 1; i < words.length; i++) {
         if (words[i] === "git") kept.push(words.slice(i));
