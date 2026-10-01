@@ -220,6 +220,23 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand("/bin/bash -c 'git status'"), false);
   });
 
+  it("sees a conflict outside the directory it runs from", async () => {
+    // From a subdirectory, `git add ../a.txt` still stages the conflict at the
+    // repository root — the lookup must not be scoped to the cwd.
+    const root = mkdtempSync(join(tmpdir(), "conflict-subdir-"));
+    conflictedRepo(root);
+    mkdirSync(join(root, "sub"));
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const relative = await run("git add ../a.txt", join(root, "sub"));
+    assert.equal(relative?.block, true);
+    assert.match(relative!.reason, /Unresolved conflicts in .*a\.txt/);
+    const whole = await run("git add -A", join(root, "sub"));
+    assert.equal(whole?.block, true);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("reads git only where a command runs", () => {
     // An argument that only prints an example is not an executed command.
     assert.equal(isConflictResolutionCommand("echo git add a.txt"), false);

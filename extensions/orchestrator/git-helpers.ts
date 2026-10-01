@@ -780,7 +780,11 @@ export function isConflictResolutionCommand(command: string): boolean {
  * index as an empty one turns a broken check into a silent pass.
  */
 export function listUnmergedFiles(cwd?: string): { ok: boolean; files: string[] } {
-  const r = runGit(["ls-files", "--unmerged"], cwd);
+  // `-- :/` is the whole repository, and `--full-name` makes the paths
+  // repo-relative. Without them git lists only what is under the current
+  // directory, so `git add ../a.txt` from a subdirectory would read as clean
+  // while staging a conflict higher up.
+  const r = runGit(["ls-files", "--unmerged", "--full-name", "--", ":/"], cwd);
   if (r.code !== 0) {
     // warn, not debug: this is the check failing, and it gates a block.
     gitLog.warn("unmerged_lookup_failed", "code", r.code, "repo", Boolean(cwd));

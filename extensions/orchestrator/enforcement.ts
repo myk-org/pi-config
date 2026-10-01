@@ -604,7 +604,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         const lookup = listUnmergedFiles(dir);
         if (!lookup.ok) continue;
         readable++;
-        for (const file of lookup.files) conflicted.push(`${dir}/${file}`);
+        // Paths are repo-relative; the directory names the repository checked.
+        for (const file of lookup.files) conflicted.push(dir === ctx.cwd ? file : `${dir} → ${file}`);
       }
       if (conflicted.length === 0 && readable === 0) {
         // Every candidate was unreadable, so nothing was actually checked.
