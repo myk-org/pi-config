@@ -622,7 +622,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         };
       }
       if (conflicted.length > 0) {
-        log.info("conflict_resolution_block", conflicted.join(", "));
+        log.error("conflict_resolution_blocked", conflicted.join(", "));
         return {
           block: true,
           reason:
