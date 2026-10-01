@@ -481,7 +481,7 @@ function matchingParen(cmd: string, open: number): number {
       return i;
     }
   }
-  gitLog.debug("matching_paren_unterminated", "skipped_quoted", skippedQuoted);
+  gitLog.debug("matching_paren_unterminated", "open", open, "skipped_quoted", skippedQuoted);
   return cmd.length;
 }
 
@@ -496,7 +496,7 @@ function closingQuote(cmd: string, open: number, quote: string): number {
       return i;
     }
   }
-  gitLog.debug("closing_quote_unterminated", "quote", quote);
+  gitLog.debug("closing_quote_unterminated", "quote", quote, "open", open);
   return cmd.length;
 }
 
