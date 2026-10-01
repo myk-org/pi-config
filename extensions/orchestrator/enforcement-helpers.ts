@@ -387,10 +387,11 @@ export function resolveEffectiveCwd(command: string, sessionCwd: string): string
   for (const a of anchors) {
     if (a.target) dir = applyCd(dir, a.target);
   }
+  // Git applies each -C in turn, each relative to the previous one, so
+  // `git -C worktree -C nested` lands in worktree/nested.
   const cTargets = gitIndex === -1 ? [] : gitCsIn(segments[gitIndex].text);
-  const cTarget = cTargets[cTargets.length - 1] ?? null;
-  if (cTarget) dir = applyCd(dir, cTarget);
-  enfLog.debug("effective_cwd", "dir", dir, "source", cTarget ? "git_C" : anchors.length ? "cd" : "session", "cds", anchors.length);
+  for (const cTarget of cTargets) dir = applyCd(dir, cTarget);
+  enfLog.debug("effective_cwd", "dir", dir, "source", cTargets.length ? "git_C" : anchors.length ? "cd" : "session", "cds", anchors.length);
   return dir;
 }
 

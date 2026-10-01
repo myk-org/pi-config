@@ -637,6 +637,11 @@ describe("conflict-resolution guard", () => {
     assert.equal(resolveEffectiveCwd("cd /first && cd /second && pytest", "/session"), "/first");
   });
 
+  it("applies repeated -C values in order, as git does", () => {
+    assert.equal(resolveEffectiveCwd("git -C worktree -C nested commit", "/root"), "/root/worktree/nested");
+    assert.equal(resolveEffectiveCwd("git -C /repo -C ../other add x", "/root"), "/other");
+  });
+
   it("applies chained relative directory changes in order", () => {
     assert.equal(resolveEffectiveCwd("cd a && cd b && git add x", "/session"), "/session/a/b");
     assert.equal(resolveEffectiveCwd("cd /repo && cd . && git add x", "/session"), "/repo");
