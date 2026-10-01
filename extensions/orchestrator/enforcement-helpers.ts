@@ -156,11 +156,15 @@ function cdTargetIn(segment: string): string | null {
     skipSpace();
     if (i >= args.length) break;
     if (args.startsWith("--", i)) { i += 2; continue; }
-    if (args[i] === "-" && i + 1 < args.length && !/\s/.test(args[i + 1])) {
+    // A lone `-` is the previous directory, not an option.
+    if (args[i] === "-" && (i + 1 >= args.length || /\s/.test(args[i + 1]))) {
+      enfLog.debug("cd_target_previous");
+      return "-";
+    }
+    if (args[i] === "-" && i + 1 < args.length) {
       while (i < args.length && !/\s/.test(args[i])) i++;
       continue;
     }
-    if (i + 1 < args.length && args[i] === "-" && /\s/.test(args[i + 1])) { i++; continue; }
     const quote = args[i];
     if (quote === "'" || quote === '"') {
       const end = args.indexOf(quote, i + 1);
@@ -181,12 +185,19 @@ function cdTargetIn(segment: string): string | null {
     enfLog.debug("cd_target", "target", target);
     return target || null;
   }
-  enfLog.debug("cd_target_unresolved");
-  return null;
+  // Bare `cd` goes home; `cd -` goes to the previous directory, which the
+  // caller resolves against what it tracked.
+  enfLog.debug("cd_target_default");
+  return "~";
 }
 
 /** Apply one directory change to a running directory. */
 function applyCd(dir: string, target: string): string {
+  // `cd -` with no previous directory tracked leaves the shell where it is.
+  if (target === "-") {
+    enfLog.debug("apply_cd_previous_untracked", "dir", dir);
+    return dir;
+  }
   let next: string;
   if (target.startsWith("~/")) next = join(process.env.HOME ?? "~", target.slice(2));
   else if (target === "~") next = process.env.HOME ?? "~";
@@ -302,6 +313,9 @@ export function conflictCandidateDirs(
   const dirs = new Set<string>();
   // running[d] is the directory of the shell at paren depth d.
   const running: string[] = [sessionCwd];
+  // OLDPWD: where the shell was before the last change, which is what `cd -`
+  // returns to. It starts as the session directory.
+  let previous = sessionCwd;
   // Walk the *executable* text: a `cd` inside a `bash -c` script, or inside a
   // command substitution, moves the directory the staging really runs in.
   const scan = executableText(command) || command;
@@ -321,7 +335,12 @@ export function conflictCandidateDirs(
         // stages where it already was.
         dirs.add(running[seg.depth]);
       }
-      running[seg.depth] = applyCd(running[seg.depth], target);
+      const from = running[seg.depth];
+      // `cd -` goes to OLDPWD as it stands *before* this change, and only then
+      // does the previous directory become where we are now.
+      const to = target === "-" ? previous : applyCd(from, target);
+      previous = from;
+      running[seg.depth] = to;
     }
     if (/\bgit\b/.test(seg.text)) {
       const base = running[seg.depth];

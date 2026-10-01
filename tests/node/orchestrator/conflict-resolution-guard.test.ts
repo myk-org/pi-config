@@ -662,6 +662,45 @@ describe("conflict-resolution guard", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("follows a bare cd to the home directory", async () => {
+    const priorHome = process.env.HOME;
+    const home = mkdtempSync(join(tmpdir(), "conflict-home-"));
+    process.env.HOME = home;
+    try {
+      const root = mkdtempSync(join(tmpdir(), "conflict-home-session-"));
+      gitIn(root, ["init", "-q", "-b", "main"]);
+      writeFileSync(join(root, "keep.txt"), "clean\n");
+      gitIn(root, ["add", "keep.txt"]);
+      gitIn(root, ["commit", "-qm", "clean"]);
+      conflictedRepo(home);
+
+      process.env.PI_AGENT_NAME = "git-expert";
+      process.env.PI_SUBAGENT_CHILD = "1";
+      const result = await run("cd && git add a.txt", root);
+      assert.equal(result?.block, true);
+      assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
+      rmSync(root, { recursive: true, force: true });
+    } finally {
+      if (priorHome === undefined) delete process.env.HOME;
+      else process.env.HOME = priorHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("follows cd - back to the previous directory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "conflict-previous-"));
+    mkdirSync(join(root, "clean"));
+    gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
+    conflictedRepo(root);
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("cd clean && cd - && git add a.txt", root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("checks both directories when a cd may be skipped", async () => {
     // `false && cd clean` never runs, so the staging happens where we already are.
     const root = mkdtempSync(join(tmpdir(), "conflict-skipped-cd-"));
