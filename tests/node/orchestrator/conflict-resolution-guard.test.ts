@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
-import { resolveEffectiveCwd } from "../../../extensions/orchestrator/enforcement-helpers.js";
+import { resolveEffectiveCwd, conflictCandidateDirs } from "../../../extensions/orchestrator/enforcement-helpers.js";
 import {
   isConflictResolutionCommand,
   listUnmergedFiles,
@@ -195,6 +195,15 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand("/bin/bash -c 'git add a.txt'"), true);
     assert.equal(isConflictResolutionCommand("/usr/bin/env bash -c 'git add a.txt'"), true);
     assert.equal(isConflictResolutionCommand("/bin/bash -c 'git status'"), false);
+  });
+
+  it("reads -C only as a global option, not as a subcommand flag", () => {
+    // `git commit -C <sha>` reuses a message; it does not change directory, and
+    // treating it as one would send the safety guards after a nonexistent path.
+    assert.equal(conflictCandidateDirs("git commit -C HEAD -F -", "/root").all.join(","), "/root");
+    assert.equal(conflictCandidateDirs("git -c core.editor=vim commit -F -", "/root").all.join(","), "/root");
+    assert.equal(conflictCandidateDirs("git -C sub commit -F -", "/root").all.join(","), "/root,/root/sub");
+    assert.equal(conflictCandidateDirs('git -C "my repo" add x', "/root").all.join(","), "/root,/root/my repo");
   });
 
   it("treats a here-string as data, not a heredoc", () => {

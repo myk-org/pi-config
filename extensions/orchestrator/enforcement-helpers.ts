@@ -177,20 +177,60 @@ function applyCd(dir: string, target: string): string {
 }
 
 /**
- * Every `-C` value in a git segment, in the order they appear — both the spaced
- * (`-C repo`) and attached (`-Crepo`) forms. Git honours the last one, and the
- * guard has to consider all of them.
+ * Split a segment into shell words, honouring quotes.
+ */
+function tokenize(text: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  let has = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; has = true; continue; }
+    if (/\s/.test(ch)) {
+      if (has) tokens.push(current);
+      current = "";
+      has = false;
+      continue;
+    }
+    current += ch;
+    has = true;
+  }
+  if (has) tokens.push(current);
+  return tokens;
+}
+
+/**
+ * Every `-C` directory override in a git segment, in order.
+ *
+ * Only git's *global* options count. `-C` after the subcommand is a different
+ * flag entirely — `git commit -C <sha>` reuses that commit's message — so
+ * reading it as a directory would send every git safety guard looking for a
+ * directory named after a commit, and skip the checks. The walk therefore stops
+ * at the first bare word, which is the subcommand.
  */
 function gitCsIn(segment: string): string[] {
-  const found: { at: number; value: string }[] = [];
-  for (const m of segment.matchAll(/\s-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))/g)) {
-    found.push({ at: m.index ?? 0, value: m[1] ?? m[2] ?? m[3] });
+  const tokens = tokenize(segment);
+  const start = tokens.findIndex((w) => w === "git");
+  if (start === -1) return [];
+  const values: string[] = [];
+  for (let i = start + 1; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (!tok.startsWith("-") || tok === "-") break;
+    if (tok === "-C" || tok.startsWith("-C") && tok.length > 2) {
+      const value = tok === "-C" ? tokens[i + 1] : tok.slice(2);
+      if (value) values.push(value);
+      if (tok === "-C") i++;
+      continue;
+    }
+    // Any other option may take a separate value; skip it if the next word is one.
+    if (!tok.includes("=") && tokens[i + 1] && !tokens[i + 1].startsWith("-")) i++;
   }
-  for (const m of segment.matchAll(/\s-C(?![ \t-])(?:"([^"]+)"|'([^']+)'|([^\s]+))/g)) {
-    found.push({ at: m.index ?? 0, value: m[1] ?? m[2] ?? m[3] });
-  }
-  found.sort((a, b) => a.at - b.at);
-  const values = found.map((f) => f.value);
   if (values.length) enfLog.debug("git_C_options", "count", values.length, "last", values[values.length - 1]);
   return values;
 }
