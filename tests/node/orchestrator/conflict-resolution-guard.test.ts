@@ -220,6 +220,15 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand("/bin/bash -c 'git status'"), false);
   });
 
+  it("treats an unreadable subcommand position as unsafe", () => {
+    // The subcommand can come from a variable at run time.
+    assert.equal(isConflictResolutionCommand('action=add; git "$action" a.txt'), true);
+    assert.equal(isConflictResolutionCommand("git $cmd a.txt"), true);
+    // Ordinary commands with a variable argument are unaffected.
+    assert.equal(isConflictResolutionCommand('git add "$file"'), true);
+    assert.equal(isConflictResolutionCommand("git status"), false);
+  });
+
   it("reads -C only as a global option, not as a subcommand flag", () => {
     // `git commit -C <sha>` reuses a message; it does not change directory, and
     // treating it as one would send the safety guards after a nonexistent path.

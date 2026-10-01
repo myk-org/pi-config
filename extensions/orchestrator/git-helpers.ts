@@ -708,6 +708,14 @@ export function isConflictResolutionCommand(command: string): boolean {
     gitLog.warn("conflict_command_unscanned", "depth_limit", 6);
     return true;
   }
+  // An unknown word where the subcommand belongs - a shell variable, or a
+  // placeholder left by a quoted argument - could be `add`, `rm` or `restore`
+  // once the shell resolves it. `action=add; git "$action" a.txt` stages, so
+  // an unreadable subcommand is treated as a resolution.
+  if (/\bgit\b(?:\s+-\S+)*\s+(?:_|\S*\$\S*)/.test(cmd)) {
+    gitLog.warn("conflict_command_dynamic_subcommand", "matches", true);
+    return true;
+  }
   // git rm drops a conflicted deletion's unmerged entry, which is a resolution.
   const matches =
     hasGitSub(cmd, "add") ||
