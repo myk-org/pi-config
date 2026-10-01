@@ -323,7 +323,10 @@ export function conflictCandidateDirs(
   const scan = executableText(command) || command;
 
   for (const seg of unquotedSegments(scan)) {
-    // Entering a subshell starts a child shell in the current directory.
+    // Leaving a subshell discards its directory, and entering a new one starts
+    // from the outer shell again — otherwise `(cd clean); (git add x)` would
+    // inherit `clean` for the second subshell.
+    if (running.length > seg.depth + 1) running.length = seg.depth + 1;
     while (running.length <= seg.depth) running.push(running[running.length - 1]);
     const target = cdTargetIn(seg.text);
     if (target) {
