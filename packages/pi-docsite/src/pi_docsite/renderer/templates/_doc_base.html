@@ -57,7 +57,7 @@
                     <kbd>&#8984;K</kbd> Search
                 </button>
                 <a href="{{ badge_url }}" target="_blank" rel="noopener" class="docsfy-badge" title="documentation">
-                    ⚡ {{ badge_head }}{% if badge_accent %}<span class="brand-accent">{{ badge_accent }}</span>{% endif %}
+                    ⚡ {{ BADGE_HEAD }}{% if BADGE_ACCENT %}<span class="brand-accent">{{ BADGE_ACCENT }}</span>{% endif %}
                 </a>
                 {% if repo_url and repo_url.startswith('http') %}
                 <a href="{{ repo_url }}" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="{{ repo_url }}">

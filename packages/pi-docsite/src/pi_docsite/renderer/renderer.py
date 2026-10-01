@@ -573,7 +573,7 @@ def render_page(
     env = _get_jinja_env()
     template = env.get_template("page.html")
     content_html, toc_html = _md_to_html(markdown_content)
-    badge_head, badge_accent = _badge_parts(badge_label)
+    BADGE_HEAD, BADGE_ACCENT = _badge_parts(badge_label)
     return template.render(
         title=page_title,
         project_name=project_name,
@@ -586,8 +586,8 @@ def render_page(
         next_page=next_page,
         repo_url=repo_url,
         badge_url=_safe_badge_url(repo_url),
-        badge_head=badge_head,
-        badge_accent=badge_accent,
+        BADGE_HEAD=BADGE_HEAD,
+        BADGE_ACCENT=BADGE_ACCENT,
         search_index=search_index,
         asset_version=_asset_version(),
         version=version,
@@ -605,7 +605,7 @@ def render_index(
 ) -> str:
     env = _get_jinja_env()
     template = env.get_template("index.html")
-    badge_head, badge_accent = _badge_parts(badge_label)
+    BADGE_HEAD, BADGE_ACCENT = _badge_parts(badge_label)
     return template.render(
         title=project_name,
         project_name=project_name,
@@ -614,8 +614,8 @@ def render_index(
         repo_url=repo_url,
         current_slug="",
         badge_url=_safe_badge_url(repo_url),
-        badge_head=badge_head,
-        badge_accent=badge_accent,
+        BADGE_HEAD=BADGE_HEAD,
+        BADGE_ACCENT=BADGE_ACCENT,
         asset_version=_asset_version(),
         search_index=search_index,
         version=version,
@@ -628,7 +628,9 @@ def _badge_parts(label: str) -> tuple[str, str]:
     Returns ``(head, accent)``; ``accent`` is empty when the label has no '-'.
     """
     head, sep, tail = (label or DEFAULT_BADGE_LABEL).partition("-")
-    return (head, f"{sep}{tail}") if sep else (head, "")
+    parts = (head, f"{sep}{tail}") if sep else (head, "")
+    logger.debug("badge_parts: label=%s head=%s accent=%s", label, parts[0], parts[1])
+    return parts
 
 
 def _safe_badge_url(repo_url: str) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pi_docsite.generate as generate_docs
@@ -100,22 +101,72 @@ def test_main_is_idempotent(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     assert first == second
 
 
-def test_skill_notice_advertises_the_shipped_skill(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    home = tmp_path / "home"
-    monkeypatch.setattr(
-        generate_docs,
-        "AGENT_SKILL_DIRS",
-        tuple(home / a / "skills" / "pi-docsite" for a in ("a", "b")),
-    )
+def test_skill_notice_names_the_packaged_skill_when_absent(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    monkeypatch.setattr(generate_docs, "AGENT_SKILL_DIRS", (tmp_path / "home" / "skills" / "pi-docsite",))
 
-    # Nothing installed: the notice must name the packaged SKILL.md so the LLM
-    # reading the build output can act on it.
-    notice = generate_docs._skill_notice()
+    notice = generate_docs._skill_notice(docs)
     assert notice is not None
     assert "SKILL.md" in notice
-    assert str(home) in notice
 
-    installed = home / "a" / "skills" / "pi-docsite"
+
+def test_skill_notice_is_silent_for_a_home_dir_install(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    installed = tmp_path / "home" / "skills" / "pi-docsite"
+    monkeypatch.setattr(generate_docs, "AGENT_SKILL_DIRS", (installed,))
+    assert generate_docs._skill_notice(docs) is not None
+
     installed.mkdir(parents=True)
-    (installed / "SKILL.md").write_text("# pi-docsite")
-    assert generate_docs._skill_notice() is None
+    (installed / "SKILL.md").write_text("# pi-docsite", encoding="utf-8")
+    assert generate_docs._skill_notice(docs) is None
+
+
+def test_skill_detection_covers_the_documented_home_locations() -> None:
+    # The shipped tuple once omitted ~/.agents/skills/, so a skill installed there
+    # still produced the "not installed for any agent" notice on every build.
+    tails = {str(d.parent).removeprefix(str(Path.home())).lstrip("/") for d in generate_docs.AGENT_SKILL_DIRS}
+    assert ".agents/skills" in tails
+    assert ".pi/agent/skills" in tails
+    assert ".claude/skills" in tails
+
+
+def test_skill_notice_is_silent_for_a_project_local_install(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    monkeypatch.setattr(generate_docs, "AGENT_SKILL_DIRS", ())
+    local = docs.parent / ".pi" / "skills" / "pi-docsite"
+    local.mkdir(parents=True)
+    (local / "SKILL.md").write_text("# pi-docsite", encoding="utf-8")
+    assert generate_docs._skill_notice(docs) is None
+
+
+def test_cli_badge_label_reaches_pages_and_index(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    monkeypatch.setattr(generate_docs, "AGENT_SKILL_DIRS", ())
+
+    assert generate_docs.main(["--badge-label", "acme-docs"]) == 0
+    assert '⚡ acme<span class="brand-accent">-docs</span>' in (docs / "index.html").read_text(encoding="utf-8")
+    assert '⚡ acme<span class="brand-accent">-docs</span>' in (docs / "alpha.html").read_text(encoding="utf-8")
+
+
+def test_cli_badge_label_does_not_leak_into_the_next_build(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    # BADGE_LABEL doubled as the parser default, so one custom-label build made
+    # that label sticky for every later in-process main() call.
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    monkeypatch.setattr(generate_docs, "AGENT_SKILL_DIRS", ())
+
+    assert generate_docs.main(["--badge-label", "acme"]) == 0
+    assert generate_docs.main([]) == 0
+    html = (docs / "index.html").read_text(encoding="utf-8")
+    assert "acme" not in html
+    assert "⚾" not in html
+    assert '⚡ pi<span class="brand-accent">-docsite</span>' in html
+
+
+def test_published_packages_declare_a_readme() -> None:
+    # Both PyPI wheels shipped an empty long_description until `readme` was added.
+    root = Path(__file__).resolve().parents[3]
+    for rel in ("packages/pi-docsite/pyproject.toml", "packages/pi-sidecar/pyproject.toml"):
+        data = tomllib.loads((root / rel).read_text(encoding="utf-8"))
+        readme = data["project"].get("readme")
+        assert readme, f"{rel} declares no readme, so its PyPI page has no description"
+        assert (root / rel).parent.joinpath(readme).is_file(), f"{rel} points at a missing {readme}"

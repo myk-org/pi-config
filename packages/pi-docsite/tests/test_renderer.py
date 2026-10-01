@@ -513,6 +513,8 @@ def test_render_page_badge_is_not_hardcoded_to_pi_config() -> None:
     assert 'brand-accent">-config<' not in default_html
     assert 'brand-accent">-docsite<' in default_html
 
+
+def test_render_page_badge_renders_a_dashless_label_unaccented() -> None:
     custom = render_page(
         markdown_content="# T",
         page_title="T",
