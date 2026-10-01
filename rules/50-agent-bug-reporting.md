@@ -26,6 +26,7 @@ This rule applies ONLY to agents defined in this repository (`agents/` directory
 - docker-expert
 - ts-expert
 - git-expert
+- conflict-resolver
 - github-expert
 - go-expert
 - java-expert

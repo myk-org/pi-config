@@ -405,6 +405,33 @@ export function hasGitSub(command: string, sub: string): boolean {
   ).test(command);
 }
 
+/**
+ * Git commands that write a *resolution* of an in-progress merge/rebase/
+ * cherry-pick. Inspecting a conflicted tree (`git status`, `git diff`) and
+ * backing out (`--abort`) are deliberately not in this set.
+ */
+export function isConflictResolutionCommand(command: string): boolean {
+  return (
+    hasGitSub(command, "add") ||
+    hasGitSub(command, "restore") ||
+    /\bgit\b[\s\S]*\bcheckout\b[\s\S]*--(ours|theirs|mine)\b/.test(command) ||
+    /\bgit\b[\s\S]*\b(merge|rebase|cherry-pick)\b[\s\S]*--continue\b/.test(command)
+  );
+}
+
+/** Files with an unmerged index entry (merge/rebase/cherry-pick in progress). */
+export function listUnmergedFiles(cwd?: string): string[] {
+  const r = runGit(["ls-files", "--unmerged"], cwd);
+  if (r.code !== 0 || !r.stdout) return [];
+  const files = new Set<string>();
+  for (const line of r.stdout.split("\n")) {
+    // <mode> <sha> <stage>\t<path>
+    const path = line.slice(line.indexOf("\t") + 1).trim();
+    if (path) files.add(path);
+  }
+  return [...files];
+}
+
 export const DANGEROUS = [
   /\brm\s+(?:-[a-zA-Z]+\s+)*(-[a-zA-Z]*r[a-zA-Z]*|--recursive)/i,
   /\bsudo\b/i,

@@ -1,6 +1,6 @@
 # Agent Reference
 
-Pi ships 29 specialist agents in `agents/`. Each one is a markdown file with YAML frontmatter (`name`, `description`, `tools`) followed by a system prompt. This page lists every bundled agent, what its description says, and how the orchestrator decides which one to use.
+Pi ships 30 specialist agents in `agents/`. Each one is a markdown file with YAML frontmatter (`name`, `description`, `tools`) followed by a system prompt. This page lists every bundled agent, what its description says, and how the orchestrator decides which one to use.
 
 Specialists are meant to be **delegated to, not imitated**. The orchestrator reads the routing rules, spawns the matching specialist through the `subagent` tool, and merges the result — it does not do the specialist's job inline.
 
@@ -10,7 +10,7 @@ Specialists are meant to be **delegated to, not imitated**. The orchestrator rea
 
 Routing is defined in `rules/10-agent-routing.md`, not by the model guessing from agent names. Three layers:
 
-1. **Domain-to-agent table.** File types and tools map to a named agent — `.py` → `python-expert`, `.go` → `go-expert`, JS/TS/React/Vue/Angular → `ts-expert`, `.java` → `java-expert`, `.sh` → `bash-expert`, `.md` → `technical-documentation-writer`, Docker → `docker-expert`, Kubernetes/OpenShift → `kubernetes-expert`, Jenkins/CI/Groovy → `jenkins-expert`, local git → `git-expert`, GitHub (PRs, issues, releases, workflows) → `github-expert`, external library docs → `docs-fetcher`, running or analyzing tests → `test-runner`, writing tests → `test-automator`, debugging → `debugger`, API docs → `api-documenter`, external-repo security audit → `security-auditor`.
+1. **Domain-to-agent table.** File types and tools map to a named agent — `.py` → `python-expert`, `.go` → `go-expert`, JS/TS/React/Vue/Angular → `ts-expert`, `.java` → `java-expert`, `.sh` → `bash-expert`, `.md` → `technical-documentation-writer`, Docker → `docker-expert`, Kubernetes/OpenShift → `kubernetes-expert`, Jenkins/CI/Groovy → `jenkins-expert`, local git → `git-expert`, GitHub (PRs, issues, releases, workflows) → `github-expert`, unresolved merge/rebase conflicts → `conflict-resolver`, external library docs → `docs-fetcher`, running or analyzing tests → `test-runner`, writing tests → `test-automator`, debugging → `debugger`, API docs → `api-documenter`, external-repo security audit → `security-auditor`.
 
 2. **Intent overrides the tool.** The same file type routes differently by goal: running existing Python tests → `test-runner`; fixing Python production code after failures → `python-expert`; creating or changing Python tests → `test-automator`; editing Python production files → `python-expert` even via `sed`/`awk`; creating a PR → `github-expert`, never `git-expert`.
 
@@ -45,14 +45,15 @@ Full `read, write, edit, bash` — they implement, not just advise.
 
 ## Version control and forges
 
-These two are split deliberately: `git-expert` is local repository work, `github-expert` is everything that talks to the GitHub API through `gh`.
+These two are split deliberately: `git-expert` is local repository work, `github-expert` is everything that talks to the GitHub API through `gh`. `conflict-resolver` is split out of `git-expert` because it is the one git task that needs real judgment: `git-expert` is commonly pinned to a small model, so when a merge, rebase, or cherry-pick leaves unmerged paths, `git-expert` is blocked from writing a resolution (`git add`, `git restore`, `git checkout --ours/--theirs`, `merge|rebase --continue`) and hands off to `conflict-resolver`.
 
 | Agent | Description | Tools |
 | :--- | :--- | :--- |
 | [`git-expert`](#git-expert) | Local git operations including commits, branching, merging, rebasing, stash, and resolving git issues. Never uses --no-verify. For GitHub platform operations (PRs, issues, releases), use github-expert instead. | `read, bash` |
+| [`conflict-resolver`](#conflict-resolver) | Resolve git merge/rebase/cherry-pick conflicts by reading commit intent on both sides. git-expert hands off here; it is blocked from resolving them. | `read, bash, edit, write` |
 | [`github-expert`](#github-expert) | GitHub platform operations including PRs, issues, releases, repos, and workflows. Uses the gh CLI for all GitHub API interactions. | `read, bash` |
 
-Both are read-only on the file system, but `bash` is enough to mutate branches and open PRs.
+Both `git-expert` and `github-expert` are read-only on the file system, but `bash` is enough to mutate branches and open PRs. `conflict-resolver` writes, because resolving a conflict means editing the conflicted files.
 
 ## Testing
 
@@ -121,7 +122,7 @@ Spawned together by `/issue-review`, all read-only, all returning JSON findings 
 
 ## Tool access at a glance
 
-- **Full access** (`read, write, edit, bash`) — 12 agents: the five language specialists, `docker-expert`, `kubernetes-expert`, `jenkins-expert`, `api-documenter`, `technical-documentation-writer`, `test-automator`, `worker`.
+- **Full access** (`read, write, edit, bash`) — 13 agents: the five language specialists, `docker-expert`, `kubernetes-expert`, `jenkins-expert`, `api-documenter`, `technical-documentation-writer`, `test-automator`, `conflict-resolver`, `worker`.
 - **Read-only** (`read, bash`) — the other 17: every reviewer, every issue reviewer, `git-expert`, `github-expert`, `test-runner`, `debugger`, `planner`, `scout`, `docs-fetcher`, `security-auditor`.
 
 Restricting `tools:` is the first lever when a bundled specialist has more authority than you want; see [Managing Custom Agents](managing-custom-agents.html).

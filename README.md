@@ -48,7 +48,7 @@ Single extension that provides:
 | -------------- | --------------------------------------------------------------------------------------------------------------- |
 | Languages      | python-expert, go-expert, ts-expert, java-expert, bash-expert                                                   |
 | Infrastructure | docker-expert, kubernetes-expert, jenkins-expert                                                                |
-| Dev workflow   | git-expert, github-expert, test-runner, test-automator, debugger                                                |
+| Dev workflow   | git-expert, github-expert, conflict-resolver, test-runner, test-automator, debugger                           |
 | Documentation  | technical-documentation-writer, api-documenter, docs-fetcher                                                    |
 | Code review    | code-reviewer-quality, code-reviewer-guidelines, code-reviewer-security, code-reviewer-docs, code-reviewer-spec |
 | Security       | security-auditor                                                                                                |

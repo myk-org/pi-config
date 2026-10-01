@@ -14,6 +14,7 @@
 | Kubernetes/OpenShift | `kubernetes-expert` |
 | Jenkins/CI/Groovy | `jenkins-expert` |
 | Git operations (local) | `git-expert` |
+| Git merge/rebase/cherry-pick conflicts | `conflict-resolver` (git-expert is blocked from resolving them) |
 | GitHub (PRs, issues, releases, workflows) | `github-expert` |
 | Running existing tests / analyzing failures | `test-runner` |
 | Creating or modifying tests / test strategy | `test-automator` |
@@ -32,6 +33,7 @@ Route based on the task intent, not just the tool being used.
 - Creating or changing Python tests? → `test-automator`
 - Editing Python production files? → `python-expert` (even with sed/awk)
 - Creating a PR? → `github-expert` (not git-expert)
+- A merge/rebase/cherry-pick left unmerged paths? → `conflict-resolver` (git-expert is mechanically blocked from resolving them; report the conflict and delegate)
 - External library docs? → `docs-fetcher` (not direct fetch)
 
 ## Documentation Routing (MANDATORY)

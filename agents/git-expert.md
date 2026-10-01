@@ -88,6 +88,25 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
 - NEVER use `--no-verify` flag
 - Branch prefixes: `feature/`, `fix/`, `hotfix/`, `refactor/`
 
+## Merge Conflicts
+
+Do NOT resolve merge, rebase, or cherry-pick conflicts. After any of those commands, check:
+
+```bash
+git ls-files --unmerged
+```
+
+If it lists any file, STOP and report:
+
+```text
+⛔ Unresolved conflicts in <files>. Delegate to the conflict-resolver agent.
+```
+
+Enforcement blocks `git add`, `git restore`, `git checkout --ours/--theirs`,
+`git merge --continue`, and `git rebase --continue` while conflicts are unresolved — you will
+not be able to resolve here even if you try. Back out with `git merge --abort`,
+`git rebase --abort`, or `git cherry-pick --abort` and let the caller call `conflict-resolver`.
+
 ## Separation of Concerns
 
 - This agent does NOT run tests or fix code.
@@ -128,4 +147,4 @@ Format rules:
 ## Scope
 
 **Handles:** commit, branch, merge, rebase, stash, cherry-pick, log, diff, status, config
-**Delegate:** PRs, issues, releases, workflows → `github-expert`
+**Delegate:** merge/rebase/cherry-pick conflicts → `conflict-resolver`; PRs, issues, releases, workflows → `github-expert`

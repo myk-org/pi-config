@@ -24,7 +24,9 @@ import {
   hasGitSub,
   isBranchAhead,
   isBranchMerged,
+  isConflictResolutionCommand,
   isGitRepo,
+  listUnmergedFiles,
   runGit,
 } from "./git-helpers.js";
 import { spawnSync } from "node:child_process";
@@ -557,6 +559,25 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         return {
           block: true,
           reason: "⛔ git commit/push blocked. Use git-expert agent for commit and push operations.",
+        };
+      }
+    }
+
+    // Conflict resolution belongs to conflict-resolver. git-expert is routinely
+    // pinned to a small model, which cannot judge intent on both sides of a
+    // conflict, so the handoff is enforced here rather than left to the prompt.
+    // Reads (git status/diff) and `--abort` stay allowed.
+    if (process.env.PI_AGENT_NAME === "git-expert" && isConflictResolutionCommand(command)) {
+      const conflicted = listUnmergedFiles(resolveEffectiveCwd(command, ctx.cwd));
+      if (conflicted.length > 0) {
+        log.info("conflict_resolution_block", conflicted.join(", "));
+        return {
+          block: true,
+          reason:
+            `⛔ Unresolved conflicts in ${conflicted.join(", ")}. Do not resolve them in git-expert — ` +
+            `stop, report this message to the caller, and have it delegate to the conflict-resolver ` +
+            `agent (subagent(agent="conflict-resolver")). To back out instead: ` +
+            `git merge --abort / git rebase --abort / git cherry-pick --abort.`,
         };
       }
     }

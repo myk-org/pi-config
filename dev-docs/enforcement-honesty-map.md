@@ -18,6 +18,9 @@ Declares what is actually code-enforced versus prompt-only. A tier is about
 - Verifiers: `tool_called <tool> before <command>` at `turn_end`
 - Remote script exec blocks: `curl \| bash`, nested `$(bash -c "$(curl)")`, etc. (`checkRemoteExecBlock`)
 - `comment_signature`: injects `Assisted-by: PI (<model>)` into `gh pr|issue create|comment|edit` `--body` / heredoc (`injectGhBodySignature`)
+- Conflict handoff: in `git-expert`, `git add` / `git restore` / `git checkout --ours|--theirs` /
+  `merge|rebase --continue` are blocked while `git ls-files --unmerged` is non-empty, with a message
+  pointing at the `conflict-resolver` agent (`isConflictResolutionCommand`, `listUnmergedFiles`)
 
 Inventory a project’s code-tier memories:
 
