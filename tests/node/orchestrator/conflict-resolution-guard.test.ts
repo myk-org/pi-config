@@ -454,7 +454,11 @@ describe("conflict-resolution guard", () => {
     process.env.PI_SUBAGENT_CHILD = "1";
     const result = await run("GIT_DIR=/somewhere/.git git add a.txt", root);
     assert.equal(result?.block, true);
-    assert.match(result!.reason, /selects the Git index/);
+    assert.match(result!.reason, /selects the Git repository or index/);
+
+    const viaOption = await run("git --git-dir=/somewhere/.git --work-tree=/somewhere add a.txt", root);
+    assert.equal(viaOption?.block, true);
+    assert.match(viaOption!.reason, /--git-dir/);
     rmSync(root, { recursive: true, force: true });
   });
 

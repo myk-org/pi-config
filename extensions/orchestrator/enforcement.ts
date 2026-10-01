@@ -583,8 +583,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         return {
           block: true,
           reason:
-            `⛔ ${envOverride} selects the Git index for this command, so the conflict state cannot be ` +
-            "verified. Do not resolve conflicts in git-expert — abort and delegate to the " +
+            `⛔ ${envOverride} selects the Git repository or index for this command, so the conflict state ` +
+            "cannot be verified. Do not resolve conflicts in git-expert — abort and delegate to the " +
             `conflict-resolver agent (subagent(agent="conflict-resolver")).`,
         };
       }

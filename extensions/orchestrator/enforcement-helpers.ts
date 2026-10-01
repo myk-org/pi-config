@@ -246,11 +246,24 @@ function gitCsIn(segment: string): string[] {
   return values;
 }
 
-/** A Git environment variable that selects the repository or index. */
-function gitEnvOverride(command: string): string | null {
-  const m = /\b(GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR)\s*=/.exec(command);
-  if (m) enfLog.warn("git_env_override", "var", m[1]);
-  return m ? m[1] : null;
+/**
+ * Anything that points git at a repository other than the working directory: the
+ * GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE environment variables, or the equivalent
+ * long options. Their target is an index path, not a directory the walker can
+ * enumerate, so the caller refuses rather than checks the wrong places.
+ */
+function gitIndexOverride(command: string): string | null {
+  const env = /\b(GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR)\s*=/.exec(command);
+  if (env) {
+    enfLog.warn("git_index_override", "source", env[1]);
+    return env[1];
+  }
+  const opt = /--git-dir(?:=|\s)/.test(command) ? "--git-dir"
+    : /--work-tree(?:=|\s)/.test(command) ? "--work-tree"
+    : /--namespace(?:=|\s)/.test(command) ? "--namespace"
+    : null;
+  if (opt) enfLog.warn("git_index_override", "source", opt);
+  return opt;
 }
 
 /**
@@ -270,7 +283,7 @@ export function conflictCandidateDirs(
   command: string,
   sessionCwd: string,
 ): { all: string[]; envOverride: string | null } {
-  const envOverride = gitEnvOverride(command);
+  const envOverride = gitIndexOverride(command);
   const dirs = new Set<string>();
   // running[d] is the directory of the shell at paren depth d.
   const running: string[] = [sessionCwd];
