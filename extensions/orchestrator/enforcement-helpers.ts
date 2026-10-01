@@ -75,6 +75,8 @@ interface ShellSegment {
   start: number;
   depth: number;
   conditional: boolean;
+  /** `cmd &` runs the command in a subshell, so its cd does not move this shell. */
+  backgrounded?: boolean;
 }
 
 function unquotedSegments(command: string): ShellSegment[] {
@@ -83,8 +85,14 @@ function unquotedSegments(command: string): ShellSegment[] {
   let quote: string | null = null;
   let depth = 0;
   let conditional = false;
-  const push = (end: number, startAt: number, cond: boolean) => {
-    segments.push({ text: command.slice(startAt, end), start: startAt, depth, conditional: cond });
+  const push = (end: number, startAt: number, cond: boolean, backgrounded = false) => {
+    segments.push({
+      text: command.slice(startAt, end),
+      start: startAt,
+      depth,
+      conditional: cond,
+      ...(backgrounded ? { backgrounded: true } : {}),
+    });
   };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
@@ -117,8 +125,10 @@ function unquotedSegments(command: string): ShellSegment[] {
       push(i, start, conditional);
       conditional = false;
       start = i + 1;
-    } else if (ch === ";" || ch === "|") {
-      push(i, start, conditional);
+    } else if (ch === "&" || ch === ";" || ch === "|") {
+      // A lone `&` backgrounds the command: it runs in a subshell, so whatever
+      // directory change it makes is not the foreground shell's.
+      push(i, start, conditional, ch === "&");
       conditional = false;
       start = i + 1;
     } else if (ch === "(") {
@@ -329,18 +339,23 @@ export function conflictCandidateDirs(
     const target = cdTargetIn(seg.text);
     if (target && dynamic(target) && !dynamicPath) dynamicPath = target;
     if (target) {
-      if (seg.conditional) {
-        // Behind a short-circuit the cd may never run, so the directory the
-        // shell is in *before* it counts too: `false && cd clean; git add x`
-        // stages where it already was.
+      if (seg.conditional || seg.backgrounded) {
+        // Behind a short-circuit the cd may never run, and a backgrounded cd
+        // runs in its own subshell — so in both cases the directory the shell is
+        // in *before* it is where a later command actually stages.
         dirs.add(running[seg.depth]);
       }
       const from = running[seg.depth];
       // `cd -` goes to OLDPWD as it stands *before* this change, and only then
       // does the previous directory become where we are now.
       const to = target === "-" ? previous : applyCd(from, target);
-      previous = from;
-      running[seg.depth] = to;
+      if (seg.backgrounded) {
+        // The subshell moves; this shell does not.
+        dirs.add(to);
+      } else {
+        previous = from;
+        running[seg.depth] = to;
+      }
     }
     if (segmentRunsGit(seg.text)) {
       const base = running[seg.depth];

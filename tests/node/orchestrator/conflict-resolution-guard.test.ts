@@ -701,6 +701,21 @@ describe("conflict-resolution guard", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("does not follow a backgrounded cd into the foreground", async () => {
+    // `cd clean &` runs in a subshell, so the staging happens where we already are.
+    const root = mkdtempSync(join(tmpdir(), "conflict-background-"));
+    mkdirSync(join(root, "clean"));
+    gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
+    conflictedRepo(root);
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("cd clean & git add a.txt", root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("checks both directories when a cd may be skipped", async () => {
     // `false && cd clean` never runs, so the staging happens where we already are.
     const root = mkdtempSync(join(tmpdir(), "conflict-skipped-cd-"));
