@@ -101,8 +101,10 @@ User switches log level on the fly via settings — debug must show everything n
   `tests/python/test_install.py`. Allowed: this repo for *developers*; optional
   `docker build` from a clone; third-party git (e.g. mcp-proxy).
 - Docs: `docs/*.md` are the hand-written source; `.html`, `llms*.txt`, and
-  `search-index.json` are generated from them by `uv run --group docs python
-  scripts/generate_docs.py` — never hand-edit the generated files
+  `search-index.json` are generated from them by `uv run --group docs pi-docsite
+  --docs-dir docs --tagline "Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar."`
+  — never hand-edit the generated files. `--tagline` is not optional in practice: omitting it
+  blanks the meta description and tagline on every page.
 - **CLI specialist agents (container):** `entrypoint.sh` runs
   `scripts/symlink-cli-specialists.sh` from the npm unpack
   (`~/.pi/agent/npm/node_modules/pi-orchestrator-config`) to `ln -sfn`
@@ -286,7 +288,8 @@ generated and committed.
 Regenerate after changing any `docs/*.md`:
 
 ```bash
-uv run --group docs python scripts/generate_docs.py
+uv run --group docs pi-docsite --docs-dir docs \
+  --tagline "Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar."
 ```
 
 The output is deterministic: repeated runs are byte-identical, so a rebuild that shows

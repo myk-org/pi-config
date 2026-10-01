@@ -12,6 +12,8 @@ export interface CronStatusTaskView {
   intervalMs?: number;
   atHour?: number;
   atMinute?: number;
+  /** "provider/model-id" or bare "model-id"; absent means the session default. */
+  model?: string;
   createdAt: number;
   lastRun?: number;
   nextRun?: number;
@@ -97,6 +99,7 @@ export function toCronStatusTaskView(
     intervalMs?: number;
     atHour?: number;
     atMinute?: number;
+    model?: string;
     createdAt: number;
     lastRun?: number;
     nextRun?: number;
@@ -116,6 +119,7 @@ export function toCronStatusTaskView(
     intervalMs: task.intervalMs,
     atHour: task.atHour,
     atMinute: task.atMinute,
+    model: task.model,
     createdAt: task.createdAt,
     lastRun: task.lastRun,
     nextRun: task.nextRun,

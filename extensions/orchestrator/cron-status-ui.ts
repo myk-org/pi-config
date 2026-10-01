@@ -116,6 +116,9 @@ export async function openCronStatusOverlay(
               `${t.fg("muted", "Next run")}  ${formatNextRunLabel(current, now)}`,
               `${t.fg("muted", "Created")}   ${new Date(current.createdAt).toLocaleString()}`,
             ];
+            if (current.model) {
+              lines.push(`${t.fg("muted", "Model")}    ${current.model}`);
+            }
             if (current.sessionLabel) {
               lines.push(
                 `${t.fg("muted", "Session")}  ${current.sessionLabel}`,

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { parseProcStartTime } from "./utils.js";
+import { parseModelOverride } from "./parse-model-override.js";
 import { createLogger } from "../shared/logger.js";
 
 export type CronScope = "session" | "project";
@@ -16,6 +17,8 @@ export interface DurableCronTask {
   intervalMs?: number;
   atHour?: number;
   atMinute?: number;
+  /** "provider/model-id" or bare "model-id"; absent means inherit. */
+  model?: string;
   createdAt: number;
   lastRun?: number;
   nextRun?: number;
@@ -182,6 +185,7 @@ export function validateDurableCronTask(task: unknown): asserts task is DurableC
   if (value.atHour !== undefined && (!Number.isInteger(value.atHour) || value.atHour < 0 || value.atHour > 23)) throw new Error("Invalid durable cron hour");
   if (value.atMinute !== undefined && (!Number.isInteger(value.atMinute) || value.atMinute < 0 || value.atMinute > 59 || value.atHour === undefined)) throw new Error("Invalid durable cron minute");
   if (value.intervalMs === undefined && value.atHour === undefined) throw new Error("Invalid durable cron schedule");
+  if (value.model !== undefined && !parseModelOverride(value.model)) throw new Error("Invalid durable cron model");
   if ((value.lastRun !== undefined && !Number.isFinite(value.lastRun)) || (value.nextRun !== undefined && !Number.isFinite(value.nextRun))) throw new Error("Invalid durable cron timestamp");
 }
 function validate(tasks: DurableCronTask[]) { for (const task of tasks) validateDurableCronTask(task); }
