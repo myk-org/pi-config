@@ -191,6 +191,17 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand("cat <<'x git add'\nbody\nx git add"), false);
   });
 
+  it("treats a here-string as data, not a heredoc", () => {
+    assert.equal(isConflictResolutionCommand('cat <<<"git add a.txt"'), false);
+    assert.equal(isConflictResolutionCommand("cat <<< 'git add a.txt'"), false);
+    // ...but a substitution inside one still runs.
+    assert.equal(isConflictResolutionCommand('cat <<<"$(git add a.txt)"'), true);
+  });
+
+  it("classifies a resolution inside process substitution", () => {
+    assert.equal(isConflictResolutionCommand("diff <(git add a.txt) <(git status)"), true);
+  });
+
   it("does not treat a heredoc token in a comment as an opener", () => {
     const cmd = "# see <<EOF\ngit add a.txt\nEOF";
     assert.equal(isConflictResolutionCommand(cmd), true);

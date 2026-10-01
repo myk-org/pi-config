@@ -516,6 +516,7 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
   let heredocs = 0;
   let continuations = 0;
   let comments = 0;
+  let hereStrings = 0;
 
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i];
@@ -535,6 +536,26 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
       let end = cmd.indexOf("\n", i);
       if (end === -1) end = cmd.length;
       comments++;
+      i = end;
+      continue;
+    }
+
+    // A here-string (`<<<word`) is one data argument, not a heredoc. Its text
+    // is inert, but a substitution inside it still runs, so scan it for those.
+    if (ch === "<" && cmd[i + 1] === "<" && cmd[i + 2] === "<") {
+      let j = i + 3;
+      while (j < cmd.length && /[ \t]/.test(cmd[j])) j++;
+      const quote = cmd[j];
+      let end = j;
+      if (quote === "'" || quote === '"') {
+        end = closingQuote(cmd, j, quote);
+        add(` ${executableText(cmd.slice(j + 1, end), depth + 1, quote === '"' ? "body" : "literal-body")} `);
+        hereStrings++;
+      } else {
+        while (end < cmd.length && !/[\s;&|]/.test(cmd[end])) end++;
+        add(` ${executableText(cmd.slice(j, end), depth + 1, "body")} `);
+        hereStrings++;
+      }
       i = end;
       continue;
     }
@@ -649,7 +670,7 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
 
     if (keepLiterals) add(ch);
   }
-  gitLog.debug("shell_scan", "depth", depth, "mode", mode, "heredocs", heredocs, "substitutions", substitutions, "continuations", continuations, "comments", comments);
+  gitLog.debug("shell_scan", "depth", depth, "mode", mode, "heredocs", heredocs, "substitutions", substitutions, "continuations", continuations, "comments", comments, "here_strings", hereStrings);
   return out;
 }
 
