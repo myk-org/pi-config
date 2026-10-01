@@ -785,6 +785,17 @@ export function isConflictResolutionCommand(command: string): boolean {
  * enforcing a block must fail closed on `ok: false` — treating an unreadable
  * index as an empty one turns a broken check into a silent pass.
  */
+/**
+ * Is this directory inside a git work tree at all? Distinguishes "no repository
+ * yet" — `git init && git add -A`, a fresh clone — from "a repository whose
+ * index cannot be read", which is the case worth failing closed on.
+ */
+export function isInsideGitWorkTree(cwd?: string): boolean {
+  const r = runGit(["rev-parse", "--is-inside-work-tree"], cwd);
+  gitLog.debug("inside_work_tree", "code", r.code);
+  return r.code === 0 && r.stdout.trim() === "true";
+}
+
 export function listUnmergedFiles(cwd?: string): { ok: boolean; files: string[] } {
   // `-- :/` is the whole repository, and `--full-name` makes the paths
   // repo-relative. Without them git lists only what is under the current

@@ -421,14 +421,30 @@ describe("conflict-resolution guard", () => {
   });
 
   it("blocks a resolution command when the conflict state cannot be read", async () => {
-    // Fail closed: a broken lookup must not read as "no conflict".
-    const notARepo = mkdtempSync(join(tmpdir(), "conflict-norepo-"));
+    // Inside a repository whose index will not answer: fail closed.
+    const root = mkdtempSync(join(tmpdir(), "conflict-badindex-"));
+    gitIn(root, ["init", "-q", "-b", "main"]);
+    writeFileSync(join(root, "keep.txt"), "clean\n");
+    gitIn(root, ["add", "keep.txt"]);
+    gitIn(root, ["commit", "-qm", "clean"]);
+    writeFileSync(join(root, ".git", "index"), "not an index");
+
     process.env.PI_AGENT_NAME = "git-expert";
     process.env.PI_SUBAGENT_CHILD = "1";
-    const result = await run("git add a.txt", notARepo);
+    const result = await run("git add keep.txt", root);
     assert.equal(result?.block, true);
     assert.match(result!.reason, /conflict state is unknown/);
-    rmSync(notARepo, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("allows staging where there is no repository yet", async () => {
+    // `git init && git add -A` has nothing to conflict with.
+    const fresh = mkdtempSync(join(tmpdir(), "conflict-fresh-"));
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("git init -q && git add -A", fresh);
+    assert.equal(result?.block, undefined);
+    rmSync(fresh, { recursive: true, force: true });
   });
 
   it("catches a conflict selected by an attached git -C path", async () => {

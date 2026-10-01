@@ -21,6 +21,7 @@ import {
 import {
   DANGEROUS,
   getCurrentBranch,
+  isInsideGitWorkTree,
   getMainBranch,
   getProtectedBranches,
   getPrMergeStatus,
@@ -607,8 +608,10 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         // Paths are repo-relative; the directory names the repository checked.
         for (const file of lookup.files) conflicted.push(dir === ctx.cwd ? file : `${dir} → ${file}`);
       }
-      if (conflicted.length === 0 && readable === 0) {
-        // Every candidate was unreadable, so nothing was actually checked.
+      if (conflicted.length === 0 && readable === 0 && all.some((dir) => isInsideGitWorkTree(dir))) {
+        // Inside a repository whose index will not answer, so nothing was checked.
+        // A directory that is not a repository at all (`git init && git add -A`)
+        // has no conflicts to protect and is left alone.
         log.warn("conflict_lookup_failed", all.join(", "));
         return {
           block: true,
