@@ -581,6 +581,10 @@ export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"):
       let end = cmd.indexOf("\n", i);
       if (end === -1) end = cmd.length;
       comments++;
+      // The newline that ends a comment is a command boundary like any other:
+      // dropping it would join the next command onto the previous segment's text
+      // and read `note; git add x` as one segment starting with `note`.
+      if (end < cmd.length) add("\n");
       i = end;
       continue;
     }
@@ -700,12 +704,14 @@ export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"):
       if (isScriptArgument(cmd, start)) {
         // Newlines, not spaces: the script is a command of its own, so a cd or
         // git inside it starts a segment rather than trailing an option word.
-        if (keepSubstitutions) add(`\n(${executableText(content, depth + 1)})\n`);
+        if (keepSubstitutions) add(`\n(${executableText(decodeAnsiC(content), depth + 1)})\n`);
         else add(" _ ");
       } else if (glued || /(?:\bgit|\bcd|\bpushd|\bchdir|-C)$/.test(out.trimEnd())) {
         // The subcommand or a directory argument, quoted: `git 'add' x`,
-        // `cd "work tree"`, `git -C "my repo" add`.
-        add(content);
+        // `cd 'work tree'`, `git -C 'my repo' add`. A directory is re-quoted so a
+        // name with a space stays one word for the directory walker.
+        const isDirArg = /(?:\bcd|\bpushd|\bchdir|-C)$/.test(out.trimEnd());
+        add(isDirArg ? `"${content}"` : content);
       } else {
         add(" _ ");
       }
@@ -749,7 +755,7 @@ export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"):
 
 
 /** Shell keywords and `VAR=value` prefixes that precede a segment's command. */
-const SEGMENT_SKIP = new Set(["if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "{", "}", "(", ")"]);
+const SEGMENT_SKIP = new Set(["if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "{", "}", "(", ")", "function", "coproc"]);
 
 /**
  * Words after which a `git` token is still executed rather than merely printed:
@@ -759,10 +765,16 @@ const SEGMENT_SKIP = new Set(["if", "then", "else", "elif", "fi", "do", "done", 
 const GIT_EXECUTORS = new Set([
   "xargs", "find", "-exec", "-execdir", "env", "sudo", "time", "nohup", "nice",
   "ionice", "stdbuf", "setsid", "command", "exec", "timeout",
-  // Shells run whatever their argument runs, including a subshell of the command
-  // being scanned.
-  "bash", "sh", "zsh", "dash", "ksh",
+  // These run their argument as commands. A shell is deliberately absent: its
+  // script argument is emitted as a segment of its own, and treating `bash` as a
+  // wrapper instead made `bash -c 'echo git add'` look like a staging command.
+  "eval", "source", ".",
 ]);
+
+/** Is this word the git executable? A full or relative path names it just as well. */
+function isGitWord(word: string): boolean {
+  return word === "git" || word.endsWith("/git");
+}
 
 /**
  * Does this segment run git? A segment whose *command word* is git, or one that
@@ -772,12 +784,17 @@ const GIT_EXECUTORS = new Set([
 export function segmentRunsGit(segment: string): boolean {
   const words = tokenize(segment.trim());
   let k = 0;
-  while (k < words.length && (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]))) k++;
+  while (k < words.length) {
+    // `function NAME { ... }` puts the name between the keyword and the body.
+    if (words[k] === "function") { k += 2; continue; }
+    if (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) { k += 1; continue; }
+    break;
+  }
   if (k < words.length) {
     // A segment can start mid-subshell, so `(git` is still the git command.
     const head = words[k].replace(/^[()]+|[()]+$/g, "");
-    if (head === "git") return true;
-    if (GIT_EXECUTORS.has(head) && words.slice(k + 1).includes("git")) return true;
+    if (isGitWord(head)) return true;
+    if (executorRunsGit(words, k, head)) return true;
   }
   // A parenthesised group is real syntax, so a git command inside one runs even
   // when the segment starts with something else: `printf %s ((git add x))`.
@@ -801,20 +818,40 @@ function executedGitCommands(cmd: string): string[][] {
   for (const raw of cmd.split(/[\n;&|()]+/)) {
     const words = tokenize(raw.trim());
     let k = 0;
-    while (k < words.length && (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]))) k++;
+    while (k < words.length) {
+      // `function NAME { ... }` puts the name between the keyword and the body.
+      if (words[k] === "function") { k += 2; continue; }
+      if (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) { k += 1; continue; }
+      break;
+    }
     if (k >= words.length) continue;
     // A segment can start mid-subshell, so `(git` is still the git command.
     const head = words[k].replace(/^[()]+|[()]+$/g, "");
-    if (head === "git") {
+    if (isGitWord(head)) {
       kept.push(words.slice(k));
-    } else if (GIT_EXECUTORS.has(head)) {
+    } else if (executorRunsGit(words, k, head)) {
       // The wrapper runs the rest, so any git token in the segment counts.
       for (let i = k + 1; i < words.length; i++) {
-        if (words[i] === "git") kept.push(words.slice(i));
+        if (isGitWord(words[i])) kept.push(words.slice(i));
       }
     }
   }
   return kept;
+}
+
+/**
+ * Does a wrapper at `k` run git? `command -v git` prints the path instead of
+ * running anything, so a lookup is not an invocation.
+ */
+function executorRunsGit(words: string[], k: number, head: string): boolean {
+  if (!GIT_EXECUTORS.has(head)) return false;
+  if (head === "command" && /^-[vV]$/.test(words[k + 1] ?? "")) return false;
+  return words.slice(k + 1).some(isGitWord);
+}
+
+/** ANSI-C quoting turns these escapes into characters the shell really sees. */
+function decodeAnsiC(text: string): string {
+  return text.replace(/\\n/g, "\n").replace(/\\t/g, " ");
 }
 
 export function isConflictResolutionCommand(command: string): boolean {
@@ -836,7 +873,7 @@ export function isConflictResolutionCommand(command: string): boolean {
   // Subcommands come from the token stream, not from a `git ... add` pattern: an
   // option value may contain a space, so `git -C conflicted\ repo add` is `add`
   // with a two-word value, which no regex over the raw line can see past.
-  const STAGE_SUBCOMMANDS = new Set(["add", "rm", "restore", "reset"]);
+  const STAGE_SUBCOMMANDS = new Set(["add", "rm", "restore", "reset", "update-index"]);
   const SEQUENCERS = new Set(["merge", "rebase", "cherry-pick", "revert", "am"]);
   let matches = false;
   for (const words of executedGitCommands(scanned)) {
