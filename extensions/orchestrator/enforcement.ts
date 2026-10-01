@@ -28,6 +28,7 @@ import {
   hasGitSub,
   isBranchAhead,
   isBranchMerged,
+  createsAndResolvesConflict,
   isConflictResolutionCommand,
   isGitRepo,
   listUnmergedFiles,
@@ -571,6 +572,18 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // pinned to a small model, which cannot judge intent on both sides of a
     // conflict, so the handoff is enforced here rather than left to the prompt.
     // Reads (git status/diff) and `--abort` stay allowed.
+    if (process.env.PI_AGENT_NAME === "git-expert" && createsAndResolvesConflict(command)) {
+      // The index below is read *before* the command runs, so a command that
+      // starts a merge and then stages a side would pass the check and resolve
+      // the conflict it just created.
+      return {
+        block: true,
+        reason:
+          "\u26d4 This command starts a merge/rebase/cherry-pick and then stages a resolution of it. " +
+          "The conflict does not exist yet, so it cannot be checked. Delegate to the conflict-resolver " +
+          'agent (subagent(agent="conflict-resolver")), and let git-expert commit the staged result.',
+      };
+    }
     if (process.env.PI_AGENT_NAME === "git-expert" && isConflictResolutionCommand(command)) {
       // Which directory does git run in? A conditional branch, a completed
       // subshell, or several invocations in one command have no single answer,
@@ -621,7 +634,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         // A repository whose index will not answer: the conflict state there is
         // unknown, so it is refused. A directory that is not a repository at all
         // has no index to be unknown about and is never in this list.
-        log.warn("conflict_lookup_failed", unreadable.join(", "));
+        // error, not warn: the check that gates this block failed.
+        log.error("conflict_lookup_failed", unreadable.join(", "));
         return {
           block: true,
           reason:

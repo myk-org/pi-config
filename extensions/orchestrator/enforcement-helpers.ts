@@ -489,21 +489,37 @@ export function resolveEffectiveCwd(command: string, sessionCwd: string): string
   // A segment only counts when it *runs* git: `cd ~/git/proj` merely contains
   // the word, and anchoring on it would drop a real directory change.
   const gitIndex = segments.findIndex((s) => segmentRunsGit(s.text));
-  const cdSegments = segments
-    .map((s, i) => ({ i, target: cdTargetIn(s.text) }))
-    .filter((c) => c.target !== null);
-  const anchors = gitIndex === -1 ? cdSegments.slice(0, 1) : cdSegments.filter((c) => c.i < gitIndex);
-  let dir = sessionCwd;
-  for (const a of anchors) {
-    if (a.target === "~popd") continue;
-    // `cd -` returns to where the shell was; with nothing tracked it stays put.
-    dir = a.target === "-" ? dir : applyCd(dir, a.target);
+  // Only a cd that moves *this* shell counts. A cd inside a subshell, or one
+  // behind a short-circuit, runs somewhere else or may not run at all, so
+  // applying it sent the guards looking at a directory the shell never entered —
+  // `(cd /tmp) && git commit` read /tmp settings, where enforcement is off.
+  const targetDepth = gitIndex === -1 ? 0 : segments[gitIndex].depth;
+  const running: string[] = [sessionCwd];
+  const applied: string[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    // A trailing cd after the git command did not happen yet.
+    if (i === gitIndex) break;
+    const seg = segments[i];
+    if (seg.depth > targetDepth) break;
+    while (running.length <= seg.depth) running.push(running[running.length - 1]);
+    const target = cdTargetIn(seg.text);
+    if (!target || target === "~popd") continue;
+    // A subshell at a different depth cannot move this shell. Note that a cd
+    // behind a short-circuit still counts: `cd a && cd b` really does leave the
+    // shell in b, and `if cd x; then` leaves it in x too.
+    if (seg.depth !== targetDepth) continue;
+    running[targetDepth] = applyCd(running[targetDepth], target);
+    applied.push(target);
+    // With no git invocation to anchor to, the first cd is the conservative
+    // answer for `cd a && cd b && pytest`.
+    if (gitIndex === -1) break;
   }
+  let dir = running[targetDepth];
   // Git applies each -C in turn, each relative to the previous one, so
   // `git -C worktree -C nested` lands in worktree/nested.
   const cTargets = gitIndex === -1 ? [] : gitCsIn(segments[gitIndex].text);
   for (const cTarget of cTargets) dir = applyCd(dir, cTarget, process.env.HOME ?? "~", false);
-  enfLog.debug("effective_cwd", "dir", dir, "source", cTargets.length ? "git_C" : anchors.length ? "cd" : "session", "cds", anchors.length);
+  enfLog.debug("effective_cwd", "dir", dir, "source", cTargets.length ? "git_C" : applied.length ? "cd" : "session", "cds", applied.length);
   return dir;
 }
 

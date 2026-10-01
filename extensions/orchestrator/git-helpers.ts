@@ -854,6 +854,38 @@ function decodeAnsiC(text: string): string {
   return text.replace(/\\n/g, "\n").replace(/\\t/g, " ");
 }
 
+/**
+ * Does this command both *create* a conflict and stage a side of it?
+ *
+ * The index is read once, before the command runs, so `git merge branch &&
+ * git add conflicted.txt` sees a clean tree and then does in one line what the
+ * handoff exists to prevent. Reading only the sequencer and only the staging is
+ * enough: neither alone says anything, and together they are the whole bypass.
+ */
+export function createsAndResolvesConflict(command: string): boolean {
+  const scanned = executableText(command);
+  if (scanned.includes(UNSCANNED)) return true;
+  const STARTERS = new Set(["merge", "rebase", "cherry-pick", "revert", "am", "stash"]);
+  const STAGES = new Set(["add", "rm", "restore", "reset", "update-index"]);
+  let starts = false;
+  let stages = false;
+  for (const words of executedGitCommands(scanned)) {
+    let k = 1;
+    while (k < words.length && words[k].startsWith("-") && words[k] !== "-") {
+      const tok = words[k];
+      const attached = tok.length > 2 && !tok.startsWith("--") ? true : tok.includes("=");
+      if (!attached && words[k + 1] && !words[k + 1].startsWith("-")) k += 2;
+      else k += 1;
+    }
+    const sub = (words[k] ?? "").split("=")[0];
+    if (STARTERS.has(sub)) starts = true;
+    if (STAGES.has(sub)) stages = true;
+  }
+  const both = starts && stages;
+  gitLog.debug("conflict_created_and_resolved", "starts", starts, "stages", stages);
+  return both;
+}
+
 export function isConflictResolutionCommand(command: string): boolean {
   const scanned = executableText(command);
   // Nesting deeper than the scan depth means the scanner stopped early. Treat

@@ -25,8 +25,10 @@ If neither path exists, work from the non-negotiables below; they are sufficient
 - **Never pick a side for a lock file.** Resolve the manifest, delete the lock, regenerate
   (`uv lock`, `npm install`).
 - **Never commit.** Only `git-expert` may, and the harness rejects it here. Your job ends with the
-  working tree resolved and staged: `git add <resolved files>`, then report. The caller runs
-  `git-expert` for the commit or for `rebase --continue`.
+  working tree resolved and staged: `git add <resolved files>`, then report. Which sequencer the
+  caller continues depends on what was in progress — `git merge --continue`, `git rebase --continue`
+  or `git cherry-pick --continue` — so say which one you found in your report rather than assuming
+  rebase. The commit itself is also `git-expert`'s.
 - **Never** force-push, reset away either side, or skip pre-commit hooks.
 - Prefer merging both sides when the intents are compatible; a bug fix or security fix wins over
   a feature; style-only conflicts take either side.

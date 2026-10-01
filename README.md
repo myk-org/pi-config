@@ -54,6 +54,11 @@ Single extension that provides:
 | Security       | security-auditor                                                                                                |
 | Workflow       | scout, planner, worker, reviewer                                                                                |
 
+`git-expert` cannot resolve a conflict — it is blocked from staging a side of one by
+enforcement, not just by prompt. When a merge, rebase or cherry-pick stops with unresolved
+files, delegate to `conflict-resolver`, which resolves them and hands the staged result back
+for `git-expert` to commit.
+
 ### Prompt Templates
 
 | Prompt                                                                                          | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                |

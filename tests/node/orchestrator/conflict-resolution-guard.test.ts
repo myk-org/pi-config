@@ -858,6 +858,15 @@ describe("conflict-resolution guard", () => {
     assert.equal(resolveEffectiveCwd("cd /first && cd /second && pytest", "/session"), "/first");
   });
 
+  it("does not follow a cd that ran in a subshell", () => {
+    // The cd happened in its own subshell; the shell that runs git never moved,
+    // so the guards must read the session directory, not /tmp.
+    assert.equal(resolveEffectiveCwd("(cd /tmp) && git add x", "/session"), "/session");
+    // A cd in the same chain does count, and an `if` guard really does move it.
+    assert.equal(resolveEffectiveCwd("cd /repo && git add x", "/session"), "/repo");
+    assert.equal(resolveEffectiveCwd("if cd /x; then git add y; fi", "/session"), "/x");
+  });
+
   it("anchors on the segment that runs git, not one that names it", () => {
     // `cd ~/git/proj` contains the word without running git.
     assert.equal(resolveEffectiveCwd("cd /tmp/git/proj && git commit --signoff -F -", "/session"), "/tmp/git/proj");
