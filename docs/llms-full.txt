@@ -5283,7 +5283,7 @@ its documentation as Markdown.
 
 It renders a directory of `*.md` into a static site: sidebar navigation, full-text
 search, `llms.txt` / `llms-full.txt` for LLM consumption, and a search index. No config
-file, no build framework, no docsfy.
+file, no build framework, no build step to learn.
 
 ## Run it
 

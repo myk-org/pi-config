@@ -4,7 +4,7 @@
 Usage:
     uv run python scripts/generate_docs.py
 
-Renders deterministically (markdown -> HTML via the vendored docsfy renderer),
+Renders deterministically (markdown -> HTML via the vendored renderer),
 so repeated runs produce byte-identical output. The markdown sources are the
 single source of truth: this script only ever writes HTML, ``llms*.txt``,
 ``search-index.json`` and ``docs/assets/``; it never touches a ``.md`` file.
@@ -366,9 +366,9 @@ def _h1(markdown_text: str, slug: str) -> str:
 
 
 def _is_generation_failure_stub(markdown_text: str) -> bool:
-    """Return True when a page's body is the docsfy generation-failure notice.
+    """Return True when a page's body is the generation-failure notice.
 
-    Upstream docsfy keeps such pages out of the AI-readable indexes so a failed
+    Upstream keeps such pages out of the AI-readable indexes so a failed
     generation is never published as if it were real documentation; that filter
     was lost when the renderer and generator were vendored. The pattern lives in
     the renderer, which already declares it, so reuse it here rather than

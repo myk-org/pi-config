@@ -315,7 +315,7 @@ describe("message boundary separator", () => {
     const result = concatenateDeltas([
       { message: msg1, delta: "I'll explore the repo." },
       { message: msg2, delta: 'Here is the plan: ' },
-      { message: msg3, delta: '{"project_name": "docsfy", "pages": ["overview"]}' },
+      { message: msg3, delta: '{"project_name": "acme-docs", "pages": ["overview"]}' },
     ]);
     // The JSON portion must remain parseable
     const jsonMatch = result.match(/\{.*\}/s);
@@ -336,7 +336,7 @@ describe("message boundary separator", () => {
     assert.ok(!result.includes('\n\n'), "no \\n\\n should be inside JSON");
   });
 
-  it("multi-tool response: prose then JSON plan (docsfy scenario)", () => {
+  it("multi-tool response: prose then JSON plan (docsite scenario)", () => {
     const msg1 = {};
     const msg2 = {};
     const msg3 = {};
@@ -357,9 +357,9 @@ describe("message boundary separator", () => {
     assert.equal(parsed.project_name, "pi-sidecar");
   });
 
-  it("boundary splits JSON key mid-word across messages (docsfy real bug)", () => {
+  it("boundary splits JSON key mid-word across messages (real streaming bug)", () => {
     // Real scenario: AI streams JSON across messages, boundary falls mid-token
-    // msg1 ends with '{"project_' and msg2 starts with 'name": "docsfy"}'
+    // msg1 ends with '{"project_' and msg2 starts with 'name": "acme-docs"}'
     // With prose before JSON, the whole response doesn't start with { so
     // looksLikeJson is false, and \n\n gets injected at the boundary
     const msg1 = {};
@@ -368,7 +368,7 @@ describe("message boundary separator", () => {
     const result = concatenateDeltas([
       { message: msg1, delta: "Here is the plan: " },
       { message: msg2, delta: '{"project_' },
-      { message: msg3, delta: 'name": "docsfy", "pages": ["overview"]}' },
+      { message: msg3, delta: 'name": "acme-docs", "pages": ["overview"]}' },
     ]);
     // The JSON must NOT have \n\n injected inside it
     const jsonMatch = result.match(/\{.*\}/s);
@@ -378,16 +378,16 @@ describe("message boundary separator", () => {
   });
 
   it("boundary inside JSON value mid-word (corrupts string content)", () => {
-    // Boundary falls inside a JSON string value: "do | csfy"
+    // Boundary falls inside a JSON string value: "do | cite"
     const msg1 = {};
     const msg2 = {};
     const result = concatenateDeltas([
       { message: msg1, delta: '{"name": "do' },
-      { message: msg2, delta: 'csfy"}' },
+      { message: msg2, delta: 'csite"}' },
     ]);
     // Pure JSON — should not be corrupted
     assert.doesNotThrow(() => JSON.parse(result), `JSON must be valid, got: ${result}`);
     const parsed = JSON.parse(result);
-    assert.equal(parsed.name, "docsfy", "value must not be split");
+    assert.equal(parsed.name, "docsite", "value must not be split");
   });
 });
