@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createLogger } from "../../../extensions/shared/logger.js";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { resolveEffectiveCwd, conflictCandidateDirs } from "../../../extensions/orchestrator/enforcement-helpers.js";
 import {
@@ -26,12 +27,17 @@ const GIT_ENV = {
   GIT_CONFIG_SYSTEM: "/dev/null",
 };
 
+const testLog = createLogger("conflict-guard-test");
+
 function gitIn(repo: string, args: string[]): void {
+  // Subcommand and branch only: a test repo path can carry a random suffix.
+  testLog.debug("fixture_git", "subcommand", args[0], "branch", args.find((a) => a.startsWith("-b")) ?? "");
   execFileSync("git", args, { cwd: repo, env: GIT_ENV, stdio: ["pipe", "pipe", "pipe"] });
 }
 
 /** main: a.txt=base; branch: a.txt=theirs; main: a.txt=ours -> real merge conflict. */
 function conflictedRepo(at?: string): string {
+  testLog.debug("fixture_repo", "kind", "conflicted");
   const repo = at ?? mkdtempSync(join(tmpdir(), "conflict-guard-"));
   if (at) mkdirSync(repo, { recursive: true });
   const git = (args: string[]) => gitIn(repo, args);
@@ -55,6 +61,7 @@ function conflictedRepo(at?: string): string {
 
 /** A real repo with a clean index — a failed `git` call must not be what makes a test pass. */
 function cleanRepo(): string {
+  testLog.debug("fixture_repo", "kind", "clean");
   const repo = mkdtempSync(join(tmpdir(), "conflict-clean-"));
   gitIn(repo, ["init", "-q", "-b", "main"]);
   writeFileSync(join(repo, "a.txt"), "clean\n");
