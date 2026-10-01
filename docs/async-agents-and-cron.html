@@ -448,6 +448,17 @@
 (<code>explicit &gt; agent_overrides[name] &gt; agent frontmatter &gt; agent_provider/agent_model &gt; parent</code>),
 so a plain <code>agent_model</code> setting is all you need to pin background work to a specific model.
 It is a <code>string</code> setting, default <code>""</code>, meaning "inherit the parent session's model".</p>
+<p>To pin one schedule without moving the whole session, name the model in the request:</p>
+<div class="highlight"><pre><span></span><code>/cron<span class="w"> </span>--persist<span class="w"> </span>Every<span class="w"> </span>hour,<span class="w"> </span>check<span class="w"> </span>upstream<span class="w"> </span>releases<span class="w"> </span>using<span class="w"> </span>openrouter/anthropic/claude-opus-5.
+</code></pre></div>
+
+<p><code>cron_manage</code> stores that on the task and passes it as the subagent <code>explicit</code> override for
+that run only. A bare <code>model-id</code> keeps the normal provider resolution chain. An unpinned cron
+uses the worker's own chain (<code>agent_overrides[worker]</code> → worker frontmatter →
+<code>agent_provider</code>/<code>agent_model</code>) and does not inherit the session model. Pinning an <code>acpx-*</code>
+provider does not work — child processes cannot register those providers, so the cron runs on
+<code>internal_operations_provider</code>/<code>internal_operations_model</code> when both are set, and is skipped
+with a logged error when they are not (see ACPX Compatibility below).</p>
 <h3 id="keep-background-context-between-runs">Keep Background Context Between Runs</h3>
 <p>If you want a background agent to remember previous work, ask Pi to persist that session:</p>
 <blockquote>
@@ -489,7 +500,7 @@ It is a <code>string</code> setting, default <code>""</code>, meaning "inherit t
 <p>Session-scoped tasks survive <code>/reload</code> inside the running process but are deleted on a real exit. Project-scoped tasks are reloaded by later sessions, and a leader lease in the same directory guarantees only one session executes a given task — other sessions show it as <code>project (waiting for leader)</code>.</p>
 <blockquote>
 <p><strong>Note:</strong> If you need to confirm what is still scheduled, run <code>/cron list</code> or <code>/cron list-all</code> after reconnecting instead of assuming an older schedule is still active.</p>
-<p><strong>Tip:</strong> <code>/cron</code> with free text does not schedule anything by itself. It re-enters the conversation with a request to call the <code>cron_manage</code> tool, and <code>persist</code> is set to <code>true</code> only when you passed <code>--persist</code>. Schedules must have an <code>interval_seconds</code> of at least 10, and <code>at_minute</code> is only valid together with <code>at_hour</code>.</p>
+<p><strong>Tip:</strong> <code>/cron</code> with free text does not schedule anything by itself. It re-enters the conversation with a request to call the <code>cron_manage</code> tool, and <code>persist</code> is set to <code>true</code> only when you passed <code>--persist</code>. Schedules must have an <code>interval_seconds</code> of at least 10, and <code>at_minute</code> is only valid together with <code>at_hour</code>. <code>model</code> accepts <code>provider/model-id</code> or a bare <code>model-id</code>; leaving it out uses the worker's normal model resolution.</p>
 </blockquote>
 <h3 id="acpx-compatibility">ACPX Compatibility</h3>
 <p>Detached LLM work is more restricted when your parent session is using an <code>acpx-*</code> provider. Child Pi processes launched as async agents skip ACPX provider registration, so Pi decides between three outcomes:</p>

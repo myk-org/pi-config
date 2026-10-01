@@ -14,6 +14,7 @@ import {
   refreshLeaderLock,
   releaseLeaderLock,
   type DurableCronTask,
+  validateDurableCronTask,
 } from "../../../extensions/orchestrator/cron-store.ts";
 
 const dirs: string[] = [];
@@ -45,6 +46,34 @@ function writeLockOwner(store: string, kind: "leader" | "mutation", owner: objec
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "owner.json"), JSON.stringify(owner));
 }
+
+describe("validateDurableCronTask model", () => {
+  it("accepts provider/model-id", () => {
+    assert.doesNotThrow(() => validateDurableCronTask({ ...task(), model: "openrouter/anthropic/claude-opus-5" }));
+  });
+
+  it("accepts a bare model id", () => {
+    assert.doesNotThrow(() => validateDurableCronTask({ ...task(), model: "claude-opus-5" }));
+  });
+
+  it("accepts an absent model", () => {
+    assert.doesNotThrow(() => validateDurableCronTask(task()));
+  });
+
+  it("rejects a model with an empty side", () => {
+    assert.throws(() => validateDurableCronTask({ ...task(), model: "p/" }), /Invalid durable cron model/);
+    assert.throws(() => validateDurableCronTask({ ...task(), model: "" }), /Invalid durable cron model/);
+  });
+
+  it("rejects a non-string model", () => {
+    assert.throws(() => validateDurableCronTask({ ...task(), model: 7 }), /Invalid durable cron model/);
+  });
+
+  it("drops a stored task with a malformed model instead of persisting it", () => {
+    const store = tempStore();
+    assert.throws(() => mutateDurableCronStore(store, (tasks) => [...tasks, { ...task("bad"), model: "p/" } as DurableCronTask]));
+  });
+});
 
 describe("durable cron store", () => {
   it("writes a versioned envelope atomically and preserves the captured cwd", () => {

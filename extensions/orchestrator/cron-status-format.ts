@@ -1,6 +1,9 @@
 /**
  * Pure cron status display helpers — no TUI deps (unit-testable).
  */
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("cron_status");
 
 export interface CronStatusTaskView {
   /** Unique scope-qualified overlay row id (e.g. "session:<uuid>"). */
@@ -12,6 +15,8 @@ export interface CronStatusTaskView {
   intervalMs?: number;
   atHour?: number;
   atMinute?: number;
+  /** "provider/model-id" or bare "model-id"; absent means the session default. */
+  model?: string;
   createdAt: number;
   lastRun?: number;
   nextRun?: number;
@@ -88,6 +93,28 @@ export function formatNextRunLabel(
   return `in ${formatRelativeMs(delta)}`;
 }
 
+/** Detail rows rendered by the cron task overlay, uncolored (label, value). */
+export function cronDetailRows(
+  task: CronStatusTaskView,
+  now = Date.now(),
+): Array<[string, string]> {
+  const rows: Array<[string, string]> = [
+    ["Schedule", formatCronSchedule(task)],
+    [
+      "Last run",
+      `${formatLastRunLabel(task, now)}${
+        task.lastRun ? ` · ${new Date(task.lastRun).toLocaleString()}` : ""
+      }`,
+    ],
+    ["Next run", formatNextRunLabel(task, now)],
+    ["Created", new Date(task.createdAt).toLocaleString()],
+  ];
+  if (task.sessionLabel) rows.push(["Session", task.sessionLabel]);
+  if (task.model) rows.push(["Model", task.model]);
+  log.debug("cron_detail_rows", { id: task.id, rows: rows.length, model: task.model || "inherit" });
+  return rows;
+}
+
 /** Map a CronTask-like object into an overlay row view. */
 export function toCronStatusTaskView(
   task: {
@@ -97,6 +124,7 @@ export function toCronStatusTaskView(
     intervalMs?: number;
     atHour?: number;
     atMinute?: number;
+    model?: string;
     createdAt: number;
     lastRun?: number;
     nextRun?: number;
@@ -116,6 +144,7 @@ export function toCronStatusTaskView(
     intervalMs: task.intervalMs,
     atHour: task.atHour,
     atMinute: task.atMinute,
+    model: task.model,
     createdAt: task.createdAt,
     lastRun: task.lastRun,
     nextRun: task.nextRun,

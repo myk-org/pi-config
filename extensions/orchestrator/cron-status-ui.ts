@@ -4,6 +4,7 @@
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
+  cronDetailRows,
   formatCronSchedule,
   formatLastRunLabel,
   formatNextRunLabel,
@@ -16,6 +17,7 @@ import {
 
 export type { CronStatusTaskView } from "./cron-status-format.js";
 export {
+  cronDetailRows,
   formatCronSchedule,
   formatLastRunLabel,
   formatNextRunLabel,
@@ -103,24 +105,9 @@ export async function openCronStatusOverlay(
             if (!current) {
               return [t.fg("error", "Task removed."), t.fg("dim", "Esc back")];
             }
-            const now = Date.now();
-            const lines = [
-              `${t.fg("muted", "Schedule")}  ${formatCronSchedule(current)}`,
-              `${t.fg("muted", "Last run")}  ${formatLastRunLabel(current, now)}` +
-                (current.lastRun
-                  ? t.fg(
-                      "dim",
-                      ` · ${new Date(current.lastRun).toLocaleString()}`,
-                    )
-                  : ""),
-              `${t.fg("muted", "Next run")}  ${formatNextRunLabel(current, now)}`,
-              `${t.fg("muted", "Created")}   ${new Date(current.createdAt).toLocaleString()}`,
-            ];
-            if (current.sessionLabel) {
-              lines.push(
-                `${t.fg("muted", "Session")}  ${current.sessionLabel}`,
-              );
-            }
+            const lines = cronDetailRows(current).map(
+              ([label, value]) => `${t.fg("muted", label.padEnd(9))}  ${value}`,
+            );
             lines.push("", t.fg("muted", "Task"), current.task);
             return lines;
           },
