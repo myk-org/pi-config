@@ -6,7 +6,7 @@
 import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
@@ -25,10 +25,15 @@ const GIT_ENV = {
   GIT_CONFIG_SYSTEM: "/dev/null",
 };
 
+function gitIn(repo: string, args: string[]): void {
+  execFileSync("git", args, { cwd: repo, env: GIT_ENV, stdio: ["pipe", "pipe", "pipe"] });
+}
+
 /** main: a.txt=base; branch: a.txt=theirs; main: a.txt=ours -> real merge conflict. */
-function conflictedRepo(): string {
-  const repo = mkdtempSync(join(tmpdir(), "conflict-guard-"));
-  const git = (args: string[]) => execFileSync("git", args, { cwd: repo, env: GIT_ENV, stdio: ["pipe", "pipe", "pipe"] });
+function conflictedRepo(at?: string): string {
+  const repo = at ?? mkdtempSync(join(tmpdir(), "conflict-guard-"));
+  if (at) mkdirSync(repo, { recursive: true });
+  const git = (args: string[]) => gitIn(repo, args);
   git(["init", "-q", "-b", "main"]);
   writeFileSync(join(repo, "a.txt"), "base\n");
   git(["add", "a.txt"]);
@@ -47,15 +52,25 @@ function conflictedRepo(): string {
   return repo;
 }
 
+/** A real repo with a clean index — a failed `git` call must not be what makes a test pass. */
+function cleanRepo(): string {
+  const repo = mkdtempSync(join(tmpdir(), "conflict-clean-"));
+  gitIn(repo, ["init", "-q", "-b", "main"]);
+  writeFileSync(join(repo, "a.txt"), "clean\n");
+  gitIn(repo, ["add", "a.txt"]);
+  gitIn(repo, ["commit", "-qm", "clean"]);
+  return repo;
+}
+
 describe("conflict-resolution guard", () => {
   let cwd: string;
-  let cleanRepo: string;
+  let clean: string;
   const hooks = new Map<string, Function>();
   const prior = { ...process.env };
 
   before(() => {
     cwd = conflictedRepo();
-    cleanRepo = mkdtempSync(join(tmpdir(), "conflict-clean-"));
+    clean = cleanRepo();
     registerEnforcement({
       on: (name: string, handler: Function) => hooks.set(name, handler),
       registerTool: () => {},
@@ -67,7 +82,7 @@ describe("conflict-resolution guard", () => {
     for (const [k, v] of Object.entries(prior)) if (v === undefined) delete process.env[k];
     else process.env[k] = v;
     rmSync(cwd, { recursive: true, force: true });
-    rmSync(cleanRepo, { recursive: true, force: true });
+    rmSync(clean, { recursive: true, force: true });
   });
 
   afterEach(() => {
@@ -82,37 +97,89 @@ describe("conflict-resolution guard", () => {
       | undefined;
   }
 
-  it("sees the unmerged file and classifies resolution commands", () => {
+  it("reports the unmerged file from a conflicted index", () => {
     assert.deepEqual(listUnmergedFiles(cwd), ["a.txt"]);
-    assert.deepEqual(listUnmergedFiles(cleanRepo), []);
-    for (const cmd of ["git add a.txt", "git restore --source=HEAD a.txt", "git checkout --theirs a.txt", "git rebase --continue"]) {
+  });
+
+  it("reports no files from a clean repository", () => {
+    assert.deepEqual(listUnmergedFiles(clean), []);
+  });
+
+  it("classifies staging, deletion, side-selection, and continuation commands", () => {
+    const resolutions = [
+      "git add a.txt",
+      "git restore --source=HEAD a.txt",
+      "git rm a.txt",
+      "git checkout --ours a.txt",
+      "git checkout --theirs a.txt",
+      "git checkout -m a.txt",
+      "git merge --continue",
+      "git rebase --continue",
+      "git cherry-pick --continue",
+    ];
+    for (const cmd of resolutions) {
       assert.equal(isConflictResolutionCommand(cmd), true, cmd);
     }
+  });
+
+  it("leaves read-only commands unclassified", () => {
     for (const cmd of ["git status", "git diff", "git merge --abort", "gh pr view 1"]) {
       assert.equal(isConflictResolutionCommand(cmd), false, cmd);
     }
   });
 
-  it("blocks git-expert from staging a resolution and names the resolver agent", async () => {
+  it("blocks git-expert from staging a resolution", async () => {
     process.env.PI_AGENT_NAME = "git-expert";
     process.env.PI_SUBAGENT_CHILD = "1";
     const result = await run("git add a.txt");
     assert.equal(result?.block, true);
+  });
+
+  it("names the conflict-resolver agent in the block message", async () => {
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("git add a.txt");
     assert.match(result!.reason, /Unresolved conflicts in a\.txt/);
     assert.match(result!.reason, /conflict-resolver/);
   });
 
-  it("still lets git-expert read the conflict and abort", async () => {
+  it("blocks a conflicting deletion instead of letting git rm stage it", async () => {
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("git rm a.txt");
+    assert.equal(result?.block, true);
+  });
+
+  it("lets git-expert read the conflicted tree", async () => {
     process.env.PI_AGENT_NAME = "git-expert";
     process.env.PI_SUBAGENT_CHILD = "1";
     assert.equal((await run("git status"))?.block, undefined);
+  });
+
+  it("lets git-expert abort the operation", async () => {
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
     assert.equal((await run("git merge --abort"))?.block, undefined);
   });
 
   it("does not fire without an in-progress conflict", async () => {
     process.env.PI_AGENT_NAME = "git-expert";
     process.env.PI_SUBAGENT_CHILD = "1";
-    assert.equal((await run("git add a.txt", cleanRepo))?.block, undefined);
+    assert.equal((await run("git add a.txt", clean))?.block, undefined);
+  });
+
+  it("follows a subshell cd into a conflicted worktree", async () => {
+    // Session cwd is clean; the conflict lives in the worktree the subshell enters.
+    const root = mkdtempSync(join(tmpdir(), "conflict-subshell-"));
+    mkdirSync(join(root, ".worktrees"));
+    conflictedRepo(join(root, ".worktrees", "conflicted"));
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run(`(cd .worktrees/conflicted && git add a.txt)`, root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /conflict-resolver/);
+    rmSync(root, { recursive: true, force: true });
   });
 
   it("lets conflict-resolver stage its own resolution", async () => {

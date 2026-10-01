@@ -2385,12 +2385,12 @@ Full `read, write, edit, bash` — they implement, not just advise.
 
 ## Version control and forges
 
-These two are split deliberately: `git-expert` is local repository work, `github-expert` is everything that talks to the GitHub API through `gh`. `conflict-resolver` is split out of `git-expert` because it is the one git task that needs real judgment: `git-expert` is commonly pinned to a small model, so when a merge, rebase, or cherry-pick leaves unmerged paths, `git-expert` is blocked from writing a resolution (`git add`, `git restore`, `git checkout --ours/--theirs`, `merge|rebase --continue`) and hands off to `conflict-resolver`.
+These two are split deliberately: `git-expert` is local repository work, `github-expert` is everything that talks to the GitHub API through `gh`. `conflict-resolver` is split out of `git-expert` because it is the one git task that needs real judgment: `git-expert` is commonly pinned to a small model, so when a merge, rebase, or cherry-pick leaves unmerged paths, `git-expert` is blocked from writing a resolution (`git add`, `git restore`, `git rm`, `git checkout --ours/--theirs`, `merge|rebase|cherry-pick --continue`) and hands off to `conflict-resolver`.
 
 | Agent | Description | Tools |
 | :--- | :--- | :--- |
 | [`git-expert`](#git-expert) | Local git operations including commits, branching, merging, rebasing, stash, and resolving git issues. Never uses --no-verify. For GitHub platform operations (PRs, issues, releases), use github-expert instead. | `read, bash` |
-| [`conflict-resolver`](#conflict-resolver) | Resolve git merge/rebase/cherry-pick conflicts by reading commit intent on both sides. git-expert hands off here; it is blocked from resolving them. | `read, bash, edit, write` |
+| [`conflict-resolver`](#conflict-resolver) | Resolve git merge, rebase, and cherry-pick conflicts by reading commit intent on both sides, where git-expert is blocked from resolving them and hands off instead. | `read, bash, edit, write` |
 | [`github-expert`](#github-expert) | GitHub platform operations including PRs, issues, releases, repos, and workflows. Uses the gh CLI for all GitHub API interactions. | `read, bash` |
 
 Both `git-expert` and `github-expert` are read-only on the file system, but `bash` is enough to mutate branches and open PRs. `conflict-resolver` writes, because resolving a conflict means editing the conflicted files.

@@ -102,9 +102,9 @@ If it lists any file, STOP and report:
 ⛔ Unresolved conflicts in <files>. Delegate to the conflict-resolver agent.
 ```
 
-Enforcement blocks `git add`, `git restore`, `git checkout --ours/--theirs`,
-`git merge --continue`, and `git rebase --continue` while conflicts are unresolved — you will
-not be able to resolve here even if you try. Back out with `git merge --abort`,
+Enforcement blocks `git add`, `git restore`, `git rm`, `git checkout --ours/--theirs`,
+`git merge --continue`, `git rebase --continue`, and `git cherry-pick --continue` while conflicts
+are unresolved — you will not be able to resolve here even if you try. Back out with `git merge --abort`,
 `git rebase --abort`, or `git cherry-pick --abort` and let the caller call `conflict-resolver`.
 
 ## Separation of Concerns

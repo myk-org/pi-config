@@ -3,6 +3,9 @@
  */
 
 import { execFile, execSync } from "node:child_process";
+import { createLogger } from "../shared/logger.js";
+
+const gitLog = createLogger("git-helpers");
 
 export function runGit(
   args: string[],
@@ -411,24 +414,32 @@ export function hasGitSub(command: string, sub: string): boolean {
  * backing out (`--abort`) are deliberately not in this set.
  */
 export function isConflictResolutionCommand(command: string): boolean {
-  return (
+  // git rm drops a conflicted deletion's unmerged entry, which is a resolution.
+  const matches =
     hasGitSub(command, "add") ||
     hasGitSub(command, "restore") ||
-    /\bgit\b[\s\S]*\bcheckout\b[\s\S]*--(ours|theirs|mine)\b/.test(command) ||
-    /\bgit\b[\s\S]*\b(merge|rebase|cherry-pick)\b[\s\S]*--continue\b/.test(command)
-  );
+    hasGitSub(command, "rm") ||
+    /\bgit\b[\s\S]*\bcheckout\b[\s\S]*(?:--(?:ours|theirs|mine)|-m)\b/.test(command) ||
+    /\bgit\b[\s\S]*\b(merge|rebase|cherry-pick)\b[\s\S]*--continue\b/.test(command);
+  // Subcommand names only — never the command text, which can carry secrets.
+  gitLog.debug("conflict_command_classified", "matches", matches);
+  return matches;
 }
 
 /** Files with an unmerged index entry (merge/rebase/cherry-pick in progress). */
 export function listUnmergedFiles(cwd?: string): string[] {
   const r = runGit(["ls-files", "--unmerged"], cwd);
-  if (r.code !== 0 || !r.stdout) return [];
+  if (r.code !== 0 || !r.stdout) {
+    gitLog.debug("unmerged_lookup_empty", "code", r.code, "repo", Boolean(cwd));
+    return [];
+  }
   const files = new Set<string>();
   for (const line of r.stdout.split("\n")) {
     // <mode> <sha> <stage>\t<path>
     const path = line.slice(line.indexOf("\t") + 1).trim();
     if (path) files.add(path);
   }
+  gitLog.debug("unmerged_lookup", "count", files.size);
   return [...files];
 }
 

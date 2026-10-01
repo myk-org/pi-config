@@ -61,11 +61,14 @@ export function commandHasTrailerByName(command: string, trailerName: string): b
 
 /** Parse bash command for cd target to resolve the effective working directory (worktree support) */
 export function resolveEffectiveCwd(command: string, sessionCwd: string): string {
-  // Match the FIRST cd in the command (at start or after &&, ;, ||)
+  // Match the FIRST cd in the command (at start, after &&, ;, ||, or opening a
+  // subshell/group). A `(cd dir && git add x)` runs its git inside that
+  // directory, so a subshell opener counts as a boundary too — otherwise a guard
+  // inspects the session cwd while the command runs somewhere else entirely.
   // First cd sets up the working directory before subsequent commands run.
   // Using LAST cd is unsafe — a trailing cd (e.g., git commit && cd /tmp) would
   // misattribute the cwd to the wrong directory.
-  const cdMatch = command.match(/(?:^|[;&|]\s*)cd\s+([^\s;&|]+)/);
+  const cdMatch = command.match(/(?:^|[;&|(]\s*)cd\s+([^\s;&|)]+)/);
   if (cdMatch) {
     const target = cdMatch[1].replace(/['"]/g, "");
     if (target.startsWith("/")) return target;

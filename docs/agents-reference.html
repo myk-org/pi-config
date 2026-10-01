@@ -399,7 +399,7 @@
 </tbody>
 </table></div>
 <h2 id="version-control-and-forges">Version control and forges</h2>
-<p>These two are split deliberately: <code>git-expert</code> is local repository work, <code>github-expert</code> is everything that talks to the GitHub API through <code>gh</code>. <code>conflict-resolver</code> is split out of <code>git-expert</code> because it is the one git task that needs real judgment: <code>git-expert</code> is commonly pinned to a small model, so when a merge, rebase, or cherry-pick leaves unmerged paths, <code>git-expert</code> is blocked from writing a resolution (<code>git add</code>, <code>git restore</code>, <code>git checkout --ours/--theirs</code>, <code>merge|rebase --continue</code>) and hands off to <code>conflict-resolver</code>.</p>
+<p>These two are split deliberately: <code>git-expert</code> is local repository work, <code>github-expert</code> is everything that talks to the GitHub API through <code>gh</code>. <code>conflict-resolver</code> is split out of <code>git-expert</code> because it is the one git task that needs real judgment: <code>git-expert</code> is commonly pinned to a small model, so when a merge, rebase, or cherry-pick leaves unmerged paths, <code>git-expert</code> is blocked from writing a resolution (<code>git add</code>, <code>git restore</code>, <code>git rm</code>, <code>git checkout --ours/--theirs</code>, <code>merge|rebase|cherry-pick --continue</code>) and hands off to <code>conflict-resolver</code>.</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -416,7 +416,7 @@
 </tr>
 <tr>
 <td><a href="#conflict-resolver"><code>conflict-resolver</code></a></td>
-<td>Resolve git merge/rebase/cherry-pick conflicts by reading commit intent on both sides. git-expert hands off here; it is blocked from resolving them.</td>
+<td>Resolve git merge, rebase, and cherry-pick conflicts by reading commit intent on both sides, where git-expert is blocked from resolving them and hands off instead.</td>
 <td><code>read, bash, edit, write</code></td>
 </tr>
 <tr>
