@@ -69,6 +69,30 @@ describe("search.js", () => {
 		assert.doesNotMatch(text, /rebuild/i);
 	});
 
+	it("does not send the reader round the retry loop on an access denial", async () => {
+		// 403 (and 401) are permanent: waiting does not lift an access
+		// restriction, so retry advice would be as wrong as rebuild advice.
+		const asset = loadAsset("search.js", { fetch: async () => errorResponse(403) });
+
+		search(asset, "quick");
+		await asset.flush();
+
+		const text = resultText(asset);
+		assert.match(text, /HTTP 403/);
+		assert.match(text, /access/i);
+		assert.doesNotMatch(text, /Try again/i);
+		assert.doesNotMatch(text, /rebuild/i);
+	});
+
+	it("keeps retry advice for a transient server failure", async () => {
+		const asset = loadAsset("search.js", { fetch: async () => errorResponse(503) });
+
+		search(asset, "quick");
+		await asset.flush();
+
+		assert.match(resultText(asset), /Try again shortly/);
+	});
+
 	it("distinguishes a network or parse failure from a server error", async () => {
 		const network = loadAsset("search.js", {
 			fetch: async () => {

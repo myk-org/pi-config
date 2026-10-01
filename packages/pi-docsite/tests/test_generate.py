@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import tomllib
@@ -331,6 +332,55 @@ def test_review_notice_finds_the_config_beside_a_symlinked_docs_dir(tmp_path: Pa
     config = _review_config(tmp_path, "[config]\n")
 
     assert generate_docs._find_review_config(tmp_path / "docs") == config
+
+
+def test_review_notice_prints_repo_relative_globs_for_a_symlinked_docs_dir(tmp_path: Path) -> None:
+    # main() resolves --docs-dir for file operations, but the printed paths are
+    # matched against repo-relative ones: with docs/ pointing out of the repo,
+    # the resolved path would yield absolute suggestions nothing can match.
+    elsewhere = tmp_path / "elsewhere" / "site"
+    elsewhere.mkdir(parents=True)
+    (tmp_path / "docs").symlink_to(elsewhere)
+    config = _review_config(tmp_path, "[config]\n")
+
+    notice = generate_docs._review_notice(tmp_path / "docs", GENERATED, config, on_disk=elsewhere)
+    assert notice is not None
+    assert '"docs/*.html"' in notice
+    assert str(tmp_path) not in notice
+
+
+def test_review_notice_omits_the_dot_prefix_when_docs_is_the_repo_root(tmp_path: Path) -> None:
+    # relative_to() yields "." when both paths are the repo root, and
+    # "./index.html" is not what the review tool matches.
+    _review_config(tmp_path, "[config]\n")
+
+    notice = generate_docs._review_notice(tmp_path, GENERATED, tmp_path / generate_docs.REVIEW_CONFIG)
+    assert notice is not None
+    assert '"./index.html"' not in notice
+    assert '"*.html"' in notice
+    assert "under the docs root" in notice
+    # And the suggestion really does silence the notice once pasted.
+    config = tmp_path / "covered.toml"
+    array = notice.split("\n\n", 1)[1].removeprefix("[ignore]\nglob = ").strip()
+    config.write_text(f"[ignore]\nglob = {array}\n", encoding="utf-8")
+    assert generate_docs._review_notice(tmp_path, GENERATED, config) is None
+
+
+def test_review_notice_escapes_glob_metacharacters_in_page_names(tmp_path: Path) -> None:
+    # A page may be called guide[1].html. Unescaped, the brackets are a
+    # character class and the suggestion stops matching the file it was meant to
+    # exclude, so the notice comes back on every build.
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "404.html").write_text("<html><body>Not found</body></html>\n", encoding="utf-8")
+    _review_config(tmp_path, "[config]\n")
+    generated = ["index.html", "guide[1].html", "search-index.json"]
+
+    notice = _notice(docs, generated)
+    assert notice is not None
+    assert '"docs/guide[[]1[]].html"' in notice
+    # The escaped pattern matches the literal file, which is what silences it.
+    assert fnmatch.fnmatch("docs/guide[1].html", "docs/guide[[]1[]].html")
 
 
 def test_review_notice_finds_the_config_above_a_nested_docs_dir(tmp_path: Path) -> None:

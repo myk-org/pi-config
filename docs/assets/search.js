@@ -116,6 +116,10 @@
         err.textContent = 'Search needs the site served over HTTP (opening the file directly blocks it).';
       } else if (indexStatus === 404) {
         err.textContent = 'Search index not found — rebuild the site.';
+      } else if (indexStatus === 401 || indexStatus === 403 || (indexStatus >= 400 && indexStatus < 500 && indexStatus !== 408 && indexStatus !== 429)) {
+        // A permanent client error: waiting does not lift an access restriction
+        // or a bad request, so do not send the reader round the retry loop.
+        err.textContent = 'Search index unavailable (HTTP ' + indexStatus + '). Check the site\'s access configuration.';
       } else if (indexStatus) {
         err.textContent = 'Search index unavailable (HTTP ' + indexStatus + '). Try again shortly.';
       } else {

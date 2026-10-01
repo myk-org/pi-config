@@ -120,14 +120,19 @@ def _find_review_config(docs_dir: Path) -> Path | None:
     return None
 
 
-def _review_config_candidates(docs_dir: Path) -> Iterator[Path]:
-    """docs_dir and its parents, absolute, symlinks intact.
+def _lexical_docs_dir(docs_dir: Path) -> Path:
+    """``docs_dir`` made absolute, symlinks left intact.
 
     Absolute because a relative --docs-dir makes every path below it relative
-    too, and the globs have to be repo-relative; not resolved because resolving
-    is exactly what loses the repo when docs/ is a symlink.
+    too, and the printed review globs have to be repo-relative; not resolved
+    because resolving is exactly what loses the repo when docs/ is a symlink.
     """
-    start = docs_dir if docs_dir.is_absolute() else Path.cwd() / docs_dir
+    return docs_dir if docs_dir.is_absolute() else Path.cwd() / docs_dir
+
+
+def _review_config_candidates(docs_dir: Path) -> Iterator[Path]:
+    """docs_dir and its parents, absolute, symlinks intact."""
+    start = _lexical_docs_dir(docs_dir)
     yield from (start, *start.parents)
 
 
@@ -150,7 +155,27 @@ def _ignore_globs(ignore: object) -> list[str]:
     return globs
 
 
-def _review_patterns(docs_dir: Path, generated: Sequence[str], prefix: str) -> list[str]:
+GLOB_META = "*?[]"
+
+
+def _glob_literal(text: str) -> str:
+    """`text` as a pattern that matches itself and nothing else.
+
+    A page may legitimately be called ``guide[1].html``. Unescaped, the brackets
+    are a character class, so the suggested pattern stops matching the file it
+    was meant to exclude and the notice returns on the next build. fnmatch
+    matches a literal character through a one-character class.
+    """
+    return "".join(f"[{char}]" if char in GLOB_META else char for char in text)
+
+
+def _join(prefix: str, name: str) -> str:
+    """Repo-relative path for a generated file, with no ``./`` and no empty part."""
+    literal = _glob_literal(name)
+    return f"{prefix}/{literal}" if prefix else literal
+
+
+def _review_patterns(on_disk: Path, generated: Sequence[str], prefix: str) -> list[str]:
     """Repo-relative review-exclusion patterns covering exactly what was generated.
 
     One pattern per generated file, except HTML: ``docs/*.html`` is the compact
@@ -163,13 +188,15 @@ def _review_patterns(docs_dir: Path, generated: Sequence[str], prefix: str) -> l
     """
     html = [name for name in generated if name.endswith(".html")]
     owned = {Path(name).name for name in html}
-    preserved = [path.name for path in sorted(docs_dir.glob("*.html")) if path.name not in owned]
-    patterns: list[str] = [f"{prefix}/*.html"] if not preserved else [f"{prefix}/{name}" for name in html]
-    patterns += [f"{prefix}/{name}" for name in generated if not name.endswith(".html")]
+    preserved = [path.name for path in sorted(on_disk.glob("*.html")) if path.name not in owned]
+    patterns: list[str] = (
+        [f"{prefix}/*.html" if prefix else "*.html"] if not preserved else [_join(prefix, name) for name in html]
+    )
+    patterns += [_join(prefix, name) for name in generated if not name.endswith(".html")]
     return patterns
 
 
-def _review_notice(docs_dir: Path, generated: Sequence[str], config: Path) -> str | None:
+def _review_notice(docs_dir: Path, generated: Sequence[str], config: Path, on_disk: Path | None = None) -> str | None:
     """One pointer at the review config when the generated site is still in scope.
 
     A consuming repo commits the generated site, so an AI reviewer comments on
@@ -182,6 +209,11 @@ def _review_notice(docs_dir: Path, generated: Sequence[str], config: Path) -> st
     ``generated`` is what *this build* wrote, not everything matching a pattern:
     the generator preserves HTML it did not write, and that difference decides
     whether a blanket pattern is safe to recommend.
+
+    ``docs_dir`` is the lexical docs path, because the printed paths are relative
+    to the repo root -- with ``docs/`` symlinked out of the repo, the resolved
+    path yields absolute suggestions the review tool will never match.
+    ``on_disk`` is where the files actually are, for the preserved-HTML check.
     """
     root = config.parent
     try:
@@ -196,22 +228,25 @@ def _review_notice(docs_dir: Path, generated: Sequence[str], config: Path) -> st
     ignore = parsed.get("ignore")
     globs = _ignore_globs(ignore)
 
+    # Empty when the docs dir IS the config's directory: `docs/./index.html` is
+    # not what the review tool matches against, `index.html` is.
     try:
-        prefix = docs_dir.relative_to(root).as_posix()
+        prefix = "/".join(_glob_literal(part) for part in docs_dir.relative_to(root).parts)
     except ValueError:
-        prefix = docs_dir.as_posix()
+        prefix = _glob_literal(docs_dir.as_posix())
     # Repo-relative paths -- the same strings the review tool matches globs
     # against, so a user's own patterns cover them exactly as they would here.
-    targets = [f"{prefix}/{name}" for name in generated]
+    targets = [_join(prefix, name) for name in generated]
     missing = [path for path in targets if not any(fnmatch.fnmatch(path, glob) for glob in globs)]
     log.debug("review_notice: config=%s generated=%d missing=%s", config, len(targets), missing)
     if not missing:
         return None
     # json.dumps renders a TOML-compatible array of basic strings, so the line
     # can be pasted into the config as it is.
-    suggestion = json.dumps(_review_patterns(docs_dir, generated, prefix))
+    suggestion = json.dumps(_review_patterns(on_disk or docs_dir, generated, prefix))
+    where = f"{prefix}/" if prefix else "the docs root"
     head = (
-        f"pi-docsite: {len(missing)} generated file(s) under {prefix}/ are not excluded from AI review, "
+        f"pi-docsite: {len(missing)} generated file(s) under {where} are not excluded from AI review, "
         f"and the reviewer will report findings in output this generator owns. "
     )
     if isinstance(ignore, dict):
@@ -604,7 +639,12 @@ def main(argv: list[str] | None = None) -> int:
     # docs/ is a symlink, and the review config sits beside the symlink.
     review_config = _find_review_config(args.docs_dir)
     review_notice = (
-        _review_notice(DOCS_DIR, [name for name, _ in written] + copied_assets, review_config)
+        _review_notice(
+            _lexical_docs_dir(args.docs_dir),
+            [name for name, _ in written] + copied_assets,
+            review_config,
+            on_disk=DOCS_DIR,
+        )
         if review_config
         else None
     )

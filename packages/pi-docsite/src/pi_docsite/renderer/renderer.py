@@ -7,8 +7,10 @@ deterministic rendering half was taken: no AI generation, no network, no
 ``docsfy`` package imports. The docsfy images pipeline (``copy_images_to_site``)
 is not vendored because this repo ships no ``docsfy-images/`` source.
 
-Upstream behaviour is preserved, including the "Generated with docsfy" badge,
-which keeps working via the ``docsfy_repo_url`` template variable.
+Upstream behaviour is preserved except for the branding badge: it is driven by
+this package's ``--badge-label`` (``BADGE_HEAD``/``BADGE_ACCENT``, linked through
+``badge_url``) instead of upstream's fixed "Generated with docsfy" text, so a
+site built here never names the upstream project.
 
 It is a vendored copy, so local modifications are expected. The local
 deviations are ``_indent_fenced_blocks`` (see its docstring, ``llms-full.txt``
