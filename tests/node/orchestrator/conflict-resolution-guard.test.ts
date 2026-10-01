@@ -363,6 +363,23 @@ describe("conflict-resolution guard", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("reads an index override only where git actually runs", () => {
+    const detect = (c: string) => conflictCandidateDirs(c, "/root").envOverride;
+    // Printing the name is not selecting the index.
+    assert.equal(detect("echo GIT_INDEX_FILE=/x"), null);
+    // A wrapper in front of the assignment still selects it.
+    assert.equal(detect("sudo GIT_DIR=/x/.git git add a.txt"), "GIT_DIR");
+    assert.equal(detect("sudo env GIT_WORK_TREE=/x git add a.txt"), "GIT_WORK_TREE");
+  });
+
+  it("lets a literal path override an earlier unverifiable one", () => {
+    // The first cd may expand at run time, but the second is certain.
+    assert.equal(conflictCandidateDirs("cd $REPO; cd /known && git add a.txt", "/root").dynamicPath, null);
+    // Still reported when nothing settles it.
+    assert.ok(conflictCandidateDirs("cd $REPO; git add a.txt", "/root").dynamicPath);
+    // A glob character the command escaped is part of the name, not a pattern.
+    assert.equal(conflictCandidateDirs("cd /repo\\[1\\] && git add a.txt", "/root").dynamicPath, null);
+  });
   it("classifies a resolution inside process substitution", () => {
     assert.equal(isConflictResolutionCommand("diff <(git add a.txt) <(git status)"), true);
   });

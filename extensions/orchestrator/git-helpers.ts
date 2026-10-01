@@ -692,6 +692,10 @@ export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"):
     const ansi = ch === "$" && cmd[i + 1] === "'";
     if (ansi || ch === "'") {
       const start = ansi ? i + 1 : i;
+      // No closing quote: bash reports an unexpected EOF and runs nothing at all,
+      // so the rest of the command is not executable. Treating the tail as run
+      // would be the unsafe direction — it would invent a staging command the
+      // shell never performs.
       const end = cmd.indexOf("'", start + 1);
       const content = cmd.slice(start + 1, end === -1 ? cmd.length : end);
       // A quoted part glued to adjacent text is part of the same shell word
@@ -782,6 +786,12 @@ function isGitWord(word: string): boolean {
  * `cd ~/git/proj` contains the word without running anything.
  */
 export function segmentRunsGit(segment: string): boolean {
+  const verdict = classifySegment(segment);
+  gitLog.debug("segment_runs_git", "verdict", verdict);
+  return verdict;
+}
+
+function classifySegment(segment: string): boolean {
   const words = tokenize(segment.trim());
   let k = 0;
   while (k < words.length) {
@@ -836,6 +846,7 @@ function executedGitCommands(cmd: string): string[][] {
       }
     }
   }
+  gitLog.debug("executed_git_commands", "count", kept.length);
   return kept;
 }
 

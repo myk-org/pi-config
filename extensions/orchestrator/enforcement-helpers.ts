@@ -102,6 +102,14 @@ function unquotedSegments(command: string): ShellSegment[] {
     const ch = command[i];
     if (quote) {
       if (ch === quote) quote = null;
+      // An unterminated quote cannot survive a line break in practice. Resolving
+      // it here — rather than in the newline branch below, which this branch
+      // never reaches while a quote is open — is what stops one stray
+      // apostrophe from blinding the parser for every line that follows.
+      else if (ch === "\n") {
+        enfLog.debug("quote_reset_at_newline", "char", quote);
+        quote = null;
+      }
       continue;
     }
     if (ch === "\\" && command[i + 1]) {
@@ -288,6 +296,9 @@ function gitCsIn(segment: string): string[] {
   return values;
 }
 
+/** Words that run whatever follows them, so an assignment behind one still counts. */
+const WRAPPER_WORDS = new Set(["sudo", "command", "exec", "time", "nohup", "nice", "stdbuf", "setsid", "timeout"]);
+
 /** env options whose value is a separate word. */
 const ENV_VALUE_OPTIONS = new Set([
   "-u", "--unset", "-C", "--chdir", "-S", "--split-string", "-a", "--argv0",
@@ -316,7 +327,8 @@ function gitIndexOverride(command: string): string | null {
     const nameOf = (tok: string) => tok.split("=")[0];
     let i = 0;
     // `export GIT_INDEX_FILE=/x` sets it for later commands in the same shell,
-    // so it points git at another index just as an inline assignment does.
+    // so it points git at another index just as an inline assignment does. This
+    // segment does not run git itself, so it is checked before that requirement.
     if (tokens[i] === "export") {
       i++;
       while (i < tokens.length) {
@@ -329,8 +341,14 @@ function gitIndexOverride(command: string): string | null {
       }
       continue;
     }
-    // Leading `VAR=value` assignments, then the same again after `env`.
-    for (let round = 0; round < 2; round++) {
+    // `echo GIT_INDEX_FILE=/x` only prints the name. An override is something
+    // git is actually run with, so the segment has to run git for it to count.
+    if (!segmentRunsGit(seg.text)) continue;
+    // Leading `VAR=value` assignments, then the same again after `env`. A
+    // wrapper that runs the rest — `sudo`, `command`, `exec`, `time` — sits in
+    // front of both, and can be chained.
+    for (let round = 0; round < 4; round++) {
+      while (i < tokens.length && WRAPPER_WORDS.has(tokens[i])) i++;
       while (i < tokens.length && assignment.test(tokens[i])) {
         const name = nameOf(tokens[i]);
         if (GIT_INDEX_VARS.has(name)) {
@@ -385,8 +403,9 @@ export function conflictCandidateDirs(
 ): { all: string[]; envOverride: string | null; dynamicPath: string | null } {
   const envOverride = gitIndexOverride(command);
   // A path the shell expands at run time — `$DIR`, `$(pwd)`, a glob — cannot be
-  // checked here, so it is reported rather than resolved to a literal.
-  const dynamic = (p: string) => /[$*?[\]{}]/.test(p);
+  // checked here, so it is reported rather than resolved to a literal. A glob
+  // character the command escaped is part of the name, not a pattern.
+  const dynamic = (p: string) => /[$*?{]/.test(p.replace(/\\./g, ""));
   let dynamicPath: string | null = null;
   const dirs = new Set<string>();
   // running[d] is the directory of the shell at paren depth d.
@@ -416,7 +435,6 @@ export function conflictCandidateDirs(
     const assigned = /(?:^|[\s;&|(])HOME=(\S*)/.exec(seg.text);
     if (assigned) home = assigned[1];
     const target = cdTargetIn(seg.text);
-    if (target && dynamic(target) && !dynamicPath) dynamicPath = target;
     if (target) {
       if (seg.conditional || seg.backgrounded) {
         // Behind a short-circuit the cd may never run, and a backgrounded cd
@@ -447,6 +465,10 @@ export function conflictCandidateDirs(
         previous[seg.depth] = from;
         running[seg.depth] = to;
       }
+      // A directory change that certainly runs, to a literal path, settles where
+      // the shell is: an earlier unverifiable one no longer matters.
+      if (!dynamic(target) && !seg.conditional && !seg.backgrounded) dynamicPath = null;
+      else if (dynamic(target) && !dynamicPath) dynamicPath = target;
     }
     if (segmentRunsGit(seg.text)) {
       let base = running[seg.depth];
