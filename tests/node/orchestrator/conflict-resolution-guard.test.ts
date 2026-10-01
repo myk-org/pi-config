@@ -149,6 +149,40 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand('git add "a b.txt"'), true);
   });
 
+  it("classifies a nested shell script argument", () => {
+    for (const cmd of ["bash -c 'git add a.txt'", "sh -c \"git add a.txt\"", "eval 'git rm a.txt'"]) {
+      assert.equal(isConflictResolutionCommand(cmd), true, cmd);
+    }
+  });
+
+  it("classifies a command substitution inside double quotes", () => {
+    assert.equal(isConflictResolutionCommand('printf %s "$(git add a.txt)"'), true);
+    assert.equal(isConflictResolutionCommand("echo `git add a.txt`"), true);
+  });
+
+  it("classifies a command that follows a heredoc delimiter on the opener line", () => {
+    const cmd = "cat <<EOF; git add a.txt\nsome body mentioning git rm\nEOF";
+    assert.equal(isConflictResolutionCommand(cmd), true);
+  });
+
+  it("classifies an unquoted heredoc body substitution", () => {
+    assert.equal(isConflictResolutionCommand("cat <<EOF\n$(git add a.txt)\nEOF"), true);
+  });
+
+  it("ignores a quoted heredoc body entirely", () => {
+    assert.equal(isConflictResolutionCommand("cat <<'EOF'\n$(git add a.txt)\nEOF"), false);
+  });
+
+  it("strips bodies for bare and punctuated heredoc delimiters", () => {
+    for (const delim of ["EOF", "END-OF", "MSG_1"]) {
+      assert.equal(isConflictResolutionCommand(`cat <<${delim}\nplease git add a.txt by hand\n${delim}`), false, delim);
+    }
+  });
+
+  it("keeps a quoted git -C value parseable", () => {
+    assert.equal(isConflictResolutionCommand('git -C "repo" add a.txt'), true);
+  });
+
   it("blocks git-expert from staging a resolution", async () => {
     process.env.PI_AGENT_NAME = "git-expert";
     process.env.PI_SUBAGENT_CHILD = "1";
@@ -254,6 +288,22 @@ describe("conflict-resolution guard", () => {
   it("keeps the pre-git directory when a trailing cd follows", () => {
     assert.equal(resolveEffectiveCwd("cd /repo && git commit --signoff && cd /tmp", "/session"), "/repo");
     assert.equal(resolveEffectiveCwd("cd /first && cd /second && pytest", "/session"), "/first");
+  });
+
+  it("blocks a resolution hidden inside a nested shell", async () => {
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("bash -c 'git add a.txt'");
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Unresolved conflicts in a\.txt/);
+  });
+
+  it("blocks a resolution hidden in a command substitution", async () => {
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run('printf %s "$(git add a.txt)"');
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Unresolved conflicts in a\.txt/);
   });
 
   it("lets conflict-resolver stage its own resolution", async () => {

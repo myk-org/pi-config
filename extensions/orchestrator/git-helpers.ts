@@ -409,17 +409,131 @@ export function hasGitSub(command: string, sub: string): boolean {
 }
 
 /**
- * Text that is printed or piped, not executed: quoted spans and heredoc bodies.
- * `echo 'git add a.txt'` and a commit message mentioning `git add` are not
- * invocations, so they must not be classified as resolution commands. Quoting a
- * *path* (`git add "a b.txt"`) is unaffected — only the quoted text is removed,
- * and the git token stays outside it.
+ * The shell part of a command: what it would actually run.
+ *
+ * Quoted text is not automatically inert — `bash -c 'git add x'`,
+ * `eval '...'` and `"$(git add x)"` all execute — and a heredoc body is inert
+ * except for substitutions, while the text *after* the delimiter on the opener
+ * line still runs. So this scans rather than pattern-matches: literals are kept,
+ * `$(...)`, backticks and script arguments are descended into, heredoc bodies
+ * contribute only their substitutions, and an inert quoted span collapses to a
+ * placeholder token so `git -C "repo" add` stays parseable.
  */
-function stripNonExecutableText(command: string): string {
-  return command
-    .replace(/<<-?\s*['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n[ \t]*\1\s*(?=\n|$)/gm, "")
-    .replace(/'[^']*'/g, " ")
-    .replace(/"[^"]*"/g, " ");
+type ScanMode = "full" | "body" | "literal-body";
+
+function matchingParen(cmd: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < cmd.length; i++) {
+    if (cmd[i] === "(") depth++;
+    else if (cmd[i] === ")" && --depth === 0) return i;
+  }
+  return cmd.length;
+}
+
+/** Index of the closing quote, skipping over $( ) and backtick regions. */
+function closingQuote(cmd: string, open: number, quote: string): number {
+  for (let i = open + 1; i < cmd.length; i++) {
+    if (cmd[i] === "\\") { i++; continue; }
+    if (cmd[i] === "$" && cmd[i + 1] === "(") { i = matchingParen(cmd, i + 1); continue; }
+    if (cmd[i] === "`") { const end = cmd.indexOf("`", i + 1); i = end === -1 ? cmd.length : end; continue; }
+    if (cmd[i] === quote) return i;
+  }
+  return cmd.length;
+}
+
+/** True when the quoted span at `at` is a script `eval`/`sh -c` argument. */
+function isScriptArgument(cmd: string, at: number): boolean {
+  const before = cmd.slice(0, at).replace(/\s+$/, "");
+  return /(?:^|[\s;&|(])(?:eval|(?:bash|sh|zsh|dash)\s+-c)$/.test(before);
+}
+
+function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string {
+  if (depth > 4) return "";
+  const keepLiterals = mode === "full";
+  const keepSubstitutions = mode !== "literal-body";
+  let out = "";
+  const pendingHeredocs: { delim: string; expand: boolean; stripTabs: boolean }[] = [];
+  const add = (s: string) => { out += s; };
+
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+
+    // Heredoc opener: remember the delimiter, keep scanning the same line.
+    if (ch === "<" && cmd[i + 1] === "<") {
+      const m = /^<<(-?)\s*(?:'([^']*)'|"([^"]*)"|([^\s;&|)'\n]+))/.exec(cmd.slice(i));
+      if (m) {
+        pendingHeredocs.push({
+          delim: m[2] ?? m[3] ?? m[4],
+          expand: !m[2] && !m[3],
+          stripTabs: m[1] === "-",
+        });
+        i += m[0].length - 1;
+        continue;
+      }
+    }
+
+    // A heredoc body starts after this line ends.
+    if (ch === "\n" && pendingHeredocs.length > 0) {
+      let body = cmd.slice(i + 1);
+      let consumed = 0;
+      for (const h of pendingHeredocs) {
+        const lines = body.split("\n");
+        const end = lines.findIndex((l) => new RegExp(`^${h.stripTabs ? "" : "[ \\t]*"}${h.delim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[ \\t]*$`).test(l));
+        const bodyText = lines.slice(0, end === -1 ? lines.length : end).join("\n");
+        if (h.expand && keepSubstitutions) add(executableText(bodyText, depth + 1, "body"));
+        consumed += (end === -1 ? body.length : bodyText.length + end) + (end === -1 ? 0 : 1);
+        body = body.slice(consumed);
+      }
+      i += consumed;
+      pendingHeredocs.length = 0;
+      add(" ");
+      continue;
+    }
+
+    // Command substitution — always executes.
+    if (ch === "$" && cmd[i + 1] === "(" && keepSubstitutions) {
+      const end = matchingParen(cmd, i + 1);
+      add(` ${executableText(cmd.slice(i + 2, end), depth + 1)} `);
+      i = end;
+      continue;
+    }
+    if (ch === "`" && keepSubstitutions) {
+      const end = cmd.indexOf("`", i + 1);
+      add(` ${executableText(cmd.slice(i + 1, end === -1 ? cmd.length : end), depth + 1)} `);
+      i = end === -1 ? cmd.length : end;
+      continue;
+    }
+
+    if (ch === "'") {
+      const end = cmd.indexOf("'", i + 1);
+      const content = cmd.slice(i + 1, end === -1 ? cmd.length : end);
+      if (isScriptArgument(cmd, i)) {
+        if (keepSubstitutions) add(` ${executableText(content, depth + 1)} `);
+        else add(" _ ");
+      } else {
+        add(" _ ");
+      }
+      i = end === -1 ? cmd.length : end;
+      continue;
+    }
+    if (ch === '"') {
+      const end = closingQuote(cmd, i, '"');
+      const content = cmd.slice(i + 1, end);
+      if (isScriptArgument(cmd, i)) {
+        if (keepSubstitutions) add(` ${executableText(content, depth + 1)} `);
+      } else if (keepSubstitutions) {
+        // Only the substitutions inside a double-quoted span execute.
+        add(` ${executableText(content, depth + 1, "body")} `);
+      } else {
+        add(" _ ");
+      }
+      i = end;
+      continue;
+    }
+
+    if (keepLiterals) add(ch);
+  }
+  return out;
 }
 
 /**
@@ -428,7 +542,7 @@ function stripNonExecutableText(command: string): string {
  * backing out (`--abort`) are deliberately not in this set.
  */
 export function isConflictResolutionCommand(command: string): boolean {
-  const cmd = stripNonExecutableText(command);
+  const cmd = executableText(command);
   // git rm drops a conflicted deletion's unmerged entry, which is a resolution.
   const matches =
     hasGitSub(cmd, "add") ||
