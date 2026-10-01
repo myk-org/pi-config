@@ -134,12 +134,17 @@ def _lexical_docs_dir(docs_dir: Path, on_disk: Path | None = None) -> Path:
     symlink before it (``--docs-dir docs/..`` where docs -> elsewhere) it names a
     different directory than the one the build writes into. When the filesystem
     disagrees, the directory the files land in wins -- config discovery and the
-    written site must not be two different places.
+    written site must not be two different places. Disagreement is decided by
+    asking the filesystem where the *normalized* path actually leads, so a
+    ``..`` that only changes the spelling (``real/../docs``) keeps the lexical
+    path even when a symlink sits further along it.
     """
     start = docs_dir if docs_dir.is_absolute() else Path.cwd() / docs_dir
     normalized = Path(os.path.normpath(start))
     target = on_disk if on_disk is not None else start.resolve()
-    crossed = normalized != start and target != normalized
+    # resolve() is the question "do these two spellings lead to the same place?",
+    # and it only runs when a ".." was actually collapsed.
+    crossed = normalized != start and normalized.resolve() != target
     log.debug(
         "review_notice: docs_dir=%s normalized=%s on_disk=%s symlink_crossed=%s",
         docs_dir,

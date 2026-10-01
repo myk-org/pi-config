@@ -389,10 +389,7 @@ def test_review_notice_escapes_metacharacters_in_the_docs_directory(tmp_path: Pa
 
 
 def test_review_notice_follows_a_parent_component_across_a_symlink(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # docs/ -> /outside/site, built with --docs-dir docs/.. : the files land in
     # /outside, so that is the directory whose config governs them. Collapsing the
@@ -407,20 +404,70 @@ def test_review_notice_follows_a_parent_component_across_a_symlink(
     (repo / "docs").symlink_to(outside / "site")
     monkeypatch.chdir(repo)
 
-    with caplog.at_level(logging.DEBUG, logger="pi_docsite.generate"):
-        assert generate_docs.main(["--docs-dir", "docs/.."]) == 0
+    assert generate_docs.main(["--docs-dir", "docs/.."]) == 0
 
     # The config that governs the written directory is the one beside it, and the
     # globs are relative to that config's directory - no "..", no repo prefix.
     out = capsys.readouterr().out
     assert '"*.html"' in out
     assert ".." not in out
-    assert any("symlink_crossed=True" in record.getMessage() for record in caplog.records)
 
     array = out.split("[ignore]\nglob = ", 1)[1].split("\n", 1)[0]
     (outside / ".pr_agent.toml").write_text(f"[ignore]\nglob = {array}\n", encoding="utf-8")
     assert generate_docs.main(["--docs-dir", "docs/.."]) == 0
     assert "[ignore]" not in capsys.readouterr().out
+
+
+def test_review_notice_keeps_the_repo_when_the_dotdot_only_respells_the_path(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # real/../docs, where docs/ is a symlink: the ".." only changes how the path
+    # is spelled, both spellings lead to the same place, so config discovery must
+    # stay in the repo - not follow the symlink out of it and find nothing.
+    outside = tmp_path / "outside"
+    (outside / "site").mkdir(parents=True)
+    (outside / "site" / "alpha.md").write_text(FRONT + "# Alpha\n\nBody of alpha.\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    (repo / "real").mkdir(parents=True)
+    (repo / "docs").symlink_to(outside / "site")
+    (repo / ".pr_agent.toml").write_text("[config]\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    assert generate_docs.main(["--docs-dir", "real/../docs"]) == 0
+
+    out = capsys.readouterr().out
+    # Repo-relative to the repo-root config, even though the files land outside.
+    assert '"docs/*.html"' in out
+    assert str(tmp_path) not in out
+
+    array = out.split("[ignore]\nglob = ", 1)[1].split("\n", 1)[0]
+    (repo / ".pr_agent.toml").write_text(f"[ignore]\nglob = {array}\n", encoding="utf-8")
+    assert generate_docs.main(["--docs-dir", "real/../docs"]) == 0
+    assert "[ignore]" not in capsys.readouterr().out
+
+
+def test_lexical_docs_dir_logs_the_symlink_decision(
+    tmp_path: Path, monkeypatch: MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Diagnostics only: what the notice does is asserted elsewhere, so a reworded
+    # log message cannot fail a behaviour test.
+    outside = tmp_path / "outside" / "site"
+    outside.mkdir(parents=True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "docs").symlink_to(outside)
+    monkeypatch.chdir(repo)
+
+    with caplog.at_level(logging.DEBUG, logger="pi_docsite.generate"):
+        crossed = generate_docs._lexical_docs_dir(Path("docs/.."), outside.parent)
+    assert crossed == outside.parent
+    assert any("symlink_crossed=True" in record.getMessage() for record in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="pi_docsite.generate"):
+        spelled = generate_docs._lexical_docs_dir(Path("real/../docs"), outside)
+    assert spelled == repo / "docs"
+    assert any("symlink_crossed=False" in record.getMessage() for record in caplog.records)
 
 
 def test_review_notice_escapes_glob_metacharacters_in_page_names(tmp_path: Path) -> None:
