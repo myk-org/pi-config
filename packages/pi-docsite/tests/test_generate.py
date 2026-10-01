@@ -201,3 +201,90 @@ def test_published_packages_declare_a_readme() -> None:
         readme = data["project"].get("readme")
         assert readme, f"{rel} declares no readme, so its PyPI page has no description"
         assert (root / rel).parent.joinpath(readme).is_file(), f"{rel} points at a missing {readme}"
+
+
+def _review_config(docs: Path, body: str) -> Path:
+    config = docs.parent / generate_docs.REVIEW_CONFIG
+    config.write_text(body, encoding="utf-8")
+    return config
+
+
+def test_review_notice_is_silent_without_a_review_config(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    assert generate_docs._review_notice(docs) is None
+
+
+def test_review_notice_names_the_ignore_globs_when_generated_files_are_in_scope(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    _review_config(docs, "[config]\nadd_repo_metadata = true\n")
+    assert generate_docs.main([]) == 0
+
+    notice = generate_docs._review_notice(docs)
+    assert notice is not None
+    assert "[ignore]" in notice
+    assert '"docs/*.html"' in notice
+    assert '"docs/assets/*"' in notice
+    assert '"docs/llms.txt"' in notice
+    assert '"docs/llms-full.txt"' in notice
+    assert '"docs/search-index.json"' in notice
+    # The .md sources are the repo's own work and must stay in review scope.
+    assert "docs/*.md" not in notice
+
+
+def test_review_notice_is_silent_once_the_config_covers_the_generated_files(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    assert generate_docs.main([]) == 0
+    _review_config(
+        docs,
+        '[ignore]\nglob = ["docs/*.html", "docs/assets/*", "docs/llms.txt",'
+        ' "docs/llms-full.txt", "docs/search-index.json"]\n',
+    )
+    assert generate_docs._review_notice(docs) is None
+
+
+def test_review_notice_ignores_an_unrelated_ignore_list(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    assert generate_docs.main([]) == 0
+    # Basename-only globs match repo-relative paths, so this covers nothing.
+    _review_config(docs, '[ignore]\nglob = ["*.html", "llms.txt"]\n')
+    assert generate_docs._review_notice(docs) is not None
+    # docs/** does cover the generated files (fnmatch: * spans "/"), so a repo
+    # that chose the blunt option is left alone -- the notice is about
+    # coverage, not about taste.
+    _review_config(docs, '[ignore]\nglob = ["docs/**"]\n')
+    assert generate_docs._review_notice(docs) is None
+
+
+def test_review_notice_stays_quiet_on_an_unparsable_config(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    _review_config(docs, "not = = toml\n")
+    assert generate_docs._review_notice(docs) is None
+
+
+def test_review_notice_debug_log_carries_the_missing_files(
+    tmp_path: Path, monkeypatch: MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    assert generate_docs.main([]) == 0
+    _review_config(docs, '[ignore]\nglob = ["docs/*.html"]\n')
+
+    with caplog.at_level(logging.DEBUG, logger="pi_docsite.generate"):
+        assert generate_docs._review_notice(docs) is not None
+    message = caplog.records[-1].getMessage()
+    assert "docs/llms.txt" in message
+    assert "docs/alpha.html" not in message
+
+
+def test_main_prints_the_review_notice_beside_the_summary(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    _review_config(docs, "[config]\n")
+
+    assert generate_docs.main([]) == 0
+
+    assert "[ignore]" in capsys.readouterr().out

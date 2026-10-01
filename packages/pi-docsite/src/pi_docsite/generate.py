@@ -12,11 +12,13 @@ single source of truth: this script only ever writes HTML, ``llms*.txt``,
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import re
 import shutil
 import subprocess
+import tomllib
 from argparse import ArgumentParser
 from pathlib import Path
 from typing import Any
@@ -48,6 +50,15 @@ log = logging.getLogger("pi_docsite.generate")
 # Named, not an index into the detection list: the notice must render even when
 # that list changes shape.
 EXAMPLE_SKILL_DEST = Path.home() / ".pi" / "agent" / "skills" / "pi-docsite"
+
+# The review config this generator knows how to check, and the generated output
+# it should not be asked to review. Scoped to Qodo Merge / PR-Agent because its
+# `[ignore] glob` key is the one the notice can both read (tomllib) and verify.
+REVIEW_CONFIG = ".pr_agent.toml"
+# Names under the docs dir, relative to it. Deliberately narrow: the .md
+# sources and nav.json are the repo's own work and stay in review scope, so a
+# blanket docs/** would hide the project's documentation from review.
+REVIEW_EXCLUDE_NAMES = ("*.html", "assets/*", "llms.txt", "llms-full.txt", "search-index.json")
 
 
 def _agent_skill_dirs(home: Path) -> tuple[Path, ...]:
@@ -90,6 +101,57 @@ def _skill_notice(docs_dir: Path, home: Path | None = None) -> str | None:
         f"guidance to your LLM, copy {Path(__file__).parent / 'skill' / 'SKILL.md'} "
         f"into your agent's skills directory (for example "
         f"{EXAMPLE_SKILL_DEST / 'SKILL.md'})."
+    )
+
+
+def _review_notice(docs_dir: Path) -> str | None:
+    """One pointer at the review config when the generated site is still in scope.
+
+    A consuming repo commits the generated site, so an AI reviewer comments on
+    thousands of lines of machine-written HTML. Those findings are not the
+    consuming repo's to fix -- the source is this generator -- so the notice
+    names the ignore list, and returns None (silence) once the config already
+    covers every generated file. A notice that nags after the user complied is
+    worse than no notice.
+    """
+    config = docs_dir.parent / REVIEW_CONFIG
+    if not config.is_file():
+        log.debug("review_notice: no %s next to %s", REVIEW_CONFIG, docs_dir)
+        return None
+    try:
+        with config.open("rb") as handle:
+            ignore = tomllib.load(handle).get("ignore", {})
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        # Unreadable config: say nothing rather than guess. The build output is
+        # already on screen, and a wrong suggestion about a config this
+        # generator cannot parse is noise.
+        log.debug("review_notice: could not read %s: %s", config, exc)
+        return None
+    globs = ignore.get("glob", []) if isinstance(ignore, dict) else []
+
+    try:
+        prefix = docs_dir.relative_to(config.parent).as_posix()
+    except ValueError:
+        prefix = docs_dir.as_posix()
+    # What the generator actually wrote, as repo-relative paths -- the same
+    # strings the review tool matches its globs against.
+    generated = [
+        path.relative_to(config.parent).as_posix()
+        for pattern in REVIEW_EXCLUDE_NAMES
+        for path in sorted(docs_dir.glob(pattern))
+    ]
+    missing = [path for path in generated if not any(fnmatch.fnmatch(path, glob) for glob in globs)]
+    log.debug("review_notice: config=%s generated=%d missing=%s", config, len(generated), missing)
+    if not missing:
+        return None
+    # json.dumps renders a TOML-compatible array of basic strings, so the line
+    # can be pasted into the config as it is.
+    suggestion = json.dumps([f"{prefix}/{name}" for name in REVIEW_EXCLUDE_NAMES])
+    return (
+        f"pi-docsite: {len(missing)} generated file(s) under {prefix}/ are not excluded from AI review, "
+        f"and the reviewer will report findings in output this generator owns. Add to {REVIEW_CONFIG} "
+        f"(keep the .md and nav.json sources in scope):\n\n"
+        f"[ignore]\nglob = {suggestion}\n"
     )
 
 
@@ -463,9 +525,9 @@ def main(argv: list[str] | None = None) -> int:
     for name in stale:
         print(f"   removed  {name}")
     print(f"{len(order)} pages, {len(written)} files, {sum(s for _, s in written)} B total")
-    notice = _skill_notice(DOCS_DIR)
-    if notice:
-        print(notice)
+    for notice in (_skill_notice(DOCS_DIR), _review_notice(DOCS_DIR)):
+        if notice:
+            print(notice)
     return 0
 
 

@@ -19,6 +19,11 @@
   // inline mode; served over HTTP this is not an issue.
   var index = Array.isArray(window.__DOCS_SEARCH_INDEX__) ? window.__DOCS_SEARCH_INDEX__ : null;
   var indexError = null;
+  // Opening the file straight off disk is the one case CORS blocks, and so the
+  // one case where "serve the site over HTTP" is the remedy. Over HTTP a failed
+  // fetch means a missing or corrupt search-index.json, and telling the reader
+  // to serve the site when they already do is advice that cannot help (#875).
+  var onFileProtocol = location.protocol === 'file:';
   if (!index) {
     fetch('search-index.json').then(function(r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -32,7 +37,9 @@
     }).catch(function(err) {
       indexError = err;
       console.error('[docs] search index unavailable:', err,
-        '— serve the site over HTTP, or build it with the search index inlined.');
+        onFileProtocol
+          ? '— serve the site over HTTP, or build it with the search index inlined.'
+          : '— search-index.json is missing or invalid; rebuild the site.');
       // Same reason as the success path: a query typed while the request was
       // pending would otherwise stay on "Loading search index..." forever, now
       // that the request has failed.
@@ -96,9 +103,13 @@
     if (!index) {
       var err = document.createElement('div');
       err.className = 'search-no-results';
-      err.textContent = indexError
-        ? 'Search needs the site served over HTTP (opening the file directly blocks it).'
-        : 'Loading search index...';
+      if (!indexError) {
+        err.textContent = 'Loading search index...';
+      } else if (onFileProtocol) {
+        err.textContent = 'Search needs the site served over HTTP (opening the file directly blocks it).';
+      } else {
+        err.textContent = 'Search index could not be loaded (search-index.json is missing or invalid).';
+      }
       results.appendChild(err);
       return;
     }

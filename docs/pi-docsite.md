@@ -130,6 +130,11 @@ The search index is written once and **fetched** by every page rather than inlin
 which keeps each page small. Browsers block `fetch()` of a local file over `file://`, so
 serve the site over HTTP for search to work.
 
+The error message follows the cause: a page opened over `file://` is told to serve the
+site over HTTP, while a page that is already served over HTTP and still cannot load the
+index is told the index is missing or invalid — advice that applies to them. Either way
+the underlying error goes to the browser console.
+
 ## Ask your LLM
 
 A ready-made skill ships inside the package at `skill/SKILL.md`, with the commands,
@@ -163,6 +168,33 @@ print('installed to', dst)
 "
 ```
 
+## Keeping generated files out of AI review
+
+The generated site is committed, so a repo with an AI reviewer configured — Qodo Merge /
+PR-Agent, `.pr_agent.toml` — gets findings against thousands of lines of machine-written
+HTML. The consuming repo cannot act on them: the source is the generator.
+
+**The generator names the fix.** While a `.pr_agent.toml` exists and its `[ignore] glob`
+does not cover the generated paths, every build prints one line with the exact ignore
+list to add:
+
+```text
+pi-docsite: 34 generated file(s) under docs/ are not excluded from AI review, and the
+reviewer will report findings in output this generator owns. Add to .pr_agent.toml (keep
+the .md and nav.json sources in scope):
+
+[ignore]
+glob = ["docs/*.html", "docs/assets/*", "docs/llms.txt", "docs/llms-full.txt", "docs/search-index.json"]
+```
+
+The list is deliberately narrow: `*.md` sources and `nav.json` are the repo's own work and
+stay in review. A blanket `docs/**` also silences the notice, but it hides the project's
+documentation from review too.
+
+The notice disappears once the config covers the generated files, and a repo with no
+`.pr_agent.toml` never sees it. An LLM driving a build should **ask** before editing the
+review config — review scope is the repo owner's call.
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |
@@ -171,6 +203,7 @@ print('installed to', dst)
 | `note: N page(s) not in nav.json` | The page built fine but has no curated sidebar position. Add it to `nav.json`. |
 | `docs/<slug>.md has N H1 headings, expected 1` | Add exactly one real H1, or close the code fence swallowing it. |
 | Search returns nothing | Open the browser console. `search index unavailable` means the page was opened over `file://`, where the fetch is blocked. Serve it over HTTP. |
+| Search says the index could not be loaded | The page is already served over HTTP, so `search-index.json` is missing or invalid. Rebuild; the real error is in the console. |
 | Rebuild shows unrelated diffs | That is a determinism bug, not a stale build. |
 
 ## Requirements

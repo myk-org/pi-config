@@ -5,9 +5,19 @@ env_list = ["py", "node"]
 skip_install = true
 allowlist_externals = ["uv"]
 set_env = {UV_PROJECT_ENVIRONMENT = "{env_dir}"}
-commands = [["uv", "run", "--group", "tests", "pytest", { replace = "posargs", default = [], extend = true }]]
+# The docs generator is a workspace package with its own suite; it needs the
+# `docs` group to import pi_docsite, and root testpaths=tests/python skips it.
+commands = [
+  ["uv", "run", "--group", "tests", "pytest", { replace = "posargs", default = [], extend = true }],
+  ["uv", "run", "--group", "docs", "--group", "tests", "pytest", "packages/pi-docsite/tests"],
+]
 
 [env.node]
 skip_install = true
 allowlist_externals = ["npx"]
-commands = [["npx", "tsx", "--test", "tests/node/**/*.test.ts"]]
+# Second suite: the browser assets shipped in renderer/static, which have no
+# exports and can only be tested by running them against a DOM.
+commands = [
+  ["npx", "tsx", "--test", "tests/node/**/*.test.ts"],
+  ["npx", "tsx", "--test", "packages/pi-docsite/tests/js/**/*.test.ts"],
+]
