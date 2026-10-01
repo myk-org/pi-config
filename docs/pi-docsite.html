@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>pi-docsite - pi-config</title>
     <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
-    <link rel="stylesheet" href="assets/style.css?v=e7c0b4379e">
+    <link rel="stylesheet" href="assets/style.css?v=5a6efa51d2">
     <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
     <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
     <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
@@ -280,7 +280,7 @@
                 <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
                     <kbd>&#8984;K</kbd> Search
                 </button>
-                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsfy-badge" title="documentation">
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsite-badge" title="documentation">
                     ⚡ pi<span class="brand-accent">-docsite</span>
                 </a>
 
@@ -314,7 +314,7 @@ monorepo. It is also a standalone product — you can use it in any project that
 its documentation as Markdown.</p>
 <p>It renders a directory of <code>*.md</code> into a static site: sidebar navigation, full-text
 search, <code>llms.txt</code> / <code>llms-full.txt</code> for LLM consumption, and a search index. No config
-file, no build framework, no docsfy.</p>
+file, no build framework, no build step to learn.</p>
 <h2 id="run-it">Run it</h2>
 <p>No install step — <code>uvx</code> runs it in an ephemeral environment:</p>
 <div class="highlight"><pre><span></span><code>uvx<span class="w"> </span>pi-docsite<span class="w"> </span>--docs-dir<span class="w"> </span>docs<span class="w"> </span>--tagline<span class="w"> </span><span class="s2">"One line describing this project"</span>
@@ -457,6 +457,11 @@ something actually changed</strong> — not a timestamp or a reordering.</p>
 <p>The search index is written once and <strong>fetched</strong> by every page rather than inlined,
 which keeps each page small. Browsers block <code>fetch()</code> of a local file over <code>file://</code>, so
 serve the site over HTTP for search to work.</p>
+<p>The error message follows the cause. A page opened over <code>file://</code> is told to serve the site
+over HTTP — the one case where that is the remedy. Over HTTP the three failures stay
+distinct: a <code>404</code> means the index is missing (rebuild), a <code>5xx</code> says the server failed and
+the index may be fine (retry), and a network or parse failure is reported as such. The
+underlying error goes to the browser console in every case.</p>
 <h2 id="ask-your-llm">Ask your LLM</h2>
 <p>A ready-made skill ships inside the package at <code>skill/SKILL.md</code>, with the commands,
 the <code>nav.json</code> contract, and the failure modes.</p>
@@ -483,6 +488,32 @@ channel that reaches whoever is actually running the tool. It disappears once
 <span class="s2">"</span>
 </code></pre></div>
 
+<h2 id="keeping-generated-files-out-of-ai-review">Keeping generated files out of AI review</h2>
+<p>The generated site is committed, so a repo with an AI reviewer configured — Qodo Merge /
+PR-Agent, <code>.pr_agent.toml</code> — gets findings against thousands of lines of machine-written
+HTML. The consuming repo cannot act on them: the source is the generator.</p>
+<p><strong>The generator names the fix.</strong> While a <code>.pr_agent.toml</code> exists and its <code>[ignore] glob</code>
+does not cover the files this build wrote, every build prints one line with the exact
+patterns to add:</p>
+<div class="highlight"><pre><span></span><code>pi-docsite: 13 generated file(s) under docs/ are not excluded from AI review, and the
+reviewer will report findings in output this generator owns. Add to .pr_agent.toml (keep
+the .md and nav.json sources in scope):
+
+[ignore]
+glob = ["docs/*.html", "docs/search-index.json", "docs/llms.txt", "docs/llms-full.txt", "docs/assets/callouts.js", ...]
+</code></pre></div>
+
+<p>When the config already has an <code>[ignore]</code> table, the notice says to merge the patterns
+into the existing <code>glob</code> list instead — a second <code>[ignore]</code> table is invalid TOML. The
+config is looked up from the docs directory upwards, so <code>website/docs</code> and a symlinked
+<code>docs/</code> both find the repo's file, and the printed globs stay repo-relative.</p>
+<p>The list is deliberately narrow. <code>docs/*.md</code> and <code>nav.json</code> are the repo's own work and
+stay in review, and so does anything the generator did not write: a hand-written
+<code>404.html</code> or a verification page is preserved on every build, so when one exists the
+suggestion names the generated pages individually instead of suggesting <code>docs/*.html</code>.</p>
+<p>The notice disappears once the config covers the generated files, and a repo with no
+<code>.pr_agent.toml</code> never sees it. An LLM driving a build should <strong>ask</strong> before editing the
+review config — review scope is the repo owner's call.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <div class="table-wrap"><table>
 <thead>
@@ -506,7 +537,15 @@ channel that reaches whoever is actually running the tool. It disappears once
 </tr>
 <tr>
 <td>Search returns nothing</td>
-<td>Open the browser console. <code>search index unavailable</code> means the page was opened over <code>file://</code>, where the fetch is blocked. Serve it over HTTP.</td>
+<td>Open the browser console. <code>search index unavailable</code> on a <code>file://</code> page means the fetch was blocked. Serve it over HTTP.</td>
+</tr>
+<tr>
+<td>Search index unavailable (HTTP 500)</td>
+<td>The server failed, not the file. Retry; check the deployment if it persists.</td>
+</tr>
+<tr>
+<td>Search says the index could not be loaded</td>
+<td>The request failed before a response arrived, or the body was not JSON. Check the console and the network.</td>
 </tr>
 <tr>
 <td>Rebuild shows unrelated diffs</td>
@@ -554,6 +593,7 @@ channel that reaches whoever is actually running the tool. It disappears once
 <li><a href="#determinism">Determinism</a></li>
 <li><a href="#search-works-offline">Search works offline</a></li>
 <li><a href="#ask-your-llm">Ask your LLM</a></li>
+<li><a href="#keeping-generated-files-out-of-ai-review">Keeping generated files out of AI review</a></li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>
 <li><a href="#requirements">Requirements</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
@@ -576,14 +616,14 @@ channel that reaches whoever is actually running the tool. It disappears once
 
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    <script src="assets/theme.js?v=e7c0b4379e"></script>
+    <script src="assets/theme.js?v=5a6efa51d2"></script>
 
-    <script src="assets/search.js?v=e7c0b4379e"></script>
-    <script src="assets/copy.js?v=e7c0b4379e"></script>
-    <script src="assets/callouts.js?v=e7c0b4379e"></script>
-    <script src="assets/scrollspy.js?v=e7c0b4379e"></script>
-    <script src="assets/codelabels.js?v=e7c0b4379e"></script>
-    <script src="assets/github.js?v=e7c0b4379e"></script>
+    <script src="assets/search.js?v=5a6efa51d2"></script>
+    <script src="assets/copy.js?v=5a6efa51d2"></script>
+    <script src="assets/callouts.js?v=5a6efa51d2"></script>
+    <script src="assets/scrollspy.js?v=5a6efa51d2"></script>
+    <script src="assets/codelabels.js?v=5a6efa51d2"></script>
+    <script src="assets/github.js?v=5a6efa51d2"></script>
     <script>
 (function() {
     var toggle = document.getElementById('sidebar-toggle');

@@ -525,7 +525,7 @@ def test_render_page_badge_renders_a_dashless_label_unaccented() -> None:
         badge_label="webhook",
     )
     assert "⚡ webhook" in custom
-    assert "brand-accent" not in custom.split("docsfy-badge")[1].split("</a>")[0]
+    assert "brand-accent" not in custom.split("docsite-badge")[1].split("</a>")[0]
 
 
 def test_render_index_badge_honors_the_label_flag() -> None:

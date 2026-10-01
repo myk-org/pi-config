@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Docsfy - Documentation Theme (Warm Stone + Orange)
+   pi-docsite - Documentation Theme (Warm Stone + Orange)
    ========================================================================== */
 
 /* --------------------------------------------------------------------------
@@ -1497,9 +1497,9 @@ pre:hover .copy-btn {
 }
 
 /* --------------------------------------------------------------------------
-   docsfy Branding Badge
+   Generator Branding Badge
    -------------------------------------------------------------------------- */
-.docsfy-badge {
+.docsite-badge {
     display: flex;
     align-items: center;
     gap: 4px;
@@ -1514,7 +1514,7 @@ pre:hover .copy-btn {
     white-space: nowrap;
 }
 
-.docsfy-badge:hover {
+.docsite-badge:hover {
     border-color: var(--accent);
     background: var(--accent-light);
 }

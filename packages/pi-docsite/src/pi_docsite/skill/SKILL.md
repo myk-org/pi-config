@@ -119,6 +119,23 @@ touched.
   page, and browsers block that fetch over `file://`. Opening the generated HTML
   straight from disk will report the index as unavailable.
 
+## AI code review
+
+Generated output is machine-written, so a reviewer configured on the repo (Qodo Merge
+/ PR-Agent, `.pr_agent.toml`) will file findings against it that the consuming repo
+cannot act on — the source is the generator.
+
+If the repo has a `.pr_agent.toml`, check whether `[ignore] glob` already covers the
+generated paths listed above. The generator prints the exact patterns when it does not,
+and stays silent once they are covered. **Ask the user whether to add them, then do not
+edit the review config unprompted** — review scope is the repo owner's policy.
+
+When you do add them: merge into the existing `[ignore] glob` list if the table is
+already there (a second `[ignore]` table is invalid TOML), and keep the `.md` sources
+and `nav.json` in scope. Prefer the printed patterns over a blanket `docs/**`: the
+generator preserves HTML it did not write — a hand-written `404.html`, a verification
+page — and a blanket pattern hides those too.
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |
@@ -127,4 +144,5 @@ touched.
 | `docs/<slug>.md has N H1 headings, expected 1` | Add exactly one real H1, or close the code fence that is swallowing it. |
 | Page missing from the sidebar | It should not happen — the generator lists every `*.md`. If it does, check for a filename that does not end in `.md`. |
 | Search returns nothing | Open the browser console. A `search index unavailable` message means the page was opened over `file://`. Serve the site over HTTP. |
+| Search says the index could not be loaded | The request failed before a response arrived, or the body was not JSON. Check the console and the network. |
 | Rebuild shows unrelated diffs | Non-deterministic output; this is a bug in pi-docsite, not a stale build. |

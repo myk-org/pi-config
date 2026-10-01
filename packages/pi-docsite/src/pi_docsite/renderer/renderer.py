@@ -1,14 +1,16 @@
 """Static markdown -> HTML renderer for the documentation site.
 
-Vendored verbatim (modulo the adaptations below) from ``myk-org/docsfy``
-(``src/docsfy/renderer.py``) so this repo can rebuild ``docs/`` on its own,
-without depending on the external docsfy clone at runtime. Only the
+This is a vendored copy, taken from the internal upstream docs renderer in
+commit ``b2fa733`` (PR #865, 2026-09-30) so this repo can rebuild ``docs/`` on
+its own, without depending on the external clone at runtime. Only the
 deterministic rendering half was taken: no AI generation, no network, no
-``docsfy`` package imports. The docsfy images pipeline (``copy_images_to_site``)
-is not vendored because this repo ships no ``docsfy-images/`` source.
+upstream package imports. The upstream images pipeline (``copy_images_to_site``)
+is not vendored because this repo ships no image sources to copy.
 
-Upstream behaviour is preserved, including the "Generated with docsfy" badge,
-which keeps working via the ``docsfy_repo_url`` template variable.
+Upstream behaviour is preserved except for the branding badge: it is driven by
+this package's ``--badge-label`` (``BADGE_HEAD``/``BADGE_ACCENT``, linked through
+``badge_url``) instead of upstream's fixed generator-credit text, so a site
+built here never names the upstream project.
 
 It is a vendored copy, so local modifications are expected. The local
 deviations are ``_indent_fenced_blocks`` (see its docstring, ``llms-full.txt``
@@ -39,7 +41,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_BADGE_URL = "https://example.invalid"
 DEFAULT_BADGE_LABEL = "pi-docsite"
 
-# Vendored from docsfy.generator. Deliberately NOT re.DOTALL, and the title is
+# Vendored from the upstream generator. Deliberately NOT re.DOTALL, and the title is
 # restricted to a single line ([^\n]+ rather than .+). Without these
 # constraints, "." matches newlines, so a real multi-paragraph document that
 # happens to *end* with this exact phrase would have its entire body greedily
@@ -62,7 +64,7 @@ def _get_jinja_env() -> Environment:
     return _jinja_env
 
 
-# Sanitizer allowlist. Anything not listed is dropped. Upstream docsfy strips
+# Sanitizer allowlist. Anything not listed is dropped. Upstream strips
 # dangerous tags with regexes, which four separate bypasses walked straight through
 # (``<base href=...>``, ``<script src=...></script >``, an unclosed
 # ``<iframe srcdoc="&lt;script&gt;...">``, and a ``<script>`` body surviving as
@@ -699,7 +701,7 @@ def _build_llms_txt(
 def _indent_fenced_blocks(text: str) -> str:
     """Indent the body of every fenced code block by 4 spaces, fences unchanged.
 
-    LOCAL, INTENTIONAL DIVERGENCE from upstream ``myk-org/docsfy``, which emits
+    LOCAL, INTENTIONAL DIVERGENCE from upstream (commit ``b2fa733``), which emits
     the fences' contents at column 0. ``llms-full.txt`` is read as plain text by
     an LLM, where a line such as ``# config.yaml`` inside a YAML fence looks
     exactly like a top-level markdown heading and pollutes the document outline.

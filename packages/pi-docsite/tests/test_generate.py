@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import tomllib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -201,3 +203,365 @@ def test_published_packages_declare_a_readme() -> None:
         readme = data["project"].get("readme")
         assert readme, f"{rel} declares no readme, so its PyPI page has no description"
         assert (root / rel).parent.joinpath(readme).is_file(), f"{rel} points at a missing {readme}"
+
+
+# What one build of a two-page site writes: the pages, the copied assets and the
+# three root-level files. _review_notice is given this list explicitly, because
+# "what this build wrote" is exactly the contract under test.
+GENERATED = ["index.html", "alpha.html", "assets/style.css", "assets/search.js", "llms.txt", "search-index.json"]
+
+
+def _review_config(root: Path, body: str) -> Path:
+    config = root / generate_docs.REVIEW_CONFIG
+    config.write_text(body, encoding="utf-8")
+    return config
+
+
+def _notice(docs: Path, generated: Sequence[str] = GENERATED) -> str | None:
+    config = generate_docs._find_review_config(docs)
+    assert config is not None, "no review config found for the test"
+    return generate_docs._review_notice(docs, generated, config)
+
+
+def test_review_notice_is_silent_without_a_review_config(tmp_path: Path) -> None:
+    assert generate_docs._find_review_config(tmp_path / "docs") is None
+
+
+def test_review_notice_names_the_patterns_when_generated_files_are_in_scope(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    _review_config(tmp_path, "[config]\nadd_repo_metadata = true\n")
+
+    notice = _notice(docs)
+    assert notice is not None
+    assert "[ignore]" in notice
+    # HTML is the compact pattern while nothing else in the directory is hand-written.
+    assert '"docs/*.html"' in notice
+    # Assets and root files are named one by one: docs/assets/ is shared.
+    assert '"docs/assets/style.css"' in notice
+    assert '"docs/llms.txt"' in notice
+    assert '"docs/search-index.json"' in notice
+    # The .md sources are the repo's own work and must stay in review scope.
+    assert "docs/*.md" not in notice
+
+
+def test_review_notice_keeps_preserved_html_in_review(tmp_path: Path) -> None:
+    # A repo may keep a hand-written 404.html or a verification page -- the
+    # generator preserves both -- so a blanket docs/*.html would hide them too.
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "404.html").write_text("<html><body>Not found</body></html>\n", encoding="utf-8")
+    _review_config(tmp_path, "[config]\n")
+
+    notice = _notice(docs)
+    assert notice is not None
+    assert '"docs/*.html"' not in notice
+    assert '"docs/index.html"' in notice
+    assert "404.html" not in notice
+
+
+def test_review_notice_tells_the_user_to_merge_into_an_existing_table(tmp_path: Path) -> None:
+    # A second [ignore] table is invalid TOML, and the parse-failure branch would
+    # then silence this notice for good.
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    _review_config(tmp_path, '[ignore]\nglob = ["vendor/*"]\n')
+
+    notice = _notice(docs)
+    assert notice is not None
+    assert "existing [ignore].glob list" in notice
+    # The suggestion must paste into a config that already has the table, keeping
+    # the existing entry: the result still parses and still silences the notice.
+    array = notice.split("\n\n", 1)[1].removeprefix("# inside [ignore].glob:\n").strip()
+    merged = tmp_path / "merged.toml"
+    merged.write_text(f'[ignore]\nglob = ["vendor/*", {array[1:-1]}]\n', encoding="utf-8")
+    parsed = tomllib.loads(merged.read_text(encoding="utf-8"))["ignore"]["glob"]
+    assert parsed[0] == "vendor/*"
+    assert "docs/*.html" in parsed
+    assert generate_docs._review_notice(docs, GENERATED, merged) is None
+
+
+def test_review_notice_is_silent_once_the_config_covers_the_generated_files(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    config = _review_config(
+        tmp_path,
+        '[ignore]\nglob = ["docs/*.html", "docs/assets/*", "docs/llms.txt", "docs/search-index.json"]\n',
+    )
+    assert generate_docs._review_notice(docs, GENERATED, config) is None
+
+
+def test_review_notice_ignores_an_unrelated_ignore_list(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    # Basename-only globs match repo-relative paths, so this covers nothing.
+    _review_config(tmp_path, '[ignore]\nglob = ["*.html", "llms.txt"]\n')
+    assert _notice(docs) is not None
+    # docs/** does cover the generated files (fnmatch: * spans "/"), so a repo
+    # that chose the blunt option is left alone -- the notice is about coverage,
+    # not about taste.
+    _review_config(tmp_path, '[ignore]\nglob = ["docs/**"]\n')
+    assert _notice(docs) is None
+
+
+@pytest.mark.parametrize("glob", ["1", '"docs/*.html"', "true"])
+def test_review_notice_survives_an_unusable_glob_value(tmp_path: Path, glob: str) -> None:
+    # None of these shapes is reviewable config. Matched blindly, [1] raises
+    # TypeError after the site is written and a bare string matches character by
+    # character -- the worst outcome, a build that aborts or a notice that never
+    # comes back.
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    _review_config(tmp_path, f"[ignore]\nglob = {glob}\n")
+    assert _notice(docs) is not None
+
+
+def test_review_notice_stays_quiet_on_an_unparsable_config(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    config = _review_config(tmp_path, "not = = toml\n")
+    assert generate_docs._review_notice(docs, GENERATED, config) is None
+
+
+def test_review_notice_finds_the_config_beside_a_symlinked_docs_dir(tmp_path: Path) -> None:
+    # main() resolves --docs-dir for file operations; the config still sits next
+    # to the symlink, which is what the review tool reads.
+    elsewhere = tmp_path / "elsewhere" / "site"
+    elsewhere.mkdir(parents=True)
+    (tmp_path / "docs").symlink_to(elsewhere)
+    config = _review_config(tmp_path, "[config]\n")
+
+    assert generate_docs._find_review_config(tmp_path / "docs") == config
+
+
+def test_review_notice_prints_repo_relative_globs_for_a_symlinked_docs_dir(tmp_path: Path) -> None:
+    # main() resolves --docs-dir for file operations, but the printed paths are
+    # matched against repo-relative ones: with docs/ pointing out of the repo,
+    # the resolved path would yield absolute suggestions nothing can match.
+    elsewhere = tmp_path / "elsewhere" / "site"
+    elsewhere.mkdir(parents=True)
+    (tmp_path / "docs").symlink_to(elsewhere)
+    config = _review_config(tmp_path, "[config]\n")
+
+    notice = generate_docs._review_notice(tmp_path / "docs", GENERATED, config, on_disk=elsewhere)
+    assert notice is not None
+    assert '"docs/*.html"' in notice
+    assert str(tmp_path) not in notice
+
+
+def test_review_notice_omits_the_dot_prefix_when_docs_is_the_repo_root(tmp_path: Path) -> None:
+    # relative_to() yields "." when both paths are the repo root, and
+    # "./index.html" is not what the review tool matches.
+    _review_config(tmp_path, "[config]\n")
+
+    notice = generate_docs._review_notice(tmp_path, GENERATED, tmp_path / generate_docs.REVIEW_CONFIG)
+    assert notice is not None
+    assert '"./index.html"' not in notice
+    assert '"*.html"' in notice
+    assert "under the docs root" in notice
+    # And the suggestion really does silence the notice once pasted.
+    config = tmp_path / "covered.toml"
+    array = notice.split("\n\n", 1)[1].removeprefix("[ignore]\nglob = ").strip()
+    config.write_text(f"[ignore]\nglob = {array}\n", encoding="utf-8")
+    assert generate_docs._review_notice(tmp_path, GENERATED, config) is None
+
+
+def test_review_notice_escapes_metacharacters_in_the_docs_directory(tmp_path: Path) -> None:
+    # Same escaping requirement one level up: the docs directory itself may
+    # contain brackets. The prefix is escaped exactly once - escaping it before
+    # handing it over and again inside the pattern builder is what made the
+    # suggestion stop matching its own directory.
+    docs = tmp_path / "docs[1]"
+    docs.mkdir()
+    (docs / "404.html").write_text("<html><body>Not found</body></html>\n", encoding="utf-8")
+    (docs / "alpha.html").write_text("<html><body>kept</body></html>\n", encoding="utf-8")
+    config = _review_config(tmp_path, "[config]\n")
+
+    notice = generate_docs._review_notice(docs, ["index.html", "search-index.json"], config)
+    assert notice is not None
+    assert '"docs[[]1[]]/index.html"' in notice
+    assert (tmp_path / "docs[1]" / "404.html").as_posix() not in notice
+
+    covered = tmp_path / "covered.toml"
+    array = notice.split("\n\n", 1)[1].removeprefix("[ignore]\nglob = ").strip()
+    covered.write_text(f"[ignore]\nglob = {array}\n", encoding="utf-8")
+    assert generate_docs._review_notice(docs, ["index.html", "search-index.json"], covered) is None
+
+
+def test_review_notice_follows_a_parent_component_across_a_symlink(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # docs/ -> /outside/site, built with --docs-dir docs/.. : the files land in
+    # /outside, so that is the directory whose config governs them. Collapsing the
+    # ".." textually would search the repo instead and report paths the review
+    # tool never sees.
+    outside = tmp_path / "outside"
+    (outside / "site").mkdir(parents=True)
+    (outside / "site" / "alpha.md").write_text(FRONT + "# Alpha\n\nBody of alpha.\n", encoding="utf-8")
+    (outside / ".pr_agent.toml").write_text("[config]\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "docs").symlink_to(outside / "site")
+    monkeypatch.chdir(repo)
+
+    assert generate_docs.main(["--docs-dir", "docs/.."]) == 0
+
+    # The config that governs the written directory is the one beside it, and the
+    # globs are relative to that config's directory - no "..", no repo prefix.
+    out = capsys.readouterr().out
+    assert '"*.html"' in out
+    assert ".." not in out
+
+    array = out.split("[ignore]\nglob = ", 1)[1].split("\n", 1)[0]
+    (outside / ".pr_agent.toml").write_text(f"[ignore]\nglob = {array}\n", encoding="utf-8")
+    assert generate_docs.main(["--docs-dir", "docs/.."]) == 0
+    assert "[ignore]" not in capsys.readouterr().out
+
+
+def test_review_notice_keeps_the_repo_when_the_dotdot_only_respells_the_path(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # real/../docs, where docs/ is a symlink: the ".." only changes how the path
+    # is spelled, both spellings lead to the same place, so config discovery must
+    # stay in the repo - not follow the symlink out of it and find nothing.
+    outside = tmp_path / "outside"
+    (outside / "site").mkdir(parents=True)
+    (outside / "site" / "alpha.md").write_text(FRONT + "# Alpha\n\nBody of alpha.\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    (repo / "real").mkdir(parents=True)
+    (repo / "docs").symlink_to(outside / "site")
+    (repo / ".pr_agent.toml").write_text("[config]\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    assert generate_docs.main(["--docs-dir", "real/../docs"]) == 0
+
+    out = capsys.readouterr().out
+    # Repo-relative to the repo-root config, even though the files land outside.
+    assert '"docs/*.html"' in out
+    assert str(tmp_path) not in out
+
+    array = out.split("[ignore]\nglob = ", 1)[1].split("\n", 1)[0]
+    (repo / ".pr_agent.toml").write_text(f"[ignore]\nglob = {array}\n", encoding="utf-8")
+    assert generate_docs.main(["--docs-dir", "real/../docs"]) == 0
+    assert "[ignore]" not in capsys.readouterr().out
+
+
+def test_lexical_docs_dir_logs_the_symlink_decision(
+    tmp_path: Path, monkeypatch: MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Diagnostics only: what the notice does is asserted elsewhere, so a reworded
+    # log message cannot fail a behaviour test.
+    outside = tmp_path / "outside" / "site"
+    outside.mkdir(parents=True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "docs").symlink_to(outside)
+    monkeypatch.chdir(repo)
+
+    with caplog.at_level(logging.DEBUG, logger="pi_docsite.generate"):
+        crossed = generate_docs._lexical_docs_dir(Path("docs/.."), outside.parent)
+    assert crossed == outside.parent
+    assert any("symlink_crossed=True" in record.getMessage() for record in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="pi_docsite.generate"):
+        spelled = generate_docs._lexical_docs_dir(Path("real/../docs"), outside)
+    assert spelled == repo / "docs"
+    assert any("symlink_crossed=False" in record.getMessage() for record in caplog.records)
+
+
+def test_review_notice_escapes_glob_metacharacters_in_page_names(tmp_path: Path) -> None:
+    # A page may be called guide[1].html. Unescaped, the brackets are a
+    # character class and the suggestion stops matching the file it was meant to
+    # exclude, so the notice comes back on every build. The coverage check must
+    # keep using the *literal* path, or the escaped suggestion would never match
+    # it and the notice could not be silenced at all.
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "404.html").write_text("<html><body>Not found</body></html>\n", encoding="utf-8")
+    _review_config(tmp_path, "[config]\n")
+    generated = ["index.html", "guide[1].html", "search-index.json"]
+
+    notice = _notice(docs, generated)
+    assert notice is not None
+    assert '"docs/guide[[]1[]].html"' in notice
+    # The escaped pattern matches the literal file, which is what silences it.
+    assert fnmatch.fnmatch("docs/guide[1].html", "docs/guide[[]1[]].html")
+
+    covered = tmp_path / "covered.toml"
+    array = notice.split("\n\n", 1)[1].removeprefix("[ignore]\nglob = ").strip()
+    covered.write_text(f"[ignore]\nglob = {array}\n", encoding="utf-8")
+    assert generate_docs._review_notice(docs, generated, covered) is None
+
+
+def test_review_notice_collapses_parent_components_in_the_docs_path(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # --docs-dir ../docs from a subdirectory, and docs/../docs, are ordinary
+    # invocations. The suggested globs must still be the files' repo-relative
+    # paths, not subdir/../docs/*.html.
+    _setup(tmp_path, monkeypatch, ["alpha"])
+    (tmp_path / ".pr_agent.toml").write_text("[config]\n", encoding="utf-8")
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    monkeypatch.chdir(subdir)
+
+    assert generate_docs.main(["--docs-dir", "../docs"]) == 0
+
+    out = capsys.readouterr().out
+    assert '"docs/*.html"' in out
+    assert ".." not in out
+
+    # And the suggestion silences the notice when pasted.
+    array = out.split("[ignore]\nglob = ", 1)[1].split("\n", 1)[0]
+    (tmp_path / ".pr_agent.toml").write_text(f"[ignore]\nglob = {array}\n", encoding="utf-8")
+    assert generate_docs.main(["--docs-dir", "../docs"]) == 0
+    assert "[ignore]" not in capsys.readouterr().out
+
+
+def test_review_notice_finds_the_config_above_a_nested_docs_dir(tmp_path: Path) -> None:
+    docs = tmp_path / "website" / "docs"
+    docs.mkdir(parents=True)
+    config = _review_config(tmp_path, "[config]\n")
+
+    assert generate_docs._find_review_config(docs) == config
+    notice = generate_docs._review_notice(docs, GENERATED, config)
+    # The globs are matched against repo-relative paths, so the prefix is the
+    # docs dir's own location under the repo root, not "docs".
+    assert notice is not None
+    assert '"website/docs/*.html"' in notice
+
+
+def test_review_notice_debug_log_carries_the_missing_files(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    config = _review_config(tmp_path, '[ignore]\nglob = ["docs/*.html"]\n')
+
+    with caplog.at_level(logging.DEBUG, logger="pi_docsite.generate"):
+        assert generate_docs._review_notice(docs, GENERATED, config) is not None
+    message = caplog.records[-1].getMessage()
+    assert "docs/llms.txt" in message
+    assert "docs/alpha.html" not in message
+
+
+def test_main_prints_the_review_notice_beside_the_summary(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    _review_config(docs.parent, "[config]\n")
+
+    assert generate_docs.main([]) == 0
+
+    out = capsys.readouterr().out
+    assert "[ignore]" in out
+    assert '"docs/alpha.html"' in out or '"docs/*.html"' in out
+
+
+def test_main_says_nothing_when_the_repo_has_no_review_config(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _setup(tmp_path, monkeypatch, ["alpha"])
+
+    assert generate_docs.main([]) == 0
+
+    assert "[ignore]" not in capsys.readouterr().out

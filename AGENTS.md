@@ -89,7 +89,8 @@ User switches log level on the fly via settings — debug must show everything n
 
 - Stack: TypeScript (extensions), Python (myk_pi_tools CLI), Markdown (agents, rules, prompts)
 - Structure: see `dev-docs/repo-structure.md`
-- Test: `tests/node/` (tsx + node:test), `tests/python/` (pytest), `packages/pi-sidecar/tests/` (sidecar TS + Python), `packages/pi-vertex-claude/test/` (vitest)
+- Test: `tests/node/` (tsx + node:test), `tests/python/` (pytest), `packages/pi-sidecar/tests/` (sidecar TS + Python), `packages/pi-vertex-claude/test/` (vitest),
+  `packages/pi-docsite/tests/` (pytest for the generator, jsdom + node:test for the shipped browser assets)
 - Key packages: `pi-web-access`, `@myk-org/pi-sidecar`, `pi-sidecar-client`, `@myk-org/pi-vertex-claude`
 - Container: `ghcr.io/myk-org/pi-config:latest` (see Dockerfile)
 - **User install/runtime is npm + PyPI only — never a `myk-org/pi-config` git clone.**

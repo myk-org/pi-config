@@ -6,7 +6,7 @@ its documentation as Markdown.
 
 It renders a directory of `*.md` into a static site: sidebar navigation, full-text
 search, `llms.txt` / `llms-full.txt` for LLM consumption, and a search index. No config
-file, no build framework, no docsfy.
+file, no build framework, no build step to learn.
 
 ## Run it
 
@@ -130,6 +130,12 @@ The search index is written once and **fetched** by every page rather than inlin
 which keeps each page small. Browsers block `fetch()` of a local file over `file://`, so
 serve the site over HTTP for search to work.
 
+The error message follows the cause. A page opened over `file://` is told to serve the site
+over HTTP — the one case where that is the remedy. Over HTTP the three failures stay
+distinct: a `404` means the index is missing (rebuild), a `5xx` says the server failed and
+the index may be fine (retry), and a network or parse failure is reported as such. The
+underlying error goes to the browser console in every case.
+
 ## Ask your LLM
 
 A ready-made skill ships inside the package at `skill/SKILL.md`, with the commands,
@@ -163,6 +169,39 @@ print('installed to', dst)
 "
 ```
 
+## Keeping generated files out of AI review
+
+The generated site is committed, so a repo with an AI reviewer configured — Qodo Merge /
+PR-Agent, `.pr_agent.toml` — gets findings against thousands of lines of machine-written
+HTML. The consuming repo cannot act on them: the source is the generator.
+
+**The generator names the fix.** While a `.pr_agent.toml` exists and its `[ignore] glob`
+does not cover the files this build wrote, every build prints one line with the exact
+patterns to add:
+
+```text
+pi-docsite: 13 generated file(s) under docs/ are not excluded from AI review, and the
+reviewer will report findings in output this generator owns. Add to .pr_agent.toml (keep
+the .md and nav.json sources in scope):
+
+[ignore]
+glob = ["docs/*.html", "docs/search-index.json", "docs/llms.txt", "docs/llms-full.txt", "docs/assets/callouts.js", ...]
+```
+
+When the config already has an `[ignore]` table, the notice says to merge the patterns
+into the existing `glob` list instead — a second `[ignore]` table is invalid TOML. The
+config is looked up from the docs directory upwards, so `website/docs` and a symlinked
+`docs/` both find the repo's file, and the printed globs stay repo-relative.
+
+The list is deliberately narrow. `docs/*.md` and `nav.json` are the repo's own work and
+stay in review, and so does anything the generator did not write: a hand-written
+`404.html` or a verification page is preserved on every build, so when one exists the
+suggestion names the generated pages individually instead of suggesting `docs/*.html`.
+
+The notice disappears once the config covers the generated files, and a repo with no
+`.pr_agent.toml` never sees it. An LLM driving a build should **ask** before editing the
+review config — review scope is the repo owner's call.
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |
@@ -170,7 +209,9 @@ print('installed to', dst)
 | `nav.json lists 'x' but docs/x.md does not exist` | The page was renamed or deleted. Fix `nav.json`. |
 | `note: N page(s) not in nav.json` | The page built fine but has no curated sidebar position. Add it to `nav.json`. |
 | `docs/<slug>.md has N H1 headings, expected 1` | Add exactly one real H1, or close the code fence swallowing it. |
-| Search returns nothing | Open the browser console. `search index unavailable` means the page was opened over `file://`, where the fetch is blocked. Serve it over HTTP. |
+| Search returns nothing | Open the browser console. `search index unavailable` on a `file://` page means the fetch was blocked. Serve it over HTTP. |
+| Search index unavailable (HTTP 500) | The server failed, not the file. Retry; check the deployment if it persists. |
+| Search says the index could not be loaded | The request failed before a response arrived, or the body was not JSON. Check the console and the network. |
 | Rebuild shows unrelated diffs | That is a determinism bug, not a stale build. |
 
 ## Requirements
