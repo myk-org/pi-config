@@ -144,8 +144,16 @@ function unquotedSegments(command: string): ShellSegment[] {
       conditional = false;
       start = i + 1;
       chainStart = chainLen();
-    } else if (ch === ";" || ch === "|") {
+    } else if (ch === ";") {
       push(i, start, conditional);
+      conditional = false;
+      start = i + 1;
+      chainStart = chainLen();
+    } else if (ch === "|") {
+      // Every pipeline component runs in a subshell of its own, so a directory
+      // change on the left of the pipe does not reach the right. Marking it
+      // backgrounded is exactly the same rule as a trailing ampersand.
+      push(i, start, conditional, true);
       conditional = false;
       start = i + 1;
       chainStart = chainLen();

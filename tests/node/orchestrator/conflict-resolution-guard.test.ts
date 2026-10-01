@@ -405,6 +405,14 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand("bash -c 'echo \\n \\t'"), false);
   });
 
+  it("does not carry a directory change across a pipe", () => {
+    // Each pipeline component is its own subshell, so the right-hand side runs
+    // where the shell already was, not where the left-hand side changed to.
+    const dirs = conflictCandidateDirs("cd clean | git add a.txt", "/root").all;
+    assert.ok(dirs.includes("/root"));
+    assert.ok(dirs.includes("/root/clean"));
+  });
+
   it("classifies a resolution inside process substitution", () => {
     assert.equal(isConflictResolutionCommand("diff <(git add a.txt) <(git status)"), true);
   });
