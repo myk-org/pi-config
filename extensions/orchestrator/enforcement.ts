@@ -576,22 +576,36 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       // and guessing wrong lets a resolution through. So ask every directory the
       // command could reach: block if any is conflicted. Over-blocking costs a
       // message; under-blocking costs the guard.
-      const { primary, all } = conflictCandidateDirs(command, ctx.cwd);
-      const primaryLookup = listUnmergedFiles(primary);
-      if (!primaryLookup.ok) {
-        log.warn("conflict_lookup_failed", primary);
+      const { all, envOverride } = conflictCandidateDirs(command, ctx.cwd);
+      if (envOverride) {
+        // GIT_DIR/GIT_WORK_TREE can point the index anywhere. Rather than
+        // guess which repository it selects, refuse.
         return {
           block: true,
           reason:
-            "⛔ Could not read the unmerged index, so the conflict state is unknown. " +
-            "Refusing to run a resolution command blind: run `git status` to see where you are, " +
-            `or delegate to the conflict-resolver agent (subagent(agent="conflict-resolver")).`,
+            `⛔ ${envOverride} selects the Git index for this command, so the conflict state cannot be ` +
+            "verified. Do not resolve conflicts in git-expert — abort and delegate to the " +
+            `conflict-resolver agent (subagent(agent="conflict-resolver")).`,
         };
       }
       const conflicted: string[] = [];
+      let readable = 0;
       for (const dir of all) {
         const lookup = listUnmergedFiles(dir);
-        if (lookup.ok) for (const file of lookup.files) conflicted.push(`${dir}/${file}`);
+        if (!lookup.ok) continue;
+        readable++;
+        for (const file of lookup.files) conflicted.push(`${dir}/${file}`);
+      }
+      if (conflicted.length === 0 && readable === 0) {
+        // Every candidate was unreadable, so nothing was actually checked.
+        log.warn("conflict_lookup_failed", all.join(", "));
+        return {
+          block: true,
+          reason:
+            "⛔ Could not read the unmerged index in any candidate directory, so the conflict state is " +
+            "unknown. Refusing to run a resolution command blind: run `git status` to see where you are, " +
+            `or delegate to the conflict-resolver agent (subagent(agent="conflict-resolver")).`,
+        };
       }
       if (conflicted.length > 0) {
         log.info("conflict_resolution_block", conflicted.join(", "));

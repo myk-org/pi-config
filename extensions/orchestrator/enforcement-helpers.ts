@@ -61,13 +61,31 @@ export function commandHasTrailerByName(command: string, trailerName: string): b
 
 /**
  * Split a command into segments on shell separators that are *outside* quotes,
- * recording each segment's offset. Quoted text is data, not syntax: a `(` or `cd`
- * inside a string is part of an argument, never a boundary.
+ * recording each segment's offset, its parenthesis depth, and whether the
+ * separator before it was `||` (so the segment may never run). Quoted text is
+ * data, not syntax: a `(` or `cd` inside a string is part of an argument, never
+ * a boundary.
+ *
+ * Depth and conditionality are what let the caller tell a `cd` that moves this
+ * shell from one inside a subshell or behind a short-circuit, which change
+ * nothing for a later command.
  */
-function unquotedSegments(command: string): { text: string; start: number }[] {
-  const segments: { text: string; start: number }[] = [];
+interface ShellSegment {
+  text: string;
+  start: number;
+  depth: number;
+  conditional: boolean;
+}
+
+function unquotedSegments(command: string): ShellSegment[] {
+  const segments: ShellSegment[] = [];
   let start = 0;
   let quote: string | null = null;
+  let depth = 0;
+  let conditional = false;
+  const push = (end: number, startAt: number, cond: boolean) => {
+    segments.push({ text: command.slice(startAt, end), start: startAt, depth, conditional: cond });
+  };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
     if (quote) {
@@ -82,79 +100,157 @@ function unquotedSegments(command: string): { text: string; start: number }[] {
     // bracket a subshell but are not separators on their own.
     const two = command.slice(i, i + 2);
     if (two === "&&" || two === "||") {
-      segments.push({ text: command.slice(start, i), start });
+      push(i, start, two === "||");
+      conditional = two === "||";
       i++;
       start = i + 1;
     } else if (ch === ";" || ch === "|" || ch === "\n") {
-      segments.push({ text: command.slice(start, i), start });
+      push(i, start, false);
+      conditional = false;
       start = i + 1;
+    } else if (ch === "(") {
+      depth++;
+    } else if (ch === ")") {
+      if (depth > 0) {
+        // The closing paren ends the segment it belongs to; only what follows
+        // it is back at the outer depth.
+        push(i, start, false);
+        depth--;
+        start = i + 1;
+        conditional = false;
+      }
     }
   }
-  segments.push({ text: command.slice(start), start });
+  push(command.length, start, conditional);
   enfLog.debug("shell_segments", "count", segments.length);
   return segments;
 }
 
 /** The target of a `cd` at the start of a segment, honouring quoting and `~`. */
 function cdTargetIn(segment: string): string | null {
-  const m = segment.match(/^[\s(]*cd\s+(.*)$/s);
+  // A cd may follow a shell keyword: `if cd /repo; then …`.
+  const m = /^\s*(?:if\s+|then\s+|else\s+|elif\s+|do\s+|\(\s*|\{\s*)*(?:cd|pushd)\b\s*([\s\S]*)$/.exec(segment);
   if (!m) {
     enfLog.debug("cd_target_absent", "segment_head", segment.trim().slice(0, 24));
     return null;
   }
-  let rest = m[1];
-  const quote = rest[0];
-  if (quote === "'" || quote === '"') {
-    // A quoted target may contain spaces and parentheses — take it whole.
-    const end = rest.indexOf(quote, 1);
-    if (end > 0) {
-      enfLog.debug("cd_target_quoted", "target", rest.slice(1, end));
-      return rest.slice(1, end);
+  const args = m[1];
+  // Walk the arguments: skip options, then read one destination — a quoted
+  // target whole, so a directory name may contain spaces or parentheses.
+  let i = 0;
+  const skipSpace = () => { while (i < args.length && /\s/.test(args[i])) i++; };
+  for (;;) {
+    skipSpace();
+    if (i >= args.length) break;
+    if (args.startsWith("--", i)) { i += 2; continue; }
+    if (args[i] === "-" && i + 1 < args.length && !/\s/.test(args[i + 1])) {
+      while (i < args.length && !/\s/.test(args[i])) i++;
+      continue;
     }
+    if (i + 1 < args.length && args[i] === "-" && /\s/.test(args[i + 1])) { i++; continue; }
+    const quote = args[i];
+    if (quote === "'" || quote === '"') {
+      const end = args.indexOf(quote, i + 1);
+      const target = end === -1 ? args.slice(i + 1) : args.slice(i + 1, end);
+      enfLog.debug("cd_target_quoted", "target", target);
+      return target;
+    }
+    let end = i;
+    while (end < args.length && !/[\s;&|)]/.test(args[end])) end++;
+    const target = args.slice(i, end);
+    enfLog.debug("cd_target", "target", target);
+    return target || null;
   }
-  const unquoted = rest.split(/[\s;&|)]/)[0];
-  const target = unquoted ? unquoted.replace(/^['"]|['"]$/g, "") : null;
-  if (target) enfLog.debug("cd_target", "target", target);
-  return target;
+  enfLog.debug("cd_target_unresolved");
+  return null;
 }
 
 /** Apply one directory change to a running directory. */
 function applyCd(dir: string, target: string): string {
-  if (target.startsWith("~/")) return join(process.env.HOME ?? "~", target.slice(2));
-  if (target === "~") return process.env.HOME ?? "~";
-  if (target.startsWith("/")) return target;
-  return join(dir, target);
+  let next: string;
+  if (target.startsWith("~/")) next = join(process.env.HOME ?? "~", target.slice(2));
+  else if (target === "~") next = process.env.HOME ?? "~";
+  else if (target.startsWith("/")) next = target;
+  else next = join(dir, target);
+  enfLog.debug("apply_cd", "from", dir, "target", target, "to", next);
+  return next;
 }
 
-/** The `-C <dir>` of a git segment, if it has one. */
-function gitCIn(segment: string): string | null {
-  const m = segment.match(/\bgit\b[\s\S]*?(?:\s)-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))/);
-  if (!m) return null;
-  return m[1] ?? m[2] ?? m[3];
+/**
+ * Every `-C` value in a git segment, in the order they appear — both the spaced
+ * (`-C repo`) and attached (`-Crepo`) forms. Git honours the last one, and the
+ * guard has to consider all of them.
+ */
+function gitCsIn(segment: string): string[] {
+  const found: { at: number; value: string }[] = [];
+  for (const m of segment.matchAll(/\s-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))/g)) {
+    found.push({ at: m.index ?? 0, value: m[1] ?? m[2] ?? m[3] });
+  }
+  for (const m of segment.matchAll(/\s-C(?![ \t-])(?:"([^"]+)"|'([^']+)'|([^\s]+))/g)) {
+    found.push({ at: m.index ?? 0, value: m[1] ?? m[2] ?? m[3] });
+  }
+  found.sort((a, b) => a.at - b.at);
+  const values = found.map((f) => f.value);
+  if (values.length) enfLog.debug("git_C_options", "count", values.length, "last", values[values.length - 1]);
+  return values;
 }
 
-/** Every directory git could plausibly run in, plus the best single guess. */
-export function conflictCandidateDirs(command: string, sessionCwd: string): { primary: string; all: string[] } {
-  const segments = unquotedSegments(command);
-  const dirs: string[] = [sessionCwd];
-  // Apply directory changes in shell order so chained relative cds compose.
-  let running = sessionCwd;
-  for (const seg of segments) {
+/** A Git environment variable that selects the repository or index. */
+function gitEnvOverride(command: string): string | null {
+  const m = /\b(GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR)\s*=/.exec(command);
+  if (m) enfLog.warn("git_env_override", "var", m[1]);
+  return m ? m[1] : null;
+}
+
+/**
+ * Every directory the command could plausibly run git in.
+ *
+ * Candidates come from where git actually runs: the directory in effect at each
+ * git invocation, plus every `-C` resolved in order from that directory (git
+ * applies them one after another), plus any directory a `cd` reached only
+ * conditionally. Each subshell gets its own directory stack, because a `cd`
+ * inside one cannot move the outer shell — which is also why a `cd` in a
+ * subshell contributes a candidate without becoming the running directory.
+ *
+ * When an environment variable selects the index, the target is unknowable and
+ * `envOverride` says so, so the caller can refuse instead of guess.
+ */
+export function conflictCandidateDirs(
+  command: string,
+  sessionCwd: string,
+): { all: string[]; envOverride: string | null } {
+  const envOverride = gitEnvOverride(command);
+  const dirs = new Set<string>();
+  // running[d] is the directory of the shell at paren depth d.
+  const running: string[] = [sessionCwd];
+
+  for (const seg of unquotedSegments(command)) {
+    // Entering a subshell starts a child shell in the current directory.
+    while (running.length <= seg.depth) running.push(running[running.length - 1]);
     const target = cdTargetIn(seg.text);
-    if (!target) continue;
-    running = applyCd(running, target);
-    dirs.push(running);
+    if (target) {
+      if (seg.conditional) {
+        // `a || cd b` — the cd may never run, so its directory is a candidate
+        // but the shell has not moved.
+        dirs.add(applyCd(running[seg.depth], target));
+      } else {
+        running[seg.depth] = applyCd(running[seg.depth], target);
+      }
+    }
+    if (/\bgit\b/.test(seg.text)) {
+      const base = running[seg.depth];
+      dirs.add(base);
+      // Git applies each -C in turn, each relative to the previous one.
+      let cursor = base;
+      for (const c of gitCsIn(seg.text)) {
+        cursor = applyCd(cursor, c);
+        dirs.add(cursor);
+      }
+    }
   }
-  // `-C` beats whatever the shell was sitting in, and is relative to it.
-  let primary = running;
-  for (const seg of segments) {
-    const c = gitCIn(seg.text);
-    if (!c) continue;
-    primary = applyCd(running, c);
-    dirs.push(primary);
-  }
-  enfLog.debug("conflict_candidate_dirs", "primary", primary, "count", dirs.length);
-  return { primary, all: [...new Set(dirs)] };
+  const all = [...dirs];
+  enfLog.debug("conflict_candidate_dirs", "count", all.length, "env_override", envOverride ?? "none");
+  return { all, envOverride };
 }
 
 /** Parse bash command for cd target to resolve the effective working directory (worktree support) */
@@ -182,7 +278,8 @@ export function resolveEffectiveCwd(command: string, sessionCwd: string): string
   for (const a of anchors) {
     if (a.target) dir = applyCd(dir, a.target);
   }
-  const cTarget = gitIndex === -1 ? null : gitCIn(segments[gitIndex].text);
+  const cTargets = gitIndex === -1 ? [] : gitCsIn(segments[gitIndex].text);
+  const cTarget = cTargets[cTargets.length - 1] ?? null;
   if (cTarget) dir = applyCd(dir, cTarget);
   enfLog.debug("effective_cwd", "dir", dir, "source", cTarget ? "git_C" : anchors.length ? "cd" : "session", "cds", anchors.length);
   return dir;

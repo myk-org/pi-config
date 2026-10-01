@@ -22,8 +22,9 @@ Declares what is actually code-enforced versus prompt-only. A tier is about
   `merge|rebase|cherry-pick --continue` are blocked while `git ls-files --unmerged` is non-empty, with a
   message pointing at the `conflict-resolver` agent (`isConflictResolutionCommand`, `listUnmergedFiles`);
   `resolveEffectiveCwd` resolves quoting before boundaries and applies chained `cd`s in shell order, with
-  `git -C` overriding both; conflict enforcement additionally asks `conflictCandidateDirs` and blocks when
-  *any* directory the command could reach is conflicted, failing closed when the best guess is unreadable
+  `git -C` overriding both; conflict enforcement asks `conflictCandidateDirs` for every directory git could
+  run in — per-subshell directory stacks, chained `-C` values, conditional `cd`s — and blocks when any is
+  conflicted, refusing outright when a Git env var selects the index
 
 Inventory a project’s code-tier memories:
 
