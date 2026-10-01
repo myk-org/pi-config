@@ -164,7 +164,14 @@ function cdTargetIn(segment: string): string | null {
     const quote = args[i];
     if (quote === "'" || quote === '"') {
       const end = args.indexOf(quote, i + 1);
-      const target = end === -1 ? args.slice(i + 1) : args.slice(i + 1, end);
+      let target = end === -1 ? args.slice(i + 1) : args.slice(i + 1, end);
+      i = end === -1 ? args.length : end + 1;
+      // The shell concatenates adjacent parts into one word: `cd "work tree"x`
+      // is `work treex`, so keep whatever follows the closing quote.
+      while (i < args.length && !/[\s;&|)]/.test(args[i])) {
+        target += args[i];
+        i++;
+      }
       enfLog.debug("cd_target_quoted", "target", target);
       return target;
     }

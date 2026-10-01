@@ -220,6 +220,11 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand("/bin/bash -c 'git status'"), false);
   });
 
+  it("keeps the unquoted tail of a quoted directory name", () => {
+    assert.equal(conflictCandidateDirs('cd "work tree"x && git add a.txt', "/root").all.join(","), "/root/work treex");
+    assert.equal(conflictCandidateDirs('cd pre"fix" && git add a.txt', "/root").all.join(","), "/root/prefix");
+  });
+
   it("treats an unreadable subcommand position as unsafe", () => {
     // The subcommand can come from a variable at run time.
     assert.equal(isConflictResolutionCommand('action=add; git "$action" a.txt'), true);
