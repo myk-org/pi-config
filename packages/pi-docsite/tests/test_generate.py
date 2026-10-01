@@ -98,3 +98,24 @@ def test_main_is_idempotent(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     assert generate_docs.main([]) == 0
     second = {p.name: p.read_bytes() for p in docs.glob("*") if p.is_file()}
     assert first == second
+
+
+def test_skill_notice_advertises_the_shipped_skill(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setattr(
+        generate_docs,
+        "AGENT_SKILL_DIRS",
+        tuple(home / a / "skills" / "pi-docsite" for a in ("a", "b")),
+    )
+
+    # Nothing installed: the notice must name the packaged SKILL.md so the LLM
+    # reading the build output can act on it.
+    notice = generate_docs._skill_notice()
+    assert notice is not None
+    assert "SKILL.md" in notice
+    assert str(home) in notice
+
+    installed = home / "a" / "skills" / "pi-docsite"
+    installed.mkdir(parents=True)
+    (installed / "SKILL.md").write_text("# pi-docsite")
+    assert generate_docs._skill_notice() is None

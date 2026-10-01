@@ -37,6 +37,37 @@ DOCS_DIR = Path.cwd() / "docs"
 PROJECT_NAME = ""
 REPO_URL = ""
 TAGLINE = ""
+# The badge identifies the generator, not the consuming project. It used to be the
+# literal "pi-config", so every vendored site rendered a badge naming this repo and
+# linking to its own — the same class of leak DEFAULT_BADGE_URL exists to stop.
+BADGE_LABEL = "pi-docsite"
+
+# Where agents look for a skill, so the notice below can stay quiet once the
+# shipped skill is in place. Detection only -- the copy step stays manual.
+AGENT_SKILL_DIRS = (
+    Path.home() / ".pi" / "agent" / "skills" / "pi-docsite",
+    Path.home() / ".claude" / "skills" / "pi-docsite",
+    Path.home() / ".cursor" / "skills" / "pi-docsite",
+    Path.home() / ".gemini" / "skills" / "pi-docsite",
+)
+
+
+def _skill_notice() -> str | None:
+    """One line advertising the shipped skill, or None once it is installed.
+
+    pip has no post-install hook, so nothing can announce the packaged
+    ``skill/SKILL.md`` at install time. This generator prints the pointer
+    instead: whoever (or whatever agent) is reading the build output sees it,
+    and the LLM driving the build can offer to install it.
+    """
+    if any((d / "SKILL.md").is_file() for d in AGENT_SKILL_DIRS):
+        return None
+    return (
+        f"pi-docsite: generator skill not installed for any agent. To expose pi-docsite "
+        f"guidance to your LLM, copy {Path(__file__).parent / 'skill' / 'SKILL.md'} "
+        f"into your agent's skills directory (for example "
+        f"{AGENT_SKILL_DIRS[0] / 'SKILL.md'})."
+    )
 
 
 def _discover_repo_url(docs_dir: Path) -> str:
@@ -275,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     Every value is a flag with a derived default, so this script and docs_render/
     can be vendored into another repo as-is.
     """
-    global DOCS_DIR, PROJECT_NAME, REPO_URL, TAGLINE
+    global DOCS_DIR, PROJECT_NAME, REPO_URL, TAGLINE, BADGE_LABEL
     parser = ArgumentParser(description="Render the static documentation site from docs/*.md.")
     parser.add_argument(
         "--docs-dir", type=Path, default=DOCS_DIR, help="directory holding the *.md sources (default: %(default)s)"
@@ -285,6 +316,11 @@ def main(argv: list[str] | None = None) -> int:
         "--repo-url", default=None, help="repository URL for header links; defaults to git remote origin"
     )
     parser.add_argument("--tagline", default="", help="one-line description shown on the index")
+    parser.add_argument(
+        "--badge-label",
+        default=BADGE_LABEL,
+        help="text of the header badge; identifies the generator, not the project (default: %(default)s)",
+    )
     args = parser.parse_args(argv)
 
     DOCS_DIR = args.docs_dir.resolve()
@@ -295,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
     REPO_URL = args.repo_url if args.repo_url is not None else _web_url(_discover_repo_url(DOCS_DIR))
     PROJECT_NAME = args.project_name or _project_name_from_url(REPO_URL, DOCS_DIR)
     TAGLINE = args.tagline
+    BADGE_LABEL = args.badge_label.strip() or BADGE_LABEL
 
     pages: dict[str, str] = {}
     for md_file in sorted(DOCS_DIR.glob("*.md")):
@@ -345,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
     # makes that fetch work; browsers block it on file:// via CORS.
     _write(
         "index.html",
-        renderer.render_index(PROJECT_NAME, TAGLINE, navigation, repo_url=REPO_URL),
+        renderer.render_index(PROJECT_NAME, TAGLINE, navigation, repo_url=REPO_URL, badge_label=BADGE_LABEL),
     )
 
     for idx, page in enumerate(order):
@@ -362,6 +399,7 @@ def main(argv: list[str] | None = None) -> int:
                 prev_page=order[idx - 1] if idx > 0 else None,
                 next_page=order[idx + 1] if idx < len(order) - 1 else None,
                 repo_url=REPO_URL,
+                badge_label=BADGE_LABEL,
             ),
         )
     _write(
@@ -400,6 +438,9 @@ def main(argv: list[str] | None = None) -> int:
     for name in stale:
         print(f"   removed  {name}")
     print(f"{len(order)} pages, {len(written)} files, {sum(s for _, s in written)} B total")
+    notice = _skill_notice()
+    if notice:
+        print(notice)
     return 0
 
 
