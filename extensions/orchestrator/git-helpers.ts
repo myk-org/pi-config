@@ -434,6 +434,7 @@ const SHELL_NAMES = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 function matchingParen(cmd: string, open: number): number {
   let depth = 0;
   let quote: string | null = null;
+  let skippedQuoted = 0;
   for (let i = open; i < cmd.length; i++) {
     const ch = cmd[i];
     if (quote) {
@@ -441,10 +442,14 @@ function matchingParen(cmd: string, open: number): number {
       if (ch === quote) quote = null;
       continue;
     }
-    if (ch === "'" || ch === '"') quote = ch;
+    if (ch === "'" || ch === '"') { quote = ch; skippedQuoted++; }
     else if (ch === "(") depth++;
-    else if (ch === ")" && --depth === 0) return i;
+    else if (ch === ")" && --depth === 0) {
+      gitLog.debug("matching_paren", "at", i, "skipped_quoted", skippedQuoted);
+      return i;
+    }
   }
+  gitLog.debug("matching_paren_unterminated", "skipped_quoted", skippedQuoted);
   return cmd.length;
 }
 
@@ -454,8 +459,12 @@ function closingQuote(cmd: string, open: number, quote: string): number {
     if (cmd[i] === "\\") { i++; continue; }
     if (cmd[i] === "$" && cmd[i + 1] === "(") { i = matchingParen(cmd, i + 1); continue; }
     if (cmd[i] === "`") { const end = cmd.indexOf("`", i + 1); i = end === -1 ? cmd.length : end; continue; }
-    if (cmd[i] === quote) return i;
+    if (cmd[i] === quote) {
+      gitLog.debug("closing_quote", "quote", quote, "at", i);
+      return i;
+    }
   }
+  gitLog.debug("closing_quote_unterminated", "quote", quote);
   return cmd.length;
 }
 
@@ -491,7 +500,9 @@ function isScriptArgument(cmd: string, at: number): boolean {
 function isHeredocTerminator(line: string, delim: string, stripTabs: boolean): boolean {
   const escaped = delim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = stripTabs ? new RegExp(`^\\t*${escaped}$`) : new RegExp(`^${escaped}$`);
-  return re.test(line);
+  const isTerminator = re.test(line);
+  gitLog.debug("heredoc_terminator", "delim", delim, "strip_tabs", stripTabs, "matched", isTerminator);
+  return isTerminator;
 }
 
 function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string {
