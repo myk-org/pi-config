@@ -220,6 +220,17 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand("/bin/bash -c 'git status'"), false);
   });
 
+  it("reads git only where a command runs", () => {
+    // An argument that only prints an example is not an executed command.
+    assert.equal(isConflictResolutionCommand("echo git add a.txt"), false);
+    assert.equal(isConflictResolutionCommand("printf 'run git add a.txt now'"), false);
+    // ...but words that execute what follows them do count.
+    assert.equal(isConflictResolutionCommand("xargs git add"), true);
+    assert.equal(isConflictResolutionCommand("find . -exec git add {} \\;"), true);
+    assert.equal(isConflictResolutionCommand("git add a.txt"), true);
+    assert.equal(isConflictResolutionCommand("cd x && git add a.txt"), true);
+  });
+
   it("keeps the unquoted tail of a quoted directory name", () => {
     assert.equal(conflictCandidateDirs('cd "work tree"x && git add a.txt', "/root").all.join(","), "/root/work treex");
     assert.equal(conflictCandidateDirs('cd pre"fix" && git add a.txt', "/root").all.join(","), "/root/prefix");

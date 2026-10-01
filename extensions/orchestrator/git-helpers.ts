@@ -605,7 +605,8 @@ export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"):
         if (!closed) break;
       }
       pendingHeredocs.length = 0;
-      add(" ");
+      // A newline, so whatever follows the terminator starts its own command.
+      add("\n");
       i = cursor - 1;
       continue;
     }
@@ -614,14 +615,16 @@ export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"):
     if (ch === "$" && cmd[i + 1] === "(" && keepSubstitutions) {
       const end = matchingParen(cmd, i + 1);
       substitutions++;
-      add(` ${executableText(cmd.slice(i + 2, end), depth + 1)} `);
+      // Parenthesised so the substituted commands are command positions of their
+      // own rather than trailing arguments of the command that expanded them.
+      add(`(${executableText(cmd.slice(i + 2, end), depth + 1)})`);
       i = end;
       continue;
     }
     if (ch === "`" && keepSubstitutions) {
       const end = cmd.indexOf("`", i + 1);
       substitutions++;
-      add(` ${executableText(cmd.slice(i + 1, end === -1 ? cmd.length : end), depth + 1)} `);
+      add(`(${executableText(cmd.slice(i + 1, end === -1 ? cmd.length : end), depth + 1)})`);
       i = end === -1 ? cmd.length : end;
       continue;
     }
@@ -681,7 +684,7 @@ export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"):
       } else if (keepSubstitutions) {
         // Only the substitutions inside a double-quoted span execute.
         substitutions++;
-        add(` ${executableText(content, depth + 1, "body")} `);
+        add(`(${executableText(content, depth + 1, "body")})`);
       } else {
         add(" _ ");
       }
@@ -700,14 +703,55 @@ export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"):
  * cherry-pick. Inspecting a conflicted tree (`git status`, `git diff`) and
  * backing out (`--abort`) are deliberately not in this set.
  */
+
+
+/** Shell keywords and `VAR=value` prefixes that precede a segment's command. */
+const SEGMENT_SKIP = new Set(["if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "{", "}", "(", ")"]);
+
+/**
+ * Words after which a `git` token is still executed rather than merely printed:
+ * these run the command that follows them, so `xargs git add` and
+ * `find . -exec git add` stage while `echo git add` does not.
+ */
+const GIT_EXECUTORS = new Set([
+  "xargs", "find", "-exec", "-execdir", "env", "sudo", "time", "nohup", "nice",
+  "ionice", "stdbuf", "setsid", "command", "exec", "timeout",
+]);
+
+/**
+ * The parts of `cmd` where git actually runs: a git token that is a segment's
+ * command word, or one that follows a word which executes what comes after it.
+ * An argument that merely names git — `echo git add a.txt` — is not a command.
+ */
+function executedGitText(cmd: string): string {
+  const kept: string[] = [];
+  for (const raw of cmd.split(/[\n;&|()]+/)) {
+    const words = raw.trim().split(/\s+/).filter(Boolean);
+    let k = 0;
+    while (k < words.length && (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]))) k++;
+    if (k >= words.length) continue;
+    if (words[k] === "git") {
+      kept.push(words.slice(k).join(" "));
+    } else if (GIT_EXECUTORS.has(words[k])) {
+      // The wrapper runs the rest, so any git token in the segment counts.
+      for (let i = k + 1; i < words.length; i++) {
+        if (words[i] === "git") kept.push(words.slice(i).join(" "));
+      }
+    }
+  }
+  return kept.join(" ; ");
+}
+
 export function isConflictResolutionCommand(command: string): boolean {
-  const cmd = executableText(command);
+  const scanned = executableText(command);
   // Nesting deeper than the scan depth means the scanner stopped early. Treat
-  // that as a resolution command rather than as proof there is none.
-  if (cmd.includes(UNSCANNED)) {
+  // that as a resolution command rather than as proof there is none — checked on
+  // the scan itself, before filtering, or the marker would be filtered away.
+  if (scanned.includes(UNSCANNED)) {
     gitLog.warn("conflict_command_unscanned", "depth_limit", 6);
     return true;
   }
+  const cmd = executedGitText(scanned);
   // An unknown word where the subcommand belongs - a shell variable, or a
   // placeholder left by a quoted argument - could be `add`, `rm` or `restore`
   // once the shell resolves it. `action=add; git "$action" a.txt` stages, so
