@@ -128,6 +128,20 @@ describe("conflict-resolution guard", () => {
     }
   });
 
+  it("ignores resolution commands inside quoted text", () => {
+    assert.equal(isConflictResolutionCommand("echo 'git add a.txt'"), false);
+    assert.equal(isConflictResolutionCommand('echo "run git checkout --theirs a.txt"'), false);
+  });
+
+  it("ignores resolution commands inside a heredoc body", () => {
+    const heredoc = "git commit -F - <<'EOF'\nfix: stop staging by hand, git add is manual\nEOF";
+    assert.equal(isConflictResolutionCommand(heredoc), false);
+  });
+
+  it("still classifies a real invocation whose path is quoted", () => {
+    assert.equal(isConflictResolutionCommand('git add "a b.txt"'), true);
+  });
+
   it("blocks git-expert from staging a resolution", async () => {
     process.env.PI_AGENT_NAME = "git-expert";
     process.env.PI_SUBAGENT_CHILD = "1";

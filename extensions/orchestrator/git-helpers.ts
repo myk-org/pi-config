@@ -409,18 +409,33 @@ export function hasGitSub(command: string, sub: string): boolean {
 }
 
 /**
+ * Text that is printed or piped, not executed: quoted spans and heredoc bodies.
+ * `echo 'git add a.txt'` and a commit message mentioning `git add` are not
+ * invocations, so they must not be classified as resolution commands. Quoting a
+ * *path* (`git add "a b.txt"`) is unaffected — only the quoted text is removed,
+ * and the git token stays outside it.
+ */
+function stripNonExecutableText(command: string): string {
+  return command
+    .replace(/<<-?\s*['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n[ \t]*\1\s*(?=\n|$)/gm, "")
+    .replace(/'[^']*'/g, " ")
+    .replace(/"[^"]*"/g, " ");
+}
+
+/**
  * Git commands that write a *resolution* of an in-progress merge/rebase/
  * cherry-pick. Inspecting a conflicted tree (`git status`, `git diff`) and
  * backing out (`--abort`) are deliberately not in this set.
  */
 export function isConflictResolutionCommand(command: string): boolean {
+  const cmd = stripNonExecutableText(command);
   // git rm drops a conflicted deletion's unmerged entry, which is a resolution.
   const matches =
-    hasGitSub(command, "add") ||
-    hasGitSub(command, "restore") ||
-    hasGitSub(command, "rm") ||
-    /\bgit\b[\s\S]*\bcheckout\b[\s\S]*(?:--(?:ours|theirs|mine)|-m)\b/.test(command) ||
-    /\bgit\b[\s\S]*\b(merge|rebase|cherry-pick)\b[\s\S]*--continue\b/.test(command);
+    hasGitSub(cmd, "add") ||
+    hasGitSub(cmd, "restore") ||
+    hasGitSub(cmd, "rm") ||
+    /\bgit\b[\s\S]*\bcheckout\b[\s\S]*(?:--(?:ours|theirs|mine)|-m)\b/.test(cmd) ||
+    /\bgit\b[\s\S]*\b(merge|rebase|cherry-pick)\b[\s\S]*--continue\b/.test(cmd);
   // Subcommand names only — never the command text, which can carry secrets.
   gitLog.debug("conflict_command_classified", "matches", matches);
   return matches;
