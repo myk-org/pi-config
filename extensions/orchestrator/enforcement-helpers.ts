@@ -246,24 +246,55 @@ function gitCsIn(segment: string): string[] {
   return values;
 }
 
+const GIT_INDEX_VARS = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]);
+const GIT_INDEX_OPTIONS = new Set(["--git-dir", "--work-tree", "--namespace"]);
+
 /**
  * Anything that points git at a repository other than the working directory: the
  * GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE environment variables, or the equivalent
  * long options. Their target is an index path, not a directory the walker can
  * enumerate, so the caller refuses rather than checks the wrong places.
+ *
+ * Position matters. An environment variable only selects the index in *assignment
+ * position* — `GIT_DIR=/x git add a.txt`, optionally through `env` — so
+ * `git add GIT_INDEX_FILE=notes` stages a file with that name. The long options
+ * only count in git's global option region, before the subcommand, so
+ * `git add -- --work-tree=x` is a filename too.
  */
 function gitIndexOverride(command: string): string | null {
-  const env = /\b(GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR)\s*=/.exec(command);
-  if (env) {
-    enfLog.warn("git_index_override", "source", env[1]);
-    return env[1];
+  const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/;
+  for (const seg of unquotedSegments(command)) {
+    const tokens = tokenize(seg.text);
+    const nameOf = (tok: string) => tok.split("=")[0];
+    let i = 0;
+    // Leading `VAR=value` assignments, then the same again after `env`.
+    for (let round = 0; round < 2; round++) {
+      while (i < tokens.length && assignment.test(tokens[i])) {
+        const name = nameOf(tokens[i]);
+        if (GIT_INDEX_VARS.has(name)) {
+          enfLog.warn("git_index_override", "source", name);
+          return name;
+        }
+        i++;
+      }
+      if (tokens[i] !== "env") break;
+      i++;
+      while (i < tokens.length && tokens[i].startsWith("-")) i++;
+    }
+    const g = tokens.indexOf("git");
+    if (g === -1) continue;
+    for (let k = g + 1; k < tokens.length; k++) {
+      const tok = tokens[k];
+      if (!tok.startsWith("-") || tok === "-") break;
+      const name = nameOf(tok);
+      if (GIT_INDEX_OPTIONS.has(name)) {
+        enfLog.warn("git_index_override", "source", name);
+        return name;
+      }
+      if (!tok.includes("=") && tokens[k + 1] && !tokens[k + 1].startsWith("-")) k++;
+    }
   }
-  const opt = /--git-dir(?:=|\s)/.test(command) ? "--git-dir"
-    : /--work-tree(?:=|\s)/.test(command) ? "--work-tree"
-    : /--namespace(?:=|\s)/.test(command) ? "--namespace"
-    : null;
-  if (opt) enfLog.warn("git_index_override", "source", opt);
-  return opt;
+  return null;
 }
 
 /**

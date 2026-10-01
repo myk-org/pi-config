@@ -241,6 +241,16 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand('cat <<<"$(git add a.txt)"'), true);
   });
 
+  it("sees an index override only in assignment or option position", () => {
+    const detect = (c: string) => conflictCandidateDirs(c, "/root").envOverride;
+    assert.equal(detect("GIT_DIR=/x/.git git add a.txt"), "GIT_DIR");
+    assert.equal(detect("env -i GIT_WORK_TREE=/x git add a.txt"), "GIT_WORK_TREE");
+    assert.equal(detect("git --git-dir=/x/.git add a.txt"), "--git-dir");
+    // A file named like an assignment, and one passed after `--`, are not overrides.
+    assert.equal(detect("git add GIT_INDEX_FILE=notes"), null);
+    assert.equal(detect("git add -- --work-tree=x"), null);
+  });
+
   it("classifies a resolution inside process substitution", () => {
     assert.equal(isConflictResolutionCommand("diff <(git add a.txt) <(git status)"), true);
   });
