@@ -441,12 +441,19 @@ export function isConflictResolutionCommand(command: string): boolean {
   return matches;
 }
 
-/** Files with an unmerged index entry (merge/rebase/cherry-pick in progress). */
-export function listUnmergedFiles(cwd?: string): string[] {
+/**
+ * Files with an unmerged index entry (merge/rebase/cherry-pick in progress).
+ *
+ * `ok` distinguishes "the index is clean" from "git would not answer". Callers
+ * enforcing a block must fail closed on `ok: false` — treating an unreadable
+ * index as an empty one turns a broken check into a silent pass.
+ */
+export function listUnmergedFiles(cwd?: string): { ok: boolean; files: string[] } {
   const r = runGit(["ls-files", "--unmerged"], cwd);
-  if (r.code !== 0 || !r.stdout) {
-    gitLog.debug("unmerged_lookup_empty", "code", r.code, "repo", Boolean(cwd));
-    return [];
+  if (r.code !== 0) {
+    // warn, not debug: this is the check failing, and it gates a block.
+    gitLog.warn("unmerged_lookup_failed", "code", r.code, "repo", Boolean(cwd));
+    return { ok: false, files: [] };
   }
   const files = new Set<string>();
   for (const line of r.stdout.split("\n")) {
@@ -455,7 +462,7 @@ export function listUnmergedFiles(cwd?: string): string[] {
     if (path) files.add(path);
   }
   gitLog.debug("unmerged_lookup", "count", files.size);
-  return [...files];
+  return { ok: true, files: [...files] };
 }
 
 export const DANGEROUS = [

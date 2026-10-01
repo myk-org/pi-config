@@ -568,13 +568,23 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // conflict, so the handoff is enforced here rather than left to the prompt.
     // Reads (git status/diff) and `--abort` stay allowed.
     if (process.env.PI_AGENT_NAME === "git-expert" && isConflictResolutionCommand(command)) {
-      const conflicted = listUnmergedFiles(resolveEffectiveCwd(command, ctx.cwd));
-      if (conflicted.length > 0) {
-        log.info("conflict_resolution_block", conflicted.join(", "));
+      const lookup = listUnmergedFiles(resolveEffectiveCwd(command, ctx.cwd));
+      if (!lookup.ok) {
+        log.warn("conflict_lookup_failed", resolveEffectiveCwd(command, ctx.cwd));
         return {
           block: true,
           reason:
-            `⛔ Unresolved conflicts in ${conflicted.join(", ")}. Do not resolve them in git-expert — ` +
+            "⛔ Could not read the unmerged index, so the conflict state is unknown. " +
+            "Refusing to run a resolution command blind: run `git status` to see where you are, " +
+            `or delegate to the conflict-resolver agent (subagent(agent="conflict-resolver")).`,
+        };
+      }
+      if (lookup.files.length > 0) {
+        log.info("conflict_resolution_block", lookup.files.join(", "));
+        return {
+          block: true,
+          reason:
+            `⛔ Unresolved conflicts in ${lookup.files.join(", ")}. Do not resolve them in git-expert — ` +
             `stop, report this message to the caller, and have it delegate to the conflict-resolver ` +
             `agent (subagent(agent="conflict-resolver")). To back out instead: ` +
             `git merge --abort / git rebase --abort / git cherry-pick --abort.`,

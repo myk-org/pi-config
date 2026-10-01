@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
+import { resolveEffectiveCwd } from "../../../extensions/orchestrator/enforcement-helpers.js";
 import {
   isConflictResolutionCommand,
   listUnmergedFiles,
@@ -98,11 +99,17 @@ describe("conflict-resolution guard", () => {
   }
 
   it("reports the unmerged file from a conflicted index", () => {
-    assert.deepEqual(listUnmergedFiles(cwd), ["a.txt"]);
+    assert.deepEqual(listUnmergedFiles(cwd), { ok: true, files: ["a.txt"] });
   });
 
   it("reports no files from a clean repository", () => {
-    assert.deepEqual(listUnmergedFiles(clean), []);
+    assert.deepEqual(listUnmergedFiles(clean), { ok: true, files: [] });
+  });
+
+  it("marks an unreadable index as failed rather than clean", () => {
+    const notARepo = mkdtempSync(join(tmpdir(), "conflict-norepo-"));
+    assert.deepEqual(listUnmergedFiles(notARepo), { ok: false, files: [] });
+    rmSync(notARepo, { recursive: true, force: true });
   });
 
   it("classifies staging, deletion, side-selection, and continuation commands", () => {
@@ -194,6 +201,59 @@ describe("conflict-resolution guard", () => {
     assert.equal(result?.block, true);
     assert.match(result!.reason, /conflict-resolver/);
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it("blocks a resolution command when the conflict state cannot be read", async () => {
+    // Fail closed: a broken lookup must not read as "no conflict".
+    const notARepo = mkdtempSync(join(tmpdir(), "conflict-norepo-"));
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("git add a.txt", notARepo);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /conflict state is unknown/);
+    rmSync(notARepo, { recursive: true, force: true });
+  });
+
+  it("follows the directory git actually runs in, not the first cd", async () => {
+    // (cd /clean && cd <conflicted> && git add a.txt): the later cd is the one
+    // git executes in, so that is where the index must be read.
+    const root = mkdtempSync(join(tmpdir(), "conflict-second-cd-"));
+    mkdirSync(join(root, "clean"));
+    gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
+    conflictedRepo(join(root, "conflicted"));
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("(cd clean && cd conflicted && git add a.txt)", root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Unresolved conflicts in a\.txt/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("reads a quoted cd target containing spaces", async () => {
+    // Truncating at the space would check a directory that does not exist.
+    const root = mkdtempSync(join(tmpdir(), "conflict-space-"));
+    mkdirSync(join(root, "clean"));
+    conflictedRepo(join(root, "work tree"));
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run('(cd "work tree" && git add a.txt)', root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Unresolved conflicts in a\.txt/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("ignores a cd that only appears inside a quoted argument", () => {
+    // The commit runs in the session repo; the guard must read it there too.
+    const quoted = 'git commit -m "' + '(cd /tmp)' + '"';
+    assert.equal(resolveEffectiveCwd(quoted, "/session"), "/session");
+    assert.equal(resolveEffectiveCwd("echo 'cd /tmp' && git add a.txt", "/session"), "/session");
+  });
+
+  it("keeps the pre-git directory when a trailing cd follows", () => {
+    assert.equal(resolveEffectiveCwd("cd /repo && git commit --signoff && cd /tmp", "/session"), "/repo");
+    assert.equal(resolveEffectiveCwd("cd /first && cd /second && pytest", "/session"), "/first");
   });
 
   it("lets conflict-resolver stage its own resolution", async () => {

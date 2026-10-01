@@ -59,28 +59,88 @@ export function commandHasTrailerByName(command: string, trailerName: string): b
   return result;
 }
 
+/**
+ * Split a command into segments on shell separators that are *outside* quotes,
+ * recording each segment's offset. Quoted text is data, not syntax: a `(` or `cd`
+ * inside a string is part of an argument, never a boundary.
+ */
+function unquotedSegments(command: string): { text: string; start: number }[] {
+  const segments: { text: string; start: number }[] = [];
+  let start = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    // A separator is a single "&&", "||", ";", "|", or newline; "(" and ")"
+    // bracket a subshell but are not separators on their own.
+    const two = command.slice(i, i + 2);
+    if (two === "&&" || two === "||") {
+      segments.push({ text: command.slice(start, i), start });
+      i++;
+      start = i + 1;
+    } else if (ch === ";" || ch === "|" || ch === "\n") {
+      segments.push({ text: command.slice(start, i), start });
+      start = i + 1;
+    }
+  }
+  segments.push({ text: command.slice(start), start });
+  return segments;
+}
+
+/** The target of a `cd` at the start of a segment, honouring quoting and `~`. */
+function cdTargetIn(segment: string): string | null {
+  const m = segment.match(/^[\s(]*cd\s+(.*)$/s);
+  if (!m) return null;
+  let rest = m[1];
+  const quote = rest[0];
+  if (quote === "'" || quote === '"') {
+    // A quoted target may contain spaces and parentheses — take it whole.
+    const end = rest.indexOf(quote, 1);
+    if (end > 0) return rest.slice(1, end);
+  }
+  const unquoted = rest.split(/[\s;&|)]/)[0];
+  return unquoted ? unquoted.replace(/^['"]|['"]$/g, "") : null;
+}
+
 /** Parse bash command for cd target to resolve the effective working directory (worktree support) */
 export function resolveEffectiveCwd(command: string, sessionCwd: string): string {
-  // Match the FIRST cd in the command (at start, after &&, ;, ||, or opening a
-  // subshell/group). A `(cd dir && git add x)` runs its git inside that
-  // directory, so a subshell opener counts as a boundary too — otherwise a guard
-  // inspects the session cwd while the command runs somewhere else entirely.
-  // First cd sets up the working directory before subsequent commands run.
-  // Using LAST cd is unsafe — a trailing cd (e.g., git commit && cd /tmp) would
-  // misattribute the cwd to the wrong directory.
-  const cdMatch = command.match(/(?:^|[;&|(]\s*)cd\s+([^\s;&|)]+)/);
-  if (cdMatch) {
-    const target = cdMatch[1].replace(/['"]/g, "");
-    if (target.startsWith("/")) return target;
-    return join(sessionCwd, target);
+  // Quoting decides what is syntax, so segments are split outside quotes first.
+  // Then pick the LAST cd that precedes the git invocation — the directory git
+  // actually runs in. Two cases make the obvious implementations wrong:
+  //   (cd /clean && cd /conflicted && git add x)  → the later cd wins
+  //   cd /repo && git commit && cd /tmp          → a trailing cd must not
+  // With no git invocation to anchor to, the first cd is used, which is the
+  // conservative answer for `cd a && cd b && pytest`.
+  const segments = unquotedSegments(command);
+  const gitIndex = segments.findIndex((s) => /\bgit\b/.test(s.text));
+  const cdSegments = segments
+    .map((s, i) => ({ i, target: cdTargetIn(s.text) }))
+    .filter((c) => c.target !== null);
+  const anchor = gitIndex === -1 ? cdSegments[0] : cdSegments.filter((c) => c.i < gitIndex).pop() ?? cdSegments[0];
+  if (anchor?.target) {
+    const target = anchor.target;
+    const dir = target.startsWith("/") || target.startsWith("~")
+      ? target.replace(/^~/, process.env.HOME ?? "~")
+      : join(sessionCwd, target);
+    enfLog.debug("effective_cwd", "cd", target, "dir", dir);
+    return dir;
   }
   // Match: git -C /path/to/dir ...
   const gitCMatch = command.match(/\bgit\s+-C\s+([^\s]+)/);
   if (gitCMatch) {
     const target = gitCMatch[1].replace(/['"]/g, "");
-    if (target.startsWith("/")) return target;
-    return join(sessionCwd, target);
+    const dir = target.startsWith("/") ? target : join(sessionCwd, target);
+    enfLog.debug("effective_cwd", "git_C", target, "dir", dir);
+    return dir;
   }
+  enfLog.debug("effective_cwd", "source", "session");
   return sessionCwd;
 }
 
