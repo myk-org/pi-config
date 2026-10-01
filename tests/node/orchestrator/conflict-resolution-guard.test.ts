@@ -130,6 +130,13 @@ describe("conflict-resolution guard", () => {
       "git merge --continue",
       "git rebase --continue",
       "git cherry-pick --continue",
+      "git rebase --skip",
+      "git cherry-pick --skip",
+      "git revert --continue",
+      "git am --skip",
+      "git checkout MERGE_HEAD -- a.txt",
+      "git reset -- a.txt",
+      "git reset",
     ];
     for (const cmd of resolutions) {
       assert.equal(isConflictResolutionCommand(cmd), true, cmd);
@@ -137,7 +144,7 @@ describe("conflict-resolution guard", () => {
   });
 
   it("leaves read-only commands unclassified", () => {
-    for (const cmd of ["git status", "git diff", "git merge --abort", "gh pr view 1"]) {
+    for (const cmd of ["git status", "git diff", "git merge --abort", "git rebase --abort", "gh pr view 1"]) {
       assert.equal(isConflictResolutionCommand(cmd), false, cmd);
     }
   });

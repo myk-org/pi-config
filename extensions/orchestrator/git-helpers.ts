@@ -760,13 +760,19 @@ export function isConflictResolutionCommand(command: string): boolean {
     gitLog.warn("conflict_command_dynamic_subcommand", "matches", true);
     return true;
   }
-  // git rm drops a conflicted deletion's unmerged entry, which is a resolution.
+  // Every one of these clears an unmerged entry, which is picking a side:
+  //   git add / git rm / git restore      stage the working tree as-is
+  //   git checkout MERGE_HEAD -- <path>   take one side by name
+  //   git reset [-- <path>]               drop the index entry
+  //   ... --continue / --skip / --quit    advance past the conflicted commit
+  // `--abort` is deliberately absent: it backs out rather than resolving.
   const matches =
     hasGitSub(cmd, "add") ||
     hasGitSub(cmd, "restore") ||
     hasGitSub(cmd, "rm") ||
-    /\bgit\b[\s\S]*\bcheckout\b[\s\S]*(?:--(?:ours|theirs|mine)|-m)\b/.test(cmd) ||
-    /\bgit\b[\s\S]*\b(merge|rebase|cherry-pick)\b[\s\S]*--continue\b/.test(cmd);
+    hasGitSub(cmd, "reset") ||
+    /\bgit\b[\s\S]*\bcheckout\b[\s\S]*(?:--(?:ours|theirs|mine)\b|\s-m\b|\s--\s)/.test(cmd) ||
+    /\bgit\b[\s\S]*\b(merge|rebase|cherry-pick|revert|am)\b[\s\S]*--(?:continue|skip|quit)\b/.test(cmd);
   // Subcommand names only — never the command text, which can carry secrets.
   gitLog.debug("conflict_command_classified", "matches", matches);
   return matches;
