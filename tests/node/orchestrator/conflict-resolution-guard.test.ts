@@ -324,11 +324,14 @@ describe("conflict-resolution guard", () => {
     assert.ok(dirs("env -C /conflicted git add a.txt").includes("/conflicted"));
   });
 
-  it("reads HOME and an exported index from the command itself", () => {
+  it("takes HOME from the command rather than from this process", () => {
     // The shell's own HOME decides where a bare cd goes, not the process's.
     assert.ok(conflictCandidateDirs("HOME=/h cd && git add a.txt", "/root").all.includes("/h"));
-    // An export selects the index for later commands in the same shell.
+  });
+
+  it("reads an exported index from the command itself", () => {
     const detect = (c: string) => conflictCandidateDirs(c, "/root").envOverride;
+    // An export selects the index for later commands in the same shell.
     assert.equal(detect("export GIT_INDEX_FILE=/x/i\ngit add a.txt"), "GIT_INDEX_FILE");
     // `-i` takes no value, so the assignment after it still counts.
     assert.equal(detect("env -i GIT_WORK_TREE=/x git add a.txt"), "GIT_WORK_TREE");
@@ -369,7 +372,10 @@ describe("conflict-resolution guard", () => {
     assert.equal(detect("echo GIT_INDEX_FILE=/x"), null);
     // A wrapper in front of the assignment still selects it.
     assert.equal(detect("sudo GIT_DIR=/x/.git git add a.txt"), "GIT_DIR");
-    assert.equal(detect("sudo env GIT_WORK_TREE=/x git add a.txt"), "GIT_WORK_TREE");
+  });
+
+  it("reads an index override behind a wrapper and env together", () => {
+    assert.equal(conflictCandidateDirs("sudo env GIT_WORK_TREE=/x git add a.txt", "/root").envOverride, "GIT_WORK_TREE");
   });
 
   it("lets a literal path override an earlier unverifiable one", () => {
@@ -903,9 +909,12 @@ describe("conflict-resolution guard", () => {
     assert.equal(resolveEffectiveCwd("if cd /x; then git add y; fi", "/session"), "/x");
   });
 
-  it("anchors on the segment that runs git, not one that names it", () => {
+  it("anchors the effective directory on the segment that runs git", () => {
     // `cd ~/git/proj` contains the word without running git.
     assert.equal(resolveEffectiveCwd("cd /tmp/git/proj && git commit --signoff -F -", "/session"), "/tmp/git/proj");
+  });
+
+  it("anchors the candidate directories on the segment that runs git", () => {
     assert.equal(conflictCandidateDirs("cd /tmp/git/proj && git add a.txt", "/root").all.join(","), "/tmp/git/proj");
   });
 
