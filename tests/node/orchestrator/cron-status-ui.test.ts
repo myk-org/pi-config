@@ -72,7 +72,7 @@ describe("cronDetailRows", () => {
     );
   });
 
-  it("always renders schedule, last run, next run, and created", () => {
+  it("always renders the four base rows", () => {
     const rows = cronDetailRows(sample({ intervalMs: 60_000 }), 1_000_000).map(
       ([label]) => label,
     );

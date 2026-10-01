@@ -48,15 +48,24 @@ function writeLockOwner(store: string, kind: "leader" | "mutation", owner: objec
 }
 
 describe("validateDurableCronTask model", () => {
-  it("accepts provider/model-id, a bare id, and an absent model", () => {
+  it("accepts provider/model-id", () => {
     assert.doesNotThrow(() => validateDurableCronTask({ ...task(), model: "openrouter/anthropic/claude-opus-5" }));
+  });
+
+  it("accepts a bare model id", () => {
     assert.doesNotThrow(() => validateDurableCronTask({ ...task(), model: "claude-opus-5" }));
+  });
+
+  it("accepts an absent model", () => {
     assert.doesNotThrow(() => validateDurableCronTask(task()));
   });
 
   it("rejects a model with an empty side", () => {
     assert.throws(() => validateDurableCronTask({ ...task(), model: "p/" }), /Invalid durable cron model/);
     assert.throws(() => validateDurableCronTask({ ...task(), model: "" }), /Invalid durable cron model/);
+  });
+
+  it("rejects a non-string model", () => {
     assert.throws(() => validateDurableCronTask({ ...task(), model: 7 }), /Invalid durable cron model/);
   });
 

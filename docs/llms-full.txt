@@ -2925,10 +2925,12 @@ To pin one schedule without moving the whole session, name the model in the requ
 ```
 
 `cron_manage` stores that on the task and passes it as the subagent `explicit` override for
-that run only. A bare `model-id` keeps the normal provider resolution chain. Pinning an
-`acpx-*` provider does not work — child processes cannot register those providers, so the cron
-falls back to `internal_operations_provider`/`internal_operations_model` (see ACPX
-Compatibility below).
+that run only. A bare `model-id` keeps the normal provider resolution chain. An unpinned cron
+uses the worker's own chain (`agent_overrides[worker]` → worker frontmatter →
+`agent_provider`/`agent_model`) and does not inherit the session model. Pinning an `acpx-*`
+provider does not work — child processes cannot register those providers, so the cron runs on
+`internal_operations_provider`/`internal_operations_model` when both are set, and is skipped
+with a logged error when they are not (see ACPX Compatibility below).
 
 ### Keep Background Context Between Runs
 
@@ -2959,7 +2961,7 @@ Session-scoped tasks survive `/reload` inside the running process but are delete
 
 > **Note:** If you need to confirm what is still scheduled, run `/cron list` or `/cron list-all` after reconnecting instead of assuming an older schedule is still active.
 
-> **Tip:** `/cron` with free text does not schedule anything by itself. It re-enters the conversation with a request to call the `cron_manage` tool, and `persist` is set to `true` only when you passed `--persist`. Schedules must have an `interval_seconds` of at least 10, and `at_minute` is only valid together with `at_hour`. `model` accepts `provider/model-id` or a bare `model-id`; leaving it out inherits the session model.
+> **Tip:** `/cron` with free text does not schedule anything by itself. It re-enters the conversation with a request to call the `cron_manage` tool, and `persist` is set to `true` only when you passed `--persist`. Schedules must have an `interval_seconds` of at least 10, and `at_minute` is only valid together with `at_hour`. `model` accepts `provider/model-id` or a bare `model-id`; leaving it out uses the worker's normal model resolution.
 
 ### ACPX Compatibility
 

@@ -1,6 +1,9 @@
 /**
  * Pure cron status display helpers — no TUI deps (unit-testable).
  */
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("cron_status");
 
 export interface CronStatusTaskView {
   /** Unique scope-qualified overlay row id (e.g. "session:<uuid>"). */
@@ -108,6 +111,7 @@ export function cronDetailRows(
   ];
   if (task.sessionLabel) rows.push(["Session", task.sessionLabel]);
   if (task.model) rows.push(["Model", task.model]);
+  log.debug("cron_detail_rows", { id: task.id, rows: rows.length, model: task.model || "inherit" });
   return rows;
 }
 
