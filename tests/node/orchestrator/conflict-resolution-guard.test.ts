@@ -191,6 +191,13 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand("cat <<'x git add'\nbody\nx git add"), false);
   });
 
+  it("classifies a git name split by adjacent quotes", () => {
+    for (const cmd of ["git'' add a.txt", "g''it add a.txt", "git 'add' a.txt", 'git "add" a.txt']) {
+      assert.equal(isConflictResolutionCommand(cmd), true, cmd);
+    }
+    assert.equal(isConflictResolutionCommand("echo 'git add a.txt'"), false);
+  });
+
   it("classifies a command split by a line continuation", () => {
     assert.equal(isConflictResolutionCommand("git \\\n  add a.txt"), true);
     assert.equal(isConflictResolutionCommand("git \\\n  status"), false);

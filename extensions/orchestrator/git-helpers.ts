@@ -419,7 +419,7 @@ export function hasGitSub(command: string, sub: string): boolean {
  * contribute only their substitutions, and an inert quoted span collapses to a
  * placeholder token so `git -C "repo" add` stays parseable.
  */
-type ScanMode = "full" | "body" | "literal-body";
+type ScanMode = "full" | "words" | "body" | "literal-body";
 
 /**
  * Emitted when nesting exceeded the scan depth: the scanner stopped early and
@@ -507,7 +507,7 @@ function isHeredocTerminator(line: string, delim: string, stripTabs: boolean): b
 
 function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string {
   if (depth > 6) return UNSCANNED;
-  const keepLiterals = mode === "full";
+  const keepLiterals = mode === "full" || mode === "words";
   const keepSubstitutions = mode !== "literal-body";
   let out = "";
   const pendingHeredocs: { delim: string; expand: boolean; stripTabs: boolean }[] = [];
@@ -598,9 +598,17 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
       const start = ansi ? i + 1 : i;
       const end = cmd.indexOf("'", start + 1);
       const content = cmd.slice(start + 1, end === -1 ? cmd.length : end);
+      // A quoted part glued to adjacent text is part of the same shell word
+      // (`g'add'` is `gadd`, `git''` is `git`), so it must be concatenated. Only
+      // a standalone quoted argument collapses to a placeholder.
+      // `$'…'` is its own word — the `$` is a token, not glued text.
+      const glued = !ansi && start > 0 && !/[\s;&|(]/.test(cmd[start - 1]);
       if (isScriptArgument(cmd, start)) {
         if (keepSubstitutions) add(` ${executableText(content, depth + 1)} `);
         else add(" _ ");
+      } else if (glued || /\bgit$/.test(out.trimEnd())) {
+        // `git 'add' x` — the subcommand itself, quoted.
+        add(content);
       } else {
         add(" _ ");
       }
@@ -610,8 +618,13 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
     if (ch === '"') {
       const end = closingQuote(cmd, i, '"');
       const content = cmd.slice(i + 1, end);
+      const glued = i > 0 && !/[\s;&|(]/.test(cmd[i - 1]);
       if (isScriptArgument(cmd, i)) {
         if (keepSubstitutions) add(` ${executableText(content, depth + 1)} `);
+      } else if (glued || /\bgit$/.test(out.trimEnd())) {
+        // Part of a shell word, or the subcommand itself: keep the text so the
+        // word survives concatenation.
+        add(executableText(content, depth + 1, "full"));
       } else if (keepSubstitutions) {
         // Only the substitutions inside a double-quoted span execute.
         substitutions++;
