@@ -18,8 +18,11 @@ Declares what is actually code-enforced versus prompt-only. A tier is about
 - Verifiers: `tool_called <tool> before <command>` at `turn_end`
 - Remote script exec blocks: `curl \| bash`, nested `$(bash -c "$(curl)")`, etc. (`checkRemoteExecBlock`)
 - `comment_signature`: injects `Assisted-by: PI (<model>)` into `gh pr|issue create|comment|edit` `--body` / heredoc (`injectGhBodySignature`)
-- Conflict handoff: in `git-expert`, `git add` / `git restore` / `git rm` / `git checkout --ours|--theirs` /
-  `merge|rebase|cherry-pick --continue` are blocked while `git ls-files --unmerged` is non-empty, with a
+- Conflict handoff: in `git-expert`, `git add` / `git restore` / `git rm` / `git update-index` / `git reset` /
+  `git checkout --ours|--theirs` and the `--continue` / `--skip` / `--quit` flags of
+  `merge|rebase|cherry-pick|revert|am` are blocked while `git ls-files --unmerged` is non-empty, and a
+  command that starts one of those sequencers and then stages in the same line is refused before the
+  index is even read (`createsAndResolvesConflict`). Reads and `--abort` stay allowed. The refusal carries a
   message pointing at the `conflict-resolver` agent (`isConflictResolutionCommand`, `listUnmergedFiles`);
   `resolveEffectiveCwd` resolves quoting before boundaries and applies chained `cd`s in shell order, with
   `git -C` overriding both; conflict enforcement asks `conflictCandidateDirs` for every directory git could

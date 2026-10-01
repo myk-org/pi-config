@@ -2385,7 +2385,7 @@ Full `read, write, edit, bash` — they implement, not just advise.
 
 ## Version control and forges
 
-These two are split deliberately: `git-expert` is local repository work, `github-expert` is everything that talks to the GitHub API through `gh`. `conflict-resolver` is split out of `git-expert` because it is the one git task that needs real judgment: `git-expert` is commonly pinned to a small model, so when a merge, rebase, or cherry-pick leaves unmerged paths, `git-expert` is blocked from writing a resolution (`git add`, `git restore`, `git rm`, `git checkout --ours/--theirs`, `merge|rebase|cherry-pick --continue`) and hands off to `conflict-resolver`.
+These two are split deliberately: `git-expert` is local repository work, `github-expert` is everything that talks to the GitHub API through `gh`. `conflict-resolver` is split out of `git-expert` because it is the one git task that needs real judgment: `git-expert` is commonly pinned to a small model, so when a merge, rebase, or cherry-pick leaves unmerged paths, `git-expert` is blocked from writing a resolution (`git add`, `git restore`, `git rm`, `git update-index`, `git reset`, `git checkout --ours/--theirs`, and the `--continue`/`--skip`/`--quit` flags of `merge|rebase|cherry-pick|revert|am`) and hands off to `conflict-resolver`. Reads such as `git status` and `git diff`, and the `--abort` flags, stay allowed.
 
 | Agent | Description | Tools |
 | :--- | :--- | :--- |
