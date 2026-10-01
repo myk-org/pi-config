@@ -100,8 +100,10 @@ function unquotedSegments(command: string): ShellSegment[] {
     // bracket a subshell but are not separators on their own.
     const two = command.slice(i, i + 2);
     if (two === "&&" || two === "||") {
-      push(i, start, two === "||");
-      conditional = two === "||";
+      push(i, start, conditional);
+      // What FOLLOWS a short-circuit may be skipped: `false && cd x` never runs
+      // it, and `cd a || cd b` runs the second only if the first failed.
+      conditional = true;
       i++;
       start = i + 1;
     } else if (ch === "\n") {
@@ -112,11 +114,11 @@ function unquotedSegments(command: string): ShellSegment[] {
         enfLog.debug("quote_reset_at_newline", "char", quote);
         quote = null;
       }
-      push(i, start, false);
+      push(i, start, conditional);
       conditional = false;
       start = i + 1;
     } else if (ch === ";" || ch === "|") {
-      push(i, start, false);
+      push(i, start, conditional);
       conditional = false;
       start = i + 1;
     } else if (ch === "(") {
@@ -331,12 +333,12 @@ export function conflictCandidateDirs(
     const target = cdTargetIn(seg.text);
     if (target) {
       if (seg.conditional) {
-        // `a || cd b` — the cd may never run, so its directory is a candidate
-        // but the shell has not moved.
-        dirs.add(applyCd(running[seg.depth], target));
-      } else {
-        running[seg.depth] = applyCd(running[seg.depth], target);
+        // Behind a short-circuit the cd may never run, so the directory the
+        // shell is in *before* it counts too: `false && cd clean; git add x`
+        // stages where it already was.
+        dirs.add(running[seg.depth]);
       }
+      running[seg.depth] = applyCd(running[seg.depth], target);
     }
     if (/\bgit\b/.test(seg.text)) {
       const base = running[seg.depth];

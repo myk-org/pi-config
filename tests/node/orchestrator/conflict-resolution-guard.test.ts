@@ -546,6 +546,21 @@ describe("conflict-resolution guard", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("checks both directories when a cd may be skipped", async () => {
+    // `false && cd clean` never runs, so the staging happens where we already are.
+    const root = mkdtempSync(join(tmpdir(), "conflict-skipped-cd-"));
+    mkdirSync(join(root, "clean"));
+    gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
+    conflictedRepo(root);
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("false && cd clean; git add a.txt", root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("starts a new subshell from the outer directory", async () => {
     // The second subshell must not inherit the first one's directory.
     const root = mkdtempSync(join(tmpdir(), "conflict-two-subshells-"));
