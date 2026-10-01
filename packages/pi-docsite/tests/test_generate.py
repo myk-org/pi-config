@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pi_docsite.generate as generate_docs
+import pytest
 from pytest import MonkeyPatch
+
+
+def _fake_home(target: Path) -> Any:
+    """Patch Path.home() to a temp dir so detection never reads the real home."""
+    return classmethod(lambda _cls: target)
+
 
 FRONT = "---\nnav_group: Group\nnav_order: 10\n---\n"
 DEFAULT_GROUP = "More"
@@ -103,48 +112,71 @@ def test_main_is_idempotent(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
 
 def test_skill_notice_names_the_packaged_skill_when_absent(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     docs = _setup(tmp_path, monkeypatch, ["alpha"])
-    monkeypatch.setattr(generate_docs, "AGENT_SKILL_DIRS", (tmp_path / "home" / "skills" / "pi-docsite",))
-
-    notice = generate_docs._skill_notice(docs)
+    notice = generate_docs._skill_notice(docs, home=tmp_path / "home")
     assert notice is not None
     assert "SKILL.md" in notice
 
 
-def test_skill_notice_is_silent_for_a_home_dir_install(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "relative",
+    [
+        ".agents/skills/pi-docsite",
+        ".pi/agent/skills/pi-docsite",
+        ".claude/skills/pi-docsite",
+        ".cursor/skills/pi-docsite",
+        ".gemini/skills/pi-docsite",
+    ],
+)
+def test_skill_notice_is_silent_for_each_documented_home_location(
+    tmp_path: Path, monkeypatch: MonkeyPatch, relative: str
+) -> None:
     docs = _setup(tmp_path, monkeypatch, ["alpha"])
-    installed = tmp_path / "home" / "skills" / "pi-docsite"
-    monkeypatch.setattr(generate_docs, "AGENT_SKILL_DIRS", (installed,))
-    assert generate_docs._skill_notice(docs) is not None
-
+    home = tmp_path / "home"
+    installed = home / relative
     installed.mkdir(parents=True)
     (installed / "SKILL.md").write_text("# pi-docsite", encoding="utf-8")
-    assert generate_docs._skill_notice(docs) is None
-
-
-def test_skill_detection_covers_the_documented_home_locations() -> None:
-    # The shipped tuple once omitted ~/.agents/skills/, so a skill installed there
-    # still produced the "not installed for any agent" notice on every build.
-    tails = {str(d.parent).removeprefix(str(Path.home())).lstrip("/") for d in generate_docs.AGENT_SKILL_DIRS}
-    assert ".agents/skills" in tails
-    assert ".pi/agent/skills" in tails
-    assert ".claude/skills" in tails
+    assert generate_docs._skill_notice(docs, home=home) is None
 
 
 def test_skill_notice_is_silent_for_a_project_local_install(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     docs = _setup(tmp_path, monkeypatch, ["alpha"])
-    monkeypatch.setattr(generate_docs, "AGENT_SKILL_DIRS", ())
     local = docs.parent / ".pi" / "skills" / "pi-docsite"
     local.mkdir(parents=True)
     (local / "SKILL.md").write_text("# pi-docsite", encoding="utf-8")
-    assert generate_docs._skill_notice(docs) is None
+    assert generate_docs._skill_notice(docs, home=tmp_path / "home") is None
 
 
-def test_cli_badge_label_reaches_pages_and_index(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+def test_skill_notice_debug_log_carries_the_detection_result(
+    tmp_path: Path, monkeypatch: MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A dict passed as the format argument leaves the formatted message without
+    # any values, so an unexpected notice could not be explained from the log.
     docs = _setup(tmp_path, monkeypatch, ["alpha"])
-    monkeypatch.setattr(generate_docs, "AGENT_SKILL_DIRS", ())
+    home = tmp_path / "home"
+    installed = home / ".claude" / "skills" / "pi-docsite"
+    installed.mkdir(parents=True)
+    (installed / "SKILL.md").write_text("# pi-docsite", encoding="utf-8")
+
+    with caplog.at_level(logging.DEBUG, logger="pi_docsite.generate"):
+        assert generate_docs._skill_notice(docs, home=home) is None
+    message = caplog.records[-1].getMessage()
+    assert "candidates=6" in message
+    assert str(installed) in message
+
+
+def test_cli_badge_label_reaches_the_index(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    monkeypatch.setattr(generate_docs.Path, "home", _fake_home(tmp_path / "home"))
 
     assert generate_docs.main(["--badge-label", "acme-docs"]) == 0
     assert '⚡ acme<span class="brand-accent">-docs</span>' in (docs / "index.html").read_text(encoding="utf-8")
+
+
+def test_cli_badge_label_reaches_a_content_page(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    docs = _setup(tmp_path, monkeypatch, ["alpha"])
+    monkeypatch.setattr(generate_docs.Path, "home", _fake_home(tmp_path / "home"))
+
+    assert generate_docs.main(["--badge-label", "acme-docs"]) == 0
     assert '⚡ acme<span class="brand-accent">-docs</span>' in (docs / "alpha.html").read_text(encoding="utf-8")
 
 
@@ -152,13 +184,12 @@ def test_cli_badge_label_does_not_leak_into_the_next_build(tmp_path: Path, monke
     # BADGE_LABEL doubled as the parser default, so one custom-label build made
     # that label sticky for every later in-process main() call.
     docs = _setup(tmp_path, monkeypatch, ["alpha"])
-    monkeypatch.setattr(generate_docs, "AGENT_SKILL_DIRS", ())
+    monkeypatch.setattr(generate_docs.Path, "home", _fake_home(tmp_path / "home"))
 
     assert generate_docs.main(["--badge-label", "acme"]) == 0
     assert generate_docs.main([]) == 0
     html = (docs / "index.html").read_text(encoding="utf-8")
     assert "acme" not in html
-    assert "⚾" not in html
     assert '⚡ pi<span class="brand-accent">-docsite</span>' in html
 
 

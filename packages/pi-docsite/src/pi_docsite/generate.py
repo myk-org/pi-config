@@ -44,23 +44,27 @@ TAGLINE = ""
 # Immutable: it is the --badge-label default, so it must never be rebound per build.
 DEFAULT_BADGE_LABEL = "pi-docsite"
 
-# Where agents look for a skill, so the notice below can stay quiet once the
-# shipped skill is in place. Detection only -- the copy step stays manual.
-AGENT_SKILL_DIRS = (
-    Path.home() / ".agents" / "skills" / "pi-docsite",
-    Path.home() / ".pi" / "agent" / "skills" / "pi-docsite",
-    Path.home() / ".claude" / "skills" / "pi-docsite",
-    Path.home() / ".cursor" / "skills" / "pi-docsite",
-    Path.home() / ".gemini" / "skills" / "pi-docsite",
-)
-
 log = logging.getLogger("pi_docsite.generate")
-# Named, not AGENT_SKILL_DIRS[n]: the notice must render even when the detection
-# tuple is empty or reordered.
+# Named, not an index into the detection list: the notice must render even when
+# that list changes shape.
 EXAMPLE_SKILL_DEST = Path.home() / ".pi" / "agent" / "skills" / "pi-docsite"
 
 
-def _skill_notice(docs_dir: Path) -> str | None:
+def _agent_skill_dirs(home: Path) -> tuple[Path, ...]:
+    """Home-directory skill locations, resolved per call so `home` is injectable.
+
+    Detection only -- the copy step stays manual.
+    """
+    return (
+        home / ".agents" / "skills" / "pi-docsite",
+        home / ".pi" / "agent" / "skills" / "pi-docsite",
+        home / ".claude" / "skills" / "pi-docsite",
+        home / ".cursor" / "skills" / "pi-docsite",
+        home / ".gemini" / "skills" / "pi-docsite",
+    )
+
+
+def _skill_notice(docs_dir: Path, home: Path | None = None) -> str | None:
     """One line advertising the shipped skill, or None once it is installed.
 
     pip has no post-install hook, so nothing can announce the packaged
@@ -72,9 +76,13 @@ def _skill_notice(docs_dir: Path) -> str | None:
     directories -- the skill directory next to the docs being built is a
     documented install target.
     """
-    candidates = (*AGENT_SKILL_DIRS, docs_dir.parent / ".pi" / "skills" / "pi-docsite")
-    installed = [d for d in candidates if (d / "SKILL.md").is_file()]
-    log.debug("skill_notice", {"candidates": len(candidates), "installed": [str(d) for d in installed]})
+    base = home if home is not None else Path.home()
+    candidates = (*_agent_skill_dirs(base), docs_dir.parent / ".pi" / "skills" / "pi-docsite")
+    installed = [str(d) for d in candidates if (d / "SKILL.md").is_file()]
+    # %s placeholders, not a dict as the format argument: a dict leaves the
+    # formatted message with none of these values, so a surprising notice cannot
+    # be explained from the debug log.
+    log.debug("skill_notice: candidates=%d installed=%s", len(candidates), installed)
     if installed:
         return None
     return (
