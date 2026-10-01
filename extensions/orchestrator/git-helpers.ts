@@ -507,7 +507,7 @@ function isHeredocTerminator(line: string, delim: string, stripTabs: boolean): b
   return isTerminator;
 }
 
-function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string {
+export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string {
   if (depth > 6) return UNSCANNED;
   const keepLiterals = mode === "full" || mode === "words";
   const keepSubstitutions = mode !== "literal-body";
@@ -652,10 +652,13 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
       // and runs nothing, so the tail must not be read as a command.
       const glued = !ansi && end !== -1 && start > 0 && !/[\s;&|(]/.test(cmd[start - 1]);
       if (isScriptArgument(cmd, start)) {
-        if (keepSubstitutions) add(` ${executableText(content, depth + 1)} `);
+        // Newlines, not spaces: the script is a command of its own, so a cd or
+        // git inside it starts a segment rather than trailing an option word.
+        if (keepSubstitutions) add(`\n(${executableText(content, depth + 1)})\n`);
         else add(" _ ");
-      } else if (glued || /\bgit$/.test(out.trimEnd())) {
-        // `git 'add' x` — the subcommand itself, quoted.
+      } else if (glued || /(?:\bgit|\bcd|\bpushd|\bchdir|-C)$/.test(out.trimEnd())) {
+        // The subcommand or a directory argument, quoted: `git 'add' x`,
+        // `cd "work tree"`, `git -C "my repo" add`.
         add(content);
       } else {
         add(" _ ");
@@ -668,11 +671,13 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
       const content = cmd.slice(i + 1, end);
       const glued = i > 0 && !/[\s;&|(]/.test(cmd[i - 1]);
       if (isScriptArgument(cmd, i)) {
-        if (keepSubstitutions) add(` ${executableText(content, depth + 1)} `);
-      } else if (glued || /\bgit$/.test(out.trimEnd())) {
-        // Part of a shell word, or the subcommand itself: keep the text so the
-        // word survives concatenation.
-        add(executableText(content, depth + 1, "full"));
+        if (keepSubstitutions) add(`\n(${executableText(content, depth + 1)})\n`);
+      } else if (glued || /(?:\bgit|\bcd|\bpushd|\bchdir|-C)$/.test(out.trimEnd())) {
+        // Part of a shell word, or a quoted directory argument: keep the text so
+        // the word survives concatenation. Quoting is re-emitted so a path with
+        // spaces still reaches the directory walker as one argument.
+        const isDirArg = /(?:\bcd|\bpushd|\bchdir|-C)$/.test(out.trimEnd());
+        add(isDirArg ? `"${content}"` : executableText(content, depth + 1, "full"));
       } else if (keepSubstitutions) {
         // Only the substitutions inside a double-quoted span execute.
         substitutions++;

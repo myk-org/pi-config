@@ -7,7 +7,7 @@ import { createLogger } from "../shared/logger.js";
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
-import { DANGEROUS, getCurrentBranch, hasGitSub } from "./git-helpers.js";
+import { DANGEROUS, executableText, getCurrentBranch, hasGitSub } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
 enfLog.debug("enforcement-helpers module loaded");
@@ -274,8 +274,11 @@ export function conflictCandidateDirs(
   const dirs = new Set<string>();
   // running[d] is the directory of the shell at paren depth d.
   const running: string[] = [sessionCwd];
+  // Walk the *executable* text: a `cd` inside a `bash -c` script, or inside a
+  // command substitution, moves the directory the staging really runs in.
+  const scan = executableText(command) || command;
 
-  for (const seg of unquotedSegments(command)) {
+  for (const seg of unquotedSegments(scan)) {
     // Entering a subshell starts a child shell in the current directory.
     while (running.length <= seg.depth) running.push(running[running.length - 1]);
     const target = cdTargetIn(seg.text);

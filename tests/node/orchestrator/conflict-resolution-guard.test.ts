@@ -191,6 +191,22 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand("cat <<'x git add'\nbody\nx git add"), false);
   });
 
+  it("follows a cd inside a nested shell script", async () => {
+    const root = mkdtempSync(join(tmpdir(), "conflict-nested-shell-cd-"));
+    gitIn(root, ["init", "-q", "-b", "main"]);
+    writeFileSync(join(root, "keep.txt"), "clean\n");
+    gitIn(root, ["add", "keep.txt"]);
+    gitIn(root, ["commit", "-qm", "clean"]);
+    conflictedRepo(join(root, "conflicted"));
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("bash -c 'cd conflicted && git add a.txt'", root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("classifies a path-qualified shell script argument", () => {
     assert.equal(isConflictResolutionCommand("/bin/bash -c 'git add a.txt'"), true);
     assert.equal(isConflictResolutionCommand("/usr/bin/env bash -c 'git add a.txt'"), true);
