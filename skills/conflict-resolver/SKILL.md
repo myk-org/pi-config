@@ -158,14 +158,17 @@ uv run pytest -q    # or npm test, go test, etc.
 ## Phase 5: Complete
 
 ```bash
-# For merge
+# For merge: stage, then report for git-expert to commit
 git add <all-resolved-files>
-git commit  # uses merge commit message
 
-# For rebase
+# For rebase: stage, then report for git-expert to continue
 git add <all-resolved-files>
-git rebase --continue
 ```
+
+Stage the resolved files, then stop. **Committing is `git-expert`'s job** — a
+`git commit` here is rejected by the harness, so following the old sequence
+leaves the operation unfinished. Report what you resolved and that it is staged,
+and let the caller delegate the commit or `rebase --continue` to `git-expert`.
 
 ## Common Patterns
 

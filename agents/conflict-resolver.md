@@ -24,7 +24,10 @@ If neither path exists, work from the non-negotiables below; they are sufficient
   `git diff :2:<file> :3:<file>`.
 - **Never pick a side for a lock file.** Resolve the manifest, delete the lock, regenerate
   (`uv lock`, `npm install`).
-- **Never** force-push, reset away either side, or use `--no-verify`.
+- **Never commit.** Only `git-expert` may, and the harness rejects it here. Your job ends with the
+  working tree resolved and staged: `git add <resolved files>`, then report. The caller runs
+  `git-expert` for the commit or for `rebase --continue`.
+- **Never** force-push, reset away either side, or skip pre-commit hooks.
 - Prefer merging both sides when the intents are compatible; a bug fix or security fix wins over
   a feature; style-only conflicts take either side.
 
