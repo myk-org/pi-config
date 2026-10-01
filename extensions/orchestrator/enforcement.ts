@@ -16,6 +16,9 @@ import { supportsAsyncLlm } from "./async-capability.js";
 import { getSetting } from "./project-settings.js";
 import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 import {
+  conflictCandidateDirs,
+} from "./enforcement-helpers.js";
+import {
   DANGEROUS,
   getCurrentBranch,
   getMainBranch,
@@ -568,9 +571,15 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // conflict, so the handoff is enforced here rather than left to the prompt.
     // Reads (git status/diff) and `--abort` stay allowed.
     if (process.env.PI_AGENT_NAME === "git-expert" && isConflictResolutionCommand(command)) {
-      const lookup = listUnmergedFiles(resolveEffectiveCwd(command, ctx.cwd));
-      if (!lookup.ok) {
-        log.warn("conflict_lookup_failed", resolveEffectiveCwd(command, ctx.cwd));
+      // Which directory does git run in? A conditional branch, a completed
+      // subshell, or several invocations in one command have no single answer,
+      // and guessing wrong lets a resolution through. So ask every directory the
+      // command could reach: block if any is conflicted. Over-blocking costs a
+      // message; under-blocking costs the guard.
+      const { primary, all } = conflictCandidateDirs(command, ctx.cwd);
+      const primaryLookup = listUnmergedFiles(primary);
+      if (!primaryLookup.ok) {
+        log.warn("conflict_lookup_failed", primary);
         return {
           block: true,
           reason:
@@ -579,12 +588,17 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             `or delegate to the conflict-resolver agent (subagent(agent="conflict-resolver")).`,
         };
       }
-      if (lookup.files.length > 0) {
-        log.info("conflict_resolution_block", lookup.files.join(", "));
+      const conflicted: string[] = [];
+      for (const dir of all) {
+        const lookup = listUnmergedFiles(dir);
+        if (lookup.ok) for (const file of lookup.files) conflicted.push(`${dir}/${file}`);
+      }
+      if (conflicted.length > 0) {
+        log.info("conflict_resolution_block", conflicted.join(", "));
         return {
           block: true,
           reason:
-            `⛔ Unresolved conflicts in ${lookup.files.join(", ")}. Do not resolve them in git-expert — ` +
+            `⛔ Unresolved conflicts in ${conflicted.join(", ")}. Do not resolve them in git-expert — ` +
             `stop, report this message to the caller, and have it delegate to the conflict-resolver ` +
             `agent (subagent(agent="conflict-resolver")). To back out instead: ` +
             `git merge --abort / git rebase --abort / git cherry-pick --abort.`,

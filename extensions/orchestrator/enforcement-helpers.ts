@@ -91,57 +91,101 @@ function unquotedSegments(command: string): { text: string; start: number }[] {
     }
   }
   segments.push({ text: command.slice(start), start });
+  enfLog.debug("shell_segments", "count", segments.length);
   return segments;
 }
 
 /** The target of a `cd` at the start of a segment, honouring quoting and `~`. */
 function cdTargetIn(segment: string): string | null {
   const m = segment.match(/^[\s(]*cd\s+(.*)$/s);
-  if (!m) return null;
+  if (!m) {
+    enfLog.debug("cd_target_absent", "segment_head", segment.trim().slice(0, 24));
+    return null;
+  }
   let rest = m[1];
   const quote = rest[0];
   if (quote === "'" || quote === '"') {
     // A quoted target may contain spaces and parentheses — take it whole.
     const end = rest.indexOf(quote, 1);
-    if (end > 0) return rest.slice(1, end);
+    if (end > 0) {
+      enfLog.debug("cd_target_quoted", "target", rest.slice(1, end));
+      return rest.slice(1, end);
+    }
   }
   const unquoted = rest.split(/[\s;&|)]/)[0];
-  return unquoted ? unquoted.replace(/^['"]|['"]$/g, "") : null;
+  const target = unquoted ? unquoted.replace(/^['"]|['"]$/g, "") : null;
+  if (target) enfLog.debug("cd_target", "target", target);
+  return target;
+}
+
+/** Apply one directory change to a running directory. */
+function applyCd(dir: string, target: string): string {
+  if (target.startsWith("~/")) return join(process.env.HOME ?? "~", target.slice(2));
+  if (target === "~") return process.env.HOME ?? "~";
+  if (target.startsWith("/")) return target;
+  return join(dir, target);
+}
+
+/** The `-C <dir>` of a git segment, if it has one. */
+function gitCIn(segment: string): string | null {
+  const m = segment.match(/\bgit\b[\s\S]*?(?:\s)-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))/);
+  if (!m) return null;
+  return m[1] ?? m[2] ?? m[3];
+}
+
+/** Every directory git could plausibly run in, plus the best single guess. */
+export function conflictCandidateDirs(command: string, sessionCwd: string): { primary: string; all: string[] } {
+  const segments = unquotedSegments(command);
+  const dirs: string[] = [sessionCwd];
+  // Apply directory changes in shell order so chained relative cds compose.
+  let running = sessionCwd;
+  for (const seg of segments) {
+    const target = cdTargetIn(seg.text);
+    if (!target) continue;
+    running = applyCd(running, target);
+    dirs.push(running);
+  }
+  // `-C` beats whatever the shell was sitting in, and is relative to it.
+  let primary = running;
+  for (const seg of segments) {
+    const c = gitCIn(seg.text);
+    if (!c) continue;
+    primary = applyCd(running, c);
+    dirs.push(primary);
+  }
+  enfLog.debug("conflict_candidate_dirs", "primary", primary, "count", dirs.length);
+  return { primary, all: [...new Set(dirs)] };
 }
 
 /** Parse bash command for cd target to resolve the effective working directory (worktree support) */
 export function resolveEffectiveCwd(command: string, sessionCwd: string): string {
   // Quoting decides what is syntax, so segments are split outside quotes first.
-  // Then pick the LAST cd that precedes the git invocation — the directory git
-  // actually runs in. Two cases make the obvious implementations wrong:
-  //   (cd /clean && cd /conflicted && git add x)  → the later cd wins
+  // Then the LAST cd before the git invocation, applied in shell order so a
+  // chain of relative cds composes. Two cases make the obvious implementations
+  // wrong:
+  //   (cd clean && cd conflicted && git add x)  → the later cd wins
   //   cd /repo && git commit && cd /tmp          → a trailing cd must not
   // With no git invocation to anchor to, the first cd is used, which is the
   // conservative answer for `cd a && cd b && pytest`.
+  //
+  // A command that can run git in more than one directory (a conditional branch,
+  // a completed subshell, several invocations) has no single answer here. That
+  // is why conflict enforcement asks conflictCandidateDirs instead of trusting
+  // this function's guess.
   const segments = unquotedSegments(command);
   const gitIndex = segments.findIndex((s) => /\bgit\b/.test(s.text));
   const cdSegments = segments
     .map((s, i) => ({ i, target: cdTargetIn(s.text) }))
     .filter((c) => c.target !== null);
-  const anchor = gitIndex === -1 ? cdSegments[0] : cdSegments.filter((c) => c.i < gitIndex).pop() ?? cdSegments[0];
-  if (anchor?.target) {
-    const target = anchor.target;
-    const dir = target.startsWith("/") || target.startsWith("~")
-      ? target.replace(/^~/, process.env.HOME ?? "~")
-      : join(sessionCwd, target);
-    enfLog.debug("effective_cwd", "cd", target, "dir", dir);
-    return dir;
+  const anchors = gitIndex === -1 ? cdSegments.slice(0, 1) : cdSegments.filter((c) => c.i < gitIndex);
+  let dir = sessionCwd;
+  for (const a of anchors) {
+    if (a.target) dir = applyCd(dir, a.target);
   }
-  // Match: git -C /path/to/dir ...
-  const gitCMatch = command.match(/\bgit\s+-C\s+([^\s]+)/);
-  if (gitCMatch) {
-    const target = gitCMatch[1].replace(/['"]/g, "");
-    const dir = target.startsWith("/") ? target : join(sessionCwd, target);
-    enfLog.debug("effective_cwd", "git_C", target, "dir", dir);
-    return dir;
-  }
-  enfLog.debug("effective_cwd", "source", "session");
-  return sessionCwd;
+  const cTarget = gitIndex === -1 ? null : gitCIn(segments[gitIndex].text);
+  if (cTarget) dir = applyCd(dir, cTarget);
+  enfLog.debug("effective_cwd", "dir", dir, "source", cTarget ? "git_C" : anchors.length ? "cd" : "session", "cds", anchors.length);
+  return dir;
 }
 
 /** Auto-fix direct python commands (prepend uv run), block pip commands */

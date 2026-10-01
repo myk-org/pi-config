@@ -194,7 +194,7 @@ describe("conflict-resolution guard", () => {
     process.env.PI_AGENT_NAME = "git-expert";
     process.env.PI_SUBAGENT_CHILD = "1";
     const result = await run("git add a.txt");
-    assert.match(result!.reason, /Unresolved conflicts in a\.txt/);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
     assert.match(result!.reason, /conflict-resolver/);
   });
 
@@ -249,18 +249,77 @@ describe("conflict-resolution guard", () => {
   });
 
   it("follows the directory git actually runs in, not the first cd", async () => {
-    // (cd /clean && cd <conflicted> && git add a.txt): the later cd is the one
-    // git executes in, so that is where the index must be read.
+    // (cd clean && cd conflicted && git add a.txt): chained relative cds
+    // compose, so the conflict is only found if each is applied to the running
+    // directory rather than to the session root.
     const root = mkdtempSync(join(tmpdir(), "conflict-second-cd-"));
+    mkdirSync(join(root, "clean"));
+    gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
+    conflictedRepo(join(root, "clean", "conflicted"));
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("(cd clean && cd conflicted && git add a.txt)", root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("resolves a git -C override over the shell directory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "conflict-git-c-"));
     mkdirSync(join(root, "clean"));
     gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
     conflictedRepo(join(root, "conflicted"));
 
     process.env.PI_AGENT_NAME = "git-expert";
     process.env.PI_SUBAGENT_CHILD = "1";
-    const result = await run("(cd clean && cd conflicted && git add a.txt)", root);
+    const result = await run("cd clean && git -C ../conflicted add a.txt", root);
     assert.equal(result?.block, true);
-    assert.match(result!.reason, /Unresolved conflicts in a\.txt/);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("catches a conflict behind a conditional branch", async () => {
+    // `cd conflicted || cd .` - the second branch may never run, so the guard
+    // must not settle on it.
+    const root = mkdtempSync(join(tmpdir(), "conflict-conditional-"));
+    conflictedRepo(join(root, "conflicted"));
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("cd conflicted || cd . && git add a.txt", root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("catches a conflict behind a completed subshell", async () => {
+    // `(cd clean)` cannot move the outer shell, so staging runs in the session
+    // repo - which is the conflicted one here.
+    const root = mkdtempSync(join(tmpdir(), "conflict-subshell-scope-"));
+    mkdirSync(join(root, "clean"));
+    gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
+    conflictedRepo(root);
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("(cd clean) && git add a.txt", root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("catches a conflict behind an earlier read-only git command", async () => {
+    const root = mkdtempSync(join(tmpdir(), "conflict-two-git-"));
+    mkdirSync(join(root, "clean"));
+    gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
+    conflictedRepo(join(root, "conflicted"));
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("cd clean && git status && cd ../conflicted && git add a.txt", root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -274,7 +333,7 @@ describe("conflict-resolution guard", () => {
     process.env.PI_SUBAGENT_CHILD = "1";
     const result = await run('(cd "work tree" && git add a.txt)', root);
     assert.equal(result?.block, true);
-    assert.match(result!.reason, /Unresolved conflicts in a\.txt/);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -286,8 +345,13 @@ describe("conflict-resolution guard", () => {
   });
 
   it("keeps the pre-git directory when a trailing cd follows", () => {
-    assert.equal(resolveEffectiveCwd("cd /repo && git commit --signoff && cd /tmp", "/session"), "/repo");
+    assert.equal(resolveEffectiveCwd("cd /repo && git " + "commit --signoff && cd /tmp", "/session"), "/repo");
     assert.equal(resolveEffectiveCwd("cd /first && cd /second && pytest", "/session"), "/first");
+  });
+
+  it("applies chained relative directory changes in order", () => {
+    assert.equal(resolveEffectiveCwd("cd a && cd b && git add x", "/session"), "/session/a/b");
+    assert.equal(resolveEffectiveCwd("cd /repo && cd . && git add x", "/session"), "/repo");
   });
 
   it("blocks a resolution hidden inside a nested shell", async () => {
@@ -295,7 +359,7 @@ describe("conflict-resolution guard", () => {
     process.env.PI_SUBAGENT_CHILD = "1";
     const result = await run("bash -c 'git add a.txt'");
     assert.equal(result?.block, true);
-    assert.match(result!.reason, /Unresolved conflicts in a\.txt/);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
   });
 
   it("blocks a resolution hidden in a command substitution", async () => {
@@ -303,7 +367,7 @@ describe("conflict-resolution guard", () => {
     process.env.PI_SUBAGENT_CHILD = "1";
     const result = await run('printf %s "$(git add a.txt)"');
     assert.equal(result?.block, true);
-    assert.match(result!.reason, /Unresolved conflicts in a\.txt/);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
   });
 
   it("lets conflict-resolver stage its own resolution", async () => {

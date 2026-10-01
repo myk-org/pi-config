@@ -21,8 +21,9 @@ Declares what is actually code-enforced versus prompt-only. A tier is about
 - Conflict handoff: in `git-expert`, `git add` / `git restore` / `git rm` / `git checkout --ours|--theirs` /
   `merge|rebase|cherry-pick --continue` are blocked while `git ls-files --unmerged` is non-empty, with a
   message pointing at the `conflict-resolver` agent (`isConflictResolutionCommand`, `listUnmergedFiles`);
-  `resolveEffectiveCwd` resolves quoting before boundaries and picks the `cd` preceding the git
-  invocation, so the check inspects the directory the command runs in; an unreadable index fails closed
+  `resolveEffectiveCwd` resolves quoting before boundaries and applies chained `cd`s in shell order, with
+  `git -C` overriding both; conflict enforcement additionally asks `conflictCandidateDirs` and blocks when
+  *any* directory the command could reach is conflicted, failing closed when the best guess is unreadable
 
 Inventory a project’s code-tier memories:
 
