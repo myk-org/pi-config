@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import tomllib
 from argparse import ArgumentParser
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -105,14 +105,14 @@ def _skill_notice(docs_dir: Path, home: Path | None = None) -> str | None:
 def _find_review_config(docs_dir: Path) -> Path | None:
     """Nearest ``.pr_agent.toml`` at or above ``docs_dir``, or None.
 
-    Searched on the *lexical* path, not the resolved one. main() resolves
-    ``--docs-dir`` for file operations, which would walk away from the repo when
-    ``docs/`` is a symlink to a directory elsewhere, and one level is not enough
-    when docs live deeper (``website/docs``). The review tool reads the config at
-    the repo root, so the nearest config at or above the docs dir is the one that
-    governs this build.
+    Searched on the path main() hands it (see :func:`_lexical_docs_dir`), not on
+    the raw argument: a docs dir nested deeper (``website/docs``) needs more than
+    one level of walking, a symlinked ``docs/`` must not walk out of the repo, and
+    a ``..`` that crosses a symlink has to follow the build. The review tool reads
+    the config at the repo root, so the nearest config at or above the docs dir is
+    the one that governs this build.
     """
-    for candidate in _review_config_candidates(docs_dir):
+    for candidate in (docs_dir, *docs_dir.parents):
         config = candidate / REVIEW_CONFIG
         if config.is_file():
             log.debug("review_notice: config=%s", config)
@@ -121,24 +121,33 @@ def _find_review_config(docs_dir: Path) -> Path | None:
     return None
 
 
-def _lexical_docs_dir(docs_dir: Path) -> Path:
-    """``docs_dir`` made absolute, ``..`` collapsed, symlinks left intact.
+def _lexical_docs_dir(docs_dir: Path, on_disk: Path | None = None) -> Path:
+    """``docs_dir`` made absolute, ``..`` collapsed, symlinks normally left intact.
 
     Absolute because a relative --docs-dir makes every path below it relative
     too, and the printed review globs have to be repo-relative; ``..`` collapsed
     because those globs must be the files' real repo-relative paths rather than
     ``subdir/../docs/...``; not resolved because resolving is exactly what loses
-    the repo when docs/ is a symlink. normpath is purely lexical, so it collapses
-    ``..`` without touching the symlinks resolve() would follow.
+    the repo when docs/ is a symlink.
+
+    One exception: ``os.path.normpath`` collapses ``..`` *textually*, so with a
+    symlink before it (``--docs-dir docs/..`` where docs -> elsewhere) it names a
+    different directory than the one the build writes into. When the filesystem
+    disagrees, the directory the files land in wins -- config discovery and the
+    written site must not be two different places.
     """
     start = docs_dir if docs_dir.is_absolute() else Path.cwd() / docs_dir
-    return Path(os.path.normpath(start))
-
-
-def _review_config_candidates(docs_dir: Path) -> Iterator[Path]:
-    """docs_dir and its parents, absolute, symlinks intact."""
-    start = _lexical_docs_dir(docs_dir)
-    yield from (start, *start.parents)
+    normalized = Path(os.path.normpath(start))
+    target = on_disk if on_disk is not None else start.resolve()
+    crossed = normalized != start and target != normalized
+    log.debug(
+        "review_notice: docs_dir=%s normalized=%s on_disk=%s symlink_crossed=%s",
+        docs_dir,
+        normalized,
+        target,
+        crossed,
+    )
+    return target if crossed else normalized
 
 
 def _ignore_globs(ignore: object) -> list[str]:
@@ -264,8 +273,10 @@ def _review_notice(docs_dir: Path, generated: Sequence[str], config: Path, on_di
     if not missing:
         return None
     # json.dumps renders a TOML-compatible array of basic strings, so the line
-    # can be pasted into the config as it is.
-    suggestion = json.dumps(_review_patterns(on_disk or docs_dir, generated, _glob_literal(prefix)))
+    # can be pasted into the config as it is. Escaping happens once, inside
+    # _review_patterns: escaping the prefix here too would double it, and a
+    # docs directory named docs[1] would stop matching its own files.
+    suggestion = json.dumps(_review_patterns(on_disk or docs_dir, generated, prefix))
     where = f"{prefix}/" if prefix else "the docs root"
     head = (
         f"pi-docsite: {len(missing)} generated file(s) under {where} are not excluded from AI review, "
@@ -659,10 +670,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{len(order)} pages, {len(written)} files, {sum(s for _, s in written)} B total")
     # args.docs_dir, not DOCS_DIR: the resolved path walks out of the repo when
     # docs/ is a symlink, and the review config sits beside the symlink.
-    review_config = _find_review_config(args.docs_dir)
+    review_config = _find_review_config(_lexical_docs_dir(args.docs_dir, DOCS_DIR))
     review_notice = (
         _review_notice(
-            _lexical_docs_dir(args.docs_dir),
+            _lexical_docs_dir(args.docs_dir, DOCS_DIR),
             [name for name, _ in written] + copied_assets,
             review_config,
             on_disk=DOCS_DIR,

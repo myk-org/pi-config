@@ -366,6 +366,63 @@ def test_review_notice_omits_the_dot_prefix_when_docs_is_the_repo_root(tmp_path:
     assert generate_docs._review_notice(tmp_path, GENERATED, config) is None
 
 
+def test_review_notice_escapes_metacharacters_in_the_docs_directory(tmp_path: Path) -> None:
+    # Same escaping requirement one level up: the docs directory itself may
+    # contain brackets. The prefix is escaped exactly once - escaping it before
+    # handing it over and again inside the pattern builder is what made the
+    # suggestion stop matching its own directory.
+    docs = tmp_path / "docs[1]"
+    docs.mkdir()
+    (docs / "404.html").write_text("<html><body>Not found</body></html>\n", encoding="utf-8")
+    (docs / "alpha.html").write_text("<html><body>kept</body></html>\n", encoding="utf-8")
+    config = _review_config(tmp_path, "[config]\n")
+
+    notice = generate_docs._review_notice(docs, ["index.html", "search-index.json"], config)
+    assert notice is not None
+    assert '"docs[[]1[]]/index.html"' in notice
+    assert (tmp_path / "docs[1]" / "404.html").as_posix() not in notice
+
+    covered = tmp_path / "covered.toml"
+    array = notice.split("\n\n", 1)[1].removeprefix("[ignore]\nglob = ").strip()
+    covered.write_text(f"[ignore]\nglob = {array}\n", encoding="utf-8")
+    assert generate_docs._review_notice(docs, ["index.html", "search-index.json"], covered) is None
+
+
+def test_review_notice_follows_a_parent_component_across_a_symlink(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # docs/ -> /outside/site, built with --docs-dir docs/.. : the files land in
+    # /outside, so that is the directory whose config governs them. Collapsing the
+    # ".." textually would search the repo instead and report paths the review
+    # tool never sees.
+    outside = tmp_path / "outside"
+    (outside / "site").mkdir(parents=True)
+    (outside / "site" / "alpha.md").write_text(FRONT + "# Alpha\n\nBody of alpha.\n", encoding="utf-8")
+    (outside / ".pr_agent.toml").write_text("[config]\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "docs").symlink_to(outside / "site")
+    monkeypatch.chdir(repo)
+
+    with caplog.at_level(logging.DEBUG, logger="pi_docsite.generate"):
+        assert generate_docs.main(["--docs-dir", "docs/.."]) == 0
+
+    # The config that governs the written directory is the one beside it, and the
+    # globs are relative to that config's directory - no "..", no repo prefix.
+    out = capsys.readouterr().out
+    assert '"*.html"' in out
+    assert ".." not in out
+    assert any("symlink_crossed=True" in record.getMessage() for record in caplog.records)
+
+    array = out.split("[ignore]\nglob = ", 1)[1].split("\n", 1)[0]
+    (outside / ".pr_agent.toml").write_text(f"[ignore]\nglob = {array}\n", encoding="utf-8")
+    assert generate_docs.main(["--docs-dir", "docs/.."]) == 0
+    assert "[ignore]" not in capsys.readouterr().out
+
+
 def test_review_notice_escapes_glob_metacharacters_in_page_names(tmp_path: Path) -> None:
     # A page may be called guide[1].html. Unescaped, the brackets are a
     # character class and the suggestion stops matching the file it was meant to
