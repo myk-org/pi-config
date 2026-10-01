@@ -70,27 +70,34 @@ describe("search.js", () => {
 	});
 
 	it("does not send the reader round the retry loop on an access denial", async () => {
-		// 403 (and 401) are permanent: waiting does not lift an access
-		// restriction, so retry advice would be as wrong as rebuild advice.
-		const asset = loadAsset("search.js", { fetch: async () => errorResponse(403) });
+		// 401/403 and the other permanent 4xx are not fixed by waiting: retry
+		// advice there sends the reader round a loop that never ends.
+		for (const status of [401, 403, 400, 410]) {
+			const asset = loadAsset("search.js", { fetch: async () => errorResponse(status) });
 
-		search(asset, "quick");
-		await asset.flush();
+			search(asset, "quick");
+			await asset.flush();
 
-		const text = resultText(asset);
-		assert.match(text, /HTTP 403/);
-		assert.match(text, /access/i);
-		assert.doesNotMatch(text, /Try again/i);
-		assert.doesNotMatch(text, /rebuild/i);
+			const text = resultText(asset);
+			assert.match(text, new RegExp(`HTTP ${status}`), `status ${status} is reported`);
+			assert.match(text, /access/i, `status ${status} gets access guidance`);
+			assert.doesNotMatch(text, /Try again/i, `status ${status} must not get retry advice`);
+		}
 	});
 
-	it("keeps retry advice for a transient server failure", async () => {
-		const asset = loadAsset("search.js", { fetch: async () => errorResponse(503) });
+	it("keeps retry advice for a transient response", async () => {
+		// 408 and 429 are the explicit exceptions in the client range: both clear
+		// on their own, so they get the retry message, not the access one.
+		for (const status of [408, 429, 500, 503]) {
+			const asset = loadAsset("search.js", { fetch: async () => errorResponse(status) });
 
-		search(asset, "quick");
-		await asset.flush();
+			search(asset, "quick");
+			await asset.flush();
 
-		assert.match(resultText(asset), /Try again shortly/);
+			const text = resultText(asset);
+			assert.match(text, /Try again shortly/, `status ${status} is retryable`);
+			assert.doesNotMatch(text, /access/i, `status ${status} must not get access advice`);
+		}
 	});
 
 	it("distinguishes a network or parse failure from a server error", async () => {

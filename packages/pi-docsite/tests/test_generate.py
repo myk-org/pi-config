@@ -369,7 +369,9 @@ def test_review_notice_omits_the_dot_prefix_when_docs_is_the_repo_root(tmp_path:
 def test_review_notice_escapes_glob_metacharacters_in_page_names(tmp_path: Path) -> None:
     # A page may be called guide[1].html. Unescaped, the brackets are a
     # character class and the suggestion stops matching the file it was meant to
-    # exclude, so the notice comes back on every build.
+    # exclude, so the notice comes back on every build. The coverage check must
+    # keep using the *literal* path, or the escaped suggestion would never match
+    # it and the notice could not be silenced at all.
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "404.html").write_text("<html><body>Not found</body></html>\n", encoding="utf-8")
@@ -381,6 +383,36 @@ def test_review_notice_escapes_glob_metacharacters_in_page_names(tmp_path: Path)
     assert '"docs/guide[[]1[]].html"' in notice
     # The escaped pattern matches the literal file, which is what silences it.
     assert fnmatch.fnmatch("docs/guide[1].html", "docs/guide[[]1[]].html")
+
+    covered = tmp_path / "covered.toml"
+    array = notice.split("\n\n", 1)[1].removeprefix("[ignore]\nglob = ").strip()
+    covered.write_text(f"[ignore]\nglob = {array}\n", encoding="utf-8")
+    assert generate_docs._review_notice(docs, generated, covered) is None
+
+
+def test_review_notice_collapses_parent_components_in_the_docs_path(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # --docs-dir ../docs from a subdirectory, and docs/../docs, are ordinary
+    # invocations. The suggested globs must still be the files' repo-relative
+    # paths, not subdir/../docs/*.html.
+    _setup(tmp_path, monkeypatch, ["alpha"])
+    (tmp_path / ".pr_agent.toml").write_text("[config]\n", encoding="utf-8")
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    monkeypatch.chdir(subdir)
+
+    assert generate_docs.main(["--docs-dir", "../docs"]) == 0
+
+    out = capsys.readouterr().out
+    assert '"docs/*.html"' in out
+    assert ".." not in out
+
+    # And the suggestion silences the notice when pasted.
+    array = out.split("[ignore]\nglob = ", 1)[1].split("\n", 1)[0]
+    (tmp_path / ".pr_agent.toml").write_text(f"[ignore]\nglob = {array}\n", encoding="utf-8")
+    assert generate_docs.main(["--docs-dir", "../docs"]) == 0
+    assert "[ignore]" not in capsys.readouterr().out
 
 
 def test_review_notice_finds_the_config_above_a_nested_docs_dir(tmp_path: Path) -> None:

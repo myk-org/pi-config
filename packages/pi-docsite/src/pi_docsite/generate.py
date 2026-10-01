@@ -15,6 +15,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -121,13 +122,17 @@ def _find_review_config(docs_dir: Path) -> Path | None:
 
 
 def _lexical_docs_dir(docs_dir: Path) -> Path:
-    """``docs_dir`` made absolute, symlinks left intact.
+    """``docs_dir`` made absolute, ``..`` collapsed, symlinks left intact.
 
     Absolute because a relative --docs-dir makes every path below it relative
-    too, and the printed review globs have to be repo-relative; not resolved
-    because resolving is exactly what loses the repo when docs/ is a symlink.
+    too, and the printed review globs have to be repo-relative; ``..`` collapsed
+    because those globs must be the files' real repo-relative paths rather than
+    ``subdir/../docs/...``; not resolved because resolving is exactly what loses
+    the repo when docs/ is a symlink. normpath is purely lexical, so it collapses
+    ``..`` without touching the symlinks resolve() would follow.
     """
-    return docs_dir if docs_dir.is_absolute() else Path.cwd() / docs_dir
+    start = docs_dir if docs_dir.is_absolute() else Path.cwd() / docs_dir
+    return Path(os.path.normpath(start))
 
 
 def _review_config_candidates(docs_dir: Path) -> Iterator[Path]:
@@ -169,13 +174,22 @@ def _glob_literal(text: str) -> str:
     return "".join(f"[{char}]" if char in GLOB_META else char for char in text)
 
 
-def _join(prefix: str, name: str) -> str:
-    """Repo-relative path for a generated file, with no ``./`` and no empty part."""
-    literal = _glob_literal(name)
-    return f"{prefix}/{literal}" if prefix else literal
+def _repo_path(prefix: str, name: str) -> str:
+    """Repo-relative path of a generated file, with no ``./`` and no empty part.
+
+    Unescaped: this is the literal string the review tool matches, and what its
+    globs have to be tested against. Escaping here would compare a pattern
+    against its own escaped spelling, and the notice would never go quiet.
+    """
+    return f"{prefix}/{name}" if prefix else name
 
 
-def _review_patterns(on_disk: Path, generated: Sequence[str], prefix: str) -> list[str]:
+def _glob_path(prefix: str, name: str) -> str:
+    """The same path as a pattern that matches it literally and nothing else."""
+    return _glob_literal(_repo_path(prefix, name))
+
+
+def _review_patterns(on_disk: Path, generated: Sequence[str], glob_prefix: str) -> list[str]:
     """Repo-relative review-exclusion patterns covering exactly what was generated.
 
     One pattern per generated file, except HTML: ``docs/*.html`` is the compact
@@ -185,14 +199,20 @@ def _review_patterns(on_disk: Path, generated: Sequence[str], prefix: str) -> li
     would hide the repo's own file from review along with the generated ones.
     Assets are always named one by one for the same reason: docs/assets/ is a
     shared directory a repo may add its own files to.
+
+    Every literal component goes through :func:`_glob_literal`, because a page
+    may legitimately be called ``guide[1].html`` and unescaped brackets are a
+    character class that matches something else.
     """
     html = [name for name in generated if name.endswith(".html")]
     owned = {Path(name).name for name in html}
     preserved = [path.name for path in sorted(on_disk.glob("*.html")) if path.name not in owned]
     patterns: list[str] = (
-        [f"{prefix}/*.html" if prefix else "*.html"] if not preserved else [_join(prefix, name) for name in html]
+        [f"{glob_prefix}/*.html" if glob_prefix else "*.html"]
+        if not preserved
+        else [_glob_path(glob_prefix, name) for name in html]
     )
-    patterns += [_join(prefix, name) for name in generated if not name.endswith(".html")]
+    patterns += [_glob_path(glob_prefix, name) for name in generated if not name.endswith(".html")]
     return patterns
 
 
@@ -229,21 +249,23 @@ def _review_notice(docs_dir: Path, generated: Sequence[str], config: Path, on_di
     globs = _ignore_globs(ignore)
 
     # Empty when the docs dir IS the config's directory: `docs/./index.html` is
-    # not what the review tool matches against, `index.html` is.
+    # not what the review tool matches against, `index.html` is. Literal parts:
+    # these are the paths themselves, and only the printed patterns escape them.
     try:
-        prefix = "/".join(_glob_literal(part) for part in docs_dir.relative_to(root).parts)
+        parts = docs_dir.relative_to(root).parts
     except ValueError:
-        prefix = _glob_literal(docs_dir.as_posix())
+        parts = (docs_dir.as_posix(),)
+    prefix = "/".join(parts)
     # Repo-relative paths -- the same strings the review tool matches globs
     # against, so a user's own patterns cover them exactly as they would here.
-    targets = [_join(prefix, name) for name in generated]
+    targets = [_repo_path(prefix, name) for name in generated]
     missing = [path for path in targets if not any(fnmatch.fnmatch(path, glob) for glob in globs)]
     log.debug("review_notice: config=%s generated=%d missing=%s", config, len(targets), missing)
     if not missing:
         return None
     # json.dumps renders a TOML-compatible array of basic strings, so the line
     # can be pasted into the config as it is.
-    suggestion = json.dumps(_review_patterns(on_disk or docs_dir, generated, prefix))
+    suggestion = json.dumps(_review_patterns(on_disk or docs_dir, generated, _glob_literal(prefix)))
     where = f"{prefix}/" if prefix else "the docs root"
     head = (
         f"pi-docsite: {len(missing)} generated file(s) under {where} are not excluded from AI review, "
