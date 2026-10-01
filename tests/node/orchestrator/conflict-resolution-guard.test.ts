@@ -191,6 +191,11 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand("cat <<'x git add'\nbody\nx git add"), false);
   });
 
+  it("classifies a command split by a line continuation", () => {
+    assert.equal(isConflictResolutionCommand("git \\\n  add a.txt"), true);
+    assert.equal(isConflictResolutionCommand("git \\\n  status"), false);
+  });
+
   it("classifies a nested shell script argument", () => {
     for (const cmd of ["bash -c 'git add a.txt'", "sh -c \"git add a.txt\"", "eval 'git rm a.txt'"]) {
       assert.equal(isConflictResolutionCommand(cmd), true, cmd);

@@ -514,9 +514,19 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
   const add = (s: string) => { out += s; };
   let substitutions = 0;
   let heredocs = 0;
+  let continuations = 0;
 
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i];
+
+    // A backslash-newline is a line continuation: the shell removes both, so
+    // "git \\<newline>add x" is "git add x". Emitting the pair would hide the
+    // subcommand from the matcher, which requires whitespace between them.
+    if (ch === "\\" && cmd[i + 1] === "\n") {
+      continuations++;
+      i++;
+      continue;
+    }
 
     // Heredoc opener: remember the delimiter, keep scanning the same line.
     if (ch === "<" && cmd[i + 1] === "<") {
@@ -615,7 +625,7 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
 
     if (keepLiterals) add(ch);
   }
-  gitLog.debug("shell_scan", "depth", depth, "mode", mode, "heredocs", heredocs, "substitutions", substitutions);
+  gitLog.debug("shell_scan", "depth", depth, "mode", mode, "heredocs", heredocs, "substitutions", substitutions, "continuations", continuations);
   return out;
 }
 
