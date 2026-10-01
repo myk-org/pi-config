@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import tomllib
 from argparse import ArgumentParser
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -51,14 +52,10 @@ log = logging.getLogger("pi_docsite.generate")
 # that list changes shape.
 EXAMPLE_SKILL_DEST = Path.home() / ".pi" / "agent" / "skills" / "pi-docsite"
 
-# The review config this generator knows how to check, and the generated output
-# it should not be asked to review. Scoped to Qodo Merge / PR-Agent because its
-# `[ignore] glob` key is the one the notice can both read (tomllib) and verify.
+# The review config this generator knows how to check. Scoped to Qodo Merge /
+# PR-Agent because its `[ignore] glob` key is the one the notice can both read
+# (tomllib) and verify.
 REVIEW_CONFIG = ".pr_agent.toml"
-# Names under the docs dir, relative to it. Deliberately narrow: the .md
-# sources and nav.json are the repo's own work and stay in review scope, so a
-# blanket docs/** would hide the project's documentation from review.
-REVIEW_EXCLUDE_NAMES = ("*.html", "assets/*", "llms.txt", "llms-full.txt", "search-index.json")
 
 
 def _agent_skill_dirs(home: Path) -> tuple[Path, ...]:
@@ -104,7 +101,75 @@ def _skill_notice(docs_dir: Path, home: Path | None = None) -> str | None:
     )
 
 
-def _review_notice(docs_dir: Path) -> str | None:
+def _find_review_config(docs_dir: Path) -> Path | None:
+    """Nearest ``.pr_agent.toml`` at or above ``docs_dir``, or None.
+
+    Searched on the *lexical* path, not the resolved one. main() resolves
+    ``--docs-dir`` for file operations, which would walk away from the repo when
+    ``docs/`` is a symlink to a directory elsewhere, and one level is not enough
+    when docs live deeper (``website/docs``). The review tool reads the config at
+    the repo root, so the nearest config at or above the docs dir is the one that
+    governs this build.
+    """
+    for candidate in _review_config_candidates(docs_dir):
+        config = candidate / REVIEW_CONFIG
+        if config.is_file():
+            log.debug("review_notice: config=%s", config)
+            return config
+    log.debug("review_notice: no %s at or above %s", REVIEW_CONFIG, docs_dir)
+    return None
+
+
+def _review_config_candidates(docs_dir: Path) -> Iterator[Path]:
+    """docs_dir and its parents, absolute, symlinks intact.
+
+    Absolute because a relative --docs-dir makes every path below it relative
+    too, and the globs have to be repo-relative; not resolved because resolving
+    is exactly what loses the repo when docs/ is a symlink.
+    """
+    start = docs_dir if docs_dir.is_absolute() else Path.cwd() / docs_dir
+    yield from (start, *start.parents)
+
+
+def _ignore_globs(ignore: object) -> list[str]:
+    """The ``[ignore].glob`` patterns, dropping anything that is not a string.
+
+    TOML happily holds ``glob = "docs/*.html"`` (a bare string) or ``glob = [1]``.
+    Passing those to fnmatch either raises -- which would abort the build after
+    the site is already written -- or matches character by character and mutes
+    the notice. Neither shape is reviewable config, so neither is honoured.
+    """
+    raw = ignore.get("glob") if isinstance(ignore, dict) else None
+    if not isinstance(raw, list):
+        if raw is not None:
+            log.debug("review_notice: ignoring non-list [ignore].glob: %r", raw)
+        return []
+    globs = [entry for entry in raw if isinstance(entry, str)]
+    if len(globs) != len(raw):
+        log.debug("review_notice: ignoring non-string [ignore].glob entries: %r", raw)
+    return globs
+
+
+def _review_patterns(docs_dir: Path, generated: Sequence[str], prefix: str) -> list[str]:
+    """Repo-relative review-exclusion patterns covering exactly what was generated.
+
+    One pattern per generated file, except HTML: ``docs/*.html`` is the compact
+    form and is only safe while every HTML file in the directory belongs to this
+    generator. A repo may keep a hand-written ``404.html`` or a verification
+    page -- the generator deliberately preserves those -- and a blanket pattern
+    would hide the repo's own file from review along with the generated ones.
+    Assets are always named one by one for the same reason: docs/assets/ is a
+    shared directory a repo may add its own files to.
+    """
+    html = [name for name in generated if name.endswith(".html")]
+    owned = {Path(name).name for name in html}
+    preserved = [path.name for path in sorted(docs_dir.glob("*.html")) if path.name not in owned]
+    patterns: list[str] = [f"{prefix}/*.html"] if not preserved else [f"{prefix}/{name}" for name in html]
+    patterns += [f"{prefix}/{name}" for name in generated if not name.endswith(".html")]
+    return patterns
+
+
+def _review_notice(docs_dir: Path, generated: Sequence[str], config: Path) -> str | None:
     """One pointer at the review config when the generated site is still in scope.
 
     A consuming repo commits the generated site, so an AI reviewer comments on
@@ -113,45 +178,51 @@ def _review_notice(docs_dir: Path) -> str | None:
     names the ignore list, and returns None (silence) once the config already
     covers every generated file. A notice that nags after the user complied is
     worse than no notice.
+
+    ``generated`` is what *this build* wrote, not everything matching a pattern:
+    the generator preserves HTML it did not write, and that difference decides
+    whether a blanket pattern is safe to recommend.
     """
-    config = docs_dir.parent / REVIEW_CONFIG
-    if not config.is_file():
-        log.debug("review_notice: no %s next to %s", REVIEW_CONFIG, docs_dir)
-        return None
+    root = config.parent
     try:
         with config.open("rb") as handle:
-            ignore = tomllib.load(handle).get("ignore", {})
+            parsed = tomllib.load(handle)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         # Unreadable config: say nothing rather than guess. The build output is
         # already on screen, and a wrong suggestion about a config this
         # generator cannot parse is noise.
         log.debug("review_notice: could not read %s: %s", config, exc)
         return None
-    globs = ignore.get("glob", []) if isinstance(ignore, dict) else []
+    ignore = parsed.get("ignore")
+    globs = _ignore_globs(ignore)
 
     try:
-        prefix = docs_dir.relative_to(config.parent).as_posix()
+        prefix = docs_dir.relative_to(root).as_posix()
     except ValueError:
         prefix = docs_dir.as_posix()
-    # What the generator actually wrote, as repo-relative paths -- the same
-    # strings the review tool matches its globs against.
-    generated = [
-        path.relative_to(config.parent).as_posix()
-        for pattern in REVIEW_EXCLUDE_NAMES
-        for path in sorted(docs_dir.glob(pattern))
-    ]
-    missing = [path for path in generated if not any(fnmatch.fnmatch(path, glob) for glob in globs)]
-    log.debug("review_notice: config=%s generated=%d missing=%s", config, len(generated), missing)
+    # Repo-relative paths -- the same strings the review tool matches globs
+    # against, so a user's own patterns cover them exactly as they would here.
+    targets = [f"{prefix}/{name}" for name in generated]
+    missing = [path for path in targets if not any(fnmatch.fnmatch(path, glob) for glob in globs)]
+    log.debug("review_notice: config=%s generated=%d missing=%s", config, len(targets), missing)
     if not missing:
         return None
     # json.dumps renders a TOML-compatible array of basic strings, so the line
     # can be pasted into the config as it is.
-    suggestion = json.dumps([f"{prefix}/{name}" for name in REVIEW_EXCLUDE_NAMES])
-    return (
+    suggestion = json.dumps(_review_patterns(docs_dir, generated, prefix))
+    head = (
         f"pi-docsite: {len(missing)} generated file(s) under {prefix}/ are not excluded from AI review, "
-        f"and the reviewer will report findings in output this generator owns. Add to {REVIEW_CONFIG} "
-        f"(keep the .md and nav.json sources in scope):\n\n"
-        f"[ignore]\nglob = {suggestion}\n"
+        f"and the reviewer will report findings in output this generator owns. "
+    )
+    if isinstance(ignore, dict):
+        # A second [ignore] table makes the TOML invalid, and the parse-failure
+        # branch above would then silence this notice for good.
+        return (
+            f"{head}Add these patterns to the existing [ignore].glob list in {REVIEW_CONFIG} "
+            f"(keep the .md and nav.json sources in scope):\n\n# inside [ignore].glob:\n{suggestion}\n"
+        )
+    return (
+        f"{head}Add to {REVIEW_CONFIG} (keep the .md and nav.json sources in scope):\n\n[ignore]\nglob = {suggestion}\n"
     )
 
 
@@ -438,9 +509,13 @@ def main(argv: list[str] | None = None) -> int:
 
     assets_dir = DOCS_DIR / "assets"
     assets_dir.mkdir(exist_ok=True)
+    copied_assets: list[str] = []
     for static_file in sorted(renderer.STATIC_DIR.iterdir()):
         if static_file.is_file():
             shutil.copy2(static_file, assets_dir / static_file.name)
+            # Tracked by name, not globbed later: docs/assets/ is shared with
+            # whatever else a repo keeps there, and only these files are ours.
+            copied_assets.append(f"assets/{static_file.name}")
 
     written: list[tuple[str, int]] = []
 
@@ -525,9 +600,18 @@ def main(argv: list[str] | None = None) -> int:
     for name in stale:
         print(f"   removed  {name}")
     print(f"{len(order)} pages, {len(written)} files, {sum(s for _, s in written)} B total")
-    for notice in (_skill_notice(DOCS_DIR), _review_notice(DOCS_DIR)):
-        if notice:
-            print(notice)
+    # args.docs_dir, not DOCS_DIR: the resolved path walks out of the repo when
+    # docs/ is a symlink, and the review config sits beside the symlink.
+    review_config = _find_review_config(args.docs_dir)
+    review_notice = (
+        _review_notice(DOCS_DIR, [name for name, _ in written] + copied_assets, review_config)
+        if review_config
+        else None
+    )
+    notices = [notice for notice in (_skill_notice(DOCS_DIR), review_notice) if notice]
+    log.debug("main: printed %d notice(s)", len(notices))
+    for notice in notices:
+        print(notice)
     return 0
 
 

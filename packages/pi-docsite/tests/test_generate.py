@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import tomllib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -203,77 +204,155 @@ def test_published_packages_declare_a_readme() -> None:
         assert (root / rel).parent.joinpath(readme).is_file(), f"{rel} points at a missing {readme}"
 
 
-def _review_config(docs: Path, body: str) -> Path:
-    config = docs.parent / generate_docs.REVIEW_CONFIG
+# What one build of a two-page site writes: the pages, the copied assets and the
+# three root-level files. _review_notice is given this list explicitly, because
+# "what this build wrote" is exactly the contract under test.
+GENERATED = ["index.html", "alpha.html", "assets/style.css", "assets/search.js", "llms.txt", "search-index.json"]
+
+
+def _review_config(root: Path, body: str) -> Path:
+    config = root / generate_docs.REVIEW_CONFIG
     config.write_text(body, encoding="utf-8")
     return config
 
 
-def test_review_notice_is_silent_without_a_review_config(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    docs = _setup(tmp_path, monkeypatch, ["alpha"])
-    assert generate_docs._review_notice(docs) is None
+def _notice(docs: Path, generated: Sequence[str] = GENERATED) -> str | None:
+    config = generate_docs._find_review_config(docs)
+    assert config is not None, "no review config found for the test"
+    return generate_docs._review_notice(docs, generated, config)
 
 
-def test_review_notice_names_the_ignore_globs_when_generated_files_are_in_scope(
-    tmp_path: Path, monkeypatch: MonkeyPatch
-) -> None:
-    docs = _setup(tmp_path, monkeypatch, ["alpha"])
-    _review_config(docs, "[config]\nadd_repo_metadata = true\n")
-    assert generate_docs.main([]) == 0
+def test_review_notice_is_silent_without_a_review_config(tmp_path: Path) -> None:
+    assert generate_docs._find_review_config(tmp_path / "docs") is None
 
-    notice = generate_docs._review_notice(docs)
+
+def test_review_notice_names_the_patterns_when_generated_files_are_in_scope(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    _review_config(tmp_path, "[config]\nadd_repo_metadata = true\n")
+
+    notice = _notice(docs)
     assert notice is not None
     assert "[ignore]" in notice
+    # HTML is the compact pattern while nothing else in the directory is hand-written.
     assert '"docs/*.html"' in notice
-    assert '"docs/assets/*"' in notice
+    # Assets and root files are named one by one: docs/assets/ is shared.
+    assert '"docs/assets/style.css"' in notice
     assert '"docs/llms.txt"' in notice
-    assert '"docs/llms-full.txt"' in notice
     assert '"docs/search-index.json"' in notice
     # The .md sources are the repo's own work and must stay in review scope.
     assert "docs/*.md" not in notice
 
 
-def test_review_notice_is_silent_once_the_config_covers_the_generated_files(
-    tmp_path: Path, monkeypatch: MonkeyPatch
-) -> None:
-    docs = _setup(tmp_path, monkeypatch, ["alpha"])
-    assert generate_docs.main([]) == 0
-    _review_config(
-        docs,
-        '[ignore]\nglob = ["docs/*.html", "docs/assets/*", "docs/llms.txt",'
-        ' "docs/llms-full.txt", "docs/search-index.json"]\n',
+def test_review_notice_keeps_preserved_html_in_review(tmp_path: Path) -> None:
+    # A repo may keep a hand-written 404.html or a verification page -- the
+    # generator preserves both -- so a blanket docs/*.html would hide them too.
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "404.html").write_text("<html><body>Not found</body></html>\n", encoding="utf-8")
+    _review_config(tmp_path, "[config]\n")
+
+    notice = _notice(docs)
+    assert notice is not None
+    assert '"docs/*.html"' not in notice
+    assert '"docs/index.html"' in notice
+    assert "404.html" not in notice
+
+
+def test_review_notice_tells_the_user_to_merge_into_an_existing_table(tmp_path: Path) -> None:
+    # A second [ignore] table is invalid TOML, and the parse-failure branch would
+    # then silence this notice for good.
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    _review_config(tmp_path, '[ignore]\nglob = ["vendor/*"]\n')
+
+    notice = _notice(docs)
+    assert notice is not None
+    assert "existing [ignore].glob list" in notice
+    # The suggestion must paste into a config that already has the table, keeping
+    # the existing entry: the result still parses and still silences the notice.
+    array = notice.split("\n\n", 1)[1].removeprefix("# inside [ignore].glob:\n").strip()
+    merged = tmp_path / "merged.toml"
+    merged.write_text(f'[ignore]\nglob = ["vendor/*", {array[1:-1]}]\n', encoding="utf-8")
+    parsed = tomllib.loads(merged.read_text(encoding="utf-8"))["ignore"]["glob"]
+    assert parsed[0] == "vendor/*"
+    assert "docs/*.html" in parsed
+    assert generate_docs._review_notice(docs, GENERATED, merged) is None
+
+
+def test_review_notice_is_silent_once_the_config_covers_the_generated_files(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    config = _review_config(
+        tmp_path,
+        '[ignore]\nglob = ["docs/*.html", "docs/assets/*", "docs/llms.txt", "docs/search-index.json"]\n',
     )
-    assert generate_docs._review_notice(docs) is None
+    assert generate_docs._review_notice(docs, GENERATED, config) is None
 
 
-def test_review_notice_ignores_an_unrelated_ignore_list(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    docs = _setup(tmp_path, monkeypatch, ["alpha"])
-    assert generate_docs.main([]) == 0
+def test_review_notice_ignores_an_unrelated_ignore_list(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
     # Basename-only globs match repo-relative paths, so this covers nothing.
-    _review_config(docs, '[ignore]\nglob = ["*.html", "llms.txt"]\n')
-    assert generate_docs._review_notice(docs) is not None
+    _review_config(tmp_path, '[ignore]\nglob = ["*.html", "llms.txt"]\n')
+    assert _notice(docs) is not None
     # docs/** does cover the generated files (fnmatch: * spans "/"), so a repo
-    # that chose the blunt option is left alone -- the notice is about
-    # coverage, not about taste.
-    _review_config(docs, '[ignore]\nglob = ["docs/**"]\n')
-    assert generate_docs._review_notice(docs) is None
+    # that chose the blunt option is left alone -- the notice is about coverage,
+    # not about taste.
+    _review_config(tmp_path, '[ignore]\nglob = ["docs/**"]\n')
+    assert _notice(docs) is None
 
 
-def test_review_notice_stays_quiet_on_an_unparsable_config(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    docs = _setup(tmp_path, monkeypatch, ["alpha"])
-    _review_config(docs, "not = = toml\n")
-    assert generate_docs._review_notice(docs) is None
+@pytest.mark.parametrize("glob", ["1", '"docs/*.html"', "true"])
+def test_review_notice_survives_an_unusable_glob_value(tmp_path: Path, glob: str) -> None:
+    # None of these shapes is reviewable config. Matched blindly, [1] raises
+    # TypeError after the site is written and a bare string matches character by
+    # character -- the worst outcome, a build that aborts or a notice that never
+    # comes back.
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    _review_config(tmp_path, f"[ignore]\nglob = {glob}\n")
+    assert _notice(docs) is not None
 
 
-def test_review_notice_debug_log_carries_the_missing_files(
-    tmp_path: Path, monkeypatch: MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    docs = _setup(tmp_path, monkeypatch, ["alpha"])
-    assert generate_docs.main([]) == 0
-    _review_config(docs, '[ignore]\nglob = ["docs/*.html"]\n')
+def test_review_notice_stays_quiet_on_an_unparsable_config(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    config = _review_config(tmp_path, "not = = toml\n")
+    assert generate_docs._review_notice(docs, GENERATED, config) is None
+
+
+def test_review_notice_finds_the_config_beside_a_symlinked_docs_dir(tmp_path: Path) -> None:
+    # main() resolves --docs-dir for file operations; the config still sits next
+    # to the symlink, which is what the review tool reads.
+    elsewhere = tmp_path / "elsewhere" / "site"
+    elsewhere.mkdir(parents=True)
+    (tmp_path / "docs").symlink_to(elsewhere)
+    config = _review_config(tmp_path, "[config]\n")
+
+    assert generate_docs._find_review_config(tmp_path / "docs") == config
+
+
+def test_review_notice_finds_the_config_above_a_nested_docs_dir(tmp_path: Path) -> None:
+    docs = tmp_path / "website" / "docs"
+    docs.mkdir(parents=True)
+    config = _review_config(tmp_path, "[config]\n")
+
+    assert generate_docs._find_review_config(docs) == config
+    notice = generate_docs._review_notice(docs, GENERATED, config)
+    # The globs are matched against repo-relative paths, so the prefix is the
+    # docs dir's own location under the repo root, not "docs".
+    assert notice is not None
+    assert '"website/docs/*.html"' in notice
+
+
+def test_review_notice_debug_log_carries_the_missing_files(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    config = _review_config(tmp_path, '[ignore]\nglob = ["docs/*.html"]\n')
 
     with caplog.at_level(logging.DEBUG, logger="pi_docsite.generate"):
-        assert generate_docs._review_notice(docs) is not None
+        assert generate_docs._review_notice(docs, GENERATED, config) is not None
     message = caplog.records[-1].getMessage()
     assert "docs/llms.txt" in message
     assert "docs/alpha.html" not in message
@@ -283,8 +362,20 @@ def test_main_prints_the_review_notice_beside_the_summary(
     tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     docs = _setup(tmp_path, monkeypatch, ["alpha"])
-    _review_config(docs, "[config]\n")
+    _review_config(docs.parent, "[config]\n")
 
     assert generate_docs.main([]) == 0
 
-    assert "[ignore]" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "[ignore]" in out
+    assert '"docs/alpha.html"' in out or '"docs/*.html"' in out
+
+
+def test_main_says_nothing_when_the_repo_has_no_review_config(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _setup(tmp_path, monkeypatch, ["alpha"])
+
+    assert generate_docs.main([]) == 0
+
+    assert "[ignore]" not in capsys.readouterr().out

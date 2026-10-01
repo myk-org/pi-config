@@ -19,6 +19,11 @@
   // inline mode; served over HTTP this is not an issue.
   var index = Array.isArray(window.__DOCS_SEARCH_INDEX__) ? window.__DOCS_SEARCH_INDEX__ : null;
   var indexError = null;
+  // HTTP status when a response actually arrived, null when the request never
+  // completed (offline, DNS, CORS) or the body was not JSON. The two are not the
+  // same failure: a 500 or a dropped connection says nothing about the index
+  // file, so the reader must not be told to rebuild because of one.
+  var indexStatus = null;
   // Opening the file straight off disk is the one case CORS blocks, and so the
   // one case where "serve the site over HTTP" is the remedy. Over HTTP a failed
   // fetch means a missing or corrupt search-index.json, and telling the reader
@@ -26,7 +31,7 @@
   var onFileProtocol = location.protocol === 'file:';
   if (!index) {
     fetch('search-index.json').then(function(r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (!r.ok) { indexStatus = r.status; throw new Error('HTTP ' + r.status); }
       return r.json();
     }).then(function(data) {
       index = data;
@@ -39,7 +44,9 @@
       console.error('[docs] search index unavailable:', err,
         onFileProtocol
           ? '— serve the site over HTTP, or build it with the search index inlined.'
-          : '— search-index.json is missing or invalid; rebuild the site.');
+          : (indexStatus
+              ? '— the server answered HTTP ' + indexStatus + ' for search-index.json; the index may be fine.'
+              : '— search-index.json could not be fetched or parsed; check the network and rebuild if it persists.'));
       // Same reason as the success path: a query typed while the request was
       // pending would otherwise stay on "Loading search index..." forever, now
       // that the request has failed.
@@ -107,8 +114,12 @@
         err.textContent = 'Loading search index...';
       } else if (onFileProtocol) {
         err.textContent = 'Search needs the site served over HTTP (opening the file directly blocks it).';
+      } else if (indexStatus === 404) {
+        err.textContent = 'Search index not found — rebuild the site.';
+      } else if (indexStatus) {
+        err.textContent = 'Search index unavailable (HTTP ' + indexStatus + '). Try again shortly.';
       } else {
-        err.textContent = 'Search index could not be loaded (search-index.json is missing or invalid).';
+        err.textContent = 'Search index could not be loaded (network error or invalid index).';
       }
       results.appendChild(err);
       return;

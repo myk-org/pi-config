@@ -53,8 +53,38 @@ describe("search.js", () => {
 		search(asset, "quick");
 		await asset.flush();
 
-		assert.match(resultText(asset), /index/i);
+		assert.match(resultText(asset), /not found/i);
 		assert.doesNotMatch(resultText(asset), /No results found/);
+	});
+
+	it("does not tell the reader to rebuild when the server failed", async () => {
+		// A 500 says nothing about the index file: it may be perfectly intact.
+		const asset = loadAsset("search.js", { fetch: async () => errorResponse(500) });
+
+		search(asset, "quick");
+		await asset.flush();
+
+		const text = resultText(asset);
+		assert.match(text, /HTTP 500/);
+		assert.doesNotMatch(text, /rebuild/i);
+	});
+
+	it("distinguishes a network or parse failure from a server error", async () => {
+		const network = loadAsset("search.js", {
+			fetch: async () => {
+				throw new TypeError("Failed to fetch");
+			},
+		});
+		search(network, "quick");
+		await network.flush();
+		const networkText = resultText(network);
+
+		const server = loadAsset("search.js", { fetch: async () => errorResponse(503) });
+		search(server, "quick");
+		await server.flush();
+
+		assert.match(networkText, /could not be loaded/i);
+		assert.notStrictEqual(networkText, resultText(server));
 	});
 
 	it("records malformed JSON as a load failure", async () => {
