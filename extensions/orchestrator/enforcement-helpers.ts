@@ -104,7 +104,18 @@ function unquotedSegments(command: string): ShellSegment[] {
       conditional = two === "||";
       i++;
       start = i + 1;
-    } else if (ch === ";" || ch === "|" || ch === "\n") {
+    } else if (ch === "\n") {
+      // An unterminated quote cannot survive a line break in practice; drop the
+      // state so one stray apostrophe cannot blind the directory parser for the
+      // rest of the command.
+      if (quote) {
+        enfLog.debug("quote_reset_at_newline", "char", quote);
+        quote = null;
+      }
+      push(i, start, false);
+      conditional = false;
+      start = i + 1;
+    } else if (ch === ";" || ch === "|") {
       push(i, start, false);
       conditional = false;
       start = i + 1;

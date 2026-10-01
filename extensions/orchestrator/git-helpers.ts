@@ -626,6 +626,18 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
       continue;
     }
 
+    // Inside a double-quoted span or a heredoc body an apostrophe is an ordinary
+    // character - "it's" is not a quote. Treating it as one swallowed the
+    // substitutions that follow, e.g. printf %s "it's $(git add a.txt)".
+    if (ch === "'" && !keepLiterals) {
+      if (keepSubstitutions) {
+        const end = cmd.indexOf("'", i + 1);
+        add(` ${executableText(cmd.slice(i + 1, end === -1 ? cmd.length : end), depth + 1, "body")} `);
+        i = end === -1 ? cmd.length : end;
+      }
+      continue;
+    }
+
     // ANSI-C quoting: $'…' — literal, but still a script argument to `sh -c`.
     const ansi = ch === "$" && cmd[i + 1] === "'";
     if (ansi || ch === "'") {
@@ -635,8 +647,10 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
       // A quoted part glued to adjacent text is part of the same shell word
       // (`g'add'` is `gadd`, `git''` is `git`), so it must be concatenated. Only
       // a standalone quoted argument collapses to a placeholder.
-      // `$'…'` is its own word — the `$` is a token, not glued text.
-      const glued = !ansi && start > 0 && !/[\s;&|(]/.test(cmd[start - 1]);
+      // `$'…'` is its own word — the `$` is a token, not glued text. An
+      // unterminated quote is not glued either: bash reports an unexpected EOF
+      // and runs nothing, so the tail must not be read as a command.
+      const glued = !ansi && end !== -1 && start > 0 && !/[\s;&|(]/.test(cmd[start - 1]);
       if (isScriptArgument(cmd, start)) {
         if (keepSubstitutions) add(` ${executableText(content, depth + 1)} `);
         else add(" _ ");

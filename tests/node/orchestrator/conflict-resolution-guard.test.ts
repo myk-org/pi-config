@@ -206,6 +206,18 @@ describe("conflict-resolution guard", () => {
     assert.equal(conflictCandidateDirs('git -C "my repo" add x', "/root").all.join(","), "/root,/root/my repo");
   });
 
+  it("reads an apostrophe inside a double-quoted span as a character", () => {
+    // `it's` is not a quote; the substitution after it still runs.
+    assert.equal(isConflictResolutionCommand('printf %s "it\'s $(git add a.txt)"'), true);
+    assert.equal(isConflictResolutionCommand('echo "it\'s fine"'), false);
+    assert.equal(isConflictResolutionCommand("cat <<'EOF'\nit's $(git add a.txt)\nEOF"), false);
+  });
+
+  it("classifies nothing after an unterminated quote, as bash does", () => {
+    // bash reports an unexpected EOF and runs nothing, so neither do we.
+    assert.equal(isConflictResolutionCommand("echo can't && git add a.txt"), false);
+  });
+
   it("treats a here-string as data, not a heredoc", () => {
     assert.equal(isConflictResolutionCommand('cat <<<"git add a.txt"'), false);
     assert.equal(isConflictResolutionCommand("cat <<< 'git add a.txt'"), false);
