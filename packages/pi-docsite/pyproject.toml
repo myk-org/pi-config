@@ -9,6 +9,7 @@ name = "pi-docsite"
 # published a wheel whose metadata disagreed with its own tag.
 dynamic = ["version"]
 description = "Deterministic static documentation site generator for Markdown projects"
+readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.14"
 dependencies = ["markdown>=3.11", "jinja2>=3.1.6", "pygments>=2.21.0"]
