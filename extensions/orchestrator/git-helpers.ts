@@ -515,6 +515,7 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
   let substitutions = 0;
   let heredocs = 0;
   let continuations = 0;
+  let comments = 0;
 
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i];
@@ -525,6 +526,16 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
     if (ch === "\\" && cmd[i + 1] === "\n") {
       continuations++;
       i++;
+      continue;
+    }
+
+    // A `#` at the start of a word begins a comment: nothing after it runs, so a
+    // heredoc-looking token inside one must not swallow the lines below.
+    if (ch === "#" && (i === 0 || /[\s;&|(]/.test(cmd[i - 1]))) {
+      let end = cmd.indexOf("\n", i);
+      if (end === -1) end = cmd.length;
+      comments++;
+      i = end;
       continue;
     }
 
@@ -638,7 +649,7 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
 
     if (keepLiterals) add(ch);
   }
-  gitLog.debug("shell_scan", "depth", depth, "mode", mode, "heredocs", heredocs, "substitutions", substitutions, "continuations", continuations);
+  gitLog.debug("shell_scan", "depth", depth, "mode", mode, "heredocs", heredocs, "substitutions", substitutions, "continuations", continuations, "comments", comments);
   return out;
 }
 

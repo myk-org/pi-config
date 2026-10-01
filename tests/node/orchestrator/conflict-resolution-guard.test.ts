@@ -191,6 +191,15 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand("cat <<'x git add'\nbody\nx git add"), false);
   });
 
+  it("does not treat a heredoc token in a comment as an opener", () => {
+    const cmd = "# see <<EOF\ngit add a.txt\nEOF";
+    assert.equal(isConflictResolutionCommand(cmd), true);
+  });
+
+  it("ignores staging mentioned only inside a comment", () => {
+    assert.equal(isConflictResolutionCommand("git status # remember to git add a.txt"), false);
+  });
+
   it("classifies a git name split by adjacent quotes", () => {
     for (const cmd of ["git'' add a.txt", "g''it add a.txt", "git 'add' a.txt", 'git "add" a.txt']) {
       assert.equal(isConflictResolutionCommand(cmd), true, cmd);
