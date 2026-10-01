@@ -488,7 +488,9 @@ function isScriptArgument(cmd: string, at: number): boolean {
     }
     i--;
   }
-  const command = words[i] ?? "";
+  // Compare the executable's name, so /bin/bash and /usr/bin/env-less paths
+  // resolve the same as a bare `bash`.
+  const command = (words[i] ?? "").split("/").pop() ?? "";
   if (command === "eval" || command === "source" || command === ".") return true;
   if (!SHELL_NAMES.has(command)) return false;
   // A bare `bash 'script'` is a script file, not a script string.

@@ -191,6 +191,12 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand("cat <<'x git add'\nbody\nx git add"), false);
   });
 
+  it("classifies a path-qualified shell script argument", () => {
+    assert.equal(isConflictResolutionCommand("/bin/bash -c 'git add a.txt'"), true);
+    assert.equal(isConflictResolutionCommand("/usr/bin/env bash -c 'git add a.txt'"), true);
+    assert.equal(isConflictResolutionCommand("/bin/bash -c 'git status'"), false);
+  });
+
   it("treats a here-string as data, not a heredoc", () => {
     assert.equal(isConflictResolutionCommand('cat <<<"git add a.txt"'), false);
     assert.equal(isConflictResolutionCommand("cat <<< 'git add a.txt'"), false);
