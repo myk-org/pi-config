@@ -469,6 +469,11 @@ describe("conflict-resolution guard", () => {
     const viaOption = await run("git --git-dir=/somewhere/.git --work-tree=/somewhere add a.txt", root);
     assert.equal(viaOption?.block, true);
     assert.match(viaOption!.reason, /--git-dir/);
+
+    // A path the shell expands is not something the guard can check.
+    const viaVariable = await run('git -C "$REPO" add a.txt', root);
+    assert.equal(viaVariable?.block, true);
+    assert.match(viaVariable!.reason, /expanded by the shell/);
     rmSync(root, { recursive: true, force: true });
   });
 

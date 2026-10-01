@@ -315,8 +315,12 @@ function gitIndexOverride(command: string): string | null {
 export function conflictCandidateDirs(
   command: string,
   sessionCwd: string,
-): { all: string[]; envOverride: string | null } {
+): { all: string[]; envOverride: string | null; dynamicPath: string | null } {
   const envOverride = gitIndexOverride(command);
+  // A path the shell expands at run time — `$DIR`, `$(pwd)`, a glob — cannot be
+  // checked here, so it is reported rather than resolved to a literal.
+  const dynamic = (p: string) => /[$*?[\]{}]/.test(p);
+  let dynamicPath: string | null = null;
   const dirs = new Set<string>();
   // running[d] is the directory of the shell at paren depth d.
   const running: string[] = [sessionCwd];
@@ -331,6 +335,7 @@ export function conflictCandidateDirs(
     if (running.length > seg.depth + 1) running.length = seg.depth + 1;
     while (running.length <= seg.depth) running.push(running[running.length - 1]);
     const target = cdTargetIn(seg.text);
+    if (target && dynamic(target) && !dynamicPath) dynamicPath = target;
     if (target) {
       if (seg.conditional) {
         // Behind a short-circuit the cd may never run, so the directory the
@@ -346,14 +351,15 @@ export function conflictCandidateDirs(
       // Git applies each -C in turn, each relative to the previous one.
       let cursor = base;
       for (const c of gitCsIn(seg.text)) {
+        if (dynamic(c) && !dynamicPath) dynamicPath = c;
         cursor = applyCd(cursor, c);
         dirs.add(cursor);
       }
     }
   }
   const all = [...dirs];
-  enfLog.debug("conflict_candidate_dirs", "count", all.length, "env_override", envOverride ?? "none");
-  return { all, envOverride };
+  enfLog.debug("conflict_candidate_dirs", "count", all.length, "env_override", envOverride ?? "none", "dynamic_path", dynamicPath ?? "none");
+  return { all, envOverride, dynamicPath };
 }
 
 /** Parse bash command for cd target to resolve the effective working directory (worktree support) */

@@ -576,7 +576,17 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       // and guessing wrong lets a resolution through. So ask every directory the
       // command could reach: block if any is conflicted. Over-blocking costs a
       // message; under-blocking costs the guard.
-      const { all, envOverride } = conflictCandidateDirs(command, ctx.cwd);
+      const { all, envOverride, dynamicPath } = conflictCandidateDirs(command, ctx.cwd);
+      if (dynamicPath) {
+        // The shell expands this path at run time, so there is nothing to check.
+        return {
+          block: true,
+          reason:
+            `⛔ ${dynamicPath} is expanded by the shell, so the repository it selects cannot be verified. ` +
+            "Do not resolve conflicts in git-expert — abort and delegate to the " +
+            `conflict-resolver agent (subagent(agent="conflict-resolver")).`,
+        };
+      }
       if (envOverride) {
         // GIT_DIR/GIT_WORK_TREE can point the index anywhere. Rather than
         // guess which repository it selects, refuse.
