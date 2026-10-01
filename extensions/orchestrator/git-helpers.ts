@@ -413,6 +413,7 @@ export function hasGitSub(command: string, sub: string): boolean {
  * `conflicted\ repo` is one word and `-c core.editor="vim -f"` is one option.
  */
 export function tokenize(text: string): string[] {
+  gitLog.debug("tokenize", "chars", text.length);
   const tokens: string[] = [];
   let current = "";
   let quote: string | null = null;
