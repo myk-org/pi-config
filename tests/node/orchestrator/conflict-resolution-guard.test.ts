@@ -437,6 +437,45 @@ describe("conflict-resolution guard", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("reads an escaped space in a -C value", async () => {
+    const root = mkdtempSync(join(tmpdir(), "conflict-escaped-c-"));
+    gitIn(root, ["init", "-q", "-b", "main"]);
+    writeFileSync(join(root, "keep.txt"), "clean\n");
+    gitIn(root, ["add", "keep.txt"]);
+    gitIn(root, ["commit", "-qm", "clean"]);
+    conflictedRepo(join(root, "conflicted repo"));
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("git -C conflicted\\ repo add a.txt", root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Unresolved conflicts in .*a\.txt/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("refuses when one candidate repository cannot be read", async () => {
+    // A readable candidate elsewhere must not excuse an unreadable target.
+    const root = mkdtempSync(join(tmpdir(), "conflict-partial-read-"));
+    gitIn(root, ["init", "-q", "-b", "main"]);
+    writeFileSync(join(root, "keep.txt"), "clean\n");
+    gitIn(root, ["add", "keep.txt"]);
+    gitIn(root, ["commit", "-qm", "clean"]);
+    const other = join(root, "other");
+    mkdirSync(other);
+    gitIn(other, ["init", "-q", "-b", "main"]);
+    writeFileSync(join(other, "keep.txt"), "clean\n");
+    gitIn(other, ["add", "keep.txt"]);
+    gitIn(other, ["commit", "-qm", "clean"]);
+    writeFileSync(join(other, ".git", "index"), "not an index");
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("git -C other add keep.txt", root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /Could not read the unmerged index/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("allows staging where there is no repository yet", async () => {
     // `git init && git add -A` has nothing to conflict with.
     const fresh = mkdtempSync(join(tmpdir(), "conflict-fresh-"));

@@ -601,22 +601,31 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       }
       const conflicted: string[] = [];
       let readable = 0;
+      const unreadable: string[] = [];
       for (const dir of all) {
         const lookup = listUnmergedFiles(dir);
-        if (!lookup.ok) continue;
+        if (!lookup.ok) {
+          // An unreadable repository is unknown, not clean — but a directory that
+          // is not a repository has no index to be unknown about.
+          if (isInsideGitWorkTree(dir)) unreadable.push(dir);
+          continue;
+        }
         readable++;
         // Paths are repo-relative; the directory names the repository checked.
         for (const file of lookup.files) conflicted.push(dir === ctx.cwd ? file : `${dir} → ${file}`);
       }
-      if (conflicted.length === 0 && readable === 0 && all.some((dir) => isInsideGitWorkTree(dir))) {
-        // Inside a repository whose index will not answer, so nothing was checked.
-        // A directory that is not a repository at all (`git init && git add -A`)
-        // has no conflicts to protect and is left alone.
-        log.warn("conflict_lookup_failed", all.join(", "));
+      // Any unreadable repository means the command may be staging into a state
+      // nobody checked, so it is refused — not excused because another candidate
+      // happened to answer.
+      if (conflicted.length === 0 && unreadable.length > 0) {
+        // A repository whose index will not answer: the conflict state there is
+        // unknown, so it is refused. A directory that is not a repository at all
+        // has no index to be unknown about and is never in this list.
+        log.warn("conflict_lookup_failed", unreadable.join(", "));
         return {
           block: true,
           reason:
-            "⛔ Could not read the unmerged index in any candidate directory, so the conflict state is " +
+            `⛔ Could not read the unmerged index in ${unreadable.join(", ")}, so the conflict state is ` +
             "unknown. Refusing to run a resolution command blind: run `git status` to see where you are, " +
             `or delegate to the conflict-resolver agent (subagent(agent="conflict-resolver")).`,
         };

@@ -7,7 +7,7 @@ import { createLogger } from "../shared/logger.js";
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
-import { DANGEROUS, executableText, getCurrentBranch, hasGitSub } from "./git-helpers.js";
+import { DANGEROUS, executableText, getCurrentBranch, hasGitSub, tokenize } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
 enfLog.debug("enforcement-helpers module loaded");
@@ -194,35 +194,6 @@ function applyCd(dir: string, target: string): string {
   else next = join(dir, target);
   enfLog.debug("apply_cd", "from", dir, "target", target, "to", next);
   return next;
-}
-
-/**
- * Split a segment into shell words, honouring quotes.
- */
-function tokenize(text: string): string[] {
-  const tokens: string[] = [];
-  let current = "";
-  let quote: string | null = null;
-  let has = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (quote) {
-      if (ch === quote) quote = null;
-      else current += ch;
-      continue;
-    }
-    if (ch === "'" || ch === '"') { quote = ch; has = true; continue; }
-    if (/\s/.test(ch)) {
-      if (has) tokens.push(current);
-      current = "";
-      has = false;
-      continue;
-    }
-    current += ch;
-    has = true;
-  }
-  if (has) tokens.push(current);
-  return tokens;
 }
 
 /**

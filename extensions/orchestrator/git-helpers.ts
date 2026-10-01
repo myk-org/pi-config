@@ -409,6 +409,37 @@ export function hasGitSub(command: string, sub: string): boolean {
 }
 
 /**
+ * Split a shell segment into words, honouring quotes and backslash escapes, so
+ * `conflicted\ repo` is one word and `-c core.editor="vim -f"` is one option.
+ */
+export function tokenize(text: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  let has = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; has = true; continue; }
+    if (ch === "\\" && i + 1 < text.length) { current += text[i + 1]; i++; continue; }
+    if (/\s/.test(ch)) {
+      if (has) tokens.push(current);
+      current = "";
+      has = false;
+      continue;
+    }
+    current += ch;
+    has = true;
+  }
+  if (has) tokens.push(current);
+  return tokens;
+}
+
+/**
  * The shell part of a command: what it would actually run.
  *
  * Quoted text is not automatically inert — `bash -c 'git add x'`,
@@ -426,7 +457,7 @@ type ScanMode = "full" | "words" | "body" | "literal-body";
  * did not see everything. Callers must treat it as "not safe to allow" rather
  * than as absence of a command.
  */
-const UNSCANNED = " unscanned-nesting ";
+const UNSCANNED = "\u0000unscanned-nesting\u0000";
 
 const SHELL_NAMES = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 
@@ -523,11 +554,22 @@ export function executableText(cmd: string, depth = 0, mode: ScanMode = "full"):
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i];
 
-    // A backslash-newline is a line continuation: the shell removes both, so
-    // "git \\<newline>add x" is "git add x". Emitting the pair would hide the
-    // subcommand from the matcher, which requires whitespace between them.
-    if (ch === "\\" && cmd[i + 1] === "\n") {
-      continuations++;
+    // A backslash escapes whatever follows: `conflicted\ repo` is one word with
+    // a space, and a backslash before a newline is a continuation the shell
+    // removes entirely. Leaving either in place breaks word splitting - which is
+    // how `git -C conflicted\ repo add` hid its subcommand from the matcher.
+    if (ch === "\\" && i + 1 < cmd.length) {
+      if (cmd[i + 1] === "\n") {
+        continuations++;
+        i++;
+        continue;
+      }
+      // The escape is kept: `conflicted\ repo` is one word, and the tokenizer
+      // downstream is what knows that. Stripping it here would turn it into two.
+      if (keepLiterals) {
+        add(ch);
+        add(cmd[i + 1]);
+      }
       i++;
       continue;
     }
@@ -719,27 +761,29 @@ const GIT_EXECUTORS = new Set([
 ]);
 
 /**
- * The parts of `cmd` where git actually runs: a git token that is a segment's
- * command word, or one that follows a word which executes what comes after it.
- * An argument that merely names git — `echo git add a.txt` — is not a command.
+ * The word lists of every git invocation that actually runs: a git token that is
+ * a segment's command word, or one that follows a word which executes what comes
+ * after it. An argument that merely names git - `echo git add a.txt` - is not a
+ * command. Words are kept as tokens and never rejoined: an option value may hold
+ * an escaped space, and joining would split it back into two words.
  */
-function executedGitText(cmd: string): string {
-  const kept: string[] = [];
+function executedGitCommands(cmd: string): string[][] {
+  const kept: string[][] = [];
   for (const raw of cmd.split(/[\n;&|()]+/)) {
-    const words = raw.trim().split(/\s+/).filter(Boolean);
+    const words = tokenize(raw.trim());
     let k = 0;
     while (k < words.length && (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]))) k++;
     if (k >= words.length) continue;
     if (words[k] === "git") {
-      kept.push(words.slice(k).join(" "));
+      kept.push(words.slice(k));
     } else if (GIT_EXECUTORS.has(words[k])) {
       // The wrapper runs the rest, so any git token in the segment counts.
       for (let i = k + 1; i < words.length; i++) {
-        if (words[i] === "git") kept.push(words.slice(i).join(" "));
+        if (words[i] === "git") kept.push(words.slice(i));
       }
     }
   }
-  return kept.join(" ; ");
+  return kept;
 }
 
 export function isConflictResolutionCommand(command: string): boolean {
@@ -751,29 +795,48 @@ export function isConflictResolutionCommand(command: string): boolean {
     gitLog.warn("conflict_command_unscanned", "depth_limit", 6);
     return true;
   }
-  const cmd = executedGitText(scanned);
-  // An unknown word where the subcommand belongs - a shell variable, or a
-  // placeholder left by a quoted argument - could be `add`, `rm` or `restore`
-  // once the shell resolves it. `action=add; git "$action" a.txt` stages, so
-  // an unreadable subcommand is treated as a resolution.
-  if (/\bgit\b(?:\s+-\S+)*\s+(?:_|\S*\$\S*)/.test(cmd)) {
-    gitLog.warn("conflict_command_dynamic_subcommand", "matches", true);
-    return true;
-  }
   // Every one of these clears an unmerged entry, which is picking a side:
-  //   git add / git rm / git restore      stage the working tree as-is
-  //   git checkout MERGE_HEAD -- <path>   take one side by name
-  //   git reset [-- <path>]               drop the index entry
-  //   ... --continue / --skip / --quit    advance past the conflicted commit
+  //   git add / git rm / git restore   stage the working tree as-is
+  //   git reset                       drop the index entry
+  //   git checkout <side flags>       take one side, by flag or by revision
+  //   <sequencer> --continue/--skip   advance past the conflicted commit
   // `--abort` is deliberately absent: it backs out rather than resolving.
-  const matches =
-    hasGitSub(cmd, "add") ||
-    hasGitSub(cmd, "restore") ||
-    hasGitSub(cmd, "rm") ||
-    hasGitSub(cmd, "reset") ||
-    /\bgit\b[\s\S]*\bcheckout\b[\s\S]*(?:--(?:ours|theirs|mine)\b|\s-m\b|\s--\s)/.test(cmd) ||
-    /\bgit\b[\s\S]*\b(merge|rebase|cherry-pick|revert|am)\b[\s\S]*--(?:continue|skip|quit)\b/.test(cmd);
-  // Subcommand names only — never the command text, which can carry secrets.
+  //
+  // Subcommands come from the token stream, not from a `git ... add` pattern: an
+  // option value may contain a space, so `git -C conflicted\ repo add` is `add`
+  // with a two-word value, which no regex over the raw line can see past.
+  const STAGE_SUBCOMMANDS = new Set(["add", "rm", "restore", "reset"]);
+  const SEQUENCERS = new Set(["merge", "rebase", "cherry-pick", "revert", "am"]);
+  let matches = false;
+  for (const words of executedGitCommands(scanned)) {
+    let k = 1;
+    // Skip git's global options: a bare `-C` or `-c` consumes the next word,
+    // while a short option with an attached value does not.
+    while (k < words.length && words[k].startsWith("-") && words[k] !== "-") {
+      const tok = words[k];
+      const attached = tok.length > 2 && !tok.startsWith("--") ? true : tok.includes("=");
+      if (!attached && words[k + 1] && !words[k + 1].startsWith("-")) k += 2;
+      else k += 1;
+    }
+    const sub = words[k] || "";
+    const rest = words.slice(k + 1).join(" ");
+    // A subcommand the scanner could not read could be any of them.
+    if (sub === "_" || sub.includes("$")) {
+      gitLog.warn("conflict_command_dynamic_subcommand", "matches", true);
+      matches = true;
+      break;
+    }
+    if (
+      STAGE_SUBCOMMANDS.has(sub) ||
+      // A side flag, `-m` to re-merge, or `-- <path>` after a revision — each
+      // takes one side of the conflict.
+      (sub === "checkout" && /(^|\s)(?:--(?:ours|theirs|mine)\b|-m\b|--(?:\s|$))/.test(rest)) ||
+      (SEQUENCERS.has(sub) && /--(?:continue|skip|quit)\b/.test(rest))
+    ) {
+      matches = true;
+      break;
+    }
+  }
   gitLog.debug("conflict_command_classified", "matches", matches);
   return matches;
 }
