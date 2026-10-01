@@ -31,7 +31,7 @@ function validateSessionCronTask(task: unknown): asserts task is CronTask {
   const value = task as CronTask;
   if (!value || typeof value !== "object" || typeof value.id !== "string" || !value.id || typeof value.description !== "string" || typeof value.task !== "string" || !value.task.trim() || !Number.isFinite(value.createdAt)) throw new Error("Invalid session cron task");
   validateSchedule({ interval_seconds: value.intervalMs === undefined ? undefined : value.intervalMs / 1000, at_hour: value.atHour, at_minute: value.atMinute });
-  if (value.model !== undefined && !parseModelOverride(value.model)) throw new Error("Invalid session cron model");
+  if (value.model !== undefined && (typeof value.model !== "string" || !parseModelOverride(value.model))) throw new Error("Invalid session cron model");
   if ((value.lastRun !== undefined && !Number.isFinite(value.lastRun)) || (value.nextRun !== undefined && !Number.isFinite(value.nextRun))) throw new Error("Invalid session cron timestamp");
 }
 function writeSessionTasks(file: string, tasks: Iterable<CronTask>) {
@@ -71,9 +71,10 @@ function validateSchedule(details: any) {
 }
 /** Normalize a "provider/model-id" or "model-id" override; undefined means inherit. */
 function normalizeModel(spec: unknown): string | undefined {
-  if (typeof spec !== "string" || !spec.trim()) return undefined;
+  if (typeof spec !== "string" || !spec.trim()) { log.debug("cron_model_absent", { reason: typeof spec === "string" ? "blank" : "missing" }); return undefined; }
   const parsed = parseModelOverride(spec);
-  if (!parsed) throw new Error('model must be "provider/model-id" or "model-id"');
+  if (!parsed) { log.warn("cron_model_rejected", { spec: spec.slice(0, 120) }); throw new Error('model must be "provider/model-id" or "model-id"'); }
+  log.debug("cron_model_normalized", { spec: spec.trim().slice(0, 120), provider: parsed.provider, model: parsed.model });
   return parsed.provider ? `${parsed.provider}/${parsed.model}` : parsed.model!;
 }
 function nextDelay(task: CronTask) { if (task.intervalMs) return task.intervalMs; const target = new Date(); target.setHours(task.atHour!, task.atMinute!, 0, 0); if (+target <= Date.now()) target.setDate(target.getDate() + 1); return +target - Date.now(); }
@@ -134,9 +135,11 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
         log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost_before_dispatch" });
         election(); return;
       }
-      // explicit outranks parentProvider/parentModelId in resolveAgentModelProvider, so an
-      // acpx-* override must lose to the sidecar pair instead of riding along with it.
-      spawnAsyncAgent("worker", cmd, task.cwd, agents, { name: `Cron: ${task.description.slice(0, 40)}`, ...(dispatch.action === "sidecar-async" ? { parentProvider: dispatch.sidecar.provider, parentModelId: dispatch.sidecar.model } : explicit ? { explicit } : {}) });
+      // The sidecar must be authoritative: passed as parent fields it could lose to worker
+      // overrides/frontmatter, which async children cannot always register. An unusable
+      // acpx-* override is discarded rather than passed at all.
+      const override = dispatch.action === "sidecar-async" ? dispatch.sidecar : explicit;
+      spawnAsyncAgent("worker", cmd, task.cwd, agents, { name: `Cron: ${task.description.slice(0, 40)}`, ...(override ? { explicit: override } : {}) });
     } catch (error: any) { log.error("cron_execute_failed", qualifyCronId(task), error?.message || error); }
   }
   function stop(id: string) { const timer = timers.get(id); if (timer) { clearTimeout(timer as any); clearInterval(timer as any); timers.delete(id); } }

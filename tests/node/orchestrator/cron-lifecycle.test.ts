@@ -6,6 +6,7 @@ import { afterEach, describe, it } from "node:test";
 import { registerCron } from "../../../extensions/orchestrator/cron.js";
 import { readDurableCronStore } from "../../../extensions/orchestrator/cron-store.ts";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
+import { resolveAgentModelProvider } from "../../../extensions/orchestrator/resolve-agent-model.js";
 
 const dirs: string[] = [];
 const harnesses = new Set<{ restore(): void }>();
@@ -72,6 +73,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
       { id: "missing-cwd", scope: "project", description: "bad", task: "check", intervalMs: 10_000, createdAt: 1 },
       { id: "scope", scope: "session", cwd, description: "bad", task: "check", intervalMs: 10_000, createdAt: 1 },
       { id: "schedule", scope: "project", cwd, description: "bad", task: "check", createdAt: 1 },
+      { id: "model", scope: "project", cwd, description: "bad", task: "check", intervalMs: 10_000, createdAt: 1, model: "p/" },
     ] }));
     const h = makeCron();
     try {
@@ -498,7 +500,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
       } finally { restore(); h.restore(); }
     });
 
-    it("rejects a malformed model and keeps a bare model id", async () => {
+    it("rejects a malformed model", async () => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
       const h = makeCron();
       const restore = isolateSettings(cwd);
@@ -507,12 +509,35 @@ describe("cron lifecycle", { concurrency: false }, () => {
         const cron = registerCron(h.pi, () => {});
         h.handlers.get("session_start")![0]({}, context(cwd));
         // A leading slash is a bare model id (shared parseModelOverride semantics), so only
-        // an empty side is rejected. Blank means "inherit".
+        // an empty side is rejected.
         for (const model of ["openrouter/", "p/"]) assert.match((await h.tool().execute("id", { action: "add", task: "bad", interval_seconds: 60, model })).content[0].text, /^Error:/);
-        await h.tool().execute("id", { action: "add", task: "blank", interval_seconds: 60, model: "   " });
+        assert.deepEqual(cron.getCronTasks(), []);
+      } finally { restore(); h.restore(); }
+    });
+
+    it("treats a blank model as inherit", async () => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+      const h = makeCron();
+      const restore = isolateSettings(cwd);
+      try {
+        h.pi.events.on = h.pi.eventHandler;
+        const cron = registerCron(h.pi, () => {});
+        h.handlers.get("session_start")![0]({}, context(cwd));
+        assert.doesNotMatch((await h.tool().execute("id", { action: "add", task: "blank", interval_seconds: 60, model: "   " })).content[0].text, /^Error:/);
         assert.equal(cron.getCronTasks()[0].model, undefined);
+      } finally { restore(); h.restore(); }
+    });
+
+    it("accepts a bare model id", async () => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+      const h = makeCron();
+      const restore = isolateSettings(cwd);
+      try {
+        h.pi.events.on = h.pi.eventHandler;
+        const cron = registerCron(h.pi, () => {});
+        h.handlers.get("session_start")![0]({}, context(cwd));
         await h.tool().execute("id", { action: "add", task: "bare", interval_seconds: 60, model: "claude-opus-5" });
-        assert.equal(cron.getCronTasks()[1].model, "claude-opus-5");
+        assert.equal(cron.getCronTasks()[0].model, "claude-opus-5");
       } finally { restore(); h.restore(); }
     });
 
@@ -558,8 +583,36 @@ describe("cron lifecycle", { concurrency: false }, () => {
         h.handlers.get("session_start")![0]({}, context(cwd));
         await h.tool().execute("id", { action: "add", task: "check", interval_seconds: 60, model: "acpx-cursor/composer-2" });
         const options = await dispatch(h, spawns);
-        assert.equal(options.explicit, undefined);
-        assert.deepEqual([options.parentProvider, options.parentModelId], ["openai", "gpt-5.4"]);
+        assert.deepEqual(options.explicit, { provider: "openai", model: "gpt-5.4" });
+        assert.equal(options.parentProvider, undefined);
+        assert.equal(options.parentModelId, undefined);
+      } finally { restore(); h.restore(); }
+    });
+
+    it("keeps the sidecar authoritative over a conflicting worker override", async () => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+      const h = makeCron();
+      // The worker override would otherwise outrank parentProvider/parentModelId and send the
+      // child to an acpx-* provider it cannot register.
+      const restore = isolateSettings(cwd, {
+        acpx_agents: ["cursor"],
+        internal_operations_provider: "openai",
+        internal_operations_model: "gpt-5.4",
+        agent_overrides: { worker: { provider: "acpx-cursor", model: "composer-2" } },
+      });
+      const spawns: any[] = [];
+      try {
+        h.pi.events.on = h.pi.eventHandler;
+        registerCron(h.pi, (...args: any[]) => { spawns.push(args); return { id: "job" }; });
+        h.handlers.get("session_start")![0]({}, context(cwd));
+        await h.tool().execute("id", { action: "add", task: "check", interval_seconds: 60, model: "acpx-cursor/composer-2" });
+        const options = await dispatch(h, spawns);
+        assert.deepEqual(options.explicit, { provider: "openai", model: "gpt-5.4" });
+        // explicit is the top tier of the chain, so the worker override cannot win.
+        const [agent, , , agents] = spawns[0];
+        assert.equal(agent, "worker");
+        const worker = agents.find((a: any) => a.name === "worker") ?? {};
+        assert.equal(resolveAgentModelProvider(agent, worker, undefined, undefined, cwd, options.explicit).provider, "openai");
       } finally { restore(); h.restore(); }
     });
 

@@ -90,6 +90,27 @@ export function formatNextRunLabel(
   return `in ${formatRelativeMs(delta)}`;
 }
 
+/** Detail rows rendered by the cron task overlay, uncolored (label, value). */
+export function cronDetailRows(
+  task: CronStatusTaskView,
+  now = Date.now(),
+): Array<[string, string]> {
+  const rows: Array<[string, string]> = [
+    ["Schedule", formatCronSchedule(task)],
+    [
+      "Last run",
+      `${formatLastRunLabel(task, now)}${
+        task.lastRun ? ` · ${new Date(task.lastRun).toLocaleString()}` : ""
+      }`,
+    ],
+    ["Next run", formatNextRunLabel(task, now)],
+    ["Created", new Date(task.createdAt).toLocaleString()],
+  ];
+  if (task.sessionLabel) rows.push(["Session", task.sessionLabel]);
+  if (task.model) rows.push(["Model", task.model]);
+  return rows;
+}
+
 /** Map a CronTask-like object into an overlay row view. */
 export function toCronStatusTaskView(
   task: {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  cronDetailRows,
   formatCronSchedule,
   formatLastRunLabel,
   formatNextRunLabel,
@@ -53,6 +54,29 @@ describe("resolveNextRunAt / labels", () => {
 
   it("formats never for missing lastRun", () => {
     assert.equal(formatLastRunLabel(sample()), "never");
+  });
+});
+
+describe("cronDetailRows", () => {
+  it("adds a Model row when the task pins a model", () => {
+    const rows = cronDetailRows(sample({ model: "openrouter/anthropic/claude-opus-5" }));
+    assert.deepEqual(rows.filter(([label]) => label === "Model"), [
+      ["Model", "openrouter/anthropic/claude-opus-5"],
+    ]);
+  });
+
+  it("omits the Model row when the task inherits its model", () => {
+    assert.equal(
+      cronDetailRows(sample()).some(([label]) => label === "Model"),
+      false,
+    );
+  });
+
+  it("always renders schedule, last run, next run, and created", () => {
+    const rows = cronDetailRows(sample({ intervalMs: 60_000 }), 1_000_000).map(
+      ([label]) => label,
+    );
+    assert.deepEqual(rows, ["Schedule", "Last run", "Next run", "Created"]);
   });
 });
 
