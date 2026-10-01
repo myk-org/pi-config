@@ -94,10 +94,20 @@ function unquotedSegments(command: string): ShellSegment[] {
       ...(backgrounded ? { backgrounded: true } : {}),
     });
   };
+  // The index of the first segment in the current `&&`/`||` chain. A trailing
+  // `&` backgrounds the whole chain, not just the command beside it.
+  let chainStart = 0;
+  const chainLen = () => segments.length;
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
     if (quote) {
       if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "\\" && command[i + 1]) {
+      // An escaped character is part of a word: `weird\&name` is one directory
+      // name, not a name followed by a background operator.
+      i++;
       continue;
     }
     if (ch === "'" || ch === '"') {
@@ -125,12 +135,25 @@ function unquotedSegments(command: string): ShellSegment[] {
       push(i, start, conditional);
       conditional = false;
       start = i + 1;
-    } else if (ch === "&" || ch === ";" || ch === "|") {
-      // A lone `&` backgrounds the command: it runs in a subshell, so whatever
-      // directory change it makes is not the foreground shell's.
-      push(i, start, conditional, ch === "&");
+      chainStart = chainLen();
+    } else if (ch === ";" || ch === "|") {
+      push(i, start, conditional);
       conditional = false;
       start = i + 1;
+      chainStart = chainLen();
+    } else if (ch === "&") {
+      // `2>&1` and `>&2` redirect; a lone `&` backgrounds the whole chain it
+      // ends, so every segment of that chain runs in a subshell.
+      const redirect = command[i - 1] === ">";
+      if (redirect) continue;
+      const isDouble = command[i + 1] === "&";
+      push(i, start, conditional, !isDouble);
+      if (!isDouble) {
+        for (let s = chainStart; s < segments.length; s++) segments[s].backgrounded = true;
+      }
+      conditional = false;
+      start = i + 1;
+      chainStart = chainLen();
     } else if (ch === "(") {
       depth++;
     } else if (ch === ")") {
@@ -151,13 +174,18 @@ function unquotedSegments(command: string): ShellSegment[] {
 
 /** The target of a `cd` at the start of a segment, honouring quoting and `~`. */
 function cdTargetIn(segment: string): string | null {
-  // A cd may follow a shell keyword: `if cd /repo; then …`.
-  const m = /^\s*(?:if\s+|then\s+|else\s+|elif\s+|do\s+|\(\s*|\{\s*)*(?:cd|pushd)\b\s*([\s\S]*)$/.exec(segment);
+  // A cd may follow a shell keyword or a builtin wrapper: `if cd /repo; then …`,
+  // `command cd /repo`.
+  const m = /^\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)|if\s+|then\s+|else\s+|elif\s+|do\s+|\(\s*|\{\s*)*(?:(?:command|builtin)\s+)*(cd|pushd|popd)\b\s*([\s\S]*)$/.exec(
+    segment,
+  );
   if (!m) {
     enfLog.debug("cd_target_absent", "segment_head", segment.trim().slice(0, 24));
     return null;
   }
-  const args = m[1];
+  // `popd` returns to whatever `pushd` displaced, and takes no argument.
+  if (m[1] === "popd") return "~popd";
+  const args = m[2];
   // Walk the arguments: skip options, then read one destination — a quoted
   // target whole, so a directory name may contain spaces or parentheses.
   let i = 0;
@@ -175,6 +203,10 @@ function cdTargetIn(segment: string): string | null {
       while (i < args.length && !/\s/.test(args[i])) i++;
       continue;
     }
+    if (args[i] === "\\" && i + 1 < args.length) {
+      i += 2;
+      continue;
+    }
     const quote = args[i];
     if (quote === "'" || quote === '"') {
       const end = args.indexOf(quote, i + 1);
@@ -190,7 +222,11 @@ function cdTargetIn(segment: string): string | null {
       return target;
     }
     let end = i;
-    while (end < args.length && !/[\s;&|)]/.test(args[end])) end++;
+    // An escaped character is part of the name: `weird\&name` is one directory.
+    while (end < args.length && !/[\s;&|)]/.test(args[end])) {
+      if (args[end] === "\\" && end + 1 < args.length) end++;
+      end++;
+    }
     const target = args.slice(i, end);
     enfLog.debug("cd_target", "target", target);
     return target || null;
@@ -202,17 +238,22 @@ function cdTargetIn(segment: string): string | null {
 }
 
 /** Apply one directory change to a running directory. */
-function applyCd(dir: string, target: string): string {
-  // `cd -` with no previous directory tracked leaves the shell where it is.
-  if (target === "-") {
+function applyCd(dir: string, target: string, home = process.env.HOME ?? "~", fromShell = true): string {
+  // `cd -` with no previous directory tracked leaves the shell where it is. Only
+  // a shell's own `cd -` means that: a directory literally named `-`, reached as
+  // `git -C-`, is an ordinary relative directory.
+  if (target === "-" && fromShell) {
     enfLog.debug("apply_cd_previous_untracked", "dir", dir);
     return dir;
   }
   let next: string;
-  if (target.startsWith("~/")) next = join(process.env.HOME ?? "~", target.slice(2));
-  else if (target === "~") next = process.env.HOME ?? "~";
-  else if (target.startsWith("/")) next = target;
-  else next = join(dir, target);
+  // The shell builds one word from backslash escapes: `weird\&name` is a single
+  // directory named `weird&name`, whatever else the name looks like.
+  const word = target.replace(/\\(.)/g, "$1");
+  if (word.startsWith("~/")) next = join(home, word.slice(2));
+  else if (word === "~") next = home;
+  else if (word.startsWith("/")) next = word;
+  else next = join(dir, word);
   enfLog.debug("apply_cd", "from", dir, "target", target, "to", next);
   return next;
 }
@@ -247,6 +288,12 @@ function gitCsIn(segment: string): string[] {
   return values;
 }
 
+/** env options whose value is a separate word. */
+const ENV_VALUE_OPTIONS = new Set([
+  "-u", "--unset", "-C", "--chdir", "-S", "--split-string", "-a", "--argv0",
+  "--block-signal", "--default-signal", "--ignore-signal", "--debug",
+]);
+
 const GIT_INDEX_VARS = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]);
 const GIT_INDEX_OPTIONS = new Set(["--git-dir", "--work-tree", "--namespace"]);
 
@@ -268,6 +315,20 @@ function gitIndexOverride(command: string): string | null {
     const tokens = tokenize(seg.text);
     const nameOf = (tok: string) => tok.split("=")[0];
     let i = 0;
+    // `export GIT_INDEX_FILE=/x` sets it for later commands in the same shell,
+    // so it points git at another index just as an inline assignment does.
+    if (tokens[i] === "export") {
+      i++;
+      while (i < tokens.length) {
+        const name = nameOf(tokens[i]);
+        if (GIT_INDEX_VARS.has(name)) {
+          enfLog.warn("git_index_override", "source", name, "via", "export");
+          return name;
+        }
+        i++;
+      }
+      continue;
+    }
     // Leading `VAR=value` assignments, then the same again after `env`.
     for (let round = 0; round < 2; round++) {
       while (i < tokens.length && assignment.test(tokens[i])) {
@@ -280,7 +341,14 @@ function gitIndexOverride(command: string): string | null {
       }
       if (tokens[i] !== "env") break;
       i++;
-      while (i < tokens.length && tokens[i].startsWith("-")) i++;
+      // env's own options: only these take a separate value, and that value must
+      // not be read as an assignment or as the command. `-i` takes none, so
+      // treating every option as value-taking would swallow the assignment after it.
+      while (i < tokens.length && tokens[i].startsWith("-") && tokens[i] !== "-") {
+        const opt = tokens[i].split("=")[0];
+        if (!tokens[i].includes("=") && ENV_VALUE_OPTIONS.has(opt)) i++;
+        i++;
+      }
     }
     const g = tokens.indexOf("git");
     if (g === -1) continue;
@@ -324,8 +392,15 @@ export function conflictCandidateDirs(
   // running[d] is the directory of the shell at paren depth d.
   const running: string[] = [sessionCwd];
   // OLDPWD: where the shell was before the last change, which is what `cd -`
-  // returns to. It starts as the session directory.
-  let previous = sessionCwd;
+  // returns to. Each depth has its own, and each starts where the shell did —
+  // the shell's own PWD, not just the directory we were invoked from.
+  const startPwd = process.env.PWD && process.env.PWD.startsWith("/") ? process.env.PWD : sessionCwd;
+  const previous: string[] = [startPwd];
+  // What `pushd` displaced, per depth, for `popd` to return to.
+  const pushed: string[][] = [[]];
+  // `HOME=/x git add a.txt` sends a bare `cd` and a `~` somewhere else, so the
+  // command's own assignment wins over this process's environment.
+  let home = process.env.HOME ?? "~";
   // Walk the *executable* text: a `cd` inside a `bash -c` script, or inside a
   // command substitution, moves the directory the staging really runs in.
   const scan = executableText(command) || command;
@@ -336,6 +411,10 @@ export function conflictCandidateDirs(
     // inherit `clean` for the second subshell.
     if (running.length > seg.depth + 1) running.length = seg.depth + 1;
     while (running.length <= seg.depth) running.push(running[running.length - 1]);
+    while (previous.length <= seg.depth) previous.push(previous[previous.length - 1]);
+    while (pushed.length <= seg.depth) pushed.push([]);
+    const assigned = /(?:^|[\s;&|(])HOME=(\S*)/.exec(seg.text);
+    if (assigned) home = assigned[1];
     const target = cdTargetIn(seg.text);
     if (target && dynamic(target) && !dynamicPath) dynamicPath = target;
     if (target) {
@@ -348,23 +427,40 @@ export function conflictCandidateDirs(
       const from = running[seg.depth];
       // `cd -` goes to OLDPWD as it stands *before* this change, and only then
       // does the previous directory become where we are now.
-      const to = target === "-" ? previous : applyCd(from, target);
+      let to: string;
+      if (target === "-") to = previous[seg.depth];
+      else if (target === "~popd") {
+        const stack = pushed[seg.depth];
+        to = stack.length ? stack.pop()! : from;
+      } else {
+        to = applyCd(from, target, home);
+        // A bare `pushd` pushes where we are and goes home, the same as a bare
+        // `cd`; a `cd` leaves the push stack alone.
+        if (/\bpushd\b/.test(seg.text) && !/^\s*(?:if\s+|then\s+|else\s+|elif\s+|do\s+|\(\s*|\{\s*)*pushd\s+\S/.test(seg.text)) {
+          pushed[seg.depth].push(from);
+        }
+      }
       if (seg.backgrounded) {
         // The subshell moves; this shell does not.
         dirs.add(to);
       } else {
-        previous = from;
+        previous[seg.depth] = from;
         running[seg.depth] = to;
       }
     }
     if (segmentRunsGit(seg.text)) {
-      const base = running[seg.depth];
+      let base = running[seg.depth];
+      // `env -C dir git add x` moves git into dir without a shell cd.
+      const envChdir = /^\s*(?:VAR=\S*\s*)*env\s+(?:-\S+\s+)*?(?:-C|--chdir)(?:[=\s]+)(\S+)/.exec(seg.text);
+      if (envChdir) base = applyCd(base, envChdir[1], home);
       dirs.add(base);
       // Git applies each -C in turn, each relative to the previous one.
       let cursor = base;
       for (const c of gitCsIn(seg.text)) {
         if (dynamic(c) && !dynamicPath) dynamicPath = c;
-        cursor = applyCd(cursor, c);
+        // A directory literally named `-` is ordinary; only the shell's own
+        // `cd -` means the previous directory.
+        cursor = applyCd(cursor, c, home, false);
         dirs.add(cursor);
       }
     }
@@ -399,12 +495,14 @@ export function resolveEffectiveCwd(command: string, sessionCwd: string): string
   const anchors = gitIndex === -1 ? cdSegments.slice(0, 1) : cdSegments.filter((c) => c.i < gitIndex);
   let dir = sessionCwd;
   for (const a of anchors) {
-    if (a.target) dir = applyCd(dir, a.target);
+    if (a.target === "~popd") continue;
+    // `cd -` returns to where the shell was; with nothing tracked it stays put.
+    dir = a.target === "-" ? dir : applyCd(dir, a.target);
   }
   // Git applies each -C in turn, each relative to the previous one, so
   // `git -C worktree -C nested` lands in worktree/nested.
   const cTargets = gitIndex === -1 ? [] : gitCsIn(segments[gitIndex].text);
-  for (const cTarget of cTargets) dir = applyCd(dir, cTarget);
+  for (const cTarget of cTargets) dir = applyCd(dir, cTarget, process.env.HOME ?? "~", false);
   enfLog.debug("effective_cwd", "dir", dir, "source", cTargets.length ? "git_C" : anchors.length ? "cd" : "session", "cds", anchors.length);
   return dir;
 }

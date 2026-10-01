@@ -307,6 +307,62 @@ describe("conflict-resolution guard", () => {
     assert.equal(detect("git add -- --work-tree=x"), null);
   });
 
+  it("reads every directory a wrapper or redirection can move git into", () => {
+    const dirs = (c: string) => conflictCandidateDirs(c, "/root").all;
+    // `command cd` and `builtin cd` are still a cd.
+    assert.ok(dirs("command cd /conflicted && git add a.txt").includes("/conflicted"));
+    assert.ok(dirs("builtin cd /conflicted && git add a.txt").includes("/conflicted"));
+    // A `pushd` displaces a directory that `popd` returns to.
+    assert.ok(dirs("cd /a && pushd b && popd && git add a.txt").includes("/a/b"));
+    // Redirection is not a background operator.
+    assert.deepEqual(dirs("git add a.txt 2>&1"), ["/root"]);
+    // An escaped `&` is part of the name.
+    assert.ok(dirs("cd /a\\&b && git add a.txt").includes("/a&b"));
+    // A directory literally named `-` is not the previous directory.
+    assert.ok(dirs("git -C- add a.txt").includes("/root/-"));
+    // `env -C` moves git without a shell cd.
+    assert.ok(dirs("env -C /conflicted git add a.txt").includes("/conflicted"));
+  });
+
+  it("reads HOME and an exported index from the command itself", () => {
+    // The shell's own HOME decides where a bare cd goes, not the process's.
+    assert.ok(conflictCandidateDirs("HOME=/h cd && git add a.txt", "/root").all.includes("/h"));
+    // An export selects the index for later commands in the same shell.
+    const detect = (c: string) => conflictCandidateDirs(c, "/root").envOverride;
+    assert.equal(detect("export GIT_INDEX_FILE=/x/i\ngit add a.txt"), "GIT_INDEX_FILE");
+    // `-i` takes no value, so the assignment after it still counts.
+    assert.equal(detect("env -i GIT_WORK_TREE=/x git add a.txt"), "GIT_WORK_TREE");
+    // A value-taking option consumes its value instead.
+    assert.equal(detect("env -u GIT_INDEX_FILE git add a.txt"), null);
+  });
+
+  it("blocks a command that creates the conflict and stages it in one line", async () => {
+    // The index is read before the command runs, so the conflict is invisible to
+    // the check above; creating it and staging it together is the same bypass.
+    const root = mkdtempSync(join(tmpdir(), "conflict-sequencer-"));
+    gitIn(root, ["init", "-q", "-b", "main"]);
+    writeFileSync(join(root, "a.txt"), "one\n");
+    gitIn(root, ["add", "a.txt"]);
+    gitIn(root, ["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "base"]);
+    gitIn(root, ["checkout", "-q", "-b", "other"]);
+    writeFileSync(join(root, "a.txt"), "other\n");
+    gitIn(root, ["add", "a.txt"]);
+    gitIn(root, ["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "other"]);
+    gitIn(root, ["checkout", "-q", "main"]);
+    writeFileSync(join(root, "a.txt"), "mine\n");
+    gitIn(root, ["add", "a.txt"]);
+    gitIn(root, ["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "mine"]);
+
+    process.env.PI_AGENT_NAME = "git-expert";
+    process.env.PI_SUBAGENT_CHILD = "1";
+    const result = await run("git merge other && git add a.txt", root);
+    assert.equal(result?.block, true);
+    assert.match(result!.reason, /starts a merge/);
+    // Starting a merge on its own is not a resolution and stays allowed.
+    assert.notEqual((await run("git merge other", root))?.block, true);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("classifies a resolution inside process substitution", () => {
     assert.equal(isConflictResolutionCommand("diff <(git add a.txt) <(git status)"), true);
   });
