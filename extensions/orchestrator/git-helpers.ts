@@ -860,6 +860,29 @@ function executorRunsGit(words: string[], k: number, head: string): boolean {
   return words.slice(k + 1).some(isGitWord);
 }
 
+/** Global options whose value is the next word rather than an attached one. */
+const GLOBAL_VALUE_OPTIONS = new Set(["-C", "-c"]);
+const GLOBAL_LONG_VALUE_OPTIONS = new Set(["--git-dir", "--work-tree", "--namespace", "--exec-path"]);
+
+/**
+ * The index of the subcommand in a git word list.
+ *
+ * Only a few global options take their value as a separate word. Assuming every
+ * option does swallowed the subcommand itself — `git --no-pager add x` read
+ * `add` as the value of `--no-pager` and then found no subcommand at all.
+ */
+function gitSubcommandIndex(words: string[]): number {
+  let k = 1;
+  while (k < words.length && words[k].startsWith("-") && words[k] !== "-") {
+    const tok = words[k];
+    const attached = tok.length > 2 && !tok.startsWith("--") ? true : tok.includes("=");
+    const takesNext = tok.startsWith("--") ? GLOBAL_LONG_VALUE_OPTIONS.has(tok) : GLOBAL_VALUE_OPTIONS.has(tok);
+    if (!attached && takesNext && words[k + 1] && !words[k + 1].startsWith("-")) k += 2;
+    else k += 1;
+  }
+  return k;
+}
+
 /** ANSI-C quoting turns these escapes into characters the shell really sees. */
 function decodeAnsiC(text: string): string {
   return text.replace(/\\n/g, "\n").replace(/\\t/g, " ");
@@ -881,14 +904,7 @@ export function createsAndResolvesConflict(command: string): boolean {
   let starts = false;
   let stages = false;
   for (const words of executedGitCommands(scanned)) {
-    let k = 1;
-    while (k < words.length && words[k].startsWith("-") && words[k] !== "-") {
-      const tok = words[k];
-      const attached = tok.length > 2 && !tok.startsWith("--") ? true : tok.includes("=");
-      if (!attached && words[k + 1] && !words[k + 1].startsWith("-")) k += 2;
-      else k += 1;
-    }
-    const sub = (words[k] ?? "").split("=")[0];
+    const sub = (words[gitSubcommandIndex(words)] ?? "").split("=")[0];
     if (STARTERS.has(sub)) starts = true;
     if (STAGES.has(sub)) stages = true;
   }
@@ -920,15 +936,7 @@ export function isConflictResolutionCommand(command: string): boolean {
   const SEQUENCERS = new Set(["merge", "rebase", "cherry-pick", "revert", "am"]);
   let matches = false;
   for (const words of executedGitCommands(scanned)) {
-    let k = 1;
-    // Skip git's global options: a bare `-C` or `-c` consumes the next word,
-    // while a short option with an attached value does not.
-    while (k < words.length && words[k].startsWith("-") && words[k] !== "-") {
-      const tok = words[k];
-      const attached = tok.length > 2 && !tok.startsWith("--") ? true : tok.includes("=");
-      if (!attached && words[k + 1] && !words[k + 1].startsWith("-")) k += 2;
-      else k += 1;
-    }
+    const k = gitSubcommandIndex(words);
     const sub = words[k] || "";
     const rest = words.slice(k + 1).join(" ");
     // A subcommand the scanner could not read could be any of them.

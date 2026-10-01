@@ -380,6 +380,25 @@ describe("conflict-resolution guard", () => {
     // A glob character the command escaped is part of the name, not a pattern.
     assert.equal(conflictCandidateDirs("cd /repo\\[1\\] && git add a.txt", "/root").dynamicPath, null);
   });
+  it("reads a quoted or escaped spelling of a staging command", () => {
+    // The subcommand itself may be quoted, and a global option that takes no
+    // value must not swallow it.
+    assert.equal(isConflictResolutionCommand('git "add" a.txt'), true);
+    assert.equal(isConflictResolutionCommand("git 'add' a.txt"), true);
+    assert.equal(isConflictResolutionCommand("git --no-pager add a.txt"), true);
+    assert.equal(isConflictResolutionCommand("git -c core.x=1 add a.txt"), true);
+    // A heredoc delimiter written with an escape is still a heredoc.
+    assert.equal(isConflictResolutionCommand("git add a.txt <<\\EOF\nbody\nEOF\n"), true);
+  });
+
+  it("leaves commands that only name git alone", () => {
+    // Sourcing a file called git is not running git, and a script of literal
+    // escapes is not staging anything.
+    assert.equal(isConflictResolutionCommand(". ./git"), false);
+    assert.equal(isConflictResolutionCommand("source git"), false);
+    assert.equal(isConflictResolutionCommand("bash -c 'echo \\n \\t'"), false);
+  });
+
   it("classifies a resolution inside process substitution", () => {
     assert.equal(isConflictResolutionCommand("diff <(git add a.txt) <(git status)"), true);
   });
