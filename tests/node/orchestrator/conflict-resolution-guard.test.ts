@@ -149,6 +149,48 @@ describe("conflict-resolution guard", () => {
     assert.equal(isConflictResolutionCommand('git add "a b.txt"'), true);
   });
 
+  it("classifies a shell invocation with bundled or long options", () => {
+    for (const cmd of ["bash -xc 'git add a.txt'", "bash --login -c 'git add a.txt'", "sh -euc \"git add a.txt\""]) {
+      assert.equal(isConflictResolutionCommand(cmd), true, cmd);
+    }
+    assert.equal(isConflictResolutionCommand("bash config.sh"), false);
+  });
+
+  it("classifies an ANSI-C quoted script argument", () => {
+    assert.equal(isConflictResolutionCommand("bash -c $'git add a.txt'"), true);
+    assert.equal(isConflictResolutionCommand("echo $'git add a.txt'"), false);
+  });
+
+  it("treats nesting past the scan depth as a resolution", () => {
+    // Six nested substitutions: the scanner cannot see the bottom, so it must
+    // not report "no resolution command".
+    let cmd = "git add a.txt";
+    for (let i = 0; i < 7; i++) cmd = `echo $(echo ${cmd})`;
+    assert.equal(isConflictResolutionCommand(cmd), true);
+  });
+
+  it("scans past a quoted paren inside a substitution", () => {
+    assert.equal(isConflictResolutionCommand(`echo $(printf ')'; git add a.txt)`), true);
+  });
+
+  it("matches a heredoc terminator the way the shell does", () => {
+    // With `  EOF` the shell keeps reading, so the next line is still data.
+    assert.equal(isConflictResolutionCommand("cat <<EOF\n  EOF\ngit add a.txt\nEOF"), false);
+    // `<<-` lets tabs indent the terminator, so the first tabbed EOF ends the
+    // body and the following line really is executed.
+    assert.equal(isConflictResolutionCommand("cat <<-EOF\n\tEOF\ngit add a.txt\n\tEOF"), true);
+    // ...but without an early terminator the body stays data.
+    assert.equal(isConflictResolutionCommand("cat <<-EOF\n\tbody\ngit add a.txt\n\tEOF"), false);
+  });
+
+  it("does not leak a second heredoc body into classification", () => {
+    assert.equal(isConflictResolutionCommand("cat <<Afoo <<foo\nfirst\nAfoo\nplease git add a.txt\nfoo"), false);
+  });
+
+  it("does not leak quoted delimiter text into classification", () => {
+    assert.equal(isConflictResolutionCommand("cat <<'x git add'\nbody\nx git add"), false);
+  });
+
   it("classifies a nested shell script argument", () => {
     for (const cmd of ["bash -c 'git add a.txt'", "sh -c \"git add a.txt\"", "eval 'git rm a.txt'"]) {
       assert.equal(isConflictResolutionCommand(cmd), true, cmd);

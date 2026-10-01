@@ -421,11 +421,29 @@ export function hasGitSub(command: string, sub: string): boolean {
  */
 type ScanMode = "full" | "body" | "literal-body";
 
+/**
+ * Emitted when nesting exceeded the scan depth: the scanner stopped early and
+ * did not see everything. Callers must treat it as "not safe to allow" rather
+ * than as absence of a command.
+ */
+const UNSCANNED = " unscanned-nesting ";
+
+const SHELL_NAMES = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
+
+/** Closing paren of a `$(`, ignoring parens inside quotes. */
 function matchingParen(cmd: string, open: number): number {
   let depth = 0;
+  let quote: string | null = null;
   for (let i = open; i < cmd.length; i++) {
-    if (cmd[i] === "(") depth++;
-    else if (cmd[i] === ")" && --depth === 0) return i;
+    const ch = cmd[i];
+    if (quote) {
+      if (ch === "\\") { i++; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') quote = ch;
+    else if (ch === "(") depth++;
+    else if (ch === ")" && --depth === 0) return i;
   }
   return cmd.length;
 }
@@ -441,19 +459,50 @@ function closingQuote(cmd: string, open: number, quote: string): number {
   return cmd.length;
 }
 
-/** True when the quoted span at `at` is a script `eval`/`sh -c` argument. */
+/**
+ * True when the quoted span at `at` is a script argument — the string a shell
+ * runs. Covers `bash -c`, bundled short flags (`bash -xc`), options before `-c`
+ * (`bash --login -c`), ANSI-C quoting (`bash -c $'…'`), and `eval`.
+ */
 function isScriptArgument(cmd: string, at: number): boolean {
-  const before = cmd.slice(0, at).replace(/\s+$/, "");
-  return /(?:^|[\s;&|(])(?:eval|(?:bash|sh|zsh|dash)\s+-c)$/.test(before);
+  const before = cmd.slice(0, at).replace(/[$]+$/, "").trimEnd();
+  const words = before.split(/\s+/);
+  // Walk back over option words to the command word that started them.
+  let i = words.length - 1;
+  let sawCommandOption = false;
+  while (i >= 0 && words[i].startsWith("-") && words[i].length > 1) {
+    if (words[i] === "-" || words[i].startsWith("--")) {
+      // A long option may take the script as its value.
+      if (/^--(command|login|noprofile|norc|interactive|posix|verbose|xtrace|echo|errexit|nounset|pipefail)$/.test(words[i])) sawCommandOption = true;
+    } else if (words[i].includes("c")) {
+      sawCommandOption = true;
+    }
+    i--;
+  }
+  const command = words[i] ?? "";
+  if (command === "eval" || command === "source" || command === ".") return true;
+  if (!SHELL_NAMES.has(command)) return false;
+  // A bare `bash 'script'` is a script file, not a script string.
+  gitLog.debug("script_argument", "command", command, "option", sawCommandOption);
+  return sawCommandOption;
+}
+
+/** Does `line` terminate the heredoc? Ordinary delimiters match exactly; `<<-` allows leading tabs. */
+function isHeredocTerminator(line: string, delim: string, stripTabs: boolean): boolean {
+  const escaped = delim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = stripTabs ? new RegExp(`^\\t*${escaped}$`) : new RegExp(`^${escaped}$`);
+  return re.test(line);
 }
 
 function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string {
-  if (depth > 4) return "";
+  if (depth > 6) return UNSCANNED;
   const keepLiterals = mode === "full";
   const keepSubstitutions = mode !== "literal-body";
   let out = "";
   const pendingHeredocs: { delim: string; expand: boolean; stripTabs: boolean }[] = [];
   const add = (s: string) => { out += s; };
+  let substitutions = 0;
+  let heredocs = 0;
 
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i];
@@ -467,47 +516,68 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
           expand: !m[2] && !m[3],
           stripTabs: m[1] === "-",
         });
+        heredocs++;
         i += m[0].length - 1;
         continue;
       }
     }
 
-    // A heredoc body starts after this line ends.
+    // Heredoc bodies start after this line. One cursor walks past each body and
+    // its terminator, so a second heredoc on the same line resumes in the right
+    // place instead of inside the first body.
     if (ch === "\n" && pendingHeredocs.length > 0) {
-      let body = cmd.slice(i + 1);
-      let consumed = 0;
+      let cursor = i + 1;
       for (const h of pendingHeredocs) {
-        const lines = body.split("\n");
-        const end = lines.findIndex((l) => new RegExp(`^${h.stripTabs ? "" : "[ \\t]*"}${h.delim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[ \\t]*$`).test(l));
-        const bodyText = lines.slice(0, end === -1 ? lines.length : end).join("\n");
-        if (h.expand && keepSubstitutions) add(executableText(bodyText, depth + 1, "body"));
-        consumed += (end === -1 ? body.length : bodyText.length + end) + (end === -1 ? 0 : 1);
-        body = body.slice(consumed);
+        const bodyLines: string[] = [];
+        let closed = false;
+        // Consume the whole body — every line until the terminator — so the
+        // outer scan cannot resume inside body text.
+        while (cursor <= cmd.length) {
+          let lineEnd = cmd.indexOf("\n", cursor);
+          const atEnd = lineEnd === -1;
+          if (atEnd) lineEnd = cmd.length;
+          const line = cmd.slice(cursor, lineEnd);
+          if (isHeredocTerminator(line, h.delim, h.stripTabs)) {
+            cursor = Math.min(lineEnd + 1, cmd.length);
+            closed = true;
+            break;
+          }
+          bodyLines.push(line);
+          cursor = atEnd ? cmd.length : lineEnd + 1;
+          if (atEnd) break;
+        }
+        if (h.expand && keepSubstitutions) add(` ${executableText(bodyLines.join("\n"), depth + 1, "body")} `);
+        if (!closed) break;
       }
-      i += consumed;
       pendingHeredocs.length = 0;
       add(" ");
+      i = cursor - 1;
       continue;
     }
 
     // Command substitution — always executes.
     if (ch === "$" && cmd[i + 1] === "(" && keepSubstitutions) {
       const end = matchingParen(cmd, i + 1);
+      substitutions++;
       add(` ${executableText(cmd.slice(i + 2, end), depth + 1)} `);
       i = end;
       continue;
     }
     if (ch === "`" && keepSubstitutions) {
       const end = cmd.indexOf("`", i + 1);
+      substitutions++;
       add(` ${executableText(cmd.slice(i + 1, end === -1 ? cmd.length : end), depth + 1)} `);
       i = end === -1 ? cmd.length : end;
       continue;
     }
 
-    if (ch === "'") {
-      const end = cmd.indexOf("'", i + 1);
-      const content = cmd.slice(i + 1, end === -1 ? cmd.length : end);
-      if (isScriptArgument(cmd, i)) {
+    // ANSI-C quoting: $'…' — literal, but still a script argument to `sh -c`.
+    const ansi = ch === "$" && cmd[i + 1] === "'";
+    if (ansi || ch === "'") {
+      const start = ansi ? i + 1 : i;
+      const end = cmd.indexOf("'", start + 1);
+      const content = cmd.slice(start + 1, end === -1 ? cmd.length : end);
+      if (isScriptArgument(cmd, start)) {
         if (keepSubstitutions) add(` ${executableText(content, depth + 1)} `);
         else add(" _ ");
       } else {
@@ -523,6 +593,7 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
         if (keepSubstitutions) add(` ${executableText(content, depth + 1)} `);
       } else if (keepSubstitutions) {
         // Only the substitutions inside a double-quoted span execute.
+        substitutions++;
         add(` ${executableText(content, depth + 1, "body")} `);
       } else {
         add(" _ ");
@@ -533,6 +604,7 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
 
     if (keepLiterals) add(ch);
   }
+  gitLog.debug("shell_scan", "depth", depth, "mode", mode, "heredocs", heredocs, "substitutions", substitutions);
   return out;
 }
 
@@ -543,6 +615,12 @@ function executableText(cmd: string, depth = 0, mode: ScanMode = "full"): string
  */
 export function isConflictResolutionCommand(command: string): boolean {
   const cmd = executableText(command);
+  // Nesting deeper than the scan depth means the scanner stopped early. Treat
+  // that as a resolution command rather than as proof there is none.
+  if (cmd.includes(UNSCANNED)) {
+    gitLog.warn("conflict_command_unscanned", "depth_limit", 6);
+    return true;
+  }
   // git rm drops a conflicted deletion's unmerged entry, which is a resolution.
   const matches =
     hasGitSub(cmd, "add") ||
