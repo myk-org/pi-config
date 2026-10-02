@@ -29,6 +29,7 @@ import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
 import { runWithSessionCwd } from "./session-cwd.js";
 
 const fixtureLog = createLogger("session-store");
+const pricingLog = createLogger("session-store");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -514,10 +515,16 @@ type StoredSession = Pick<AgentSession, "prompt" | "subscribe" | "dispose" | "ab
  * priced component must not be reported as a $0 call — consumers would show
  * unknown spend as genuinely free.
  */
-function hasKnownPricing(model: { cost?: Record<string, number | undefined> } | undefined): boolean {
+export function hasKnownPricing(model: { cost?: Record<string, number | undefined> } | undefined): boolean {
   const cost = model?.cost;
-  if (!cost) return false;
-  return Object.values(cost).some((value) => typeof value === "number" && value > 0);
+  const known = cost
+    ? Object.values(cost).some((value) => typeof value === "number" && value > 0)
+    : false;
+  // Never log the model or its prices — only the resulting decision.
+  pricingLog.debug(
+    `[sidecar] PRICING_KNOWN: known=${known}, priceMetadata=${cost ? "present" : "absent"}`,
+  );
+  return known;
 }
 
 interface SessionEntry {
@@ -1542,8 +1549,16 @@ export class SessionStore {
             usage.output_tokens += msg.usage.output || 0;
             usage.cache_read_tokens += msg.usage.cacheRead || 0;
             usage.cache_write_tokens += msg.usage.cacheWrite || 0;
-            if (msg.usage.cost?.total != null && entry.pricingKnown) {
-              usage.cost_usd = (usage.cost_usd ?? 0) + msg.usage.cost.total;
+            const reported = msg.usage.cost?.total;
+            // A model with unknown pricing reports zeros, but a driver can still
+            // know the real turn cost (ACPX models without catalog prices do).
+            // Only discard a reported *zero*; never discard a positive total.
+            if (reported != null && (entry.pricingKnown || reported > 0)) {
+              usage.cost_usd = (usage.cost_usd ?? 0) + reported;
+            } else if (reported != null) {
+              logger.debug(
+                `[sidecar] COST_UNKNOWN: session=${id}, reportedTotal=${reported}, pricingKnown=${entry.pricingKnown}`,
+              );
             }
           }
         }

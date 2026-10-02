@@ -557,6 +557,23 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
     } finally { globalThis.fetch = originalFetch; await store.disposeAll(); rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it("marks a key-discovered model as unknown-priced on the stored session", async () => {
+    const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
+    const store = new SessionStore();
+    Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ models: [
+      { name: "models/gemini-zeroprice-839", supportedGenerationMethods: ["generateContent"], inputTokenLimit: 4096, outputTokenLimit: 1024 },
+    ] }), { status: 200 })) as typeof fetch;
+    const dir = mkdtempSync(join(tmpdir(), "sidecar-839-zeroprice-"));
+    try {
+      const id = await store.create({ provider: "google", model: "gemini-zeroprice-839", systemPrompt: "hi", cwd: dir, agentDir: dir, tools: [], apiKey: keyA });
+      const entry = (store as any).sessions.get(id);
+      assert.equal(entry.pricingKnown, false, "a key-discovered model has no catalog price, so pricing is unknown");
+      store.delete(id);
+    } finally { globalThis.fetch = originalFetch; await store.disposeAll(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("rejects embedding-only Google models even with native limits", async () => {
     const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
     const store = new SessionStore();

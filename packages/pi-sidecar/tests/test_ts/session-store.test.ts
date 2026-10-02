@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { SessionStore } from "../../src/sessions.js";
+import { SessionStore, hasKnownPricing } from "../../src/sessions.js";
 import {
   getSessionCwd,
   resolveProviderStreamCwd,
@@ -481,14 +481,17 @@ exit 0
    * means as "unknown pricing" rather than "free". Reporting that $0 makes
    * unknown spend look free to consumers (rootcoz), so usage.cost_usd must stay
    * null instead of accumulating a numeric zero.
+   *
+   * A driver can still report a real turn cost for such a model (ACPX models
+   * without catalog prices do), so a *positive* total must always be kept.
    */
-  it("prompt() leaves cost null for a model with unknown pricing", async () => {
-    const usage = { input_tokens: 10, output_tokens: 4, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 0.42 };
-    const run = async (pricingKnown: boolean) => {
+  it("prompt() distinguishes unknown pricing from a reported zero", async () => {
+    const run = async (pricingKnown: boolean, reportedTotal: number | null) => {
       const store = new SessionStore();
       let emit: (event: unknown) => void = () => {};
+      const id = `s-pricing-${pricingKnown}-${reportedTotal}`;
       store.putSessionFixture(
-        `s-pricing-${pricingKnown}`,
+        id,
         {
           subscribe: (cb: (event: unknown) => void) => {
             emit = cb;
@@ -498,7 +501,11 @@ exit 0
             emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "done" } });
             emit({
               type: "agent_end",
-              messages: [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 10, output: 4, cost: { total: 0.42 } } }],
+              messages: [{
+                role: "assistant",
+                content: [{ type: "text", text: "done" }],
+                usage: { input: 10, output: 4, cost: reportedTotal == null ? undefined : { total: reportedTotal } },
+              }],
             });
           },
           dispose: () => {},
@@ -507,15 +514,39 @@ exit 0
         "/tmp/job-pricing",
         pricingKnown,
       );
-      const result = await store.prompt(`s-pricing-${pricingKnown}`, "hi") as { usage: typeof usage };
-      return result.usage;
+      return await store.prompt(id, "hi") as { usage: { input_tokens: number; cost_usd: number | null } };
     };
 
-    const priced = await run(true);
-    assert.equal(priced.cost_usd, 0.42);
+    const priced = await run(true, 0.42);
+    assert.equal(priced.usage.cost_usd, 0.42, "a priced model reports its cost");
 
-    const unpriced = await run(false);
-    assert.equal(unpriced.cost_usd, null, "unknown pricing must stay null, not report as free");
-    assert.equal(unpriced.input_tokens, 10, "token counts stay intact");
+    const pricedFree = await run(true, 0);
+    assert.equal(pricedFree.usage.cost_usd, 0, "a priced model reporting zero is genuinely free");
+
+    const unknownZero = await run(false, 0);
+    assert.equal(unknownZero.usage.cost_usd, null, "unknown pricing must stay null, not report as free");
+    assert.equal(unknownZero.usage.input_tokens, 10, "token counts stay intact");
+
+    const unknownReal = await run(false, 1.75);
+    assert.equal(
+      unknownReal.usage.cost_usd,
+      1.75,
+      "a driver-reported positive cost must survive even when catalog pricing is unknown",
+    );
+    assert.equal(unknownReal.usage.input_tokens, 10, "token counts stay intact");
+  });
+
+  /**
+   * Detection itself must be covered: hasKnownPricing() is what marks a session
+   * unknown-priced, and prompt() above supplies that flag directly.
+   */
+  it("hasKnownPricing() reads the model's price metadata", () => {
+    assert.equal(hasKnownPricing({ cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }), false,
+      "all-zero prices mean unknown, not free");
+    assert.equal(hasKnownPricing({ cost: { input: 0, output: 0.000003, cacheRead: 0, cacheWrite: 0 } }), true,
+      "any positive component means the price is known");
+    assert.equal(hasKnownPricing({ cost: {} }), false, "empty price metadata means unknown");
+    assert.equal(hasKnownPricing({}), false, "absent price metadata means unknown");
+    assert.equal(hasKnownPricing(undefined), false, "an absent model means unknown");
   });
 });

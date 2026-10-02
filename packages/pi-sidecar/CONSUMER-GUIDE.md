@@ -397,11 +397,40 @@ curl -s -X POST http://127.0.0.1:9100/sessions/<session-id>/prompt \
 # Returns: {"text": "4", "usage": {"input_tokens": ..., "output_tokens": ..., "cost_usd": ...}}
 ```
 
+### `cost_usd` semantics
+
+`cost_usd` is `null` when the price is **unknown**, and a number when it is
+known. The two are not interchangeable:
+
+| Value | Meaning |
+|-------|---------|
+| number | The sidecar knows the price and accumulated the reported turn costs. |
+| `null` | The session's model has no catalog price, so the total is unknown. |
+
+Pi requires numeric prices, so a model resolved from a **key-scoped listing**
+(`POST /models/for-api-key`, or a model id that is not in the catalog) is
+registered with zero prices. Zero means "unknown pricing" to Pi, not "free" —
+so the sidecar reports `null` rather than `0` for those sessions. Token counts
+(`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`) are
+always populated regardless of pricing.
+
+A driver may still report a real per-turn cost for such a model (ACPX models
+without catalog prices do). When it does, that positive total **is**
+accumulated and reported as a number. Only a reported `0` on an unknown-priced
+model is withheld as `null`.
+
+> ⚠️ **Consumers must not treat `null` as `0`.** Aggregating with
+> `COALESCE(SUM(cost_usd), 0)` reports unknown-only spend as a genuine zero and
+> reports mixed spend as a complete total. Distinguish the two — e.g. count
+> `cost_usd IS NULL` rows separately, or surface the total as "unknown" when any
+> contributing row is `null`.
+
 ## Provider Types
 
 | Provider | Source | Models | Cost reported |
 |----------|--------|--------|--------------|
-| `google` | Native (API key) | Gemini models | ✅ Yes |
+| `google` | Native (API key) | Gemini models in the catalog | ✅ Yes |
+| `google` | Key-scoped listing | Model ids **not** in the catalog | ⚠️ `null` unless the driver reports a real cost |
 | `google-vertex` | Native (ADC) | Gemini via Vertex | ✅ Yes |
 | `google-vertex-claude` | Vertex Claude extension | Claude via Vertex | ✅ Yes |
 | `cli-cursor` | Cursor CLI (`agent`) | Cursor models | ❌ No |
