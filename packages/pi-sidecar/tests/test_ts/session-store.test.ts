@@ -477,6 +477,43 @@ exit 0
     }
   });
   /**
+   * Drives prompt() over a fixture session that reports `reportedTotal` as the
+   * turn cost, so cost and token assertions can live in separate tests.
+   */
+  const promptWithReportedCost = async (pricingKnown: boolean, reportedTotal: number | null) => {
+    const store = new SessionStore();
+    let emit: (event: unknown) => void = () => {};
+    const id = `s-pricing-${pricingKnown}-${reportedTotal}`;
+    store.putSessionFixture(
+      id,
+      {
+        subscribe: (cb: (event: unknown) => void) => {
+          emit = cb;
+          return () => {};
+        },
+        prompt: async () => {
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "done" } });
+          emit({
+            type: "agent_end",
+            messages: [{
+              role: "assistant",
+              content: [{ type: "text", text: "done" }],
+              usage: { input: 10, output: 4, cacheRead: 3, cacheWrite: 2, cost: reportedTotal == null ? undefined : { total: reportedTotal } },
+            }],
+          });
+        },
+        dispose: () => {},
+        abort: async () => {},
+      },
+      "/tmp/job-pricing",
+      pricingKnown,
+    );
+    return await store.prompt(id, "hi") as {
+      usage: { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number; cost_usd: number | null };
+    };
+  };
+
+  /**
    * A model resolved from a key-scoped listing carries zero prices, which Pi
    * means as "unknown pricing" rather than "free". Reporting that $0 makes
    * unknown spend look free to consumers (rootcoz), so usage.cost_usd must stay
@@ -486,54 +523,35 @@ exit 0
    * without catalog prices do), so a *positive* total must always be kept.
    */
   it("prompt() distinguishes unknown pricing from a reported zero", async () => {
-    const run = async (pricingKnown: boolean, reportedTotal: number | null) => {
-      const store = new SessionStore();
-      let emit: (event: unknown) => void = () => {};
-      const id = `s-pricing-${pricingKnown}-${reportedTotal}`;
-      store.putSessionFixture(
-        id,
-        {
-          subscribe: (cb: (event: unknown) => void) => {
-            emit = cb;
-            return () => {};
-          },
-          prompt: async () => {
-            emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "done" } });
-            emit({
-              type: "agent_end",
-              messages: [{
-                role: "assistant",
-                content: [{ type: "text", text: "done" }],
-                usage: { input: 10, output: 4, cost: reportedTotal == null ? undefined : { total: reportedTotal } },
-              }],
-            });
-          },
-          dispose: () => {},
-          abort: async () => {},
-        },
-        "/tmp/job-pricing",
-        pricingKnown,
-      );
-      return await store.prompt(id, "hi") as { usage: { input_tokens: number; cost_usd: number | null } };
-    };
-
-    const priced = await run(true, 0.42);
+    const priced = await promptWithReportedCost(true, 0.42);
     assert.equal(priced.usage.cost_usd, 0.42, "a priced model reports its cost");
 
-    const pricedFree = await run(true, 0);
+    const pricedFree = await promptWithReportedCost(true, 0);
     assert.equal(pricedFree.usage.cost_usd, 0, "a priced model reporting zero is genuinely free");
 
-    const unknownZero = await run(false, 0);
+    const unknownZero = await promptWithReportedCost(false, 0);
     assert.equal(unknownZero.usage.cost_usd, null, "unknown pricing must stay null, not report as free");
-    assert.equal(unknownZero.usage.input_tokens, 10, "token counts stay intact");
 
-    const unknownReal = await run(false, 1.75);
+    const unknownReal = await promptWithReportedCost(false, 1.75);
     assert.equal(
       unknownReal.usage.cost_usd,
       1.75,
       "a driver-reported positive cost must survive even when catalog pricing is unknown",
     );
-    assert.equal(unknownReal.usage.input_tokens, 10, "token counts stay intact");
+  });
+
+  /**
+   * Token accounting is independent of pricing: withholding an unknown cost must
+   * not disturb the token counts, for either a priced or an unknown-priced model.
+   */
+  it("prompt() keeps token counts intact regardless of pricing", async () => {
+    for (const pricingKnown of [true, false]) {
+      const result = await promptWithReportedCost(pricingKnown, 0);
+      assert.equal(result.usage.input_tokens, 10, `input tokens intact (pricingKnown=${pricingKnown})`);
+      assert.equal(result.usage.output_tokens, 4, `output tokens intact (pricingKnown=${pricingKnown})`);
+      assert.equal(result.usage.cache_read_tokens, 3, `cache reads intact (pricingKnown=${pricingKnown})`);
+      assert.equal(result.usage.cache_write_tokens, 2, `cache writes intact (pricingKnown=${pricingKnown})`);
+    }
   });
 
   /**
