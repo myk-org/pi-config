@@ -174,11 +174,12 @@ class AITokenUsage:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     cost_usd: float | None = None
-    cost_partial: bool = False
     duration_ms: int | None = None
     provider: str = ""
     model: str = ""
     session_id: str = ""
+    # Appended last so the positional argument order of the fields above is unchanged.
+    cost_partial: bool = False
 
 
 # Module-level callback — consumers register their storage function

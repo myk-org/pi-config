@@ -195,11 +195,25 @@ class TestDataclasses:
         assert usage.cache_read_tokens == 0
         assert usage.cache_write_tokens == 0
         assert usage.cost_usd is None
-        assert usage.cost_partial is False
         assert usage.duration_ms is None
         assert usage.provider == ""
         assert usage.model == ""
         assert usage.session_id == ""
+        assert usage.cost_partial is False
+
+    def test_ai_token_usage_positional_order_unchanged(self) -> None:
+        """cost_partial was appended, so existing positional calls keep their meaning."""
+        usage = AITokenUsage(1, 2, 3, 4, 0.5, 150, "openrouter", "some-model", "sess-9")
+        assert usage.input_tokens == 1
+        assert usage.output_tokens == 2
+        assert usage.cache_read_tokens == 3
+        assert usage.cache_write_tokens == 4
+        assert usage.cost_usd == 0.5
+        assert usage.duration_ms == 150, "a duration passed positionally must not land on cost_partial"
+        assert usage.provider == "openrouter"
+        assert usage.model == "some-model"
+        assert usage.session_id == "sess-9"
+        assert usage.cost_partial is False, "the appended flag defaults to complete"
 
 
 # ---------------------------------------------------------------------------
