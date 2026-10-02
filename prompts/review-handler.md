@@ -504,6 +504,16 @@ Qodo if autoqodo, both if both flags active).
 
 #### 9a+9b: Wait and Fetch (combined async)
 
+> **NEVER set `fireAndForget: true` on these workers.** The poll's entire purpose is
+> to hand you its output. A fireAndForget agent is silent — it finishes and you are
+> never told, so the loop stalls until the user comes back and tells you it was done.
+> Leave `fireAndForget` unset. Also pass a `taskId` (`-1` if unlinked); a call without
+> one is rejected outright.
+>
+> **After spawning, end your turn.** Do not poll, sleep, or re-spawn. The result arrives
+> as a follow-up message. If you find yourself "checking" on the worker, you have
+> already lost the result.
+
 **Always pass `--source` explicitly. No defaults.**
 
 **If autorabbit is ON (only):** Spawn ONE async worker:
@@ -537,7 +547,10 @@ When EITHER returns with new comments, process them (Phases 2-8). Then re-spawn 
 The other agent keeps running independently.
 
 **While waiting for the async result**, the session remains interactive — the user
-can continue working. When the result surfaces, process it:
+can continue working. You do NOT need to track it: the result surfaces on its own as a
+follow-up message, and it is addressed to you, not to the user. Do not tell the user the
+loop is running and then drop it; do not report "still waiting" as if that were an
+update. When the result surfaces, process it:
 
 Check the poll JSON output — it always contains an `approved` key:
 
