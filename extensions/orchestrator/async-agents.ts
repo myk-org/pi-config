@@ -1409,7 +1409,9 @@ export function registerAsyncAgents(
   // Kill an async agent by name, id prefix, or "all"
   function killAsyncAgent(target: string, origin: AsyncKillOrigin = "user"): { killed: string[]; errors: string[] } {
     // Runtime guard: callers outside the type system still get a safe, non-false label.
-    const killOrigin = KILL_ORIGIN_LABELS[origin] ? origin : "user";
+    // Object.hasOwn, not a plain lookup — inherited keys such as `toString` would otherwise
+    // pass the truthiness check and make the label a function instead of a string.
+    const killOrigin: AsyncKillOrigin = Object.hasOwn(KILL_ORIGIN_LABELS, origin) ? origin : "user";
     const killLabel = KILL_ORIGIN_LABELS[killOrigin];
     log.info("async_kill_requested", { target, origin: killOrigin, label: killLabel });
     const killed: string[] = [];
@@ -1464,7 +1466,11 @@ export function registerAsyncAgents(
         existing.exitCode = -9;
         existing.endedAt = Date.now();
         existing.killOrigin = killOrigin;
-        existing.output = killLabel;
+        // Keep whatever the agent already produced below the label, matching the
+        // in-memory job.output, so the overlay and pidash see the same text the
+        // AI receives instead of losing the partial output.
+        const persistedOutput = typeof existing.output === "string" ? existing.output : "";
+        existing.output = persistedOutput ? `${killLabel}\n${persistedOutput}` : killLabel;
         fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
       } catch (e: any) { log.error(`kill: status.json update failed for ${job.id}: ${e?.message}`); }
       // Delete result file if it exists — prevent re-ingestion on reload
@@ -1475,6 +1481,11 @@ export function registerAsyncAgents(
         try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { killSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
       }
       if (killSideEffectsOk) job.sideEffectsApplied = true;
+      // Keep the origin label on the in-memory output too, not just status.json: grouped
+      // delivery and the subagents:failed event read job.output, so without this the AI and
+      // pitasks lose attribution for every killed member of a group.
+      const priorOutput = typeof job.output === "string" ? job.output : "";
+      job.output = priorOutput ? `${killLabel}\n${priorOutput}` : killLabel;
       // Check if this completes a group — deliver remaining siblings' results
       if (job.groupId) {
         const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);
@@ -1486,11 +1497,9 @@ export function registerAsyncAgents(
         // Non-grouped killed job — deliver immediately so AI knows it was killed
         const displayName = job.name || job.agent;
         const duration = job.durationMs || (Date.now() - job.startedAt);
-        const priorOutput = typeof job.output === "string" ? job.output : "";
-        const rawOutput = priorOutput ? `${killLabel}\n${priorOutput}` : killLabel;
         const output = formatAsyncResultOutput(
           job.agent,
-          rawOutput,
+          job.output,
           resultOutputPath(job),
         );
         const killContent = `## Async Agent Result: ${displayName} ❌ failed — ${killLabel}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`;

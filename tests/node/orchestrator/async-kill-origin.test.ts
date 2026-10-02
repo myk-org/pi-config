@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
@@ -39,9 +39,14 @@ function harness() {
     sessionManager: { getCwd: () => cwd, getSessionId: () => "test" },
   };
   handlers.get("session_start")![0]({}, ctx);
-  const spawn = () => api.spawnAsyncAgent("worker", "do the thing", cwd, [{ name: "worker" } as any], {});
+  const spawn = (options: Record<string, unknown> = {}) => api.spawnAsyncAgent("worker", "do the thing", cwd, [{ name: "worker" } as any], options);
   const statusJson = (id: string) => JSON.parse(readFileSync(join(cwd, ".pi", "tmp", id, "status.json"), "utf8"));
-  return { cwd, api, commands, ctx, events, messages, spawn, statusJson, restore: () => { global.setInterval = previousSetInterval; rmSync(cwd, { recursive: true, force: true }); } };
+  const writeStatus = (id: string, patch: Record<string, unknown>) => {
+    const path = join(cwd, ".pi", "tmp", id, "status.json");
+    const existing = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+    writeFileSync(path, JSON.stringify({ ...existing, ...patch }), { mode: 0o600 });
+  };
+  return { cwd, api, commands, ctx, events, messages, spawn, statusJson, writeStatus, restore: () => { global.setInterval = previousSetInterval; rmSync(cwd, { recursive: true, force: true }); } };
 }
 
 describe("async kill origin attribution (issue #816)", () => {
@@ -116,6 +121,43 @@ describe("async kill origin attribution (issue #816)", () => {
     } finally { h.restore(); }
   });
 
+  it("preserves prior agent output below the kill label", () => {
+    const h = harness();
+    try {
+      const job = h.spawn();
+      // Real prior output — the earlier test never set any, so nothing proved the label
+      // was prepended rather than replacing what the agent had already produced.
+      h.writeStatus(job.id, { output: "partial findings from the agent" });
+      h.api.killAsyncAgent(job.id, "task-system");
+      const status = h.statusJson(job.id);
+      assert.equal(status.output, "Killed by task system\npartial findings from the agent");
+      assert.ok(
+        status.output.indexOf("Killed by task system") < status.output.indexOf("partial findings from the agent"),
+        "the label comes first, with prior output below it",
+      );
+      assert.equal(status.killOrigin, "task-system");
+      // The delivery carries the same label the overlay and pidash read from disk.
+      assert.match(h.messages[0].content, /Killed by task system/);
+    } finally { h.restore(); }
+  });
+
+  it("keeps the kill label on grouped jobs so group delivery carries attribution", () => {
+    const h = harness();
+    try {
+      const job = h.spawn({ groupId: "group-886" });
+      h.api.killAsyncAgent(job.id, "orchestrator");
+      log.debug("kill_origin_case", { origin: "orchestrator", grouped: true });
+      // Group delivery reads the in-memory job output, not status.json, so the label
+      // has to live there too or the AI and pitasks lose attribution entirely.
+      assert.ok(h.messages.length > 0, "a completed group delivers its results");
+      assert.match(
+        h.messages.map((m: any) => String(m.content)).join("\n"),
+        /Killed by orchestrator/,
+        "group delivery carries the kill origin",
+      );
+    } finally { h.restore(); }
+  });
+
   it("falls back to user attribution for an unrecognised runtime origin", () => {
     const h = harness();
     try {
@@ -124,6 +166,21 @@ describe("async kill origin attribution (issue #816)", () => {
       log.debug("kill_origin_case", { origin: "invalid" });
       assert.equal(h.statusJson(job.id).killOrigin, "user");
       assert.equal(h.statusJson(job.id).output, "Killed by user");
+    } finally { h.restore(); }
+  });
+
+  it("falls back to user attribution for an Object.prototype key", () => {
+    const h = harness();
+    try {
+      const job = h.spawn();
+      // `toString` and friends are truthy on a plain object literal, so a naive
+      // lookup accepted them and made the label a function rather than a string.
+      h.api.killAsyncAgent(job.id, "toString" as any);
+      log.debug("kill_origin_case", { origin: "prototype-key" });
+      const status = h.statusJson(job.id);
+      assert.equal(status.killOrigin, "user");
+      assert.equal(status.output, "Killed by user");
+      assert.equal(typeof status.output, "string", "the label must never be a function's source");
     } finally { h.restore(); }
   });
 });

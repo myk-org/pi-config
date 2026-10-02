@@ -40,6 +40,19 @@ function jobTitle(job: AsyncStatusJobView): string {
   return job.name || job.agent;
 }
 
+/**
+ * Attribution suffix for the detail header: " · killed by <origin>" when the
+ * live status.json records who killed the job, otherwise nothing.
+ *
+ * Extracted so it can be tested without driving the interactive overlay loop.
+ */
+export function formatKillOriginSuffix(
+  killOrigin: string | undefined,
+  theme: { fg: (color: string, value: string) => string },
+): string {
+  return killOrigin ? theme.fg("dim", ` · killed by ${killOrigin}`) : "";
+}
+
 function isActive(status: string): boolean {
   return status === "running" || status === "queued";
 }
@@ -183,9 +196,7 @@ export async function openAsyncStatusOverlay(
             const state = live?.state || current.status;
             const dur = deps.formatDuration(elapsedMs(current));
             // Show who killed a failed job rather than guessing "user".
-            const origin = live?.killOrigin
-              ? t.fg("dim", ` · killed by ${live.killOrigin}`)
-              : "";
+            const origin = formatKillOriginSuffix(live?.killOrigin, t);
             return (
               `${statusGlyph(state, t)} ` +
               t.fg(

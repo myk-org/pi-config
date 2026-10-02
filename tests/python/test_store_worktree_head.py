@@ -32,7 +32,7 @@ def _git(*args: str, cwd: Path) -> str:
 
 def _commit(repo: Path, message: str) -> str:
     (repo / "file.txt").write_text(f"{message}\n", encoding="utf-8")
-    _git("add", "-A", cwd=repo)
+    _git("add", "--", "file.txt", cwd=repo)
     _git(
         "-c",
         "user.email=t@example.com",

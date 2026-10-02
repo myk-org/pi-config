@@ -82,13 +82,24 @@ COPY --chmod=755 scripts/docker-safe /usr/local/bin/docker-safe
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g npm@12.0.2
 
-# Qodo CLI: official npm package, published on every release.
+# Qodo CLI: official npm package, pinned so rebuilding this revision installs the
+# same release. Bump QODO_VERSION deliberately when adopting a new release.
 # Global npm prefix lives outside HOME so PI_HOST_USER mounts cannot hide the executable.
-# `qodo --version` exits non-zero when logged out, so only check the reported version line.
+# `qodo --version` exits non-zero when logged out; that specific result is tolerated,
+# but any other failure fails the build instead of slipping past the version check.
+ARG QODO_VERSION=0.36.0
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-  npm install -g @qodo/command && \
-  command -v qodo && \
-  qodo --version | grep -q 'Client:'
+  set -eu; \
+  npm install -g @qodo/command@${QODO_VERSION}; \
+  command -v qodo; \
+  qodo_status=0; \
+  qodo --version > /tmp/qodo-version.txt 2>&1 || qodo_status=$?; \
+  cat /tmp/qodo-version.txt; \
+  grep -q "Client: ${QODO_VERSION}" /tmp/qodo-version.txt; \
+  if [ "$qodo_status" -ne 0 ] && ! grep -q "Qodo API key not found" /tmp/qodo-version.txt; then \
+    echo "qodo --version exited ${qodo_status} for a reason other than a missing API key" >&2; \
+    exit 1; \
+  fi
 
 # Install acpx, agent-browser, pi-web-access, gemini-cli, and Graft (pi itself is installed at runtime in entrypoint.sh)
 COPY scripts/graft-allow-scripts.mjs /usr/local/lib/scripts/graft-allow-scripts.mjs
