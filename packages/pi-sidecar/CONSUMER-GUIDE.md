@@ -399,31 +399,41 @@ curl -s -X POST http://127.0.0.1:9100/sessions/<session-id>/prompt \
 
 ### `cost_usd` semantics
 
-`cost_usd` is `null` when the price is **unknown**, and a number when it is
-known. The two are not interchangeable:
+`cost_usd` is the accumulation of the costs the driver actually reported. Two
+other values carry meaning, and conflating them is how unknown spend turns into
+a believable number:
 
 | Value | Meaning |
 |-------|---------|
-| number | The sidecar knows the price and accumulated the reported turn costs. |
-| `null` | The session's model has no catalog price, so the total is unknown. |
+| number | Costs were reported and accumulated. |
+| `null` | Nothing usable was reported, so no total can be given. |
+| number + `cost_partial: true` | A **lower bound**: at least one turn reported a cost that is unknowable, so the real total is higher. |
 
-Pi requires numeric prices, so a model resolved from a **key-scoped listing**
-(`POST /models/for-api-key`, or a model id that is not in the catalog) is
-registered with zero prices. Zero means "unknown pricing" to Pi, not "free" —
-so the sidecar reports `null` rather than `0` for those sessions. Token counts
-(`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`) are
-always populated regardless of pricing.
+Read `cost_usd` together with `cost_partial`, never on its own. `cost_partial`
+is `false` when every reported turn cost was usable.
 
-A driver may still report a real per-turn cost for such a model (ACPX models
-without catalog prices do). When it does, that positive total **is**
-accumulated and reported as a number. Only a reported `0` on an unknown-priced
-model is withheld as `null`.
+The complication is Pi pricing metadata. Pi requires numeric prices, so a model
+resolved from a **key-scoped listing** (`POST /models/for-api-key`, or a model id
+absent from the catalog) is registered with zero prices. Zero means *unknown
+pricing* to Pi, not *free*, so the sidecar cannot derive a cost for those turns —
+but a driver may still report one (ACPX models without catalog prices do).
 
-> ⚠️ **Consumers must not treat `null` as `0`.** Aggregating with
-> `COALESCE(SUM(cost_usd), 0)` reports unknown-only spend as a genuine zero and
-> reports mixed spend as a complete total. Distinguish the two — e.g. count
-> `cost_usd IS NULL` rows separately, or surface the total as "unknown" when any
-> contributing row is `null`.
+So the three cases are:
+
+1. **Catalog model, costs reported** → number, `cost_partial: false`.
+2. **Unknown-priced model, driver reports nothing usable** → `null`.
+3. **Unknown-priced model, driver reports some turns** → number **plus**
+   `cost_partial: true`, because the unreported turns may still have cost.
+
+Token counts (`input_tokens`, `output_tokens`, `cache_read_tokens`,
+`cache_write_tokens`) are always populated regardless of pricing.
+
+> ⚠️ **Consumers must not treat `null` as `0`, and must not present a
+> `cost_partial` total as complete.** Aggregating with `COALESCE(SUM(cost_usd), 0)`
+> reports unknown-only spend as a genuine zero and reports mixed spend as a
+> complete total. Sum with `SUM(cost_usd)` and carry
+> `bool_or(cost_partial) OR SUM(cost_partial) > 0` alongside, then label any total
+> that includes unknown spend as incomplete.
 
 ## Provider Types
 

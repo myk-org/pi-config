@@ -1498,7 +1498,9 @@ export class SessionStore {
     let textDeltaCount = 0;
     let assistantMessageCount = 0;
     let messageBoundaries: number[] = [];
-    const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: null as number | null, duration_ms: 0 };
+    // cost_partial marks a total that is a floor, not a sum: at least one turn's
+    // cost was withheld as unknown while another turn contributed a real amount.
+    const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: null as number | null, cost_partial: false, duration_ms: 0 };
     const startTime = Date.now();
 
     const unsubscribe = entry.session.subscribe((event) => {
@@ -1556,6 +1558,9 @@ export class SessionStore {
             if (reported != null && (entry.pricingKnown || reported > 0)) {
               usage.cost_usd = (usage.cost_usd ?? 0) + reported;
             } else if (reported != null) {
+              // Unknown-priced turn reporting zero: real spend may exist but is
+              // unknowable here, so any accumulated total is only a lower bound.
+              usage.cost_partial = true;
               logger.debug(
                 `[sidecar] COST_UNKNOWN: session=${id}, reportedTotal=${reported}, pricingKnown=${entry.pricingKnown}`,
               );

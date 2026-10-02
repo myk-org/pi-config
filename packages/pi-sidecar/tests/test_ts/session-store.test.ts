@@ -509,7 +509,7 @@ exit 0
       pricingKnown,
     );
     return await store.prompt(id, "hi") as {
-      usage: { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number; cost_usd: number | null };
+      usage: { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number; cost_usd: number | null; cost_partial: boolean };
     };
   };
 
@@ -528,6 +528,7 @@ exit 0
 
     const pricedFree = await promptWithReportedCost(true, 0);
     assert.equal(pricedFree.usage.cost_usd, 0, "a priced model reporting zero is genuinely free");
+    assert.equal(pricedFree.usage.cost_partial, false, "a priced model has no unknown turns to withhold");
 
     const unknownZero = await promptWithReportedCost(false, 0);
     assert.equal(unknownZero.usage.cost_usd, null, "unknown pricing must stay null, not report as free");
@@ -552,6 +553,38 @@ exit 0
       assert.equal(result.usage.cache_read_tokens, 3, `cache reads intact (pricingKnown=${pricingKnown})`);
       assert.equal(result.usage.cache_write_tokens, 2, `cache writes intact (pricingKnown=${pricingKnown})`);
     }
+  });
+
+  /**
+   * A prompt can mix a turn whose cost the driver reported with a turn whose zero
+   * report means unknowable. The accumulated amount is then a floor, not a total,
+   * and `cost_partial` must say so rather than let a partial figure read as complete.
+   */
+  it("prompt() flags a cost as partial when an unknown turn contributes nothing", async () => {
+    const store = new SessionStore();
+    let emit: (event: unknown) => void = () => {};
+    store.putSessionFixture(
+      "s-pricing-partial",
+      {
+        subscribe: (cb: (event: unknown) => void) => {
+          emit = cb;
+          return () => {};
+        },
+        prompt: async () => {
+          emit({ type: "agent_end", messages: [
+            { role: "assistant", content: [{ type: "text", text: "a" }], usage: { input: 5, output: 2, cost: { total: 1.25 } } },
+            { role: "assistant", content: [{ type: "text", text: "b" }], usage: { input: 5, output: 2, cost: { total: 0 } } },
+          ] });
+        },
+        dispose: () => {},
+        abort: async () => {},
+      },
+      "/tmp/job-pricing",
+      false,
+    );
+    const result = await store.prompt("s-pricing-partial", "hi") as { usage: { cost_usd: number | null; cost_partial: boolean } };
+    assert.equal(result.usage.cost_usd, 1.25, "the reported amount is kept");
+    assert.equal(result.usage.cost_partial, true, "but the total is only a lower bound");
   });
 
   /**
