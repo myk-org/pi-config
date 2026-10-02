@@ -439,6 +439,27 @@ describe("conflict-resolution guard", () => {
     assert.equal(resolveEffectiveCwd("cd /repo && (cd /tmp) && git add x", "/session"), "/repo");
   });
 
+  it("inherits an outer directory change into a subshell", () => {
+    // The outer cd runs first, and the subshell starts where the shell is.
+    assert.equal(resolveEffectiveCwd("cd /protected && (git add x)", "/session"), "/protected");
+    // A cd inside the subshell still does not move the outer shell.
+    assert.equal(resolveEffectiveCwd("(cd /tmp) && git add x", "/session"), "/session");
+  });
+
+  it("keeps an unresolved path when the move is relative or comes late", () => {
+    // A relative move inherits whatever the expanded directory produced.
+    assert.equal(conflictCandidateDirs("cd $REPO; cd nested; git add f", "/s").dynamicPath, "$REPO");
+    // Git already ran while it was outstanding, so a later cd cannot settle it.
+    assert.equal(conflictCandidateDirs('cd "$REPO"; git add a.txt; cd /', "/s").dynamicPath, "$REPO");
+    // An absolute move before git does settle it.
+    assert.equal(conflictCandidateDirs("cd $REPO; cd /known; git add f", "/s").dynamicPath, null);
+  });
+
+  it("reads a quoted directory path that spans a newline", () => {
+    const dirs = conflictCandidateDirs('cd "conflicted\nrepo" && git add a.txt', "/s").all;
+    assert.ok(dirs.includes("/s/conflicted\nrepo"));
+  });
+
   it("classifies a resolution inside process substitution", () => {
     assert.equal(isConflictResolutionCommand("diff <(git add a.txt) <(git status)"), true);
   });

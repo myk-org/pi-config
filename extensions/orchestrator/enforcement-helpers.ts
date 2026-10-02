@@ -102,14 +102,10 @@ function unquotedSegments(command: string): ShellSegment[] {
     const ch = command[i];
     if (quote) {
       if (ch === quote) quote = null;
-      // An unterminated quote cannot survive a line break in practice. Resolving
-      // it here — rather than in the newline branch below, which this branch
-      // never reaches while a quote is open — is what stops one stray
-      // apostrophe from blinding the parser for every line that follows.
-      else if (ch === "\n") {
-        enfLog.debug("quote_reset_at_newline", "char", quote);
-        quote = null;
-      }
+      // A quote spans a newline: `cd "conflicted\nrepo"` is one multi-line path.
+      // An unterminated quote is not recovered from here either — bash reports
+      // one and runs nothing, and the caller fails closed when no directory
+      // can be resolved.
       continue;
     }
     if (ch === "\\" && command[i + 1]) {
@@ -415,6 +411,8 @@ export function conflictCandidateDirs(
   // character the command escaped is part of the name, not a pattern.
   const dynamic = (p: string) => /[$*?{]/.test(p.replace(/\\./g, ""));
   let dynamicPath: string | null = null;
+  // Set once a git command has run while a dynamic path was outstanding.
+  let gitRanUnresolved = false;
   const dirs = new Set<string>();
   // running[d] is the directory of the shell at paren depth d.
   const running: string[] = [sessionCwd];
@@ -473,12 +471,20 @@ export function conflictCandidateDirs(
         previous[seg.depth] = from;
         running[seg.depth] = to;
       }
-      // A directory change that certainly runs, to a literal path, settles where
-      // the shell is: an earlier unverifiable one no longer matters.
-      if (!dynamic(target) && !seg.conditional && !seg.backgrounded) dynamicPath = null;
+      // A directory change settles an earlier unverifiable one only when it is
+      // absolute — a relative move inherits whatever the expanded one produced —
+      // and only before any git command has already run while the expansion was
+      // outstanding. Once such a command has run, where it ran is already decided
+      // and a later cd cannot change it.
+      const settled = !dynamic(target) && target.startsWith("/") && !seg.conditional && !seg.backgrounded;
+      if (settled && !gitRanUnresolved) dynamicPath = null;
       else if (dynamic(target) && !dynamicPath) dynamicPath = target;
     }
     if (segmentRunsGit(seg.text)) {
+      // Git is about to run in a directory we could not resolve. Nothing later
+      // in this command can change that, so the refusal now stands regardless of
+      // any directory change that follows.
+      if (dynamicPath) gitRanUnresolved = true;
       let base = running[seg.depth];
       // `env -C dir git add x` moves git into dir without a shell cd.
       const envChdir = /^\s*(?:VAR=\S*\s*)*env\s+(?:-\S+\s+)*?(?:-C|--chdir)(?:[=\s]+)(\S+)/.exec(seg.text);
@@ -538,16 +544,21 @@ export function resolveEffectiveCwd(command: string, sessionCwd: string): string
     while (running.length <= seg.depth) running.push(running[running.length - 1]);
     const target = cdTargetIn(seg.text);
     if (!target || target === "~popd") continue;
-    // A subshell at a different depth cannot move this shell. Note that a cd
-    // behind a short-circuit still counts: `cd a && cd b` really does leave the
-    // shell in b, and `if cd x; then` leaves it in x too.
-    if (seg.depth !== targetDepth) continue;
-    running[targetDepth] = applyCd(running[targetDepth], target);
+    // A change at a shallower depth still counts: `cd /protected && (git commit)`
+    // enters /protected first, and the subshell inherits it. Only deeper segments
+    // were ruled out above, because those run in a subshell that has closed by
+    // the time git runs. Note that a change behind a short-circuit still counts:
+    // `cd a && cd b` really does leave the shell in b, and `if cd x; then` leaves
+    // it in x too.
+    running[seg.depth] = applyCd(running[seg.depth], target);
     applied.push(target);
     // With no git invocation to anchor to, the first cd is the conservative
     // answer for `cd a && cd b && pytest`.
     if (gitIndex === -1) break;
   }
+  // The git segment itself was never walked, so a subshell depth it introduced
+  // has no entry yet. It inherits the directory of the shell that spawned it.
+  while (running.length <= targetDepth) running.push(running[running.length - 1]);
   let dir = running[targetDepth];
   // Git applies each -C in turn, each relative to the previous one, so
   // `git -C worktree -C nested` lands in worktree/nested.
