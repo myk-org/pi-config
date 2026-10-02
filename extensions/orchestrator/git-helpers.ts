@@ -776,6 +776,12 @@ const GIT_EXECUTORS = new Set([
   "eval", "source", ".",
 ]);
 
+/** Wrapper options whose operand names something other than the command. */
+const WRAPPER_VALUE_OPTIONS = new Set([
+  "-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt", "-r", "--role",
+  "-t", "--type", "-U", "--other-user", "-C", "--chdir", "--preserve-env",
+]);
+
 /** Is this word the git executable? A full or relative path names it just as well. */
 function isGitWord(word: string): boolean {
   return word === "git" || word.endsWith("/git");
@@ -881,9 +887,23 @@ function gitWordIndex(words: string[]): number {
     const head = words[k].replace(/^[()]+|[()]+$/g, "");
     if (isGitWord(head)) return k;
     // A wrapper runs whatever follows it. `command -v git` prints the path
-    // instead of running anything, so that spelling is not an invocation.
+    // instead of running anything, and `sudo -u git` names a user, not a
+    // command - so a wrapper's own options are stepped over, operands included.
     if (GIT_EXECUTORS.has(head) && !/^-[vV]$/.test(words[k + 1] ?? "")) {
-      for (let i = k + 1; i < words.length; i++) if (isGitWord(words[i])) return i;
+      // The operand of a wrapper option names something else: `sudo -u git`
+      // runs git as a user called git, and never runs it at all.
+      // Walk past the wrapper's own options. One that takes a value takes the
+      // next word too, and that word is its operand: in `sudo -u git merge` the
+      // git is the user to run as, and the command is merge.
+      let i = k + 1;
+      let from = i;
+      while (i < words.length) {
+        const tok = words[i];
+        if (!tok.startsWith("-") || tok === "-") break;
+        i += WRAPPER_VALUE_OPTIONS.has(tok) ? 2 : 1;
+        from = i;
+      }
+      for (let j = from; j < words.length; j++) if (isGitWord(words[j])) return j;
     }
     return -1;
   }
@@ -904,16 +924,29 @@ function gitSubcommandIndex(words: string[], gitAt = 0): number {
 }
 
 /** The directory a git word list targets, via its global -C values, in order. */
-function gitScopeValues(words: string[]): string[] {
+function gitScopeValues(words: string[], gitAt = 0): string[] {
   const values: string[] = [];
-  for (let i = 1; i < words.length; i++) {
-    const tok = words[i];
-    if (!tok.startsWith("-") || tok === "-") break;
-    if (tok === "-C") { if (words[i + 1]) values.push(words[i + 1]); i++; continue; }
-    if (tok.startsWith("-C") && tok.length > 2) { values.push(tok.slice(2)); continue; }
-    if (tok.includes("=")) continue;
-    if (GLOBAL_LONG_VALUE_OPTIONS.has(tok) && words[i + 1]) i++;
-  }
+  // Two regions contribute: the wrapper's own options before git — `sudo -C a
+  // git` changes directory through sudo and git inherits it — and git's own
+  // global options after it. Both are applied in order, so the scope is the
+  // directory these commands really reach.
+  // In the wrapper region a plain word is the wrapper itself and is stepped
+  // over; in git's own region the first plain word is the subcommand and ends it.
+  const read = (from: number, to: number, skipPlainWords: boolean) => {
+    for (let i = from; i < to; i++) {
+      const tok = words[i];
+      if (!tok.startsWith("-") || tok === "-") {
+        if (skipPlainWords) continue;
+        break;
+      }
+      if (tok === "-C") { if (words[i + 1]) values.push(words[i + 1]); i++; continue; }
+      if (tok.startsWith("-C") && tok.length > 2) { values.push(tok.slice(2)); continue; }
+      if (tok.includes("=")) continue;
+      if (GLOBAL_LONG_VALUE_OPTIONS.has(tok) && words[i + 1]) i++;
+    }
+  };
+  read(0, gitAt, true);
+  read(gitAt + 1, words.length, false);
   return values;
 }
 
@@ -953,7 +986,7 @@ export function createsAndResolvesConflict(command: string): boolean {
     if (k === -1) continue;
     // Which repository this invocation targets: git applies each -C in turn.
     let scope = "";
-    for (const c of gitScopeValues(words)) scope = resolve(scope || ".", c);
+    for (const c of gitScopeValues(words, k)) scope = resolve(scope || ".", c);
     const k0 = gitSubcommandIndex(words, k);
     const sub = (words[k0] ?? "").split("=")[0];
     const rest = words.slice(k0 + 1).join(" ");

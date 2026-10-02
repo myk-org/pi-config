@@ -230,8 +230,12 @@ function cdTargetIn(segment: string): string | null {
         target += args[i];
         i++;
       }
-      enfLog.debug("cd_target_quoted", "target", target);
-      return target;
+      // Inside quotes a backslash is literal, so it is doubled here and the
+      // caller unescapes it back: `cd 'foo\ bar'` is one directory whose name
+      // contains a backslash, not a space.
+      const literal = target.replace(/\\/g, "\\\\");
+      enfLog.debug("cd_target_quoted", "target", literal);
+      return literal;
     }
     let end = i;
     // An escaped character is part of the name: `weird\&name` is one directory.
@@ -239,7 +243,10 @@ function cdTargetIn(segment: string): string | null {
       if (args[end] === "\\" && end + 1 < args.length) end++;
       end++;
     }
-    const target = args.slice(i, end);
+    // Unquoted, a backslash before a newline is a continuation the shell removes
+    // entirely. Inside quotes it would be literal, which is why only this path
+    // joins and the quoted one above does not.
+    const target = args.slice(i, end).replace(/\\\n/g, "");
     enfLog.debug("cd_target", "target", target);
     return target || null;
   }
@@ -260,10 +267,8 @@ function applyCd(dir: string, target: string, home = process.env.HOME ?? "~", fr
   }
   let next: string;
   // The shell builds one word from backslash escapes: `weird\&name` is a single
-  // directory named `weird&name`, whatever else the name looks like. A backslash
-  // before a newline is a continuation the shell removes entirely, so the two
-  // halves of a split path join with nothing between them.
-  const word = target.replace(/\\\n/g, "").replace(/\\(.)/g, "$1");
+  // directory named `weird&name`, whatever else the name looks like.
+  const word = target.replace(/\\(.)/g, "$1");
   if (word.startsWith("~/")) next = join(home, word.slice(2));
   else if (word === "~") next = home;
   else if (word.startsWith("/")) next = word;
@@ -492,24 +497,33 @@ export function conflictCandidateDirs(
       if (dynamic(target) && !dynamicPath) dynamicPath = target;
     }
     if (segmentRunsGit(seg.text)) {
-      if (dynamicAt[seg.depth] && isConflictResolutionCommand(seg.text)) unresolvedStaging = true;
       let base = running[seg.depth];
       // `env -C dir git add x` moves git into dir without a shell cd.
       const envChdir = /^\s*(?:VAR=\S*\s*)*env\s+(?:-\S+\s+)*?(?:-C|--chdir)(?:[=\s]+)(\S+)/.exec(seg.text);
       if (envChdir) base = applyCd(base, envChdir[1], home);
       dirs.add(base);
       // Git applies each -C in turn, each relative to the previous one.
+      const overrides = gitCsIn(seg.text);
       let cursor = base;
-      for (const c of gitCsIn(seg.text)) {
-        if (dynamic(c) && !dynamicPath) dynamicPath = c;
-        // An expanded override is the same unknown directory, reached without a cd.
-        if (dynamic(c)) unresolvedStaging = unresolvedStaging || isConflictResolutionCommand(seg.text);
+      for (const c of overrides) {
+        // An expanded override is the directory this invocation actually runs
+        // in, so it is the one worth reporting over an earlier cd target.
+        if (dynamic(c)) dynamicPath = c;
         // A directory literally named `-` is ordinary; only the shell's own
         // `cd -` means the previous directory.
         cursor = applyCd(cursor, c, home, false);
         dirs.add(cursor);
       }
-    }
+      // Where this invocation actually runs decides whether it is unresolved. A
+      // final absolute override names the worktree outright, so a directory the
+      // shell merely expanded on its way there is irrelevant to it.
+      const stages = isConflictResolutionCommand(seg.text);
+      const lastOverride = overrides[overrides.length - 1];
+      const named = lastOverride !== undefined && !dynamic(lastOverride) && lastOverride.startsWith("/");
+      if (stages && !named) {
+        if (dynamicAt[seg.depth] || overrides.some((c) => dynamic(c))) unresolvedStaging = true;
+      }
+  }
   }
   const all = [...dirs];
   // Only a command that staged while the directory was unresolved is worth

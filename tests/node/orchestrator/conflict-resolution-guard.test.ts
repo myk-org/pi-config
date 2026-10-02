@@ -499,9 +499,39 @@ describe("conflict-resolution guard", () => {
   });
 
   it("joins a path split across a line continuation", () => {
-    // The shell removes the backslash and the newline entirely.
-    const dirs = conflictCandidateDirs('cd "foo\\\nbar" && git add x', "/s").all;
-    assert.ok(dirs.includes("/s/foobar"));
+    // Unquoted, the shell removes the backslash and the newline entirely.
+    const joined = conflictCandidateDirs("cd foo\\\nbar && git add x", "/s").all;
+    assert.ok(joined.includes("/s/foobar"));
+  });
+
+  it("keeps a backslash that is inside quotes", () => {
+    // In quotes the backslash is part of the name, so this is one directory
+    // whose name ends in a backslash and a space is not a separator.
+    const literal = resolveEffectiveCwd("cd 'foo\\ bar'; git add x", "/s");
+    assert.equal(literal, "/s/foo\\ bar");
+  });
+
+  it("does not read a wrapper operand as the command", () => {
+    const both = (c: string) => createsAndResolvesConflict(c);
+    // `sudo -u git merge` runs merge as a user called git; git is never run.
+    assert.equal(both("sudo -u git merge branch; sudo -u git add file"), false);
+    assert.equal(both("sudo git merge branch; sudo git add file"), true);
+  });
+
+  it("scopes a wrapped command to the directory its wrapper changed", () => {
+    const both = (c: string) => createsAndResolvesConflict(c);
+    // sudo changes directory, and git inherits it.
+    assert.equal(both("sudo -C a git merge x; sudo -C b git add y"), false);
+    assert.equal(both("sudo -C a git merge x; sudo -C a git add y"), true);
+  });
+
+  it("lets an absolute override outrank an expanded directory", () => {
+    const unresolved = (c: string) => conflictCandidateDirs(c, "/s").dynamicPath;
+    // The override names the worktree, so the directory the shell expanded on
+    // the way there is irrelevant to where git runs.
+    assert.equal(unresolved('cd "$REPO"; git -C /known add file'), null);
+    // An expanded override is the unknown one, and it is the one reported.
+    assert.equal(unresolved('cd "$REPO"; git -C "$X" add file'), "$X");
   });
 
   it("classifies a resolution inside process substitution", () => {
