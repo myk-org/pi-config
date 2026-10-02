@@ -10,6 +10,9 @@ import {
   openListDetailOverlay,
   OverlayScrollDetail,
 } from "./overlay-dashboard.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("async-status");
 
 export { parseAsyncOutputLine } from "./async-status-parse.js";
 
@@ -50,7 +53,12 @@ export function formatKillOriginSuffix(
   killOrigin: string | undefined,
   theme: { fg: (color: string, value: string) => string },
 ): string {
-  return killOrigin ? theme.fg("dim", ` · killed by ${killOrigin}`) : "";
+  if (!killOrigin) {
+    log.debug("kill_origin_header: no origin recorded");
+    return "";
+  }
+  log.debug("kill_origin_header: rendering attribution", { killOrigin });
+  return theme.fg("dim", ` · killed by ${killOrigin}`);
 }
 
 function isActive(status: string): boolean {

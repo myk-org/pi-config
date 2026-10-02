@@ -136,8 +136,15 @@ describe("async kill origin attribution (issue #816)", () => {
         "the label comes first, with prior output below it",
       );
       assert.equal(status.killOrigin, "task-system");
-      // The delivery carries the same label the overlay and pidash read from disk.
+      // The delivery must carry the agent's text too, not just the label — an earlier
+      // version preserved it on disk while the in-memory output stayed empty, so the AI
+      // received the kill label alone.
       assert.match(h.messages[0].content, /Killed by task system/);
+      assert.match(
+        h.messages[0].content,
+        /partial findings from the agent/,
+        "the delivery must include the partial output preserved in status.json",
+      );
     } finally { h.restore(); }
   });
 

@@ -1459,6 +1459,7 @@ export function registerAsyncAgents(
       job.updatedAt = Date.now();
       job.durationMs = Date.now() - job.startedAt;
       // Persist killed state to disk — prevents stale re-delivery on reload
+      let persistedPriorOutput = "";
       try {
         const statusPath = path.join(job.workerDir, "status.json");
         const existing = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, "utf-8")) : {};
@@ -1469,8 +1470,8 @@ export function registerAsyncAgents(
         // Keep whatever the agent already produced below the label, matching the
         // in-memory job.output, so the overlay and pidash see the same text the
         // AI receives instead of losing the partial output.
-        const persistedOutput = typeof existing.output === "string" ? existing.output : "";
-        existing.output = persistedOutput ? `${killLabel}\n${persistedOutput}` : killLabel;
+        persistedPriorOutput = typeof existing.output === "string" ? existing.output : "";
+        existing.output = persistedPriorOutput ? `${killLabel}\n${persistedPriorOutput}` : killLabel;
         fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
       } catch (e: any) { log.error(`kill: status.json update failed for ${job.id}: ${e?.message}`); }
       // Delete result file if it exists — prevent re-ingestion on reload
@@ -1484,7 +1485,10 @@ export function registerAsyncAgents(
       // Keep the origin label on the in-memory output too, not just status.json: grouped
       // delivery and the subagents:failed event read job.output, so without this the AI and
       // pitasks lose attribution for every killed member of a group.
-      const priorOutput = typeof job.output === "string" ? job.output : "";
+      // Prefer the in-memory value, but fall back to the persisted one — the agent's partial
+      // output often only exists in status.json, and dropping it here would lose the very
+      // text the kill preserved on disk.
+      const priorOutput = typeof job.output === "string" && job.output ? job.output : persistedPriorOutput;
       job.output = priorOutput ? `${killLabel}\n${priorOutput}` : killLabel;
       // Check if this completes a group — deliver remaining siblings' results
       if (job.groupId) {
