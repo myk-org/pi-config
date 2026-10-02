@@ -7,7 +7,7 @@ import { createLogger } from "../shared/logger.js";
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
-import { DANGEROUS, executableText, getCurrentBranch, hasGitSub, segmentRunsGit, tokenize } from "./git-helpers.js";
+import { DANGEROUS, executableText, getCurrentBranch, hasGitSub, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
 enfLog.debug("enforcement-helpers module loaded");
@@ -260,8 +260,10 @@ function applyCd(dir: string, target: string, home = process.env.HOME ?? "~", fr
   }
   let next: string;
   // The shell builds one word from backslash escapes: `weird\&name` is a single
-  // directory named `weird&name`, whatever else the name looks like.
-  const word = target.replace(/\\(.)/g, "$1");
+  // directory named `weird&name`, whatever else the name looks like. A backslash
+  // before a newline is a continuation the shell removes entirely, so the two
+  // halves of a split path join with nothing between them.
+  const word = target.replace(/\\\n/g, "").replace(/\\(.)/g, "$1");
   if (word.startsWith("~/")) next = join(home, word.slice(2));
   else if (word === "~") next = home;
   else if (word.startsWith("/")) next = word;
@@ -411,8 +413,14 @@ export function conflictCandidateDirs(
   // character the command escaped is part of the name, not a pattern.
   const dynamic = (p: string) => /[$*?{]/.test(p.replace(/\\./g, ""));
   let dynamicPath: string | null = null;
-  // Set once a git command has run while a dynamic path was outstanding.
-  let gitRanUnresolved = false;
+  // Per paren depth: is the directory this shell is in one we could not resolve?
+  // A subshell's answer dies with the subshell, which is what makes a completed
+  // subshell stop mattering.
+  const dynamicAt: boolean[] = [false];
+  // Set when a command that stages ran in a directory we could not resolve. That
+  // is the case worth refusing: we do not know what it staged. A read-only
+  // command in the same directory is not, so it does not pin the refusal.
+  let unresolvedStaging = false;
   const dirs = new Set<string>();
   // running[d] is the directory of the shell at paren depth d.
   const running: string[] = [sessionCwd];
@@ -438,6 +446,7 @@ export function conflictCandidateDirs(
     while (running.length <= seg.depth) running.push(running[running.length - 1]);
     while (previous.length <= seg.depth) previous.push(previous[previous.length - 1]);
     while (pushed.length <= seg.depth) pushed.push([]);
+    while (dynamicAt.length <= seg.depth) dynamicAt.push(dynamicAt[dynamicAt.length - 1]);
     const assigned = /(?:^|[\s;&|(])HOME=(\S*)/.exec(seg.text);
     if (assigned) home = assigned[1];
     const target = cdTargetIn(seg.text);
@@ -471,20 +480,19 @@ export function conflictCandidateDirs(
         previous[seg.depth] = from;
         running[seg.depth] = to;
       }
-      // A directory change settles an earlier unverifiable one only when it is
-      // absolute — a relative move inherits whatever the expanded one produced —
-      // and only before any git command has already run while the expansion was
-      // outstanding. Once such a command has run, where it ran is already decided
-      // and a later cd cannot change it.
-      const settled = !dynamic(target) && target.startsWith("/") && !seg.conditional && !seg.backgrounded;
-      if (settled && !gitRanUnresolved) dynamicPath = null;
-      else if (dynamic(target) && !dynamicPath) dynamicPath = target;
+      // An expanded target leaves the directory unresolved. A relative move
+      // inherits that from where it started; an absolute literal path settles it.
+      dynamicAt[seg.depth] =
+        dynamic(target) || (!target.startsWith("/") && dynamicAt[seg.depth]);
+      if (!seg.conditional && !seg.backgrounded && target.startsWith("/") && !dynamic(target) && !unresolvedStaging) {
+        // Once a staging command has already run in an unresolved directory, the
+        // path stays reported: the refusal has to name the path we could not read.
+        dynamicPath = null;
+      }
+      if (dynamic(target) && !dynamicPath) dynamicPath = target;
     }
     if (segmentRunsGit(seg.text)) {
-      // Git is about to run in a directory we could not resolve. Nothing later
-      // in this command can change that, so the refusal now stands regardless of
-      // any directory change that follows.
-      if (dynamicPath) gitRanUnresolved = true;
+      if (dynamicAt[seg.depth] && isConflictResolutionCommand(seg.text)) unresolvedStaging = true;
       let base = running[seg.depth];
       // `env -C dir git add x` moves git into dir without a shell cd.
       const envChdir = /^\s*(?:VAR=\S*\s*)*env\s+(?:-\S+\s+)*?(?:-C|--chdir)(?:[=\s]+)(\S+)/.exec(seg.text);
@@ -494,6 +502,8 @@ export function conflictCandidateDirs(
       let cursor = base;
       for (const c of gitCsIn(seg.text)) {
         if (dynamic(c) && !dynamicPath) dynamicPath = c;
+        // An expanded override is the same unknown directory, reached without a cd.
+        if (dynamic(c)) unresolvedStaging = unresolvedStaging || isConflictResolutionCommand(seg.text);
         // A directory literally named `-` is ordinary; only the shell's own
         // `cd -` means the previous directory.
         cursor = applyCd(cursor, c, home, false);
@@ -502,8 +512,11 @@ export function conflictCandidateDirs(
     }
   }
   const all = [...dirs];
-  enfLog.debug("conflict_candidate_dirs", "count", all.length, "env_override", envOverride ?? "none", "dynamic_path", dynamicPath ?? "none");
-  return { all, envOverride, dynamicPath };
+  // Only a command that staged while the directory was unresolved is worth
+  // refusing. Otherwise the path was resolved, or only read from, by the end.
+  const unresolved = unresolvedStaging ? dynamicPath : null;
+  enfLog.debug("conflict_candidate_dirs", "count", all.length, "env_override", envOverride ?? "none", "dynamic_path", unresolved ?? "none", "unresolved_staging", unresolvedStaging);
+  return { all, envOverride, dynamicPath: unresolved };
 }
 
 /** Parse bash command for cd target to resolve the effective working directory (worktree support) */

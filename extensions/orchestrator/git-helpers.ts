@@ -3,6 +3,7 @@
  */
 
 import { execFile, execSync } from "node:child_process";
+import { resolve } from "node:path";
 import { createLogger } from "../shared/logger.js";
 
 const gitLog = createLogger("git-helpers");
@@ -871,8 +872,27 @@ const GLOBAL_LONG_VALUE_OPTIONS = new Set(["--git-dir", "--work-tree", "--namesp
  * option does swallowed the subcommand itself — `git --no-pager add x` read
  * `add` as the value of `--no-pager` and then found no subcommand at all.
  */
-function gitSubcommandIndex(words: string[]): number {
-  let k = 1;
+/** The index of the word that runs git, or -1. */
+function gitWordIndex(words: string[]): number {
+  let k = 0;
+  while (k < words.length) {
+    if (words[k] === "function") { k += 2; continue; }
+    if (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) { k += 1; continue; }
+    const head = words[k].replace(/^[()]+|[()]+$/g, "");
+    if (isGitWord(head)) return k;
+    // A wrapper runs whatever follows it. `command -v git` prints the path
+    // instead of running anything, so that spelling is not an invocation.
+    if (GIT_EXECUTORS.has(head) && !/^-[vV]$/.test(words[k + 1] ?? "")) {
+      for (let i = k + 1; i < words.length; i++) if (isGitWord(words[i])) return i;
+    }
+    return -1;
+  }
+  return -1;
+}
+
+/** The index of the subcommand, given where the git word starts. */
+function gitSubcommandIndex(words: string[], gitAt = 0): number {
+  let k = gitAt + 1;
   while (k < words.length && words[k].startsWith("-") && words[k] !== "-") {
     const tok = words[k];
     const attached = tok.length > 2 && !tok.startsWith("--") ? true : tok.includes("=");
@@ -922,39 +942,34 @@ export function createsAndResolvesConflict(command: string): boolean {
   const STASH_STARTS = new Set(["pop", "apply", "branch"]);
   const SIDE_PICKING = new Set(["update-index", "restore", "rm", "reset"]);
 
-  let started = false;
-  let startedScope = "";
+  // Repositories in which a sequencer has already started, keyed by the directory
+  // each one actually resolves to. A later merge in a different repository must
+  // not be attributed to the first one, and staging is only a resolution in a
+  // repository that started it.
+  const started = new Set<string>();
   for (const raw of scanned.split(/[\n;&|()]+/)) {
     const words = tokenize(raw.trim());
-    let k = 0;
-    while (k < words.length) {
-      if (words[k] === "function") { k += 2; continue; }
-      if (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) { k += 1; continue; }
-      break;
-    }
-    if (k >= words.length || !isGitWord(words[k].replace(/^[()]+|[()]+$/g, ""))) continue;
+    const k = gitWordIndex(words);
+    if (k === -1) continue;
     // Which repository this invocation targets: git applies each -C in turn.
     let scope = "";
-    for (const c of gitScopeValues(words)) scope = scope ? `${scope}/${c}` : c;
-    const k0 = gitSubcommandIndex(words);
+    for (const c of gitScopeValues(words)) scope = resolve(scope || ".", c);
+    const k0 = gitSubcommandIndex(words, k);
     const sub = (words[k0] ?? "").split("=")[0];
     const rest = words.slice(k0 + 1).join(" ");
     const starts =
       (STARTERS.has(sub) && !BACKOUT.test(rest)) ||
       (sub === "stash" && STASH_STARTS.has((words[k0 + 1] ?? "").split("=")[0]));
-    if (starts && !started) {
-      started = true;
-      startedScope = scope;
-    }
+    if (starts) started.add(scope);
     // Staging counts only after the sequencer, and only in the same repository:
     // `git -C a merge && git -C b add x` touches two unrelated trees.
     const stages = sub === "add" || SIDE_PICKING.has(sub) || (sub === "checkout" && /(^|\s)--/.test(rest));
-    if (stages && started && scope === startedScope) {
+    if (stages && started.has(scope)) {
       gitLog.debug("conflict_created_and_resolved", "scope", scope || "cwd", "subcommand", sub);
       return true;
     }
   }
-  gitLog.debug("conflict_created_and_resolved", "started", started, "resolved", false);
+  gitLog.debug("conflict_created_and_resolved", "started", started.size, "resolved", false);
   return false;
 }
 

@@ -414,25 +414,6 @@ describe("conflict-resolution guard", () => {
     assert.ok(dirs.includes("/root/clean"));
   });
 
-  it("reads order, flags and scope when a command creates and stages", () => {
-    const both = (c: string) => createsAndResolvesConflict(c);
-    // The sequencer has to come first: staging before it is ordinary work.
-    assert.equal(both("git merge main && git add a.txt"), true);
-    assert.equal(both("git add a.txt && git merge main"), false);
-    // A backout resolves nothing, and finishing one is the handoff's job.
-    assert.equal(both("git merge --abort && git add a.txt"), false);
-    assert.equal(both("git merge main --continue && git add a.txt"), false);
-    // Reading the stash list is not starting anything; popping it can conflict.
-    assert.equal(both("git stash list && git add a.txt"), false);
-    assert.equal(both("git stash pop && git add a.txt"), true);
-    // Two repositories are two unrelated trees.
-    assert.equal(both("git -C repo-a merge branch && git -C repo-b add x"), false);
-    assert.equal(both("git -C a merge x && git -C a add y"), true);
-    // A pull merges; picking a side after it resolves.
-    assert.equal(both("git pull origin main && git add a.txt"), true);
-    assert.equal(both("git merge x && git checkout --ours a.txt"), true);
-  });
-
   it("keeps walking past a subshell before the git command", () => {
     // A subshell that closes cannot move the shell, and it must not end the walk.
     assert.equal(resolveEffectiveCwd("(cd /tmp) && cd /repo && git add x", "/session"), "/repo");
@@ -458,6 +439,69 @@ describe("conflict-resolution guard", () => {
   it("reads a quoted directory path that spans a newline", () => {
     const dirs = conflictCandidateDirs('cd "conflicted\nrepo" && git add a.txt', "/s").all;
     assert.ok(dirs.includes("/s/conflicted\nrepo"));
+  });
+
+  it("reads order when a command creates and stages", () => {
+    const both = (c: string) => createsAndResolvesConflict(c);
+    // The sequencer has to come first: staging before it is ordinary work.
+    assert.equal(both("git merge main && git add a.txt"), true);
+    assert.equal(both("git add a.txt && git merge main"), false);
+  });
+
+  it("ignores a sequencer that backs out or only reads", () => {
+    const both = (c: string) => createsAndResolvesConflict(c);
+    // A backout resolves nothing, and finishing one is the handoff's own job.
+    assert.equal(both("git merge --abort && git add a.txt"), false);
+    assert.equal(both("git merge main --continue && git add a.txt"), false);
+    // Reading the stash list starts nothing; popping it can conflict.
+    assert.equal(both("git stash list && git add a.txt"), false);
+    assert.equal(both("git stash pop && git add a.txt"), true);
+  });
+
+  it("attributes staging to the repository that started", () => {
+    const both = (c: string) => createsAndResolvesConflict(c);
+    // Two repositories are two unrelated trees.
+    assert.equal(both("git -C repo-a merge branch && git -C repo-b add x"), false);
+    assert.equal(both("git -C a merge x && git -C a add y"), true);
+    // A later merge in a second repository is tracked as its own.
+    assert.equal(both("git -C a merge branch; git -C b merge branch; git -C b add file"), true);
+    // Paths that name the same directory compare equal however they are written.
+    assert.equal(both("git -C repo merge x; git -C repo/./ add y"), true);
+    assert.equal(both("git -C a -C . merge x; git -C a add y"), true);
+  });
+
+  it("finds a staged resolution behind an assignment or a wrapper", () => {
+    const both = (c: string) => createsAndResolvesConflict(c);
+    assert.equal(both("GIT_CONFIG_COUNT=0 git merge branch; git add file"), true);
+    assert.equal(both("command git merge branch; command git add file"), true);
+    assert.equal(both("sudo git merge branch; sudo git add file"), true);
+    // A lookup prints the path instead of running it.
+    assert.equal(both("command -v git"), false);
+    // A pull merges; picking a side after it resolves.
+    assert.equal(both("git pull origin main && git add a.txt"), true);
+    assert.equal(both("git merge x && git checkout --ours a.txt"), true);
+  });
+
+  it("refuses only when staging ran in an unresolved directory", () => {
+    const unresolved = (c: string) => conflictCandidateDirs(c, "/s").dynamicPath;
+    // Still refused: staging in a directory the shell expands.
+    assert.equal(unresolved("cd $REPO; git add f"), "$REPO");
+    assert.equal(unresolved('git -C "$REPO" add a.txt'), "$REPO");
+    // A later absolute move does not undo a staging that already ran.
+    assert.equal(unresolved('cd "$REPO"; git add a.txt; cd /'), "$REPO");
+    // A relative move inherits the expansion it started from.
+    assert.equal(unresolved("cd $REPO; cd nested; git add f"), "$REPO");
+    // Not refused: nothing staged while the directory was unknown.
+    assert.equal(unresolved("cd $REPO; cd /known; git add f"), null);
+    assert.equal(unresolved('cd "$REPO"; git status; cd /known; git add file'), null);
+    // A subshell that has exited cannot affect the shell that outlives it.
+    assert.equal(unresolved("(cd $REPO && cd /known); git add file"), null);
+  });
+
+  it("joins a path split across a line continuation", () => {
+    // The shell removes the backslash and the newline entirely.
+    const dirs = conflictCandidateDirs('cd "foo\\\nbar" && git add x', "/s").all;
+    assert.ok(dirs.includes("/s/foobar"));
   });
 
   it("classifies a resolution inside process substitution", () => {

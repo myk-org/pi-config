@@ -576,7 +576,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       // The index below is read *before* the command runs, so a command that
       // starts a merge and then stages a side would pass the check and resolve
       // the conflict it just created.
-      log.warn("conflict_created_and_resolved", "agent", process.env.PI_AGENT_NAME ?? "unknown");
+      // error, not warn: the command was refused, not recovered from.
+      log.error("conflict_created_and_resolved", "agent", process.env.PI_AGENT_NAME ?? "unknown");
       return {
         block: true,
         reason:
