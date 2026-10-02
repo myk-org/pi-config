@@ -28,7 +28,14 @@ Before every response, identify operations that can run in parallel and execute 
 Use `async: true` for independent tasks (reviews, research, polling, monitoring, CI checks) — any task where you don't need the result immediately.
 Only use sync when the very next step depends on this agent's output.
 After spawning async agents, end your turn — results arrive automatically as a follow-up message.
-(`fireAndForget: true` agents are silent — no follow-up.)
+
+**`fireAndForget: true` delivers nothing.** The agent runs silently and you never see
+its output. Use it ONLY for work whose result nobody consumes — in pi-config, that is
+dreaming and nothing else. Every watcher, poll, and review agent exists to report
+something back, so leave `fireAndForget` unset for them. If you are about to set it,
+ask whether you will ever read the result; if yes, do not set it.
+**`taskId` is required on every async call** (use `-1` when unlinked) — a call without
+it is rejected, and the agent does not run.
 
 Do NOT write bash loops, sleep commands, or poll for results after spawning async agents.
 
