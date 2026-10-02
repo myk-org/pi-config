@@ -561,6 +561,24 @@ describe("conflict-resolution guard", () => {
     assert.equal(both("git -Ca merge x; git -Cb add y"), false);
   });
 
+  it("keeps an equals sign that belongs to a short option", () => {
+    const both = (c: string) => createsAndResolvesConflict(c);
+    // `-C=repo` names the directory `=repo`. Only a long option uses `=` to
+    // separate its value.
+    assert.equal(both("git -C=repo1 merge x; git -C=repo2 add y"), false);
+    assert.equal(both("git -C=repo1 merge x; git -Crepo2 add y"), false);
+    assert.equal(both("sudo --chdir=/a git merge x; sudo --chdir=/b git add y"), false);
+  });
+
+  it("keys the repository on the git directory, not the work tree", () => {
+    const both = (c: string) => createsAndResolvesConflict(c);
+    // The git directory selects the index that records a merge, so two work
+    // trees over one git directory are one repository with one conflict state.
+    assert.equal(both("git --git-dir=/r/.git --work-tree=/w1 merge x; git --git-dir=/r/.git --work-tree=/w2 add y"), true);
+    // Two git directories are two repositories.
+    assert.equal(both("git --git-dir=/r1/.git merge x; git --git-dir=/r2/.git add y"), false);
+  });
+
   it("classifies a resolution inside process substitution", () => {
     assert.equal(isConflictResolutionCommand("diff <(git add a.txt) <(git status)"), true);
   });

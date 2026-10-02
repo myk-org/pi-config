@@ -788,7 +788,15 @@ const WRAPPER_CHDIR_OPTIONS: Record<string, Set<string>> = {
   env: new Set(["-C", "--chdir"]),
 };
 /** Git's own directory option. */
-const GIT_CHDIR_OPTIONS = new Set(["-C", "--work-tree"]);
+/**
+ * Git's own options that name the repository. -C moves the working directory and
+ * --git-dir names the repository outright.
+ *
+ * Deliberately not --work-tree: the git directory is what selects the index that
+ * records a merge, so two work trees over one git directory share one conflict
+ * state and must not be treated as separate repositories.
+ */
+const GIT_CHDIR_OPTIONS = new Set(["-C", "--git-dir"]);
 
 /** For a wrapper with no directory option of its own. */
 const NO_CHDIR_OPTIONS = new Set<string>();
@@ -943,7 +951,10 @@ function gitSubcommandIndex(words: string[], gitAt = 0): number {
 function chdirValue(tok: string, options: Set<string>, next?: string): string | undefined {
   for (const opt of options) {
     if (tok === opt) return next;
-    if (tok.startsWith(`${opt}=`)) return tok.slice(opt.length + 1);
+    // Only a long option separates its value with `=`. On a short one the
+    // equals sign is part of the name, so `-C=repo` names the directory
+    // `=repo` and not `repo`.
+    if (opt.startsWith("--") && tok.startsWith(`${opt}=`)) return tok.slice(opt.length + 1);
     if (!opt.startsWith("--") && tok.startsWith(opt) && tok.length > opt.length) return tok.slice(opt.length);
   }
   return undefined;
