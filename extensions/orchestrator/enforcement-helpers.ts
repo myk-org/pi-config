@@ -530,7 +530,11 @@ export function resolveEffectiveCwd(command: string, sessionCwd: string): string
     // A trailing cd after the git command did not happen yet.
     if (i === gitIndex) break;
     const seg = segments[i];
-    if (seg.depth > targetDepth) break;
+    // A segment deeper than the git command runs in a subshell that has already
+    // closed by the time git runs, so it cannot have moved this shell. It is
+    // skipped rather than ending the walk: a subshell before the command is
+    // ordinary, and stopping there would drop every later directory change.
+    if (seg.depth > targetDepth) continue;
     while (running.length <= seg.depth) running.push(running[running.length - 1]);
     const target = cdTargetIn(seg.text);
     if (!target || target === "~popd") continue;

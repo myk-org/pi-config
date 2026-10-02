@@ -13,6 +13,7 @@ import { createLogger } from "../../../extensions/shared/logger.js";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { resolveEffectiveCwd, conflictCandidateDirs } from "../../../extensions/orchestrator/enforcement-helpers.js";
 import {
+  createsAndResolvesConflict,
   isConflictResolutionCommand,
   listUnmergedFiles,
 } from "../../../extensions/orchestrator/git-helpers.js";
@@ -411,6 +412,31 @@ describe("conflict-resolution guard", () => {
     const dirs = conflictCandidateDirs("cd clean | git add a.txt", "/root").all;
     assert.ok(dirs.includes("/root"));
     assert.ok(dirs.includes("/root/clean"));
+  });
+
+  it("reads order, flags and scope when a command creates and stages", () => {
+    const both = (c: string) => createsAndResolvesConflict(c);
+    // The sequencer has to come first: staging before it is ordinary work.
+    assert.equal(both("git merge main && git add a.txt"), true);
+    assert.equal(both("git add a.txt && git merge main"), false);
+    // A backout resolves nothing, and finishing one is the handoff's job.
+    assert.equal(both("git merge --abort && git add a.txt"), false);
+    assert.equal(both("git merge main --continue && git add a.txt"), false);
+    // Reading the stash list is not starting anything; popping it can conflict.
+    assert.equal(both("git stash list && git add a.txt"), false);
+    assert.equal(both("git stash pop && git add a.txt"), true);
+    // Two repositories are two unrelated trees.
+    assert.equal(both("git -C repo-a merge branch && git -C repo-b add x"), false);
+    assert.equal(both("git -C a merge x && git -C a add y"), true);
+    // A pull merges; picking a side after it resolves.
+    assert.equal(both("git pull origin main && git add a.txt"), true);
+    assert.equal(both("git merge x && git checkout --ours a.txt"), true);
+  });
+
+  it("keeps walking past a subshell before the git command", () => {
+    // A subshell that closes cannot move the shell, and it must not end the walk.
+    assert.equal(resolveEffectiveCwd("(cd /tmp) && cd /repo && git add x", "/session"), "/repo");
+    assert.equal(resolveEffectiveCwd("cd /repo && (cd /tmp) && git add x", "/session"), "/repo");
   });
 
   it("classifies a resolution inside process substitution", () => {

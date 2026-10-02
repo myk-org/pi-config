@@ -883,6 +883,20 @@ function gitSubcommandIndex(words: string[]): number {
   return k;
 }
 
+/** The directory a git word list targets, via its global -C values, in order. */
+function gitScopeValues(words: string[]): string[] {
+  const values: string[] = [];
+  for (let i = 1; i < words.length; i++) {
+    const tok = words[i];
+    if (!tok.startsWith("-") || tok === "-") break;
+    if (tok === "-C") { if (words[i + 1]) values.push(words[i + 1]); i++; continue; }
+    if (tok.startsWith("-C") && tok.length > 2) { values.push(tok.slice(2)); continue; }
+    if (tok.includes("=")) continue;
+    if (GLOBAL_LONG_VALUE_OPTIONS.has(tok) && words[i + 1]) i++;
+  }
+  return values;
+}
+
 /** ANSI-C quoting turns these escapes into characters the shell really sees. */
 function decodeAnsiC(text: string): string {
   return text.replace(/\\n/g, "\n").replace(/\\t/g, " ");
@@ -899,18 +913,49 @@ function decodeAnsiC(text: string): string {
 export function createsAndResolvesConflict(command: string): boolean {
   const scanned = executableText(command);
   if (scanned.includes(UNSCANNED)) return true;
-  const STARTERS = new Set(["merge", "rebase", "cherry-pick", "revert", "am", "stash"]);
-  const STAGES = new Set(["add", "rm", "restore", "reset", "update-index"]);
-  let starts = false;
-  let stages = false;
-  for (const words of executedGitCommands(scanned)) {
-    const sub = (words[gitSubcommandIndex(words)] ?? "").split("=")[0];
-    if (STARTERS.has(sub)) starts = true;
-    if (STAGES.has(sub)) stages = true;
+  // Subcommands that merge, and therefore can leave conflicts behind.
+  const STARTERS = new Set(["merge", "rebase", "cherry-pick", "revert", "am", "pull"]);
+  // Flags that make a sequencer do the opposite: a backout resolves nothing and
+  // finishing an existing conflict is the handoff's job, not a way around it.
+  const BACKOUT = /--(?:abort|quit|continue|skip)\b/;
+  // `git stash list` reads; `stash pop` and `stash apply` merge and can conflict.
+  const STASH_STARTS = new Set(["pop", "apply", "branch"]);
+  const SIDE_PICKING = new Set(["update-index", "restore", "rm", "reset"]);
+
+  let started = false;
+  let startedScope = "";
+  for (const raw of scanned.split(/[\n;&|()]+/)) {
+    const words = tokenize(raw.trim());
+    let k = 0;
+    while (k < words.length) {
+      if (words[k] === "function") { k += 2; continue; }
+      if (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) { k += 1; continue; }
+      break;
+    }
+    if (k >= words.length || !isGitWord(words[k].replace(/^[()]+|[()]+$/g, ""))) continue;
+    // Which repository this invocation targets: git applies each -C in turn.
+    let scope = "";
+    for (const c of gitScopeValues(words)) scope = scope ? `${scope}/${c}` : c;
+    const k0 = gitSubcommandIndex(words);
+    const sub = (words[k0] ?? "").split("=")[0];
+    const rest = words.slice(k0 + 1).join(" ");
+    const starts =
+      (STARTERS.has(sub) && !BACKOUT.test(rest)) ||
+      (sub === "stash" && STASH_STARTS.has((words[k0 + 1] ?? "").split("=")[0]));
+    if (starts && !started) {
+      started = true;
+      startedScope = scope;
+    }
+    // Staging counts only after the sequencer, and only in the same repository:
+    // `git -C a merge && git -C b add x` touches two unrelated trees.
+    const stages = sub === "add" || SIDE_PICKING.has(sub) || (sub === "checkout" && /(^|\s)--/.test(rest));
+    if (stages && started && scope === startedScope) {
+      gitLog.debug("conflict_created_and_resolved", "scope", scope || "cwd", "subcommand", sub);
+      return true;
+    }
   }
-  const both = starts && stages;
-  gitLog.debug("conflict_created_and_resolved", "starts", starts, "stages", stages);
-  return both;
+  gitLog.debug("conflict_created_and_resolved", "started", started, "resolved", false);
+  return false;
 }
 
 export function isConflictResolutionCommand(command: string): boolean {
