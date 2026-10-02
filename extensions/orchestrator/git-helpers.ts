@@ -790,11 +790,8 @@ const WRAPPER_CHDIR_OPTIONS: Record<string, Set<string>> = {
 /** Git's own directory option. */
 const GIT_CHDIR_OPTIONS = new Set(["-C", "--work-tree"]);
 
-/** The spelling a bare option takes its value in, for a set that may hold one. */
-function dirOptionsChdir(options: Set<string>): string {
-  for (const o of options) if (o.startsWith("-") && !o.startsWith("--")) return o;
-  return "";
-}
+/** For a wrapper with no directory option of its own. */
+const NO_CHDIR_OPTIONS = new Set<string>();
 
 /** Is this word the git executable? A full or relative path names it just as well. */
 function isGitWord(word: string): boolean {
@@ -938,35 +935,62 @@ function gitSubcommandIndex(words: string[], gitAt = 0): number {
 }
 
 /** The directory a git word list targets, via its global -C values, in order. */
+/**
+ * The directory a chdir option names, in whichever of its spellings it is
+ * written: separated (`-C dir`, `--chdir dir`), attached (`-Cdir`) or with an
+ * equals sign (`--chdir=dir`).
+ */
+function chdirValue(tok: string, options: Set<string>, next?: string): string | undefined {
+  for (const opt of options) {
+    if (tok === opt) return next;
+    if (tok.startsWith(`${opt}=`)) return tok.slice(opt.length + 1);
+    if (!opt.startsWith("--") && tok.startsWith(opt) && tok.length > opt.length) return tok.slice(opt.length);
+  }
+  return undefined;
+}
+
+/**
+ * The directories a git invocation is moved into by directory options, in order.
+ *
+ * Two regions contribute. Before the git word sits a chain of wrappers, each of
+ * which may change directory with its own option — and they disagree: sudo
+ * changes directory with -D and uses -C for a descriptor limit, while env -C and
+ * git -C both change directory. Which wrapper owns which option therefore has to
+ * be tracked as the words are read, rather than assumed from the first one.
+ */
 function gitScopeValues(words: string[], gitAt = 0): string[] {
   const values: string[] = [];
-  // Two regions contribute: the wrapper's own options before git — `sudo -C a
-  // git` changes directory through sudo and git inherits it — and git's own
-  // global options after it. Both are applied in order, so the scope is the
-  // directory these commands really reach.
-  // In the wrapper region a plain word is the wrapper itself and is stepped
-  // over; in git's own region the first plain word is the subcommand and ends it.
-  // A wrapper changes directory with its own option, and it is not always -C:
-  // `sudo -C` sets a file-descriptor limit, and `env -C` changes directory.
-  // Reading sudo's -C as a directory gave two commands in one repository
-  // different scopes, and hid a merge-then-stage behind it.
-  const wrapper = words[0]?.replace(/^[()]+|[()]+$/g, "");
-  const chdir = WRAPPER_CHDIR_OPTIONS[wrapper ?? ""] ?? new Set<string>();
-  const read = (from: number, to: number, skipPlainWords: boolean, dirOptions: Set<string>, attached: string) => {
-    for (let i = from; i < to; i++) {
-      const tok = words[i];
-      if (!tok.startsWith("-") || tok === "-") {
-        if (skipPlainWords) continue;
-        break;
-      }
-      if (tok === dirOptionsChdir(dirOptions)) { if (words[i + 1]) values.push(words[i + 1]); i++; continue; }
-      if (attached && tok.startsWith(attached) && tok.length > attached.length) { values.push(tok.slice(attached.length)); continue; }
-      if (tok.includes("=")) continue;
-      if (GLOBAL_LONG_VALUE_OPTIONS.has(tok) && words[i + 1]) i++;
+  let wrapper = "";
+  for (let i = 0; i < gitAt; i++) {
+    const tok = words[i];
+    if (!tok.startsWith("-") || tok === "-") {
+      wrapper = tok.replace(/^[()]+|[()]+$/g, "");
+      continue;
     }
-  };
-  read(0, gitAt, true, chdir, "");
-  read(gitAt + 1, words.length, false, GIT_CHDIR_OPTIONS, "-C");
+    const opt = tok.split("=")[0];
+    const value = chdirValue(tok, WRAPPER_CHDIR_OPTIONS[wrapper] ?? NO_CHDIR_OPTIONS, words[i + 1]);
+    if (value !== undefined) {
+      values.push(value);
+      if (!tok.includes("=") && tok === opt) i++;
+      continue;
+    }
+    // Any other option may take a value of its own; step over it so a wrapper
+    // name is not mistaken for the command.
+    if (!tok.includes("=") && WRAPPER_VALUE_OPTIONS.has(opt) && words[i + 1]) i++;
+  }
+  // Git's own global options, up to the subcommand.
+  for (let i = gitAt + 1; i < words.length; i++) {
+    const tok = words[i];
+    if (!tok.startsWith("-") || tok === "-") break;
+    const value = chdirValue(tok, GIT_CHDIR_OPTIONS, words[i + 1]);
+    if (value !== undefined) {
+      values.push(value);
+      if (!tok.includes("=") && !tok.startsWith("--")) i++;
+      continue;
+    }
+    if (!tok.includes("=") && GLOBAL_LONG_VALUE_OPTIONS.has(tok) && words[i + 1]) i++;
+  }
+  gitLog.debug("git_scope_values", "count", values.length, "last", values[values.length - 1] ?? "cwd");
   return values;
 }
 

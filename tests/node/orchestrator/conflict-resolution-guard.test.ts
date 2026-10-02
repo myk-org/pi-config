@@ -545,6 +545,22 @@ describe("conflict-resolution guard", () => {
     assert.equal(unresolved('cd "$REPO"; git -C "$X" add file'), "$X");
   });
 
+  it("reads a directory change made by an inner wrapper", () => {
+    const both = (c: string) => createsAndResolvesConflict(c);
+    // env changes directory with -C, and sudo passes it through.
+    assert.equal(both("sudo env -C a git merge x; sudo env -C b git add y"), false);
+    assert.equal(both("sudo env -C a git merge x; sudo env -C a git add y"), true);
+  });
+
+  it("reads a directory option in any of its spellings", () => {
+    const both = (c: string) => createsAndResolvesConflict(c);
+    // Separated, attached, and with an equals sign all name the same option.
+    assert.equal(both("sudo --chdir a git merge x; sudo --chdir b git add y"), false);
+    assert.equal(both("sudo --chdir=/repo-a git merge x; sudo --chdir=/repo-b git add y"), false);
+    assert.equal(both("sudo --chdir=/repo-a git merge x; sudo --chdir=/repo-a git add y"), true);
+    assert.equal(both("git -Ca merge x; git -Cb add y"), false);
+  });
+
   it("classifies a resolution inside process substitution", () => {
     assert.equal(isConflictResolutionCommand("diff <(git add a.txt) <(git status)"), true);
   });
