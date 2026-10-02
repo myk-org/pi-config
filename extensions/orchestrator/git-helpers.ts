@@ -782,6 +782,20 @@ const WRAPPER_VALUE_OPTIONS = new Set([
   "-t", "--type", "-U", "--other-user", "-C", "--chdir", "--preserve-env",
 ]);
 
+/** Options that change directory, which differ per wrapper. */
+const WRAPPER_CHDIR_OPTIONS: Record<string, Set<string>> = {
+  sudo: new Set(["-D", "--chdir"]),
+  env: new Set(["-C", "--chdir"]),
+};
+/** Git's own directory option. */
+const GIT_CHDIR_OPTIONS = new Set(["-C", "--work-tree"]);
+
+/** The spelling a bare option takes its value in, for a set that may hold one. */
+function dirOptionsChdir(options: Set<string>): string {
+  for (const o of options) if (o.startsWith("-") && !o.startsWith("--")) return o;
+  return "";
+}
+
 /** Is this word the git executable? A full or relative path names it just as well. */
 function isGitWord(word: string): boolean {
   return word === "git" || word.endsWith("/git");
@@ -932,21 +946,27 @@ function gitScopeValues(words: string[], gitAt = 0): string[] {
   // directory these commands really reach.
   // In the wrapper region a plain word is the wrapper itself and is stepped
   // over; in git's own region the first plain word is the subcommand and ends it.
-  const read = (from: number, to: number, skipPlainWords: boolean) => {
+  // A wrapper changes directory with its own option, and it is not always -C:
+  // `sudo -C` sets a file-descriptor limit, and `env -C` changes directory.
+  // Reading sudo's -C as a directory gave two commands in one repository
+  // different scopes, and hid a merge-then-stage behind it.
+  const wrapper = words[0]?.replace(/^[()]+|[()]+$/g, "");
+  const chdir = WRAPPER_CHDIR_OPTIONS[wrapper ?? ""] ?? new Set<string>();
+  const read = (from: number, to: number, skipPlainWords: boolean, dirOptions: Set<string>, attached: string) => {
     for (let i = from; i < to; i++) {
       const tok = words[i];
       if (!tok.startsWith("-") || tok === "-") {
         if (skipPlainWords) continue;
         break;
       }
-      if (tok === "-C") { if (words[i + 1]) values.push(words[i + 1]); i++; continue; }
-      if (tok.startsWith("-C") && tok.length > 2) { values.push(tok.slice(2)); continue; }
+      if (tok === dirOptionsChdir(dirOptions)) { if (words[i + 1]) values.push(words[i + 1]); i++; continue; }
+      if (attached && tok.startsWith(attached) && tok.length > attached.length) { values.push(tok.slice(attached.length)); continue; }
       if (tok.includes("=")) continue;
       if (GLOBAL_LONG_VALUE_OPTIONS.has(tok) && words[i + 1]) i++;
     }
   };
-  read(0, gitAt, true);
-  read(gitAt + 1, words.length, false);
+  read(0, gitAt, true, chdir, "");
+  read(gitAt + 1, words.length, false, GIT_CHDIR_OPTIONS, "-C");
   return values;
 }
 

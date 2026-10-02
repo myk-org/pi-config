@@ -519,10 +519,21 @@ describe("conflict-resolution guard", () => {
   });
 
   it("scopes a wrapped command to the directory its wrapper changed", () => {
+    // These are parsed, never run, so the operands are the ones each wrapper
+    // actually accepts rather than placeholders.
     const both = (c: string) => createsAndResolvesConflict(c);
-    // sudo changes directory, and git inherits it.
-    assert.equal(both("sudo -C a git merge x; sudo -C b git add y"), false);
-    assert.equal(both("sudo -C a git merge x; sudo -C a git add y"), true);
+    // sudo changes directory with -D, and git inherits it.
+    assert.equal(both("sudo -D a git merge x; sudo -D b git add y"), false);
+    assert.equal(both("sudo -D a git merge x; sudo -D a git add y"), true);
+    // env changes directory with -C.
+    assert.equal(both("env -C a git merge x; env -C b git add y"), false);
+  });
+
+  it("does not read a descriptor limit as a directory", () => {
+    const both = (c: string) => createsAndResolvesConflict(c);
+    // sudo -C sets a file-descriptor limit, so both commands run where the
+    // shell already is and the merge-then-stage is one repository.
+    assert.equal(both("sudo -C 3 git merge x; sudo -C 4 git add file"), true);
   });
 
   it("lets an absolute override outrank an expanded directory", () => {
