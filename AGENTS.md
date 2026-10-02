@@ -26,6 +26,14 @@ pi-sidecar lives under `packages/pi-sidecar/` as an npm workspace package. It is
 **Public API contract:** The HTTP REST API (`/health`, `/models`, `/providers`, `/sessions`) and the Python client (`pi_sidecar_client`) are the external contract — never break these.
 Internal code, imports, and structure can change freely.
 
+`prompt` usage reports `cost_usd` as the accumulation of driver-reported costs: a number means costs
+were reported, `null` means nothing usable was reported, and a number with `cost_partial: true` is a lower
+bound because at least one turn's cost was unknowable. A model from a key-scoped listing has all-zero Pi
+price metadata, which means *unknown pricing* rather than *free*, so the sidecar cannot derive a cost for
+those turns — but a driver may still report one, and that reported amount is always kept. Read `cost_usd`
+together with `cost_partial`; consumers must not coalesce `null` to `0` nor present a partial total as
+complete — see `packages/pi-sidecar/CONSUMER-GUIDE.md`.
+
 `GET /providers` lists all provider IDs registered in the initialized runtime,
 including built-ins and extensions, regardless of ambient auth or whether
 `GET /models` includes their models. It returns `{ "providers": [...] }` with

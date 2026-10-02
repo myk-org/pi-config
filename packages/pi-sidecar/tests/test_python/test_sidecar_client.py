@@ -199,6 +199,21 @@ class TestDataclasses:
         assert usage.provider == ""
         assert usage.model == ""
         assert usage.session_id == ""
+        assert usage.cost_partial is False
+
+    def test_ai_token_usage_positional_order_unchanged(self) -> None:
+        """cost_partial was appended, so existing positional calls keep their meaning."""
+        usage = AITokenUsage(1, 2, 3, 4, 0.5, 150, "openrouter", "some-model", "sess-9")
+        assert usage.input_tokens == 1
+        assert usage.output_tokens == 2
+        assert usage.cache_read_tokens == 3
+        assert usage.cache_write_tokens == 4
+        assert usage.cost_usd == 0.5
+        assert usage.duration_ms == 150, "a duration passed positionally must not land on cost_partial"
+        assert usage.provider == "openrouter"
+        assert usage.model == "some-model"
+        assert usage.session_id == "sess-9"
+        assert usage.cost_partial is False, "the appended flag defaults to complete"
 
 
 # ---------------------------------------------------------------------------
@@ -647,7 +662,38 @@ class TestSidecarClient:
         assert result.usage.cache_read_tokens == 5
         assert result.usage.cache_write_tokens == 3
         assert result.usage.cost_usd == 0.001
+        assert result.usage.cost_partial is False
         assert result.usage.duration_ms == 150
+
+    async def test_client_prompt_deserializes_partial_cost(self, client: SidecarClient) -> None:
+        """A lower-bound cost must survive deserialization with its partial flag."""
+        mock_resp = _mock_response(
+            200,
+            {
+                "text": "Hello!",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 20,
+                    "cost_usd": 1.25,
+                    "cost_partial": True,
+                },
+            },
+        )
+        client._client.post = AsyncMock(return_value=mock_resp)
+
+        result = await client.prompt("sess-1", "hi")
+        assert result.usage is not None
+        assert result.usage.cost_usd == 1.25
+        assert result.usage.cost_partial is True, "callers must be able to tell a lower bound from a total"
+
+    async def test_client_prompt_tolerates_missing_partial_flag(self, client: SidecarClient) -> None:
+        """An older sidecar omits cost_partial; it must default to a complete total."""
+        mock_resp = _mock_response(200, {"text": "Hello!", "usage": {"input_tokens": 1, "cost_usd": 2.0}})
+        client._client.post = AsyncMock(return_value=mock_resp)
+
+        result = await client.prompt("sess-1", "hi")
+        assert result.usage is not None
+        assert result.usage.cost_partial is False
 
     # -- prompt failure --
     async def test_client_prompt_failure(self, client: SidecarClient) -> None:

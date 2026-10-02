@@ -33,6 +33,8 @@ async def my_usage_recorder(
         "input_tokens": result.usage.input_tokens if result.usage else 0,
         "output_tokens": result.usage.output_tokens if result.usage else 0,
         "cost_usd": result.usage.cost_usd if result.usage else None,
+        # A numeric cost with cost_partial=True is a lower bound, not a total.
+        "cost_partial": result.usage.cost_partial if result.usage else False,
     }
     usage_log.append(record)
     print(f"  [tracked] {call_type}: {record['input_tokens']}in/{record['output_tokens']}out")

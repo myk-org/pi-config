@@ -29,6 +29,7 @@ import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
 import { runWithSessionCwd } from "./session-cwd.js";
 
 const fixtureLog = createLogger("session-store");
+const pricingLog = createLogger("session-store");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -506,12 +507,39 @@ export const DEFAULT_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
 /** Methods SessionStore calls on a stored session (create() or test fixture). */
 type StoredSession = Pick<AgentSession, "prompt" | "subscribe" | "dispose" | "abort">;
 
+/**
+ * Whether a model carries real prices.
+ *
+ * Pi requires numeric prices, so a model resolved from a key-scoped listing
+ * uses zeros to mean "unknown pricing" rather than "free". A model with no
+ * priced component must not be reported as a $0 call — consumers would show
+ * unknown spend as genuinely free.
+ */
+export function hasKnownPricing(model: { cost?: Record<string, number | undefined> } | undefined): boolean {
+  const cost = model?.cost;
+  const known = cost
+    ? Object.values(cost).some((value) => typeof value === "number" && value > 0)
+    : false;
+  // Never log the model or its prices — only the resulting decision.
+  pricingLog.debug(
+    `[sidecar] PRICING_KNOWN: known=${known}, priceMetadata=${cost ? "present" : "absent"}`,
+  );
+  return known;
+}
+
 interface SessionEntry {
   session: StoredSession;
   lastActivity: number;
   inFlight: boolean;
   cwd: string;
   redact: (value: string) => string;
+  /**
+   * Whether the session's model carries real prices. Pi requires numeric prices,
+   * so a model resolved from a key-scoped listing uses zeros to mean "unknown
+   * pricing", not "free". Reporting that as $0 makes unknown spend look free to
+   * consumers (e.g. rootcoz), so usage cost stays null instead.
+   */
+  pricingKnown: boolean;
 }
 
 /**
@@ -671,6 +699,7 @@ export class SessionStore {
     id: string,
     session: StoredSession,
     cwd: string,
+    pricingKnown = true,
   ): void {
     fixtureLog.debug(`putSessionFixture id=${id} cwdBound=${Boolean(cwd)}`);
     this.sessions.set(id, {
@@ -679,6 +708,7 @@ export class SessionStore {
       inFlight: false,
       cwd,
       redact: (value) => value,
+      pricingKnown,
     });
   }
 
@@ -1438,7 +1468,7 @@ export class SessionStore {
       throw httpError("Sidecar is shutting down", 503);
     }
 
-    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact });
+    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model) });
     log.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${customTools.length})`);
     return id;
     } catch (err) {
@@ -1468,7 +1498,9 @@ export class SessionStore {
     let textDeltaCount = 0;
     let assistantMessageCount = 0;
     let messageBoundaries: number[] = [];
-    const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: null as number | null, duration_ms: 0 };
+    // cost_partial marks a total that is a floor, not a sum: at least one turn's
+    // cost was withheld as unknown while another turn contributed a real amount.
+    const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: null as number | null, cost_partial: false, duration_ms: 0 };
     const startTime = Date.now();
 
     const unsubscribe = entry.session.subscribe((event) => {
@@ -1519,8 +1551,20 @@ export class SessionStore {
             usage.output_tokens += msg.usage.output || 0;
             usage.cache_read_tokens += msg.usage.cacheRead || 0;
             usage.cache_write_tokens += msg.usage.cacheWrite || 0;
-            if (msg.usage.cost?.total != null) {
-              usage.cost_usd = (usage.cost_usd ?? 0) + msg.usage.cost.total;
+            const reported = msg.usage.cost?.total;
+            // A model with unknown pricing reports zeros, but a driver can still
+            // know the real turn cost (ACPX models without catalog prices do).
+            // Only discard a reported *zero*; never discard a positive total.
+            if (reported != null && (entry.pricingKnown || reported > 0)) {
+              usage.cost_usd = (usage.cost_usd ?? 0) + reported;
+            } else {
+              // Either the turn reported a zero we cannot price, or it reported no
+              // cost at all. Both leave this turn's spend unknown, so any total
+              // accumulated from the other turns is a lower bound, not a sum.
+              usage.cost_partial = true;
+              logger.debug(
+                `[sidecar] COST_UNKNOWN: session=${id}, reportedTotal=${reported}, pricingKnown=${entry.pricingKnown}`,
+              );
             }
           }
         }

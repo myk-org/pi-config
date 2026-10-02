@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { SessionStore } from "../../src/sessions.js";
+import { SessionStore, hasKnownPricing } from "../../src/sessions.js";
 import {
   getSessionCwd,
   resolveProviderStreamCwd,
@@ -475,5 +475,163 @@ exit 0
       rmSync(bootCwd, { recursive: true, force: true });
       rmSync(sessionCwd, { recursive: true, force: true });
     }
+  });
+  /**
+   * Drives prompt() over a fixture session that reports `reportedTotal` as the
+   * turn cost, so cost and token assertions can live in separate tests.
+   */
+  const promptWithReportedCost = async (pricingKnown: boolean, reportedTotal: number | null) => {
+    const store = new SessionStore();
+    let emit: (event: unknown) => void = () => {};
+    const id = `s-pricing-${pricingKnown}-${reportedTotal}`;
+    store.putSessionFixture(
+      id,
+      {
+        subscribe: (cb: (event: unknown) => void) => {
+          emit = cb;
+          return () => {};
+        },
+        prompt: async () => {
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "done" } });
+          emit({
+            type: "agent_end",
+            messages: [{
+              role: "assistant",
+              content: [{ type: "text", text: "done" }],
+              usage: { input: 10, output: 4, cacheRead: 3, cacheWrite: 2, cost: reportedTotal == null ? undefined : { total: reportedTotal } },
+            }],
+          });
+        },
+        dispose: () => {},
+        abort: async () => {},
+      },
+      "/tmp/job-pricing",
+      pricingKnown,
+    );
+    return await store.prompt(id, "hi") as {
+      usage: { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number; cost_usd: number | null; cost_partial: boolean };
+    };
+  };
+
+  /**
+   * A model resolved from a key-scoped listing carries zero prices, which Pi
+   * means as "unknown pricing" rather than "free". Reporting that $0 makes
+   * unknown spend look free to consumers (rootcoz), so usage.cost_usd must stay
+   * null instead of accumulating a numeric zero.
+   *
+   * A driver can still report a real turn cost for such a model (ACPX models
+   * without catalog prices do), so a *positive* total must always be kept.
+   */
+  it("prompt() distinguishes unknown pricing from a reported zero", async () => {
+    const priced = await promptWithReportedCost(true, 0.42);
+    assert.equal(priced.usage.cost_usd, 0.42, "a priced model reports its cost");
+
+    const pricedFree = await promptWithReportedCost(true, 0);
+    assert.equal(pricedFree.usage.cost_usd, 0, "a priced model reporting zero is genuinely free");
+    assert.equal(pricedFree.usage.cost_partial, false, "a priced model has no unknown turns to withhold");
+
+    const unknownZero = await promptWithReportedCost(false, 0);
+    assert.equal(unknownZero.usage.cost_usd, null, "unknown pricing must stay null, not report as free");
+
+    const unknownReal = await promptWithReportedCost(false, 1.75);
+    assert.equal(
+      unknownReal.usage.cost_usd,
+      1.75,
+      "a driver-reported positive cost must survive even when catalog pricing is unknown",
+    );
+  });
+
+  /**
+   * Token accounting is independent of pricing: withholding an unknown cost must
+   * not disturb the token counts, for either a priced or an unknown-priced model.
+   */
+  it("prompt() keeps token counts intact regardless of pricing", async () => {
+    for (const pricingKnown of [true, false]) {
+      const result = await promptWithReportedCost(pricingKnown, 0);
+      assert.equal(result.usage.input_tokens, 10, `input tokens intact (pricingKnown=${pricingKnown})`);
+      assert.equal(result.usage.output_tokens, 4, `output tokens intact (pricingKnown=${pricingKnown})`);
+      assert.equal(result.usage.cache_read_tokens, 3, `cache reads intact (pricingKnown=${pricingKnown})`);
+      assert.equal(result.usage.cache_write_tokens, 2, `cache writes intact (pricingKnown=${pricingKnown})`);
+    }
+  });
+
+  /**
+   * A prompt can mix a turn whose cost the driver reported with a turn whose zero
+   * report means unknowable. The accumulated amount is then a floor, not a total,
+   * and `cost_partial` must say so rather than let a partial figure read as complete.
+   */
+  it("prompt() flags a cost as partial when an unknown turn contributes nothing", async () => {
+    const store = new SessionStore();
+    let emit: (event: unknown) => void = () => {};
+    store.putSessionFixture(
+      "s-pricing-partial",
+      {
+        subscribe: (cb: (event: unknown) => void) => {
+          emit = cb;
+          return () => {};
+        },
+        prompt: async () => {
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "a" } });
+          emit({ type: "agent_end", messages: [
+            { role: "assistant", content: [{ type: "text", text: "a" }], usage: { input: 5, output: 2, cost: { total: 1.25 } } },
+            { role: "assistant", content: [{ type: "text", text: "b" }], usage: { input: 5, output: 2, cost: { total: 0 } } },
+          ] });
+        },
+        dispose: () => {},
+        abort: async () => {},
+      },
+      "/tmp/job-pricing",
+      false,
+    );
+    const result = await store.prompt("s-pricing-partial", "hi") as { usage: { cost_usd: number | null; cost_partial: boolean } };
+    assert.equal(result.usage.cost_usd, 1.25, "the reported amount is kept");
+    assert.equal(result.usage.cost_partial, true, "but the total is only a lower bound");
+  });
+
+  /**
+   * An unknown-priced turn may omit cost entirely rather than report zero. That
+   * turn's spend is equally unknowable, so it must mark the total partial too —
+   * otherwise a mixed prompt returns a lower bound flagged as complete.
+   */
+  it("prompt() flags a cost as partial when an unknown turn reports no cost at all", async () => {
+    const store = new SessionStore();
+    let emit: (event: unknown) => void = () => {};
+    store.putSessionFixture(
+      "s-pricing-omitted",
+      {
+        subscribe: (cb: (event: unknown) => void) => {
+          emit = cb;
+          return () => {};
+        },
+        prompt: async () => {
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "a" } });
+          emit({ type: "agent_end", messages: [
+            { role: "assistant", content: [{ type: "text", text: "a" }], usage: { input: 5, output: 2, cost: { total: 2.5 } } },
+            { role: "assistant", content: [{ type: "text", text: "b" }], usage: { input: 5, output: 2 } },
+          ] });
+        },
+        dispose: () => {},
+        abort: async () => {},
+      },
+      "/tmp/job-pricing",
+      false,
+    );
+    const result = await store.prompt("s-pricing-omitted", "hi") as { usage: { cost_usd: number | null; cost_partial: boolean } };
+    assert.equal(result.usage.cost_usd, 2.5, "the reported amount is kept");
+    assert.equal(result.usage.cost_partial, true, "an omitted cost is unknown, so the total is a lower bound");
+  });
+
+  /**
+   * Detection itself must be covered: hasKnownPricing() is what marks a session
+   * unknown-priced, and prompt() above supplies that flag directly.
+   */
+  it("hasKnownPricing() reads the model's price metadata", () => {
+    assert.equal(hasKnownPricing({ cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }), false,
+      "all-zero prices mean unknown, not free");
+    assert.equal(hasKnownPricing({ cost: { input: 0, output: 0.000003, cacheRead: 0, cacheWrite: 0 } }), true,
+      "any positive component means the price is known");
+    assert.equal(hasKnownPricing({ cost: {} }), false, "empty price metadata means unknown");
+    assert.equal(hasKnownPricing({}), false, "absent price metadata means unknown");
+    assert.equal(hasKnownPricing(undefined), false, "an absent model means unknown");
   });
 });
