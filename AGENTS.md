@@ -120,6 +120,20 @@ User switches log level on the fly via settings — debug must show everything n
 3. Add to agent list in `rules/50-agent-bug-reporting.md`
 4. Test: start pi session, verify orchestrator routes to new agent
 
+Frontmatter `description` is one sentence. If the agent points at a packaged
+skill, resolve the path at runtime (`ls ~/.pi/agent/npm/node_modules/pi-orchestrator-config/skills/<name>/SKILL.md`
+with a local fallback) — a bare relative path breaks outside this checkout.
+
+## Delegating Conflicts
+
+`git-expert` never resolves merge, rebase, or cherry-pick conflicts: it is routinely pinned to a
+small model, so `enforcement.ts` blocks `git add`, `git restore`, `git rm`, `git update-index`,
+`git reset`, `git checkout --ours|--theirs`, and the `--continue`/`--skip`/`--quit` flags of
+`merge|rebase|cherry-pick|revert|am` in its process while `git ls-files --unmerged` reports
+anything, and refuses a command that starts one of those sequencers and then stages in the same
+line. Delegate to `conflict-resolver` (`subagent(agent="conflict-resolver")`) whenever
+a merge, rebase, or cherry-pick leaves unmerged paths. Do not work around the block.
+
 ## When Removing an Agent
 
 1. Delete `agents/<name>.md`

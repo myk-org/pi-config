@@ -7,7 +7,7 @@ import { createLogger } from "../shared/logger.js";
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
-import { DANGEROUS, getCurrentBranch, hasGitSub } from "./git-helpers.js";
+import { DANGEROUS, executableText, getCurrentBranch, hasGitSub, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
 enfLog.debug("enforcement-helpers module loaded");
@@ -59,26 +59,540 @@ export function commandHasTrailerByName(command: string, trailerName: string): b
   return result;
 }
 
+/**
+ * Split a command into segments on shell separators that are *outside* quotes,
+ * recording each segment's offset, its parenthesis depth, and whether the
+ * separator before it was `||` (so the segment may never run). Quoted text is
+ * data, not syntax: a `(` or `cd` inside a string is part of an argument, never
+ * a boundary.
+ *
+ * Depth and conditionality are what let the caller tell a `cd` that moves this
+ * shell from one inside a subshell or behind a short-circuit, which change
+ * nothing for a later command.
+ */
+interface ShellSegment {
+  text: string;
+  start: number;
+  depth: number;
+  conditional: boolean;
+  /** `cmd &` runs the command in a subshell, so its cd does not move this shell. */
+  backgrounded?: boolean;
+}
+
+function unquotedSegments(command: string): ShellSegment[] {
+  const segments: ShellSegment[] = [];
+  let start = 0;
+  let quote: string | null = null;
+  let depth = 0;
+  let conditional = false;
+  const push = (end: number, startAt: number, cond: boolean, backgrounded = false) => {
+    segments.push({
+      text: command.slice(startAt, end),
+      start: startAt,
+      depth,
+      conditional: cond,
+      ...(backgrounded ? { backgrounded: true } : {}),
+    });
+  };
+  // The index of the first segment in the current `&&`/`||` chain. A trailing
+  // `&` backgrounds the whole chain, not just the command beside it.
+  let chainStart = 0;
+  const chainLen = () => segments.length;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      // A quote spans a newline: `cd "conflicted\nrepo"` is one multi-line path.
+      // An unterminated quote is not recovered from here either — bash reports
+      // one and runs nothing, and the caller fails closed when no directory
+      // can be resolved.
+      continue;
+    }
+    if (ch === "\\" && command[i + 1]) {
+      // An escaped character is part of a word: `weird\&name` is one directory
+      // name, not a name followed by a background operator.
+      i++;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    // A separator is a single "&&", "||", ";", "|", or newline; "(" and ")"
+    // bracket a subshell but are not separators on their own.
+    const two = command.slice(i, i + 2);
+    if (two === "&&" || two === "||") {
+      push(i, start, conditional);
+      // What FOLLOWS a short-circuit may be skipped: `false && cd x` never runs
+      // it, and `cd a || cd b` runs the second only if the first failed.
+      conditional = true;
+      i++;
+      start = i + 1;
+    } else if (ch === "\n") {
+      // An unterminated quote cannot survive a line break in practice; drop the
+      // state so one stray apostrophe cannot blind the directory parser for the
+      // rest of the command.
+      if (quote) {
+        enfLog.debug("quote_reset_at_newline", "char", quote);
+        quote = null;
+      }
+      push(i, start, conditional);
+      conditional = false;
+      start = i + 1;
+      chainStart = chainLen();
+    } else if (ch === ";") {
+      push(i, start, conditional);
+      conditional = false;
+      start = i + 1;
+      chainStart = chainLen();
+    } else if (ch === "|") {
+      // Every pipeline component runs in a subshell of its own, so a directory
+      // change on the left of the pipe does not reach the right. Marking it
+      // backgrounded is exactly the same rule as a trailing ampersand.
+      push(i, start, conditional, true);
+      conditional = false;
+      start = i + 1;
+      chainStart = chainLen();
+    } else if (ch === "&") {
+      // `2>&1` and `>&2` redirect; a lone `&` backgrounds the whole chain it
+      // ends, so every segment of that chain runs in a subshell.
+      const redirect = command[i - 1] === ">";
+      if (redirect) continue;
+      const isDouble = command[i + 1] === "&";
+      push(i, start, conditional, !isDouble);
+      if (!isDouble) {
+        for (let s = chainStart; s < segments.length; s++) segments[s].backgrounded = true;
+      }
+      conditional = false;
+      start = i + 1;
+      chainStart = chainLen();
+    } else if (ch === "(") {
+      depth++;
+    } else if (ch === ")") {
+      if (depth > 0) {
+        // The closing paren ends the segment it belongs to; only what follows
+        // it is back at the outer depth.
+        push(i, start, false);
+        depth--;
+        start = i + 1;
+        conditional = false;
+      }
+    }
+  }
+  push(command.length, start, conditional);
+  enfLog.debug("shell_segments", "count", segments.length);
+  return segments;
+}
+
+/** The target of a `cd` at the start of a segment, honouring quoting and `~`. */
+function cdTargetIn(segment: string): string | null {
+  // A cd may follow a shell keyword or a builtin wrapper: `if cd /repo; then …`,
+  // `command cd /repo`.
+  const m = /^\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)|if\s+|then\s+|else\s+|elif\s+|do\s+|\(\s*|\{\s*)*(?:(?:command|builtin)\s+)*(cd|pushd|popd)\b\s*([\s\S]*)$/.exec(
+    segment,
+  );
+  if (!m) {
+    enfLog.debug("cd_target_absent", "segment_head", segment.trim().slice(0, 24));
+    return null;
+  }
+  // `popd` returns to whatever `pushd` displaced, and takes no argument.
+  if (m[1] === "popd") return "~popd";
+  const args = m[2];
+  // Walk the arguments: skip options, then read one destination — a quoted
+  // target whole, so a directory name may contain spaces or parentheses.
+  let i = 0;
+  const skipSpace = () => { while (i < args.length && /\s/.test(args[i])) i++; };
+  for (;;) {
+    skipSpace();
+    if (i >= args.length) break;
+    if (args.startsWith("--", i)) { i += 2; continue; }
+    // A lone `-` is the previous directory, not an option.
+    if (args[i] === "-" && (i + 1 >= args.length || /\s/.test(args[i + 1]))) {
+      enfLog.debug("cd_target_previous");
+      return "-";
+    }
+    if (args[i] === "-" && i + 1 < args.length) {
+      while (i < args.length && !/\s/.test(args[i])) i++;
+      continue;
+    }
+    if (args[i] === "\\" && i + 1 < args.length) {
+      i += 2;
+      continue;
+    }
+    const quote = args[i];
+    if (quote === "'" || quote === '"') {
+      const end = args.indexOf(quote, i + 1);
+      let target = end === -1 ? args.slice(i + 1) : args.slice(i + 1, end);
+      i = end === -1 ? args.length : end + 1;
+      // The shell concatenates adjacent parts into one word: `cd "work tree"x`
+      // is `work treex`, so keep whatever follows the closing quote.
+      while (i < args.length && !/[\s;&|)]/.test(args[i])) {
+        target += args[i];
+        i++;
+      }
+      // Inside quotes a backslash is literal, so it is doubled here and the
+      // caller unescapes it back: `cd 'foo\ bar'` is one directory whose name
+      // contains a backslash, not a space.
+      const literal = target.replace(/\\/g, "\\\\");
+      enfLog.debug("cd_target_quoted", "target", literal);
+      return literal;
+    }
+    let end = i;
+    // An escaped character is part of the name: `weird\&name` is one directory.
+    while (end < args.length && !/[\s;&|)]/.test(args[end])) {
+      if (args[end] === "\\" && end + 1 < args.length) end++;
+      end++;
+    }
+    // Unquoted, a backslash before a newline is a continuation the shell removes
+    // entirely. Inside quotes it would be literal, which is why only this path
+    // joins and the quoted one above does not.
+    const target = args.slice(i, end).replace(/\\\n/g, "");
+    enfLog.debug("cd_target", "target", target);
+    return target || null;
+  }
+  // Bare `cd` goes home; `cd -` goes to the previous directory, which the
+  // caller resolves against what it tracked.
+  enfLog.debug("cd_target_default");
+  return "~";
+}
+
+/** Apply one directory change to a running directory. */
+function applyCd(dir: string, target: string, home = process.env.HOME ?? "~", fromShell = true): string {
+  // `cd -` with no previous directory tracked leaves the shell where it is. Only
+  // a shell's own `cd -` means that: a directory literally named `-`, reached as
+  // `git -C-`, is an ordinary relative directory.
+  if (target === "-" && fromShell) {
+    enfLog.debug("apply_cd_previous_untracked", "dir", dir);
+    return dir;
+  }
+  let next: string;
+  // The shell builds one word from backslash escapes: `weird\&name` is a single
+  // directory named `weird&name`, whatever else the name looks like.
+  const word = target.replace(/\\(.)/g, "$1");
+  if (word.startsWith("~/")) next = join(home, word.slice(2));
+  else if (word === "~") next = home;
+  else if (word.startsWith("/")) next = word;
+  else next = join(dir, word);
+  enfLog.debug("apply_cd", "from", dir, "target", target, "to", next);
+  return next;
+}
+
+/**
+ * Every `-C` directory override in a git segment, in order.
+ *
+ * Only git's *global* options count. `-C` after the subcommand is a different
+ * flag entirely — `git commit -C <sha>` reuses that commit's message — so
+ * reading it as a directory would send every git safety guard looking for a
+ * directory named after a commit, and skip the checks. The walk therefore stops
+ * at the first bare word, which is the subcommand.
+ */
+function gitCsIn(segment: string): string[] {
+  const tokens = tokenize(segment);
+  const start = tokens.findIndex((w) => w === "git");
+  if (start === -1) return [];
+  const values: string[] = [];
+  for (let i = start + 1; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (!tok.startsWith("-") || tok === "-") break;
+    if (tok === "-C" || tok.startsWith("-C") && tok.length > 2) {
+      const value = tok === "-C" ? tokens[i + 1] : tok.slice(2);
+      if (value) values.push(value);
+      if (tok === "-C") i++;
+      continue;
+    }
+    // Any other option may take a separate value; skip it if the next word is one.
+    if (!tok.includes("=") && tokens[i + 1] && !tokens[i + 1].startsWith("-")) i++;
+  }
+  if (values.length) enfLog.debug("git_C_options", "count", values.length, "last", values[values.length - 1]);
+  return values;
+}
+
+/** Words that run whatever follows them, so an assignment behind one still counts. */
+const WRAPPER_WORDS = new Set(["sudo", "command", "exec", "time", "nohup", "nice", "stdbuf", "setsid", "timeout"]);
+
+/** env options whose value is a separate word. */
+const ENV_VALUE_OPTIONS = new Set([
+  "-u", "--unset", "-C", "--chdir", "-S", "--split-string", "-a", "--argv0",
+  "--block-signal", "--default-signal", "--ignore-signal", "--debug",
+]);
+
+const GIT_INDEX_VARS = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]);
+const GIT_INDEX_OPTIONS = new Set(["--git-dir", "--work-tree", "--namespace"]);
+
+/**
+ * Anything that points git at a repository other than the working directory: the
+ * GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE environment variables, or the equivalent
+ * long options. Their target is an index path, not a directory the walker can
+ * enumerate, so the caller refuses rather than checks the wrong places.
+ *
+ * Position matters. An environment variable only selects the index in *assignment
+ * position* — `GIT_DIR=/x git add a.txt`, optionally through `env` — so
+ * `git add GIT_INDEX_FILE=notes` stages a file with that name. The long options
+ * only count in git's global option region, before the subcommand, so
+ * `git add -- --work-tree=x` is a filename too.
+ */
+function gitIndexOverride(command: string): string | null {
+  const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/;
+  for (const seg of unquotedSegments(command)) {
+    const tokens = tokenize(seg.text);
+    const nameOf = (tok: string) => tok.split("=")[0];
+    let i = 0;
+    // `export GIT_INDEX_FILE=/x` sets it for later commands in the same shell,
+    // so it points git at another index just as an inline assignment does. This
+    // segment does not run git itself, so it is checked before that requirement.
+    if (tokens[i] === "export") {
+      i++;
+      while (i < tokens.length) {
+        const name = nameOf(tokens[i]);
+        if (GIT_INDEX_VARS.has(name)) {
+          enfLog.warn("git_index_override", "source", name, "via", "export");
+          return name;
+        }
+        i++;
+      }
+      continue;
+    }
+    // `echo GIT_INDEX_FILE=/x` only prints the name. An override is something
+    // git is actually run with, so the segment has to run git for it to count.
+    if (!segmentRunsGit(seg.text)) continue;
+    // Leading `VAR=value` assignments, then the same again after `env`. A
+    // wrapper that runs the rest — `sudo`, `command`, `exec`, `time` — sits in
+    // front of both, and can be chained.
+    for (let round = 0; round < 4; round++) {
+      while (i < tokens.length && WRAPPER_WORDS.has(tokens[i])) i++;
+      while (i < tokens.length && assignment.test(tokens[i])) {
+        const name = nameOf(tokens[i]);
+        if (GIT_INDEX_VARS.has(name)) {
+          enfLog.warn("git_index_override", "source", name);
+          return name;
+        }
+        i++;
+      }
+      if (tokens[i] !== "env") break;
+      i++;
+      // env's own options: only these take a separate value, and that value must
+      // not be read as an assignment or as the command. `-i` takes none, so
+      // treating every option as value-taking would swallow the assignment after it.
+      while (i < tokens.length && tokens[i].startsWith("-") && tokens[i] !== "-") {
+        const opt = tokens[i].split("=")[0];
+        if (!tokens[i].includes("=") && ENV_VALUE_OPTIONS.has(opt)) i++;
+        i++;
+      }
+    }
+    const g = tokens.indexOf("git");
+    if (g === -1) continue;
+    for (let k = g + 1; k < tokens.length; k++) {
+      const tok = tokens[k];
+      if (!tok.startsWith("-") || tok === "-") break;
+      const name = nameOf(tok);
+      if (GIT_INDEX_OPTIONS.has(name)) {
+        enfLog.warn("git_index_override", "source", name);
+        return name;
+      }
+      if (!tok.includes("=") && tokens[k + 1] && !tokens[k + 1].startsWith("-")) k++;
+    }
+  }
+  return null;
+}
+
+/**
+ * Every directory the command could plausibly run git in.
+ *
+ * Candidates come from where git actually runs: the directory in effect at each
+ * git invocation, plus every `-C` resolved in order from that directory (git
+ * applies them one after another), plus any directory a `cd` reached only
+ * conditionally. Each subshell gets its own directory stack, because a `cd`
+ * inside one cannot move the outer shell — which is also why a `cd` in a
+ * subshell contributes a candidate without becoming the running directory.
+ *
+ * When an environment variable selects the index, the target is unknowable and
+ * `envOverride` says so, so the caller can refuse instead of guess.
+ */
+export function conflictCandidateDirs(
+  command: string,
+  sessionCwd: string,
+): { all: string[]; envOverride: string | null; dynamicPath: string | null } {
+  const envOverride = gitIndexOverride(command);
+  // A path the shell expands at run time — `$DIR`, `$(pwd)`, a glob — cannot be
+  // checked here, so it is reported rather than resolved to a literal. A glob
+  // character the command escaped is part of the name, not a pattern.
+  const dynamic = (p: string) => /[$*?{]/.test(p.replace(/\\./g, ""));
+  let dynamicPath: string | null = null;
+  // Per paren depth: is the directory this shell is in one we could not resolve?
+  // A subshell's answer dies with the subshell, which is what makes a completed
+  // subshell stop mattering.
+  const dynamicAt: boolean[] = [false];
+  // Set when a command that stages ran in a directory we could not resolve. That
+  // is the case worth refusing: we do not know what it staged. A read-only
+  // command in the same directory is not, so it does not pin the refusal.
+  let unresolvedStaging = false;
+  const dirs = new Set<string>();
+  // running[d] is the directory of the shell at paren depth d.
+  const running: string[] = [sessionCwd];
+  // OLDPWD: where the shell was before the last change, which is what `cd -`
+  // returns to. Each depth has its own, and each starts where the shell did —
+  // the shell's own PWD, not just the directory we were invoked from.
+  const startPwd = process.env.PWD && process.env.PWD.startsWith("/") ? process.env.PWD : sessionCwd;
+  const previous: string[] = [startPwd];
+  // What `pushd` displaced, per depth, for `popd` to return to.
+  const pushed: string[][] = [[]];
+  // `HOME=/x git add a.txt` sends a bare `cd` and a `~` somewhere else, so the
+  // command's own assignment wins over this process's environment.
+  let home = process.env.HOME ?? "~";
+  // Walk the *executable* text: a `cd` inside a `bash -c` script, or inside a
+  // command substitution, moves the directory the staging really runs in.
+  const scan = executableText(command) || command;
+
+  for (const seg of unquotedSegments(scan)) {
+    // Leaving a subshell discards its directory, and entering a new one starts
+    // from the outer shell again — otherwise `(cd clean); (git add x)` would
+    // inherit `clean` for the second subshell.
+    if (running.length > seg.depth + 1) running.length = seg.depth + 1;
+    while (running.length <= seg.depth) running.push(running[running.length - 1]);
+    while (previous.length <= seg.depth) previous.push(previous[previous.length - 1]);
+    while (pushed.length <= seg.depth) pushed.push([]);
+    while (dynamicAt.length <= seg.depth) dynamicAt.push(dynamicAt[dynamicAt.length - 1]);
+    const assigned = /(?:^|[\s;&|(])HOME=(\S*)/.exec(seg.text);
+    if (assigned) home = assigned[1];
+    const target = cdTargetIn(seg.text);
+    if (target) {
+      if (seg.conditional || seg.backgrounded) {
+        // Behind a short-circuit the cd may never run, and a backgrounded cd
+        // runs in its own subshell — so in both cases the directory the shell is
+        // in *before* it is where a later command actually stages.
+        dirs.add(running[seg.depth]);
+      }
+      const from = running[seg.depth];
+      // `cd -` goes to OLDPWD as it stands *before* this change, and only then
+      // does the previous directory become where we are now.
+      let to: string;
+      if (target === "-") to = previous[seg.depth];
+      else if (target === "~popd") {
+        const stack = pushed[seg.depth];
+        to = stack.length ? stack.pop()! : from;
+      } else {
+        to = applyCd(from, target, home);
+        // A bare `pushd` pushes where we are and goes home, the same as a bare
+        // `cd`; a `cd` leaves the push stack alone.
+        if (/\bpushd\b/.test(seg.text) && !/^\s*(?:if\s+|then\s+|else\s+|elif\s+|do\s+|\(\s*|\{\s*)*pushd\s+\S/.test(seg.text)) {
+          pushed[seg.depth].push(from);
+        }
+      }
+      if (seg.backgrounded) {
+        // The subshell moves; this shell does not.
+        dirs.add(to);
+      } else {
+        previous[seg.depth] = from;
+        running[seg.depth] = to;
+      }
+      // An expanded target leaves the directory unresolved. A relative move
+      // inherits that from where it started; an absolute literal path settles it.
+      dynamicAt[seg.depth] =
+        dynamic(target) || (!target.startsWith("/") && dynamicAt[seg.depth]);
+      if (!seg.conditional && !seg.backgrounded && target.startsWith("/") && !dynamic(target) && !unresolvedStaging) {
+        // Once a staging command has already run in an unresolved directory, the
+        // path stays reported: the refusal has to name the path we could not read.
+        dynamicPath = null;
+      }
+      if (dynamic(target) && !dynamicPath) dynamicPath = target;
+    }
+    if (segmentRunsGit(seg.text)) {
+      let base = running[seg.depth];
+      // `env -C dir git add x` moves git into dir without a shell cd.
+      const envChdir = /^\s*(?:VAR=\S*\s*)*env\s+(?:-\S+\s+)*?(?:-C|--chdir)(?:[=\s]+)(\S+)/.exec(seg.text);
+      if (envChdir) base = applyCd(base, envChdir[1], home);
+      dirs.add(base);
+      // Git applies each -C in turn, each relative to the previous one.
+      const overrides = gitCsIn(seg.text);
+      let cursor = base;
+      for (const c of overrides) {
+        // An expanded override is the directory this invocation actually runs
+        // in, so it is the one worth reporting over an earlier cd target.
+        if (dynamic(c)) dynamicPath = c;
+        // A directory literally named `-` is ordinary; only the shell's own
+        // `cd -` means the previous directory.
+        cursor = applyCd(cursor, c, home, false);
+        dirs.add(cursor);
+      }
+      // Where this invocation actually runs decides whether it is unresolved. A
+      // final absolute override names the worktree outright, so a directory the
+      // shell merely expanded on its way there is irrelevant to it.
+      const stages = isConflictResolutionCommand(seg.text);
+      const lastOverride = overrides[overrides.length - 1];
+      const named = lastOverride !== undefined && !dynamic(lastOverride) && lastOverride.startsWith("/");
+      if (stages && !named) {
+        if (dynamicAt[seg.depth] || overrides.some((c) => dynamic(c))) unresolvedStaging = true;
+      }
+  }
+  }
+  const all = [...dirs];
+  // Only a command that staged while the directory was unresolved is worth
+  // refusing. Otherwise the path was resolved, or only read from, by the end.
+  const unresolved = unresolvedStaging ? dynamicPath : null;
+  enfLog.debug("conflict_candidate_dirs", "count", all.length, "env_override", envOverride ?? "none", "dynamic_path", unresolved ?? "none", "unresolved_staging", unresolvedStaging);
+  return { all, envOverride, dynamicPath: unresolved };
+}
+
 /** Parse bash command for cd target to resolve the effective working directory (worktree support) */
 export function resolveEffectiveCwd(command: string, sessionCwd: string): string {
-  // Match the FIRST cd in the command (at start or after &&, ;, ||)
-  // First cd sets up the working directory before subsequent commands run.
-  // Using LAST cd is unsafe — a trailing cd (e.g., git commit && cd /tmp) would
-  // misattribute the cwd to the wrong directory.
-  const cdMatch = command.match(/(?:^|[;&|]\s*)cd\s+([^\s;&|]+)/);
-  if (cdMatch) {
-    const target = cdMatch[1].replace(/['"]/g, "");
-    if (target.startsWith("/")) return target;
-    return join(sessionCwd, target);
+  // Quoting decides what is syntax, so segments are split outside quotes first.
+  // Then the LAST cd before the git invocation, applied in shell order so a
+  // chain of relative cds composes. Two cases make the obvious implementations
+  // wrong:
+  //   (cd clean && cd conflicted && git add x)  → the later cd wins
+  //   cd /repo && git commit && cd /tmp          → a trailing cd must not
+  // With no git invocation to anchor to, the first cd is used, which is the
+  // conservative answer for `cd a && cd b && pytest`.
+  //
+  // A command that can run git in more than one directory (a conditional branch,
+  // a completed subshell, several invocations) has no single answer here. That
+  // is why conflict enforcement asks conflictCandidateDirs instead of trusting
+  // this function's guess.
+  const segments = unquotedSegments(command);
+  // A segment only counts when it *runs* git: `cd ~/git/proj` merely contains
+  // the word, and anchoring on it would drop a real directory change.
+  const gitIndex = segments.findIndex((s) => segmentRunsGit(s.text));
+  // Only a cd that moves *this* shell counts. A cd inside a subshell, or one
+  // behind a short-circuit, runs somewhere else or may not run at all, so
+  // applying it sent the guards looking at a directory the shell never entered —
+  // `(cd /tmp) && git commit` read /tmp settings, where enforcement is off.
+  const targetDepth = gitIndex === -1 ? 0 : segments[gitIndex].depth;
+  const running: string[] = [sessionCwd];
+  const applied: string[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    // A trailing cd after the git command did not happen yet.
+    if (i === gitIndex) break;
+    const seg = segments[i];
+    // A segment deeper than the git command runs in a subshell that has already
+    // closed by the time git runs, so it cannot have moved this shell. It is
+    // skipped rather than ending the walk: a subshell before the command is
+    // ordinary, and stopping there would drop every later directory change.
+    if (seg.depth > targetDepth) continue;
+    while (running.length <= seg.depth) running.push(running[running.length - 1]);
+    const target = cdTargetIn(seg.text);
+    if (!target || target === "~popd") continue;
+    // A change at a shallower depth still counts: `cd /protected && (git commit)`
+    // enters /protected first, and the subshell inherits it. Only deeper segments
+    // were ruled out above, because those run in a subshell that has closed by
+    // the time git runs. Note that a change behind a short-circuit still counts:
+    // `cd a && cd b` really does leave the shell in b, and `if cd x; then` leaves
+    // it in x too.
+    running[seg.depth] = applyCd(running[seg.depth], target);
+    applied.push(target);
+    // With no git invocation to anchor to, the first cd is the conservative
+    // answer for `cd a && cd b && pytest`.
+    if (gitIndex === -1) break;
   }
-  // Match: git -C /path/to/dir ...
-  const gitCMatch = command.match(/\bgit\s+-C\s+([^\s]+)/);
-  if (gitCMatch) {
-    const target = gitCMatch[1].replace(/['"]/g, "");
-    if (target.startsWith("/")) return target;
-    return join(sessionCwd, target);
-  }
-  return sessionCwd;
+  // The git segment itself was never walked, so a subshell depth it introduced
+  // has no entry yet. It inherits the directory of the shell that spawned it.
+  while (running.length <= targetDepth) running.push(running[running.length - 1]);
+  let dir = running[targetDepth];
+  // Git applies each -C in turn, each relative to the previous one, so
+  // `git -C worktree -C nested` lands in worktree/nested.
+  const cTargets = gitIndex === -1 ? [] : gitCsIn(segments[gitIndex].text);
+  for (const cTarget of cTargets) dir = applyCd(dir, cTarget, process.env.HOME ?? "~", false);
+  enfLog.debug("effective_cwd", "dir", dir, "source", cTargets.length ? "git_C" : applied.length ? "cd" : "session", "cds", applied.length);
+  return dir;
 }
 
 /** Auto-fix direct python commands (prepend uv run), block pip commands */

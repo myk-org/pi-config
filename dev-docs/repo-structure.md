@@ -15,6 +15,7 @@ pi-config/
 │   ├── docs-fetcher.md
 │   ├── ts-expert.md
 │   ├── git-expert.md
+│   ├── conflict-resolver.md
 │   ├── github-expert.md
 │   ├── go-expert.md
 │   ├── java-expert.md

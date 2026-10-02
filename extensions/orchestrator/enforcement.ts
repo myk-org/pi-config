@@ -16,15 +16,22 @@ import { supportsAsyncLlm } from "./async-capability.js";
 import { getSetting } from "./project-settings.js";
 import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 import {
+  conflictCandidateDirs,
+} from "./enforcement-helpers.js";
+import {
   DANGEROUS,
   getCurrentBranch,
+  isInsideGitWorkTree,
   getMainBranch,
   getProtectedBranches,
   getPrMergeStatus,
   hasGitSub,
   isBranchAhead,
   isBranchMerged,
+  createsAndResolvesConflict,
+  isConflictResolutionCommand,
   isGitRepo,
+  listUnmergedFiles,
   runGit,
 } from "./git-helpers.js";
 import { spawnSync } from "node:child_process";
@@ -557,6 +564,97 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         return {
           block: true,
           reason: "⛔ git commit/push blocked. Use git-expert agent for commit and push operations.",
+        };
+      }
+    }
+
+    // Conflict resolution belongs to conflict-resolver. git-expert is routinely
+    // pinned to a small model, which cannot judge intent on both sides of a
+    // conflict, so the handoff is enforced here rather than left to the prompt.
+    // Reads (git status/diff) and `--abort` stay allowed.
+    if (process.env.PI_AGENT_NAME === "git-expert" && createsAndResolvesConflict(command)) {
+      // The index below is read *before* the command runs, so a command that
+      // starts a merge and then stages a side would pass the check and resolve
+      // the conflict it just created.
+      // error, not warn: the command was refused, not recovered from.
+      log.error("conflict_created_and_resolved", "agent", process.env.PI_AGENT_NAME ?? "unknown");
+      return {
+        block: true,
+        reason:
+          "\u26d4 This command starts a merge/rebase/cherry-pick and then stages a resolution of it. " +
+          "The conflict does not exist yet, so it cannot be checked. Delegate to the conflict-resolver " +
+          'agent (subagent(agent="conflict-resolver")), and let git-expert commit the staged result.',
+      };
+    }
+    if (process.env.PI_AGENT_NAME === "git-expert" && isConflictResolutionCommand(command)) {
+      // Which directory does git run in? A conditional branch, a completed
+      // subshell, or several invocations in one command have no single answer,
+      // and guessing wrong lets a resolution through. So ask every directory the
+      // command could reach: block if any is conflicted. Over-blocking costs a
+      // message; under-blocking costs the guard.
+      const { all, envOverride, dynamicPath } = conflictCandidateDirs(command, ctx.cwd);
+      if (dynamicPath) {
+        // The shell expands this path at run time, so there is nothing to check.
+        return {
+          block: true,
+          reason:
+            `⛔ ${dynamicPath} is expanded by the shell, so the repository it selects cannot be verified. ` +
+            "Do not resolve conflicts in git-expert — abort and delegate to the " +
+            `conflict-resolver agent (subagent(agent="conflict-resolver")).`,
+        };
+      }
+      if (envOverride) {
+        // GIT_DIR/GIT_WORK_TREE can point the index anywhere. Rather than
+        // guess which repository it selects, refuse.
+        return {
+          block: true,
+          reason:
+            `⛔ ${envOverride} selects the Git repository or index for this command, so the conflict state ` +
+            "cannot be verified. Do not resolve conflicts in git-expert — abort and delegate to the " +
+            `conflict-resolver agent (subagent(agent="conflict-resolver")).`,
+        };
+      }
+      const conflicted: string[] = [];
+      let readable = 0;
+      const unreadable: string[] = [];
+      for (const dir of all) {
+        const lookup = listUnmergedFiles(dir);
+        if (!lookup.ok) {
+          // An unreadable repository is unknown, not clean — but a directory that
+          // is not a repository has no index to be unknown about.
+          if (isInsideGitWorkTree(dir)) unreadable.push(dir);
+          continue;
+        }
+        readable++;
+        // Paths are repo-relative; the directory names the repository checked.
+        for (const file of lookup.files) conflicted.push(dir === ctx.cwd ? file : `${dir} → ${file}`);
+      }
+      // Any unreadable repository means the command may be staging into a state
+      // nobody checked, so it is refused — not excused because another candidate
+      // happened to answer.
+      if (conflicted.length === 0 && unreadable.length > 0) {
+        // A repository whose index will not answer: the conflict state there is
+        // unknown, so it is refused. A directory that is not a repository at all
+        // has no index to be unknown about and is never in this list.
+        // error, not warn: the check that gates this block failed.
+        log.error("conflict_lookup_failed", unreadable.join(", "));
+        return {
+          block: true,
+          reason:
+            `⛔ Could not read the unmerged index in ${unreadable.join(", ")}, so the conflict state is ` +
+            "unknown. Refusing to run a resolution command blind: run `git status` to see where you are, " +
+            `or delegate to the conflict-resolver agent (subagent(agent="conflict-resolver")).`,
+        };
+      }
+      if (conflicted.length > 0) {
+        log.error("conflict_resolution_blocked", conflicted.join(", "));
+        return {
+          block: true,
+          reason:
+            `⛔ Unresolved conflicts in ${conflicted.join(", ")}. Do not resolve them in git-expert — ` +
+            `stop, report this message to the caller, and have it delegate to the conflict-resolver ` +
+            `agent (subagent(agent="conflict-resolver")). To back out instead: ` +
+            `git merge --abort / git rebase --abort / git cherry-pick --abort.`,
         };
       }
     }

@@ -309,7 +309,7 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="agent-reference">Agent Reference</h1>
-<p>Pi ships 29 specialist agents in <code>agents/</code>. Each one is a markdown file with YAML frontmatter (<code>name</code>, <code>description</code>, <code>tools</code>) followed by a system prompt. This page lists every bundled agent, what its description says, and how the orchestrator decides which one to use.</p>
+<p>Pi ships 30 specialist agents in <code>agents/</code>. Each one is a markdown file with YAML frontmatter (<code>name</code>, <code>description</code>, <code>tools</code>) followed by a system prompt. This page lists every bundled agent, what its description says, and how the orchestrator decides which one to use.</p>
 <p>Specialists are meant to be <strong>delegated to, not imitated</strong>. The orchestrator reads the routing rules, spawns the matching specialist through the <code>subagent</code> tool, and merges the result — it does not do the specialist's job inline.</p>
 <blockquote>
 <p><strong>Note:</strong> None of the bundled agents pin a <code>model</code> or <code>provider</code> in their frontmatter. Every agent runs on whatever model the session resolves to, unless you override it per call or through <code>agent_overrides</code> in settings.</p>
@@ -318,7 +318,7 @@
 <p>Routing is defined in <code>rules/10-agent-routing.md</code>, not by the model guessing from agent names. Three layers:</p>
 <ol>
 <li>
-<p><strong>Domain-to-agent table.</strong> File types and tools map to a named agent — <code>.py</code> → <code>python-expert</code>, <code>.go</code> → <code>go-expert</code>, JS/TS/React/Vue/Angular → <code>ts-expert</code>, <code>.java</code> → <code>java-expert</code>, <code>.sh</code> → <code>bash-expert</code>, <code>.md</code> → <code>technical-documentation-writer</code>, Docker → <code>docker-expert</code>, Kubernetes/OpenShift → <code>kubernetes-expert</code>, Jenkins/CI/Groovy → <code>jenkins-expert</code>, local git → <code>git-expert</code>, GitHub (PRs, issues, releases, workflows) → <code>github-expert</code>, external library docs → <code>docs-fetcher</code>, running or analyzing tests → <code>test-runner</code>, writing tests → <code>test-automator</code>, debugging → <code>debugger</code>, API docs → <code>api-documenter</code>, external-repo security audit → <code>security-auditor</code>.</p>
+<p><strong>Domain-to-agent table.</strong> File types and tools map to a named agent — <code>.py</code> → <code>python-expert</code>, <code>.go</code> → <code>go-expert</code>, JS/TS/React/Vue/Angular → <code>ts-expert</code>, <code>.java</code> → <code>java-expert</code>, <code>.sh</code> → <code>bash-expert</code>, <code>.md</code> → <code>technical-documentation-writer</code>, Docker → <code>docker-expert</code>, Kubernetes/OpenShift → <code>kubernetes-expert</code>, Jenkins/CI/Groovy → <code>jenkins-expert</code>, local git → <code>git-expert</code>, GitHub (PRs, issues, releases, workflows) → <code>github-expert</code>, unresolved merge/rebase conflicts → <code>conflict-resolver</code>, external library docs → <code>docs-fetcher</code>, running or analyzing tests → <code>test-runner</code>, writing tests → <code>test-automator</code>, debugging → <code>debugger</code>, API docs → <code>api-documenter</code>, external-repo security audit → <code>security-auditor</code>.</p>
 </li>
 <li>
 <p><strong>Intent overrides the tool.</strong> The same file type routes differently by goal: running existing Python tests → <code>test-runner</code>; fixing Python production code after failures → <code>python-expert</code>; creating or changing Python tests → <code>test-automator</code>; editing Python production files → <code>python-expert</code> even via <code>sed</code>/<code>awk</code>; creating a PR → <code>github-expert</code>, never <code>git-expert</code>.</p>
@@ -399,7 +399,7 @@
 </tbody>
 </table></div>
 <h2 id="version-control-and-forges">Version control and forges</h2>
-<p>These two are split deliberately: <code>git-expert</code> is local repository work, <code>github-expert</code> is everything that talks to the GitHub API through <code>gh</code>.</p>
+<p>These two are split deliberately: <code>git-expert</code> is local repository work, <code>github-expert</code> is everything that talks to the GitHub API through <code>gh</code>. <code>conflict-resolver</code> is split out of <code>git-expert</code> because it is the one git task that needs real judgment: <code>git-expert</code> is commonly pinned to a small model, so when a merge, rebase, or cherry-pick leaves unmerged paths, <code>git-expert</code> is blocked from writing a resolution (<code>git add</code>, <code>git restore</code>, <code>git rm</code>, <code>git update-index</code>, <code>git reset</code>, <code>git checkout --ours/--theirs</code>, and the <code>--continue</code>/<code>--skip</code>/<code>--quit</code> flags of <code>merge|rebase|cherry-pick|revert|am</code>) and hands off to <code>conflict-resolver</code>. Reads such as <code>git status</code> and <code>git diff</code>, and the <code>--abort</code> flags, stay allowed.</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -415,13 +415,18 @@
 <td><code>read, bash</code></td>
 </tr>
 <tr>
+<td><a href="#conflict-resolver"><code>conflict-resolver</code></a></td>
+<td>Resolve git merge, rebase, and cherry-pick conflicts by reading commit intent on both sides, where git-expert is blocked from resolving them and hands off instead.</td>
+<td><code>read, bash, edit, write</code></td>
+</tr>
+<tr>
 <td><a href="#github-expert"><code>github-expert</code></a></td>
 <td>GitHub platform operations including PRs, issues, releases, repos, and workflows. Uses the gh CLI for all GitHub API interactions.</td>
 <td><code>read, bash</code></td>
 </tr>
 </tbody>
 </table></div>
-<p>Both are read-only on the file system, but <code>bash</code> is enough to mutate branches and open PRs.</p>
+<p>Both <code>git-expert</code> and <code>github-expert</code> are read-only on the file system, but <code>bash</code> is enough to mutate branches and open PRs. <code>conflict-resolver</code> writes, because resolving a conflict means editing the conflicted files.</p>
 <h2 id="testing">Testing</h2>
 <p>Running tests and writing tests are separate agents. <code>test-runner</code> is analysis-only; a completed <code>test-runner</code> or <code>test-automator</code> subagent does not prove the test command passed — the exit status does.</p>
 <div class="table-wrap"><table>
@@ -599,7 +604,7 @@
 <p><code>planner</code> and <code>debugger</code> deliberately cannot write. <code>worker</code> is the only one in this group that can.</p>
 <h2 id="tool-access-at-a-glance">Tool access at a glance</h2>
 <ul>
-<li><strong>Full access</strong> (<code>read, write, edit, bash</code>) — 12 agents: the five language specialists, <code>docker-expert</code>, <code>kubernetes-expert</code>, <code>jenkins-expert</code>, <code>api-documenter</code>, <code>technical-documentation-writer</code>, <code>test-automator</code>, <code>worker</code>.</li>
+<li><strong>Full access</strong> (<code>read, write, edit, bash</code>) — 13 agents: the five language specialists, <code>docker-expert</code>, <code>kubernetes-expert</code>, <code>jenkins-expert</code>, <code>api-documenter</code>, <code>technical-documentation-writer</code>, <code>test-automator</code>, <code>conflict-resolver</code>, <code>worker</code>.</li>
 <li><strong>Read-only</strong> (<code>read, bash</code>) — the other 17: every reviewer, every issue reviewer, <code>git-expert</code>, <code>github-expert</code>, <code>test-runner</code>, <code>debugger</code>, <code>planner</code>, <code>scout</code>, <code>docs-fetcher</code>, <code>security-auditor</code>.</li>
 </ul>
 <p>Restricting <code>tools:</code> is the first lever when a bundled specialist has more authority than you want; see <a href="managing-custom-agents.html">Managing Custom Agents</a>.</p>
