@@ -1557,9 +1557,10 @@ export class SessionStore {
             // Only discard a reported *zero*; never discard a positive total.
             if (reported != null && (entry.pricingKnown || reported > 0)) {
               usage.cost_usd = (usage.cost_usd ?? 0) + reported;
-            } else if (reported != null) {
-              // Unknown-priced turn reporting zero: real spend may exist but is
-              // unknowable here, so any accumulated total is only a lower bound.
+            } else {
+              // Either the turn reported a zero we cannot price, or it reported no
+              // cost at all. Both leave this turn's spend unknown, so any total
+              // accumulated from the other turns is a lower bound, not a sum.
               usage.cost_partial = true;
               logger.debug(
                 `[sidecar] COST_UNKNOWN: session=${id}, reportedTotal=${reported}, pricingKnown=${entry.pricingKnown}`,

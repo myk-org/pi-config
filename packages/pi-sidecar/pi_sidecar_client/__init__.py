@@ -174,6 +174,7 @@ class AITokenUsage:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     cost_usd: float | None = None
+    cost_partial: bool = False
     duration_ms: int | None = None
     provider: str = ""
     model: str = ""
@@ -506,6 +507,7 @@ class SidecarClient:
             cache_read_tokens=usage_data.get("cache_read_tokens", 0),
             cache_write_tokens=usage_data.get("cache_write_tokens", 0),
             cost_usd=usage_data.get("cost_usd"),
+            cost_partial=bool(usage_data.get("cost_partial", False)),
             duration_ms=usage_data.get("duration_ms"),
         )
 

@@ -407,7 +407,7 @@ a believable number:
 |-------|---------|
 | number | Costs were reported and accumulated. |
 | `null` | Nothing usable was reported, so no total can be given. |
-| number + `cost_partial: true` | A **lower bound**: at least one turn reported a cost that is unknowable, so the real total is higher. |
+| number + `cost_partial: true` | A **lower bound**: at least one turn's cost could not be determined, so the real total may be higher — it may also be the same. |
 
 Read `cost_usd` together with `cost_partial`, never on its own. `cost_partial`
 is `false` when every reported turn cost was usable.
@@ -423,17 +423,37 @@ So the three cases are:
 1. **Catalog model, costs reported** → number, `cost_partial: false`.
 2. **Unknown-priced model, driver reports nothing usable** → `null`.
 3. **Unknown-priced model, driver reports some turns** → number **plus**
-   `cost_partial: true`, because the unreported turns may still have cost.
+   `cost_partial: true`, because the unreported turns may still have cost. Note
+   this means *may be* higher, not *is* higher: an unreported turn can genuinely
+   cost zero, so `cost_partial` marks the total as incomplete rather than
+   asserting missing spend.
 
 Token counts (`input_tokens`, `output_tokens`, `cache_read_tokens`,
 `cache_write_tokens`) are always populated regardless of pricing.
 
 > ⚠️ **Consumers must not treat `null` as `0`, and must not present a
 > `cost_partial` total as complete.** Aggregating with `COALESCE(SUM(cost_usd), 0)`
-> reports unknown-only spend as a genuine zero and reports mixed spend as a
-> complete total. Sum with `SUM(cost_usd)` and carry
-> `bool_or(cost_partial) OR SUM(cost_partial) > 0` alongside, then label any total
-> that includes unknown spend as incomplete.
+> reports unknown-only spend as a genuine zero, and summing without carrying the
+> flag reports mixed spend as a complete total. Sum the cost with a plain
+> `SUM(cost_usd)` and carry the partial flag in its own expression, then label any
+> total that includes unknown spend as incomplete.
+
+Aggregation differs by engine, so pick the form that matches yours:
+
+```sql
+-- PostgreSQL: bool_or over the boolean column
+SELECT SUM(cost_usd) AS cost_usd, bool_or(cost_partial) AS cost_partial
+FROM ai_token_usage WHERE ...;
+
+-- SQLite / MySQL (no boolean aggregate): compare a sum of the flag instead
+SELECT SUM(cost_usd) AS cost_usd,
+       COALESCE(MAX(cost_partial), 0) AS cost_partial
+FROM ai_token_usage WHERE ...;
+```
+
+Do **not** combine a boolean aggregate with a sum of booleans in one expression
+(`bool_or(cost_partial) OR SUM(cost_partial) > 0`): `SUM(boolean)` is not valid
+on PostgreSQL.
 
 ## Provider Types
 

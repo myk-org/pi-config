@@ -571,6 +571,7 @@ exit 0
           return () => {};
         },
         prompt: async () => {
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "a" } });
           emit({ type: "agent_end", messages: [
             { role: "assistant", content: [{ type: "text", text: "a" }], usage: { input: 5, output: 2, cost: { total: 1.25 } } },
             { role: "assistant", content: [{ type: "text", text: "b" }], usage: { input: 5, output: 2, cost: { total: 0 } } },
@@ -585,6 +586,39 @@ exit 0
     const result = await store.prompt("s-pricing-partial", "hi") as { usage: { cost_usd: number | null; cost_partial: boolean } };
     assert.equal(result.usage.cost_usd, 1.25, "the reported amount is kept");
     assert.equal(result.usage.cost_partial, true, "but the total is only a lower bound");
+  });
+
+  /**
+   * An unknown-priced turn may omit cost entirely rather than report zero. That
+   * turn's spend is equally unknowable, so it must mark the total partial too —
+   * otherwise a mixed prompt returns a lower bound flagged as complete.
+   */
+  it("prompt() flags a cost as partial when an unknown turn reports no cost at all", async () => {
+    const store = new SessionStore();
+    let emit: (event: unknown) => void = () => {};
+    store.putSessionFixture(
+      "s-pricing-omitted",
+      {
+        subscribe: (cb: (event: unknown) => void) => {
+          emit = cb;
+          return () => {};
+        },
+        prompt: async () => {
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "a" } });
+          emit({ type: "agent_end", messages: [
+            { role: "assistant", content: [{ type: "text", text: "a" }], usage: { input: 5, output: 2, cost: { total: 2.5 } } },
+            { role: "assistant", content: [{ type: "text", text: "b" }], usage: { input: 5, output: 2 } },
+          ] });
+        },
+        dispose: () => {},
+        abort: async () => {},
+      },
+      "/tmp/job-pricing",
+      false,
+    );
+    const result = await store.prompt("s-pricing-omitted", "hi") as { usage: { cost_usd: number | null; cost_partial: boolean } };
+    assert.equal(result.usage.cost_usd, 2.5, "the reported amount is kept");
+    assert.equal(result.usage.cost_partial, true, "an omitted cost is unknown, so the total is a lower bound");
   });
 
   /**
