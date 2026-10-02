@@ -41,7 +41,7 @@ import {
   decideAsyncLlmDispatch,
   supportsAsyncLlm,
 } from "./async-capability.js";
-import { autoMarkInProgress, autoCompleteTask } from "./async-agents.js";
+import { autoMarkInProgress, autoCompleteTask, type AsyncKillOrigin } from "./async-agents.js";
 import { getSetting } from "./project-settings.js";
 import { checkSyncLimit } from "./sync-limit.js";
 import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
@@ -596,7 +596,7 @@ function validateTaskId(taskId: string, _cwd: string, _sessionId?: string): stri
 export function registerSubagentTool(
   pi: ExtensionAPI,
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; persistSession?: boolean; explicit?: { model?: string; provider?: string } }) => { id: string; error?: string; model?: string },
-  killAsyncAgent: (target: string) => { killed: string[]; errors: string[] },
+  killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] },
 ): void {
   // Only the orchestrator (top-level pi) can spawn subagents.
   // Child processes set PI_SUBAGENT_CHILD=1 to prevent infinite recursion.
@@ -604,11 +604,13 @@ export function registerSubagentTool(
 
   // ── Extracted execute helpers (closure over pi, spawnAsyncAgent, killAsyncAgent) ──
 
+  // asyncKill is an LLM-issued decision, not a user action.
   function executeAsyncKill(
     params: { asyncKill: string },
     mkd: (mode: "single" | "parallel" | "chain") => (results: SingleResult[]) => SubagentDetails,
   ) {
-    const { killed, errors } = killAsyncAgent(params.asyncKill);
+    const { killed, errors } = killAsyncAgent(params.asyncKill, "orchestrator");
+    log.info("subagent_async_kill", { target: params.asyncKill, origin: "orchestrator", killed: killed.length });
     const lines: string[] = [];
     if (killed.length > 0) lines.push(`Killed: ${killed.join(", ")}`);
     if (errors.length > 0) lines.push(errors.join("\n"));

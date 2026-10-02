@@ -30,7 +30,7 @@ export interface AsyncStatusUiDeps {
   killJob: (id: string) => void;
   formatDuration: (ms: number) => string;
   /** Optional live status.json reader for detail header. */
-  readLiveStatus?: (workerDir: string) => { state?: string } | null;
+  readLiveStatus?: (workerDir: string) => { state?: string; killOrigin?: string } | null;
   title?: string;
   emptyMessage?: string;
   footerHints?: string;
@@ -182,6 +182,10 @@ export async function openAsyncStatusOverlay(
             const current = deps.listJobs().find((j) => j.id === jobId) || job;
             const state = live?.state || current.status;
             const dur = deps.formatDuration(elapsedMs(current));
+            // Show who killed a failed job rather than guessing "user".
+            const origin = live?.killOrigin
+              ? t.fg("dim", ` · killed by ${live.killOrigin}`)
+              : "";
             return (
               `${statusGlyph(state, t)} ` +
               t.fg(
@@ -189,6 +193,7 @@ export async function openAsyncStatusOverlay(
                 t.bold(`${jobTitle(current)} · ${current.id.slice(-8)}`),
               ) +
               t.fg("muted", ` · ${state} · ${dur}`) +
+              origin +
               t.fg("dim", ` · ${current.task.slice(0, 40)}`)
             );
           },

@@ -74,6 +74,22 @@ export interface AsyncJob {
   restoredPid?: number;
 }
 
+/**
+ * Who requested an async-agent kill.
+ * - `user` — a human action: `/async-kill`, the async-status overlay `x`, or the pidash browser UI
+ * - `orchestrator` — the LLM via `subagent(asyncKill=...)`
+ * - `task-system` — pitasks TaskExecute via `subagents:rpc:stop`
+ * The pidash browser UI is a human clicking, so it is a `user` kill.
+ */
+export type AsyncKillOrigin = "user" | "orchestrator" | "task-system";
+
+/** Human-readable, non-sensitive attribution persisted as a killed job's output. */
+const KILL_ORIGIN_LABELS: Record<AsyncKillOrigin, string> = {
+  user: "Killed by user",
+  orchestrator: "Killed by orchestrator",
+  "task-system": "Killed by task system",
+};
+
 /** Get the effective working directory for a job. */
 function jobCwd(job: { cwd?: string; projectCwd?: string }): string {
   return job.cwd || job.projectCwd || process.cwd();
@@ -126,7 +142,7 @@ export function registerAsyncAgents(
   } = {},
 ): {
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } }) => { id: string; error?: string; model?: string };
-  killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
+  killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
   let PROJECT_TMP_DIR = path.join(process.cwd(), ".pi", "tmp"); // Computed only; created on session_start
@@ -1377,7 +1393,7 @@ export function registerAsyncAgents(
     await openAsyncStatusOverlay(ctx, {
       listJobs: () => Array.from(asyncState.jobs.values()),
       killJob: (id) => {
-        killAsyncAgent(id);
+        killAsyncAgent(id, "user");
       },
       formatDuration,
       readLiveStatus: (workerDir) => readAsyncStatus(workerDir),
@@ -1391,7 +1407,11 @@ export function registerAsyncAgents(
   });
 
   // Kill an async agent by name, id prefix, or "all"
-  function killAsyncAgent(target: string): { killed: string[]; errors: string[] } {
+  function killAsyncAgent(target: string, origin: AsyncKillOrigin = "user"): { killed: string[]; errors: string[] } {
+    // Runtime guard: callers outside the type system still get a safe, non-false label.
+    const killOrigin = KILL_ORIGIN_LABELS[origin] ? origin : "user";
+    const killLabel = KILL_ORIGIN_LABELS[killOrigin];
+    log.info("async_kill_requested", { target, origin: killOrigin, label: killLabel });
     const killed: string[] = [];
     const errors: string[] = [];
     const running = Array.from(asyncState.jobs.values()).filter(
@@ -1443,7 +1463,8 @@ export function registerAsyncAgents(
         existing.state = "failed";
         existing.exitCode = -9;
         existing.endedAt = Date.now();
-        existing.output = "Killed by user";
+        existing.killOrigin = killOrigin;
+        existing.output = killLabel;
         fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
       } catch (e: any) { log.error(`kill: status.json update failed for ${job.id}: ${e?.message}`); }
       // Delete result file if it exists — prevent re-ingestion on reload
@@ -1465,13 +1486,14 @@ export function registerAsyncAgents(
         // Non-grouped killed job — deliver immediately so AI knows it was killed
         const displayName = job.name || job.agent;
         const duration = job.durationMs || (Date.now() - job.startedAt);
-        const rawOutput = typeof job.output === "string" ? job.output : "Killed by user";
+        const priorOutput = typeof job.output === "string" ? job.output : "";
+        const rawOutput = priorOutput ? `${killLabel}\n${priorOutput}` : killLabel;
         const output = formatAsyncResultOutput(
           job.agent,
           rawOutput,
           resultOutputPath(job),
         );
-        const killContent = `## Async Agent Result: ${displayName} ❌ failed\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`;
+        const killContent = `## Async Agent Result: ${displayName} ❌ failed — ${killLabel}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`;
         if (wasAlreadyDelivered(job.id)) {
           job.delivered = true;
           log.debug(`kill: skipping already-delivered result for ${job.id}`);
@@ -1506,7 +1528,7 @@ export function registerAsyncAgents(
   async function handleAsyncKill(args: string, ctx: any): Promise<void> {
     // If arg provided, kill directly without interactive selection
     if (args) {
-      const { killed, errors } = killAsyncAgent(args);
+      const { killed, errors } = killAsyncAgent(args, "user");
       if (killed.length > 0) {
         ctx.ui.notify(`Killed: ${killed.join(", ")}`, "info");
       }
@@ -1527,7 +1549,7 @@ export function registerAsyncAgents(
           (j) => j.status === "running" || j.status === "queued",
         ),
       killJob: (id) => {
-        killAsyncAgent(id);
+        killAsyncAgent(id, "user");
       },
       formatDuration,
       readLiveStatus: (workerDir) => readAsyncStatus(workerDir),
@@ -1544,7 +1566,8 @@ export function registerAsyncAgents(
   // Handle async-kill from pidash browser UI
   pi.events.on("pidash:async-kill", (target: unknown) => {
     if (typeof target === "string") {
-      killAsyncAgent(target);
+      // A human clicking in the browser UI — still a user kill.
+      killAsyncAgent(target, "user");
     }
   });
 
@@ -1612,7 +1635,7 @@ export function registerAsyncAgents(
   // Stop — kill a running async agent
   handleRpc<{ requestId: string; agentId: string }>(
     "subagents:rpc:stop", ({ agentId }) => {
-      const { killed, errors } = killAsyncAgent(agentId);
+      const { killed, errors } = killAsyncAgent(agentId, "task-system");
       if (killed.length === 0) throw new Error(errors[0] || "Agent not found");
     },
   );

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,25 +75,6 @@ def _get_project_root() -> Path:
         raise RuntimeError("Failed to detect project root — git not available or not in a repo") from e
 
 
-def _get_current_commit_sha(cwd: Path | None = None) -> str:
-    """Get the current git commit SHA."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=cwd,
-        )
-        if result.returncode != 0:
-            log(f"Warning: Could not get commit SHA: {result.stderr.strip()}")
-            return "unknown"
-        return result.stdout.strip() or "unknown"
-    except (subprocess.SubprocessError, OSError) as e:
-        log(f"Warning: Could not get commit SHA: {e}")
-        return "unknown"
-
-
 def _get_db_path() -> Path:
     """Get the pr-reviews.db path."""
     project_root = _get_project_root()
@@ -143,8 +123,8 @@ def store_pr_review(
         pr_number: PR number.
         comments: List of comment dicts with keys: thread_id, comment_id,
                   path, line, body, severity, posted_at, status, skip_reason.
-        head_sha: Git commit SHA for the reviewed code. Auto-detected
-                  from local git HEAD if not provided.
+        head_sha: Git commit SHA for the reviewed code. Auto-detected from the
+                  HEAD of the current worktree if not provided.
         author: PR author login (e.g., 'username').
         db_path: Override database path (default: auto-detected from git root).
     """
@@ -161,8 +141,12 @@ def store_pr_review(
             log(f"Warning: could not chmod {db_dir}: {exc}")
 
     if not head_sha:
-        project_root = _get_project_root()
-        head_sha = _get_current_commit_sha(cwd=project_root)
+        # No SHA from the fetch metadata: resolve it in the process cwd (the
+        # worktree the CLI was invoked from), not in _get_project_root() — that
+        # is the MAIN worktree, so its HEAD would be recorded for every review.
+        from myk_pi_tools.reviews.store import get_current_commit_sha
+
+        head_sha = get_current_commit_sha()
     created_at = datetime.now(UTC).isoformat()
 
     # Validate all comments before touching the database
