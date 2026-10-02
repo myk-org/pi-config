@@ -506,12 +506,33 @@ export const DEFAULT_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
 /** Methods SessionStore calls on a stored session (create() or test fixture). */
 type StoredSession = Pick<AgentSession, "prompt" | "subscribe" | "dispose" | "abort">;
 
+/**
+ * Whether a model carries real prices.
+ *
+ * Pi requires numeric prices, so a model resolved from a key-scoped listing
+ * uses zeros to mean "unknown pricing" rather than "free". A model with no
+ * priced component must not be reported as a $0 call — consumers would show
+ * unknown spend as genuinely free.
+ */
+function hasKnownPricing(model: { cost?: Record<string, number | undefined> } | undefined): boolean {
+  const cost = model?.cost;
+  if (!cost) return false;
+  return Object.values(cost).some((value) => typeof value === "number" && value > 0);
+}
+
 interface SessionEntry {
   session: StoredSession;
   lastActivity: number;
   inFlight: boolean;
   cwd: string;
   redact: (value: string) => string;
+  /**
+   * Whether the session's model carries real prices. Pi requires numeric prices,
+   * so a model resolved from a key-scoped listing uses zeros to mean "unknown
+   * pricing", not "free". Reporting that as $0 makes unknown spend look free to
+   * consumers (e.g. rootcoz), so usage cost stays null instead.
+   */
+  pricingKnown: boolean;
 }
 
 /**
@@ -671,6 +692,7 @@ export class SessionStore {
     id: string,
     session: StoredSession,
     cwd: string,
+    pricingKnown = true,
   ): void {
     fixtureLog.debug(`putSessionFixture id=${id} cwdBound=${Boolean(cwd)}`);
     this.sessions.set(id, {
@@ -679,6 +701,7 @@ export class SessionStore {
       inFlight: false,
       cwd,
       redact: (value) => value,
+      pricingKnown,
     });
   }
 
@@ -1438,7 +1461,7 @@ export class SessionStore {
       throw httpError("Sidecar is shutting down", 503);
     }
 
-    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact });
+    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model) });
     log.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${customTools.length})`);
     return id;
     } catch (err) {
@@ -1519,7 +1542,7 @@ export class SessionStore {
             usage.output_tokens += msg.usage.output || 0;
             usage.cache_read_tokens += msg.usage.cacheRead || 0;
             usage.cache_write_tokens += msg.usage.cacheWrite || 0;
-            if (msg.usage.cost?.total != null) {
+            if (msg.usage.cost?.total != null && entry.pricingKnown) {
               usage.cost_usd = (usage.cost_usd ?? 0) + msg.usage.cost.total;
             }
           }

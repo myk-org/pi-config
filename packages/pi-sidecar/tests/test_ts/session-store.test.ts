@@ -476,4 +476,46 @@ exit 0
       rmSync(sessionCwd, { recursive: true, force: true });
     }
   });
+  /**
+   * A model resolved from a key-scoped listing carries zero prices, which Pi
+   * means as "unknown pricing" rather than "free". Reporting that $0 makes
+   * unknown spend look free to consumers (rootcoz), so usage.cost_usd must stay
+   * null instead of accumulating a numeric zero.
+   */
+  it("prompt() leaves cost null for a model with unknown pricing", async () => {
+    const usage = { input_tokens: 10, output_tokens: 4, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 0.42 };
+    const run = async (pricingKnown: boolean) => {
+      const store = new SessionStore();
+      let emit: (event: unknown) => void = () => {};
+      store.putSessionFixture(
+        `s-pricing-${pricingKnown}`,
+        {
+          subscribe: (cb: (event: unknown) => void) => {
+            emit = cb;
+            return () => {};
+          },
+          prompt: async () => {
+            emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "done" } });
+            emit({
+              type: "agent_end",
+              messages: [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 10, output: 4, cost: { total: 0.42 } } }],
+            });
+          },
+          dispose: () => {},
+          abort: async () => {},
+        },
+        "/tmp/job-pricing",
+        pricingKnown,
+      );
+      const result = await store.prompt(`s-pricing-${pricingKnown}`, "hi") as { usage: typeof usage };
+      return result.usage;
+    };
+
+    const priced = await run(true);
+    assert.equal(priced.cost_usd, 0.42);
+
+    const unpriced = await run(false);
+    assert.equal(unpriced.cost_usd, null, "unknown pricing must stay null, not report as free");
+    assert.equal(unpriced.input_tokens, 10, "token counts stay intact");
+  });
 });
