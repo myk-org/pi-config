@@ -191,7 +191,7 @@ export function registerAsyncAgents(
    * the kill label. The second form covers a record cut mid-delta, whose closing quote never
    * made it into the tail.
    */
-  function recoverTruncatedDelta(line: string): string | null {
+  function recoverTruncatedDelta(line: string, firstOfBoundedRead: boolean): string | null {
     // A COMPLETE record that parseAsyncOutputLine deliberately rejects is not truncated
     // output. toolcall_delta carries a `delta` field, and lifting it would ship a killed
     // worker's raw tool arguments into the persisted output and the AI-facing delivery.
@@ -201,31 +201,40 @@ export function registerAsyncAgents(
     } catch {
       /* not a complete record — continue */
     }
-    const closed = /"delta"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
-    let last: RegExpExecArray | null = null;
-    let m: RegExpExecArray | null;
-    while ((m = closed.exec(line)) !== null) last = m;
-    if (last) {
-      try {
-        return JSON.parse(`"${last[1]}"`);
-      } catch {
-        /* fall through to the open-ended form */
+    // A truncated record is recognised by what it CONTAINS, not by where it sits. The type
+    // markers precede the value, so a record cut mid-write still carries them; stderr never
+    // does. Positioning was the previous guard and it was wrong twice over: it discarded a
+    // legitimate partial final event — exactly what a worker killed mid-write leaves behind —
+    // whenever the log was read whole or the event followed other lines.
+    // The INNER event type, not the envelope: toolcall_delta is also a message_update, so
+    // matching the envelope would admit every truncated tool-call update as agent text.
+    const looksLikeTextEvent = line.includes('"text_delta"');
+    if (looksLikeTextEvent) {
+      const closed = /"delta"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+      let last: RegExpExecArray | null = null;
+      let m: RegExpExecArray | null;
+      while ((m = closed.exec(line)) !== null) last = m;
+      if (last) {
+        try {
+          return JSON.parse(`"${last[1]}"`);
+        } catch {
+          /* fall through to the open-ended form */
+        }
+      }
+      const open = line.match(/"delta"\s*:\s*"((?:[^"\\]|\\.)*)$/);
+      if (open) {
+        try {
+          return JSON.parse(`"${open[1]}"`);
+        } catch {
+          return null;
+        }
       }
     }
-    const open = line.match(/"delta"\s*:\s*"((?:[^"\\]|\\.)*)$/);
-    if (open) {
-      try {
-        return JSON.parse(`"${open[1]}"`);
-      } catch {
-        return null;
-      }
-    }
-    // The record is larger than the whole window, so its `"delta"` marker sits before the
-    // tail and never made it into the read. What remains is the tail of the record's value,
-    // ending at the value's closing quote followed by the record's closing braces. Requiring
-    // that shape is what separates a cut record from stderr: a diagnostic like
-    // `Error: cannot open "/tmp/x"` contains a quote but does not end in one followed by
-    // closing braces.
+    // The record is larger than the whole window, so even its type markers sit before the
+    // tail and the fragment is recognisable only by position and shape: it must be the first
+    // line of a BOUNDED read and must end in a closing quote followed by closing braces.
+    // A diagnostic like `Error: cannot open "/tmp/x"` contains a quote but neither.
+    if (!firstOfBoundedRead) return null;
     if (!/"\s*}\s*}\s*$/.test(line)) return null;
     const q = line.lastIndexOf('"');
     if (q <= 0) return null;
@@ -269,15 +278,17 @@ export function registerAsyncAgents(
       // Splitting each value into lines and rejoining with "\n" turned "Hel" "lo" into
       // "Hel\nlo" — corrupting the recovered text of every killed agent.
       let text = "";
-      // Truncated-record recovery applies ONLY to the first line of a BOUNDED read, where the
-      // offset is known to have landed inside a record. Running it on every unparsed line let
-      // ordinary stderr and rejected event types be promoted to recovered agent output.
+      // Truncated-record recovery runs on any line that fails to parse, but recoverTruncatedDelta
+      // decides on what the line CONTAINS: a partial assistant event keeps its type markers,
+      // while stderr and complete-but-rejected events never qualify. `usedTailRead && i === 0`
+      // is passed separately because an oversized record is recognisable only by position —
+      // its markers fall before the window.
       const lines = raw.split("\n");
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         if (!line.trim()) continue;
         const parsed = parseAsyncOutputLine(line)
-          ?? (usedTailRead && i === 0 ? recoverTruncatedDelta(line) : null);
+          ?? recoverTruncatedDelta(line, usedTailRead && i === 0);
         if (parsed === null) continue;
         text += parsed;
       }

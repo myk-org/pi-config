@@ -343,6 +343,80 @@ describe("async kill origin attribution (issue #816)", () => {
     } finally { h.restore(); }
   });
 
+  it("recovers a partial final text event from a small whole-file log", () => {
+    // Regression: recovery was gated on the FIRST line of a bounded read, so the partial
+    // final event a worker killed MID-WRITE leaves behind — the exact case recovery exists
+    // for — was dropped whenever the log was read whole.
+    const h = harness();
+    try {
+      const job = h.spawn();
+      const partial = "MIDWRITEDELTA";
+      writeFileSync(
+        join(h.cwd, ".pi", "tmp", job.id, "output.log"),
+        [
+          JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "earlier complete line\n" } }),
+          // Cut mid-value: the record never closed, exactly as a mid-write kill leaves it.
+          `{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"${partial}`,
+        ].join("\n"),
+        { mode: 0o600 },
+      );
+      h.api.killAsyncAgent(job.id, "user");
+      const delivered = String(h.messages[0].content);
+      log.debug("kill_origin_case", { origin: "user", partialFinalSmall: true });
+      assert.match(delivered, /earlier complete line/, "complete events are still recovered");
+      assert.match(delivered, new RegExp(partial),
+        "a partial final text event must reach the delivery");
+    } finally { h.restore(); }
+  });
+
+  it("recovers a partial final text event that follows complete records in a bounded tail", () => {
+    const h = harness();
+    try {
+      const job = h.spawn();
+      const TAIL = 256 * 1024;
+      const partial = "TAILFINALDELTA";
+      const bigRec = JSON.stringify({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: "old ".repeat(200_000) },
+      }) + "\n";
+      const content = bigRec + "\n".repeat(50) + "\n".repeat(TAIL - 60)
+        + `{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"${partial}`;
+      assert.ok(content.length > TAIL, "test setup: the read is a bounded tail");
+      writeFileSync(join(h.cwd, ".pi", "tmp", job.id, "output.log"), content, { mode: 0o600 });
+
+      h.api.killAsyncAgent(job.id, "user");
+      const delivered = String(h.messages[0].content);
+      log.debug("kill_origin_case", { origin: "user", partialFinalTail: true });
+      assert.match(delivered, new RegExp(partial),
+        "a partial final text event must reach the delivery even after earlier records");
+    } finally { h.restore(); }
+  });
+
+  it("does not lift a delta from a TRUNCATED non-text event", () => {
+    // Guards the content check, not the position check: a tool-call update cut mid-write is
+    // incomplete JSON too, so only the presence of the event's own type markers distinguishes
+    // it from a partial assistant event.
+    const h = harness();
+    try {
+      const job = h.spawn();
+      const rawArg = "RAWARGVALUE";
+      writeFileSync(
+        join(h.cwd, ".pi", "tmp", job.id, "output.log"),
+        [
+          JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "kept output\n" } }),
+          `{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","delta":"{\\"command\\":\\"echo ${rawArg}`,
+        ].join("\n"),
+        { mode: 0o600 },
+      );
+      h.api.killAsyncAgent(job.id, "user");
+      const delivered = String(h.messages[0].content);
+      log.debug("kill_origin_case", { origin: "user", truncatedToolCall: true });
+      assert.match(delivered, /kept output/, "the real text event is still recovered");
+      assert.ok(!delivered.includes(rawArg),
+        "a truncated tool-call update must not be lifted as agent text");
+    } finally { h.restore(); }
+  });
+
   it("keeps the newest partial output when it exceeds the delivery budget", () => {
     const h = harness();
     try {
