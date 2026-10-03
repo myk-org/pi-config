@@ -31,7 +31,7 @@ export interface AsyncStatusJobView {
 
 export interface AsyncStatusUiDeps {
   listJobs: () => AsyncStatusJobView[];
-  killJob: (id: string) => void;
+  killJob: (id: string) => { killed: string[]; errors: string[] } | void;
   formatDuration: (ms: number) => string;
   /** Optional live status.json reader for detail header. */
   readLiveStatus?: (workerDir: string) => { state?: string; killOrigin?: string } | null;
@@ -121,7 +121,7 @@ function elapsedMs(job: AsyncStatusJobView): number {
  * capitalised key, and gating it on `ctx.ui.confirm` left the overlay hanging on
  * hosts where that dialog does not resolve — the key simply appeared dead.
  */
-function killAllJobs(
+export function killAllJobs(
   ctx: ExtensionCommandContext,
   deps: AsyncStatusUiDeps,
 ): void {
@@ -131,18 +131,27 @@ function killAllJobs(
     ctx.ui?.notify?.("No running async agents to kill.", "info");
     return;
   }
-  // Each kill is attempted independently: a throw on one job must not leave the
-  // remaining agents running after the user asked for all of them to die.
-  const failed: { id: string; error: string }[] = [];
+  // Each kill is attempted independently: a failure on one job must not leave the
+  // remaining agents running after the user asked for all of them to die. A callback that
+  // returns errors (rather than throwing) counts as a failure too — signalling can fail
+  // while the worker is still alive, and reporting that as "killed" would be a lie.
+  const failed: string[] = [];
+  let killed = 0;
   for (const job of targets) {
     try {
-      deps.killJob(job.id);
+      const result = deps.killJob(job.id);
+      if (result?.errors?.length) {
+        failed.push(...result.errors);
+        log.error("kill_all: job kill reported errors", { job: job.id, errors: result.errors });
+        continue;
+      }
+      killed++;
     } catch (e: any) {
-      failed.push({ id: job.id, error: e?.message || String(e) });
-      log.error("kill_all: job kill failed", { job: job.id, error: e?.message || String(e) });
+      const message = e?.message || String(e);
+      failed.push(`${job.id}: ${message}`);
+      log.error("kill_all: job kill failed", { job: job.id, error: message });
     }
   }
-  const killed = targets.length - failed.length;
   if (failed.length === 0) {
     log.info("kill_all: killed", { count: killed });
     ctx.ui?.notify?.(

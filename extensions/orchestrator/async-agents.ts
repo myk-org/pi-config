@@ -1518,9 +1518,7 @@ export function registerAsyncAgents(
     log.debug("opening_async_status_overlay", { jobs: asyncState.jobs.size });
     await openAsyncStatusOverlay(ctx, {
       listJobs: () => Array.from(asyncState.jobs.values()),
-      killJob: (id) => {
-        killAsyncAgent(id, "user");
-      },
+      killJob: (id) => killAsyncAgent(id, "user"),
       formatDuration,
       readLiveStatus: (workerDir) => readAsyncStatus(workerDir),
     });
@@ -1564,6 +1562,7 @@ export function registerAsyncAgents(
       return { killed, errors };
     }
 
+    const unkillable: number[] = [];
     for (const job of targets) {
       const status = readAsyncStatus(job.workerDir);
       if (status?.pid) {
@@ -1572,14 +1571,27 @@ export function registerAsyncAgents(
           const matches = tree.match(/\((\d+)\)/g);
           const allPids = matches ? [...new Set(matches.map((m: string) => parseInt(m.slice(1, -1), 10)))] : [status.pid];
           for (const pid of allPids) {
-            try { process.kill(pid, "SIGKILL"); } catch {}
+            try { process.kill(pid, "SIGKILL"); } catch { unkillable.push(pid); }
           }
         } catch {
-          try { process.kill(status.pid, "SIGKILL"); } catch {}
-          if (status.childPid) try { process.kill(status.childPid, "SIGKILL"); } catch {}
+          try { process.kill(status.pid, "SIGKILL"); } catch { unkillable.push(status.pid); }
+          if (status.childPid) {
+            try { process.kill(status.childPid, "SIGKILL"); } catch { unkillable.push(status.childPid); }
+          }
         }
       }
       const label = job.name || job.agent;
+      // A swallowed signal failure used to be reported as a successful kill: the job was
+      // marked failed and counted as killed while its process kept running. Only claim a
+      // kill when nothing we signalled is still alive.
+      const stillAlive = unkillable.filter((pid) => {
+        try { process.kill(pid, 0); return true; } catch { return false; }
+      });
+      if (stillAlive.length > 0) {
+        errors.push(`Could not stop ${label} (pid ${stillAlive.join(", ")} still running).`);
+        log.error("async_kill_signal_failed", { label, pids: stillAlive, target });
+        continue;
+      }
       killed.push(label);
       job.status = "failed";
       job.updatedAt = Date.now();
