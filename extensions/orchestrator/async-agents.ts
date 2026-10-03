@@ -3,6 +3,7 @@
  */
 
 import { parseAsyncOutputLine } from "./async-status-parse.js";
+import { isProcessAlive, signalAndReportSurvivors } from "./async-kill-signal.js";
 import { createLogger } from "../shared/logger.js";
 import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -1580,31 +1581,32 @@ export function registerAsyncAgents(
       return { killed, errors };
     }
 
-    const unkillable: number[] = [];
+    // The failed-pid set is per-target: declared outside the loop, a pid that survived one
+    // target's failed signal was re-checked for every later target, and a later agent that
+    // had been signalled successfully would skip its state and result updates and stay
+    // marked running.
     for (const job of targets) {
       const status = readAsyncStatus(job.workerDir);
+      const pidsToSignal: number[] = [];
       if (status?.pid) {
         try {
           const tree = execFileSync("pstree", ["-p", String(status.pid)], { encoding: "utf-8", timeout: 3000 });
           const matches = tree.match(/\((\d+)\)/g);
-          const allPids = matches ? [...new Set(matches.map((m: string) => parseInt(m.slice(1, -1), 10)))] : [status.pid];
-          for (const pid of allPids) {
-            try { process.kill(pid, "SIGKILL"); } catch { unkillable.push(pid); }
-          }
+          pidsToSignal.push(...(matches ? [...new Set(matches.map((m: string) => parseInt(m.slice(1, -1), 10)))] : [status.pid]));
         } catch {
-          try { process.kill(status.pid, "SIGKILL"); } catch { unkillable.push(status.pid); }
-          if (status.childPid) {
-            try { process.kill(status.childPid, "SIGKILL"); } catch { unkillable.push(status.childPid); }
-          }
+          pidsToSignal.push(status.pid);
+          if (status.childPid) pidsToSignal.push(status.childPid);
         }
       }
+      const stillAlive = signalAndReportSurvivors(
+        [...new Set(pidsToSignal)],
+        (pid) => { process.kill(pid, "SIGKILL"); },
+        isProcessAlive,
+      );
       const label = job.name || job.agent;
       // A swallowed signal failure used to be reported as a successful kill: the job was
       // marked failed and counted as killed while its process kept running. Only claim a
       // kill when nothing we signalled is still alive.
-      const stillAlive = unkillable.filter((pid) => {
-        try { process.kill(pid, 0); return true; } catch { return false; }
-      });
       if (stillAlive.length > 0) {
         errors.push(`Could not stop ${label} (pid ${stillAlive.join(", ")} still running).`);
         log.error("async_kill_signal_failed", { label, pids: stillAlive, target });
