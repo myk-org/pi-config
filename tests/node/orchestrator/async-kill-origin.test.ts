@@ -236,6 +236,64 @@ describe("async kill origin attribution (issue #816)", () => {
     } finally { h.restore(); }
   });
 
+  it("keeps a complete event that happens to start exactly at the tail boundary", () => {
+    // Regression: the tail read discarded everything through the first newline
+    // unconditionally, so when the offset landed exactly on a record boundary the one
+    // complete event it held was thrown away. The first record fills the tail so the
+    // read begins precisely at its first byte.
+    const h = harness();
+    try {
+      const job = h.spawn();
+      const TAIL = 256 * 1024;
+      const boundaryMarker = "BOUNDARYMARKER";
+      const bigRec = JSON.stringify({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: "old ".repeat(200_000) },
+      }) + "\n";
+      const boundaryRec = JSON.stringify({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: `${boundaryMarker}\n` },
+      }) + "\n";
+      // boundaryRec + blank lines == exactly TAIL bytes, so the 256 KiB tail is precisely
+      // this record followed by padding, and the byte before it is a newline.
+      const content = bigRec + "\n".repeat(50) + boundaryRec + "\n".repeat(TAIL - boundaryRec.length);
+      const tailStart = content.length - TAIL;
+      assert.equal(content[tailStart], "{", "test setup: the tail starts at the record's first byte");
+      assert.equal(content[tailStart - 1], "\n", "test setup: the preceding byte ends a record");
+      writeFileSync(join(h.cwd, ".pi", "tmp", job.id, "output.log"), content, { mode: 0o600 });
+
+      h.api.killAsyncAgent(job.id, "user");
+      const delivered = String(h.messages[0].content);
+      log.debug("kill_origin_case", { origin: "user", tailBoundary: true });
+      assert.match(delivered, new RegExp(boundaryMarker),
+        "a complete event starting at the tail boundary must not be discarded");
+    } finally { h.restore(); }
+  });
+
+  it("recovers text from a final event larger than the whole tail", () => {
+    // The sole surviving record spans the entire tail, so nothing parses. Its delta is
+    // still intact up to the cut and must reach the delivery rather than the kill label
+    // alone. The marker sits at the end so it survives the delivery budget's kept tail.
+    const h = harness();
+    try {
+      const job = h.spawn();
+      const giant = JSON.stringify({
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "text_delta",
+          delta: `${"y".repeat(300 * 1024)} GIANTMARKER`,
+        },
+      }) + "\n";
+      writeFileSync(join(h.cwd, ".pi", "tmp", job.id, "output.log"), giant, { mode: 0o600 });
+
+      h.api.killAsyncAgent(job.id, "user");
+      const delivered = String(h.messages[0].content);
+      log.debug("kill_origin_case", { origin: "user", oversizedTail: true });
+      assert.match(delivered, /GIANTMARKER/,
+        "an event spanning the tail boundary must still contribute its text");
+    } finally { h.restore(); }
+  });
+
   it("keeps the newest partial output when it exceeds the delivery budget", () => {
     const h = harness();
     try {

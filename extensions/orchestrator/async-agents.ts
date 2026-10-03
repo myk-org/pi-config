@@ -180,6 +180,50 @@ export function registerAsyncAgents(
   // reading the whole log made killing a chatty agent block the orchestrator and cost
   // memory proportional to that log — for a tail we are about to discard anyway.
   const MAX_TAIL_BYTES = 256 * 1024;
+
+  /**
+   * Last-resort text recovery from a JSONL record the tail boundary cut in half.
+   *
+   * The read runs to EOF, so a record larger than the tail keeps its END and loses only its
+   * opening — the delta field itself is usually intact. Pulling that field out directly is
+   * what lets such an event still contribute its text instead of the delivery carrying only
+   * the kill label. The second form covers a record cut mid-delta, whose closing quote never
+   * made it into the tail.
+   */
+  function recoverTruncatedDelta(line: string): string | null {
+    const closed = /"delta"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+    let last: RegExpExecArray | null = null;
+    let m: RegExpExecArray | null;
+    while ((m = closed.exec(line)) !== null) last = m;
+    if (last) {
+      try {
+        return JSON.parse(`"${last[1]}"`);
+      } catch {
+        /* fall through to the open-ended form */
+      }
+    }
+    const open = line.match(/"delta"\s*:\s*"((?:[^"\\]|\\.)*)$/);
+    if (open) {
+      try {
+        return JSON.parse(`"${open[1]}"`);
+      } catch {
+        return null;
+      }
+    }
+    // The record is larger than the whole window, so its `"delta"` marker sits before the
+    // tail and never made it into the read. The fragment is then the bare tail of the
+    // record's value: everything up to the closing quote. Only attempted when the line
+    // does not begin a record, so a complete-but-unparseable event is never guessed at.
+    if (line.trimStart().startsWith("{")) return null;
+    const q = line.lastIndexOf('"');
+    if (q <= 0) return null;
+    const fragment = line.slice(0, q);
+    try {
+      return JSON.parse(`"${fragment}"`);
+    } catch {
+      return fragment;
+    }
+  }
   function readPartialWorkerOutput(job: Pick<AsyncJob, "id" | "workerDir">, budget: number): string {
     const outputPath = path.join(job.workerDir, "output.log");
     try {
@@ -200,11 +244,11 @@ export function registerAsyncAgents(
         } finally {
           fs.closeSync(fd);
         }
-        // The tail almost certainly starts mid-record; drop it so it is not parsed as a
-        // truncated JSON line that the parser would silently discard anyway.
-        const nl = raw.indexOf("\n");
-        raw = nl === -1 ? "" : raw.slice(nl + 1);
-        log.info("kill_output_tail_read", { job: job.id, size, read: MAX_TAIL_BYTES });
+        // The tail may start mid-record, but that is NOT a reason to discard anything: the
+        // record might be complete, and even a partial one can still yield its text. Blanking
+        // the first line unconditionally lost a complete event whenever the offset happened to
+        // land on a record boundary. Unparseable lines are recovered leniently below instead.
+        log.debug("kill_output_tail_read", { job: job.id, size, read: MAX_TAIL_BYTES });
       }
       // Concatenate each parsed value VERBATIM. parseAsyncOutputLine returns text deltas
       // unchanged and prefixes tool events with a newline, so appending preserves both the
@@ -214,7 +258,7 @@ export function registerAsyncAgents(
       let text = "";
       for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
-        const parsed = parseAsyncOutputLine(line);
+        const parsed = parseAsyncOutputLine(line) ?? recoverTruncatedDelta(line);
         if (parsed === null) continue;
         text += parsed;
       }
