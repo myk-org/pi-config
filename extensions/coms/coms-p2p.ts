@@ -1516,11 +1516,23 @@ Do not respond to this message.`;
 					} else {
 						if (peerCards.has(sessionId)) {
 							const card = peerCards.get(sessionId);
+							const name = knownPeerSessions.get(sessionId) ?? card?.name ?? sessionId;
+							// A peer can reload with a STABLE coms_session_id, so the outgoing session's
+							// cleanup unlinks the very file the incoming session just re-created. Deleting on
+							// that unlink evicted the live peer and announced a peer-left ~200ms after the
+							// join. Re-read the registry: if an entry for this name is still on disk, the
+							// peer is alive and the unlink belonged to the session that just went away.
+							const stillRegistered = readAllRegistryEntries(identity.project)
+								.some((e) => e.name === name);
+							if (stillRegistered) {
+								log.info("fs_watch_peer_unlink_ignored", name, sessionId);
+								maybeRefreshWidget();
+								return;
+							}
 							peerCards.delete(sessionId);
 							log.info("fs_watch_peer_removed", card?.name ?? sessionId);
 							maybeRefreshWidget();
 							if (knownPeerSessions.has(sessionId)) {
-								const name = knownPeerSessions.get(sessionId) ?? sessionId;
 								knownPeerSessions.delete(sessionId);
 								const sameNameStillExists = [...peerCards.values()].some(c => c.name === name);
 								if (!sameNameStillExists) {
