@@ -294,6 +294,55 @@ describe("async kill origin attribution (issue #816)", () => {
     } finally { h.restore(); }
   });
 
+  it("never recovers a complete non-text event the parser rejects", () => {
+    // Regression: the truncated-record fallback ran on every unparsed line, so a complete
+    // toolcall_delta — which parseAsyncOutputLine deliberately rejects — had its `delta`
+    // lifted and the killed worker's raw tool arguments shipped as its output.
+    const h = harness();
+    try {
+      const job = h.spawn();
+      const rawArg = "RAWARGVALUE";
+      writeFileSync(
+        join(h.cwd, ".pi", "tmp", job.id, "output.log"),
+        [
+          JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "kept output\n" } }),
+          JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "toolcall_delta", delta: `{"command":"echo ${rawArg}"}` } }),
+        ].join("\n"),
+        { mode: 0o600 },
+      );
+      h.api.killAsyncAgent(job.id, "user");
+      const delivered = String(h.messages[0].content);
+      log.debug("kill_origin_case", { origin: "user", rejectedEvent: true });
+      assert.match(delivered, /kept output/, "the real text event is still recovered");
+      assert.ok(!delivered.includes(rawArg),
+        "raw tool arguments from a rejected event must not appear in the delivery");
+      assert.ok(!/toolcall_delta/.test(delivered), "rejected event JSON must not be shipped");
+    } finally { h.restore(); }
+  });
+
+  it("does not promote quoted stderr to recovered agent output", () => {
+    // Regression: the bare-fragment fallback accepted any unparsed line containing a quote,
+    // so a diagnostic on stderr — which the runner writes into output.log — became output.
+    const h = harness();
+    try {
+      const job = h.spawn();
+      const diagnostic = "STDERBDIAGNOSTIC";
+      writeFileSync(
+        join(h.cwd, ".pi", "tmp", job.id, "output.log"),
+        [
+          JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "kept output\n" } }),
+          `Error: cannot open "/tmp/${diagnostic}.sock": no such file or directory`,
+        ].join("\n"),
+        { mode: 0o600 },
+      );
+      h.api.killAsyncAgent(job.id, "user");
+      const delivered = String(h.messages[0].content);
+      log.debug("kill_origin_case", { origin: "user", stderrLine: true });
+      assert.match(delivered, /kept output/, "the real text event is still recovered");
+      assert.ok(!delivered.includes(diagnostic), "stderr must never appear as agent output");
+    } finally { h.restore(); }
+  });
+
   it("keeps the newest partial output when it exceeds the delivery budget", () => {
     const h = harness();
     try {

@@ -191,6 +191,15 @@ export function registerAsyncAgents(
    * made it into the tail.
    */
   function recoverTruncatedDelta(line: string): string | null {
+    // A COMPLETE record that parseAsyncOutputLine deliberately rejects is not truncated
+    // output. toolcall_delta carries a `delta` field, and lifting it would ship a killed
+    // worker's raw tool arguments into the persisted output and the AI-facing delivery.
+    try {
+      JSON.parse(line);
+      return null;
+    } catch {
+      /* not a complete record — continue */
+    }
     const closed = /"delta"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
     let last: RegExpExecArray | null = null;
     let m: RegExpExecArray | null;
@@ -211,10 +220,12 @@ export function registerAsyncAgents(
       }
     }
     // The record is larger than the whole window, so its `"delta"` marker sits before the
-    // tail and never made it into the read. The fragment is then the bare tail of the
-    // record's value: everything up to the closing quote. Only attempted when the line
-    // does not begin a record, so a complete-but-unparseable event is never guessed at.
-    if (line.trimStart().startsWith("{")) return null;
+    // tail and never made it into the read. What remains is the tail of the record's value,
+    // ending at the value's closing quote followed by the record's closing braces. Requiring
+    // that shape is what separates a cut record from stderr: a diagnostic like
+    // `Error: cannot open "/tmp/x"` contains a quote but does not end in one followed by
+    // closing braces.
+    if (!/"\s*}\s*}\s*$/.test(line)) return null;
     const q = line.lastIndexOf('"');
     if (q <= 0) return null;
     const fragment = line.slice(0, q);
@@ -233,7 +244,8 @@ export function registerAsyncAgents(
       }
       const size = fs.statSync(outputPath).size;
       let raw: string;
-      if (size <= MAX_TAIL_BYTES) {
+      const usedTailRead = size > MAX_TAIL_BYTES;
+      if (!usedTailRead) {
         raw = fs.readFileSync(outputPath, "utf-8");
       } else {
         const fd = fs.openSync(outputPath, "r");
@@ -256,9 +268,15 @@ export function registerAsyncAgents(
       // Splitting each value into lines and rejoining with "\n" turned "Hel" "lo" into
       // "Hel\nlo" — corrupting the recovered text of every killed agent.
       let text = "";
-      for (const line of raw.split("\n")) {
+      // Truncated-record recovery applies ONLY to the first line of a BOUNDED read, where the
+      // offset is known to have landed inside a record. Running it on every unparsed line let
+      // ordinary stderr and rejected event types be promoted to recovered agent output.
+      const lines = raw.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
         if (!line.trim()) continue;
-        const parsed = parseAsyncOutputLine(line) ?? recoverTruncatedDelta(line);
+        const parsed = parseAsyncOutputLine(line)
+          ?? (usedTailRead && i === 0 ? recoverTruncatedDelta(line) : null);
         if (parsed === null) continue;
         text += parsed;
       }
