@@ -176,30 +176,62 @@ export function registerAsyncAgents(
    * the lines immediately before the kill that explain why it was stopped.
    */
   const TRUNCATION_MARKER = "…(earlier output truncated)\n";
+  // Only a bounded tail is ever read: the runner appends output with no size cap, so
+  // reading the whole log made killing a chatty agent block the orchestrator and cost
+  // memory proportional to that log — for a tail we are about to discard anyway.
+  const MAX_TAIL_BYTES = 256 * 1024;
   function readPartialWorkerOutput(job: Pick<AsyncJob, "id" | "workerDir">, budget: number): string {
+    const outputPath = path.join(job.workerDir, "output.log");
     try {
-      const outputPath = path.join(job.workerDir, "output.log");
-      if (!fs.existsSync(outputPath)) return "";
-      const raw = fs.readFileSync(outputPath, "utf-8");
-      const readable: string[] = [];
+      if (!fs.existsSync(outputPath)) {
+        log.debug("kill_output_absent", job.id);
+        return "";
+      }
+      const size = fs.statSync(outputPath).size;
+      let raw: string;
+      if (size <= MAX_TAIL_BYTES) {
+        raw = fs.readFileSync(outputPath, "utf-8");
+      } else {
+        const fd = fs.openSync(outputPath, "r");
+        try {
+          const buf = Buffer.alloc(MAX_TAIL_BYTES);
+          const read = fs.readSync(fd, buf, 0, MAX_TAIL_BYTES, size - MAX_TAIL_BYTES);
+          raw = buf.toString("utf-8", 0, read);
+        } finally {
+          fs.closeSync(fd);
+        }
+        // The tail almost certainly starts mid-record; drop it so it is not parsed as a
+        // truncated JSON line that the parser would silently discard anyway.
+        const nl = raw.indexOf("\n");
+        raw = nl === -1 ? "" : raw.slice(nl + 1);
+        log.info("kill_output_tail_read", { job: job.id, size, read: MAX_TAIL_BYTES });
+      }
+      // Concatenate each parsed value VERBATIM. parseAsyncOutputLine returns text deltas
+      // unchanged and prefixes tool events with a newline, so appending preserves both the
+      // fragment boundaries of a streamed word ("Hel" + "lo") and the event boundaries.
+      // Splitting each value into lines and rejoining with "\n" turned "Hel" "lo" into
+      // "Hel\nlo" — corrupting the recovered text of every killed agent.
+      let text = "";
       for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
-        let parsed: string | null;
-        try {
-          parsed = parseAsyncOutputLine(line);
-        } catch {
-          parsed = null; // truncated trailing line from a kill mid-write
-        }
+        const parsed = parseAsyncOutputLine(line);
         if (parsed === null) continue;
-        for (const l of parsed.split("\n")) if (l.trim()) readable.push(l);
+        text += parsed;
       }
-      const text = readable.join("\n").trim();
-      if (!text) return "";
-      return text.length > budget
+      text = text.trim();
+      if (!text) {
+        log.debug("kill_output_no_readable_events", job.id);
+        return "";
+      }
+      const out = text.length > budget
         ? `${TRUNCATION_MARKER}${text.slice(-budget)}`
         : text;
+      log.info("kill_output_recovered", { job: job.id, chars: out.length, truncated: out !== text });
+      return out;
     } catch (e: any) {
-      log.debug(`kill: could not read partial output for ${job.id}: ${e?.message}`);
+      // Handled loss: the kill path has no other output to fall back on, so the agent's
+      // partial work never reaches the result delivered to the AI.
+      log.warn("kill_output_recovery_failed", { job: job.id, error: e?.message || String(e) });
       return "";
     }
   }

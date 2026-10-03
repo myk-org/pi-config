@@ -190,6 +190,52 @@ describe("async kill origin attribution (issue #816)", () => {
     } finally { h.restore(); }
   });
 
+  it("keeps streamed word fragments intact instead of splitting them on newlines", () => {
+    const h = harness();
+    try {
+      const job = h.spawn();
+      // A worker streams one word across two text_delta events. Joining the parsed
+      // values with "\n" turned "Hel" + "lo" into "Hel\nlo", corrupting the recovered
+      // text of every killed agent; consecutive deltas must be concatenated verbatim.
+      writeFileSync(
+        join(h.cwd, ".pi", "tmp", job.id, "output.log"),
+        [
+          JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Hel" } }),
+          JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "lo" } }),
+          JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " world" } }),
+        ].join("\n"),
+        { mode: 0o600 },
+      );
+      h.api.killAsyncAgent(job.id, "user");
+      const delivered = String(h.messages[0].content);
+      log.debug("kill_origin_case", { origin: "user", fragments: true });
+      assert.match(delivered, /Hello world/, "consecutive text deltas must be joined without a separator");
+    } finally { h.restore(); }
+  });
+
+  it("reads only a bounded tail of an unbounded output.log", () => {
+    const h = harness();
+    try {
+      const job = h.spawn();
+      // The runner appends output with no size cap, so recovery must not read the whole
+      // file to keep a short tail. Pad past the 256 KiB tail bound with a single record
+      // and assert the newest content still survives.
+      const filler = "z".repeat(300 * 1024);
+      writeFileSync(
+        join(h.cwd, ".pi", "tmp", job.id, "output.log"),
+        [
+          JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `OLD ${filler}\n` } }),
+          JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "NEWMARKER\n" } }),
+        ].join("\n"),
+        { mode: 0o600 },
+      );
+      h.api.killAsyncAgent(job.id, "user");
+      const delivered = String(h.messages[0].content);
+      log.debug("kill_origin_case", { origin: "user", boundedTail: true });
+      assert.match(delivered, /NEWMARKER/, "the newest output must survive a bounded tail read");
+    } finally { h.restore(); }
+  });
+
   it("keeps the newest partial output when it exceeds the delivery budget", () => {
     const h = harness();
     try {

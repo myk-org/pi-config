@@ -19,7 +19,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
-import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
+import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import * as net from "node:net";
 import * as fs from "node:fs";
@@ -976,7 +976,16 @@ export default function (pi: ExtensionAPI) {
 					// Also clean up knownPeerSessions and fire notification
 					if (knownPeerSessions.has(sid)) {
 						knownPeerSessions.delete(sid);
-						log.debug("presence_leaving_received", "from", env.sender_name, "sid", sid);
+						log.info("presence_leaving_received", "from", env.sender_name, "sid", sid);
+						// Evicting only the departing session is not enough: on /reload the
+						// replacement session may already hold a live card under the same name, and
+						// announcing a departure would then tell the user and every browser event
+						// consumer that a still-connected peer is gone. The registry-removal path
+						// below already suppresses this; mirror it here.
+						if (!shouldAnnouncePeerLeft(peerCards.values(), card.name)) {
+							maybeRefreshWidget();
+							break;
+						}
 						try {
 							pi.sendMessage({ customType: "coms-peer-left", content: `📡 Peer left: ${card.name} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false });
 							try { pi.events.emit("pidash:coms-peer-event", { customType: "coms-peer-left", content: `📡 Peer left: ${card.name} [${new Date().toISOString()}]` }); } catch {}

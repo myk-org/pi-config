@@ -751,7 +751,39 @@ export function shouldEvictOnLeaving(
 	senderName: string,
 	senderSession?: string,
 ): boolean {
-	if (cardName !== senderName) return false;
-	if (!senderSession) return true;
-	return cardSession === senderSession;
+	const nameMatches = cardName === senderName;
+	if (!nameMatches) {
+		log.debug("peer_leaving_no_name_match", { card: cardName, sender: senderName });
+		return false;
+	}
+	// A sender with no session id predates the field, so the name check stands alone.
+	const evict = !senderSession || cardSession === senderSession;
+	log.debug("peer_leaving_match", {
+		card: cardName,
+		cardSession,
+		senderSession: senderSession ?? "<none>",
+		evict,
+	});
+	return evict;
+}
+
+/**
+ * Whether a departing session should produce a user-visible "peer left" notice.
+ *
+ * Evicting only the departing session is not enough on its own: after a /reload the
+ * replacement session may already hold a live card under the same name, and announcing
+ * a departure then tells the user — and every browser event consumer — that a peer
+ * which is still connected has gone. The registry-removal path applies the same guard.
+ */
+export function shouldAnnouncePeerLeft(
+	cards: Iterable<{ name: string }>,
+	departedName: string,
+): boolean {
+	for (const card of cards) {
+		if (card.name === departedName) {
+			log.debug("peer_left_announcement_suppressed", { peer: departedName });
+			return false;
+		}
+	}
+	return true;
 }

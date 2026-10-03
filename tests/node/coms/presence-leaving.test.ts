@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { shouldEvictOnLeaving } from "../../../extensions/coms/coms-shared.js";
+import { shouldAnnouncePeerLeft, shouldEvictOnLeaving } from "../../../extensions/coms/coms-shared.js";
 
 /**
  * Regression coverage for the /reload presence bug.
@@ -47,6 +47,57 @@ describe("shouldEvictOnLeaving", () => {
       if (shouldEvictOnLeaving(sid, card.name, "peerx", OLD_SID)) cards.delete(sid);
     }
     assert.deepEqual([...cards.keys()], [NEW_SID], "only the departing session is removed");
+  });
+});
+
+/**
+ * Eviction and announcement are separate decisions.
+ *
+ * Removing only the departing session left the replacement card live, but the handler
+ * still emitted coms-peer-left — so the user and every browser event consumer were told
+ * a still-connected peer had gone, ~200ms after its join. The registry-removal path
+ * already suppressed that notice; the presence path now does the same.
+ */
+describe("peer-left announcement after a reload", () => {
+  const OLD_SID = "sid-old-session";
+  const NEW_SID = "sid-new-session";
+
+  it("stays silent when the reloaded session already holds a card", () => {
+    const cards = new Map([
+      [NEW_SID, { name: "peerx" }],
+      [OLD_SID, { name: "peerx" }],
+    ]);
+    // New session registers, then the old session announces leaving.
+    for (const [sid, card] of [...cards.entries()]) {
+      if (!shouldEvictOnLeaving(sid, card.name, "peerx", OLD_SID)) continue;
+      cards.delete(sid);
+      const announce = shouldAnnouncePeerLeft(cards.values(), card.name);
+      assert.equal(
+        announce,
+        false,
+        "no peer-left notice while a same-named card is still live",
+      );
+    }
+    assert.deepEqual([...cards.keys()], [NEW_SID], "the live session survives");
+  });
+
+  it("still announces when the peer genuinely departed", () => {
+    const cards = new Map([[OLD_SID, { name: "peerx" }]]);
+    for (const [sid, card] of [...cards.entries()]) {
+      if (!shouldEvictOnLeaving(sid, card.name, "peerx", OLD_SID)) continue;
+      cards.delete(sid);
+      assert.equal(
+        shouldAnnouncePeerLeft(cards.values(), card.name),
+        true,
+        "a real departure must still notify",
+      );
+    }
+    assert.equal(cards.size, 0, "the card is gone");
+  });
+
+  it("does not let an unrelated peer silence the notice", () => {
+    const cards = new Map([["sid-other", { name: "someone-else" }]]);
+    assert.equal(shouldAnnouncePeerLeft(cards.values(), "peerx"), true);
   });
 });
 
