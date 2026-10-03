@@ -20,9 +20,11 @@ function probeReturning(code: string | null) {
 }
 
 describe("isProcessAlive", () => {
-  it("reports a live process as alive", () => {
-    // pid 0 / self is a real liveness signal; assert on the ESRCH branch only here.
-    assert.equal(typeof isProcessAlive(2 ** 30), "boolean");
+  it("reports the current process as alive", () => {
+    // Must assert the VALUE, not just the type: `typeof x === "boolean"` passes even if the
+    // helper reports every process as gone, which would silently disarm the kill path.
+    assert.equal(isProcessAlive(process.pid), true,
+      "the process running this test is definitionally alive");
   });
 
   it("treats only an explicit ESRCH as proof the process is gone", () => {
