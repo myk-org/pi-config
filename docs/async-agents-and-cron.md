@@ -41,14 +41,14 @@ Open the async overlay:
 /async-status
 ```
 
-This shows queued and running jobs, elapsed time, and live output. Press `Enter` to inspect a job, press `x` to kill the focused job, press `Space` to multi-select rows and `x` again to kill the whole selection, or press `a` to kill every running/queued job (with a confirmation prompt).
+This shows queued and running jobs, elapsed time, and live output. Press `Enter` to inspect a job, press `x` to kill the focused job, press `Space` to multi-select rows and `x` again to kill the whole selection, or press `X` to immediately kill every running and queued job (no confirmation prompt).
 
 3. Stop async work when needed.
 
 Use the same `/async-status` overlay:
 
 - `Space` toggles rows into a selection, `x` kills the whole selection at once.
-- `a` kills every running and queued job after a confirmation prompt.
+- `X` immediately kills every running and queued job. There is no confirmation prompt.
 
 > **Tip:** If you only need to stop one job, `x` on the focused row is safer because it shows the exact running entries before you kill them.
 

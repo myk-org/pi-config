@@ -1,6 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { shouldAnnouncePeerLeft, shouldEvictOnLeaving } from "../../../extensions/coms/coms-shared.js";
+import { rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { isSessionStillRegistered, shouldAnnouncePeerLeft, shouldEvictOnLeaving } from "../../../extensions/coms/coms-shared.js";
 
 /**
  * Regression coverage for the /reload presence bug.
@@ -102,53 +105,99 @@ describe("peer-left announcement after a reload", () => {
 });
 
 /**
- * Registry-level counterpart to shouldEvictOnLeaving.
+ * Registry-level counterpart, driven by REAL registry files.
  *
  * A peer can reload with a STABLE coms_session_id, so the outgoing session's cleanup
  * unlinks the very registry file the incoming session just re-created. The fs-watch
- * unlink handler therefore has to re-check the registry on disk before evicting:
- * if an entry for that name is still present, the peer is alive and the unlink
- * belonged to the session that just went away.
+ * unlink handler therefore re-reads the registry before evicting a card.
  *
- * This models the observed sequence — joined, then ~200ms later left for a peer
- * that never disconnected.
+ * These tests write actual JSON files into a temp directory and read them back the
+ * way the watcher does. An earlier version stubbed the registry read with a local
+ * array, so it could not reproduce the race it claimed to cover — the eviction
+ * decision and the read it depends on are the production ones here.
  */
 describe("registry presence on unlink after a stable-sid reload", () => {
-  const readAllRegistryEntries = (entries: Array<{ name: string }>): Array<{ name: string }> => entries;
+  const STABLE_SID = "sid-stable";
+  const OTHER_SID = "sid-other";
 
-  it("ignores the outgoing session's unlink when the peer re-registered", () => {
-    // Outgoing session removes the file; incoming session has already rewritten it,
-    // so the registry still holds peerx under the SAME session id.
-    const registry = readAllRegistryEntries([{ name: "peerx" }]);
-    const peerCards = new Map([["sid-stable", { name: "peerx" }]]);
+  /** Write real registry entries, then read them back exactly as readAllRegistryEntries does. */
+  function writeRegistry(dir: string, entries: Array<{ coms_session_id: string; name: string }>): void {
+    mkdirSync(dir, { recursive: true });
+    for (const entry of entries) {
+      writeFileSync(
+        join(dir, `${entry.coms_session_id}.json`),
+        JSON.stringify(entry),
+        { mode: 0o600 },
+      );
+    }
+  }
 
-    const stillRegistered = registry.some((e) => e.name === "peerx");
+  function readRegistry(dir: string): Array<{ coms_session_id: string; name: string }> {
+    if (!existsSync(dir)) return [];
+    const out: Array<{ coms_session_id: string; name: string }> = [];
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith(".json")) continue;
+      try {
+        const parsed = JSON.parse(readFileSync(join(dir, f), "utf-8"));
+        if (parsed && typeof parsed.coms_session_id === "string") out.push(parsed);
+      } catch {
+        // skip malformed
+      }
+    }
+    return out;
+  }
 
-    assert.equal(stillRegistered, true, "the peer is still on disk");
-    if (!stillRegistered) peerCards.delete("sid-stable");
-    assert.ok(peerCards.has("sid-stable"), "a live peer must not be evicted by its predecessor's unlink");
-    assert.equal(peerCards.size, 1);
+  it("ignores the outgoing session's unlink when the same session re-registered", () => {
+    const dir = join(tmpdir(), `coms-registry-${process.pid}-reload`);
+    rmSync(dir, { recursive: true, force: true });
+    try {
+      // Incoming session rewrites the file first...
+      writeRegistry(dir, [{ coms_session_id: STABLE_SID, name: "peerx" }]);
+      // ...then the outgoing session's cleanup unlinks that exact path.
+      rmSync(join(dir, `${STABLE_SID}.json`), { force: true });
+      // It recreated the file at the same stable id, so the peer is genuinely still here.
+      writeRegistry(dir, [{ coms_session_id: STABLE_SID, name: "peerx" }]);
+
+      const peerCards = new Map([[STABLE_SID, { name: "peerx" }]]);
+      if (!isSessionStillRegistered(readRegistry(dir), STABLE_SID)) {
+        peerCards.delete(STABLE_SID);
+      }
+      assert.ok(peerCards.has(STABLE_SID),
+        "a live peer must not be evicted by its predecessor's unlink");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it("still evicts when the peer really is gone", () => {
-    const registry = readAllRegistryEntries([]);
-    const peerCards = new Map([["sid-stable", { name: "peerx" }]]);
+  it("still evicts when the peer's own session is genuinely gone from disk", () => {
+    const dir = join(tmpdir(), `coms-registry-${process.pid}-gone`);
+    rmSync(dir, { recursive: true, force: true });
+    try {
+      writeRegistry(dir, [{ coms_session_id: OTHER_SID, name: "peerx" }]);
 
-    const stillRegistered = registry.some((e) => e.name === "peerx");
-
-    assert.equal(stillRegistered, false);
-    if (!stillRegistered) peerCards.delete("sid-stable");
-    assert.equal(peerCards.size, 0, "a genuinely departed peer must be removed");
+      const peerCards = new Map([[STABLE_SID, { name: "peerx" }]]);
+      if (!isSessionStillRegistered(readRegistry(dir), STABLE_SID)) {
+        peerCards.delete(STABLE_SID);
+      }
+      assert.equal(peerCards.size, 0, "a genuinely departed peer must be removed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it("does not let one peer's unlink evict a different named peer", () => {
-    const registry = readAllRegistryEntries([{ name: "other-agent" }]);
-    const peerCards = new Map([["sid-peerx", { name: "peerx" }]]);
+  it("does not let a same-named twin keep a departed session's card alive", () => {
+    // The name-only check this replaced returned true here and leaked the stale card.
+    const dir = join(tmpdir(), `coms-registry-${process.pid}-twin`);
+    rmSync(dir, { recursive: true, force: true });
+    try {
+      writeRegistry(dir, [{ coms_session_id: OTHER_SID, name: "peerx" }]);
 
-    const stillRegistered = registry.some((e) => e.name === "peerx");
-
-    assert.equal(stillRegistered, false, "another agent's presence is not peerx");
-    if (!stillRegistered) peerCards.delete("sid-peerx");
-    assert.equal(peerCards.size, 0);
+      assert.equal(isSessionStillRegistered(readRegistry(dir), STABLE_SID), false,
+        "another session sharing the name must not mask this session's departure");
+      assert.equal(readRegistry(dir).some((e) => e.name === "peerx"), true,
+        "the twin is genuinely registered — which is why a name match would be wrong");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

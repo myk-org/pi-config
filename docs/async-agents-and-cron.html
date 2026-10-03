@@ -343,14 +343,14 @@
 <div class="highlight"><pre><span></span><code>/async-status
 </code></pre></div>
 
-<p>This shows queued and running jobs, elapsed time, and live output. Press <code>Enter</code> to inspect a job, press <code>x</code> to kill the focused job, press <code>Space</code> to multi-select rows and <code>x</code> again to kill the whole selection, or press <code>a</code> to kill every running/queued job (with a confirmation prompt).</p>
+<p>This shows queued and running jobs, elapsed time, and live output. Press <code>Enter</code> to inspect a job, press <code>x</code> to kill the focused job, press <code>Space</code> to multi-select rows and <code>x</code> again to kill the whole selection, or press <code>X</code> to immediately kill every running and queued job (no confirmation prompt).</p>
 <ol>
 <li>Stop async work when needed.</li>
 </ol>
 <p>Use the same <code>/async-status</code> overlay:</p>
 <ul>
 <li><code>Space</code> toggles rows into a selection, <code>x</code> kills the whole selection at once.</li>
-<li><code>a</code> kills every running and queued job after a confirmation prompt.</li>
+<li><code>X</code> immediately kills every running and queued job. There is no confirmation prompt.</li>
 </ul>
 <blockquote>
 <p><strong>Tip:</strong> If you only need to stop one job, <code>x</code> on the focused row is safer because it shows the exact running entries before you kill them.</p>

@@ -131,17 +131,31 @@ function killAllJobs(
     ctx.ui?.notify?.("No running async agents to kill.", "info");
     return;
   }
-  try {
-    for (const job of targets) deps.killJob(job.id);
-    log.info("kill_all: killed", { count: targets.length });
+  // Each kill is attempted independently: a throw on one job must not leave the
+  // remaining agents running after the user asked for all of them to die.
+  const failed: { id: string; error: string }[] = [];
+  for (const job of targets) {
+    try {
+      deps.killJob(job.id);
+    } catch (e: any) {
+      failed.push({ id: job.id, error: e?.message || String(e) });
+      log.error("kill_all: job kill failed", { job: job.id, error: e?.message || String(e) });
+    }
+  }
+  const killed = targets.length - failed.length;
+  if (failed.length === 0) {
+    log.info("kill_all: killed", { count: killed });
     ctx.ui?.notify?.(
-      `Killed ${targets.length} async agent${targets.length === 1 ? "" : "s"}.`,
+      `Killed ${killed} async agent${killed === 1 ? "" : "s"}.`,
       "info",
     );
-  } catch (e: any) {
-    log.warn(`kill_all failed: ${e?.message || String(e)}`);
-    ctx.ui?.notify?.("Kill all failed — see logs.", "warning");
+    return;
   }
+  log.error("kill_all: partially failed", { killed, failed: failed.length });
+  ctx.ui?.notify?.(
+    `Killed ${killed} of ${targets.length} async agents — ${failed.length} failed. See logs.`,
+    "warning",
+  );
 }
 
 /**

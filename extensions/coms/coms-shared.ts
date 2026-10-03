@@ -768,6 +768,26 @@ export function shouldEvictOnLeaving(
 }
 
 /**
+ * Whether a session is still present in the on-disk coms registry.
+ *
+ * A peer can reload with a STABLE coms_session_id, so the outgoing session's cleanup
+ * unlinks the very registry file the incoming session just re-created. The fs-watch
+ * unlink handler therefore re-checks the registry before evicting a card.
+ *
+ * Matching is on the SESSION id, never the name: two sessions may legitimately share
+ * a name, and a name-only check would let the surviving twin keep a card whose own
+ * session had genuinely gone.
+ */
+export function isSessionStillRegistered(
+	entries: ReadonlyArray<{ coms_session_id?: string }>,
+	sessionId: string,
+): boolean {
+	const present = entries.some((e) => e.coms_session_id === sessionId);
+	log.debug("peer_unlink_registry_check", { session: sessionId, present });
+	return present;
+}
+
+/**
  * Whether a departing session should produce a user-visible "peer left" notice.
  *
  * Evicting only the departing session is not enough on its own: after a /reload the

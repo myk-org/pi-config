@@ -19,7 +19,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
-import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
+import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import * as net from "node:net";
 import * as fs from "node:fs";
@@ -1529,10 +1529,13 @@ Do not respond to this message.`;
 							// A peer can reload with a STABLE coms_session_id, so the outgoing session's
 							// cleanup unlinks the very file the incoming session just re-created. Deleting on
 							// that unlink evicted the live peer and announced a peer-left ~200ms after the
-							// join. Re-read the registry: if an entry for this name is still on disk, the
-							// peer is alive and the unlink belonged to the session that just went away.
-							const stillRegistered = readAllRegistryEntries(identity.project)
-								.some((e) => e.name === name);
+							// join. Re-read the registry and match on the SESSION's own id, never the
+							// name: two sessions may legitimately share a name, and a name-only check
+							// would let the surviving twin keep a card whose session is genuinely gone.
+							const stillRegistered = isSessionStillRegistered(
+								readAllRegistryEntries(identity.project),
+								sessionId,
+							);
 							if (stillRegistered) {
 								log.info("fs_watch_peer_unlink_ignored", name, sessionId);
 								maybeRefreshWidget();

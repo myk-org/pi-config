@@ -219,7 +219,13 @@ export class OverlayListDashboard<
     }
     if ((data === "a" || data === "A" || data === "X") && this.spec.onKillAll) {
       log.debug("list_kill_all_key", { key: data, selected: this.multi.size });
+      // Cleared for the same reason the x path clears it: killing marks jobs failed, so the
+      // stale ids would survive and a following `x` would act on them (or on nothing) instead
+      // of on the newly focused running row.
+      this.multi.clear();
       this.spec.onKillAll();
+      this.invalidate();
+      this.tui.requestRender(true);
       return;
     }
     if (data === "x") {
@@ -256,6 +262,7 @@ export class OverlayListDashboard<
     const theme = this.theme;
     const items = this.items();
     reconcileSelection(this.selection, items);
+    log.debug("list_render", { items: items.length, focused: this.selection.index, multi: this.multi.size });
 
     const rows = this.tui.terminal.rows || 30;
     const bodyHeight = Math.max(6, rows - 5);
@@ -315,6 +322,8 @@ export class OverlayListDashboard<
   ): string[] {
     const theme = this.theme;
     const out: string[] = [];
+
+    log.debug("list_render_rows", { items: items.length, height, multi: this.multi.size });
 
     let start = 0;
     if (items.length > height) {

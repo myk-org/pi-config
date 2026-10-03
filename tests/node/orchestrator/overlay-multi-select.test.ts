@@ -50,7 +50,7 @@ function harness(options: { selectable?: boolean } = {}) {
     selection,
     kills,
     get killAllCalls() { return killAllCalls; },
-    footer: () => String((dash as any).footerText?.() ?? ""),
+    footer: () => dash.render(100).find((l) => l.includes("select")) ?? "",
     press: (key: string) => dash.handleInput(key),
     setRows: (next: Row[]) => { rows = next; dash.invalidate(); },
     /** The overlay's multi-selection is private — observable through the `x` callback. */
@@ -138,7 +138,7 @@ describe("OverlayListDashboard multi-select", () => {
     h.dash.dispose();
   });
 
-  it("X invokes onKillAll and non-selectable overlays keep their hints", () => {
+  it("X invokes onKillAll directly, with no confirmation gate", () => {
     const h = harness({ selectable: true });
     h.press("X");
     log.debug("case", { via: "kill-all" });
@@ -146,11 +146,40 @@ describe("OverlayListDashboard multi-select", () => {
     // confirm() prompt left the overlay hanging on hosts where it never resolved.
     assert.equal(h.killAllCalls, 1);
     h.dash.dispose();
+  });
 
+  it("non-selectable overlays keep the original footer hints", () => {
     const plain = harness({});
-    assert.equal(plain.footer(), "↑↓/jk select · Enter view · x kill · Esc close",
+    // Asserted through the rendered frame — what the user actually sees — not the
+    // private footerText method, which a refactor may legitimately rename or inline.
+    const rendered = plain.dash.render(100).join("\n");
+    assert.match(rendered, /↑↓\/jk select · Enter view · x kill · Esc close/,
       "non-selectable overlays keep the original hints verbatim");
+    assert.doesNotMatch(rendered, /Space select/,
+      "the multi-select hint must not leak into non-selectable overlays");
     plain.dash.dispose();
+  });
+
+  it("bulk kill clears the selection so the next x hits the focused row", () => {
+    // Regression: X left the selected ids in place, so a following x acted on those
+    // now-failed jobs — or on nothing — instead of the newly focused running row.
+    const h = harness({ selectable: true });
+    h.setRows([
+      { id: "a", label: "alpha" },
+      { id: "b", label: "beta" },
+    ]);
+    h.press(" ");                       // select the focused row (a)
+    assert.equal(h.dash.render(100).join("\n").includes("▸"), true, "row a is selected");
+    h.press("X");                       // bulk kill
+    assert.equal(h.killAllCalls, 1);
+    assert.equal(h.selection.index, 0, "focus is still on row a");
+
+    h.dash.handleInput("j");            // move focus to the still-running row b
+    h.press("x");
+    log.debug("case", { via: "bulk-clears-selection" });
+    assert.deepEqual(h.kills.at(-1), ["b"],
+      "x after a bulk kill must act on the focused row, not the cleared selection");
+    h.dash.dispose();
   });
 
   it("a and A remain aliases for kill-all", () => {
