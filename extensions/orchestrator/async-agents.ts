@@ -79,7 +79,7 @@ export interface AsyncJob {
 
 /**
  * Who requested an async-agent kill.
- * - `user` — a human action: `/async-kill`, the async-status overlay `x`, or the pidash browser UI
+ * - `user` — a human action: the async-status overlay `x`/`a`, or the pidash browser UI
  * - `orchestrator` — the LLM via `subagent(asyncKill=...)`
  * - `task-system` — pitasks TaskExecute via `subagents:rpc:stop`
  * The pidash browser UI is a human clicking, so it is a `user` kill.
@@ -1608,45 +1608,6 @@ export function registerAsyncAgents(
     updateAsyncWidget();
     return { killed, errors };
   }
-
-  // /async-kill handler — extracted for readability (closure access preserved)
-  async function handleAsyncKill(args: string, ctx: any): Promise<void> {
-    // If arg provided, kill directly without interactive selection
-    if (args) {
-      const { killed, errors } = killAsyncAgent(args, "user");
-      if (killed.length > 0) {
-        ctx.ui.notify(`Killed: ${killed.join(", ")}`, "info");
-      }
-      if (errors.length > 0) {
-        ctx.ui.notify(errors.join("\n"), "warning");
-      }
-      return;
-    }
-
-    if (!ctx.hasUI) return;
-    // Same overlay as /async-status, scoped to running/queued
-    await openAsyncStatusOverlay(ctx, {
-      title: "Kill async agents",
-      emptyMessage: "No running async agents.",
-      footerHints: "↑↓/jk select · Enter view · x kill · Esc close",
-      listJobs: () =>
-        Array.from(asyncState.jobs.values()).filter(
-          (j) => j.status === "running" || j.status === "queued",
-        ),
-      killJob: (id) => {
-        killAsyncAgent(id, "user");
-      },
-      formatDuration,
-      readLiveStatus: (workerDir) => readAsyncStatus(workerDir),
-    });
-  }
-
-  // /async-kill command — accepts name/id/"all" or interactive overlay
-  pi.registerCommand("async-kill", {
-    description:
-      "Kill async agent(s) — /async-kill <name|id|all> or overlay picker",
-    handler: async (_args, ctx) => handleAsyncKill((_args || "").trim(), ctx),
-  });
 
   // Handle async-kill from pidash browser UI
   pi.events.on("pidash:async-kill", (target: unknown) => {

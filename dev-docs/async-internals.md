@@ -153,7 +153,7 @@ plus `output`, and prefixes the `## Async Agent Result` delivery to the AI.
 
 | Origin | Caller | Label |
 |--------|--------|-------|
-| `user` | `/async-kill`, async-status overlay `x`, pidash browser UI | `Killed by user` |
+| `user` | async-status overlay `x`/`a`, pidash browser UI | `Killed by user` |
 | `orchestrator` | `subagent(asyncKill=…)` — an LLM decision | `Killed by orchestrator` |
 | `task-system` | pitasks `subagents:rpc:stop` | `Killed by task system` |
 

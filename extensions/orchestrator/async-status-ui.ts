@@ -113,6 +113,38 @@ function elapsedMs(job: AsyncStatusJobView): number {
 }
 
 /**
+ * Kill every running/queued job. Destructive and immediate, so gated behind an
+ * explicit confirm; a no-op when the host has no confirm dialog.
+ */
+/**
+ * Kill every running/queued job. No confirmation prompt: `X` is a deliberate,
+ * capitalised key, and gating it on `ctx.ui.confirm` left the overlay hanging on
+ * hosts where that dialog does not resolve — the key simply appeared dead.
+ */
+function killAllJobs(
+  ctx: ExtensionCommandContext,
+  deps: AsyncStatusUiDeps,
+): void {
+  const targets = deps.listJobs().filter((j) => isActive(j.status));
+  if (targets.length === 0) {
+    log.debug("kill_all: nothing active");
+    ctx.ui?.notify?.("No running async agents to kill.", "info");
+    return;
+  }
+  try {
+    for (const job of targets) deps.killJob(job.id);
+    log.info("kill_all: killed", { count: targets.length });
+    ctx.ui?.notify?.(
+      `Killed ${targets.length} async agent${targets.length === 1 ? "" : "s"}.`,
+      "info",
+    );
+  } catch (e: any) {
+    log.warn(`kill_all failed: ${e?.message || String(e)}`);
+    ctx.ui?.notify?.("Kill all failed — see logs.", "warning");
+  }
+}
+
+/**
  * Open fullscreen async-status picker. Loops list → detail until user closes list.
  */
 export async function openAsyncStatusOverlay(
@@ -130,7 +162,8 @@ export async function openAsyncStatusOverlay(
         return `jobs · ${active} active / ${jobs.length}`;
       },
       footerHints:
-        deps.footerHints ?? "↑↓/jk select · Enter view · x kill · Esc close",
+        deps.footerHints ??
+        "↑↓/jk navigate · Space select · x kill selection · X kill all · Esc close",
       listItems: () => deps.listJobs(),
       rowParts: (job, theme) => {
         const shortId = job.id.length > 8 ? job.id.slice(-8) : job.id;
@@ -151,6 +184,15 @@ export async function openAsyncStatusOverlay(
       },
       onX: (job) => {
         if (isActive(job.status)) deps.killJob(job.id);
+      },
+      selectable: true,
+      onXSelected: (jobs) => {
+        const targets = jobs.filter((j) => isActive(j.status));
+        log.debug("kill_selection", { selected: jobs.length, killed: targets.length });
+        for (const job of targets) deps.killJob(job.id);
+      },
+      onKillAll: () => {
+        void killAllJobs(ctx, deps);
       },
     },
     createDetail: (job, tui, theme, done) => {

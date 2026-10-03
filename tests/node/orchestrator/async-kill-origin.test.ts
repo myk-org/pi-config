@@ -114,13 +114,11 @@ describe("async kill origin attribution (issue #816)", () => {
     } finally { h.restore(); }
   });
 
-  it("attributes a /async-kill command kill to the user", async () => {
+  it("no longer registers the /async-kill command", () => {
     const h = harness();
     try {
-      const job = h.spawn();
-      await h.commands.get("async-kill")!.handler(job.id, h.ctx);
-      log.debug("kill_origin_case", { origin: "user", via: "/async-kill" });
-      assert.equal(h.statusJson(job.id).killOrigin, "user");
+      assert.equal(h.commands.has("async-kill"), false);
+      log.debug("kill_origin_case", { origin: "user", via: "removed /async-kill" });
     } finally { h.restore(); }
   });
 

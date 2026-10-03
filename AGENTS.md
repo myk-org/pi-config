@@ -114,6 +114,16 @@ User switches log level on the fly via settings — debug must show everything n
   --docs-dir docs --tagline "Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar."`
   — never hand-edit the generated files. `--tagline` is not optional in practice: omitting it
   blanks the meta description and tagline on every page.
+  - **MANDATORY — MANDATORY REGENERATION.** Whenever you change ANY `docs/*.md`,
+    you MUST re-run the `pi-docsite` command above in the same change, and you MUST
+    commit the regenerated `.html`, `llms.txt`, `llms-full.txt`, and `search-index.json`
+    alongside the markdown that caused them. Editing `docs/*.md` and leaving the
+    generated files stale is an incomplete change, not a follow-up task.
+  - The output is deterministic: repeated runs are byte-identical. If a rebuild shows
+    unrelated churn, that is a real regression from your edit — investigate it, do not
+    commit the churn.
+  - Use the `pi-docsite` skill (`.pi/skills/` or `~/.pi/agent/skills/pi-docsite/`) when
+    you need to build, rebuild, or debug the docs site, or add a docs page.
 - **CLI specialist agents (container):** `entrypoint.sh` runs
   `scripts/symlink-cli-specialists.sh` from the npm unpack
   (`~/.pi/agent/npm/node_modules/pi-orchestrator-config`) to `ln -sfn`

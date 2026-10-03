@@ -16,17 +16,25 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { createLogger } from "../shared/logger.js";
 import {
   reconcileSelection,
   type OverlayId,
   type OverlaySelection,
 } from "./overlay-dashboard-utils.js";
 
+const log = createLogger("overlay-dashboard");
+
 export {
   reconcileSelection,
   type OverlayId,
   type OverlaySelection,
 } from "./overlay-dashboard-utils.js";
+
+/** Footer hint shown when a list spec does not provide its own. */
+export const DEFAULT_LIST_HINTS = "↑↓/jk select · Enter view · x kill · Esc close";
+/** Appended to the default hints only for `selectable` specs. */
+export const SELECT_HINT = "Space multi-select";
 
 export const OVERLAY_OPTS = {
   overlay: true as const,
@@ -55,11 +63,18 @@ export interface OverlayListSpec<
   title: string;
   countLabel: (items: readonly TItem[]) => string;
   borderTitle: (items: readonly TItem[]) => string;
-  footerHints: string;
+  /** Defaults to DEFAULT_LIST_HINTS (+ "Space multi-select" when selectable). */
+  footerHints?: string;
   listItems: () => TItem[];
   rowParts: (item: TItem, theme: Theme) => OverlayRowParts;
   /** Optional destructive/action key (x). */
   onX?: (item: TItem) => void;
+  /** Opt-in multi-select: Space toggles the focused row; `x` then acts on the whole selection. */
+  selectable?: boolean;
+  /** Called instead of onX while the multi-select set is non-empty. */
+  onXSelected?: (items: TItem[]) => void;
+  /** Optional bulk-action key (a) — destructive, so callers should confirm first. */
+  onKillAll?: () => void;
 }
 
 export interface OverlayDetailSpec {
@@ -111,6 +126,8 @@ export class OverlayListDashboard<
   private ticker: ReturnType<typeof setInterval>;
   private cachedWidth: number | undefined;
   private cachedLines: string[] | undefined;
+  /** Multi-selected ids — empty unless spec.selectable is set. */
+  private readonly multi = new Set<TId>();
 
   constructor(
     private tui: TUI,
@@ -189,7 +206,37 @@ export class OverlayListDashboard<
       }
       return;
     }
+    if (this.spec.selectable && (matchesKey(data, Key.space) || data === " ")) {
+      const focused = items[this.selection.index];
+      if (focused) {
+        if (this.multi.has(focused.id)) this.multi.delete(focused.id);
+        else this.multi.add(focused.id);
+        log.debug("list_multi_select_toggle", { id: focused.id, size: this.multi.size });
+        this.invalidate();
+        this.tui.requestRender(true);
+      }
+      return;
+    }
+    if ((data === "a" || data === "A" || data === "X") && this.spec.onKillAll) {
+      log.debug("list_kill_all_key", { key: data, selected: this.multi.size });
+      this.spec.onKillAll();
+      return;
+    }
     if (data === "x") {
+      if (this.multi.size > 0) {
+        const selected = items.filter((i) => this.multi.has(i.id));
+        // Cleared unconditionally: killed jobs disappear, and stale ids would leak.
+        this.multi.clear();
+        log.debug("list_multi_x", { count: selected.length });
+        if (selected.length > 0) this.spec.onXSelected?.(selected);
+        if (this.items().length === 0) {
+          this.close(null);
+          return;
+        }
+        this.invalidate();
+        this.tui.requestRender(true);
+        return;
+      }
       const item = items[this.selection.index];
       if (item) {
         this.spec.onX?.(item);
@@ -246,13 +293,19 @@ export class OverlayListDashboard<
         theme.fg("border", "╯"),
     );
 
-    lines.push(
-      truncateToWidth(theme.fg("dim", `  ${this.spec.footerHints}`), width),
-    );
+    lines.push(truncateToWidth(theme.fg("dim", `  ${this.footerText()}`), width));
 
     this.cachedLines = lines;
     this.cachedWidth = width;
     return lines;
+  }
+
+  /** Spec hints, falling back to the shared defaults (+ toggle hint when selectable). */
+  private footerText(): string {
+    if (this.spec.footerHints) return this.spec.footerHints;
+    if (!this.spec.selectable) return DEFAULT_LIST_HINTS;
+    log.debug("list_footer_hints", { source: "default", selectable: true });
+    return `${DEFAULT_LIST_HINTS} · ${SELECT_HINT}`;
   }
 
   private renderRows(
@@ -282,7 +335,10 @@ export class OverlayListDashboard<
       const title = isSelected
         ? theme.fg("accent", parts.title)
         : theme.fg("text", parts.title);
-      const left = ` ${marker} ${parts.glyph} ${title} ${parts.idLabel}`;
+      const picked = this.spec.selectable
+        ? this.multi.has(item.id) ? theme.fg("accent", "▸") : " "
+        : "";
+      const left = `${picked} ${marker} ${parts.glyph} ${title} ${parts.idLabel}`;
       const right = `${parts.rightParts.join(dot)} `;
       out.push(splitRow(left, right, width));
     }
