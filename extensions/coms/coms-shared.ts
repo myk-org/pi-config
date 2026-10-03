@@ -732,3 +732,26 @@ export async function getComsOriginTasks(): Promise<Array<{ taskId: string; subj
 			}));
 	} catch { return []; }
 }
+
+/**
+ * Whether a "peer left" notification should evict this peer card.
+ *
+ * A peer's leaving broadcast is matched by SESSION id, never by name alone. On
+ * /reload the outgoing session announces itself gone roughly 200ms AFTER the
+ * incoming session has already registered under the same name; matching by name
+ * therefore removed the live session and the peer showed as disconnected until
+ * something forced it to re-register.
+ *
+ * `senderSession` is absent only for older peers that predate the field, in which
+ * case the name check stands alone as before.
+ */
+export function shouldEvictOnLeaving(
+	cardSession: string,
+	cardName: string,
+	senderName: string,
+	senderSession?: string,
+): boolean {
+	if (cardName !== senderName) return false;
+	if (!senderSession) return true;
+	return cardSession === senderSession;
+}

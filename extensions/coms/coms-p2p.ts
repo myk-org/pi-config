@@ -19,7 +19,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
-import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
+import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import * as net from "node:net";
 import * as fs from "node:fs";
@@ -965,13 +965,18 @@ export default function (pi: ExtensionAPI) {
 	function handlePresence(socket: net.Socket, env: PresenceEnvelope): void {
 		ackOk(socket, env.msg_id);
 		if (env.status === "leaving" && env.sender_name) {
+			// Match the session that is actually leaving, not every session sharing that name.
+			// On /reload the outgoing session broadcasts this ~200ms AFTER the incoming one has
+			// already registered, so matching by name alone evicted the live session: the peer
+			// showed as disconnected until something forced it to re-register.
 			for (const [sid, card] of peerCards.entries()) {
-				if (card.name === env.sender_name) {
+				const sameSession = shouldEvictOnLeaving(sid, card.name, env.sender_name, env.sender_session);
+				if (sameSession) {
 					peerCards.delete(sid);
 					// Also clean up knownPeerSessions and fire notification
 					if (knownPeerSessions.has(sid)) {
 						knownPeerSessions.delete(sid);
-						log.debug("presence_leaving_received", "from", env.sender_name);
+						log.debug("presence_leaving_received", "from", env.sender_name, "sid", sid);
 						try {
 							pi.sendMessage({ customType: "coms-peer-left", content: `📡 Peer left: ${card.name} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false });
 							try { pi.events.emit("pidash:coms-peer-event", { customType: "coms-peer-left", content: `📡 Peer left: ${card.name} [${new Date().toISOString()}]` }); } catch {}
