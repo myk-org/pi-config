@@ -11,6 +11,7 @@ import {
   OverlayScrollDetail,
 } from "./overlay-dashboard.js";
 import { createLogger } from "../shared/logger.js";
+import { KILL_ORIGIN_LABELS, type AsyncKillOrigin } from "./async-agents.js";
 
 const log = createLogger("async-status");
 
@@ -47,6 +48,11 @@ function jobTitle(job: AsyncStatusJobView): string {
  * Attribution suffix for the detail header: " · killed by <origin>" when the
  * live status.json records who killed the job, otherwise nothing.
  *
+ * Uses KILL_ORIGIN_LABELS rather than echoing the stored key, so the overlay reads
+ * "killed by task system" like every other surface instead of "killed by task-system".
+ * An unrecognised value is ignored rather than rendered, so a hand-edited
+ * status.json cannot inject arbitrary text into the header.
+ *
  * Extracted so it can be tested without driving the interactive overlay loop.
  */
 export function formatKillOriginSuffix(
@@ -57,8 +63,15 @@ export function formatKillOriginSuffix(
     log.debug("kill_origin_header: no origin recorded");
     return "";
   }
+  const label = Object.hasOwn(KILL_ORIGIN_LABELS, killOrigin)
+    ? KILL_ORIGIN_LABELS[killOrigin as AsyncKillOrigin]
+    : null;
+  if (!label) {
+    log.warn("kill_origin_header: unrecognised origin ignored", { killOrigin });
+    return "";
+  }
   log.debug("kill_origin_header: rendering attribution", { killOrigin });
-  return theme.fg("dim", ` · killed by ${killOrigin}`);
+  return theme.fg("dim", ` · ${label.charAt(0).toLowerCase()}${label.slice(1)}`);
 }
 
 function isActive(status: string): boolean {

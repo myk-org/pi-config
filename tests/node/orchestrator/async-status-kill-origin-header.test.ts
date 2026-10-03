@@ -9,14 +9,27 @@ const log = createLogger("async-status-kill-origin-test");
 const identity = { fg: (_color: string, value: string) => value };
 
 describe("async status kill-origin header (issue #816)", () => {
-  it("shows who killed the job when status.json records an origin", () => {
+  it("shows who killed the job using the human label, not the raw enum key", () => {
     log.debug("kill_origin_header_case", { origin: "orchestrator" });
     assert.equal(formatKillOriginSuffix("orchestrator", identity), " · killed by orchestrator");
+    // The peer caught this live: the overlay echoed the stored key, so it read
+    // "· killed by task-system" while every other surface said "Killed by task system".
+    assert.equal(
+      formatKillOriginSuffix("task-system", identity),
+      " · killed by task system",
+      "must use KILL_ORIGIN_LABELS, not the raw key",
+    );
+    assert.equal(formatKillOriginSuffix("user", identity), " · killed by user");
   });
 
-  it("renders each recorded origin verbatim", () => {
-    assert.equal(formatKillOriginSuffix("user", identity), " · killed by user");
-    assert.equal(formatKillOriginSuffix("task-system", identity), " · killed by task-system");
+  it("ignores an unrecognised origin instead of rendering it", () => {
+    log.debug("kill_origin_header_case", { origin: "injected" });
+    assert.equal(formatKillOriginSuffix("toString", identity), "", "prototype keys must not render");
+    assert.equal(
+      formatKillOriginSuffix("<script>alert(1)</script>", identity),
+      "",
+      "a hand-edited status.json must not inject text into the header",
+    );
   });
 
   it("adds nothing when no origin is recorded", () => {

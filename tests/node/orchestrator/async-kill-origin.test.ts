@@ -46,7 +46,20 @@ function harness() {
     const existing = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
     writeFileSync(path, JSON.stringify({ ...existing, ...patch }), { mode: 0o600 });
   };
-  return { cwd, api, commands, ctx, events, messages, spawn, statusJson, writeStatus, restore: () => { global.setInterval = previousSetInterval; rmSync(cwd, { recursive: true, force: true }); } };
+  // A running job's partial text lives only in output.log — status.json gets an `output`
+  // key written to it only on the completion path, and job.output is undefined until then.
+  // Seeded as real JSONL events, because that is what the worker actually writes: seeding
+  // plain text produced a test that passed while the delivery shipped raw event JSON.
+  const writeWorkerLog = (id: string, text: string) => {
+    const lines = text.split("\n").filter((l) => l.trim());
+    const jsonl = lines.map((line) =>
+      line.startsWith("{")
+        ? line
+        : JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${line}\n` } }),
+    );
+    writeFileSync(join(cwd, ".pi", "tmp", id, "output.log"), `${jsonl.join("\n")}\n`, { mode: 0o600 });
+  };
+  return { cwd, api, commands, ctx, events, messages, spawn, statusJson, writeStatus, writeWorkerLog, restore: () => { global.setInterval = previousSetInterval; rmSync(cwd, { recursive: true, force: true }); } };
 }
 
 describe("async kill origin attribution (issue #816)", () => {
@@ -121,13 +134,14 @@ describe("async kill origin attribution (issue #816)", () => {
     } finally { h.restore(); }
   });
 
-  it("preserves prior agent output below the kill label", () => {
+  it("preserves partial worker output below the kill label", () => {
     const h = harness();
     try {
       const job = h.spawn();
-      // Real prior output — the earlier test never set any, so nothing proved the label
-      // was prepended rather than replacing what the agent had already produced.
-      h.writeStatus(job.id, { output: "partial findings from the agent" });
+      // Seeded where a live job actually keeps it: output.log. The earlier version of this
+      // test seeded status.json's `output`, which a running job never has — so it passed
+      // while the real kill path delivered the label and nothing else.
+      h.writeWorkerLog(job.id, "partial findings from the agent");
       h.api.killAsyncAgent(job.id, "task-system");
       const status = h.statusJson(job.id);
       assert.equal(status.output, "Killed by task system\npartial findings from the agent");
@@ -143,8 +157,88 @@ describe("async kill origin attribution (issue #816)", () => {
       assert.match(
         h.messages[0].content,
         /partial findings from the agent/,
-        "the delivery must include the partial output preserved in status.json",
+        "the delivery must include the partial output the worker had produced",
       );
+    } finally { h.restore(); }
+  });
+
+  it("recovers readable work from output.log, not raw event JSON", () => {
+    const h = harness();
+    try {
+      const job = h.spawn();
+      // Seed the raw event stream a killed worker leaves behind, including JSON the
+      // parser must drop. The agent's actual work must survive; the noise must not.
+      h.writeWorkerLog(job.id, "");
+      writeFileSync(
+        join(h.cwd, ".pi", "tmp", job.id, "output.log"),
+        [
+          JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "→ bash echo MARKER > partial.txt\n" } }),
+          JSON.stringify({ type: "tool_execution_start", toolName: "bash", args: { command: "echo MARKER > partial.txt" } }),
+          JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "✓ MARKER\n" } }),
+          JSON.stringify({ type: "token_usage", input: 10, output: 4, cacheRead: 0, cacheWrite: 0 }),
+          JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "toolcall_delta", partial: '{"cmd":"' } }),
+        ].join("\n"),
+        { mode: 0o600 },
+      );
+      h.api.killAsyncAgent(job.id, "user");
+      const delivered = String(h.messages[0].content);
+      log.debug("kill_origin_case", { origin: "user", rawJsonl: true });
+      assert.match(delivered, /MARKER/, "the work the agent actually did must reach the AI");
+      assert.match(delivered, /echo MARKER > partial\.txt/, "the tool call must reach the AI");
+      assert.ok(
+        !/token_usage|toolcall_delta|"cacheRead"/.test(delivered),
+        "raw event JSON must not be shipped to the AI",
+      );
+    } finally { h.restore(); }
+  });
+
+  it("keeps the newest partial output when it exceeds the delivery budget", () => {
+    const h = harness();
+    try {
+      const job = h.spawn();
+      // Chatty worker: far more output than the delivery budget. formatAsyncResultOutput
+      // keeps the HEAD of its budget, so a tail kept by the recovery step and then
+      // re-trimmed from the head would deliver the OLDEST lines and drop the ones
+      // immediately before the kill — the context that explains the kill.
+      const lines: string[] = [];
+      for (let i = 0; i < 4000; i++) lines.push(`line ${i} ${"x".repeat(20)}`);
+      h.writeWorkerLog(job.id, lines.join("\n"));
+      h.api.killAsyncAgent(job.id, "user");
+      const delivered = String(h.messages[0].content);
+      const status = h.statusJson(job.id);
+      log.debug("kill_origin_case", { origin: "user", chatty: true });
+      assert.match(delivered, /earlier output truncated/);
+      assert.match(
+        delivered,
+        /line 3999/,
+        "the newest output must survive, not the oldest",
+      );
+      assert.ok(
+        !/line 0 x/.test(delivered),
+        "the oldest output must be the part dropped",
+      );
+      assert.ok(delivered.length <= 3200, `delivery must stay within budget, got ${delivered.length}`);
+      // status.json and the delivered body must be the same string: the kill path writes
+      // one composed value to both, and a second trim inside formatAsyncResultOutput would
+      // silently make them diverge above the budget.
+      const deliveredBody = delivered.slice(delivered.lastIndexOf("\n\n") + 2);
+      assert.equal(
+        status.output,
+        deliveredBody,
+        "status.json and the delivered body must be byte-identical",
+      );
+    } finally { h.restore(); }
+  });
+
+  it("truncates a very long partial worker output instead of delivering all of it", () => {
+    const h = harness();
+    try {
+      const job = h.spawn();
+      h.writeWorkerLog(job.id, "x".repeat(20000));
+      h.api.killAsyncAgent(job.id, "user");
+      const delivered = String(h.messages[0].content);
+      assert.ok(delivered.length < 12000, `delivery must be capped, got ${delivered.length} chars`);
+      assert.match(delivered, /earlier output truncated/);
     } finally { h.restore(); }
   });
 
@@ -156,11 +250,14 @@ describe("async kill origin attribution (issue #816)", () => {
       log.debug("kill_origin_case", { origin: "orchestrator", grouped: true });
       // Group delivery reads the in-memory job output, not status.json, so the label
       // has to live there too or the AI and pitasks lose attribution entirely.
+      const delivered = h.messages.map((m: any) => String(m.content)).join("\n");
       assert.ok(h.messages.length > 0, "a completed group delivers its results");
+      assert.match(delivered, /Killed by orchestrator/, "group delivery carries the kill origin in the body");
+      // The group header must also name who killed it, matching the non-grouped header.
       assert.match(
-        h.messages.map((m: any) => String(m.content)).join("\n"),
-        /Killed by orchestrator/,
-        "group delivery carries the kill origin",
+        delivered,
+        /## Async Agent Result: .* — Killed by orchestrator/,
+        "the group header must carry the attribution suffix",
       );
     } finally { h.restore(); }
   });
@@ -186,8 +283,19 @@ describe("async kill origin attribution (issue #816)", () => {
       log.debug("kill_origin_case", { origin: "prototype-key" });
       const status = h.statusJson(job.id);
       assert.equal(status.killOrigin, "user");
-      assert.equal(status.output, "Killed by user");
-      assert.equal(typeof status.output, "string", "the label must never be a function's source");
+      assert.equal(
+        typeof status.output,
+        "string",
+        "the label must never be a function's source",
+      );
+      // Assert the label is line 1 rather than exact-equality on the whole string: a job
+      // that produced output legitimately carries "<label>\n<partial>", so an exact match
+      // only holds for a job with no output and stops describing real behaviour.
+      assert.equal(status.output.split("\n")[0], "Killed by user");
+      assert.ok(
+        !status.output.includes("function"),
+        "a prototype key must never leak a function's source",
+      );
     } finally { h.restore(); }
   });
 });

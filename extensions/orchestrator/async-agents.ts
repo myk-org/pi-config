@@ -2,6 +2,7 @@
  * Async agent infrastructure — background agent spawning, polling, result watching.
  */
 
+import { parseAsyncOutputLine } from "./async-status-parse.js";
 import { createLogger } from "../shared/logger.js";
 import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -22,7 +23,7 @@ import {
   getMainBranch,
 } from "./git-helpers.js";
 import { waitForResultFiles } from "./async-wait.js";
-import { formatAsyncResultOutput, reviewerOutputArchivePath } from "./async-result-format.js";
+import { formatAsyncResultOutput, reviewerOutputArchivePath, MAX_OUTPUT_CHARS } from "./async-result-format.js";
 import { cleanupReviewerOutputArchives } from "./reviewer-output-archive.js";
 const log = createLogger("async_agents");
 
@@ -72,6 +73,8 @@ export interface AsyncJob {
   sessionId?: string;
   model?: string;
   restoredPid?: number;
+  /** Who killed this job, if it was killed. Drives the attribution suffix in delivery headers. */
+  killOrigin?: AsyncKillOrigin;
 }
 
 /**
@@ -83,8 +86,8 @@ export interface AsyncJob {
  */
 export type AsyncKillOrigin = "user" | "orchestrator" | "task-system";
 
-/** Human-readable, non-sensitive attribution persisted as a killed job's output. */
-const KILL_ORIGIN_LABELS: Record<AsyncKillOrigin, string> = {
+/** Human-readable attribution per origin. The single source for every surface. */
+export const KILL_ORIGIN_LABELS: Record<AsyncKillOrigin, string> = {
   user: "Killed by user",
   orchestrator: "Killed by orchestrator",
   "task-system": "Killed by task system",
@@ -155,6 +158,50 @@ export function registerAsyncAgents(
       : workerOutputPath;
     log.debug("async_result_output_path", { agent: job.agent, archived: outputPath !== workerOutputPath });
     return outputPath;
+  }
+
+  /**
+   * Readable text a killed worker had produced, recovered from its output.log.
+   *
+   * output.log is a JSONL event stream, so it is run through the same
+   * parseAsyncOutputLine the async-status overlay uses — reading it raw ships the
+   * raw event JSON to the AI instead of the work the agent actually did. Lines the
+   * parser does not recognise are dropped, matching overlay behaviour.
+   *
+   * Capped so a chatty agent cannot push a megabyte into the delivery message and
+   * the AI's context. The budget is sized so the composed kill output (label plus
+   * this text) still fits inside formatAsyncResultOutput's MAX_OUTPUT_CHARS: that
+   * formatter keeps the HEAD of its budget, so a tail kept here and then re-trimmed
+   * from the head would hand the AI the OLDEST part of the newest context — exactly
+   * the lines immediately before the kill that explain why it was stopped.
+   */
+  const TRUNCATION_MARKER = "…(earlier output truncated)\n";
+  function readPartialWorkerOutput(job: Pick<AsyncJob, "id" | "workerDir">, budget: number): string {
+    try {
+      const outputPath = path.join(job.workerDir, "output.log");
+      if (!fs.existsSync(outputPath)) return "";
+      const raw = fs.readFileSync(outputPath, "utf-8");
+      const readable: string[] = [];
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        let parsed: string | null;
+        try {
+          parsed = parseAsyncOutputLine(line);
+        } catch {
+          parsed = null; // truncated trailing line from a kill mid-write
+        }
+        if (parsed === null) continue;
+        for (const l of parsed.split("\n")) if (l.trim()) readable.push(l);
+      }
+      const text = readable.join("\n").trim();
+      if (!text) return "";
+      return text.length > budget
+        ? `${TRUNCATION_MARKER}${text.slice(-budget)}`
+        : text;
+    } catch (e: any) {
+      log.debug(`kill: could not read partial output for ${job.id}: ${e?.message}`);
+      return "";
+    }
   }
 
   function preserveReviewerOutput(job: Pick<AsyncJob, "agent" | "id">, output: string): void {
@@ -612,7 +659,10 @@ export function registerAsyncAgents(
         }
       }
       const duration = j.durationMs || (j.updatedAt ? j.updatedAt - j.startedAt : 0);
-      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`);
+      // Killed members carry the same attribution suffix the non-grouped kill path uses, so a
+      // group result says who stopped the job instead of only reporting that it failed.
+      const killSuffix = j.killOrigin ? ` — ${KILL_ORIGIN_LABELS[j.killOrigin]}` : "";
+      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}${killSuffix}\n\nTask: ${j.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`);
       deliverableJobs.push(j);
     }
 
@@ -1458,8 +1508,40 @@ export function registerAsyncAgents(
       job.status = "failed";
       job.updatedAt = Date.now();
       job.durationMs = Date.now() - job.startedAt;
-      // Persist killed state to disk — prevents stale re-delivery on reload
+      // Resolve the agent's prior output BEFORE writing either destination.
+      // Prefer the in-memory value, then what status.json already held, then the worker's
+      // output.log — a job killed mid-run has neither of the first two, because `output`
+      // only lands in status.json on the completion path and job.output stays undefined
+      // until then. Reading output.log is what stops the AI receiving a kill label and
+      // none of the work the agent had actually done.
       let persistedPriorOutput = "";
+      try {
+        const statusPath = path.join(job.workerDir, "status.json");
+        if (fs.existsSync(statusPath)) {
+          persistedPriorOutput = typeof JSON.parse(fs.readFileSync(statusPath, "utf-8"))?.output === "string"
+            ? JSON.parse(fs.readFileSync(statusPath, "utf-8")).output
+            : "";
+        }
+      } catch (e: any) {
+        log.debug(`kill: could not read prior output for ${job.id}: ${e?.message}`);
+      }
+      const inMemoryOutput = typeof job.output === "string" ? job.output : "";
+      const partialFromLog = inMemoryOutput || persistedPriorOutput ? "" : readPartialWorkerOutput(
+        job,
+        // Budget the label, the newline joining them, and the truncation marker itself —
+// otherwise the composed string still overruns MAX_OUTPUT_CHARS and
+// formatAsyncResultOutput head-trims it, which drops the newest lines.
+        Math.max(0, MAX_OUTPUT_CHARS - killLabel.length - TRUNCATION_MARKER.length - 1),
+      );
+      if (partialFromLog) {
+        log.debug("kill: recovered partial output from output.log", { jobId: job.id, chars: partialFromLog.length });
+      }
+      const priorOutput = inMemoryOutput || persistedPriorOutput || partialFromLog;
+      const composedOutput = priorOutput ? `${killLabel}\n${priorOutput}` : killLabel;
+      job.output = composedOutput;
+      job.killOrigin = killOrigin;
+
+      // Persist killed state to disk — prevents stale re-delivery on reload
       try {
         const statusPath = path.join(job.workerDir, "status.json");
         const existing = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, "utf-8")) : {};
@@ -1467,11 +1549,9 @@ export function registerAsyncAgents(
         existing.exitCode = -9;
         existing.endedAt = Date.now();
         existing.killOrigin = killOrigin;
-        // Keep whatever the agent already produced below the label, matching the
-        // in-memory job.output, so the overlay and pidash see the same text the
-        // AI receives instead of losing the partial output.
-        persistedPriorOutput = typeof existing.output === "string" ? existing.output : "";
-        existing.output = persistedPriorOutput ? `${killLabel}\n${persistedPriorOutput}` : killLabel;
+        // Same composed text as job.output, so the overlay and pidash read exactly what
+        // the AI receives instead of losing the partial output.
+        existing.output = composedOutput;
         fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
       } catch (e: any) { log.error(`kill: status.json update failed for ${job.id}: ${e?.message}`); }
       // Delete result file if it exists — prevent re-ingestion on reload
@@ -1482,14 +1562,6 @@ export function registerAsyncAgents(
         try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch (e: any) { killSideEffectsOk = false; log.error(`recordReviewerResult failed for ${job.agent}: ${e?.message}`); }
       }
       if (killSideEffectsOk) job.sideEffectsApplied = true;
-      // Keep the origin label on the in-memory output too, not just status.json: grouped
-      // delivery and the subagents:failed event read job.output, so without this the AI and
-      // pitasks lose attribution for every killed member of a group.
-      // Prefer the in-memory value, but fall back to the persisted one — the agent's partial
-      // output often only exists in status.json, and dropping it here would lose the very
-      // text the kill preserved on disk.
-      const priorOutput = typeof job.output === "string" && job.output ? job.output : persistedPriorOutput;
-      job.output = priorOutput ? `${killLabel}\n${priorOutput}` : killLabel;
       // Check if this completes a group — deliver remaining siblings' results
       if (job.groupId) {
         const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);

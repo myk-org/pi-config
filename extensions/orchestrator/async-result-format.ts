@@ -5,7 +5,9 @@ import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("async_agents");
-const MAX_OUTPUT_CHARS = 3000;
+/** Delivery budget for a single result's output. Exported so callers can size their own
+ *  contribution against it — formatAsyncResultOutput keeps the HEAD of this budget. */
+export const MAX_OUTPUT_CHARS = 3000;
 
 /** Return the completed-result archive path, outside cleanup-prone worker directories. */
 export function reviewerOutputArchivePath(projectTmpDir: string, jobId: string): string {
