@@ -10,6 +10,10 @@ import {
   openListDetailOverlay,
   OverlayScrollDetail,
 } from "./overlay-dashboard.js";
+import { createLogger } from "../shared/logger.js";
+import { KILL_ORIGIN_LABELS, type AsyncKillOrigin } from "./async-agents.js";
+
+const log = createLogger("async-status");
 
 export { parseAsyncOutputLine } from "./async-status-parse.js";
 
@@ -27,10 +31,10 @@ export interface AsyncStatusJobView {
 
 export interface AsyncStatusUiDeps {
   listJobs: () => AsyncStatusJobView[];
-  killJob: (id: string) => void;
+  killJob: (id: string) => { killed: string[]; errors: string[] } | void;
   formatDuration: (ms: number) => string;
   /** Optional live status.json reader for detail header. */
-  readLiveStatus?: (workerDir: string) => { state?: string } | null;
+  readLiveStatus?: (workerDir: string) => { state?: string; killOrigin?: string } | null;
   title?: string;
   emptyMessage?: string;
   footerHints?: string;
@@ -38,6 +42,36 @@ export interface AsyncStatusUiDeps {
 
 function jobTitle(job: AsyncStatusJobView): string {
   return job.name || job.agent;
+}
+
+/**
+ * Attribution suffix for the detail header: " · killed by <origin>" when the
+ * live status.json records who killed the job, otherwise nothing.
+ *
+ * Uses KILL_ORIGIN_LABELS rather than echoing the stored key, so the overlay reads
+ * "killed by task system" like every other surface instead of "killed by task-system".
+ * An unrecognised value is ignored rather than rendered, so a hand-edited
+ * status.json cannot inject arbitrary text into the header.
+ *
+ * Extracted so it can be tested without driving the interactive overlay loop.
+ */
+export function formatKillOriginSuffix(
+  killOrigin: string | undefined,
+  theme: { fg: (color: string, value: string) => string },
+): string {
+  if (!killOrigin) {
+    log.debug("kill_origin_header: no origin recorded");
+    return "";
+  }
+  const label = Object.hasOwn(KILL_ORIGIN_LABELS, killOrigin)
+    ? KILL_ORIGIN_LABELS[killOrigin as AsyncKillOrigin]
+    : null;
+  if (!label) {
+    log.warn("kill_origin_header: unrecognised origin ignored", { killOrigin });
+    return "";
+  }
+  log.debug("kill_origin_header: rendering attribution", { killOrigin });
+  return theme.fg("dim", ` · ${label.charAt(0).toLowerCase()}${label.slice(1)}`);
 }
 
 function isActive(status: string): boolean {
@@ -79,6 +113,61 @@ function elapsedMs(job: AsyncStatusJobView): number {
 }
 
 /**
+ * Kill every running/queued job. Destructive and immediate, so gated behind an
+ * explicit confirm; a no-op when the host has no confirm dialog.
+ */
+/**
+ * Kill every running/queued job. No confirmation prompt: `X` is a deliberate,
+ * capitalised key, and gating it on `ctx.ui.confirm` left the overlay hanging on
+ * hosts where that dialog does not resolve — the key simply appeared dead.
+ */
+export function killAllJobs(
+  ctx: ExtensionCommandContext,
+  deps: AsyncStatusUiDeps,
+): void {
+  const targets = deps.listJobs().filter((j) => isActive(j.status));
+  if (targets.length === 0) {
+    log.debug("kill_all: nothing active");
+    ctx.ui?.notify?.("No running async agents to kill.", "info");
+    return;
+  }
+  // Each kill is attempted independently: a failure on one job must not leave the
+  // remaining agents running after the user asked for all of them to die. A callback that
+  // returns errors (rather than throwing) counts as a failure too — signalling can fail
+  // while the worker is still alive, and reporting that as "killed" would be a lie.
+  const failed: string[] = [];
+  let killed = 0;
+  for (const job of targets) {
+    try {
+      const result = deps.killJob(job.id);
+      if (result?.errors?.length) {
+        failed.push(...result.errors);
+        log.error("kill_all: job kill reported errors", { job: job.id, errors: result.errors });
+        continue;
+      }
+      killed++;
+    } catch (e: any) {
+      const message = e?.message || String(e);
+      failed.push(`${job.id}: ${message}`);
+      log.error("kill_all: job kill failed", { job: job.id, error: message });
+    }
+  }
+  if (failed.length === 0) {
+    log.info("kill_all: killed", { count: killed });
+    ctx.ui?.notify?.(
+      `Killed ${killed} async agent${killed === 1 ? "" : "s"}.`,
+      "info",
+    );
+    return;
+  }
+  log.error("kill_all: partially failed", { killed, failed: failed.length });
+  ctx.ui?.notify?.(
+    `Killed ${killed} of ${targets.length} async agents — ${failed.length} failed. See logs.`,
+    "warning",
+  );
+}
+
+/**
  * Open fullscreen async-status picker. Loops list → detail until user closes list.
  */
 export async function openAsyncStatusOverlay(
@@ -96,7 +185,8 @@ export async function openAsyncStatusOverlay(
         return `jobs · ${active} active / ${jobs.length}`;
       },
       footerHints:
-        deps.footerHints ?? "↑↓/jk select · Enter view · x kill · Esc close",
+        deps.footerHints ??
+        "↑↓/jk navigate · Space select · x kill selection · X kill all · Esc close",
       listItems: () => deps.listJobs(),
       rowParts: (job, theme) => {
         const shortId = job.id.length > 8 ? job.id.slice(-8) : job.id;
@@ -117,6 +207,15 @@ export async function openAsyncStatusOverlay(
       },
       onX: (job) => {
         if (isActive(job.status)) deps.killJob(job.id);
+      },
+      selectable: true,
+      onXSelected: (jobs) => {
+        const targets = jobs.filter((j) => isActive(j.status));
+        log.debug("kill_selection", { selected: jobs.length, killed: targets.length });
+        for (const job of targets) deps.killJob(job.id);
+      },
+      onKillAll: () => {
+        void killAllJobs(ctx, deps);
       },
     },
     createDetail: (job, tui, theme, done) => {
@@ -182,6 +281,8 @@ export async function openAsyncStatusOverlay(
             const current = deps.listJobs().find((j) => j.id === jobId) || job;
             const state = live?.state || current.status;
             const dur = deps.formatDuration(elapsedMs(current));
+            // Show who killed a failed job rather than guessing "user".
+            const origin = formatKillOriginSuffix(live?.killOrigin, t);
             return (
               `${statusGlyph(state, t)} ` +
               t.fg(
@@ -189,6 +290,7 @@ export async function openAsyncStatusOverlay(
                 t.bold(`${jobTitle(current)} · ${current.id.slice(-8)}`),
               ) +
               t.fg("muted", ` · ${state} · ${dur}`) +
+              origin +
               t.fg("dim", ` · ${current.task.slice(0, 40)}`)
             );
           },

@@ -732,3 +732,78 @@ export async function getComsOriginTasks(): Promise<Array<{ taskId: string; subj
 			}));
 	} catch { return []; }
 }
+
+/**
+ * Whether a "peer left" notification should evict this peer card.
+ *
+ * A peer's leaving broadcast is matched by SESSION id, never by name alone. On
+ * /reload the outgoing session announces itself gone roughly 200ms AFTER the
+ * incoming session has already registered under the same name; matching by name
+ * therefore removed the live session and the peer showed as disconnected until
+ * something forced it to re-register.
+ *
+ * `senderSession` is absent only for older peers that predate the field, in which
+ * case the name check stands alone as before.
+ */
+export function shouldEvictOnLeaving(
+	cardSession: string,
+	cardName: string,
+	senderName: string,
+	senderSession?: string,
+): boolean {
+	const nameMatches = cardName === senderName;
+	if (!nameMatches) {
+		log.debug("peer_leaving_no_name_match", { card: cardName, sender: senderName });
+		return false;
+	}
+	// A sender with no session id predates the field, so the name check stands alone.
+	const evict = !senderSession || cardSession === senderSession;
+	log.debug("peer_leaving_match", {
+		card: cardName,
+		cardSession,
+		senderSession: senderSession ?? "<none>",
+		evict,
+	});
+	return evict;
+}
+
+/**
+ * Whether a session is still present in the on-disk coms registry.
+ *
+ * A peer can reload with a STABLE coms_session_id, so the outgoing session's cleanup
+ * unlinks the very registry file the incoming session just re-created. The fs-watch
+ * unlink handler therefore re-checks the registry before evicting a card.
+ *
+ * Matching is on the SESSION id, never the name: two sessions may legitimately share
+ * a name, and a name-only check would let the surviving twin keep a card whose own
+ * session had genuinely gone.
+ */
+export function isSessionStillRegistered(
+	entries: ReadonlyArray<{ coms_session_id?: string }>,
+	sessionId: string,
+): boolean {
+	const present = entries.some((e) => e.coms_session_id === sessionId);
+	log.debug("peer_unlink_registry_check", { session: sessionId, present });
+	return present;
+}
+
+/**
+ * Whether a departing session should produce a user-visible "peer left" notice.
+ *
+ * Evicting only the departing session is not enough on its own: after a /reload the
+ * replacement session may already hold a live card under the same name, and announcing
+ * a departure then tells the user — and every browser event consumer — that a peer
+ * which is still connected has gone. The registry-removal path applies the same guard.
+ */
+export function shouldAnnouncePeerLeft(
+	cards: Iterable<{ name: string }>,
+	departedName: string,
+): boolean {
+	for (const card of cards) {
+		if (card.name === departedName) {
+			log.debug("peer_left_announcement_suppressed", { peer: departedName });
+			return false;
+		}
+	}
+	return true;
+}

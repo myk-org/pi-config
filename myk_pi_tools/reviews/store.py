@@ -220,8 +220,10 @@ def store_reviews(json_path: Path) -> None:
     # Get project root and database path
     project_root = get_project_root()
 
-    # Get current commit SHA (anchored to repo root for correctness)
-    commit_sha = get_current_commit_sha(cwd=project_root)
+    # Resolve the SHA in the process cwd (the worktree the CLI was invoked from),
+    # NOT project_root: project_root is the main worktree, so using it here
+    # records main's HEAD for every review regardless of the branch under review.
+    commit_sha = get_current_commit_sha()
 
     log(f"Storing reviews for {owner}/{repo}#{pr_number} (commit: {commit_sha[:7]})...")
 

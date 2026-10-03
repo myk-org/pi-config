@@ -19,7 +19,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
-import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
+import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import * as net from "node:net";
 import * as fs from "node:fs";
@@ -965,13 +965,27 @@ export default function (pi: ExtensionAPI) {
 	function handlePresence(socket: net.Socket, env: PresenceEnvelope): void {
 		ackOk(socket, env.msg_id);
 		if (env.status === "leaving" && env.sender_name) {
+			// Match the session that is actually leaving, not every session sharing that name.
+			// On /reload the outgoing session broadcasts this ~200ms AFTER the incoming one has
+			// already registered, so matching by name alone evicted the live session: the peer
+			// showed as disconnected until something forced it to re-register.
 			for (const [sid, card] of peerCards.entries()) {
-				if (card.name === env.sender_name) {
+				const sameSession = shouldEvictOnLeaving(sid, card.name, env.sender_name, env.sender_session);
+				if (sameSession) {
 					peerCards.delete(sid);
 					// Also clean up knownPeerSessions and fire notification
 					if (knownPeerSessions.has(sid)) {
 						knownPeerSessions.delete(sid);
-						log.debug("presence_leaving_received", "from", env.sender_name);
+						log.info("presence_leaving_received", "from", env.sender_name, "sid", sid);
+						// Evicting only the departing session is not enough: on /reload the
+						// replacement session may already hold a live card under the same name, and
+						// announcing a departure would then tell the user and every browser event
+						// consumer that a still-connected peer is gone. The registry-removal path
+						// below already suppresses this; mirror it here.
+						if (!shouldAnnouncePeerLeft(peerCards.values(), card.name)) {
+							maybeRefreshWidget();
+							break;
+						}
 						try {
 							pi.sendMessage({ customType: "coms-peer-left", content: `📡 Peer left: ${card.name} [${new Date().toISOString()}]`, display: true }, { triggerTurn: false });
 							try { pi.events.emit("pidash:coms-peer-event", { customType: "coms-peer-left", content: `📡 Peer left: ${card.name} [${new Date().toISOString()}]` }); } catch {}
@@ -1511,11 +1525,26 @@ Do not respond to this message.`;
 					} else {
 						if (peerCards.has(sessionId)) {
 							const card = peerCards.get(sessionId);
+							const name = knownPeerSessions.get(sessionId) ?? card?.name ?? sessionId;
+							// A peer can reload with a STABLE coms_session_id, so the outgoing session's
+							// cleanup unlinks the very file the incoming session just re-created. Deleting on
+							// that unlink evicted the live peer and announced a peer-left ~200ms after the
+							// join. Re-read the registry and match on the SESSION's own id, never the
+							// name: two sessions may legitimately share a name, and a name-only check
+							// would let the surviving twin keep a card whose session is genuinely gone.
+							const stillRegistered = isSessionStillRegistered(
+								readAllRegistryEntries(identity.project),
+								sessionId,
+							);
+							if (stillRegistered) {
+								log.info("fs_watch_peer_unlink_ignored", name, sessionId);
+								maybeRefreshWidget();
+								return;
+							}
 							peerCards.delete(sessionId);
 							log.info("fs_watch_peer_removed", card?.name ?? sessionId);
 							maybeRefreshWidget();
 							if (knownPeerSessions.has(sessionId)) {
-								const name = knownPeerSessions.get(sessionId) ?? sessionId;
 								knownPeerSessions.delete(sessionId);
 								const sameNameStillExists = [...peerCards.values()].some(c => c.name === name);
 								if (!sameNameStillExists) {

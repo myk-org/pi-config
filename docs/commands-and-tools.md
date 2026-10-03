@@ -21,21 +21,10 @@ Counts verified against source. Two names are registered in more than one place 
 Full-screen overlay listing running and queued async agents, with live output per agent.
 
 - **Arguments:** none
-- **Keys in the overlay:** `↑↓`/`jk` select, `Enter` view output, `x` kill, `Esc` close
+- **Keys in the overlay:** `↑↓`/`jk` navigate, `Enter` view output, `Space` multi-select, `x` kill (focused row, or the whole selection), `X` kill all running/queued, `Esc` close
 
 ```
 /async-status
-```
-
-### /async-kill
-
-Kill async agent(s) by name, by id prefix, or all at once. With no argument it opens the same overlay as `/async-status` in kill mode.
-
-- **Arguments:** `[<name> | <id-prefix> | all]` — optional
-
-```
-/async-kill all
-/async-kill code-review
 ```
 
 ### /btw

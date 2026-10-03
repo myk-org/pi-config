@@ -344,18 +344,9 @@
 <p>Full-screen overlay listing running and queued async agents, with live output per agent.</p>
 <ul>
 <li><strong>Arguments:</strong> none</li>
-<li><strong>Keys in the overlay:</strong> <code>↑↓</code>/<code>jk</code> select, <code>Enter</code> view output, <code>x</code> kill, <code>Esc</code> close</li>
+<li><strong>Keys in the overlay:</strong> <code>↑↓</code>/<code>jk</code> navigate, <code>Enter</code> view output, <code>Space</code> multi-select, <code>x</code> kill (focused row, or the whole selection), <code>X</code> kill all running/queued, <code>Esc</code> close</li>
 </ul>
 <div class="highlight"><pre><span></span><code>/async-status
-</code></pre></div>
-
-<h3 id="async-kill">/async-kill</h3>
-<p>Kill async agent(s) by name, by id prefix, or all at once. With no argument it opens the same overlay as <code>/async-status</code> in kill mode.</p>
-<ul>
-<li><strong>Arguments:</strong> <code>[&lt;name&gt; | &lt;id-prefix&gt; | all]</code> — optional</li>
-</ul>
-<div class="highlight"><pre><span></span><code>/async-kill all
-/async-kill code-review
 </code></pre></div>
 
 <h3 id="btw">/btw</h3>
@@ -858,7 +849,6 @@ grep<span class="w"> </span>-rn<span class="w"> </span><span class="s1">'registe
 <li><a href="#at-a-glance">At a glance</a></li>
 <li><a href="#slash-commands">Slash commands</a><ul>
 <li><a href="#async-status">/async-status</a></li>
-<li><a href="#async-kill">/async-kill</a></li>
 <li><a href="#btw">/btw</a></li>
 <li><a href="#coms">/coms</a></li>
 <li><a href="#coms-queue">/coms-queue</a></li>

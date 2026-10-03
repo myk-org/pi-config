@@ -2,6 +2,8 @@
  * Async agent infrastructure — background agent spawning, polling, result watching.
  */
 
+import { parseAsyncOutputLine } from "./async-status-parse.js";
+import { isProcessAlive, signalAndReportSurvivors } from "./async-kill-signal.js";
 import { createLogger } from "../shared/logger.js";
 import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -22,7 +24,7 @@ import {
   getMainBranch,
 } from "./git-helpers.js";
 import { waitForResultFiles } from "./async-wait.js";
-import { formatAsyncResultOutput, reviewerOutputArchivePath } from "./async-result-format.js";
+import { formatAsyncResultOutput, reviewerOutputArchivePath, MAX_OUTPUT_CHARS } from "./async-result-format.js";
 import { cleanupReviewerOutputArchives } from "./reviewer-output-archive.js";
 const log = createLogger("async_agents");
 
@@ -72,7 +74,25 @@ export interface AsyncJob {
   sessionId?: string;
   model?: string;
   restoredPid?: number;
+  /** Who killed this job, if it was killed. Drives the attribution suffix in delivery headers. */
+  killOrigin?: AsyncKillOrigin;
 }
+
+/**
+ * Who requested an async-agent kill.
+ * - `user` — a human action: the async-status overlay `x`/`a`, or the pidash browser UI
+ * - `orchestrator` — the LLM via `subagent(asyncKill=...)`
+ * - `task-system` — pitasks TaskExecute via `subagents:rpc:stop`
+ * The pidash browser UI is a human clicking, so it is a `user` kill.
+ */
+export type AsyncKillOrigin = "user" | "orchestrator" | "task-system";
+
+/** Human-readable attribution per origin. The single source for every surface. */
+export const KILL_ORIGIN_LABELS: Record<AsyncKillOrigin, string> = {
+  user: "Killed by user",
+  orchestrator: "Killed by orchestrator",
+  "task-system": "Killed by task system",
+};
 
 /** Get the effective working directory for a job. */
 function jobCwd(job: { cwd?: string; projectCwd?: string }): string {
@@ -126,7 +146,7 @@ export function registerAsyncAgents(
   } = {},
 ): {
   spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } }) => { id: string; error?: string; model?: string };
-  killAsyncAgent: (target: string) => { killed: string[]; errors: string[] };
+  killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
   let PROJECT_TMP_DIR = path.join(process.cwd(), ".pi", "tmp"); // Computed only; created on session_start
@@ -139,6 +159,155 @@ export function registerAsyncAgents(
       : workerOutputPath;
     log.debug("async_result_output_path", { agent: job.agent, archived: outputPath !== workerOutputPath });
     return outputPath;
+  }
+
+  /**
+   * Readable text a killed worker had produced, recovered from its output.log.
+   *
+   * output.log is a JSONL event stream, so it is run through the same
+   * parseAsyncOutputLine the async-status overlay uses — reading it raw ships the
+   * raw event JSON to the AI instead of the work the agent actually did. Lines the
+   * parser does not recognise are dropped, matching overlay behaviour.
+   *
+   * Capped so a chatty agent cannot push a megabyte into the delivery message and
+   * the AI's context. The budget is sized so the composed kill output (label plus
+   * this text) still fits inside formatAsyncResultOutput's MAX_OUTPUT_CHARS: that
+   * formatter keeps the HEAD of its budget, so a tail kept here and then re-trimmed
+   * from the head would hand the AI the OLDEST part of the newest context — exactly
+   * the lines immediately before the kill that explain why it was stopped.
+   */
+  const TRUNCATION_MARKER = "…(earlier output truncated)\n";
+  // Only a bounded tail is ever read: the runner appends output with no size cap, so
+  // reading the whole log made killing a chatty agent block the orchestrator and cost
+  // memory proportional to that log — for a tail we are about to discard anyway.
+  const MAX_TAIL_BYTES = 256 * 1024;
+
+  /**
+   * Last-resort text recovery from a JSONL record the tail boundary cut in half.
+   *
+   * The read runs to EOF, so a record larger than the tail keeps its END and loses only its
+   * opening — the delta field itself is usually intact. Pulling that field out directly is
+   * what lets such an event still contribute its text instead of the delivery carrying only
+   * the kill label. The second form covers a record cut mid-delta, whose closing quote never
+   * made it into the tail.
+   */
+  function recoverTruncatedDelta(line: string, firstOfBoundedRead: boolean): string | null {
+    // A COMPLETE record that parseAsyncOutputLine deliberately rejects is not truncated
+    // output. toolcall_delta carries a `delta` field, and lifting it would ship a killed
+    // worker's raw tool arguments into the persisted output and the AI-facing delivery.
+    try {
+      JSON.parse(line);
+      return null;
+    } catch {
+      /* not a complete record — continue */
+    }
+    // A truncated record is recognised by what it CONTAINS, not by where it sits. The type
+    // markers precede the value, so a record cut mid-write still carries them; stderr never
+    // does. Positioning was the previous guard and it was wrong twice over: it discarded a
+    // legitimate partial final event — exactly what a worker killed mid-write leaves behind —
+    // whenever the log was read whole or the event followed other lines.
+    // The INNER event type, not the envelope: toolcall_delta is also a message_update, so
+    // matching the envelope would admit every truncated tool-call update as agent text.
+    const looksLikeTextEvent = line.includes('"text_delta"');
+    if (looksLikeTextEvent) {
+      const closed = /"delta"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+      let last: RegExpExecArray | null = null;
+      let m: RegExpExecArray | null;
+      while ((m = closed.exec(line)) !== null) last = m;
+      if (last) {
+        try {
+          return JSON.parse(`"${last[1]}"`);
+        } catch {
+          /* fall through to the open-ended form */
+        }
+      }
+      const open = line.match(/"delta"\s*:\s*"((?:[^"\\]|\\.)*)$/);
+      if (open) {
+        try {
+          return JSON.parse(`"${open[1]}"`);
+        } catch {
+          return null;
+        }
+      }
+    }
+    // The record is larger than the whole window, so even its type markers sit before the
+    // tail and the fragment is recognisable only by position and shape: it must be the first
+    // line of a BOUNDED read and must end in a closing quote followed by closing braces.
+    // A diagnostic like `Error: cannot open "/tmp/x"` contains a quote but neither.
+    if (!firstOfBoundedRead) return null;
+    if (!/"\s*}\s*}\s*$/.test(line)) return null;
+    const q = line.lastIndexOf('"');
+    if (q <= 0) return null;
+    const fragment = line.slice(0, q);
+    try {
+      return JSON.parse(`"${fragment}"`);
+    } catch {
+      return fragment;
+    }
+  }
+  function readPartialWorkerOutput(job: Pick<AsyncJob, "id" | "workerDir">, budget: number): string {
+    const outputPath = path.join(job.workerDir, "output.log");
+    try {
+      if (!fs.existsSync(outputPath)) {
+        log.debug("kill_output_absent", job.id);
+        return "";
+      }
+      const size = fs.statSync(outputPath).size;
+      let raw: string;
+      const usedTailRead = size > MAX_TAIL_BYTES;
+      if (!usedTailRead) {
+        raw = fs.readFileSync(outputPath, "utf-8");
+      } else {
+        const fd = fs.openSync(outputPath, "r");
+        try {
+          const buf = Buffer.alloc(MAX_TAIL_BYTES);
+          const read = fs.readSync(fd, buf, 0, MAX_TAIL_BYTES, size - MAX_TAIL_BYTES);
+          raw = buf.toString("utf-8", 0, read);
+        } finally {
+          fs.closeSync(fd);
+        }
+        // The tail may start mid-record, but that is NOT a reason to discard anything: the
+        // record might be complete, and even a partial one can still yield its text. Blanking
+        // the first line unconditionally lost a complete event whenever the offset happened to
+        // land on a record boundary. Unparseable lines are recovered leniently below instead.
+        log.debug("kill_output_tail_read", { job: job.id, size, read: MAX_TAIL_BYTES });
+      }
+      // Concatenate each parsed value VERBATIM. parseAsyncOutputLine returns text deltas
+      // unchanged and prefixes tool events with a newline, so appending preserves both the
+      // fragment boundaries of a streamed word ("Hel" + "lo") and the event boundaries.
+      // Splitting each value into lines and rejoining with "\n" turned "Hel" "lo" into
+      // "Hel\nlo" — corrupting the recovered text of every killed agent.
+      let text = "";
+      // Truncated-record recovery runs on any line that fails to parse, but recoverTruncatedDelta
+      // decides on what the line CONTAINS: a partial assistant event keeps its type markers,
+      // while stderr and complete-but-rejected events never qualify. `usedTailRead && i === 0`
+      // is passed separately because an oversized record is recognisable only by position —
+      // its markers fall before the window.
+      const lines = raw.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line.trim()) continue;
+        const parsed = parseAsyncOutputLine(line)
+          ?? recoverTruncatedDelta(line, usedTailRead && i === 0);
+        if (parsed === null) continue;
+        text += parsed;
+      }
+      text = text.trim();
+      if (!text) {
+        log.debug("kill_output_no_readable_events", job.id);
+        return "";
+      }
+      const out = text.length > budget
+        ? `${TRUNCATION_MARKER}${text.slice(-budget)}`
+        : text;
+      log.info("kill_output_recovered", { job: job.id, chars: out.length, truncated: out !== text });
+      return out;
+    } catch (e: any) {
+      // Handled loss: the kill path has no other output to fall back on, so the agent's
+      // partial work never reaches the result delivered to the AI.
+      log.warn("kill_output_recovery_failed", { job: job.id, error: e?.message || String(e) });
+      return "";
+    }
   }
 
   function preserveReviewerOutput(job: Pick<AsyncJob, "agent" | "id">, output: string): void {
@@ -596,7 +765,10 @@ export function registerAsyncAgents(
         }
       }
       const duration = j.durationMs || (j.updatedAt ? j.updatedAt - j.startedAt : 0);
-      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${j.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`);
+      // Killed members carry the same attribution suffix the non-grouped kill path uses, so a
+      // group result says who stopped the job instead of only reporting that it failed.
+      const killSuffix = j.killOrigin ? ` — ${KILL_ORIGIN_LABELS[j.killOrigin]}` : "";
+      sections.push(`## Async Agent Result: ${displayName} ${resultStatus}${killSuffix}\n\nTask: ${j.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`);
       deliverableJobs.push(j);
     }
 
@@ -1376,9 +1548,7 @@ export function registerAsyncAgents(
     log.debug("opening_async_status_overlay", { jobs: asyncState.jobs.size });
     await openAsyncStatusOverlay(ctx, {
       listJobs: () => Array.from(asyncState.jobs.values()),
-      killJob: (id) => {
-        killAsyncAgent(id);
-      },
+      killJob: (id) => killAsyncAgent(id, "user"),
       formatDuration,
       readLiveStatus: (workerDir) => readAsyncStatus(workerDir),
     });
@@ -1391,7 +1561,13 @@ export function registerAsyncAgents(
   });
 
   // Kill an async agent by name, id prefix, or "all"
-  function killAsyncAgent(target: string): { killed: string[]; errors: string[] } {
+  function killAsyncAgent(target: string, origin: AsyncKillOrigin = "user"): { killed: string[]; errors: string[] } {
+    // Runtime guard: callers outside the type system still get a safe, non-false label.
+    // Object.hasOwn, not a plain lookup — inherited keys such as `toString` would otherwise
+    // pass the truthiness check and make the label a function instead of a string.
+    const killOrigin: AsyncKillOrigin = Object.hasOwn(KILL_ORIGIN_LABELS, origin) ? origin : "user";
+    const killLabel = KILL_ORIGIN_LABELS[killOrigin];
+    log.info("async_kill_requested", { target, origin: killOrigin, label: killLabel });
     const killed: string[] = [];
     const errors: string[] = [];
     const running = Array.from(asyncState.jobs.values()).filter(
@@ -1416,26 +1592,74 @@ export function registerAsyncAgents(
       return { killed, errors };
     }
 
+    // The failed-pid set is per-target: declared outside the loop, a pid that survived one
+    // target's failed signal was re-checked for every later target, and a later agent that
+    // had been signalled successfully would skip its state and result updates and stay
+    // marked running.
     for (const job of targets) {
       const status = readAsyncStatus(job.workerDir);
+      const pidsToSignal: number[] = [];
       if (status?.pid) {
         try {
           const tree = execFileSync("pstree", ["-p", String(status.pid)], { encoding: "utf-8", timeout: 3000 });
           const matches = tree.match(/\((\d+)\)/g);
-          const allPids = matches ? [...new Set(matches.map((m: string) => parseInt(m.slice(1, -1), 10)))] : [status.pid];
-          for (const pid of allPids) {
-            try { process.kill(pid, "SIGKILL"); } catch {}
-          }
+          pidsToSignal.push(...(matches ? [...new Set(matches.map((m: string) => parseInt(m.slice(1, -1), 10)))] : [status.pid]));
         } catch {
-          try { process.kill(status.pid, "SIGKILL"); } catch {}
-          if (status.childPid) try { process.kill(status.childPid, "SIGKILL"); } catch {}
+          pidsToSignal.push(status.pid);
+          if (status.childPid) pidsToSignal.push(status.childPid);
         }
       }
+      const stillAlive = signalAndReportSurvivors(
+        [...new Set(pidsToSignal)],
+        (pid) => { process.kill(pid, "SIGKILL"); },
+        isProcessAlive,
+      );
       const label = job.name || job.agent;
+      // A swallowed signal failure used to be reported as a successful kill: the job was
+      // marked failed and counted as killed while its process kept running. Only claim a
+      // kill when nothing we signalled is still alive.
+      if (stillAlive.length > 0) {
+        errors.push(`Could not stop ${label} (pid ${stillAlive.join(", ")} still running).`);
+        log.error("async_kill_signal_failed", { label, pids: stillAlive, target });
+        continue;
+      }
       killed.push(label);
       job.status = "failed";
       job.updatedAt = Date.now();
       job.durationMs = Date.now() - job.startedAt;
+      // Resolve the agent's prior output BEFORE writing either destination.
+      // Prefer the in-memory value, then what status.json already held, then the worker's
+      // output.log — a job killed mid-run has neither of the first two, because `output`
+      // only lands in status.json on the completion path and job.output stays undefined
+      // until then. Reading output.log is what stops the AI receiving a kill label and
+      // none of the work the agent had actually done.
+      let persistedPriorOutput = "";
+      try {
+        const statusPath = path.join(job.workerDir, "status.json");
+        if (fs.existsSync(statusPath)) {
+          persistedPriorOutput = typeof JSON.parse(fs.readFileSync(statusPath, "utf-8"))?.output === "string"
+            ? JSON.parse(fs.readFileSync(statusPath, "utf-8")).output
+            : "";
+        }
+      } catch (e: any) {
+        log.debug(`kill: could not read prior output for ${job.id}: ${e?.message}`);
+      }
+      const inMemoryOutput = typeof job.output === "string" ? job.output : "";
+      const partialFromLog = inMemoryOutput || persistedPriorOutput ? "" : readPartialWorkerOutput(
+        job,
+        // Budget the label, the newline joining them, and the truncation marker itself —
+// otherwise the composed string still overruns MAX_OUTPUT_CHARS and
+// formatAsyncResultOutput head-trims it, which drops the newest lines.
+        Math.max(0, MAX_OUTPUT_CHARS - killLabel.length - TRUNCATION_MARKER.length - 1),
+      );
+      if (partialFromLog) {
+        log.debug("kill: recovered partial output from output.log", { jobId: job.id, chars: partialFromLog.length });
+      }
+      const priorOutput = inMemoryOutput || persistedPriorOutput || partialFromLog;
+      const composedOutput = priorOutput ? `${killLabel}\n${priorOutput}` : killLabel;
+      job.output = composedOutput;
+      job.killOrigin = killOrigin;
+
       // Persist killed state to disk — prevents stale re-delivery on reload
       try {
         const statusPath = path.join(job.workerDir, "status.json");
@@ -1443,7 +1667,10 @@ export function registerAsyncAgents(
         existing.state = "failed";
         existing.exitCode = -9;
         existing.endedAt = Date.now();
-        existing.output = "Killed by user";
+        existing.killOrigin = killOrigin;
+        // Same composed text as job.output, so the overlay and pidash read exactly what
+        // the AI receives instead of losing the partial output.
+        existing.output = composedOutput;
         fs.writeFileSync(statusPath, JSON.stringify(existing), { mode: 0o600 });
       } catch (e: any) { log.error(`kill: status.json update failed for ${job.id}: ${e?.message}`); }
       // Delete result file if it exists — prevent re-ingestion on reload
@@ -1465,13 +1692,12 @@ export function registerAsyncAgents(
         // Non-grouped killed job — deliver immediately so AI knows it was killed
         const displayName = job.name || job.agent;
         const duration = job.durationMs || (Date.now() - job.startedAt);
-        const rawOutput = typeof job.output === "string" ? job.output : "Killed by user";
         const output = formatAsyncResultOutput(
           job.agent,
-          rawOutput,
+          job.output,
           resultOutputPath(job),
         );
-        const killContent = `## Async Agent Result: ${displayName} ❌ failed\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`;
+        const killContent = `## Async Agent Result: ${displayName} ❌ failed — ${killLabel}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}`;
         if (wasAlreadyDelivered(job.id)) {
           job.delivered = true;
           log.debug(`kill: skipping already-delivered result for ${job.id}`);
@@ -1502,49 +1728,11 @@ export function registerAsyncAgents(
     return { killed, errors };
   }
 
-  // /async-kill handler — extracted for readability (closure access preserved)
-  async function handleAsyncKill(args: string, ctx: any): Promise<void> {
-    // If arg provided, kill directly without interactive selection
-    if (args) {
-      const { killed, errors } = killAsyncAgent(args);
-      if (killed.length > 0) {
-        ctx.ui.notify(`Killed: ${killed.join(", ")}`, "info");
-      }
-      if (errors.length > 0) {
-        ctx.ui.notify(errors.join("\n"), "warning");
-      }
-      return;
-    }
-
-    if (!ctx.hasUI) return;
-    // Same overlay as /async-status, scoped to running/queued
-    await openAsyncStatusOverlay(ctx, {
-      title: "Kill async agents",
-      emptyMessage: "No running async agents.",
-      footerHints: "↑↓/jk select · Enter view · x kill · Esc close",
-      listJobs: () =>
-        Array.from(asyncState.jobs.values()).filter(
-          (j) => j.status === "running" || j.status === "queued",
-        ),
-      killJob: (id) => {
-        killAsyncAgent(id);
-      },
-      formatDuration,
-      readLiveStatus: (workerDir) => readAsyncStatus(workerDir),
-    });
-  }
-
-  // /async-kill command — accepts name/id/"all" or interactive overlay
-  pi.registerCommand("async-kill", {
-    description:
-      "Kill async agent(s) — /async-kill <name|id|all> or overlay picker",
-    handler: async (_args, ctx) => handleAsyncKill((_args || "").trim(), ctx),
-  });
-
   // Handle async-kill from pidash browser UI
   pi.events.on("pidash:async-kill", (target: unknown) => {
     if (typeof target === "string") {
-      killAsyncAgent(target);
+      // A human clicking in the browser UI — still a user kill.
+      killAsyncAgent(target, "user");
     }
   });
 
@@ -1612,7 +1800,7 @@ export function registerAsyncAgents(
   // Stop — kill a running async agent
   handleRpc<{ requestId: string; agentId: string }>(
     "subagents:rpc:stop", ({ agentId }) => {
-      const { killed, errors } = killAsyncAgent(agentId);
+      const { killed, errors } = killAsyncAgent(agentId, "task-system");
       if (killed.length === 0) throw new Error(errors[0] || "Agent not found");
     },
   );

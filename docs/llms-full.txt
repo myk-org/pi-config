@@ -1396,21 +1396,10 @@ Counts verified against source. Two names are registered in more than one place 
 Full-screen overlay listing running and queued async agents, with live output per agent.
 
 - **Arguments:** none
-- **Keys in the overlay:** `↑↓`/`jk` select, `Enter` view output, `x` kill, `Esc` close
+- **Keys in the overlay:** `↑↓`/`jk` navigate, `Enter` view output, `Space` multi-select, `x` kill (focused row, or the whole selection), `X` kill all running/queued, `Esc` close
 
 ```
     /async-status
-```
-
-### /async-kill
-
-Kill async agent(s) by name, by id prefix, or all at once. With no argument it opens the same overlay as `/async-status` in kill mode.
-
-- **Arguments:** `[<name> | <id-prefix> | all]` — optional
-
-```
-    /async-kill all
-    /async-kill code-review
 ```
 
 ### /btw
@@ -2837,23 +2826,16 @@ Open the async overlay:
     /async-status
 ```
 
-This shows queued and running jobs, elapsed time, and live output. Press `Enter` to inspect a job, or press `x` to kill the selected job.
+This shows queued and running jobs, elapsed time, and live output. Press `Enter` to inspect a job, press `x` to kill the focused job, press `Space` to multi-select rows and `x` again to kill the whole selection, or press `X` to immediately kill every running and queued job (no confirmation prompt).
 
 3. Stop async work when needed.
 
-Open the interactive kill picker:
+Use the same `/async-status` overlay:
 
-```bash
-    /async-kill
-```
+- `Space` toggles rows into a selection, `x` kills the whole selection at once.
+- `X` immediately kills every running and queued job. There is no confirmation prompt.
 
-Or cancel everything at once:
-
-```bash
-    /async-kill all
-```
-
-> **Tip:** If you only need to stop one job, the interactive picker is safer because it shows the exact running entries before you kill them.
+> **Tip:** If you only need to stop one job, `x` on the focused row is safer because it shows the exact running entries before you kill them.
 
 4. Create a recurring schedule.
 
@@ -2904,9 +2886,9 @@ Persisted tasks are written to `.pi/cron/crons.json` in the project and reloaded
 | Goal | Command | What you get |
 |---|---|---|
 | Watch async jobs | `/async-status` | Fullscreen list, live output, kill with `x` |
-| Kill async jobs | `/async-kill` | Interactive kill picker |
-| Kill one job by name or id prefix | `/async-kill <name\|id-prefix>` | Direct kill without opening the picker |
-| Kill every running job | `/async-kill all` | Kills all running and queued jobs |
+| Kill the focused job | `/async-status` → `x` | Kills the highlighted job |
+| Kill several jobs | `/async-status` → `Space`, `Space`, `x` | Kills every multi-selected job |
+| Kill every running job | `/async-status` → `a` | Confirmation prompt, then kills all running and queued jobs |
 | See local schedules | `/cron list` | Fullscreen list of this session's recurring tasks |
 | See only persisted schedules | `/cron --persist list` | Filters the overlay down to project-scoped crons |
 | See all session schedules | `/cron list-all` | Cross-session view of active cron files |

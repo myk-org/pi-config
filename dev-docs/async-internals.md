@@ -144,3 +144,19 @@ Modes: `"tui"` (interactive), `"rpc"` (programmatic), `"json"` (structured outpu
 | Dreaming (auto-dream timer) | `ctx.mode !== "print" && ctx.mode !== "json"` | One-shot, no background work |
 
 Use `ctx.hasUI` for simple UI guards (`notify`, `select`, `confirm`). Use argv helpers for register-time oneshot skips. Use `ctx.mode` in session callbacks after mode exists.
+
+## Kill origin attribution
+
+`killAsyncAgent(target, origin)` takes a typed `AsyncKillOrigin` so a kill is never
+misattributed to the user. The label is persisted to `status.json` as `killOrigin`
+plus `output`, and prefixes the `## Async Agent Result` delivery to the AI.
+
+| Origin | Caller | Label |
+|--------|--------|-------|
+| `user` | async-status overlay `x`/`a`, pidash browser UI | `Killed by user` |
+| `orchestrator` | `subagent(asyncKill=…)` — an LLM decision | `Killed by orchestrator` |
+| `task-system` | pitasks `subagents:rpc:stop` | `Killed by task system` |
+
+The pidash browser UI is a human clicking, so it counts as `user`. An unrecognised
+runtime value falls back to `user`. The async-status detail header appends
+`· killed by <origin>` for failed jobs.

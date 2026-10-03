@@ -120,7 +120,7 @@ async function run(config: RunConfig): Promise<void> {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    // Store child PID in status file so /async-kill can find it
+    // Store child PID in status file so kill paths can find it
     if (proc.pid) {
       status.childPid = proc.pid;
       writeJson(statusPath, status);
