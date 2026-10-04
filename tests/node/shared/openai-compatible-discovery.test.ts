@@ -603,6 +603,26 @@ describe("OpenAI-compatible discovery helpers", () => {
     assert.equal(isPricingUnknown(paid), false, "a partially priced record still carries real prices");
   });
 
+  it("treats invalid prices as no price at all", () => {
+    for (const cost of [{ input: Number.NaN }, { input: Number.POSITIVE_INFINITY }, { input: -1 }, { output: -0.5 }]) {
+      const [model] = materializeOpenAiCompatibleModels(
+        [{ id: "gpt-5.6-terra", cost }],
+        "https://gateway.example/v1",
+        "arbitrary",
+      );
+      assert.equal(
+        isPricingUnknown(model),
+        true,
+        `a record priced only with ${JSON.stringify(cost)} describes a broken source, not a price`,
+      );
+      assert.deepEqual(
+        model.cost,
+        { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        "invalid components collapse to the placeholder zero, matching the provenance decision",
+      );
+    }
+  });
+
   it("redacts sensitive diagnostics", () => {
     const diagnostic = redactOpenAiCompatibleDiagnostic(
       "GET https://user:pass@gateway.example/v1/models?key=query-secret failed with Bearer fake-key and fake-route", // pragma: allowlist secret

@@ -520,24 +520,64 @@ const PRICING_UNKNOWN = Symbol.for("pi-config.pricingUnknown");
 /**
  * Whether a model's prices are known, as opposed to merely numeric.
  *
- * Pi requires numeric prices, so a model resolved from a key-scoped listing, a
- * CLI/ACPX discovery with no catalog price, or an openai-compatible /v1/models
- * record uses zeros to mean "unknown pricing" rather than "free". Those sites
- * mark the model with PRICING_UNKNOWN.
+ * Pi requires numeric prices, so a model whose source published none is
+ * registered with zeros — and those zeros mean "unknown pricing", not "free".
+ * Three sources supply such zeros, and all three must be withheld:
  *
- * A catalog all-zero cost is the opposite: the price is known to be zero (an
- * OpenRouter `:free` variant, for example), so it is free and must be reported
- * as a real $0. Provenance decides, never the value.
+ * - Models we fabricate (key-scoped listings, CLI/ACPX discovery without a
+ *   catalog price, openai-compatible /v1/models records), marked PRICING_UNKNOWN.
+ * - models.json definitions that omit `cost`: Pi's provider composer fills them
+ *   with zeros (see pi's provider-composer `cost: definition.cost ?? {0,0,0,0}`)
+ *   and hands us a model with no marker.
+ * - Any other unmarked all-zero cost with no catalog entry behind it.
+ *
+ * An all-zero cost is authoritative only when pi-ai's own generated catalog
+ * declares that model free (an OpenRouter `:free` variant, for example). That
+ * catalog is the one price source we trust without a provenance marker, so a
+ * genuinely free model reports a real $0 while unknown spend stays null.
  */
-export function hasKnownPricing(model: { cost?: Record<string, number | undefined> } | undefined): boolean {
+export function hasKnownPricing(model: { id?: string; provider?: string; cost?: Record<string, number | undefined> } | undefined): boolean {
   const cost = model?.cost;
-  const fabricated = !!model && Reflect.get(model, PRICING_UNKNOWN) === true;
-  const known = !fabricated && !!cost && Object.values(cost).some((value) => typeof value === "number");
+  if (!cost) {
+    pricingLog.debug("[sidecar] PRICING_KNOWN: known=false, priceMetadata=absent, provenance=none");
+    return false;
+  }
+  if (Reflect.get(model, PRICING_UNKNOWN) === true) {
+    pricingLog.debug("[sidecar] PRICING_KNOWN: known=false, priceMetadata=present, provenance=fabricated");
+    return false;
+  }
+  const prices = Object.values(cost).filter((value): value is number => typeof value === "number");
+  if (prices.length === 0) {
+    pricingLog.debug("[sidecar] PRICING_KNOWN: known=false, priceMetadata=empty, provenance=none");
+    return false;
+  }
+  if (prices.some((value) => value > 0)) {
+    pricingLog.debug("[sidecar] PRICING_KNOWN: known=true, priceMetadata=present, provenance=priced");
+    return true;
+  }
+  const catalogFree = isCatalogFreeModel(model);
   // Never log the model or its prices — only the resulting decision.
   pricingLog.debug(
-    `[sidecar] PRICING_KNOWN: known=${known}, priceMetadata=${cost ? "present" : "absent"}, provenance=${fabricated ? "fabricated" : "source"}`,
+    `[sidecar] PRICING_KNOWN: known=${catalogFree}, priceMetadata=present, provenance=${catalogFree ? "catalog-free" : "unattributed-zero"}`,
   );
-  return known;
+  return catalogFree;
+}
+
+/**
+ * Whether pi-ai's generated catalog declares this exact model free (all-zero
+ * cost). Local catalog lookup only — no network, no credentials. Anything not in
+ * that catalog (static models.json entries, custom providers, extension models)
+ * has no authority behind an all-zero cost, so it stays unknown.
+ */
+function isCatalogFreeModel(model: { id?: string; provider?: string }): boolean {
+  if (!model?.id || !model.provider) return false;
+  try {
+    const catalog = getModel(model.provider as any, model.id);
+    const prices = Object.values(catalog?.cost ?? {});
+    return prices.length > 0 && prices.every((value) => typeof value === "number" && value === 0);
+  } catch {
+    return false;
+  }
 }
 
 interface SessionEntry {

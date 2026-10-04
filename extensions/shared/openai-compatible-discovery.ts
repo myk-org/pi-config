@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai";
 import { createLogger } from "./logger.js";
-import { hasPricedComponent, markPricingUnknown } from "./pricing-provenance.js";
+import { hasPricedComponent, markPricingUnknown, priceOrFallback } from "./pricing-provenance.js";
 
 const log = createLogger("openai-compatible-discovery");
 
@@ -49,10 +49,6 @@ const PI_STATIC_MODEL_DEFAULTS = {
   maxTokens: 16_384,
 } as const;
 
-function finiteNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
 function positiveFiniteNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? value
@@ -74,11 +70,15 @@ function materializeCost(value: unknown): Model<Api>["cost"] {
   const source = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+  // Invalid components (non-finite, negative) become the placeholder zero, which
+  // keeps the materialized cost consistent with hasPricedComponent()'s decision:
+  // a record priced only with invalid values contributes no valid price and is
+  // therefore marked unknown-priced.
   return {
-    input: finiteNumber(source.input, PI_STATIC_MODEL_DEFAULTS.cost.input),
-    output: finiteNumber(source.output, PI_STATIC_MODEL_DEFAULTS.cost.output),
-    cacheRead: finiteNumber(source.cacheRead, PI_STATIC_MODEL_DEFAULTS.cost.cacheRead),
-    cacheWrite: finiteNumber(source.cacheWrite, PI_STATIC_MODEL_DEFAULTS.cost.cacheWrite),
+    input: priceOrFallback(source.input, PI_STATIC_MODEL_DEFAULTS.cost.input),
+    output: priceOrFallback(source.output, PI_STATIC_MODEL_DEFAULTS.cost.output),
+    cacheRead: priceOrFallback(source.cacheRead, PI_STATIC_MODEL_DEFAULTS.cost.cacheRead),
+    cacheWrite: priceOrFallback(source.cacheWrite, PI_STATIC_MODEL_DEFAULTS.cost.cacheWrite),
   };
 }
 export interface CachedOpenAiCompatibleDiscovery<T> {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { SessionStore, hasKnownPricing } from "../../src/sessions.js";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import {
   getSessionCwd,
   resolveProviderStreamCwd,
@@ -631,8 +632,6 @@ exit 0
    * zero (an OpenRouter `:free` variant), which must report as a real $0.
    */
   it("hasKnownPricing() reads the model's price metadata", () => {
-    assert.equal(hasKnownPricing({ cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }), true,
-      "an unmarked catalog all-zero cost is a known free price");
     assert.equal(hasKnownPricing({ cost: { input: 0, output: 0.000003, cacheRead: 0, cacheWrite: 0 } }), true,
       "any priced component means the price is known");
     assert.equal(hasKnownPricing({ cost: {} }), false, "price metadata with no component means unknown");
@@ -641,13 +640,66 @@ exit 0
   });
 
   it("hasKnownPricing() trusts the unknown marker over the numeric value", () => {
-    const fabricated = { cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    const fabricated = { cost: { input: 2, output: 6, cacheRead: 0, cacheWrite: 0 } };
     (fabricated as Record<symbol, unknown>)[Symbol.for("pi-config.pricingUnknown")] = true;
     assert.equal(hasKnownPricing(fabricated), false,
-      "fabricated zeros mean unknown, not free, whatever the value");
+      "a marked placeholder stays unknown even when it carries positive numbers");
 
-    const priced = { cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-    (priced as Record<symbol, unknown>)[Symbol.for("pi-config.pricingUnknown")] = false;
-    assert.equal(hasKnownPricing(priced), true, "only a true marker withholds the price");
+    const sourced = { cost: { input: 2, output: 6, cacheRead: 0, cacheWrite: 0 } };
+    (sourced as Record<symbol, unknown>)[Symbol.for("pi-config.pricingUnknown")] = false;
+    assert.equal(hasKnownPricing(sourced), true, "only a true marker withholds the price");
+  });
+
+  /**
+   * An unmarked all-zero cost is authoritative only when pi-ai's generated
+   * catalog declares that model free. Pi's provider composer fills a models.json
+   * definition that omits `cost` with zeros and marks nothing, so an unmarked
+   * zero cost with no catalog entry behind it is unknown spend, not free spend.
+   */
+  it("hasKnownPricing() accepts an all-zero cost only from the generated catalog", () => {
+    const catalogFree = builtinProviders()
+      .flatMap((provider) => provider.getModels().map((model) => ({ provider: provider.id, model })))
+      .find(({ model }) => {
+        const prices = Object.values(model.cost ?? {});
+        return prices.length > 0 && prices.every((value) => value === 0);
+      });
+    assert.ok(catalogFree, "pi-ai ships at least one genuinely free catalog model");
+    assert.equal(
+      hasKnownPricing({ provider: catalogFree.provider, id: catalogFree.model.id, cost: catalogFree.model.cost }),
+      true,
+      "a catalog free model is a known $0",
+    );
+
+    assert.equal(
+      hasKnownPricing({
+        provider: "my-custom-gateway",
+        id: "some-model",
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      }),
+      false,
+      "a models.json / custom-provider model with Pi-supplied zeros is unknown, not free",
+    );
+
+    assert.equal(
+      hasKnownPricing({
+        provider: "openrouter",
+        id: "definitely-not-a-real-model-id",
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      }),
+      false,
+      "an all-zero cost with no catalog entry behind it stays unknown",
+    );
+  });
+
+  it("hasKnownPricing() keeps a priced model known regardless of catalog membership", () => {
+    assert.equal(
+      hasKnownPricing({
+        provider: "my-custom-gateway",
+        id: "some-model",
+        cost: { input: 2, output: 6, cacheRead: 0, cacheWrite: 0 },
+      }),
+      true,
+      "a positive component is authoritative on its own",
+    );
   });
 });

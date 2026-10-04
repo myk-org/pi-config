@@ -30,6 +30,9 @@ export const AMBIENT_AUTH_KEY = "ambient"; // pragma: allowlist secret
 
 export const DEFAULT_RUNTIME_BASE_URL = "https://localhost";
 
+/** Pricing classification for models built here (never logs prices). */
+const pricingLog = createLogger("runtime-model-pricing");
+
 export interface BuildRuntimeModelOptions {
   id: string;
   name: string;
@@ -63,7 +66,9 @@ export function buildRuntimeModel(opts: BuildRuntimeModelOptions): Model<Api> {
   // price", so consumers must read it as unknown, not as a free model. A marker
   // already on the options (models.dev priced only some components) carries
   // through to the model.
-  return !opts.cost || isPricingUnknown(opts) ? markPricingUnknown(model) : model;
+  const unknown = !opts.cost || isPricingUnknown(opts);
+  pricingLog.debug("Built runtime model pricing provenance", { unknown });
+  return unknown ? markPricingUnknown(model) : model;
 }
 
 export interface AmbientLoginAuthOptions {
