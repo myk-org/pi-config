@@ -102,7 +102,11 @@ The response is `{ "models": [...], "modelListingSupported": boolean }`.
 A provider with native key-scoped listing returns `modelListingSupported: true`;
 `models: []` then means the listing returned no models. A provider without
 native key-scoped listing returns `{ "models": [], "modelListingSupported": false }`.
-In that case, ask the user to enter a model ID. A listing is only **key-listed**:
+In that case, ask the user to enter a model ID. A canonical builtin always
+supports key-scoped listing on its own host, even when its catalog mixes APIs
+(OpenRouter fronts Anthropic models alongside OpenAI ones); a models.json
+`baseUrl` override or a custom gateway is still refused, so a request-supplied
+endpoint never receives the credential. A listing is only **key-listed**:
 it does not verify that a prompt will work. Google results require
 `generateContent`; known non-generation OpenAI model families are excluded,
 but remaining IDs are not **prompt-verified**. Do not use static catalog entries

@@ -1145,14 +1145,24 @@ export class SessionStore {
     const openAiCompatible = catalog.length > 0 && catalog.every((model) =>
       model.api === "openai-completions" || model.api === "openai-responses");
     const canonical = builtinBaseUrls.get(providerId);
-    const base = (kind === "anthropic" || kind === "google")
-      ? provider.baseUrl === canonical && catalog.length > 0 && catalog.every((model) => model.baseUrl === canonical) ? canonical : undefined
-      : openAiCompatible && catalog.every((model) => model.baseUrl === provider.baseUrl)
-        ? provider.baseUrl : undefined;
+    // A canonical builtin's host is provider-owned, so listing there does not depend on the
+    // catalog being uniformly OpenAI-shaped: OpenRouter also fronts Anthropic models, and the
+    // uniformity check alone refused key-scoped listing for it entirely. The URL guard below
+    // still pins the request to the exact canonical href before any key is sent, so relaxing
+    // this gate does not weaken credential safety. Non-canonical providers (custom gateways,
+    // loopback) keep the API-uniformity and per-model baseUrl checks unchanged.
+    const canonicalBuiltin = canonical !== undefined && provider.baseUrl === canonical;
+    const base = canonicalBuiltin
+      ? canonical
+      : (kind === "anthropic" || kind === "google")
+        ? provider.baseUrl === canonical && catalog.length > 0 && catalog.every((model) => model.baseUrl === canonical) ? canonical : undefined
+        : openAiCompatible && catalog.every((model) => model.baseUrl === provider.baseUrl)
+          ? provider.baseUrl : undefined;
     if (typeof base !== "string" || !base) {
       log.debug("Provider has no native model listing", { providerId: safeProviderId, modelListingSupported: false });
       return { models: [], modelListingSupported: false };
     }
+    log.debug("Resolved key-scoped listing base", { providerId: safeProviderId, canonicalBuiltin, modelCount: catalog.length });
     let url: URL;
     try {
       url = new URL(base);

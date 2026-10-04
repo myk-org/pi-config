@@ -57,7 +57,7 @@ describe("POST /models/for-api-key", { concurrency: false }, () => {
     // Only the external OpenAI model-list API is redirected; the sidecar and SDK remain real.
     globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const target = String(input instanceof Request ? input.url : input);
-      const origin = ["https://api.openai.com", "https://generativelanguage.googleapis.com", "https://api.anthropic.com"]
+      const origin = ["https://api.openai.com", "https://generativelanguage.googleapis.com", "https://api.anthropic.com", "https://openrouter.ai"]
         .find((host) => target.startsWith(`${host}/`));
       if (origin) {
         const redirected = target.replace(origin, upstreamUrl);
@@ -104,6 +104,30 @@ describe("POST /models/for-api-key", { concurrency: false }, () => {
     assert.equal(models[0].name, "Key only");
     assert.equal(models[0].capabilities, undefined);
     assert.equal(models[1].capabilities, undefined);
+    assert.equal(received.at(-1)?.authorization, `Bearer ${keyA}`);
+    noKey(JSON.stringify(models), keyA);
+  });
+
+  /**
+   * A canonical builtin whose catalog is not uniformly OpenAI-shaped still lists.
+   * OpenRouter fronts Anthropic models alongside OpenAI ones, which used to fail the
+   * API-uniformity gate and return an empty list instead of the provider's own models.
+   */
+  it("lists models for a multi-API canonical builtin on its canonical host", async () => {
+    upstreamBody = { data: [
+      { id: "stealth/space-bunny-alpha", name: "Space Bunny Alpha" },
+      { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+      { id: "openai/gpt-4o-mini", name: "GPT-4o mini" },
+    ] };
+    const response = await request({ provider: "openrouter", api_key: keyA });
+    assert.equal(response.status, 200, await response.clone().text());
+    const { models, modelListingSupported } = await response.json() as { models: Array<Record<string, unknown>>; modelListingSupported: boolean };
+    assert.equal(modelListingSupported, true, "a multi-API canonical builtin supports key-scoped listing");
+    // An id pi-ai's runtime cannot resolve is withheld: the mixed-API catalog offers no
+    // unambiguous template for it, so it could not be used in a session either.
+    assert.deepEqual(models.map((model) => model.id), ["stealth/space-bunny-alpha", "openai/gpt-4o-mini"]);
+    assert.deepEqual(models.map((model) => model.provider), ["openrouter", "openrouter"]);
+    assert.equal(received.at(-1)?.path, "/api/v1/models", "listing must use the provider's own canonical models path");
     assert.equal(received.at(-1)?.authorization, `Bearer ${keyA}`);
     noKey(JSON.stringify(models), keyA);
   });
@@ -453,6 +477,41 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
       assert.ok(logs.some((line) => line.includes("Provider has no native model listing") && line.includes("key-no-list-log-839") && line.includes("modelListingSupported")));
       noKey(logs.join("\n"), keyA);
     } finally { logger.debug = original; await store.disposeAll(); }
+  });
+
+  /**
+   * Relaxing the API-uniformity gate must not relax host trust: a models.json
+   * `baseUrl` override repoints the builtin somewhere else, so the canonical
+   * branch no longer applies and the key must never leave the process.
+   */
+  it("refuses to list for a builtin whose baseUrl is overridden away from canonical", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sidecar-892-redirect-"));
+    writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { openrouter: {
+      baseUrl: "https://redirected.example/v1",
+    } } }));
+    const runtime = await ModelRuntime.create({ modelsPath: join(dir, "models.json"), authPath: join(dir, "auth.json"), refreshOnCreate: false });
+    const store = new SessionStore();
+    Object.assign(store, {
+      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
+      modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true,
+    });
+    const originalFetch = globalThis.fetch;
+    let outbound = 0;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const target = String(input instanceof Request ? input.url : input);
+      if (target.startsWith("http")) outbound++;
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      const result = await store.getModelsForApiKey("openrouter", keyA).catch((error: any) => error);
+      assert.equal(result.modelListingSupported, false, "a redirected base must not be listed against");
+      assert.deepEqual(result.models, []);
+      assert.equal(outbound, 0, "no credential may reach a user-supplied endpoint");
+    } finally {
+      globalThis.fetch = originalFetch;
+      await store.disposeAll();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("does not contact a custom gateway when no key is supplied", async () => {
