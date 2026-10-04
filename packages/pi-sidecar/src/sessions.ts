@@ -508,21 +508,34 @@ export const DEFAULT_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
 type StoredSession = Pick<AgentSession, "prompt" | "subscribe" | "dispose" | "abort">;
 
 /**
- * Whether a model carries real prices.
+ * Marker for a model whose prices were fabricated because its source published
+ * none. Defined via the global symbol registry so packages/pi-sidecar and
+ * extensions/shared (which this package cannot import — separate tsconfig
+ * rootDir) agree without a dependency; the definition lives in
+ * extensions/shared/pricing-provenance.ts. Same pattern as
+ * Symbol.for("pi-config.ambientLoginAuth").
+ */
+const PRICING_UNKNOWN = Symbol.for("pi-config.pricingUnknown");
+
+/**
+ * Whether a model's prices are known, as opposed to merely numeric.
  *
- * Pi requires numeric prices, so a model resolved from a key-scoped listing
- * uses zeros to mean "unknown pricing" rather than "free". A model with no
- * priced component must not be reported as a $0 call — consumers would show
- * unknown spend as genuinely free.
+ * Pi requires numeric prices, so a model resolved from a key-scoped listing, a
+ * CLI/ACPX discovery with no catalog price, or an openai-compatible /v1/models
+ * record uses zeros to mean "unknown pricing" rather than "free". Those sites
+ * mark the model with PRICING_UNKNOWN.
+ *
+ * A catalog all-zero cost is the opposite: the price is known to be zero (an
+ * OpenRouter `:free` variant, for example), so it is free and must be reported
+ * as a real $0. Provenance decides, never the value.
  */
 export function hasKnownPricing(model: { cost?: Record<string, number | undefined> } | undefined): boolean {
   const cost = model?.cost;
-  const known = cost
-    ? Object.values(cost).some((value) => typeof value === "number" && value > 0)
-    : false;
+  const fabricated = !!model && Reflect.get(model, PRICING_UNKNOWN) === true;
+  const known = !fabricated && !!cost && Object.values(cost).some((value) => typeof value === "number");
   // Never log the model or its prices — only the resulting decision.
   pricingLog.debug(
-    `[sidecar] PRICING_KNOWN: known=${known}, priceMetadata=${cost ? "present" : "absent"}`,
+    `[sidecar] PRICING_KNOWN: known=${known}, priceMetadata=${cost ? "present" : "absent"}, provenance=${fabricated ? "fabricated" : "source"}`,
   );
   return known;
 }
@@ -535,9 +548,11 @@ interface SessionEntry {
   redact: (value: string) => string;
   /**
    * Whether the session's model carries real prices. Pi requires numeric prices,
-   * so a model resolved from a key-scoped listing uses zeros to mean "unknown
-   * pricing", not "free". Reporting that as $0 makes unknown spend look free to
-   * consumers (e.g. rootcoz), so usage cost stays null instead.
+   * so a model whose source published none (key-scoped listing, CLI/ACPX
+   * discovery without a catalog price) uses zeros for "unknown pricing", not
+   * "free"; those models carry the PRICING_UNKNOWN marker. Reporting that as $0
+   * makes unknown spend look free to consumers (e.g. rootcoz), so usage cost
+   * stays null instead. A catalog zero is authoritative and reported as free.
    */
   pricingKnown: boolean;
 }
@@ -1268,6 +1283,9 @@ export class SessionStore {
             contextWindow,
             maxTokens,
           } satisfies Model<typeof template.api>;
+          // Provenance, not the value: these zeros are fabricated, so a driver
+          // reporting $0 must not be recorded as a genuinely free call.
+          (model as Record<symbol, unknown>)[PRICING_UNKNOWN] = true;
           log.debug("Session model resolved from key-scoped listing", { session: id });
         }
       }

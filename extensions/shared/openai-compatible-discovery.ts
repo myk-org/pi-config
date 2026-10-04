@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai";
 import { createLogger } from "./logger.js";
+import { hasPricedComponent, markPricingUnknown } from "./pricing-provenance.js";
 
 const log = createLogger("openai-compatible-discovery");
 
@@ -509,7 +510,7 @@ export function materializeOpenAiCompatibleModels(
   for (const record of records) {
     if (typeof record.id !== "string" || seenIds.has(record.id)) continue;
     seenIds.add(record.id);
-    models.push({
+    const model: Model<Api> = {
       id: record.id,
       name: typeof record.name === "string" ? record.name : record.id,
       api: "openai-completions",
@@ -535,7 +536,15 @@ export function materializeOpenAiCompatibleModels(
         record.maxTokens,
         positiveFiniteNumber(record.max_output_tokens, PI_STATIC_MODEL_DEFAULTS.maxTokens),
       ),
-    });
+    };
+    // A record with no priced component is Pi's numeric placeholder for "this
+    // source published no price". Those zeros mean unknown, so mark provenance
+    // instead of letting a consumer read them as a free model. A record that
+    // prices any component — zeros included — is authoritative.
+    if (!hasPricedComponent(record.cost, ["input", "output", "cacheRead", "cacheWrite"])) {
+      markPricingUnknown(model);
+    }
+    models.push(model);
   }
   return models;
 }

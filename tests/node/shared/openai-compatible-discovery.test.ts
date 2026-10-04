@@ -12,6 +12,7 @@ import {
   materializeOpenAiCompatibleModels,
   redactOpenAiCompatibleDiagnostic,
 } from "../../../extensions/shared/openai-compatible-discovery.js";
+import { isPricingUnknown } from "../../../extensions/shared/pricing-provenance.js";
 
 function modelIds(registry: ModelRegistry, provider = "gateway") {
   return registry.getAll().filter((model) => model.provider === provider).map((model) => model.id);
@@ -570,6 +571,36 @@ describe("OpenAI-compatible discovery helpers", () => {
       "arbitrary",
     );
     assert.equal(model.contextWindow, 128_000);
+  });
+
+  it("marks an unpriced record as unknown pricing, not free", () => {
+    const [model] = materializeOpenAiCompatibleModels(
+      [{ id: "gpt-5.6-terra" }],
+      "https://gateway.example/v1",
+      "arbitrary",
+    );
+    assert.deepEqual(model.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    assert.equal(
+      isPricingUnknown(model),
+      true,
+      "a /v1/models record with no priced component must not read as a free model",
+    );
+  });
+
+  it("leaves a record that reports prices unmarked, including all zeros", () => {
+    const [priced] = materializeOpenAiCompatibleModels(
+      [{ id: "gpt-5.6-terra", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+      "https://gateway.example/v1",
+      "arbitrary",
+    );
+    assert.equal(isPricingUnknown(priced), false, "an explicit zero price is a known price");
+
+    const [paid] = materializeOpenAiCompatibleModels(
+      [{ id: "gpt-5.6-terra", cost: { input: 2, output: 6 } }],
+      "https://gateway.example/v1",
+      "arbitrary",
+    );
+    assert.equal(isPricingUnknown(paid), false, "a partially priced record still carries real prices");
   });
 
   it("redacts sensitive diagnostics", () => {

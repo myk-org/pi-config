@@ -624,14 +624,30 @@ exit 0
   /**
    * Detection itself must be covered: hasKnownPricing() is what marks a session
    * unknown-priced, and prompt() above supplies that flag directly.
+   *
+   * Pi requires numeric prices, so a source that published none yields zeros.
+   * Those zeros mean *unknown* — and the fabrication sites mark the model to say
+   * so. A catalog all-zero cost means the opposite: the price is known to be
+   * zero (an OpenRouter `:free` variant), which must report as a real $0.
    */
   it("hasKnownPricing() reads the model's price metadata", () => {
-    assert.equal(hasKnownPricing({ cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }), false,
-      "all-zero prices mean unknown, not free");
+    assert.equal(hasKnownPricing({ cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }), true,
+      "an unmarked catalog all-zero cost is a known free price");
     assert.equal(hasKnownPricing({ cost: { input: 0, output: 0.000003, cacheRead: 0, cacheWrite: 0 } }), true,
-      "any positive component means the price is known");
-    assert.equal(hasKnownPricing({ cost: {} }), false, "empty price metadata means unknown");
+      "any priced component means the price is known");
+    assert.equal(hasKnownPricing({ cost: {} }), false, "price metadata with no component means unknown");
     assert.equal(hasKnownPricing({}), false, "absent price metadata means unknown");
     assert.equal(hasKnownPricing(undefined), false, "an absent model means unknown");
+  });
+
+  it("hasKnownPricing() trusts the unknown marker over the numeric value", () => {
+    const fabricated = { cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    (fabricated as Record<symbol, unknown>)[Symbol.for("pi-config.pricingUnknown")] = true;
+    assert.equal(hasKnownPricing(fabricated), false,
+      "fabricated zeros mean unknown, not free, whatever the value");
+
+    const priced = { cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    (priced as Record<symbol, unknown>)[Symbol.for("pi-config.pricingUnknown")] = false;
+    assert.equal(hasKnownPricing(priced), true, "only a true marker withholds the price");
   });
 });

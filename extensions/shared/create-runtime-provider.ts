@@ -7,6 +7,7 @@
  */
 
 import { createLogger } from "./logger.js";
+import { isPricingUnknown, markPricingUnknown } from "./pricing-provenance.js";
 
 import type {
   Api,
@@ -45,7 +46,7 @@ export interface BuildRuntimeModelOptions {
 
 /** Build a full Model with api/provider/baseUrl required by createProvider. */
 export function buildRuntimeModel(opts: BuildRuntimeModelOptions): Model<Api> {
-  return {
+  const model: Model<Api> = {
     id: opts.id,
     name: opts.name,
     api: opts.api,
@@ -58,6 +59,11 @@ export function buildRuntimeModel(opts: BuildRuntimeModelOptions): Model<Api> {
     contextWindow: opts.contextWindow ?? 200_000,
     maxTokens: opts.maxTokens ?? 32_768,
   };
+  // A default cost is Pi's numeric placeholder for "this source published no
+  // price", so consumers must read it as unknown, not as a free model. A marker
+  // already on the options (models.dev priced only some components) carries
+  // through to the model.
+  return !opts.cost || isPricingUnknown(opts) ? markPricingUnknown(model) : model;
 }
 
 export interface AmbientLoginAuthOptions {

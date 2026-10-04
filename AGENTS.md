@@ -28,11 +28,14 @@ Internal code, imports, and structure can change freely.
 
 `prompt` usage reports `cost_usd` as the accumulation of driver-reported costs: a number means costs
 were reported, `null` means nothing usable was reported, and a number with `cost_partial: true` is a lower
-bound because at least one turn's cost was unknowable. A model from a key-scoped listing has all-zero Pi
-price metadata, which means *unknown pricing* rather than *free*, so the sidecar cannot derive a cost for
-those turns — but a driver may still report one, and that reported amount is always kept. Read `cost_usd`
-together with `cost_partial`; consumers must not coalesce `null` to `0` nor present a partial total as
-complete — see `packages/pi-sidecar/CONSUMER-GUIDE.md`.
+bound because at least one turn's cost was unknowable. A model whose source published no price has
+all-zero Pi price metadata, which means *unknown pricing* rather than *free*, so the sidecar cannot derive a
+cost for those turns — but a driver may still report one, and that reported amount is always kept. A
+catalog all-zero cost is authoritative: that model is free and reports `cost_usd: 0` with
+`cost_partial: false`. Provenance is carried by `Symbol.for("pi-config.pricingUnknown")`
+(`extensions/shared/pricing-provenance.ts`), never inferred from the value, so no model or provider id is
+special-cased. Read `cost_usd` together with `cost_partial`; consumers must not coalesce `null` to `0` nor
+present a partial total as complete — see `packages/pi-sidecar/CONSUMER-GUIDE.md`.
 
 `GET /providers` lists all provider IDs registered in the initialized runtime,
 including built-ins and extensions, regardless of ambient auth or whether

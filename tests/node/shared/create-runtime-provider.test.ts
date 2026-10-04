@@ -12,6 +12,8 @@ import {
   createRuntimeProvider,
   filterModelsWhenConfigured,
 } from "../../../extensions/shared/create-runtime-provider.js";
+import { fillRuntimeModelFromCatalog } from "../../../extensions/shared/models-dev.js";
+import { isPricingUnknown } from "../../../extensions/shared/pricing-provenance.js";
 
 describe("buildRuntimeModel", () => {
   it("fills api, provider, baseUrl with defaults", () => {
@@ -40,6 +42,48 @@ describe("buildRuntimeModel", () => {
       baseUrl: "acpx://local",
     });
     assert.equal(m.baseUrl, "acpx://local");
+  });
+
+  it("marks the placeholder cost as unknown pricing, not free", () => {
+    const defaulted = buildRuntimeModel({
+      id: "x:default",
+      name: "x",
+      api: "cli",
+      provider: "cli-x",
+    });
+    assert.deepEqual(defaulted.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    assert.equal(
+      isPricingUnknown(defaulted),
+      true,
+      "no source published a price, so zeros must read as unknown rather than free",
+    );
+  });
+
+  it("leaves a supplied cost unmarked, including authoritative zeros", () => {
+    const priced = buildRuntimeModel({
+      id: "x:default",
+      name: "x",
+      api: "cli",
+      provider: "cli-x",
+      cost: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
+    });
+    assert.equal(isPricingUnknown(priced), false, "a source-supplied cost keeps its provenance");
+  });
+
+  it("carries an inherited unknown marker onto the built model", () => {
+    const options = fillRuntimeModelFromCatalog(
+      { id: "x:default", name: "x", api: "cli", provider: "cli-x" },
+      { x: { models: { default: { id: "default", cost: {} } } } },
+      "x",
+      "default",
+    );
+    assert.deepEqual(options.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      "the placeholder fill supplies the required numbers");
+    assert.equal(
+      isPricingUnknown(buildRuntimeModel(options)),
+      true,
+      "a marker on the options must survive into the model, even when it carries a cost",
+    );
   });
 });
 

@@ -18,6 +18,7 @@ import {
 import { mapCliDiscoveredModels } from "../../../extensions/cli-provider/runtime-models.js";
 import { mapAcpxDiscoveredModels } from "../../../extensions/acpx-provider/runtime-models.js";
 import { buildRuntimeModel } from "../../../extensions/shared/create-runtime-provider.js";
+import { isPricingUnknown } from "../../../extensions/shared/pricing-provenance.js";
 
 const SAMPLE_CATALOG = {
   xai: {
@@ -424,5 +425,42 @@ describe("mapCli/mapAcpx with catalog", () => {
     ]);
     assert.equal(models[0].contextWindow, 200_000);
     assert.equal(models[0].reasoning, true);
+  });
+
+  it("marks a zero-filled cost as unknown pricing", () => {
+    const filled = fillRuntimeModelFromCatalog(
+      { id: "cursor:composer-2.5", name: "Composer 2.5 (cursor)", api: "cli", provider: "cli-cursor" },
+      { xai: { models: { "composer-2.5": { id: "composer-2.5", cost: {} } } } },
+      "cursor",
+      "composer-2.5",
+    );
+    assert.deepEqual(filled.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    assert.equal(
+      isPricingUnknown(buildRuntimeModel(filled)),
+      true,
+      "an entry with no priced component is a placeholder, so zeros mean unknown",
+    );
+  });
+
+  it("keeps a catalog cost known, including an authoritative zero", () => {
+    const priced = fillRuntimeModelFromCatalog(
+      { id: "cursor:composer-2.5", name: "Composer 2.5 (cursor)", api: "cli", provider: "cli-cursor" },
+      { xai: { models: { "composer-2.5": { id: "composer-2.5", cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 } } } } },
+      "cursor",
+      "composer-2.5",
+    );
+    assert.equal(
+      isPricingUnknown(buildRuntimeModel(priced)),
+      false,
+      "models.dev stating a zero price is a known price, so the model is free, not unknown",
+    );
+
+    const paid = fillRuntimeModelFromCatalog(
+      { id: "cursor:grok-4.6-high", name: "Grok 4.6 (cursor)", api: "cli", provider: "cli-cursor" },
+      SAMPLE_CATALOG,
+      "cursor",
+      "grok-4.6-high",
+    );
+    assert.equal(isPricingUnknown(buildRuntimeModel(paid)), false, "normally priced models are unchanged");
   });
 });
