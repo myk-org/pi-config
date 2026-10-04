@@ -418,7 +418,7 @@ export function fillRuntimeModelFromCatalog(
     // supplied component is valid — zeros included, which makes a genuinely free
     // CLI/ACPX model free. A record mixing a valid price with an invalid one is
     // malformed, so the model stays unknown-priced rather than inheriting a zero.
-    if (classifyCostRecord(entry.cost, ["input", "output", "cache_read", "cache_write"]) === "known") {
+    if (classifyCostRecord(entry.cost, ["input", "output", "cache_read", "cache_write"], { source: "models.dev", agent, model: discoveredId }) === "known") {
       markPricingKnown(next);
     } else {
       markPricingUnknown(next);

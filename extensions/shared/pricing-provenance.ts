@@ -85,21 +85,18 @@ export function priceOrFallback(value: unknown, fallback: number): number {
 }
 
 /**
- * Whether a cost record carries at least one authoritative price under `keys`.
- * Key names differ per source (Pi uses cacheRead, models.dev uses cache_read).
+ * Whether a value is a usable cost record.
+ *
+ * `operation` and `context` exist so a malformed or absent price can be traced to
+ * the classification that rejected it: which pricing source, which model, and
+ * which field set. Only non-sensitive identifiers belong in `context` — never
+ * price values or credentials.
  */
-export function hasPricedComponent(cost: unknown, keys: readonly string[]): boolean {
-  const entry = asRecord(cost);
-  const priced = !!entry && keys.some((key) => isValidPrice(entry[key]));
-  log.debug("Inspected cost record for a priced component", { priced, fields: keys.length });
-  return priced;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
+function asRecord(value: unknown, operation: string, context?: Record<string, unknown>): Record<string, unknown> | undefined {
   const record = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
-  log.debug("Checked cost record shape", { usable: !!record });
+  log.debug("Checked cost record shape", { operation, usable: !!record, ...context });
   return record;
 }
 
@@ -114,15 +111,18 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  * non-numeric value. A record mixing a valid zero with an invalid component is
  * therefore malformed, and the model must stay unknown-priced rather than
  * reporting a driver's placeholder zero as a complete $0.
+ *
+ * `context` carries non-sensitive identifiers (pricing source, provider, model)
+ * so the decision can be traced from the log.
  */
-export function classifyCostRecord(cost: unknown, keys: readonly string[]): "known" | "unknown" {
-  const entry = asRecord(cost);
+export function classifyCostRecord(cost: unknown, keys: readonly string[], context?: Record<string, unknown>): "known" | "unknown" {
+  const entry = asRecord(cost, "classify-cost-record", context);
   // Only absent (undefined) keys are skipped; an explicit null is a supplied
   // component that failed validation.
   const supplied = entry ? keys.filter((key) => entry[key] !== undefined) : [];
   const priced = supplied.some((key) => isValidPrice(entry![key]));
   const allValid = supplied.length > 0 && supplied.every((key) => isValidPrice(entry![key]));
   const verdict = priced && allValid ? "known" : "unknown";
-  log.debug("Classified cost record provenance", { verdict, supplied: supplied.length, priced, allValid });
+  log.debug("Classified cost record provenance", { verdict, supplied: supplied.length, priced, allValid, fields: keys.length, ...context });
   return verdict;
 }

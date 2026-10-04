@@ -72,12 +72,12 @@ function materializeInput(value: unknown): ("text" | "image")[] {
   return ["text", "image"];
 }
 
-function materializeCost(value: unknown): Model<Api>["cost"] {
+function materializeCost(value: unknown, context?: Record<string, unknown>): Model<Api>["cost"] {
   const source = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
   // Invalid components (non-finite, negative) become the placeholder zero, which
-  // keeps the materialized cost consistent with hasPricedComponent()'s decision:
+  // keeps the materialized cost consistent with classifyCostRecord()'s decision:
   // a record priced only with invalid values contributes no valid price and is
   // therefore marked unknown-priced. A record with at least one valid component
   // published its prices, so its zeros are authoritative even though the model
@@ -88,7 +88,7 @@ function materializeCost(value: unknown): Model<Api>["cost"] {
     cacheRead: priceOrFallback(source.cacheRead, PI_STATIC_MODEL_DEFAULTS.cost.cacheRead),
     cacheWrite: priceOrFallback(source.cacheWrite, PI_STATIC_MODEL_DEFAULTS.cost.cacheWrite),
   };
-  log.debug("Materialized discovery cost", { components: Object.keys(cost).length, priced: classifyCostRecord(source, ["input", "output", "cacheRead", "cacheWrite"]) === "known" });
+  log.debug("Materialized discovery cost", { components: Object.keys(cost).length, priced: classifyCostRecord(source, ["input", "output", "cacheRead", "cacheWrite"], context) === "known", ...context });
   return cost;
 }
 export interface CachedOpenAiCompatibleDiscovery<T> {
@@ -530,7 +530,7 @@ export function materializeOpenAiCompatibleModels(
         ? record.reasoning
         : PI_STATIC_MODEL_DEFAULTS.reasoning,
       input: materializeInput(record.input),
-      cost: materializeCost(record.cost),
+      cost: materializeCost(record.cost, { provider: providerId, model: record.id }),
       // Native Pi metadata wins. OpenAI-compatible capability APIs may expose
       // generic input/output capacities, whose sum is Pi's context window.
       contextWindow: positiveFiniteNumber(
@@ -552,7 +552,7 @@ export function materializeOpenAiCompatibleModels(
     // are absent from it, so that provenance is marked explicitly. A record with no
     // valid component, or one mixing a valid price with an invalid one, is a
     // placeholder or malformed and stays unknown-priced.
-    if (classifyCostRecord(record.cost, ["input", "output", "cacheRead", "cacheWrite"]) === "known") {
+    if (classifyCostRecord(record.cost, ["input", "output", "cacheRead", "cacheWrite"], { source: "openai-compatible", provider: providerId, model: record.id }) === "known") {
       markPricingKnown(model);
     } else {
       markPricingUnknown(model);
