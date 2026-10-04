@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createLogger } from "./logger.js";
 import type { BuildRuntimeModelOptions } from "./create-runtime-provider.js";
+import { classifyCostRecord, markPricingKnown, markPricingUnknown, priceOrFallback, safeModelRef } from "./pricing-provenance.js";
 
 const log = createLogger("models-dev");
 
@@ -404,12 +405,24 @@ export function fillRuntimeModelFromCatalog(
   }
 
   if (next.cost == null && entry?.cost) {
+    // Normalize with the same validator the provenance decision uses, so an invalid
+    // component can never pass through as a price and a zero-filled placeholder is
+    // never mistaken for a published zero.
     next.cost = {
-      input: entry.cost.input ?? 0,
-      output: entry.cost.output ?? 0,
-      cacheRead: entry.cost.cache_read ?? 0,
-      cacheWrite: entry.cost.cache_write ?? 0,
+      input: priceOrFallback(entry.cost.input, 0),
+      output: priceOrFallback(entry.cost.output, 0),
+      cacheRead: priceOrFallback(entry.cost.cache_read, 0),
+      cacheWrite: priceOrFallback(entry.cost.cache_write, 0),
     };
+    // models.dev is a real price source, so its prices are authoritative when every
+    // supplied component is valid — zeros included, which makes a genuinely free
+    // CLI/ACPX model free. A record mixing a valid price with an invalid one is
+    // malformed, so the model stays unknown-priced rather than inheriting a zero.
+    if (classifyCostRecord(entry.cost, ["input", "output", "cache_read", "cache_write"], { source: "models.dev", agent, model: safeModelRef(discoveredId) }) === "known") {
+      markPricingKnown(next);
+    } else {
+      markPricingUnknown(next);
+    }
   }
 
   if (next.input == null) {

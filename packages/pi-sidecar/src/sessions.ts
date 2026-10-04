@@ -508,23 +508,115 @@ export const DEFAULT_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
 type StoredSession = Pick<AgentSession, "prompt" | "subscribe" | "dispose" | "abort">;
 
 /**
- * Whether a model carries real prices.
- *
- * Pi requires numeric prices, so a model resolved from a key-scoped listing
- * uses zeros to mean "unknown pricing" rather than "free". A model with no
- * priced component must not be reported as a $0 call — consumers would show
- * unknown spend as genuinely free.
+ * Marker for a model whose prices were fabricated because its source published
+ * none. Defined via the global symbol registry so packages/pi-sidecar and
+ * extensions/shared (which this package cannot import — separate tsconfig
+ * rootDir) agree without a dependency; the definition lives in
+ * extensions/shared/pricing-provenance.ts. Same pattern as
+ * Symbol.for("pi-config.ambientLoginAuth").
  */
-export function hasKnownPricing(model: { cost?: Record<string, number | undefined> } | undefined): boolean {
+const PRICING_UNKNOWN = Symbol.for("pi-config.pricingUnknown");
+
+/**
+ * Counterpart marker for sources that published prices, zeros included. Defined
+ * via the global symbol registry for the same reason as PRICING_UNKNOWN above.
+ */
+const PRICING_KNOWN = Symbol.for("pi-config.pricingKnown");
+
+/**
+ * Whether a model's prices are known, as opposed to merely numeric.
+ *
+ * Pi requires numeric prices, so a model whose source published none is
+ * registered with zeros — and those zeros mean "unknown pricing", not "free".
+ * Three sources supply such zeros, and all three must be withheld:
+ *
+ * - Models we fabricate (key-scoped listings, CLI/ACPX discovery without a
+ *   catalog price, openai-compatible /v1/models records), marked PRICING_UNKNOWN.
+ * - models.json definitions that omit `cost`: Pi's provider composer fills them
+ *   with zeros (see pi's provider-composer `cost: definition.cost ?? {0,0,0,0}`)
+ *   and hands us a model with no marker.
+ * - Any other unmarked all-zero cost with no catalog entry behind it.
+ *
+ * An all-zero cost is authoritative in exactly two cases, and both require proof:
+ *
+ * 1. A source published it (PRICING_KNOWN) — models.dev or an OpenAI-compatible
+ *    `/v1/models` record stating a zero price for a model pi-ai never shipped.
+ * 2. The cost object *is* pi-ai's generated catalog entry for this model, which
+ *    is how a genuinely free model (an OpenRouter `:free` variant) is
+ *    recognized. Identity, not a provider+id match: an unpriced models.json
+ *    override of a free catalog model gets its own zero-filled cost object from
+ *    the provider composer, so sharing identifiers is not evidence of anything.
+ */
+export function hasKnownPricing(model: { id?: string; provider?: string; api?: string; baseUrl?: string; cost?: Record<string, number | undefined> } | undefined): boolean {
   const cost = model?.cost;
-  const known = cost
-    ? Object.values(cost).some((value) => typeof value === "number" && value > 0)
-    : false;
+  if (!cost) {
+    pricingLog.debug("[sidecar] PRICING_KNOWN: known=false, priceMetadata=absent, provenance=none");
+    return false;
+  }
+  if (Reflect.get(model, PRICING_UNKNOWN) === true) {
+    pricingLog.debug("[sidecar] PRICING_KNOWN: known=false, priceMetadata=present, provenance=fabricated");
+    return false;
+  }
+  const prices = Object.values(cost).filter((value): value is number => typeof value === "number");
+  if (prices.length === 0) {
+    pricingLog.debug("[sidecar] PRICING_KNOWN: known=false, priceMetadata=empty, provenance=none");
+    return false;
+  }
+  if (prices.some((value) => value > 0)) {
+    pricingLog.debug("[sidecar] PRICING_KNOWN: known=true, priceMetadata=present, provenance=priced");
+    return true;
+  }
+  // All zero: either a source published it, or it is the catalog's own entry.
+  if (Reflect.get(model, PRICING_KNOWN) === true) {
+    pricingLog.debug("[sidecar] PRICING_KNOWN: known=true, priceMetadata=present, provenance=source-published-free");
+    return true;
+  }
+  const catalogFree = isCatalogFreeModel(model);
   // Never log the model or its prices — only the resulting decision.
   pricingLog.debug(
-    `[sidecar] PRICING_KNOWN: known=${known}, priceMetadata=${cost ? "present" : "absent"}`,
+    `[sidecar] PRICING_KNOWN: known=${catalogFree}, priceMetadata=present, provenance=${catalogFree ? "catalog-free" : "unattributed-zero"}`,
   );
-  return known;
+  return catalogFree;
+}
+
+/**
+ * Whether the model is pi-ai's generated catalog entry for this identifier, and
+ * that entry declares the model free. Local catalog lookup only — no network, no
+ * credentials.
+ *
+ * The comparison checks the entry's identity surface (provider, id, api,
+ * baseUrl), not only the identifier. An unpriced models.json override that
+ * repoints a free catalog model at another endpoint or API is a different price
+ * source, so its zero-filled cost must not inherit the catalog's free verdict;
+ * `isCatalogFreeModel` returns false and the turn is reported as unknown spend.
+ *
+ * Reference identity is deliberately not used: pi-ai ships as two module
+ * instances (root and pi-coding-agent/node_modules), so the runtime's models and
+ * this package's catalog are distinct objects even for the same model.
+ */
+function isCatalogFreeModel(model: { id?: string; provider?: string; api?: string; baseUrl?: string; cost?: Record<string, number | undefined> }): boolean {
+  if (!model?.id || !model.provider) {
+    pricingLog.debug("[sidecar] CATALOG_FREE: free=false, reason=unidentified");
+    return false;
+  }
+  try {
+    const catalog = getModel(model.provider as any, model.id);
+    if (!catalog) {
+      // Provider and model id are non-sensitive identifiers and the only way to trace
+      // which zero-priced model fell back to unknown spend.
+      pricingLog.debug("[sidecar] CATALOG_FREE: free=false, reason=absent-from-catalog", { provider: model.provider, model: model.id });
+      return false;
+    }
+    const prices = Object.values(catalog.cost ?? {});
+    const free = prices.length > 0 && prices.every((value) => value === 0);
+    const sameEndpoint = catalog.api === model.api && catalog.baseUrl === model.baseUrl;
+    const verdict = free && sameEndpoint;
+    pricingLog.debug("[sidecar] CATALOG_FREE: ", { free: verdict, catalogFree: free, sameEndpoint, provider: model.provider, model: model.id });
+    return verdict;
+  } catch (err) {
+    pricingLog.warn("[sidecar] CATALOG_LOOKUP_FAILED: reason=lookup_error", { error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
 }
 
 interface SessionEntry {
@@ -535,9 +627,11 @@ interface SessionEntry {
   redact: (value: string) => string;
   /**
    * Whether the session's model carries real prices. Pi requires numeric prices,
-   * so a model resolved from a key-scoped listing uses zeros to mean "unknown
-   * pricing", not "free". Reporting that as $0 makes unknown spend look free to
-   * consumers (e.g. rootcoz), so usage cost stays null instead.
+   * so a model whose source published none (key-scoped listing, CLI/ACPX
+   * discovery without a catalog price) uses zeros for "unknown pricing", not
+   * "free"; those models carry the PRICING_UNKNOWN marker. Reporting that as $0
+   * makes unknown spend look free to consumers (e.g. rootcoz), so usage cost
+   * stays null instead. A catalog zero is authoritative and reported as free.
    */
   pricingKnown: boolean;
 }
@@ -1053,14 +1147,24 @@ export class SessionStore {
     const openAiCompatible = catalog.length > 0 && catalog.every((model) =>
       model.api === "openai-completions" || model.api === "openai-responses");
     const canonical = builtinBaseUrls.get(providerId);
-    const base = (kind === "anthropic" || kind === "google")
-      ? provider.baseUrl === canonical && catalog.length > 0 && catalog.every((model) => model.baseUrl === canonical) ? canonical : undefined
-      : openAiCompatible && catalog.every((model) => model.baseUrl === provider.baseUrl)
-        ? provider.baseUrl : undefined;
+    // A canonical builtin's host is provider-owned, so listing there does not depend on the
+    // catalog being uniformly OpenAI-shaped: OpenRouter also fronts Anthropic models, and the
+    // uniformity check alone refused key-scoped listing for it entirely. The URL guard below
+    // still pins the request to the exact canonical href before any key is sent, so relaxing
+    // this gate does not weaken credential safety. Non-canonical providers (custom gateways,
+    // loopback) keep the API-uniformity and per-model baseUrl checks unchanged.
+    const canonicalBuiltin = canonical !== undefined && provider.baseUrl === canonical;
+    const base = canonicalBuiltin
+      ? canonical
+      : (kind === "anthropic" || kind === "google")
+        ? provider.baseUrl === canonical && catalog.length > 0 && catalog.every((model) => model.baseUrl === canonical) ? canonical : undefined
+        : openAiCompatible && catalog.every((model) => model.baseUrl === provider.baseUrl)
+          ? provider.baseUrl : undefined;
     if (typeof base !== "string" || !base) {
       log.debug("Provider has no native model listing", { providerId: safeProviderId, modelListingSupported: false });
       return { models: [], modelListingSupported: false };
     }
+    log.debug("Resolved key-scoped listing base", { providerId: safeProviderId, canonicalBuiltin, modelCount: catalog.length });
     let url: URL;
     try {
       url = new URL(base);
@@ -1268,6 +1372,9 @@ export class SessionStore {
             contextWindow,
             maxTokens,
           } satisfies Model<typeof template.api>;
+          // Provenance, not the value: these zeros are fabricated, so a driver
+          // reporting $0 must not be recorded as a genuinely free call.
+          (model as Record<symbol, unknown>)[PRICING_UNKNOWN] = true;
           log.debug("Session model resolved from key-scoped listing", { session: id });
         }
       }

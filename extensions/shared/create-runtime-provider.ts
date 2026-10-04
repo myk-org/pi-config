@@ -7,6 +7,12 @@
  */
 
 import { createLogger } from "./logger.js";
+import {
+  isPricingKnown,
+  isPricingUnknown,
+  markPricingKnown,
+  markPricingUnknown,
+} from "./pricing-provenance.js";
 
 import type {
   Api,
@@ -29,6 +35,9 @@ export const AMBIENT_AUTH_KEY = "ambient"; // pragma: allowlist secret
 
 export const DEFAULT_RUNTIME_BASE_URL = "https://localhost";
 
+/** Pricing classification for models built here (never logs prices). */
+const pricingLog = createLogger("runtime-model-pricing");
+
 export interface BuildRuntimeModelOptions {
   id: string;
   name: string;
@@ -45,7 +54,7 @@ export interface BuildRuntimeModelOptions {
 
 /** Build a full Model with api/provider/baseUrl required by createProvider. */
 export function buildRuntimeModel(opts: BuildRuntimeModelOptions): Model<Api> {
-  return {
+  const model: Model<Api> = {
     id: opts.id,
     name: opts.name,
     api: opts.api,
@@ -58,6 +67,17 @@ export function buildRuntimeModel(opts: BuildRuntimeModelOptions): Model<Api> {
     contextWindow: opts.contextWindow ?? 200_000,
     maxTokens: opts.maxTokens ?? 32_768,
   };
+  // A supplied cost came from a source that published prices, so its zeros are
+  // authoritative (a free models.dev entry stays free). A default cost is Pi's
+  // numeric placeholder for "this source published no price", which is unknown.
+  // A marker already on the options (models.dev priced nothing) carries through.
+  const placeholder = !opts.cost;
+  if (placeholder || isPricingUnknown(opts)) {
+    pricingLog.debug("Runtime model has no published prices", { unknown: true });
+    return markPricingUnknown(model);
+  }
+  pricingLog.debug("Runtime model carries source-published prices", { unknown: false });
+  return isPricingKnown(opts) || opts.cost ? markPricingKnown(model) : model;
 }
 
 export interface AmbientLoginAuthOptions {

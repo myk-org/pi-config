@@ -18,6 +18,7 @@ import {
 import { mapCliDiscoveredModels } from "../../../extensions/cli-provider/runtime-models.js";
 import { mapAcpxDiscoveredModels } from "../../../extensions/acpx-provider/runtime-models.js";
 import { buildRuntimeModel } from "../../../extensions/shared/create-runtime-provider.js";
+import { isPricingKnown, isPricingUnknown, safeModelRef } from "../../../extensions/shared/pricing-provenance.js";
 
 const SAMPLE_CATALOG = {
   xai: {
@@ -284,6 +285,18 @@ describe("applyThinkingLevelFromModel", () => {
   });
 });
 
+describe("safeModelRef", () => {
+  it("never returns the id it was given", () => {
+    const secret = "sk-live-abcdef0123456789"; // pragma: allowlist secret — synthetic value proving ids are never logged
+    const ref = safeModelRef(secret);
+    assert.ok(!ref.includes(secret), "an externally supplied id must never appear in a log context");
+    assert.ok(!ref.includes("abcdef"), "no fragment of the id may leak");
+    assert.equal(ref, safeModelRef(secret), "the reference is stable for the same id");
+    assert.notEqual(ref, safeModelRef("other-id"), "different ids get different references");
+    assert.equal(safeModelRef(undefined), safeModelRef(""), "absent ids share one reference");
+  });
+});
+
 describe("fillRuntimeModelFromCatalog", () => {
   it("fills missing contextWindow maxTokens cost from catalog; reasoning from -high id", () => {
     const filled = fillRuntimeModelFromCatalog(
@@ -424,5 +437,86 @@ describe("mapCli/mapAcpx with catalog", () => {
     ]);
     assert.equal(models[0].contextWindow, 200_000);
     assert.equal(models[0].reasoning, true);
+  });
+
+  it("marks a zero-filled cost as unknown pricing", () => {
+    const filled = fillRuntimeModelFromCatalog(
+      { id: "cursor:composer-2.5", name: "Composer 2.5 (cursor)", api: "cli", provider: "cli-cursor" },
+      { xai: { models: { "composer-2.5": { id: "composer-2.5", cost: {} } } } },
+      "cursor",
+      "composer-2.5",
+    );
+    assert.deepEqual(filled.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    assert.equal(
+      isPricingUnknown(buildRuntimeModel(filled)),
+      true,
+      "an entry with no priced component is a placeholder, so zeros mean unknown",
+    );
+  });
+
+  it("treats a cost mixing a valid price with an invalid component as unknown", () => {
+    for (const cost of [
+      { input: 0, output: -1 },
+      { input: 0, output: "free" },
+      { input: 0, output: Number.NaN },
+      { input: 0, output: Number.POSITIVE_INFINITY },
+      { input: 0, output: null },
+    ]) {
+      const filled = fillRuntimeModelFromCatalog(
+        { id: "cursor:composer-2.5", name: "Composer 2.5 (cursor)", api: "cli", provider: "cli-cursor" },
+        { xai: { models: { "composer-2.5": { id: "composer-2.5", cost } } } } as never,
+        "cursor",
+        "composer-2.5",
+      );
+      const model = buildRuntimeModel(filled);
+      assert.equal(
+        isPricingUnknown(model),
+        true,
+        `a malformed cost ${JSON.stringify(cost)} must not make a driver-reported zero look complete`,
+      );
+      assert.equal(isPricingKnown(model), false);
+      assert.deepEqual(
+        model.cost,
+        { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        "invalid components collapse to the placeholder zero, matching the unknown decision",
+      );
+    }
+  });
+
+  it("ignores an absent component rather than treating it as invalid", () => {
+    const filled = fillRuntimeModelFromCatalog(
+      { id: "cursor:composer-2.5", name: "Composer 2.5 (cursor)", api: "cli", provider: "cli-cursor" },
+      { xai: { models: { "composer-2.5": { id: "composer-2.5", cost: { input: 2, output: 6 } } } } } as never,
+      "cursor",
+      "composer-2.5",
+    );
+    assert.equal(
+      isPricingKnown(buildRuntimeModel(filled)),
+      true,
+      "a source that never claimed a cache-write price still published real prices",
+    );
+  });
+
+  it("keeps a catalog cost known, including an authoritative zero", () => {
+    const priced = fillRuntimeModelFromCatalog(
+      { id: "cursor:composer-2.5", name: "Composer 2.5 (cursor)", api: "cli", provider: "cli-cursor" },
+      { xai: { models: { "composer-2.5": { id: "composer-2.5", cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 } } } } },
+      "cursor",
+      "composer-2.5",
+    );
+    assert.equal(
+      isPricingKnown(buildRuntimeModel(priced)),
+      true,
+      "models.dev stating a zero price is a published free price, so the model is free, not unknown",
+    );
+
+    const paid = fillRuntimeModelFromCatalog(
+      { id: "cursor:grok-4.6-high", name: "Grok 4.6 (cursor)", api: "cli", provider: "cli-cursor" },
+      SAMPLE_CATALOG,
+      "cursor",
+      "grok-4.6-high",
+    );
+    assert.equal(isPricingKnown(buildRuntimeModel(paid)), true, "normally priced models are unchanged");
+    assert.equal(isPricingUnknown(buildRuntimeModel(paid)), false);
   });
 });

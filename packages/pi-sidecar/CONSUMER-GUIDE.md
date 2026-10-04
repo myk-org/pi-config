@@ -413,14 +413,22 @@ Read `cost_usd` together with `cost_partial`, never on its own. `cost_partial`
 is `false` when every reported turn cost was usable.
 
 The complication is Pi pricing metadata. Pi requires numeric prices, so a model
-resolved from a **key-scoped listing** (`POST /models/for-api-key`, or a model id
-absent from the catalog) is registered with zero prices. Zero means *unknown
-pricing* to Pi, not *free*, so the sidecar cannot derive a cost for those turns —
-but a driver may still report one (ACPX models without catalog prices do).
+whose source published none — one resolved from a **key-scoped listing**
+(`POST /models/for-api-key`, or a model id absent from the catalog), a CLI/ACPX
+discovery with no catalog price, or an OpenAI-compatible `/v1/models` record with
+no priced component — is registered with zero prices. Those zeros mean *unknown
+pricing*, not *free*, so the sidecar cannot derive a cost for those turns — but a
+driver may still report one (ACPX models without catalog prices do).
 
-So the three cases are:
+A catalog all-zero cost means the opposite: the price is known to be zero (an
+OpenRouter `:free` variant, for example), so such a model is free and reports a
+real `$0`. The two are told apart by provenance, not by the number, so no model
+or provider id is special-cased.
 
-1. **Catalog model, costs reported** → number, `cost_partial: false`.
+So the four cases are:
+
+1. **Catalog model, costs reported** → number, `cost_partial: false`. A free
+   model lands here as `0` with `cost_partial: false`.
 2. **Unknown-priced model, driver reports nothing usable** → `null`.
 3. **Unknown-priced model, driver reports some turns** → number **plus**
    `cost_partial: true`, because the unreported turns may still have cost. Note
