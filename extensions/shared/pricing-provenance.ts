@@ -96,9 +96,11 @@ export function hasPricedComponent(cost: unknown, keys: readonly string[]): bool
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
+  const record = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+  log.debug("Checked cost record shape", { usable: !!record });
+  return record;
 }
 
 /**
@@ -106,14 +108,18 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  * trust, zeros included?
  *
  * "known" requires *every supplied* component to be a valid price and at least one
- * of them to be present. A record mixing a valid zero with a negative or
- * non-numeric component is malformed: the zero-filled placeholder the normalizer
- * substitutes is not a price, so the model must stay unknown-priced rather than
+ * of them to be present. An absent or undefined key is ignored — the source never
+ * claimed it — but an explicit `null` counts as supplied-and-invalid, because
+ * `priceOrFallback()` normalizes it to a placeholder zero just like a negative or
+ * non-numeric value. A record mixing a valid zero with an invalid component is
+ * therefore malformed, and the model must stay unknown-priced rather than
  * reporting a driver's placeholder zero as a complete $0.
  */
 export function classifyCostRecord(cost: unknown, keys: readonly string[]): "known" | "unknown" {
   const entry = asRecord(cost);
-  const supplied = entry ? keys.filter((key) => entry[key] !== undefined && entry[key] !== null) : [];
+  // Only absent (undefined) keys are skipped; an explicit null is a supplied
+  // component that failed validation.
+  const supplied = entry ? keys.filter((key) => entry[key] !== undefined) : [];
   const priced = supplied.some((key) => isValidPrice(entry![key]));
   const allValid = supplied.length > 0 && supplied.every((key) => isValidPrice(entry![key]));
   const verdict = priced && allValid ? "known" : "unknown";

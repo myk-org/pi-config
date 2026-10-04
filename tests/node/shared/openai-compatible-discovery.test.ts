@@ -606,7 +606,7 @@ describe("OpenAI-compatible discovery helpers", () => {
   });
 
   it("treats a record mixing a valid zero with an invalid component as unknown", () => {
-    for (const cost of [{ input: 0, output: -1 }, { input: 0, output: "free" }]) {
+    for (const cost of [{ input: 0, output: -1 }, { input: 0, output: "free" }, { input: 0, output: null }]) {
       const [model] = materializeOpenAiCompatibleModels(
         [{ id: "gpt-5.6-terra", cost }],
         "https://gateway.example/v1",

@@ -448,6 +448,7 @@ describe("mapCli/mapAcpx with catalog", () => {
       { input: 0, output: "free" },
       { input: 0, output: Number.NaN },
       { input: 0, output: Number.POSITIVE_INFINITY },
+      { input: 0, output: null },
     ]) {
       const filled = fillRuntimeModelFromCatalog(
         { id: "cursor:composer-2.5", name: "Composer 2.5 (cursor)", api: "cli", provider: "cli-cursor" },
@@ -468,6 +469,20 @@ describe("mapCli/mapAcpx with catalog", () => {
         "invalid components collapse to the placeholder zero, matching the unknown decision",
       );
     }
+  });
+
+  it("ignores an absent component rather than treating it as invalid", () => {
+    const filled = fillRuntimeModelFromCatalog(
+      { id: "cursor:composer-2.5", name: "Composer 2.5 (cursor)", api: "cli", provider: "cli-cursor" },
+      { xai: { models: { "composer-2.5": { id: "composer-2.5", cost: { input: 2, output: 6 } } } } } as never,
+      "cursor",
+      "composer-2.5",
+    );
+    assert.equal(
+      isPricingKnown(buildRuntimeModel(filled)),
+      true,
+      "a source that never claimed a cache-write price still published real prices",
+    );
   });
 
   it("keeps a catalog cost known, including an authoritative zero", () => {
