@@ -18,7 +18,7 @@ import {
 import { mapCliDiscoveredModels } from "../../../extensions/cli-provider/runtime-models.js";
 import { mapAcpxDiscoveredModels } from "../../../extensions/acpx-provider/runtime-models.js";
 import { buildRuntimeModel } from "../../../extensions/shared/create-runtime-provider.js";
-import { isPricingKnown, isPricingUnknown } from "../../../extensions/shared/pricing-provenance.js";
+import { isPricingKnown, isPricingUnknown, safeModelRef } from "../../../extensions/shared/pricing-provenance.js";
 
 const SAMPLE_CATALOG = {
   xai: {
@@ -282,6 +282,18 @@ describe("applyThinkingLevelFromModel", () => {
       () => "high",
     );
     assert.deepEqual(calls, []);
+  });
+});
+
+describe("safeModelRef", () => {
+  it("never returns the id it was given", () => {
+    const secret = "sk-live-abcdef0123456789"; // pragma: allowlist secret — synthetic value proving ids are never logged
+    const ref = safeModelRef(secret);
+    assert.ok(!ref.includes(secret), "an externally supplied id must never appear in a log context");
+    assert.ok(!ref.includes("abcdef"), "no fragment of the id may leak");
+    assert.equal(ref, safeModelRef(secret), "the reference is stable for the same id");
+    assert.notEqual(ref, safeModelRef("other-id"), "different ids get different references");
+    assert.equal(safeModelRef(undefined), safeModelRef(""), "absent ids share one reference");
   });
 });
 

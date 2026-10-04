@@ -12,6 +12,7 @@
  * cannot import extensions/shared (separate tsconfig rootDir). Same pattern as
  * Symbol.for("pi-config.ambientLoginAuth") and the session-cwd ALS.
  */
+import { createHash } from "node:crypto";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("pricing-provenance");
@@ -85,12 +86,28 @@ export function priceOrFallback(value: unknown, fallback: number): number {
 }
 
 /**
+ * Non-reversible reference for an externally supplied model id.
+ *
+ * A `/v1/models` response can echo a configured credential inside an id (the
+ * sidecar's own listing path filters exactly that case), so ids arriving from an
+ * external source are never logged verbatim. The digest still identifies which
+ * record a pricing decision came from, without exposing the value.
+ */
+export function safeModelRef(id: unknown): string {
+  const text = typeof id === "string" ? id : String(id ?? "");
+  const ref = `model#${createHash("sha256").update(text).digest("hex").slice(0, 12)}`;
+  log.debug("Derived model reference for logging", { ref });
+  return ref;
+}
+
+/**
  * Whether a value is a usable cost record.
  *
  * `operation` and `context` exist so a malformed or absent price can be traced to
  * the classification that rejected it: which pricing source, which model, and
  * which field set. Only non-sensitive identifiers belong in `context` — never
- * price values or credentials.
+ * price values or credentials, and pass externally supplied ids through
+ * `safeModelRef()` rather than verbatim.
  */
 function asRecord(value: unknown, operation: string, context?: Record<string, unknown>): Record<string, unknown> | undefined {
   const record = value && typeof value === "object" && !Array.isArray(value)

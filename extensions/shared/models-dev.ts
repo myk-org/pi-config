@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createLogger } from "./logger.js";
 import type { BuildRuntimeModelOptions } from "./create-runtime-provider.js";
-import { classifyCostRecord, markPricingKnown, markPricingUnknown, priceOrFallback } from "./pricing-provenance.js";
+import { classifyCostRecord, markPricingKnown, markPricingUnknown, priceOrFallback, safeModelRef } from "./pricing-provenance.js";
 
 const log = createLogger("models-dev");
 
@@ -418,7 +418,7 @@ export function fillRuntimeModelFromCatalog(
     // supplied component is valid — zeros included, which makes a genuinely free
     // CLI/ACPX model free. A record mixing a valid price with an invalid one is
     // malformed, so the model stays unknown-priced rather than inheriting a zero.
-    if (classifyCostRecord(entry.cost, ["input", "output", "cache_read", "cache_write"], { source: "models.dev", agent, model: discoveredId }) === "known") {
+    if (classifyCostRecord(entry.cost, ["input", "output", "cache_read", "cache_write"], { source: "models.dev", agent, model: safeModelRef(discoveredId) }) === "known") {
       markPricingKnown(next);
     } else {
       markPricingUnknown(next);

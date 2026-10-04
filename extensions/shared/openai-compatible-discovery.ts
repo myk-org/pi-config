@@ -11,6 +11,7 @@ import {
   markPricingKnown,
   markPricingUnknown,
   priceOrFallback,
+  safeModelRef,
 } from "./pricing-provenance.js";
 
 const log = createLogger("openai-compatible-discovery");
@@ -530,7 +531,7 @@ export function materializeOpenAiCompatibleModels(
         ? record.reasoning
         : PI_STATIC_MODEL_DEFAULTS.reasoning,
       input: materializeInput(record.input),
-      cost: materializeCost(record.cost, { provider: providerId, model: record.id }),
+      cost: materializeCost(record.cost, { provider: providerId, model: safeModelRef(record.id) }),
       // Native Pi metadata wins. OpenAI-compatible capability APIs may expose
       // generic input/output capacities, whose sum is Pi's context window.
       contextWindow: positiveFiniteNumber(
@@ -552,7 +553,7 @@ export function materializeOpenAiCompatibleModels(
     // are absent from it, so that provenance is marked explicitly. A record with no
     // valid component, or one mixing a valid price with an invalid one, is a
     // placeholder or malformed and stays unknown-priced.
-    if (classifyCostRecord(record.cost, ["input", "output", "cacheRead", "cacheWrite"], { source: "openai-compatible", provider: providerId, model: record.id }) === "known") {
+    if (classifyCostRecord(record.cost, ["input", "output", "cacheRead", "cacheWrite"], { source: "openai-compatible", provider: providerId, model: safeModelRef(record.id) }) === "known") {
       markPricingKnown(model);
     } else {
       markPricingUnknown(model);
