@@ -605,6 +605,22 @@ describe("OpenAI-compatible discovery helpers", () => {
     assert.equal(isPricingKnown(paid), true);
   });
 
+  it("treats a record mixing a valid zero with an invalid component as unknown", () => {
+    for (const cost of [{ input: 0, output: -1 }, { input: 0, output: "free" }]) {
+      const [model] = materializeOpenAiCompatibleModels(
+        [{ id: "gpt-5.6-terra", cost }],
+        "https://gateway.example/v1",
+        "arbitrary",
+      );
+      assert.equal(
+        isPricingUnknown(model),
+        true,
+        `a malformed record ${JSON.stringify(cost)} must not mark a zero-filled cost as a published free price`,
+      );
+      assert.equal(isPricingKnown(model), false);
+    }
+  });
+
   it("treats invalid prices as no price at all", () => {
     for (const cost of [{ input: Number.NaN }, { input: Number.POSITIVE_INFINITY }, { input: -1 }, { output: -0.5 }]) {
       const [model] = materializeOpenAiCompatibleModels(

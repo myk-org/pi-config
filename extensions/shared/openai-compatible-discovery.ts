@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai";
 import { createLogger } from "./logger.js";
 import {
-  hasPricedComponent,
+  classifyCostRecord,
   isPricingUnknown,
   markPricingKnown,
   markPricingUnknown,
@@ -88,7 +88,7 @@ function materializeCost(value: unknown): Model<Api>["cost"] {
     cacheRead: priceOrFallback(source.cacheRead, PI_STATIC_MODEL_DEFAULTS.cost.cacheRead),
     cacheWrite: priceOrFallback(source.cacheWrite, PI_STATIC_MODEL_DEFAULTS.cost.cacheWrite),
   };
-  log.debug("Materialized discovery cost", { components: Object.keys(cost).length, priced: hasPricedComponent(source, ["input", "output", "cacheRead", "cacheWrite"]) });
+  log.debug("Materialized discovery cost", { components: Object.keys(cost).length, priced: classifyCostRecord(source, ["input", "output", "cacheRead", "cacheWrite"]) === "known" });
   return cost;
 }
 export interface CachedOpenAiCompatibleDiscovery<T> {
@@ -547,11 +547,12 @@ export function materializeOpenAiCompatibleModels(
         positiveFiniteNumber(record.max_output_tokens, PI_STATIC_MODEL_DEFAULTS.maxTokens),
       ),
     };
-    // A record with no valid priced component is a placeholder, so its zeros mean
-    // unknown. A record that priced anything published real prices — zeros
-    // included — which pi-ai's catalog cannot vouch for, since these models are
-    // absent from it. Mark that provenance explicitly.
-    if (hasPricedComponent(record.cost, ["input", "output", "cacheRead", "cacheWrite"])) {
+    // A record whose every supplied component is valid published real prices —
+    // zeros included — which pi-ai's catalog cannot vouch for, since these models
+    // are absent from it, so that provenance is marked explicitly. A record with no
+    // valid component, or one mixing a valid price with an invalid one, is a
+    // placeholder or malformed and stays unknown-priced.
+    if (classifyCostRecord(record.cost, ["input", "output", "cacheRead", "cacheWrite"]) === "known") {
       markPricingKnown(model);
     } else {
       markPricingUnknown(model);

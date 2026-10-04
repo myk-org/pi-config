@@ -442,6 +442,34 @@ describe("mapCli/mapAcpx with catalog", () => {
     );
   });
 
+  it("treats a cost mixing a valid price with an invalid component as unknown", () => {
+    for (const cost of [
+      { input: 0, output: -1 },
+      { input: 0, output: "free" },
+      { input: 0, output: Number.NaN },
+      { input: 0, output: Number.POSITIVE_INFINITY },
+    ]) {
+      const filled = fillRuntimeModelFromCatalog(
+        { id: "cursor:composer-2.5", name: "Composer 2.5 (cursor)", api: "cli", provider: "cli-cursor" },
+        { xai: { models: { "composer-2.5": { id: "composer-2.5", cost } } } } as never,
+        "cursor",
+        "composer-2.5",
+      );
+      const model = buildRuntimeModel(filled);
+      assert.equal(
+        isPricingUnknown(model),
+        true,
+        `a malformed cost ${JSON.stringify(cost)} must not make a driver-reported zero look complete`,
+      );
+      assert.equal(isPricingKnown(model), false);
+      assert.deepEqual(
+        model.cost,
+        { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        "invalid components collapse to the placeholder zero, matching the unknown decision",
+      );
+    }
+  });
+
   it("keeps a catalog cost known, including an authoritative zero", () => {
     const priced = fillRuntimeModelFromCatalog(
       { id: "cursor:composer-2.5", name: "Composer 2.5 (cursor)", api: "cli", provider: "cli-cursor" },

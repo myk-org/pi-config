@@ -87,16 +87,36 @@ export function priceOrFallback(value: unknown, fallback: number): number {
 /**
  * Whether a cost record carries at least one authoritative price under `keys`.
  * Key names differ per source (Pi uses cacheRead, models.dev uses cache_read).
- *
- * A record with no valid price component is a placeholder, so it must be marked
- * unknown. A record that prices even one component — zeros included — carries
- * real information and stays known.
  */
 export function hasPricedComponent(cost: unknown, keys: readonly string[]): boolean {
-  const entry = cost && typeof cost === "object" && !Array.isArray(cost)
-    ? cost as Record<string, unknown>
-    : undefined;
+  const entry = asRecord(cost);
   const priced = !!entry && keys.some((key) => isValidPrice(entry[key]));
   log.debug("Inspected cost record for a priced component", { priced, fields: keys.length });
   return priced;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+/**
+ * Classify a raw cost record's provenance: did this source publish prices we can
+ * trust, zeros included?
+ *
+ * "known" requires *every supplied* component to be a valid price and at least one
+ * of them to be present. A record mixing a valid zero with a negative or
+ * non-numeric component is malformed: the zero-filled placeholder the normalizer
+ * substitutes is not a price, so the model must stay unknown-priced rather than
+ * reporting a driver's placeholder zero as a complete $0.
+ */
+export function classifyCostRecord(cost: unknown, keys: readonly string[]): "known" | "unknown" {
+  const entry = asRecord(cost);
+  const supplied = entry ? keys.filter((key) => entry[key] !== undefined && entry[key] !== null) : [];
+  const priced = supplied.some((key) => isValidPrice(entry![key]));
+  const allValid = supplied.length > 0 && supplied.every((key) => isValidPrice(entry![key]));
+  const verdict = priced && allValid ? "known" : "unknown";
+  log.debug("Classified cost record provenance", { verdict, supplied: supplied.length, priced, allValid });
+  return verdict;
 }

@@ -602,14 +602,16 @@ function isCatalogFreeModel(model: { id?: string; provider?: string; api?: strin
   try {
     const catalog = getModel(model.provider as any, model.id);
     if (!catalog) {
-      pricingLog.debug("[sidecar] CATALOG_FREE: free=false, reason=absent-from-catalog");
+      // Provider and model id are non-sensitive identifiers and the only way to trace
+      // which zero-priced model fell back to unknown spend.
+      pricingLog.debug("[sidecar] CATALOG_FREE: free=false, reason=absent-from-catalog", { provider: model.provider, model: model.id });
       return false;
     }
     const prices = Object.values(catalog.cost ?? {});
     const free = prices.length > 0 && prices.every((value) => value === 0);
     const sameEndpoint = catalog.api === model.api && catalog.baseUrl === model.baseUrl;
     const verdict = free && sameEndpoint;
-    pricingLog.debug("[sidecar] CATALOG_FREE: ", { free: verdict, catalogFree: free, sameEndpoint });
+    pricingLog.debug("[sidecar] CATALOG_FREE: ", { free: verdict, catalogFree: free, sameEndpoint, provider: model.provider, model: model.id });
     return verdict;
   } catch (err) {
     pricingLog.warn("[sidecar] CATALOG_LOOKUP_FAILED: reason=lookup_error", { error: err instanceof Error ? err.message : String(err) });
