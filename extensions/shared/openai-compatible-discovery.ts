@@ -5,7 +5,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai";
 import { createLogger } from "./logger.js";
-import { hasPricedComponent, markPricingUnknown, priceOrFallback } from "./pricing-provenance.js";
+import {
+  hasPricedComponent,
+  isPricingUnknown,
+  markPricingKnown,
+  markPricingUnknown,
+  priceOrFallback,
+} from "./pricing-provenance.js";
 
 const log = createLogger("openai-compatible-discovery");
 
@@ -73,13 +79,17 @@ function materializeCost(value: unknown): Model<Api>["cost"] {
   // Invalid components (non-finite, negative) become the placeholder zero, which
   // keeps the materialized cost consistent with hasPricedComponent()'s decision:
   // a record priced only with invalid values contributes no valid price and is
-  // therefore marked unknown-priced.
-  return {
+  // therefore marked unknown-priced. A record with at least one valid component
+  // published its prices, so its zeros are authoritative even though the model
+  // is absent from pi-ai's generated catalog.
+  const cost = {
     input: priceOrFallback(source.input, PI_STATIC_MODEL_DEFAULTS.cost.input),
     output: priceOrFallback(source.output, PI_STATIC_MODEL_DEFAULTS.cost.output),
     cacheRead: priceOrFallback(source.cacheRead, PI_STATIC_MODEL_DEFAULTS.cost.cacheRead),
     cacheWrite: priceOrFallback(source.cacheWrite, PI_STATIC_MODEL_DEFAULTS.cost.cacheWrite),
   };
+  log.debug("Materialized discovery cost", { components: Object.keys(cost).length, priced: hasPricedComponent(source, ["input", "output", "cacheRead", "cacheWrite"]) });
+  return cost;
 }
 export interface CachedOpenAiCompatibleDiscovery<T> {
   models: readonly T[];
@@ -537,11 +547,13 @@ export function materializeOpenAiCompatibleModels(
         positiveFiniteNumber(record.max_output_tokens, PI_STATIC_MODEL_DEFAULTS.maxTokens),
       ),
     };
-    // A record with no priced component is Pi's numeric placeholder for "this
-    // source published no price". Those zeros mean unknown, so mark provenance
-    // instead of letting a consumer read them as a free model. A record that
-    // prices any component — zeros included — is authoritative.
-    if (!hasPricedComponent(record.cost, ["input", "output", "cacheRead", "cacheWrite"])) {
+    // A record with no valid priced component is a placeholder, so its zeros mean
+    // unknown. A record that priced anything published real prices — zeros
+    // included — which pi-ai's catalog cannot vouch for, since these models are
+    // absent from it. Mark that provenance explicitly.
+    if (hasPricedComponent(record.cost, ["input", "output", "cacheRead", "cacheWrite"])) {
+      markPricingKnown(model);
+    } else {
       markPricingUnknown(model);
     }
     models.push(model);

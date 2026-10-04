@@ -18,7 +18,7 @@ import {
 import { mapCliDiscoveredModels } from "../../../extensions/cli-provider/runtime-models.js";
 import { mapAcpxDiscoveredModels } from "../../../extensions/acpx-provider/runtime-models.js";
 import { buildRuntimeModel } from "../../../extensions/shared/create-runtime-provider.js";
-import { isPricingUnknown } from "../../../extensions/shared/pricing-provenance.js";
+import { isPricingKnown, isPricingUnknown } from "../../../extensions/shared/pricing-provenance.js";
 
 const SAMPLE_CATALOG = {
   xai: {
@@ -450,9 +450,9 @@ describe("mapCli/mapAcpx with catalog", () => {
       "composer-2.5",
     );
     assert.equal(
-      isPricingUnknown(buildRuntimeModel(priced)),
-      false,
-      "models.dev stating a zero price is a known price, so the model is free, not unknown",
+      isPricingKnown(buildRuntimeModel(priced)),
+      true,
+      "models.dev stating a zero price is a published free price, so the model is free, not unknown",
     );
 
     const paid = fillRuntimeModelFromCatalog(
@@ -461,6 +461,7 @@ describe("mapCli/mapAcpx with catalog", () => {
       "cursor",
       "grok-4.6-high",
     );
-    assert.equal(isPricingUnknown(buildRuntimeModel(paid)), false, "normally priced models are unchanged");
+    assert.equal(isPricingKnown(buildRuntimeModel(paid)), true, "normally priced models are unchanged");
+    assert.equal(isPricingUnknown(buildRuntimeModel(paid)), false);
   });
 });

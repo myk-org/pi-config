@@ -19,6 +19,17 @@ const log = createLogger("pricing-provenance");
 export const PRICING_UNKNOWN = Symbol.for("pi-config.pricingUnknown");
 
 /**
+ * Counterpart marker for sources that *did* publish prices, zeros included.
+ *
+ * A models.dev entry or an OpenAI-compatible `/v1/models` record that states a
+ * zero price is authoritative even though the model is absent from pi-ai's
+ * generated catalog. Without this marker the sidecar cannot tell that explicit
+ * zero from Pi's own zero-filled placeholder, and would report a genuinely free
+ * call as unknown spend.
+ */
+export const PRICING_KNOWN = Symbol.for("pi-config.pricingKnown");
+
+/**
  * Mark a model whose prices were defaulted rather than supplied by its source.
  *
  * Enumerable on purpose: symbol keys stay out of Object.keys and JSON, but they
@@ -39,12 +50,31 @@ export function isPricingUnknown(model: unknown): boolean {
 }
 
 /**
+ * Mark a model whose prices came from a source that published them — including
+ * authoritative zeros. Unknown wins if both markers are somehow present.
+ */
+export function markPricingKnown<T extends object>(model: T): T {
+  (model as Record<symbol, unknown>)[PRICING_KNOWN] = true;
+  log.debug("Marked model pricing as source-published", { marked: true });
+  return model;
+}
+
+/** Whether a source published this model's prices (zeros included). */
+export function isPricingKnown(model: unknown): boolean {
+  const known = !!model && typeof model === "object" && Reflect.get(model, PRICING_KNOWN) === true;
+  log.debug("Read source-published pricing provenance", { known });
+  return known;
+}
+
+/**
  * A price is authoritative only when it is a finite, non-negative number. NaN,
  * Infinity, and negatives describe a broken source, not a price — treating them
  * as prices would classify an invalid quote as a known (possibly free) one.
  */
 export function isValidPrice(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  const valid = typeof value === "number" && Number.isFinite(value) && value >= 0;
+  if (!valid) log.debug("Rejected price component as invalid", { type: typeof value });
+  return valid;
 }
 
 /** Normalize one price component, falling back when the source value is invalid. */

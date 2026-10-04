@@ -13,7 +13,7 @@ import {
   filterModelsWhenConfigured,
 } from "../../../extensions/shared/create-runtime-provider.js";
 import { fillRuntimeModelFromCatalog } from "../../../extensions/shared/models-dev.js";
-import { isPricingUnknown } from "../../../extensions/shared/pricing-provenance.js";
+import { isPricingKnown, isPricingUnknown } from "../../../extensions/shared/pricing-provenance.js";
 
 describe("buildRuntimeModel", () => {
   it("fills api, provider, baseUrl with defaults", () => {
@@ -57,6 +57,7 @@ describe("buildRuntimeModel", () => {
       true,
       "no source published a price, so zeros must read as unknown rather than free",
     );
+    assert.equal(isPricingKnown(defaulted), false);
   });
 
   it("leaves a supplied cost unmarked, including authoritative zeros", () => {
@@ -67,7 +68,17 @@ describe("buildRuntimeModel", () => {
       provider: "cli-x",
       cost: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
     });
-    assert.equal(isPricingUnknown(priced), false, "a source-supplied cost keeps its provenance");
+    assert.equal(isPricingUnknown(priced), false, "a source-supplied cost is not a placeholder");
+    assert.equal(isPricingKnown(priced), true, "a supplied cost carries published prices, zeros included");
+
+    const free = buildRuntimeModel({
+      id: "x:free",
+      name: "x",
+      api: "cli",
+      provider: "cli-x",
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    });
+    assert.equal(isPricingKnown(free), true, "a source stating a zero price publishes a known free price");
   });
 
   it("carries an inherited unknown marker onto the built model", () => {

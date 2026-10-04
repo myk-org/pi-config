@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createLogger } from "./logger.js";
 import type { BuildRuntimeModelOptions } from "./create-runtime-provider.js";
-import { hasPricedComponent, markPricingUnknown } from "./pricing-provenance.js";
+import { hasPricedComponent, markPricingKnown, markPricingUnknown } from "./pricing-provenance.js";
 
 const log = createLogger("models-dev");
 
@@ -411,10 +411,14 @@ export function fillRuntimeModelFromCatalog(
       cacheRead: entry.cost.cache_read ?? 0,
       cacheWrite: entry.cost.cache_write ?? 0,
     };
-    // A models.dev entry with no priced component is a placeholder, so the
-    // zero fill means unknown rather than free. Any priced component (zeros
-    // included) is authoritative and stays known.
-    if (!hasPricedComponent(entry.cost, ["input", "output", "cache_read", "cache_write"])) {
+    // A models.dev entry with no valid priced component is a placeholder, so the
+    // zero fill means unknown rather than free. Any priced component is
+    // authoritative — models.dev is a real price source — so it carries an
+    // explicit known marker rather than relying on pi-ai's catalog, which does
+    // not contain these CLI/ACPX models.
+    if (hasPricedComponent(entry.cost, ["input", "output", "cache_read", "cache_write"])) {
+      markPricingKnown(next);
+    } else {
       markPricingUnknown(next);
     }
   }

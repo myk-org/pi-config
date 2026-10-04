@@ -7,7 +7,12 @@
  */
 
 import { createLogger } from "./logger.js";
-import { isPricingUnknown, markPricingUnknown } from "./pricing-provenance.js";
+import {
+  isPricingKnown,
+  isPricingUnknown,
+  markPricingKnown,
+  markPricingUnknown,
+} from "./pricing-provenance.js";
 
 import type {
   Api,
@@ -62,13 +67,17 @@ export function buildRuntimeModel(opts: BuildRuntimeModelOptions): Model<Api> {
     contextWindow: opts.contextWindow ?? 200_000,
     maxTokens: opts.maxTokens ?? 32_768,
   };
-  // A default cost is Pi's numeric placeholder for "this source published no
-  // price", so consumers must read it as unknown, not as a free model. A marker
-  // already on the options (models.dev priced only some components) carries
-  // through to the model.
-  const unknown = !opts.cost || isPricingUnknown(opts);
-  pricingLog.debug("Built runtime model pricing provenance", { unknown });
-  return unknown ? markPricingUnknown(model) : model;
+  // A supplied cost came from a source that published prices, so its zeros are
+  // authoritative (a free models.dev entry stays free). A default cost is Pi's
+  // numeric placeholder for "this source published no price", which is unknown.
+  // A marker already on the options (models.dev priced nothing) carries through.
+  const placeholder = !opts.cost;
+  if (placeholder || isPricingUnknown(opts)) {
+    pricingLog.debug("Runtime model has no published prices", { unknown: true });
+    return markPricingUnknown(model);
+  }
+  pricingLog.debug("Runtime model carries source-published prices", { unknown: false });
+  return isPricingKnown(opts) || opts.cost ? markPricingKnown(model) : model;
 }
 
 export interface AmbientLoginAuthOptions {

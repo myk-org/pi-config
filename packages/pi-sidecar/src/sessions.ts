@@ -518,6 +518,12 @@ type StoredSession = Pick<AgentSession, "prompt" | "subscribe" | "dispose" | "ab
 const PRICING_UNKNOWN = Symbol.for("pi-config.pricingUnknown");
 
 /**
+ * Counterpart marker for sources that published prices, zeros included. Defined
+ * via the global symbol registry for the same reason as PRICING_UNKNOWN above.
+ */
+const PRICING_KNOWN = Symbol.for("pi-config.pricingKnown");
+
+/**
  * Whether a model's prices are known, as opposed to merely numeric.
  *
  * Pi requires numeric prices, so a model whose source published none is
@@ -531,12 +537,17 @@ const PRICING_UNKNOWN = Symbol.for("pi-config.pricingUnknown");
  *   and hands us a model with no marker.
  * - Any other unmarked all-zero cost with no catalog entry behind it.
  *
- * An all-zero cost is authoritative only when pi-ai's own generated catalog
- * declares that model free (an OpenRouter `:free` variant, for example). That
- * catalog is the one price source we trust without a provenance marker, so a
- * genuinely free model reports a real $0 while unknown spend stays null.
+ * An all-zero cost is authoritative in exactly two cases, and both require proof:
+ *
+ * 1. A source published it (PRICING_KNOWN) — models.dev or an OpenAI-compatible
+ *    `/v1/models` record stating a zero price for a model pi-ai never shipped.
+ * 2. The cost object *is* pi-ai's generated catalog entry for this model, which
+ *    is how a genuinely free model (an OpenRouter `:free` variant) is
+ *    recognized. Identity, not a provider+id match: an unpriced models.json
+ *    override of a free catalog model gets its own zero-filled cost object from
+ *    the provider composer, so sharing identifiers is not evidence of anything.
  */
-export function hasKnownPricing(model: { id?: string; provider?: string; cost?: Record<string, number | undefined> } | undefined): boolean {
+export function hasKnownPricing(model: { id?: string; provider?: string; api?: string; baseUrl?: string; cost?: Record<string, number | undefined> } | undefined): boolean {
   const cost = model?.cost;
   if (!cost) {
     pricingLog.debug("[sidecar] PRICING_KNOWN: known=false, priceMetadata=absent, provenance=none");
@@ -555,6 +566,11 @@ export function hasKnownPricing(model: { id?: string; provider?: string; cost?: 
     pricingLog.debug("[sidecar] PRICING_KNOWN: known=true, priceMetadata=present, provenance=priced");
     return true;
   }
+  // All zero: either a source published it, or it is the catalog's own entry.
+  if (Reflect.get(model, PRICING_KNOWN) === true) {
+    pricingLog.debug("[sidecar] PRICING_KNOWN: known=true, priceMetadata=present, provenance=source-published-free");
+    return true;
+  }
   const catalogFree = isCatalogFreeModel(model);
   // Never log the model or its prices — only the resulting decision.
   pricingLog.debug(
@@ -564,18 +580,39 @@ export function hasKnownPricing(model: { id?: string; provider?: string; cost?: 
 }
 
 /**
- * Whether pi-ai's generated catalog declares this exact model free (all-zero
- * cost). Local catalog lookup only — no network, no credentials. Anything not in
- * that catalog (static models.json entries, custom providers, extension models)
- * has no authority behind an all-zero cost, so it stays unknown.
+ * Whether the model is pi-ai's generated catalog entry for this identifier, and
+ * that entry declares the model free. Local catalog lookup only — no network, no
+ * credentials.
+ *
+ * The comparison checks the entry's identity surface (provider, id, api,
+ * baseUrl), not only the identifier. An unpriced models.json override that
+ * repoints a free catalog model at another endpoint or API is a different price
+ * source, so its zero-filled cost must not inherit the catalog's free verdict;
+ * `isCatalogFreeModel` returns false and the turn is reported as unknown spend.
+ *
+ * Reference identity is deliberately not used: pi-ai ships as two module
+ * instances (root and pi-coding-agent/node_modules), so the runtime's models and
+ * this package's catalog are distinct objects even for the same model.
  */
-function isCatalogFreeModel(model: { id?: string; provider?: string }): boolean {
-  if (!model?.id || !model.provider) return false;
+function isCatalogFreeModel(model: { id?: string; provider?: string; api?: string; baseUrl?: string; cost?: Record<string, number | undefined> }): boolean {
+  if (!model?.id || !model.provider) {
+    pricingLog.debug("[sidecar] CATALOG_FREE: free=false, reason=unidentified");
+    return false;
+  }
   try {
     const catalog = getModel(model.provider as any, model.id);
-    const prices = Object.values(catalog?.cost ?? {});
-    return prices.length > 0 && prices.every((value) => typeof value === "number" && value === 0);
-  } catch {
+    if (!catalog) {
+      pricingLog.debug("[sidecar] CATALOG_FREE: free=false, reason=absent-from-catalog");
+      return false;
+    }
+    const prices = Object.values(catalog.cost ?? {});
+    const free = prices.length > 0 && prices.every((value) => value === 0);
+    const sameEndpoint = catalog.api === model.api && catalog.baseUrl === model.baseUrl;
+    const verdict = free && sameEndpoint;
+    pricingLog.debug("[sidecar] CATALOG_FREE: ", { free: verdict, catalogFree: free, sameEndpoint });
+    return verdict;
+  } catch (err) {
+    pricingLog.warn("[sidecar] CATALOG_LOOKUP_FAILED: reason=lookup_error", { error: err instanceof Error ? err.message : String(err) });
     return false;
   }
 }

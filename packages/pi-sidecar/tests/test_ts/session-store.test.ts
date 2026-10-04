@@ -665,9 +665,15 @@ exit 0
       });
     assert.ok(catalogFree, "pi-ai ships at least one genuinely free catalog model");
     assert.equal(
-      hasKnownPricing({ provider: catalogFree.provider, id: catalogFree.model.id, cost: catalogFree.model.cost }),
+      hasKnownPricing({
+        provider: catalogFree.provider,
+        id: catalogFree.model.id,
+        api: catalogFree.model.api,
+        baseUrl: catalogFree.model.baseUrl,
+        cost: catalogFree.model.cost,
+      }),
       true,
-      "a catalog free model is a known $0",
+      "a catalog free model, as the runtime resolves it, is a known $0",
     );
 
     assert.equal(
@@ -701,5 +707,82 @@ exit 0
       true,
       "a positive component is authoritative on its own",
     );
+  });
+
+    /**
+   * Sharing a free catalog model's provider and id is not evidence of anything:
+   * pi's provider composer fills an omitted cost with zeros, so the catalog check
+   * also verifies the model still points at the catalog's api and endpoint.
+   */
+  it("hasKnownPricing() rejects an unpriced override of a free catalog model", () => {
+    const catalogFree = builtinProviders()
+      .flatMap((provider) => provider.getModels().map((model) => ({ provider: provider.id, model })))
+      .find(({ model }) => {
+        const prices = Object.values(model.cost ?? {});
+        return prices.length > 0 && prices.every((value) => value === 0);
+      });
+    assert.ok(catalogFree, "pi-ai ships at least one genuinely free catalog model");
+    const { provider: providerId, model } = catalogFree;
+
+    assert.equal(
+      hasKnownPricing({
+        provider: providerId,
+        id: model.id,
+        api: model.api,
+        baseUrl: model.baseUrl,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      }),
+      true,
+      "the catalog's own free entry is a known $0",
+    );
+    assert.equal(
+      hasKnownPricing({
+        provider: providerId,
+        id: model.id,
+        api: model.api,
+        baseUrl: "https://some-other-gateway.example/v1",
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      }),
+      false,
+      "an unpriced override repointing the model at another endpoint is a different price source",
+    );
+    assert.equal(
+      hasKnownPricing({ provider: providerId, id: model.id, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
+      false,
+      "without the api and endpoint, the identifier alone is not proof of provenance",
+    );
+  });
+
+  it("hasKnownPricing() rejects an unpriced override of a priced catalog model", () => {
+    const priced = builtinProviders()
+      .flatMap((provider) => provider.getModels().map((model) => ({ provider: provider.id, model })))
+      .find(({ model }) => Object.values(model.cost ?? {}).some((value) => value > 0));
+    assert.ok(priced, "pi-ai ships priced models");
+    assert.equal(
+      hasKnownPricing({
+        provider: priced.provider,
+        id: priced.model.id,
+        api: priced.model.api,
+        baseUrl: priced.model.baseUrl,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      }),
+      false,
+      "a zero-filled cost must never stand in for a catalog price the catalog publishes as non-zero",
+    );
+  });
+
+  it("hasKnownPricing() accepts source-published zero prices outside the catalog", () => {
+    const published = { provider: "my-custom-gateway", id: "free-model", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    (published as Record<symbol, unknown>)[Symbol.for("pi-config.pricingKnown")] = true;
+    assert.equal(
+      hasKnownPricing(published),
+      true,
+      "a models.dev or /v1/models record stating a zero price published real prices",
+    );
+
+    const bothMarkers = { provider: "my-custom-gateway", id: "free-model", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    (bothMarkers as Record<symbol, unknown>)[Symbol.for("pi-config.pricingKnown")] = true;
+    (bothMarkers as Record<symbol, unknown>)[Symbol.for("pi-config.pricingUnknown")] = true;
+    assert.equal(hasKnownPricing(bothMarkers), false, "unknown wins when both markers are present");
   });
 });
