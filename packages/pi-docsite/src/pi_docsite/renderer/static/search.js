@@ -35,6 +35,7 @@
       return r.json();
     }).then(function(searchIndex) {
       index = searchIndex;
+      console.debug('[docs] search index loaded:', searchIndex.length, 'entries');
       // The user may have typed before the fetch resolved. Their first query
       // was answered with "Loading search index..." and never re-run, so the
       // results stayed hidden until they edited the box again.
