@@ -33,8 +33,8 @@
     fetch('search-index.json').then(function(r) {
       if (!r.ok) { indexStatus = r.status; throw new Error('HTTP ' + r.status); }
       return r.json();
-    }).then(function(data) {
-      index = data;
+    }).then(function(searchIndex) {
+      index = searchIndex;
       // The user may have typed before the fetch resolved. Their first query
       // was answered with "Loading search index..." and never re-run, so the
       // results stayed hidden until they edited the box again.
