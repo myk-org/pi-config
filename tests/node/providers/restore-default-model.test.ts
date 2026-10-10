@@ -1357,6 +1357,45 @@ describe("resolveDefaultModel + restoreDefaultModelOnSessionStart", () => {
     log.debug("empty /new abort verified", { ok, called, polls });
   });
 
+  it("empty /new session with padded reason: selection appearing mid-retry aborts restore", async () => {
+    const path = join(dir, "settings.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        defaultProvider: "foo",
+        defaultModel: "foo-model",
+      }),
+    );
+    const target = { id: "foo-model", provider: "foo" };
+    let called = false;
+    let polls = 0;
+    const ok = await restoreDefaultModelOnSessionStart({
+      settingsPath: path,
+      // Padded reason: the gate trims it (restore runs) but the mid-flight
+      // abort guard must also see "new" — not fall back to the baseline path.
+      reason: " new ",
+      argv: ["node", "pi"],
+      retries: 5,
+      delayMs: 10,
+      sleep: async () => {},
+      ctx: {
+        model: undefined,
+        modelRegistry: { find: () => target },
+      },
+      getCurrentModel: () => {
+        polls += 1;
+        return polls <= 1 ? undefined : { id: "bar-model", provider: "bar" };
+      },
+      setModel: async () => {
+        called = true;
+        return true;
+      },
+    });
+    assert.equal(ok, false);
+    assert.equal(called, false);
+    log.debug("padded-reason empty /new abort verified", { ok, called, polls });
+  });
+
   it("getCurrentModel empty snapshot: first live non-default is baseline, not abort", async () => {
     const path = join(dir, "settings.json");
     writeFileSync(

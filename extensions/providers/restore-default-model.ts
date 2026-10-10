@@ -92,15 +92,6 @@ export function hasEnabledModelsScope(
  *    blocks in all cases)
  */
 export function shouldRestoreDefaultModel(opts: RestoreDefaultModelOpts): boolean {
-  const decision = computeShouldRestoreDefaultModel(opts);
-  log.debug("shouldRestoreDefaultModel decision", {
-    reason: typeof opts.reason === "string" ? opts.reason : null,
-    decision,
-  });
-  return decision;
-}
-
-function computeShouldRestoreDefaultModel(opts: RestoreDefaultModelOpts): boolean {
   const reason = typeof opts.reason === "string" ? opts.reason.trim() : "";
 
   const currentProvider = typeof opts.currentProvider === "string"
@@ -117,6 +108,7 @@ function computeShouldRestoreDefaultModel(opts: RestoreDefaultModelOpts): boolea
     !RESTORE_ALLOWED_REASONS.has(reason)
     && !(reason === "new" && currentMissing)
   ) {
+    log.debug("shouldRestoreDefaultModel reject", { stage: "reason-gate", reason, currentMissing });
     return false;
   }
 
@@ -127,18 +119,26 @@ function computeShouldRestoreDefaultModel(opts: RestoreDefaultModelOpts): boolea
     ? opts.defaultModelId.trim()
     : "";
 
-  if (!provider || !modelId) return false;
+  if (!provider || !modelId) {
+    log.debug("shouldRestoreDefaultModel reject", { stage: "missing-defaults", reason });
+    return false;
+  }
 
   if (argvHasModelOrProviderOverride(opts.argv)) {
+    log.debug("shouldRestoreDefaultModel reject", { stage: "argv-override", reason });
     return false;
   }
 
   if (hasEnabledModelsScope(opts.enabledModels)) {
+    log.debug("shouldRestoreDefaultModel reject", { stage: "enabled-models-scope", reason });
     return false;
   }
 
-  if (currentMissing) return true;
-  return currentProvider !== provider || currentModelId !== modelId;
+  const decision = currentMissing
+    || currentProvider !== provider
+    || currentModelId !== modelId;
+  log.debug("shouldRestoreDefaultModel decision", { reason, decision });
+  return decision;
 }
 
 export type PiAgentDefaults = {
@@ -449,6 +449,10 @@ export async function restoreDefaultModelOnSessionStart(opts: {
   const currentProvider = current?.provider;
   const currentModelId = current?.id;
   const argv = opts.argv ?? process.argv;
+  // Normalize once: the decision gate trims the reason, so the mid-flight
+  // abort guard must compare the trimmed value too — a padded reason (e.g.
+  // " new ") must not split the two code paths.
+  const reason = typeof opts.reason === "string" ? opts.reason.trim() : "";
   const argvOverride = argvHasModelOrProviderOverride(argv);
   const enabledModelsScope = hasEnabledModelsScope(enabledModels);
 
@@ -463,7 +467,7 @@ export async function restoreDefaultModelOnSessionStart(opts: {
   })) {
     log.debug(
       "restore-default-model skip",
-      `reason=${opts.reason ?? "?"} default=${defaultProvider ?? "?"}/${defaultModel ?? "?"} ` +
+      `reason=${reason || "?"} default=${defaultProvider ?? "?"}/${defaultModel ?? "?"} ` +
         `current=${currentProvider ?? "?"}/${currentModelId ?? "?"} ` +
         `argvOverride=${argvOverride} enabledModelsScope=${enabledModelsScope}` +
         (enabledModelsScope ? ` enabledModels=${enabledModels!.length}` : ""),
@@ -497,7 +501,7 @@ export async function restoreDefaultModelOnSessionStart(opts: {
     log.warn(
       "restore-default-model fail-fast",
       `registeredProviders lack ${defaultProvider} (count=${count}): ${label} ` +
-        `(session_start reason=${opts.reason ?? "?"})`,
+        `(session_start reason=${reason || "?"})`,
     );
     return false;
   }
@@ -531,7 +535,7 @@ export async function restoreDefaultModelOnSessionStart(opts: {
       // picker) — abort rather than overwrite it with the saved default.
       // The baseline path below is only for startup/resume, where the first
       // live model may be the race-recovered initial pick, not user intent.
-      if (opts.reason === "new") {
+      if (reason === "new") {
         log.debug(
           "restore-default-model abort",
           `empty /new session; live selection appeared ` +
@@ -604,7 +608,7 @@ export async function restoreDefaultModelOnSessionStart(opts: {
           "restore-default-model",
           `restored ${label} ` +
             `(was ${currentProvider ?? "none"}/${currentModelId ?? "none"}; ` +
-            `session_start reason=${opts.reason ?? "?"}; attempt ${attempt}/${retries})`,
+            `session_start reason=${reason || "?"}; attempt ${attempt}/${retries})`,
         );
         return true;
       }
@@ -626,7 +630,7 @@ export async function restoreDefaultModelOnSessionStart(opts: {
   log.warn(
     "restore-default-model exhausted",
     `${lastFailReason} after ${retries} attempts ` +
-      `(session_start reason=${opts.reason ?? "?"})`,
+      `(session_start reason=${reason || "?"})`,
   );
   return false;
 }
