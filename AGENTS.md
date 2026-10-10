@@ -269,7 +269,7 @@ progress. It does not commit, push, create a PR, or post results.
   1 day). Mapping is CLI/ACPX only — native pi models are untouched. Thinking
   from id (`-high`, `[effort=xhigh]`), not catalog `reasoning`. See
   `extensions/shared/models-dev.ts`
-- Cold-start default model restore (#753): `startup`|`new` only; skips non-empty `enabledModels`; trusted project merge — see `docs/cli-provider.md`
+- Cold-start default model restore (#753): `startup`|`resume` only (`/new` keeps the selected model); skips non-empty `enabledModels`; trusted project merge — see `docs/cli-provider.md`
 - CLI/ACPX spawn cwd (#768): session cwd (`POST /sessions` / `ctx.cwd`), not
   sidecar `process.cwd()`. Cursor `--workspace` matches that folder. Dual
   `session-cwd.ts` copies (extensions/shared + packages/pi-sidecar/src) must

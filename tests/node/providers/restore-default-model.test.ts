@@ -40,16 +40,15 @@ describe("shouldRestoreDefaultModel (#753 agnostic)", () => {
   });
 
   it("skips on new (keeps currently selected model)", () => {
-    assert.equal(
-      shouldRestoreDefaultModel({
-        reason: "new",
-        defaultProvider: "foo",
-        defaultModelId: "foo-model",
-        currentProvider: "bar",
-        currentModelId: "bar-model",
-      }),
-      false,
-    );
+    const decision = shouldRestoreDefaultModel({
+      reason: "new",
+      defaultProvider: "foo",
+      defaultModelId: "foo-model",
+      currentProvider: "bar",
+      currentModelId: "bar-model",
+    });
+    assert.equal(decision, false);
+    log.debug("skips on new: restore decision", { decision, reason: "new" });
   });
 
   it("restores when same provider but different model id", () => {
