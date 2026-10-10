@@ -23,6 +23,10 @@ pi-sidecar lives under `packages/pi-sidecar/` as an npm workspace package. It is
 
 **CLI commands:** `npx pi-sidecar` (start server), `npx pi-sidecar-start` (background start/stop).
 
+The sidecar's internal agent dir is configurable (startSidecar `agentDir` option / `PI_SIDECAR_AGENT_DIR`, default
+`/tmp/pi-sidecar-agent`) so deployments can supply custom providers, auth, and settings; settings are read once at
+process start from the configured dir — see `packages/pi-sidecar/README.md`.
+
 **Public API contract:** The HTTP REST API (`/health`, `/models`, `/providers`, `/sessions`) and the Python client (`pi_sidecar_client`) are the external contract — never break these.
 Internal code, imports, and structure can change freely.
 

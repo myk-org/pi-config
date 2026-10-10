@@ -12,6 +12,9 @@
 # Environment:
 #   SIDECAR_PORT  — listen port  (default: 9201)
 #   SIDECAR_HOST  — bind address (default: 127.0.0.1)
+#   PI_SIDECAR_AGENT_DIR — agent dir the internal runtime reads models.json/
+#                          auth.json/settings.json from (custom providers,
+#                          credentials, and settings; default: /tmp/pi-sidecar-agent)
 # ---------------------------------------------------------
 set -euo pipefail
 

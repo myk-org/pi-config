@@ -702,6 +702,91 @@ npx<span class="w"> </span>pi-sidecar
 </code></pre></div>
 
 <p>Then use providers such as <code>acpx-cursor</code> / <code>cli-claude</code> (or Python aliases <code>cursor</code> / mapped names). Refresh with <code>POST /models/refresh</code> after changing env. See <a href="configuration.html">Configuration &amp; Settings</a> for project-level agent lists used by interactive Pi.</p>
+<h3 id="custom-providers-and-settings-agent-dir">Custom providers and settings (agent dir)</h3>
+<p>By default the sidecar's internal runtime keeps its catalog in the ephemeral,
+non-configurable scratch dir <code>/tmp/pi-sidecar-agent</code>. Deployments that need to
+register custom pi providers or supply pi settings point the sidecar at a
+persistent <strong>agent dir</strong> instead:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Environment variable (honored by npx pi-sidecar / pi-sidecar-start / node dist/server.js)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PI_SIDECAR_AGENT_DIR</span><span class="o">=</span>/etc/pi-sidecar/agent
+npx<span class="w"> </span>pi-sidecar
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="c1">// Or programmatically</span>
+<span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">startSidecar</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@myk-org/pi-sidecar"</span><span class="p">;</span>
+<span class="nx">startSidecar</span><span class="p">({</span><span class="w"> </span><span class="nx">agentDir</span><span class="o">:</span><span class="w"> </span><span class="s2">"/etc/pi-sidecar/agent"</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+
+<p>Precedence: explicit <code>agentDir</code> option → <code>PI_SIDECAR_AGENT_DIR</code> (trimmed,
+non-empty) → <code>/tmp/pi-sidecar-agent</code>. Resolution is logged at startup. Use an
+absolute path — a relative path resolves against the sidecar process's cwd,
+which differs between the CLI entry and embedded <code>startSidecar()</code> callers.</p>
+<p>Files honored from the configured dir (read once at process start — restart the
+sidecar after changing them):</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>models.json</code></td>
+<td>Custom pi providers registered on the shared runtime — listed by <code>GET /models</code> and <code>GET /providers</code>, usable in <code>POST /sessions</code></td>
+</tr>
+<tr>
+<td><code>auth.json</code></td>
+<td>Provider credentials for the shared runtime (same format as interactive pi's <code>auth.json</code>)</td>
+</tr>
+<tr>
+<td><code>settings.json</code></td>
+<td>Seeded into the in-memory settings store for the internal runtime and every session (e.g. <code>defaultProvider</code>)</td>
+</tr>
+</tbody>
+</table></div>
+<p>A <code>models.json</code> <code>apiKey</code> may reference an environment variable (e.g.
+<code>"$ENMAAS_API_KEY"</code>) — the variable must exist in the <strong>sidecar process's</strong>
+environment (pass it through in Docker with <code>-e</code> / <code>Env:</code>). Worked example —
+an EnMaaS OpenAI-compatible gateway at <code>/etc/pi-sidecar/agent/models.json</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"providers"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"enmaas"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"baseUrl"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://enmaas.example.com/v1"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"api"</span><span class="p">:</span><span class="w"> </span><span class="s2">"openai-completions"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"apiKey"</span><span class="p">:</span><span class="w"> </span><span class="s2">"$ENMAAS_API_KEY"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"models"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"enmaas/gpt-4o"</span><span class="p">,</span><span class="w"> </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"GPT-4o via EnMaaS"</span><span class="w"> </span><span class="p">}</span>
+<span class="w">      </span><span class="p">]</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_SIDECAR_AGENT_DIR</span><span class="o">=</span>/etc/pi-sidecar/agent
+<span class="nb">export</span><span class="w"> </span><span class="nv">ENMAAS_API_KEY</span><span class="o">=</span>&lt;your-key&gt;
+npx<span class="w"> </span>pi-sidecar
+<span class="c1"># GET /models now lists enmaas/gpt-4o (provider "enmaas");</span>
+<span class="c1"># POST /sessions accepts {"provider": "enmaas", "model": "enmaas/gpt-4o", ...}</span>
+</code></pre></div>
+
+<p>Notes:</p>
+<ul>
+<li>
+<p>The per-request <code>agent_dir</code> field on <code>POST /sessions</code> still overrides only the
+  session's resource loading (skills/prompts/agents) — it never reconfigures
+  the shared runtime.</p>
+</li>
+<li>
+<p>There is no REST API change: <code>/health</code>, <code>/models</code>, <code>/providers</code>, and
+  <code>/sessions</code> keep their semantics; the configured dir only changes what the
+  runtime is seeded with at startup.</p>
+</li>
+<li>
+<p>Settings seeded from <code>settings.json</code> never re-enable compaction — sidecar
+  sessions are short-lived and always run with compaction disabled.</p>
+</li>
+</ul>
 <h3 id="watchdog-companion-process">Watchdog (companion process)</h3>
 <div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">SIDECAR_WATCHDOG_URL</span><span class="o">=</span>http://127.0.0.1:8000/health
 npx<span class="w"> </span>pi-sidecar
@@ -830,6 +915,7 @@ npx<span class="w"> </span>pi-sidecar
 <li><a href="#http-api-surface">HTTP API surface</a></li>
 <li><a href="#custom-http-backed-tools">Custom HTTP-backed tools</a></li>
 <li><a href="#acpx-and-cli-model-sources">ACPX and CLI model sources</a></li>
+<li><a href="#custom-providers-and-settings-agent-dir">Custom providers and settings (agent dir)</a></li>
 <li><a href="#watchdog-companion-process">Watchdog (companion process)</a></li>
 <li><a href="#docker-process-coupling">Docker / process coupling</a></li>
 <li><a href="#using-vs-extending">Using vs extending</a></li>
