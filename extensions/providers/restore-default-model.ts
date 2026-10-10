@@ -7,7 +7,8 @@
  * On session_start (providers already registered), restore the saved default
  * when current differs (or is missing), unless the user passed --model /
  * --provider / --models, enabledModels scopes the model list, or the session
- * is fork/reload.
+ * is fork/reload. "/new" keeps a selected model but still fills an empty
+ * selection (#901).
  *
  * Kept free of @earendil-works/pi-ai so unit tests can import under tsx.
  */
@@ -27,7 +28,10 @@ export type RestoreDefaultModelOpts = {
   defaultModelId?: string | null;
   currentProvider?: string | null;
   currentModelId?: string | null;
-  /** session_start reason; only "startup" | "resume" may restore. */
+  /**
+   * session_start reason; "startup" | "resume" may restore, and "new" only
+   * when no model is currently selected (empty selection is filled).
+   */
   reason?: string | null;
   /**
    * CLI argv to scan for --model / --provider / --models (user override).
@@ -78,14 +82,32 @@ export function hasEnabledModelsScope(
  *
  * Gates (all must pass):
  * 1. defaultProvider and defaultModelId both non-empty
- * 2. reason is startup|resume
+ * 2. reason is startup|resume; "new" is allowed only when the current model
+ *    is missing (an existing selection is kept — nothing to preserve when
+ *    empty). fork/reload never restore.
  * 3. current missing OR current provider/id ≠ default
- * 4. argv does not contain --model, --provider, or --models
- * 5. enabledModels is missing or empty (non-empty scopes like --models)
+ * 4. argv does not contain --model, --provider, or --models (blocks in all
+ *    cases, including "new" with a missing model)
+ * 5. enabledModels is missing or empty (non-empty scopes like --models;
+ *    blocks in all cases)
  */
 export function shouldRestoreDefaultModel(opts: RestoreDefaultModelOpts): boolean {
   const reason = typeof opts.reason === "string" ? opts.reason.trim() : "";
-  if (!RESTORE_ALLOWED_REASONS.has(reason)) {
+
+  const currentProvider = typeof opts.currentProvider === "string"
+    ? opts.currentProvider.trim()
+    : "";
+  const currentModelId = typeof opts.currentModelId === "string"
+    ? opts.currentModelId.trim()
+    : "";
+  const currentMissing = !currentProvider || !currentModelId;
+
+  // Reason gate: startup|resume always eligible; "new" only when no model is
+  // selected (fills an empty selection; an existing selection is kept, #901).
+  if (
+    !RESTORE_ALLOWED_REASONS.has(reason)
+    && !(reason === "new" && currentMissing)
+  ) {
     return false;
   }
 
@@ -106,14 +128,7 @@ export function shouldRestoreDefaultModel(opts: RestoreDefaultModelOpts): boolea
     return false;
   }
 
-  const currentProvider = typeof opts.currentProvider === "string"
-    ? opts.currentProvider.trim()
-    : "";
-  const currentModelId = typeof opts.currentModelId === "string"
-    ? opts.currentModelId.trim()
-    : "";
-
-  if (!currentProvider || !currentModelId) return true;
+  if (currentMissing) return true;
   return currentProvider !== provider || currentModelId !== modelId;
 }
 

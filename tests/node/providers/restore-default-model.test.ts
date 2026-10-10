@@ -51,6 +51,44 @@ describe("shouldRestoreDefaultModel (#753 agnostic)", () => {
     log.debug("skips on new: restore decision", { decision, reason: "new" });
   });
 
+  it("restores on new when current model is missing (fills empty selection)", () => {
+    const decision = shouldRestoreDefaultModel({
+      reason: "new",
+      defaultProvider: "foo",
+      defaultModelId: "foo-model",
+      currentProvider: null,
+      currentModelId: null,
+    });
+    assert.equal(decision, true);
+    log.debug("new with missing current: restore decision", { decision, reason: "new" });
+  });
+
+  it("skips on new with missing current when argv has --model (gate blocks all reasons)", () => {
+    const decision = shouldRestoreDefaultModel({
+      reason: "new",
+      defaultProvider: "foo",
+      defaultModelId: "foo-model",
+      currentProvider: null,
+      currentModelId: null,
+      argv: ["node", "pi", "--model", "bar/bar-model"],
+    });
+    assert.equal(decision, false);
+    log.debug("new missing current argv override: restore decision", { decision });
+  });
+
+  it("skips on new with missing current when enabledModels scopes models", () => {
+    const decision = shouldRestoreDefaultModel({
+      reason: "new",
+      defaultProvider: "foo",
+      defaultModelId: "foo-model",
+      currentProvider: null,
+      currentModelId: null,
+      enabledModels: ["bar/bar-model"],
+    });
+    assert.equal(decision, false);
+    log.debug("new missing current enabledModels scope: restore decision", { decision });
+  });
+
   it("restores when same provider but different model id", () => {
     assert.equal(
       shouldRestoreDefaultModel({
@@ -695,6 +733,35 @@ describe("resolveDefaultModel + restoreDefaultModelOnSessionStart", () => {
     assert.equal(ok, false);
     assert.equal(called, false);
     log.debug("skips on new: setModel not called", { ok, called });
+  });
+
+  it("restores on new when current model is missing (fills empty selection)", async () => {
+    const path = join(dir, "settings.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        defaultProvider: "foo",
+        defaultModel: "foo-model",
+      }),
+    );
+    const target = { id: "foo-model", provider: "foo" };
+    let setModelArg: unknown;
+    const ok = await restoreDefaultModelOnSessionStart({
+      settingsPath: path,
+      reason: "new",
+      argv: ["node", "pi"],
+      ctx: {
+        model: undefined,
+        modelRegistry: { find: () => target },
+      },
+      setModel: async (m) => {
+        setModelArg = m;
+        return true;
+      },
+    });
+    assert.equal(ok, true);
+    assert.equal(setModelArg, target);
+    log.debug("new with missing current: setModel filled selection", { ok });
   });
 
   it("skips when current === default", async () => {
