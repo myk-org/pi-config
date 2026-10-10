@@ -488,8 +488,11 @@ only. When trusted, project wins for <code>defaultProvider</code> / <code>defaul
 <ol>
 <li>Settings have both <code>defaultProvider</code> and <code>defaultModel</code> (non-empty)</li>
 <li>
-<p><code>session_start</code> <code>reason</code> is <code>startup</code> or <code>new</code> (skip <code>resume</code> / <code>fork</code> /
-   <code>reload</code>)</p>
+<p><code>session_start</code> <code>reason</code> is <code>startup</code> or <code>resume</code> (skip <code>fork</code> / <code>reload</code>);
+   <code>new</code> is allowed only when no model is selected — it fills an empty
+   selection, an existing selection is kept. <code>/new</code> keeps the currently
+   selected model (the #753 auth race only exists at process start; <code>resume</code>
+   was added in a later fix for <code>pi --resume</code>)</p>
 </li>
 <li>
 <p>Current model is missing <strong>or</strong> current provider/id ≠ saved default</p>

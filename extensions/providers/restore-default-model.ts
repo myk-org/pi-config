@@ -7,7 +7,8 @@
  * On session_start (providers already registered), restore the saved default
  * when current differs (or is missing), unless the user passed --model /
  * --provider / --models, enabledModels scopes the model list, or the session
- * is fork/reload.
+ * is fork/reload. "/new" keeps a selected model but still fills an empty
+ * selection (#901).
  *
  * Kept free of @earendil-works/pi-ai so unit tests can import under tsx.
  */
@@ -20,14 +21,17 @@ import { createLogger } from "../shared/logger.js";
 const log = createLogger("providers");
 
 /** session_start reasons where cold-start restore is allowed. */
-export const RESTORE_ALLOWED_REASONS = new Set(["startup", "new", "resume"]);
+export const RESTORE_ALLOWED_REASONS = new Set(["startup", "resume"]);
 
 export type RestoreDefaultModelOpts = {
   defaultProvider?: string | null;
   defaultModelId?: string | null;
   currentProvider?: string | null;
   currentModelId?: string | null;
-  /** session_start reason; only "startup" | "new" | "resume" may restore. */
+  /**
+   * session_start reason; "startup" | "resume" may restore, and "new" only
+   * when no model is currently selected (empty selection is filled).
+   */
   reason?: string | null;
   /**
    * CLI argv to scan for --model / --provider / --models (user override).
@@ -78,14 +82,33 @@ export function hasEnabledModelsScope(
  *
  * Gates (all must pass):
  * 1. defaultProvider and defaultModelId both non-empty
- * 2. reason is startup|new|resume
+ * 2. reason is startup|resume; "new" is allowed only when the current model
+ *    is missing (an existing selection is kept — nothing to preserve when
+ *    empty). fork/reload never restore.
  * 3. current missing OR current provider/id ≠ default
- * 4. argv does not contain --model, --provider, or --models
- * 5. enabledModels is missing or empty (non-empty scopes like --models)
+ * 4. argv does not contain --model, --provider, or --models (blocks in all
+ *    cases, including "new" with a missing model)
+ * 5. enabledModels is missing or empty (non-empty scopes like --models;
+ *    blocks in all cases)
  */
 export function shouldRestoreDefaultModel(opts: RestoreDefaultModelOpts): boolean {
   const reason = typeof opts.reason === "string" ? opts.reason.trim() : "";
-  if (!RESTORE_ALLOWED_REASONS.has(reason)) {
+
+  const currentProvider = typeof opts.currentProvider === "string"
+    ? opts.currentProvider.trim()
+    : "";
+  const currentModelId = typeof opts.currentModelId === "string"
+    ? opts.currentModelId.trim()
+    : "";
+  const currentMissing = !currentProvider || !currentModelId;
+
+  // Reason gate: startup|resume always eligible; "new" only when no model is
+  // selected (fills an empty selection; an existing selection is kept, #901).
+  if (
+    !RESTORE_ALLOWED_REASONS.has(reason)
+    && !(reason === "new" && currentMissing)
+  ) {
+    log.debug("shouldRestoreDefaultModel reject", { stage: "reason-gate", reason, currentMissing });
     return false;
   }
 
@@ -96,25 +119,26 @@ export function shouldRestoreDefaultModel(opts: RestoreDefaultModelOpts): boolea
     ? opts.defaultModelId.trim()
     : "";
 
-  if (!provider || !modelId) return false;
+  if (!provider || !modelId) {
+    log.debug("shouldRestoreDefaultModel reject", { stage: "missing-defaults", reason });
+    return false;
+  }
 
   if (argvHasModelOrProviderOverride(opts.argv)) {
+    log.debug("shouldRestoreDefaultModel reject", { stage: "argv-override", reason });
     return false;
   }
 
   if (hasEnabledModelsScope(opts.enabledModels)) {
+    log.debug("shouldRestoreDefaultModel reject", { stage: "enabled-models-scope", reason });
     return false;
   }
 
-  const currentProvider = typeof opts.currentProvider === "string"
-    ? opts.currentProvider.trim()
-    : "";
-  const currentModelId = typeof opts.currentModelId === "string"
-    ? opts.currentModelId.trim()
-    : "";
-
-  if (!currentProvider || !currentModelId) return true;
-  return currentProvider !== provider || currentModelId !== modelId;
+  const decision = currentMissing
+    || currentProvider !== provider
+    || currentModelId !== modelId;
+  log.debug("shouldRestoreDefaultModel decision", { reason, decision });
+  return decision;
 }
 
 export type PiAgentDefaults = {
@@ -425,6 +449,10 @@ export async function restoreDefaultModelOnSessionStart(opts: {
   const currentProvider = current?.provider;
   const currentModelId = current?.id;
   const argv = opts.argv ?? process.argv;
+  // Normalize once: the decision gate trims the reason, so the mid-flight
+  // abort guard must compare the trimmed value too — a padded reason (e.g.
+  // " new ") must not split the two code paths.
+  const reason = typeof opts.reason === "string" ? opts.reason.trim() : "";
   const argvOverride = argvHasModelOrProviderOverride(argv);
   const enabledModelsScope = hasEnabledModelsScope(enabledModels);
 
@@ -439,7 +467,7 @@ export async function restoreDefaultModelOnSessionStart(opts: {
   })) {
     log.debug(
       "restore-default-model skip",
-      `reason=${opts.reason ?? "?"} default=${defaultProvider ?? "?"}/${defaultModel ?? "?"} ` +
+      `reason=${reason || "?"} default=${defaultProvider ?? "?"}/${defaultModel ?? "?"} ` +
         `current=${currentProvider ?? "?"}/${currentModelId ?? "?"} ` +
         `argvOverride=${argvOverride} enabledModelsScope=${enabledModelsScope}` +
         (enabledModelsScope ? ` enabledModels=${enabledModels!.length}` : ""),
@@ -473,7 +501,7 @@ export async function restoreDefaultModelOnSessionStart(opts: {
     log.warn(
       "restore-default-model fail-fast",
       `registeredProviders lack ${defaultProvider} (count=${count}): ${label} ` +
-        `(session_start reason=${opts.reason ?? "?"})`,
+        `(session_start reason=${reason || "?"})`,
     );
     return false;
   }
@@ -503,6 +531,18 @@ export async function restoreDefaultModelOnSessionStart(opts: {
         return true;
       }
     } else {
+      // Empty /new snapshot: any model that appeared is a selection (user or
+      // picker) — abort rather than overwrite it with the saved default.
+      // The baseline path below is only for startup/resume, where the first
+      // live model may be the race-recovered initial pick, not user intent.
+      if (reason === "new") {
+        log.debug(
+          "restore-default-model abort",
+          `empty /new session; live selection appeared ` +
+            `${live.provider}/${live.id} (${phase} attempt ${attempt}/${retries})`,
+        );
+        return true;
+      }
       // Empty snapshot: first non-default live model is baseline, not abort.
       // Only abort when live later *changes* from that mid-flight selection.
       if (!firstSeenLive) {
@@ -568,7 +608,7 @@ export async function restoreDefaultModelOnSessionStart(opts: {
           "restore-default-model",
           `restored ${label} ` +
             `(was ${currentProvider ?? "none"}/${currentModelId ?? "none"}; ` +
-            `session_start reason=${opts.reason ?? "?"}; attempt ${attempt}/${retries})`,
+            `session_start reason=${reason || "?"}; attempt ${attempt}/${retries})`,
         );
         return true;
       }
@@ -590,7 +630,7 @@ export async function restoreDefaultModelOnSessionStart(opts: {
   log.warn(
     "restore-default-model exhausted",
     `${lastFailReason} after ${retries} attempts ` +
-      `(session_start reason=${opts.reason ?? "?"})`,
+      `(session_start reason=${reason || "?"})`,
   );
   return false;
 }

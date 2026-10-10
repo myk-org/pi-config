@@ -67,7 +67,7 @@ import {
   isProvidersInitialized,
   markProvidersInitialized,
 } from "./initialized-guard.js";
-import { restoreDefaultModelOnSessionStart } from "./restore-default-model.js";
+import { registerModelRestoreOnSessionStart } from "./model-restore-wiring.js";
 import { registerLastThinkingLevel } from "./last-thinking-level.js";
 import { teardownProvidersOnSessionShutdown } from "./session-shutdown.js";
 
@@ -631,6 +631,22 @@ export default async function (
     }
   };
 
+  // Cold-start default model restore (#753), wired as its own session_start
+  // handler (multiple registrations are fine) so the wiring is unit-testable.
+  // Registered before the discovery-summary handler; the restore itself is
+  // fire-and-forget so ordering with the summary/thinking handler is benign.
+  registerModelRestoreOnSessionStart(pi, {
+    argv: testOptions?.argv,
+    onRestoreModel: (model, setSelected) => {
+      log.debug("onRestoreModel handoff", { provider: model.provider, id: model.id });
+      return lastThinking.restoreModel(model as Model<any>, setSelected);
+    },
+    onRestoreSettled: (event, ctx, modelRestore) => {
+      log.debug("onRestoreSettled handoff", { reason: (event as { reason?: string })?.reason });
+      return void lastThinking.applyAfterModelRestore(event, ctx, modelRestore);
+    },
+  });
+
   pi.on("session_start", (event, ctx) => {
     const reason = typeof event?.reason === "string" ? event.reason : "";
     const summary = `Providers: ${providerSummaryParts.join(", ")}`;
@@ -651,46 +667,6 @@ export default async function (
         ? { id: ctx.model.id, provider: String(ctx.model.provider) }
         : undefined,
     );
-    // agentDir via PI_CODING_AGENT_DIR / ~/.pi/agent only (ctx has cwd, not agentDir).
-    // Merge global + cwd/.pi/settings.json (project wins) only when trusted —
-    // same gate as pi SettingsManager (ctx.isProjectTrusted). Fail closed.
-    const cwd = typeof ctx.cwd === "string" ? ctx.cwd : undefined;
-    let projectTrusted = false;
-    try {
-      projectTrusted = typeof ctx.isProjectTrusted === "function"
-        ? ctx.isProjectTrusted() === true
-        : false;
-    } catch (err) {
-      log.debug(
-        "restore-default-model isProjectTrusted failed",
-        err instanceof Error ? err.message : String(err),
-      );
-      projectTrusted = false;
-    }
-    const modelRestore = restoreDefaultModelOnSessionStart({
-      ctx: {
-        model: ctx.model
-          ? { id: ctx.model.id, provider: String(ctx.model.provider) }
-          : undefined,
-        modelRegistry: ctx.modelRegistry,
-      },
-      reason,
-      cwd,
-      projectTrusted,
-      argv: testOptions?.argv,
-      getCurrentModel: () =>
-        ctx.model
-          ? { id: ctx.model.id, provider: String(ctx.model.provider) }
-          : undefined,
-      setModel: (model) => lastThinking.restoreModel(model as Model<any>, (selected) => pi.setModel(selected)),
-    }).catch((err) => {
-      log.warn(
-        "restore-default-model session_start error",
-        err instanceof Error ? err.message : String(err),
-      );
-      return false;
-    });
-    void lastThinking.applyAfterModelRestore(event, ctx, modelRestore);
   });
 
   pi.on("model_select", (event) => {

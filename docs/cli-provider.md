@@ -123,8 +123,11 @@ only. When trusted, project wins for `defaultProvider` / `defaultModel` /
 **Gate (must all pass):**
 
 1. Settings have both `defaultProvider` and `defaultModel` (non-empty)
-2. `session_start` `reason` is `startup` or `new` (skip `resume` / `fork` /
-   `reload`)
+2. `session_start` `reason` is `startup` or `resume` (skip `fork` / `reload`);
+   `new` is allowed only when no model is selected — it fills an empty
+   selection, an existing selection is kept. `/new` keeps the currently
+   selected model (the #753 auth race only exists at process start; `resume`
+   was added in a later fix for `pi --resume`)
 3. Current model is missing **or** current provider/id ≠ saved default
 4. `process.argv` does not contain `--model`, `--provider`, or `--models`
    (CLI override)

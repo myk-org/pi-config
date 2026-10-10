@@ -21,6 +21,9 @@ import {
   isRestoreModelHopeless,
   restoreDefaultModelOnSessionStart,
 } from "../../../extensions/providers/restore-default-model.js";
+import { createLogger } from "../../../extensions/shared/logger.js";
+
+const log = createLogger("restore-default-model-test");
 
 describe("shouldRestoreDefaultModel (#753 agnostic)", () => {
   it("restores when current missing with defaults set (startup)", () => {
@@ -36,17 +39,54 @@ describe("shouldRestoreDefaultModel (#753 agnostic)", () => {
     );
   });
 
-  it("restores when current ≠ default (new)", () => {
-    assert.equal(
-      shouldRestoreDefaultModel({
-        reason: "new",
-        defaultProvider: "foo",
-        defaultModelId: "foo-model",
-        currentProvider: "bar",
-        currentModelId: "bar-model",
-      }),
-      true,
-    );
+  it("skips on new (keeps currently selected model)", () => {
+    const decision = shouldRestoreDefaultModel({
+      reason: "new",
+      defaultProvider: "foo",
+      defaultModelId: "foo-model",
+      currentProvider: "bar",
+      currentModelId: "bar-model",
+    });
+    assert.equal(decision, false);
+    log.debug("skips on new: restore decision", { decision, reason: "new" });
+  });
+
+  it("restores on new when current model is missing (fills empty selection)", () => {
+    const decision = shouldRestoreDefaultModel({
+      reason: "new",
+      defaultProvider: "foo",
+      defaultModelId: "foo-model",
+      currentProvider: null,
+      currentModelId: null,
+    });
+    assert.equal(decision, true);
+    log.debug("new with missing current: restore decision", { decision, reason: "new" });
+  });
+
+  it("skips on new with missing current when argv has --model (gate blocks all reasons)", () => {
+    const decision = shouldRestoreDefaultModel({
+      reason: "new",
+      defaultProvider: "foo",
+      defaultModelId: "foo-model",
+      currentProvider: null,
+      currentModelId: null,
+      argv: ["node", "pi", "--model", "bar/bar-model"],
+    });
+    assert.equal(decision, false);
+    log.debug("new missing current argv override: restore decision", { decision });
+  });
+
+  it("skips on new with missing current when enabledModels scopes models", () => {
+    const decision = shouldRestoreDefaultModel({
+      reason: "new",
+      defaultProvider: "foo",
+      defaultModelId: "foo-model",
+      currentProvider: null,
+      currentModelId: null,
+      enabledModels: ["bar/bar-model"],
+    });
+    assert.equal(decision, false);
+    log.debug("new missing current enabledModels scope: restore decision", { decision });
   });
 
   it("restores when same provider but different model id", () => {
@@ -667,6 +707,63 @@ describe("resolveDefaultModel + restoreDefaultModelOnSessionStart", () => {
     assert.equal(called, true);
   });
 
+  it("skips on new (keeps currently selected model)", async () => {
+    const path = join(dir, "settings.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        defaultProvider: "foo",
+        defaultModel: "foo-model",
+      }),
+    );
+    let called = false;
+    const ok = await restoreDefaultModelOnSessionStart({
+      settingsPath: path,
+      reason: "new",
+      argv: ["node", "pi"],
+      ctx: {
+        model: { id: "bar-model", provider: "bar" },
+        modelRegistry: { find: () => ({ id: "foo-model", provider: "foo" }) },
+      },
+      setModel: async () => {
+        called = true;
+        return true;
+      },
+    });
+    assert.equal(ok, false);
+    assert.equal(called, false);
+    log.debug("skips on new: setModel not called", { ok, called });
+  });
+
+  it("restores on new when current model is missing (fills empty selection)", async () => {
+    const path = join(dir, "settings.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        defaultProvider: "foo",
+        defaultModel: "foo-model",
+      }),
+    );
+    const target = { id: "foo-model", provider: "foo" };
+    let setModelArg: unknown;
+    const ok = await restoreDefaultModelOnSessionStart({
+      settingsPath: path,
+      reason: "new",
+      argv: ["node", "pi"],
+      ctx: {
+        model: undefined,
+        modelRegistry: { find: () => target },
+      },
+      setModel: async (m) => {
+        setModelArg = m;
+        return true;
+      },
+    });
+    assert.equal(ok, true);
+    assert.equal(setModelArg, target);
+    log.debug("new with missing current: setModel filled selection", { ok });
+  });
+
   it("skips when current === default", async () => {
     const path = join(dir, "settings.json");
     writeFileSync(
@@ -1218,6 +1315,85 @@ describe("resolveDefaultModel + restoreDefaultModelOnSessionStart", () => {
     assert.equal(ok, false);
     assert.equal(called, false);
     assert.equal(polls, 1);
+  });
+
+  it("empty /new session: selection appearing mid-retry aborts restore", async () => {
+    const path = join(dir, "settings.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        defaultProvider: "foo",
+        defaultModel: "foo-model",
+      }),
+    );
+    const target = { id: "foo-model", provider: "foo" };
+    let called = false;
+    let polls = 0;
+    const ok = await restoreDefaultModelOnSessionStart({
+      settingsPath: path,
+      reason: "new",
+      argv: ["node", "pi"],
+      retries: 5,
+      delayMs: 10,
+      sleep: async () => {},
+      ctx: {
+        // No initial model at session_start — empty-selection fill case
+        model: undefined,
+        modelRegistry: { find: () => target },
+      },
+      getCurrentModel: () => {
+        polls += 1;
+        // A model is selected while the default is still unresolved —
+        // restore must abort instead of overwriting it on a later retry.
+        return polls <= 1 ? undefined : { id: "bar-model", provider: "bar" };
+      },
+      setModel: async () => {
+        called = true;
+        return true;
+      },
+    });
+    assert.equal(ok, false);
+    assert.equal(called, false);
+    log.debug("empty /new abort verified", { ok, called, polls });
+  });
+
+  it("empty /new session with padded reason: selection appearing mid-retry aborts restore", async () => {
+    const path = join(dir, "settings.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        defaultProvider: "foo",
+        defaultModel: "foo-model",
+      }),
+    );
+    const target = { id: "foo-model", provider: "foo" };
+    let called = false;
+    let polls = 0;
+    const ok = await restoreDefaultModelOnSessionStart({
+      settingsPath: path,
+      // Padded reason: the gate trims it (restore runs) but the mid-flight
+      // abort guard must also see "new" — not fall back to the baseline path.
+      reason: " new ",
+      argv: ["node", "pi"],
+      retries: 5,
+      delayMs: 10,
+      sleep: async () => {},
+      ctx: {
+        model: undefined,
+        modelRegistry: { find: () => target },
+      },
+      getCurrentModel: () => {
+        polls += 1;
+        return polls <= 1 ? undefined : { id: "bar-model", provider: "bar" };
+      },
+      setModel: async () => {
+        called = true;
+        return true;
+      },
+    });
+    assert.equal(ok, false);
+    assert.equal(called, false);
+    log.debug("padded-reason empty /new abort verified", { ok, called, polls });
   });
 
   it("getCurrentModel empty snapshot: first live non-default is baseline, not abort", async () => {
