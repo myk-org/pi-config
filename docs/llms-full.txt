@@ -222,7 +222,7 @@ Both settings files accept `.jsonc` (JSON with comments) or plain `.json`. If a 
     /pi-config-settings
 ```
 
-Use it when you would rather not guess an env var name or a numeric range — the TUI shows the valid values for every key.
+Use it when you would rather not guess an env var name or a numeric range — the TUI shows the valid values for every key. For the internals — source indicators, smart pickers, and how writes preserve JSONC comments — see [Project Settings Internals](project-settings.html).
 
 ## Git & Workflow Keys
 
@@ -2509,7 +2509,7 @@ The project convention is to number files so that ordering is obvious and layers
 
 Two things to be clear about, because this is easy to get wrong:
 
-1. **The ranges are a convention, not enforced behaviour.** The loader contains no numeric range check whatsoever. Nothing rejects a `05-*.md` file in the user directory or a `30-*.md` file in the project directory. The ranges appear in `README.md`, `AGENTS.md`, and `dev-docs/enforcement-honesty-map.md`; they are a naming discipline, not a mechanism.
+1. **The ranges are a convention, not enforced behaviour.** The loader contains no numeric range check whatsoever. Nothing rejects a `05-*.md` file in the user directory or a `30-*.md` file in the project directory. The ranges appear in `README.md`, `AGENTS.md`, and `contributing/enforcement-honesty-map.md`; they are a naming discipline, not a mechanism.
 2. **Ordering comes from the filename, sorted alphabetically.** After override resolution, the surviving files are sorted with `localeCompare` and joined in that order. The numeric prefixes are what make that alphabetical order match the intended reading order. This is why `00-` before `60-` works: the zero-padded numbers sort lexicographically.
 
 ### Other loading details
@@ -2528,7 +2528,7 @@ Two things to be clear about, because this is easy to get wrong:
 | `05-issue-first-workflow.md` | The pre-implementation checklist for any code change: root-cause investigation first, then branch and issue creation, a defined issue format, and a "Done" definition. Includes the SKIP list for work that does not need the workflow, and edge cases. |
 | `10-agent-routing.md` | The domain-to-agent routing table (Python, Go, TS, Java, shell, Markdown, Docker, Kubernetes, Jenkins, Git, GitHub, tests, debugging). Also covers routing by intent rather than by tool, documentation routing, which agents are dispatched internally rather than by the table, the `worker` fallback, and how to pass a model override to `subagent`. |
 | `20-code-review-loop.md` | The mandatory review loop: six reviewers plus `test-runner` in parallel after any code change, the cycle definition and max-cycles budget, review agent list, finding deduplication, responding to findings, test tracking, and baseline test comparison. Entirely gated on `review_loop_enforcement`. |
-| `25-documentation-updates.md` | A table mapping change types to the files that must be updated (`README.md`, `dev-docs/repo-structure.md`, the routing table, `Dockerfile`, `DEVELOPMENT.md`), ending with "documentation drift is a bug". |
+| `25-documentation-updates.md` | A table mapping change types to the files that must be updated (`README.md`, `contributing/repo-structure.md`, the routing table, `Dockerfile`, `DEVELOPMENT.md`), ending with "documentation drift is a bug". |
 | `30-prompt-templates.md` | What happens when a `/command` prompt template is invoked: the prompt is the authority, the orchestrator executes it, and sub-steps are delegated only when the prompt says so. |
 | `35-memory.md` | The project memory system: the mandatory memory tools (`memory_search`, `memory_reinforce`, `memory_add`, `memory_remove`, `memory_topics`, `session_search`), the three auto-injection mechanisms (situation report, vector recall above 0.65 similarity, session history recall), storage layout, the scoring system, and the capacity signal. |
 | `40-critical-rules.md` | Cross-cutting mandates: questions are not instructions, task focus on multi-step workflows, parallel execution, async agent and sync agent time estimates, subagent cwd, multi-PR/multi-branch work, user interaction, technical honesty, web access tooling, and the external code security audit gate. |
@@ -3227,6 +3227,10 @@ Pi’s memory architecture is the layer that turns one-off conversations into du
 
 The practical result is simple: you spend less time repeating project conventions, and the agent gets better at bringing the right context back at the right moment.
 
+> **Note:** The implementation is a clean-room TypeScript rewrite inspired by
+> [OpenHuman](https://github.com/tinyhumansai/openhuman) (MIT licensed) — no code was copied, only the
+> architectural ideas.
+
 ## The Big Picture
 
 The memory system is local, file-backed, and layered. Topic files are the source of truth; everything else is derived from or built around them.
@@ -3250,6 +3254,23 @@ The memory system is local, file-backed, and layered. Topic files are the source
 6. As evidence accumulates, the promotion system proposes stronger structures such as enforcement metadata or reusable skills.
 
 > **Note:** The architecture is intentionally split between human-editable topic files and machine-managed indexes. That keeps the memory easy to inspect while still supporting scoring, retrieval, and promotion.
+
+### Implementation map
+
+Every layer is a standalone module under `extensions/orchestrator/`:
+
+| Component | File | Role |
+|---|---|---|
+| Scoring engine | `memory-scoring.ts` | Stability formula, lifecycle states, category budgets, rebuilds the score index. |
+| Situation report | `situation-report.ts` | Builds the token-budgeted prompt injection and the capacity header. |
+| Memory tree | `memory-tree.ts` | Topic-file organization, hotness scores, cold-topic archiving. |
+| Embeddings | `memory-embeddings.ts` | Local vector model, embedding store, hybrid search. |
+| Memory tools | `memory-tools.ts` | The `memory_*` tools exposed to the agent. |
+| Session search | `session-search.ts` | Keyword index over past conversation summaries. |
+| Enforcement rules | `enforcement-rules.ts` | Code-enforced memories (triggers, actions, verifiers). |
+| Promotion queue | `promotion-queue.ts` | Graduates high-evidence memories into stronger structures. |
+| Preference extractor | `preference-extractor.ts` | Detects stated preferences in conversation and records them. |
+| Query classifier | `memory-query-class.ts` | Classifies the prompt to bias injection priorities. |
 
 ## Key Concepts
 
@@ -3336,6 +3357,8 @@ Important details:
 - Embeddings are cached per process for speed.
 - The on-disk store is updated with atomic write-then-rename behavior.
 - If the model cannot load, memory features degrade gracefully instead of failing the turn.
+- New entries are deduplicated at write time: a candidate whose embedding is at least `0.90` similar to an existing entry reinforces that entry instead of adding a duplicate.
+- Search is hybrid — keyword plus vector — with a keyword-only fallback when the embedding model is unavailable.
 
 This layer is used in two places:
 
@@ -3343,6 +3366,22 @@ This layer is used in two places:
 - automatic “contextually relevant memories” injection before a turn starts
 
 That means Pi can still find a useful lesson even when your current prompt does not repeat the exact wording of the original memory.
+
+### The injection pipeline runs on three hooks
+
+Memory reaches the model through three extension hooks:
+
+| Hook | What happens |
+|---|---|
+| `before_agent_start` | Injects the situation report, vector-matched memories, and relevant session history. Trivial messages such as "ok" or "thanks" are skipped so nothing is wasted on them. |
+| `tool_result` | Runs memory-based enforcement: trigger matching followed by `block`, `run_after`, or `warn` actions. |
+| `turn_end` | Injects file-change memory reminders (vector search on modified paths), task-focus enforcement when tasks are active but no tool was called, and semantic enforcement verification that can retry the turn on violations. |
+
+Everything is appended to the **tail** of the system prompt, after rules and instructions. That position is
+deliberate: LLM attention follows a U-shaped curve, and the tail of the prompt receives the strongest attention.
+
+Retrieval decisions are logged to `.pi/data/memory-telemetry.jsonl`, and the injected block carries a Ground
+Truth instruction telling the model to trust the provided context over re-deriving it.
 
 ### The situation report is the runtime view
 
@@ -3384,6 +3423,20 @@ This is why the same project memory can feel different depending on what you are
 - a debugging request brings forward mistakes and lessons
 - a release task gives more weight to decisions and conventions
 - a review workflow favors repeated review-related guidance
+
+### Session search recalls past conversations
+
+Independently of scored memory, `session-search.ts` maintains a keyword index over past conversation summaries in
+`.pi/data/session-search.json`. The index is written when a session shuts down, and `before_agent_start`
+auto-injects matches from relevant past sessions alongside the situation report.
+
+The agent can also query it directly with the `session_search` tool — see [Commands and Tools Reference](commands-and-tools.html).
+
+### Stated preferences are captured automatically
+
+`preference-extractor.ts` watches conversation for phrases such as "I prefer …", "always use …", or "never …".
+When it detects one, it adds the preference to memory automatically, and repeated statements reinforce the
+existing entry instead of creating duplicates.
 
 ### Promotion turns repeated memories into stronger structure
 
@@ -3442,9 +3495,44 @@ That matters if you are carrying an older repo or restoring archived state: the 
 - **Old state is still recoverable.** If your project used the older memory database, the Python CLI can migrate it into the current topic-file model.
 - **Background consolidation stays safe.** Dreaming, provenance merges, and promotion passes operate through sidecars and queues instead of rewriting everything in place.
 
+## Review-Adjacent Stores
+
+Two stores sit at the boundary between memory and the code-review system. They are not part of the scored memory
+model, but they learn from review decisions the same way memory learns from conversation.
+
+### Learned review preferences
+
+`.pi/data/review-guidelines.md` holds per-repo review guidelines learned from user skip decisions. When a user
+skips a finding for a generalizable reason — a project convention or an intentional pattern — a one-line guideline
+is appended to this file. All three code-reviewer agents read it before reviewing and suppress matching findings.
+
+### PR review store
+
+`myk_pi_tools/pr/pr_review_store.py` tracks PR review comments in SQLite at `.pi/data/pr-reviews.db`. It stores
+both posted and skipped findings with status and skip-reason columns, so dismissed items are auto-matched and not
+re-raised in later review cycles.
+
+Resolution tracking adds two columns:
+
+- `resolution_status` — the LLM evaluation verdict: `resolved_fixed`, `resolved_accepted`, `resolved_bad_fix`, or `resolved_no_fix`
+- `author_response` — the author's reply or fix context, kept as an audit trail
+
+The related CLI commands are `myk-pi-tools pr update-resolution` (persist verdicts from resolved threads) and
+`myk-pi-tools pr get-review-history` (dump the full review history across all statuses).
+
+See [Automating Code Reviews](automating-code-reviews.html) for the review workflows that read and write these stores.
+
+## Contributor Documentation
+
+The repository ships a contributor doc, `contributing/enforcement-honesty-map.md`, that declares which
+memory-backed enforcement is code-enforced, which is only injected, and which is aspirational.
+
 ## Related Pages
 
 - See [Curating Project Memory](curating-project-memory.html) for the hands-on workflow for adding, inspecting, and pruning memories.
+- See [Commands and Tools Reference](commands-and-tools.html) for the full `memory_*` tool reference
+  (`memory_search`, `memory_reinforce`, `memory_add`, `memory_remove`, `memory_edit`, `memory_reflect`,
+  `memory_consolidate`, `memory_topics`).
 - See [Background Memory Consolidation (Dreaming)](background-dreaming.html) for the background process that extracts, reorganizes, and promotes memories over time.
 - See [Implementing Command Guards](safety-enforcements.html) for the enforcement side of memories that graduate into hard rules.
 - See [Configuration & Settings](configuration.html) for the knobs that affect memory timing and runtime behavior.
@@ -6453,6 +6541,685 @@ For creating related commands, see [Creating Slash Commands](custom-slash-comman
 - [Built-in Workflow Commands](built-in-workflows.html)
 - [Installation & Quickstart](quickstart.html)
 - [Managing Custom Agents](managing-custom-agents.html)
+
+
+---
+
+Source: async-internals.md
+
+# Async & Runtime Internals
+
+## Async LLM capability (`supportsAsyncLlm`)
+
+Detached LLM async agents spawn a child `pi` with `PI_SUBAGENT_CHILD=1`. The acpx
+provider **does not load** in those children (nested `cursor-agent` hangs), so an
+**acpx parent cannot host async LLM children on the parent model**.
+
+The user-facing behavior matrix — what happens to optional async, must-async
+(dream/cron/fireAndForget), and `cli-*` parents — is documented in
+[Running Background Agents and Scheduled Tasks](async-agents-and-cron.html). This page covers the mechanism behind it:
+
+- Registration list: `acpx_agents` → `getRegisteredAcpxProviders` / `isAcpxProvider` (which agents we register)
+- Capability gate: **any** provider id starting with `acpx-` → `supportsAsyncLlm` false (`isAcpxProviderId`), even if not in settings — children never load acpx
+- `cli-${agent}` from `cli_agents` loads in subagent children, so `supportsAsyncLlm` is `true` for `cli-*`
+
+Settings: `acpx_agents`, `cli_agents`, `internal_operations_provider` + `internal_operations_model` — see [Project Settings Internals](project-settings.html) and [CLI Provider Internals](cli-provider.html).
+
+**acpx runtime resolution:** `extensions/acpx-provider/load-runtime.ts` prefers a
+global `npm install -g acpx`, then falls back to the package-local `acpx`
+dependency (required so plain `pi` / `~/.pi` installs can `import("acpx/runtime")`).
+Package dep range is `">=0.12.0 <1"` (latest within acpx 0.x; see issue #651).
+Not `^0.8.0` (that stays on 0.8.x under 0.x caret rules).
+
+**Native createProvider (pi ≥ 0.84.0):** `acpx-*` registers via
+`extensions/shared/create-runtime-provider.ts` (same helper as `cli-*`):
+ambient `resolve`/`check` succeed when `isAcpxAgentConfigured` (`agents.has`);
+`/login acpx-<agent>` stores an optional `configured` marker (not required for ambient
+auth); `fetchModels` rediscovers via `discoverModelsInternal` (returns `[]` if no
+state; empty discovery with state → `${agent}:default`);
+`filterModels` also gates on `agents.has` — **not** a live health probe;
+`session_shutdown` clears AgentState / maps and resets providers `initialized`
+so the next factory re-registers (required for `/new`|`/resume`|`/fork` to keep
+saved `cli-*` / `acpx-*` defaults — same lifecycle as native `createProvider`
+in `extensions/providers/`);
+streams use `{ stream, streamSimple }` → `streamAcpx`.
+No legacy `registerProvider(name, { streamSimple })` bag.
+
+**Meta invocations:** `isPiMetaInvocation()` (`extensions/orchestrator/utils.ts`)
+skips acpx/cli provider discovery on `pi --help` / `--version` (`-h` / `-v`).
+
+**Oneshot invocations:** `isPiOneshotInvocation()` / `shouldSkipOneshotRegister()`
+(`extensions/shared/oneshot.ts`, re-exported from `extensions/orchestrator/utils.ts`)
+skip pitasks, pidash, pidiff, and coms on `-p` / `--print` / `--mode json` so the
+process can exit after the reply. CLI/ACPX providers still load. Last valid
+`--mode <text|json|rpc>` wins (matching pi `parseArgs`); rpc is never oneshot
+even with `-p`. `--mode=json` / `--mode=rpc` are unknown flags in pi, not mode.
+The scanner consumes the next token after value flags so `--mode -p` is not
+oneshot. No `--` end-of-options (parseArgs has none). Argv detection does not
+cover non-TTY stdin or stdout without `-p`/`--print`/`--mode json`
+(`echo hi | pi`, `pi | cat`); register skips are argv-only — `ctx.mode`
+exists only after session_start.
+`shouldSkipOneshotShutdownDream(mode)` skips when argv is oneshot **or**
+`mode` is `print`/`json`.
+
+**Code-enforced (not prompt-only):**
+
+- `subagent-tool.ts` — coerce / sidecar / skip via `decideAsyncLlmDispatch`
+- `enforcement.ts` — does not push “use async” sleep/repeat blocks when capability is false
+- `dreaming.ts` / `cron.ts` — sidecar or skip on acpx
+
+## Async-Only Agents
+
+Some agents are enforced to only run with `async: true` — sync calls are automatically
+promoted to async by `subagent-tool.ts`. This prevents the LLM from blocking the session
+waiting for long-running agents.
+
+**Currently enforced (native / `supportsAsyncLlm` only):**
+
+- `code-reviewer-quality`
+- `code-reviewer-guidelines`
+- `code-reviewer-security`
+- `code-reviewer-docs`
+- `code-reviewer-spec`
+
+On acpx parents these agents run **sync** (coerced) instead of being forced async.
+
+**To add/remove agents from the async-only list:**
+
+1. Edit the `ASYNC_ONLY_AGENTS` set in `extensions/orchestrator/subagent-tool.ts`
+2. Update this section in `docs/async-internals.md`
+
+## Project-Scoped Temp Directories
+
+All async agent temp files live under `.pi/tmp/`. Session cron files are local state only; project cron tasks use a versioned envelope at `<project>/.pi/cron/crons.json`.
+
+```text
+    .pi/tmp/
+    ├── debug.log                                 # Async debug log
+    ├── cron-<sha256(session-id)>.json            # Session cron state; retained on reload/resume, removed on new/fork/quit
+    ├── async-results-pid-<pid>-<starttime>/      # Async agent completion results
+    └── worker-<id>/                              # Async agent working dir
+        ├── status.json                           # Agent state (running/complete/failed)
+        ├── session.json                          # Parent PID + starttime for zombie detection
+        ├── output.log                            # Agent output
+        └── system-prompt.md                      # Agent system prompt
+```
+
+**Deterministic session IDs:** Async agents use `--session-id` (hash of agent name + task prefix) alongside `--no-session` by default.
+This enables provider-side prompt caching for repeated async agent patterns.
+`--no-session` creates an in-memory session (no disk persistence); `--session-id` assigns a stable ID for cache affinity.
+Both flags are compatible: pi uses `SessionManager.inMemory(cwd, { id: sessionId })` when both are set.
+
+**Persistent sessions (`persistSession: true`):** When enabled (via subagent parameter),
+`--no-session` is omitted so the session persists to disk.
+The session ID is derived from `agentName + cwd + parentSessionId` (not task prefix)
+so the same agent in the same project reuses its session across calls.
+
+**Reviewer session reuse:** Code-reviewer agents automatically use persistent sessions
+during the review loop (cycle 2+). On the first cycle (`needs_review`/`none`), they get
+a fresh session. On subsequent cycles (`has_findings`/`in_progress`), they reuse their
+session from the previous cycle — keeping codebase context and previous findings.
+When the loop finishes clean and a new edit triggers `markNeedsReview`, sessions
+start fresh again.
+
+**Session auto-clearing:** When a reviewer's context usage exceeds 80% of the model's
+context window, its persisted session file is deleted to force a fresh session on the
+next cycle, preventing context overflow.
+
+**Zombie cleanup:** On `session_start`, checks each agent's `parentPid` + `parentStartTime` against `/proc/PID/stat` — dead parent = zombie = delete.
+
+**Shared helper:** `getProjectTmpDir(cwd)` in `utils.ts` — returns `<cwd>/.pi/tmp/`, creates dir if missing.
+
+**Enforcement:** `rm -rf` within `.pi/tmp/` or `/tmp/<something>` is silently allowed
+(paths resolved via `realpathSync()` to prevent symlink traversal).
+Read-only commands with dangerous patterns in args are also excluded from confirmation.
+
+## Argv and mode guards
+
+Modes: `"tui"` (interactive), `"rpc"` (programmatic), `"json"` (structured output), `"print"` (one-shot).
+`ctx.mode` does not exist at extension register time — use argv helpers there.
+
+| Feature | Guard | Reason |
+|---------|-------|--------|
+| Session extras register (pitasks, pidash, pidiff, coms) | `shouldSkipOneshotRegister()` / argv `isPiOneshotInvocation()` | Watchers/sockets keep the event loop alive; argv runs before `ctx.mode` exists |
+| Shutdown dream spawn | `shouldSkipOneshotShutdownDream(mode)` — argv oneshot **or** `mode === "print"\|"json"` | `runDreamAsync` → `spawnAsyncAgent` is not detached/unref'd |
+| Daemon connections (pidash, pidiff) | `ctx.mode === "tui"` | No UI to display (rpc/tui path after register) |
+| Autocomplete providers | `ctx.mode === "tui"` | No editor input |
+| Cron scheduling | `ctx.mode !== "print" && ctx.mode !== "json"` | One-shot, no timers |
+| Dreaming (auto-dream timer) | `ctx.mode !== "print" && ctx.mode !== "json"` | One-shot, no background work |
+
+Use `ctx.hasUI` for simple UI guards (`notify`, `select`, `confirm`). Use argv helpers for register-time oneshot skips. Use `ctx.mode` in session callbacks after mode exists.
+
+## Kill origin attribution
+
+`killAsyncAgent(target, origin)` takes a typed `AsyncKillOrigin` so a kill is never
+misattributed to the user. The label is persisted to `status.json` as `killOrigin`
+plus `output`, and prefixes the `## Async Agent Result` delivery to the AI.
+
+| Origin | Caller | Label |
+|--------|--------|-------|
+| `user` | async-status overlay `x`/`a`, pidash browser UI | `Killed by user` |
+| `orchestrator` | `subagent(asyncKill=…)` — an LLM decision | `Killed by orchestrator` |
+| `task-system` | pitasks `subagents:rpc:stop` | `Killed by task system` |
+
+The pidash browser UI is a human clicking, so it counts as `user`. An unrecognised
+runtime value falls back to `user`. The async-status detail header appends
+`· killed by <origin>` for failed jobs.
+
+## Related Pages
+
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) — the user-facing async and cron workflows this page implements.
+- [Background Memory Consolidation (Dreaming)](background-dreaming.html) — the dream passes that rely on async LLM capability.
+- [Inter-Agent Communication](inter-agent-communication.md) — peer-to-peer messaging between async agents.
+- [CLI Provider Internals](cli-provider.html) — the `cli-*` providers that load in subagent children.
+- [Configuration & Settings](configuration.html) — the async-related settings keys.
+
+
+---
+
+Source: cli-provider.md
+
+# CLI Provider Internals
+
+Registers real CLI tools as pi providers under the `cli-*` namespace, parallel to `acpx-*`.
+
+## Settings
+
+The extension is enabled by the `cli_agents` setting (env `CLI_AGENTS`) — a single agent name or an array, for
+example `"cursor"` or `["claude","gemini","cursor"]`. Empty or unset registers nothing. See
+[Configuration & Settings](configuration.html) for the full key reference.
+
+`cli_agents` is coerced with `asStringArray` before `.filter` so a stale/mismatched
+`getSetting` (non-array) cannot crash extension load (issue #651).
+
+## Working directory (issue #768)
+
+CLI/ACPX spawn uses the **pi session cwd** when it is bound, otherwise boot
+`process.cwd()` (sidecar start dir, typically `/app` in a container).
+
+Bind paths:
+
+- Sidecar: `POST /sessions` `cwd` → `runWithSessionCwd` around `session.prompt()`
+- Interactive pi: `before_agent_start` `ctx.cwd` → `enterSessionCwd` (skipped if ALS already set)
+- `resolveProviderStreamCwd` reads ALS, then falls back to boot `projectCwd` (warn)
+
+Two copies of `session-cwd.ts` share one store via `Symbol.for("pi-config.sessionCwdAls")`:
+`extensions/shared/session-cwd.ts` and `packages/pi-sidecar/src/session-cwd.ts`.
+Sidecar cannot import the extension file (`tsconfig` `rootDir` is `src/`). Keep the
+symbol id in sync.
+
+- Cursor: `--workspace <session-cwd>` and `spawn({ cwd })`
+- Claude / Gemini: `spawn({ cwd })` only (no `--workspace` flag)
+- ACPX: `ensureSession({ cwd })`; in-memory maps keyed per model+cwd
+
+Headless Cursor passes `--approve-mcps` only when `CLI_APPROVE_MCPS` is set
+(`false` opts out even in sidecar) or the process is a sidecar (`SIDECAR_PORT`).
+`startSidecar()` stamps `SIDECAR_PORT` while running (default 9100, `options.port`,
+or `0` for an OS ephemeral port) and restores the inherited value on `close()`.
+It returns `StartedSidecarHandle` (`ready` / `stopped`); call `bindSidecarListenExit()`
+in executables so bind and later fatal server errors exit 1. Interactive
+pi omits the flag so project MCP still needs TTY approval. Headless Gemini defaults
+`GEMINI_CLI_TRUST_WORKSPACE=true` on spawn but preserves an explicit parent
+value (including `false`) — `--skip-trust` alone does not connect project
+`.gemini/settings.json` MCP in untrusted folders (including `/tmp`). Claude
+project `.mcp.json` loads via `-p` + `--dangerously-skip-permissions`.
+
+## Load flow (matches acpx-provider)
+
+1. Read `cli_agents` at extension load
+2. For each agent: probe binary (30s discovery timeout), create agent state
+3. **Discover models from the CLI only** (see below) — no API keys, no cloud list APIs
+4. Register `cli-${agent}` via **`createRuntimeProvider()`** (shared helper wrapping
+   `createProvider`) then `pi.registerProvider(provider)` (pi ≥ 0.84.0), with discovered
+   models or `${agent}:default` if discovery returns empty
+5. Skip registration if binary missing (no agent state)
+6. Start session reaper (5m sweep; no immediate sweep at load) for
+   `~/.pi/cli-sessions/` — deletes idle `status=stopped` markers only.
+   Never deletes `status=running` (own or other `piSessionId`) so concurrent
+   pi sessions in the same cwd keep CLI `--resume` (issue #661).
+7. On `session_start` / `before_agent_start`:
+   - Bind markers to real `sessionManager.getSessionId()` (not env `PI_SESSION_ID`)
+   - Until bound, each process uses a unique provisional `tmp-<uuid>` bucket
+     (never shared `"default"`) so concurrent sessions cannot steal `--resume`
+   - On bind: migrate this process's provisional markers onto the real UUID
+   - `reason=resume` / `new` (or pi session id change): clear markers for this
+     `piSessionId` (+ this process provisional; legacy `default` only if still
+     used), force next turn to re-seed from pi `context.messages` (other
+     concurrent pi sessions in the same cwd are kept)
+   - `reason=reload`: keep markers so CLI `--resume` continues
+8. On `session_shutdown`: stop reaper, clear AgentState / in-memory maps, and
+   reset providers `initialized` so the next factory invocation re-registers
+   (needed for `/new`|`/resume`|`/fork`; disk markers kept for `/reload` resume)
+
+`pi --help` / `pi --version` (and `-h` / `-v`) still load extensions; both
+`cli-provider` and `acpx-provider` early-return via `isPiMetaInvocation()` so
+they do not run model discovery for meta invocations.
+
+## Native createProvider (pi ≥ 0.84.0)
+
+Shared helper: `extensions/shared/create-runtime-provider.ts`.
+
+| Piece | Behavior |
+|-------|----------|
+| **auth /login** | `/login cli-<agent>` stores marker credential `configured` when `isCliAgentConfigured` (binary on PATH **and** agent state). Ambient `resolve`/`check` succeed when configured. |
+| **fetchModels** | Not configured (`!isCliAgentConfigured`) → `[]`. Configured (PATH + AgentState) + empty discovery → `${agent}:default`. |
+| **filterModels** | Hides models when `isCliAgentConfigured` is false (binary gone or `agents` cleared on shutdown) |
+| **streams** | Native `ProviderStreams`: `{ stream, streamSimple }` both wrap `streamCli` |
+
+Legacy `pi.registerProvider(name, { apiKey, streamSimple })` bags are **not** used.
+
+**Binary missing at load** → provider is not registered; install then `/reload` or
+restart.
+
+**Already registered, PATH cleared (AgentState remains)** → restore PATH; models
+show again via filter/ambient. `/login` only stores the credential; model refresh
+rediscovers.
+
+**After `session_shutdown`** → AgentState / instance maps cleared and
+`initialized` reset. The next extension factory call (after `/new`|`/resume`|
+`/fork`) re-runs discovery + `registerProvider` so saved `cli-*` / `acpx-*`
+defaults remain available. PATH restore alone does not recreate AgentState;
+re-registration does.
+
+### Cold-start default restore (#753)
+
+pi `findInitialModel` needs both `getModel` and `hasConfiguredAuth`. Native
+`createProvider` registration does not provisionally mark auth configured, so a
+cold start can race: models are registered but `hasConfiguredAuth` is still
+false → wrong initial model even when agent `settings.json` has
+`defaultProvider` / `defaultModel`.
+
+Implementation: `extensions/providers/restore-default-model.ts`, hooked from
+`session_start` in `extensions/providers/index.ts` (fire-and-forget so startup
+is not blocked by retries). Provider-agnostic — any saved default is restored
+when gates pass (no hardcoded provider/model allowlists).
+
+**Settings:** Merged like pi `SettingsManager` — global
+(`PI_CODING_AGENT_DIR/settings.json` if set, else `~/.pi/agent/settings.json`)
+plus project `cwd/.pi/settings.json` (from `ctx.cwd`) **only when the project
+is trusted** (`ctx.isProjectTrusted()`); untrusted sessions use global defaults
+only. When trusted, project wins for `defaultProvider` / `defaultModel` /
+`enabledModels`. ExtensionContext has `cwd` but no `agentDir`.
+
+**Gate (must all pass):**
+
+1. Settings have both `defaultProvider` and `defaultModel` (non-empty)
+2. `session_start` `reason` is `startup` or `new` (skip `resume` / `fork` /
+   `reload`)
+3. Current model is missing **or** current provider/id ≠ saved default
+4. `process.argv` does not contain `--model`, `--provider`, or `--models`
+   (CLI override)
+5. Settings `enabledModels` is missing or empty (non-empty scopes models the
+   same way as `--models`; restore must not set an out-of-scope default)
+
+**Retry:** Up to 5 attempts × 100ms when the model is not yet resolvable
+(`registry.find` / `getAvailable` fallback) or `setModel` returns false
+(stale auth). Warns on exhaust for unresolvable **or** repeated `setModel`
+failure/throw. Production does **not**
+pass a `registeredProviders` list (a cli/acpx-only list would falsely
+fail-fast native defaults). Optional `registeredProviders` fail-fast remains
+for tests only. Does **not** fail-fast from `getAvailable()` missing the
+target — that API is auth-filtered and can omit the default during the #753
+race.
+
+**Live re-check:** Before each attempt (and again immediately before
+`setModel`), optional `getCurrentModel` (wired as `() => ctx.model`) aborts
+if current already matches the saved default, changed away from the
+`session_start` snapshot, or — when there was no initial model — any
+non-default live selection appears mid-retry (user intent).
+
+Complements #752 (`/new` re-register); does not replace an upstream
+provisional-auth fix.
+
+## Model discovery (CLI only)
+
+| Agent | How models are discovered |
+|-------|---------------------------|
+| `cursor` | Run `agent --list-models` (account-scoped list from the CLI) |
+| `claude` | No list flag — chunk-scan the selectable catalog embedded in the installed `claude` binary (no full-file string load; binaries are ~250MB+) |
+| `gemini` | No list flag — parse `isVisible: true` model definitions from the installed `gemini` CLI package |
+
+Results cached under `~/.pi/cli-model-cache/` (keyed by binary mtime/size; no TTL — invalidates when the binary changes).
+
+No curated model lists and no API-key-based discovery.
+
+### models.dev metadata fill (CLI / ACPX only)
+
+Discovery still owns **which** models exist. After discovery, missing
+`contextWindow` / `maxTokens` / cost / input modalities are filled
+from [models.dev](https://models.dev) `api.json`.
+
+Thinking level is **not** copied from the catalog. CLI `-high` /
+ACPX `[effort=high]` (also `xhigh|medium|low|minimal|max|off`) set
+`reasoning` and `pi.setThinkingLevel` on `session_start` / `model_select`.
+`-fast` is not a thinking token. Catalog `reasoning: true` alone must
+not show `thinking off` for `cursor-grok-4.6-high`.
+
+- Cache: `~/.pi/pi-config/models.dev.json`
+- Fetch on first use; refresh when the file is older than 1 day
+- Stale cache is kept if the fetch fails
+- Native pi providers are not modified
+- Unmapped ids (e.g. `composer-2.5`) keep `buildRuntimeModel` defaults (200k / 32k)
+- ACPX `context=` in the id (e.g. `[context=200k]`) wins over the catalog
+
+Mapping examples: `cursor-grok-4.6-high` → `xai/grok-4.6`;
+`claude-4.6-opus-high` → `anthropic/claude-opus-4-6`;
+`grok-4.6[effort=xhigh,fast=false]` → `xai/grok-4.6`.
+
+Code: `extensions/shared/models-dev.ts`.
+
+### CLI model ids ≠ acpx model ids
+
+`cli-*` and `acpx-*` share agent names (`cursor`, `claude`, …) but **not** model id strings. Always discover and pass ids in the namespace of the transport you use.
+
+| Transport | Example ids |
+|-----------|-------------|
+| CLI (`agent --model`) | `composer-2.5`, `cursor-grok-4.5-high`, `claude-4.6-opus-high` |
+| acpx (`availableModelIds`) | `composer-2.5[fast=true]`, `grok-4.5[effort=high,fast=true]`, `claude-opus-4-6[thinking=true,context=200k,effort=high]` |
+
+Never feed acpx model ids into CLI `--model`, and never register acpx ids under `cli-*`.
+
+## Turn flow (matches acpx-provider)
+
+1. Await discovery `ready`
+2. Ensure session (`--resume` id from `~/.pi/cli-sessions/`)
+3. Apply system prompt **once** per model session (first turn)
+4. Prompt:
+   - **Existing CLI session** → latest user message only (CLI keeps its own history)
+   - **New CLI session** (switched to `cli-*` mid-pi-session, or after `/resume` /
+     `/new` forced re-seed) → seed prior pi user/assistant turns + current message
+5. Stream `stream-json` events live into pi (`text_delta` / thinking) — not buffered until the end
+6. Persist / touch session id (`lastSeenAt`) for later turns
+7. If `--resume` fails (dead/invalid session): clear marker, re-seed history, retry once without resume.
+   Abort / SIGTERM (exit 143) / SIGINT (130) do **not** clear the marker — that is
+   cancel, not “session not found”.
+
+### `/resume` ↔ CLI session contract (issue #661)
+
+| Pi event | CLI marker | Next turn |
+|----------|------------|-----------|
+| `/reload` | keep | latest only (`--resume`) |
+| `/resume` or `/new` | clear for cwd | re-seed from pi history (fresh CLI chat) |
+| Mid-turn abort / SIGTERM | keep | retry or surface error — do not wipe |
+| True “session not found” | clear | re-seed once |
+
+Pi UI history and the Cursor/Claude/Gemini chat are different stores. After
+`/resume`, only pi JSONL is authoritative until the next seeded CLI turn.
+
+### Turn timeout (none by default)
+
+`runCliAgent` has **no default `timeoutMs`**. Long turns (autoqodo, large tool
+loops) must not be killed by an arbitrary wall clock. Cancellation is via
+upstream **`AbortSignal`** only. Callers may pass explicit `timeoutMs` when they
+want a bound. See issue #647.
+
+### Session directory (`~/.pi/cli-sessions/`)
+
+File-backed bindings keyed by cwd + agent + model + **pi session UUID**
+(from `sessionManager.getSessionId()`). Before that UUID is known, each process
+uses a unique provisional `tmp-<uuid>` id — never a shared `"default"` bucket —
+so concurrent pi sessions cannot overwrite each other's CLI `--resume` markers.
+On bind, provisional markers migrate onto the real UUID.
+
+- Fields: `sessionId`, `status`, `createdAt`, `lastSeenAt`, `resumeFailures`, `piSessionId`
+- **Reaper:** every 5m, drop idle `status=stopped` markers (≥ 30m). Never deletes
+  `status=running` for any `piSessionId` — concurrent pi sessions in the same
+  cwd keep CLI `--resume` (issue #661)
+- `/reload` keeps markers so `--resume` can continue
+- `/resume` / `/new` clears this session’s markers (+ this process’s provisional;
+  legacy `default` only when still used) and forces a history re-seed on the next turn
+
+## Streaming flags
+
+| Agent | Live stream |
+|-------|-------------|
+| cursor | `--output-format stream-json --stream-partial-output` |
+| claude | `--verbose --output-format stream-json --include-partial-messages` (`stream-json` requires `--verbose`) |
+| gemini | `--output-format stream-json` (assistant text arrives as `type:message` deltas) |
+
+## Provider ids
+
+| Provider id | Binary | Model id shape |
+|-------------|--------|----------------|
+| `cli-claude` | `claude` | `claude:<model>` |
+| `cli-gemini` | `gemini` | `gemini:<model>` |
+| `cli-cursor` | `agent` | `cursor:<model>` |
+
+## Headless trust vs tool approval
+
+`cli-*` runs CLIs non-interactively (no TTY). Two separate concerns:
+
+| Concern | What it does | If missing in headless |
+|---------|--------------|------------------------|
+| **Workspace trust** | Skip “do you trust this directory?” | Immediate exit / hard error |
+| **Tool auto-approve** | Skip “allow this command/edit?” prompts | Hang, deny, or fail — **no user can answer** |
+
+**Trust alone is not enough.** `--yolo` / `--force` is required so tool calls can proceed.
+
+| Agent | Workspace trust | Tool auto-approve |
+|-------|-----------------|-------------------|
+| cursor | `--trust` | `--force` (`--yolo` alias) |
+| claude | skipped by `-p` | `--dangerously-skip-permissions` |
+| gemini | `--skip-trust` | `--yolo` |
+
+This matches using the CLI as a backend LLM with full tool access (same intent as the system prompt we inject).
+
+## Logging
+
+Operational logs go to **`~/.pi/logs/`** (never `console.*` — that leaks into the chat text box):
+
+| File | Contents |
+|------|----------|
+| `~/.pi/logs/cli-provider.log` | discovery, registration, resume recover, session reaper |
+| `~/.pi/logs/dreaming.log` | dream skip/sidecar notes, provenance merge, promotion/rebuild errors |
+| `~/.pi/logs/providers/` | `createLogger("providers")` — restore-default-model, initialized-guard, session_shutdown |
+| `~/.pi/logs/models-dev/` | models.dev fetch/cache hit/miss and CLI/ACPX catalog mapping |
+
+Helper: `extensions/shared/file-logger.ts`
+
+- `getPiLogPath` is pure; mkdir only on write
+- Newlines collapsed to `\n`
+- Falls back to `$TMPDIR/pi-logs/` if `~/.pi/logs` unwritable
+- Sync I/O by design for low-volume ops events (mkdir every write; no dir cache)
+
+## Async
+
+Unlike `acpx-provider`, this extension **loads in subagent children** (`PI_SUBAGENT_CHILD`).
+`supportsAsyncLlm` is **true** for `cli-*` — no coerce-to-sync, no sidecar required.
+
+## Bug / fix policy
+
+A bug reported against **one** CLI (e.g. cursor) is assumed to apply to **all** `cli-*` agents unless proven agent-specific (unique flag/binary quirk).
+
+When fixing: check and land the same class of fix for `cursor`, `claude`, and `gemini` (trust/approve flags, streaming, history seeding, session resume, parsing, etc.).
+
+## Specialist agents for CLI backends
+
+Pi’s `subagent` tool is **not** in the CLI tool loop. Cursor / Claude / Gemini load
+specialists from their own project dirs. Package source of truth remains `agents/*.md`.
+
+### Container (`pi-docker`)
+
+Automatic on start (`entrypoint.sh` → `scripts/symlink-cli-specialists.sh`):
+
+| Dir | CLI |
+|-----|-----|
+| `.cursor/agents/*.md` | Cursor Agent (`cli-cursor`) |
+| `.claude/agents/*.md` | Claude Code (`cli-claude`) |
+| `.gemini/agents/*.md` | Gemini CLI (`cli-gemini`) |
+
+File symlinks via `ln -sfn` (overwrite OK; concurrent containers on the same mount are fine).
+Dirs are gitignored in the container (see `add_to_gitignore` in `entrypoint.sh`).
+
+### Native (non-container)
+
+No auto-sync. Symlink or copy package agents yourself, for example:
+
+```bash
+    PKG="$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config/agents"
+    mkdir -p .cursor/agents .claude/agents .gemini/agents
+    for f in "$PKG"/*.md; do
+      ln -sfn "$f" ".cursor/agents/$(basename "$f")"
+      ln -sfn "$f" ".claude/agents/$(basename "$f")"
+      ln -sfn "$f" ".gemini/agents/$(basename "$f")"
+    done
+```
+
+Cursor CLI Task discovery needs **project** `.cursor/agents/` (user-global
+`~/.cursor/agents` is not enough in headless `-p`). Prefer the same project layout for
+Claude/Gemini so all three match.
+
+## Module
+
+`extensions/cli-provider/` — per-agent drivers under `agents/` (add a new CLI there + register in `providers.ts`). `discoverCliModels()` exported for external registries.
+
+## Related Pages
+
+- [ACPX Provider Integration](acpx-provider.html) — the sibling transport; this extension mirrors its load flow and turn flow.
+- [Configuration & Settings](configuration.html) — the `cli_agents` key reference.
+- [External AI Agents & CLI](external-ai-agents.html) — running the same CLIs one-shot via `myk-pi-tools ai-cli`.
+- [Async & Runtime Internals](async-internals.html) — how `cli-*` providers interact with detached async agents.
+- [Project Settings Internals](project-settings.html) — the settings machinery behind `cli_agents`.
+
+
+---
+
+Source: extension-commands.md
+
+# Extension Commands
+
+Extension commands (like `/pidash`, `/pidiff`, `/btw`, `/status`) are registered in the extension source files
+under `extensions/`. Each command uses `context.registerCommand()` with a name, description, and handler.
+
+For what each command does from the user side — arguments, flags, and examples — see
+[Commands and Tools Reference](commands-and-tools.html). This page maps each command to its source and documents
+the internals that are not visible from usage alone.
+
+## Command Source Map
+
+| Command | Source | Summary |
+| --- | --- | --- |
+| `/btw` | `btw.ts` | Quick side questions |
+| `/pidash` | `pidash/pidash.ts` | Manage pidash daemon (start/stop/restart/status) |
+| `/pidiff` | `pidiff/pidiff.ts` | Manage pidiff per-project server (start/stop/restart/status) |
+| `/status` | `status.ts` | Unified session status snapshot |
+| `/review-status [worktree-path]` | `enforcement.ts` | Show review loop state, optionally for a specific worktree |
+| `/async-status` | `async-agents.ts` + `async-status-ui.ts` | Fullscreen overlay: list async agents → live output; `x` kills the focused job (or the whole `Space` multi-selection), `X` kills all running/queued immediately (no confirmation) |
+| `/dream` | `dreaming.ts` | Memory consolidation |
+| `/dream-auto` | `dreaming.ts` | Toggle automatic dreaming |
+| `/cron` | `cron.ts` + `cron-store.ts` + `cron-status-ui.ts` | Schedule session tasks, or persistent tasks with `--persist` |
+| `/pi-config-settings [project\|global]` | `settings-tui.ts` + `settings-tui-helpers.ts` | Interactive settings editor overlay |
+| `/nvim-changed-files` | `nvim.ts` | Send changed files to nvim quickfix |
+| `/coms` | `coms/coms-wrapper.ts` | P2P agent communication (start/stop/status) |
+| `/external-ai-models-refresh` | `extended-autocomplete.ts` | Refresh AI CLI model cache |
+
+## Cron Delivery Internals
+
+The two cron scopes (session vs `--persist` project tasks) and the leader lease that guarantees single execution
+are documented in [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html). The delivery
+guarantees underneath:
+
+- Persistent tasks are stored in `<project>/.pi/cron/crons.json` as versioned envelopes that retain the task's
+  project working directory. Task IDs are UUIDs, labelled for removal as `session:<uuid>` or `persist:<uuid>`.
+- Delivery is best-effort, local, at-least-once: persistent tasks run only while an eligible local pi process is open, and a crash or stale-leader recovery can repeat a delivery.
+- The project store elects one local leader to execute persistent tasks; non-leaders retain their local session tasks and can list or remove persistent tasks.
+- Leadership uses a PID-reuse-safe process-creation token; if a process cannot obtain one, durable leadership fails closed.
+- Add/remove mutations use a bounded transaction lock, so they remain safe without process identity.
+- Invalid stored task records are logged and skipped before timers are created.
+- `/cron list-all` labels each task plus persistent leader/follower state; it does not inspect another Pi process's private session-cron file.
+
+## Adding an Extension Command
+
+The `registerCommand()` pattern and the autocomplete wiring are documented with full code examples in
+[Creating Slash Commands](custom-slash-commands.html). The contributor checklist:
+
+1. Register via `context.registerCommand()` in the extension source file under `extensions/`
+2. When adding slash command arguments, update autocomplete in `extensions/orchestrator/extended-autocomplete.ts`:
+   - Extension commands: update the entry in the `completions` map
+   - Prompt templates: update the entry in `completions` **and** ensure the command is in `promptTemplateCommands`;
+     extension commands are wrapped automatically and must not be added there
+   - If adding a new completable command, follow the existing patterns (static items, cached fetchers, etc.)
+
+## Related Pages
+
+- [Commands and Tools Reference](commands-and-tools.html) — full usage documentation for every command and tool.
+- [Creating Slash Commands](custom-slash-commands.html) — how to add new commands, with code examples.
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) — async workflows and cron scopes.
+- [Project Settings Internals](project-settings.html) — the settings TUI behind `/pi-config-settings`.
+
+
+---
+
+Source: project-settings.md
+
+# Project Settings Internals
+
+How project-level settings are defined, resolved, and consumed. For the user-facing key reference — every setting
+with its type, default, and environment variable — see [Configuration & Settings](configuration.html). This page
+covers the machinery underneath: the schema source, the CLI, prompt injection, and the settings TUI.
+
+## Settings Files and Resolution
+
+Settings live in `.pi/pi-config-settings.jsonc` (preferred) or `.pi/pi-config-settings.json` at the repository
+root; `.jsonc` allows comments and wins if both exist. A global fallback lives at
+`~/.pi/pi-config-settings.jsonc` or `.json`. Values resolve project file → global file → environment variable →
+default.
+
+See [Configuration & Settings](configuration.html) for the full resolution walkthrough.
+
+## `settings-keys.json` Is the Single Source of Truth
+
+All setting keys, types, env vars, and defaults are defined in `settings-keys.json` at the repository root. Both
+the TypeScript extension and the Python CLI derive from this single file, so the two implementations cannot drift
+apart. When adding a key, edit `settings-keys.json` first — never hardcode defaults in either implementation.
+
+## CLI
+
+```bash
+    uv run myk-pi-tools settings get                   # all keys as JSON
+    uv run myk-pi-tools settings get dco use_worktrees # specific keys
+```
+
+## Agent Prompt Injection
+
+Use `{{SETTINGS:key1,key2}}` in agent `.md` files to inject resolved values at prompt assembly time. The
+placeholder is replaced by `substituteSettingsPlaceholders` in `rule-placeholders.ts` before the system prompt
+reaches any model (native or CLI/ACPX), as a JSON object of the resolved values.
+
+This is **not** the same pipeline as orchestrator rules. Agents only get `{{SETTINGS:…}}` JSON injection; rules
+use conditional assembly — `{{IF:}}` / `{{IFNOT:}}` blocks, comparison literals, and whole-file
+`requires_setting` / `requires` frontmatter gates. See [Rules and Layers](rules-and-layers.html) for the full
+conditional grammar and the distinction between the two mechanisms.
+
+Never instruct agents to read `pi-config-settings.jsonc` / `.json` manually.
+
+## Settings TUI
+
+The `/pi-config-settings [project|global]` slash command opens an interactive TUI overlay for editing settings.
+For what it looks like from the user side, see [Configuration & Settings](configuration.html); the internals:
+
+- **Two scopes:** `project` (writes to `<repo>/.pi/pi-config-settings.json`) and `global` (writes to `~/.pi/pi-config-settings.json`). Press Tab to switch.
+- **Source indicators:** Each setting shows its source: `P` (project file), `G` (global file), `E` (env var), `D` (default).
+- **Smart pickers:** Provider and model fields use fuzzy-searchable `SelectList` from `ctx.modelRegistry`.
+  `image_model` is hard-filtered to provider `google` **and** image-capable models; if that filtered list is
+  empty, the TUI falls back to free-text `InputSubmenu`.
+- **Agent lists:** `acpx_agents` and `cli_agents` use multi-select with ☑/☐ toggles.
+- **Agent overrides:** Nested per-agent provider/model editor.
+- **Secret masking:** Keys matching `token|secret|password|auth` are masked in the list and never prefilled in the editor.
+- **JSONC preservation:** The TUI always writes to `.json` (not `.jsonc`) to preserve user comments in `.jsonc` files.
+- **Immediate save:** Each change writes immediately with `clearSettingsCache()`.
+
+Files: `extensions/orchestrator/settings-tui.ts`, `settings-tui-helpers.ts`, `settings-tui-submenus.ts`.
+
+## Module
+
+`extensions/orchestrator/project-settings.ts`
+
+## Related Pages
+
+- [Configuration & Settings](configuration.html) — the full settings key reference and resolution order.
+- [Rules and Layers](rules-and-layers.html) — how rules consume settings through conditionals and frontmatter gates.
+- [CLI Provider Internals](cli-provider.html) and [Async & Runtime Internals](async-internals.html) — extensions driven by these settings.
 
 
 ---

@@ -4,7 +4,7 @@
  * pi 0.99 added `disposition` ("handled" | "queued" | "started") to prompt/steer/follow_up
  * RPC replies, and made `AgentSession.prompt()` THROW when input arrives mid-run without
  * `streamingBehavior`. pi-config drives agents in-process, never over pi's RPC mode, so the
- * disposition field is intentionally unused — see dev-docs/pi-099-disposition-audit.md.
+ * disposition field is intentionally unused — see contributing/pi-099-disposition-audit.md.
  *
  * These tests lock in *why* the in-process paths are safe. If pi's contract changes again,
  * they fail here instead of breaking the coms queue or async agents in production.
@@ -92,7 +92,7 @@ describe("pi 0.99 disposition contract", () => {
 				}
 			}
 		}
-		assert.deepEqual(offenders, [], `disposition adoption needs dev-docs/pi-099-disposition-audit.md updated: ${offenders.join(", ")}`);
+		assert.deepEqual(offenders, [], `disposition adoption needs contributing/pi-099-disposition-audit.md updated: ${offenders.join(", ")}`);
 	});
 });
 

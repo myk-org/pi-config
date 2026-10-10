@@ -104,7 +104,7 @@ User switches log level on the fly via settings — debug must show everything n
 ## Project
 
 - Stack: TypeScript (extensions), Python (myk_pi_tools CLI), Markdown (agents, rules, prompts)
-- Structure: see `dev-docs/repo-structure.md`
+- Structure: see `contributing/repo-structure.md`
 - Test: `tests/node/` (tsx + node:test), `tests/python/` (pytest), `packages/pi-sidecar/tests/` (sidecar TS + Python), `packages/pi-vertex-claude/test/` (vitest),
   `packages/pi-docsite/tests/` (pytest for the generator, jsdom + node:test for the shipped browser assets)
 - Key packages: `pi-web-access`, `@myk-org/pi-sidecar`, `pi-sidecar-client`, `@myk-org/pi-vertex-claude`
@@ -137,7 +137,7 @@ User switches log level on the fly via settings — debug must show everything n
   (`~/.pi/agent/npm/node_modules/pi-orchestrator-config`) to `ln -sfn`
   package `agents/*.md` into the mounted project’s `.cursor/agents/`,
   `.claude/agents/`, and `.gemini/agents/` (all gitignored). Native installs
-  do not auto-sync — see `dev-docs/cli-provider.md` / README Docker section.
+  do not auto-sync — see `docs/cli-provider.md` / README Docker section.
 
 ## When Adding an Agent
 
@@ -178,7 +178,7 @@ Rules load from 3 layers (later overrides earlier):
 
 Rules auto-load alphabetically. Changes take effect on next pi session.
 
-**Conditional assembly** — see `dev-docs/project-settings.md` (Rules assembly). Essentials:
+**Conditional assembly** — see `docs/project-settings.md` (Rules assembly). Essentials:
 
 - `{{IF:key}}` / `{{IFNOT:key}}` — settings truthiness (`isSettingTruthy`: empty object/array falsy)
   or feature predicates (`coms_active`, `external_ai_agents`). Unknown setting keys fail closed
@@ -240,8 +240,8 @@ progress. It does not commit, push, create a PR, or post results.
   exists before `npm pack` / `npm publish` (`prepack` covers both).
 - Oneshot (`-p` / `--print` / `--mode json`): pitasks, pidash, pidiff, and coms
   skip register via `extensions/shared/oneshot.ts`; shutdown dream also skipped.
-  See `dev-docs/async-internals.md` (Oneshot invocations). `--mode rpc` is not oneshot.
-- Extension commands: see `dev-docs/extension-commands.md`
+  See `docs/async-internals.md` (Oneshot invocations). `--mode rpc` is not oneshot.
+- Extension commands: see `docs/extension-commands.md`
 - Graft (`graft_enable=true`) applies to main agents and subagents. Every substantive prompt retrieves from Graft before raw project
   navigation. Children only consume existing graphs; stale graphs remain usable and failures fail open. Main processes own rebuilds under
   the cross-process lock.
@@ -249,8 +249,8 @@ progress. It does not commit, push, create a PR, or post results.
   `coms_queue_clear` or `coms_queue_delete`. Never use `coms_send.clearPrevious`; it is rejected. Preview tokens are owner-bound and
   expire after five minutes. RPC recovery providers retain at most 20 previews per provider and must implement an atomic
   `clearQueueIfSnapshot(snapshot)` operation; clients never call an unconditional clear after validating a preview.
-- Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `dev-docs/async-internals.md`
-- CLI providers (`cli-*`): see `dev-docs/cli-provider.md`
+- Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `docs/async-internals.md`
+- CLI providers (`cli-*`): see `docs/cli-provider.md`
 - **MCP:** built into pi as `builtin:mcp` (#848). Servers in `mcp.json` —
   user `~/.pi/agent/mcp.json`, project `mcp.json` once trusted. Managed with
   `/mcp` and `pi mcp add|remove|list|login|logout`; no external binary, no
@@ -269,28 +269,28 @@ progress. It does not commit, push, create a PR, or post results.
   1 day). Mapping is CLI/ACPX only — native pi models are untouched. Thinking
   from id (`-high`, `[effort=xhigh]`), not catalog `reasoning`. See
   `extensions/shared/models-dev.ts`
-- Cold-start default model restore (#753): `startup`|`new` only; skips non-empty `enabledModels`; trusted project merge — see `dev-docs/cli-provider.md`
+- Cold-start default model restore (#753): `startup`|`new` only; skips non-empty `enabledModels`; trusted project merge — see `docs/cli-provider.md`
 - CLI/ACPX spawn cwd (#768): session cwd (`POST /sessions` / `ctx.cwd`), not
   sidecar `process.cwd()`. Cursor `--workspace` matches that folder. Dual
   `session-cwd.ts` copies (extensions/shared + packages/pi-sidecar/src) must
   keep `Symbol.for("pi-config.sessionCwdAls")` in sync — sidecar cannot import
-  the extension file (`tsconfig` rootDir). See `dev-docs/cli-provider.md`.
+  the extension file (`tsconfig` rootDir). See `docs/cli-provider.md`.
   Headless Cursor `--approve-mcps`: `CLI_APPROVE_MCPS` wins (`false` opts out);
   otherwise sidecar (`SIDECAR_PORT` — `startSidecar()` stamps it while running,
   including default 9100, `options.port`, and ephemeral `0`; `close()` restores
   the inherited value). Executable consumers should call `bindSidecarListenExit()`
   so `StartedSidecarHandle.ready` / `.stopped` fatal failures exit 1. Headless Gemini defaults
   `GEMINI_CLI_TRUST_WORKSPACE=true` but preserves an explicit parent value.
-- Extension ops logs (cli-provider, dreaming): `~/.pi/logs/` — never `console.*` (leaks into chat). See `dev-docs/cli-provider.md` Logging
-- Memory system: see `dev-docs/memory-architecture.md`
-- Enforcement honesty (code vs injected): see `dev-docs/enforcement-honesty-map.md`
+- Extension ops logs (cli-provider, dreaming): `~/.pi/logs/` — never `console.*` (leaks into chat). See `docs/cli-provider.md` Logging
+- Memory system: see `docs/memory-architecture.md`
+- Enforcement honesty (code vs injected): see `contributing/enforcement-honesty-map.md`
 - Memory inventory CLI: `uv run myk-pi-tools memory status`
-- Project settings: see `dev-docs/project-settings.md`
+- Project settings: see `docs/project-settings.md`
 - Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.
 - Settings CLI: `uv run myk-pi-tools settings get [key ...]` — resolve settings (project → global → env → default). No args = all keys.
 - Settings TUI: `/pi-config-settings [project|global]` — interactive settings editor in the pi session.
-- Agent settings injection: use `{{SETTINGS:key1,key2}}` in agent `.md` files — `substituteSettingsPlaceholders` only (not rules `assembleRuleText`). See `dev-docs/project-settings.md`.
+- Agent settings injection: use `{{SETTINGS:key1,key2}}` in agent `.md` files — `substituteSettingsPlaceholders` only (not rules `assembleRuleText`). See `docs/project-settings.md`.
   Never instruct agents to read `pi-config-settings.jsonc`/`.json` manually.
 - When adding slash command arguments: update autocomplete in `extended-autocomplete.ts`
 - Memory `*(enforced)*` marker: entries with this marker are hash-keyed — never change their text, only add/remove whole entries

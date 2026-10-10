@@ -47,3 +47,13 @@
 - [Implementing Command Guards](safety-enforcements.md)
 - [Daemon & Websocket Networking](daemon-and-websockets.md)
 - [Asking Side Questions with /btw](btw-command.md)
+
+## Architecture
+
+- [Async & Runtime Internals](async-internals.md)
+- [CLI Provider Internals](cli-provider.md)
+
+## Development
+
+- [Extension Commands](extension-commands.md)
+- [Project Settings Internals](project-settings.md)

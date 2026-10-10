@@ -6,19 +6,15 @@ Detached LLM async agents spawn a child `pi` with `PI_SUBAGENT_CHILD=1`. The acp
 provider **does not load** in those children (nested `cursor-agent` hangs), so an
 **acpx parent cannot host async LLM children on the parent model**.
 
-**Detection:**
+The user-facing behavior matrix — what happens to optional async, must-async
+(dream/cron/fireAndForget), and `cli-*` parents — is documented in
+[Running Background Agents and Scheduled Tasks](async-agents-and-cron.html). This page covers the mechanism behind it:
 
 - Registration list: `acpx_agents` → `getRegisteredAcpxProviders` / `isAcpxProvider` (which agents we register)
 - Capability gate: **any** provider id starting with `acpx-` → `supportsAsyncLlm` false (`isAcpxProviderId`), even if not in settings — children never load acpx
+- `cli-${agent}` from `cli_agents` loads in subagent children, so `supportsAsyncLlm` is `true` for `cli-*`
 
-| Parent provider | `supportsAsyncLlm` | Behavior |
-|-----------------|--------------------|----------|
-| Native (anthropic, openai, …) | `true` | Today's force-async system unchanged |
-| Any `acpx-*` provider id | `false` | Coerce optional `async: true` → sync; must-async (dream/cron/fireAndForget) uses settings sidecar or skips |
-| `cli-${agent}` from `cli_agents` | `true` | CLI providers load in subagent children — async works; no coerce |
-
-Module: `extensions/orchestrator/async-capability.ts`  
-Settings: `acpx_agents`, `cli_agents`, `internal_operations_provider` + `internal_operations_model` (see `dev-docs/project-settings.md`, `dev-docs/cli-provider.md`)
+Settings: `acpx_agents`, `cli_agents`, `internal_operations_provider` + `internal_operations_model` — see [Project Settings Internals](project-settings.html) and [CLI Provider Internals](cli-provider.html).
 
 **acpx runtime resolution:** `extensions/acpx-provider/load-runtime.ts` prefers a
 global `npm install -g acpx`, then falls back to the package-local `acpx`
@@ -82,7 +78,7 @@ On acpx parents these agents run **sync** (coerced) instead of being forced asyn
 **To add/remove agents from the async-only list:**
 
 1. Edit the `ASYNC_ONLY_AGENTS` set in `extensions/orchestrator/subagent-tool.ts`
-2. Update this section in `dev-docs/async-internals.md`
+2. Update this section in `docs/async-internals.md`
 
 ## Project-Scoped Temp Directories
 
@@ -160,3 +156,11 @@ plus `output`, and prefixes the `## Async Agent Result` delivery to the AI.
 The pidash browser UI is a human clicking, so it counts as `user`. An unrecognised
 runtime value falls back to `user`. The async-status detail header appends
 `· killed by <origin>` for failed jobs.
+
+## Related Pages
+
+- [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) — the user-facing async and cron workflows this page implements.
+- [Background Memory Consolidation (Dreaming)](background-dreaming.html) — the dream passes that rely on async LLM capability.
+- [Inter-Agent Communication](inter-agent-communication.md) — peer-to-peer messaging between async agents.
+- [CLI Provider Internals](cli-provider.html) — the `cli-*` providers that load in subagent children.
+- [Configuration & Settings](configuration.html) — the async-related settings keys.

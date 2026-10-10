@@ -53,7 +53,7 @@ project file -> global file -> environment variable -> default
 /pi-config-settings
 ```
 
-Use it when you would rather not guess an env var name or a numeric range — the TUI shows the valid values for every key.
+Use it when you would rather not guess an env var name or a numeric range — the TUI shows the valid values for every key. For the internals — source indicators, smart pickers, and how writes preserve JSONC comments — see [Project Settings Internals](project-settings.html).
 
 ## Git & Workflow Keys
 

@@ -48,7 +48,7 @@ mentally or separately.
 
 The review loop repeats for at most `review_loop_max_cycles` cycles (default `3`, range `1`-`10` only;
 current value: `{{REVIEW_LOOP_MAX_CYCLES}}`), including the first cycle. Invalid values fall through to the
-next resolution layer / default `3` — see `dev-docs/project-settings.md` for the full resolution order.
+next resolution layer / default `3` — see `docs/project-settings.md` for the full resolution order.
 Disable the review loop via `review_loop_enforcement: false` — not via max_cycles.
 
 Cap check is after 5a; it only blocks `go to 2` (re-dispatch of step 2 / all 6 agents,

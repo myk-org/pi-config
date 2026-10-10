@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CLI Provider Internals - pi-config</title>
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=66bf87bdd9">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Installation &amp; Quickstart
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Core Workflows</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="automating-code-reviews.html"
+                           class="nav-link">
+                            Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="managing-custom-agents.html"
+                           class="nav-link">
+                            Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="using-the-web-dashboard.html"
+                           class="nav-link">
+                            Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="curating-project-memory.html"
+                           class="nav-link">
+                            Curating Project Memory
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Inter-Agent Communication Network
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="external-ai-agents.html"
+                           class="nav-link">
+                            External AI Agents &amp; CLI
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Discord Bot Notifications
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            ACPX Provider Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-docsite.html"
+                           class="nav-link">
+                            pi-docsite
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk_pi_tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="btw-command.html"
+                           class="nav-link">
+                            Asking Side Questions with /btw
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Architecture</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-internals.html"
+                           class="nav-link">
+                            Async &amp; Runtime Internals
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-provider.html"
+                           class="nav-link active" aria-current="page">
+                            CLI Provider Internals
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Development</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="extension-commands.html"
+                           class="nav-link">
+                            Extension Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="project-settings.html"
+                           class="nav-link">
+                            Project Settings Internals
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsite-badge" title="documentation">
+                    ⚡ pi<span class="brand-accent">-docsite</span>
+                </a>
+
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="cli-provider-internals">CLI Provider Internals</h1>
+<p>Registers real CLI tools as pi providers under the <code>cli-*</code> namespace, parallel to <code>acpx-*</code>.</p>
+<h2 id="settings">Settings</h2>
+<p>The extension is enabled by the <code>cli_agents</code> setting (env <code>CLI_AGENTS</code>) — a single agent name or an array, for
+example <code>"cursor"</code> or <code>["claude","gemini","cursor"]</code>. Empty or unset registers nothing. See
+<a href="configuration.html">Configuration &amp; Settings</a> for the full key reference.</p>
+<p><code>cli_agents</code> is coerced with <code>asStringArray</code> before <code>.filter</code> so a stale/mismatched
+<code>getSetting</code> (non-array) cannot crash extension load (issue #651).</p>
+<h2 id="working-directory-issue-768">Working directory (issue #768)</h2>
+<p>CLI/ACPX spawn uses the <strong>pi session cwd</strong> when it is bound, otherwise boot
+<code>process.cwd()</code> (sidecar start dir, typically <code>/app</code> in a container).</p>
+<p>Bind paths:</p>
+<ul>
+<li>Sidecar: <code>POST /sessions</code> <code>cwd</code> → <code>runWithSessionCwd</code> around <code>session.prompt()</code></li>
+<li>Interactive pi: <code>before_agent_start</code> <code>ctx.cwd</code> → <code>enterSessionCwd</code> (skipped if ALS already set)</li>
+<li><code>resolveProviderStreamCwd</code> reads ALS, then falls back to boot <code>projectCwd</code> (warn)</li>
+</ul>
+<p>Two copies of <code>session-cwd.ts</code> share one store via <code>Symbol.for("pi-config.sessionCwdAls")</code>:
+<code>extensions/shared/session-cwd.ts</code> and <code>packages/pi-sidecar/src/session-cwd.ts</code>.
+Sidecar cannot import the extension file (<code>tsconfig</code> <code>rootDir</code> is <code>src/</code>). Keep the
+symbol id in sync.</p>
+<ul>
+<li>Cursor: <code>--workspace &lt;session-cwd&gt;</code> and <code>spawn({ cwd })</code></li>
+<li>Claude / Gemini: <code>spawn({ cwd })</code> only (no <code>--workspace</code> flag)</li>
+<li>ACPX: <code>ensureSession({ cwd })</code>; in-memory maps keyed per model+cwd</li>
+</ul>
+<p>Headless Cursor passes <code>--approve-mcps</code> only when <code>CLI_APPROVE_MCPS</code> is set
+(<code>false</code> opts out even in sidecar) or the process is a sidecar (<code>SIDECAR_PORT</code>).
+<code>startSidecar()</code> stamps <code>SIDECAR_PORT</code> while running (default 9100, <code>options.port</code>,
+or <code>0</code> for an OS ephemeral port) and restores the inherited value on <code>close()</code>.
+It returns <code>StartedSidecarHandle</code> (<code>ready</code> / <code>stopped</code>); call <code>bindSidecarListenExit()</code>
+in executables so bind and later fatal server errors exit 1. Interactive
+pi omits the flag so project MCP still needs TTY approval. Headless Gemini defaults
+<code>GEMINI_CLI_TRUST_WORKSPACE=true</code> on spawn but preserves an explicit parent
+value (including <code>false</code>) — <code>--skip-trust</code> alone does not connect project
+<code>.gemini/settings.json</code> MCP in untrusted folders (including <code>/tmp</code>). Claude
+project <code>.mcp.json</code> loads via <code>-p</code> + <code>--dangerously-skip-permissions</code>.</p>
+<h2 id="load-flow-matches-acpx-provider">Load flow (matches acpx-provider)</h2>
+<ol>
+<li>Read <code>cli_agents</code> at extension load</li>
+<li>For each agent: probe binary (30s discovery timeout), create agent state</li>
+<li><strong>Discover models from the CLI only</strong> (see below) — no API keys, no cloud list APIs</li>
+<li>
+<p>Register <code>cli-${agent}</code> via <strong><code>createRuntimeProvider()</code></strong> (shared helper wrapping
+   <code>createProvider</code>) then <code>pi.registerProvider(provider)</code> (pi ≥ 0.84.0), with discovered
+   models or <code>${agent}:default</code> if discovery returns empty</p>
+</li>
+<li>
+<p>Skip registration if binary missing (no agent state)</p>
+</li>
+<li>
+<p>Start session reaper (5m sweep; no immediate sweep at load) for
+   <code>~/.pi/cli-sessions/</code> — deletes idle <code>status=stopped</code> markers only.
+   Never deletes <code>status=running</code> (own or other <code>piSessionId</code>) so concurrent
+   pi sessions in the same cwd keep CLI <code>--resume</code> (issue #661).</p>
+</li>
+<li>
+<p>On <code>session_start</code> / <code>before_agent_start</code>:</p>
+</li>
+<li>Bind markers to real <code>sessionManager.getSessionId()</code> (not env <code>PI_SESSION_ID</code>)</li>
+<li>Until bound, each process uses a unique provisional <code>tmp-&lt;uuid&gt;</code> bucket
+     (never shared <code>"default"</code>) so concurrent sessions cannot steal <code>--resume</code></li>
+<li>On bind: migrate this process's provisional markers onto the real UUID</li>
+<li><code>reason=resume</code> / <code>new</code> (or pi session id change): clear markers for this
+     <code>piSessionId</code> (+ this process provisional; legacy <code>default</code> only if still
+     used), force next turn to re-seed from pi <code>context.messages</code> (other
+     concurrent pi sessions in the same cwd are kept)</li>
+<li>
+<p><code>reason=reload</code>: keep markers so CLI <code>--resume</code> continues</p>
+</li>
+<li>
+<p>On <code>session_shutdown</code>: stop reaper, clear AgentState / in-memory maps, and
+   reset providers <code>initialized</code> so the next factory invocation re-registers
+   (needed for <code>/new</code>|<code>/resume</code>|<code>/fork</code>; disk markers kept for <code>/reload</code> resume)</p>
+</li>
+</ol>
+<p><code>pi --help</code> / <code>pi --version</code> (and <code>-h</code> / <code>-v</code>) still load extensions; both
+<code>cli-provider</code> and <code>acpx-provider</code> early-return via <code>isPiMetaInvocation()</code> so
+they do not run model discovery for meta invocations.</p>
+<h2 id="native-createprovider-pi-0840">Native createProvider (pi ≥ 0.84.0)</h2>
+<p>Shared helper: <code>extensions/shared/create-runtime-provider.ts</code>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Piece</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>auth /login</strong></td>
+<td><code>/login cli-&lt;agent&gt;</code> stores marker credential <code>configured</code> when <code>isCliAgentConfigured</code> (binary on PATH <strong>and</strong> agent state). Ambient <code>resolve</code>/<code>check</code> succeed when configured.</td>
+</tr>
+<tr>
+<td><strong>fetchModels</strong></td>
+<td>Not configured (<code>!isCliAgentConfigured</code>) → <code>[]</code>. Configured (PATH + AgentState) + empty discovery → <code>${agent}:default</code>.</td>
+</tr>
+<tr>
+<td><strong>filterModels</strong></td>
+<td>Hides models when <code>isCliAgentConfigured</code> is false (binary gone or <code>agents</code> cleared on shutdown)</td>
+</tr>
+<tr>
+<td><strong>streams</strong></td>
+<td>Native <code>ProviderStreams</code>: <code>{ stream, streamSimple }</code> both wrap <code>streamCli</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Legacy <code>pi.registerProvider(name, { apiKey, streamSimple })</code> bags are <strong>not</strong> used.</p>
+<p><strong>Binary missing at load</strong> → provider is not registered; install then <code>/reload</code> or
+restart.</p>
+<p><strong>Already registered, PATH cleared (AgentState remains)</strong> → restore PATH; models
+show again via filter/ambient. <code>/login</code> only stores the credential; model refresh
+rediscovers.</p>
+<p><strong>After <code>session_shutdown</code></strong> → AgentState / instance maps cleared and
+<code>initialized</code> reset. The next extension factory call (after <code>/new</code>|<code>/resume</code>|
+<code>/fork</code>) re-runs discovery + <code>registerProvider</code> so saved <code>cli-*</code> / <code>acpx-*</code>
+defaults remain available. PATH restore alone does not recreate AgentState;
+re-registration does.</p>
+<h3 id="cold-start-default-restore-753">Cold-start default restore (#753)</h3>
+<p>pi <code>findInitialModel</code> needs both <code>getModel</code> and <code>hasConfiguredAuth</code>. Native
+<code>createProvider</code> registration does not provisionally mark auth configured, so a
+cold start can race: models are registered but <code>hasConfiguredAuth</code> is still
+false → wrong initial model even when agent <code>settings.json</code> has
+<code>defaultProvider</code> / <code>defaultModel</code>.</p>
+<p>Implementation: <code>extensions/providers/restore-default-model.ts</code>, hooked from
+<code>session_start</code> in <code>extensions/providers/index.ts</code> (fire-and-forget so startup
+is not blocked by retries). Provider-agnostic — any saved default is restored
+when gates pass (no hardcoded provider/model allowlists).</p>
+<p><strong>Settings:</strong> Merged like pi <code>SettingsManager</code> — global
+(<code>PI_CODING_AGENT_DIR/settings.json</code> if set, else <code>~/.pi/agent/settings.json</code>)
+plus project <code>cwd/.pi/settings.json</code> (from <code>ctx.cwd</code>) <strong>only when the project
+is trusted</strong> (<code>ctx.isProjectTrusted()</code>); untrusted sessions use global defaults
+only. When trusted, project wins for <code>defaultProvider</code> / <code>defaultModel</code> /
+<code>enabledModels</code>. ExtensionContext has <code>cwd</code> but no <code>agentDir</code>.</p>
+<p><strong>Gate (must all pass):</strong></p>
+<ol>
+<li>Settings have both <code>defaultProvider</code> and <code>defaultModel</code> (non-empty)</li>
+<li>
+<p><code>session_start</code> <code>reason</code> is <code>startup</code> or <code>new</code> (skip <code>resume</code> / <code>fork</code> /
+   <code>reload</code>)</p>
+</li>
+<li>
+<p>Current model is missing <strong>or</strong> current provider/id ≠ saved default</p>
+</li>
+<li>
+<p><code>process.argv</code> does not contain <code>--model</code>, <code>--provider</code>, or <code>--models</code>
+   (CLI override)</p>
+</li>
+<li>
+<p>Settings <code>enabledModels</code> is missing or empty (non-empty scopes models the
+   same way as <code>--models</code>; restore must not set an out-of-scope default)</p>
+</li>
+</ol>
+<p><strong>Retry:</strong> Up to 5 attempts × 100ms when the model is not yet resolvable
+(<code>registry.find</code> / <code>getAvailable</code> fallback) or <code>setModel</code> returns false
+(stale auth). Warns on exhaust for unresolvable <strong>or</strong> repeated <code>setModel</code>
+failure/throw. Production does <strong>not</strong>
+pass a <code>registeredProviders</code> list (a cli/acpx-only list would falsely
+fail-fast native defaults). Optional <code>registeredProviders</code> fail-fast remains
+for tests only. Does <strong>not</strong> fail-fast from <code>getAvailable()</code> missing the
+target — that API is auth-filtered and can omit the default during the #753
+race.</p>
+<p><strong>Live re-check:</strong> Before each attempt (and again immediately before
+<code>setModel</code>), optional <code>getCurrentModel</code> (wired as <code>() =&gt; ctx.model</code>) aborts
+if current already matches the saved default, changed away from the
+<code>session_start</code> snapshot, or — when there was no initial model — any
+non-default live selection appears mid-retry (user intent).</p>
+<p>Complements #752 (<code>/new</code> re-register); does not replace an upstream
+provisional-auth fix.</p>
+<h2 id="model-discovery-cli-only">Model discovery (CLI only)</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>How models are discovered</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cursor</code></td>
+<td>Run <code>agent --list-models</code> (account-scoped list from the CLI)</td>
+</tr>
+<tr>
+<td><code>claude</code></td>
+<td>No list flag — chunk-scan the selectable catalog embedded in the installed <code>claude</code> binary (no full-file string load; binaries are ~250MB+)</td>
+</tr>
+<tr>
+<td><code>gemini</code></td>
+<td>No list flag — parse <code>isVisible: true</code> model definitions from the installed <code>gemini</code> CLI package</td>
+</tr>
+</tbody>
+</table></div>
+<p>Results cached under <code>~/.pi/cli-model-cache/</code> (keyed by binary mtime/size; no TTL — invalidates when the binary changes).</p>
+<p>No curated model lists and no API-key-based discovery.</p>
+<h3 id="modelsdev-metadata-fill-cli-acpx-only">models.dev metadata fill (CLI / ACPX only)</h3>
+<p>Discovery still owns <strong>which</strong> models exist. After discovery, missing
+<code>contextWindow</code> / <code>maxTokens</code> / cost / input modalities are filled
+from <a href="https://models.dev">models.dev</a> <code>api.json</code>.</p>
+<p>Thinking level is <strong>not</strong> copied from the catalog. CLI <code>-high</code> /
+ACPX <code>[effort=high]</code> (also <code>xhigh|medium|low|minimal|max|off</code>) set
+<code>reasoning</code> and <code>pi.setThinkingLevel</code> on <code>session_start</code> / <code>model_select</code>.
+<code>-fast</code> is not a thinking token. Catalog <code>reasoning: true</code> alone must
+not show <code>thinking off</code> for <code>cursor-grok-4.6-high</code>.</p>
+<ul>
+<li>Cache: <code>~/.pi/pi-config/models.dev.json</code></li>
+<li>Fetch on first use; refresh when the file is older than 1 day</li>
+<li>Stale cache is kept if the fetch fails</li>
+<li>Native pi providers are not modified</li>
+<li>Unmapped ids (e.g. <code>composer-2.5</code>) keep <code>buildRuntimeModel</code> defaults (200k / 32k)</li>
+<li>ACPX <code>context=</code> in the id (e.g. <code>[context=200k]</code>) wins over the catalog</li>
+</ul>
+<p>Mapping examples: <code>cursor-grok-4.6-high</code> → <code>xai/grok-4.6</code>;
+<code>claude-4.6-opus-high</code> → <code>anthropic/claude-opus-4-6</code>;
+<code>grok-4.6[effort=xhigh,fast=false]</code> → <code>xai/grok-4.6</code>.</p>
+<p>Code: <code>extensions/shared/models-dev.ts</code>.</p>
+<h3 id="cli-model-ids-acpx-model-ids">CLI model ids ≠ acpx model ids</h3>
+<p><code>cli-*</code> and <code>acpx-*</code> share agent names (<code>cursor</code>, <code>claude</code>, …) but <strong>not</strong> model id strings. Always discover and pass ids in the namespace of the transport you use.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Transport</th>
+<th>Example ids</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CLI (<code>agent --model</code>)</td>
+<td><code>composer-2.5</code>, <code>cursor-grok-4.5-high</code>, <code>claude-4.6-opus-high</code></td>
+</tr>
+<tr>
+<td>acpx (<code>availableModelIds</code>)</td>
+<td><code>composer-2.5[fast=true]</code>, <code>grok-4.5[effort=high,fast=true]</code>, <code>claude-opus-4-6[thinking=true,context=200k,effort=high]</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Never feed acpx model ids into CLI <code>--model</code>, and never register acpx ids under <code>cli-*</code>.</p>
+<h2 id="turn-flow-matches-acpx-provider">Turn flow (matches acpx-provider)</h2>
+<ol>
+<li>Await discovery <code>ready</code></li>
+<li>Ensure session (<code>--resume</code> id from <code>~/.pi/cli-sessions/</code>)</li>
+<li>Apply system prompt <strong>once</strong> per model session (first turn)</li>
+<li>Prompt:</li>
+<li><strong>Existing CLI session</strong> → latest user message only (CLI keeps its own history)</li>
+<li>
+<p><strong>New CLI session</strong> (switched to <code>cli-*</code> mid-pi-session, or after <code>/resume</code> /
+     <code>/new</code> forced re-seed) → seed prior pi user/assistant turns + current message</p>
+</li>
+<li>
+<p>Stream <code>stream-json</code> events live into pi (<code>text_delta</code> / thinking) — not buffered until the end</p>
+</li>
+<li>Persist / touch session id (<code>lastSeenAt</code>) for later turns</li>
+<li>If <code>--resume</code> fails (dead/invalid session): clear marker, re-seed history, retry once without resume.
+   Abort / SIGTERM (exit 143) / SIGINT (130) do <strong>not</strong> clear the marker — that is
+   cancel, not “session not found”.</li>
+</ol>
+<h3 id="resume-cli-session-contract-issue-661"><code>/resume</code> ↔ CLI session contract (issue #661)</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Pi event</th>
+<th>CLI marker</th>
+<th>Next turn</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/reload</code></td>
+<td>keep</td>
+<td>latest only (<code>--resume</code>)</td>
+</tr>
+<tr>
+<td><code>/resume</code> or <code>/new</code></td>
+<td>clear for cwd</td>
+<td>re-seed from pi history (fresh CLI chat)</td>
+</tr>
+<tr>
+<td>Mid-turn abort / SIGTERM</td>
+<td>keep</td>
+<td>retry or surface error — do not wipe</td>
+</tr>
+<tr>
+<td>True “session not found”</td>
+<td>clear</td>
+<td>re-seed once</td>
+</tr>
+</tbody>
+</table></div>
+<p>Pi UI history and the Cursor/Claude/Gemini chat are different stores. After
+<code>/resume</code>, only pi JSONL is authoritative until the next seeded CLI turn.</p>
+<h3 id="turn-timeout-none-by-default">Turn timeout (none by default)</h3>
+<p><code>runCliAgent</code> has <strong>no default <code>timeoutMs</code></strong>. Long turns (autoqodo, large tool
+loops) must not be killed by an arbitrary wall clock. Cancellation is via
+upstream <strong><code>AbortSignal</code></strong> only. Callers may pass explicit <code>timeoutMs</code> when they
+want a bound. See issue #647.</p>
+<h3 id="session-directory-picli-sessions">Session directory (<code>~/.pi/cli-sessions/</code>)</h3>
+<p>File-backed bindings keyed by cwd + agent + model + <strong>pi session UUID</strong>
+(from <code>sessionManager.getSessionId()</code>). Before that UUID is known, each process
+uses a unique provisional <code>tmp-&lt;uuid&gt;</code> id — never a shared <code>"default"</code> bucket —
+so concurrent pi sessions cannot overwrite each other's CLI <code>--resume</code> markers.
+On bind, provisional markers migrate onto the real UUID.</p>
+<ul>
+<li>Fields: <code>sessionId</code>, <code>status</code>, <code>createdAt</code>, <code>lastSeenAt</code>, <code>resumeFailures</code>, <code>piSessionId</code></li>
+<li>
+<p><strong>Reaper:</strong> every 5m, drop idle <code>status=stopped</code> markers (≥ 30m). Never deletes
+  <code>status=running</code> for any <code>piSessionId</code> — concurrent pi sessions in the same
+  cwd keep CLI <code>--resume</code> (issue #661)</p>
+</li>
+<li>
+<p><code>/reload</code> keeps markers so <code>--resume</code> can continue</p>
+</li>
+<li><code>/resume</code> / <code>/new</code> clears this session’s markers (+ this process’s provisional;
+  legacy <code>default</code> only when still used) and forces a history re-seed on the next turn</li>
+</ul>
+<h2 id="streaming-flags">Streaming flags</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Live stream</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>cursor</td>
+<td><code>--output-format stream-json --stream-partial-output</code></td>
+</tr>
+<tr>
+<td>claude</td>
+<td><code>--verbose --output-format stream-json --include-partial-messages</code> (<code>stream-json</code> requires <code>--verbose</code>)</td>
+</tr>
+<tr>
+<td>gemini</td>
+<td><code>--output-format stream-json</code> (assistant text arrives as <code>type:message</code> deltas)</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="provider-ids">Provider ids</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Provider id</th>
+<th>Binary</th>
+<th>Model id shape</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cli-claude</code></td>
+<td><code>claude</code></td>
+<td><code>claude:&lt;model&gt;</code></td>
+</tr>
+<tr>
+<td><code>cli-gemini</code></td>
+<td><code>gemini</code></td>
+<td><code>gemini:&lt;model&gt;</code></td>
+</tr>
+<tr>
+<td><code>cli-cursor</code></td>
+<td><code>agent</code></td>
+<td><code>cursor:&lt;model&gt;</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="headless-trust-vs-tool-approval">Headless trust vs tool approval</h2>
+<p><code>cli-*</code> runs CLIs non-interactively (no TTY). Two separate concerns:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>What it does</th>
+<th>If missing in headless</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Workspace trust</strong></td>
+<td>Skip “do you trust this directory?”</td>
+<td>Immediate exit / hard error</td>
+</tr>
+<tr>
+<td><strong>Tool auto-approve</strong></td>
+<td>Skip “allow this command/edit?” prompts</td>
+<td>Hang, deny, or fail — <strong>no user can answer</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Trust alone is not enough.</strong> <code>--yolo</code> / <code>--force</code> is required so tool calls can proceed.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Workspace trust</th>
+<th>Tool auto-approve</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>cursor</td>
+<td><code>--trust</code></td>
+<td><code>--force</code> (<code>--yolo</code> alias)</td>
+</tr>
+<tr>
+<td>claude</td>
+<td>skipped by <code>-p</code></td>
+<td><code>--dangerously-skip-permissions</code></td>
+</tr>
+<tr>
+<td>gemini</td>
+<td><code>--skip-trust</code></td>
+<td><code>--yolo</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>This matches using the CLI as a backend LLM with full tool access (same intent as the system prompt we inject).</p>
+<h2 id="logging">Logging</h2>
+<p>Operational logs go to <strong><code>~/.pi/logs/</code></strong> (never <code>console.*</code> — that leaks into the chat text box):</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>~/.pi/logs/cli-provider.log</code></td>
+<td>discovery, registration, resume recover, session reaper</td>
+</tr>
+<tr>
+<td><code>~/.pi/logs/dreaming.log</code></td>
+<td>dream skip/sidecar notes, provenance merge, promotion/rebuild errors</td>
+</tr>
+<tr>
+<td><code>~/.pi/logs/providers/</code></td>
+<td><code>createLogger("providers")</code> — restore-default-model, initialized-guard, session_shutdown</td>
+</tr>
+<tr>
+<td><code>~/.pi/logs/models-dev/</code></td>
+<td>models.dev fetch/cache hit/miss and CLI/ACPX catalog mapping</td>
+</tr>
+</tbody>
+</table></div>
+<p>Helper: <code>extensions/shared/file-logger.ts</code></p>
+<ul>
+<li><code>getPiLogPath</code> is pure; mkdir only on write</li>
+<li>Newlines collapsed to <code>\n</code></li>
+<li>Falls back to <code>$TMPDIR/pi-logs/</code> if <code>~/.pi/logs</code> unwritable</li>
+<li>Sync I/O by design for low-volume ops events (mkdir every write; no dir cache)</li>
+</ul>
+<h2 id="async">Async</h2>
+<p>Unlike <code>acpx-provider</code>, this extension <strong>loads in subagent children</strong> (<code>PI_SUBAGENT_CHILD</code>).<br>
+<code>supportsAsyncLlm</code> is <strong>true</strong> for <code>cli-*</code> — no coerce-to-sync, no sidecar required.</p>
+<h2 id="bug-fix-policy">Bug / fix policy</h2>
+<p>A bug reported against <strong>one</strong> CLI (e.g. cursor) is assumed to apply to <strong>all</strong> <code>cli-*</code> agents unless proven agent-specific (unique flag/binary quirk).</p>
+<p>When fixing: check and land the same class of fix for <code>cursor</code>, <code>claude</code>, and <code>gemini</code> (trust/approve flags, streaming, history seeding, session resume, parsing, etc.).</p>
+<h2 id="specialist-agents-for-cli-backends">Specialist agents for CLI backends</h2>
+<p>Pi’s <code>subagent</code> tool is <strong>not</strong> in the CLI tool loop. Cursor / Claude / Gemini load
+specialists from their own project dirs. Package source of truth remains <code>agents/*.md</code>.</p>
+<h3 id="container-pi-docker">Container (<code>pi-docker</code>)</h3>
+<p>Automatic on start (<code>entrypoint.sh</code> → <code>scripts/symlink-cli-specialists.sh</code>):</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Dir</th>
+<th>CLI</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.cursor/agents/*.md</code></td>
+<td>Cursor Agent (<code>cli-cursor</code>)</td>
+</tr>
+<tr>
+<td><code>.claude/agents/*.md</code></td>
+<td>Claude Code (<code>cli-claude</code>)</td>
+</tr>
+<tr>
+<td><code>.gemini/agents/*.md</code></td>
+<td>Gemini CLI (<code>cli-gemini</code>)</td>
+</tr>
+</tbody>
+</table></div>
+<p>File symlinks via <code>ln -sfn</code> (overwrite OK; concurrent containers on the same mount are fine).
+Dirs are gitignored in the container (see <code>add_to_gitignore</code> in <code>entrypoint.sh</code>).</p>
+<h3 id="native-non-container">Native (non-container)</h3>
+<p>No auto-sync. Symlink or copy package agents yourself, for example:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">PKG</span><span class="o">=</span><span class="s2">"</span><span class="nv">$HOME</span><span class="s2">/.pi/agent/npm/node_modules/pi-orchestrator-config/agents"</span>
+mkdir<span class="w"> </span>-p<span class="w"> </span>.cursor/agents<span class="w"> </span>.claude/agents<span class="w"> </span>.gemini/agents
+<span class="k">for</span><span class="w"> </span>f<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="s2">"</span><span class="nv">$PKG</span><span class="s2">"</span>/*.md<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">  </span>ln<span class="w"> </span>-sfn<span class="w"> </span><span class="s2">"</span><span class="nv">$f</span><span class="s2">"</span><span class="w"> </span><span class="s2">".cursor/agents/</span><span class="k">$(</span>basename<span class="w"> </span><span class="s2">"</span><span class="nv">$f</span><span class="s2">"</span><span class="k">)</span><span class="s2">"</span>
+<span class="w">  </span>ln<span class="w"> </span>-sfn<span class="w"> </span><span class="s2">"</span><span class="nv">$f</span><span class="s2">"</span><span class="w"> </span><span class="s2">".claude/agents/</span><span class="k">$(</span>basename<span class="w"> </span><span class="s2">"</span><span class="nv">$f</span><span class="s2">"</span><span class="k">)</span><span class="s2">"</span>
+<span class="w">  </span>ln<span class="w"> </span>-sfn<span class="w"> </span><span class="s2">"</span><span class="nv">$f</span><span class="s2">"</span><span class="w"> </span><span class="s2">".gemini/agents/</span><span class="k">$(</span>basename<span class="w"> </span><span class="s2">"</span><span class="nv">$f</span><span class="s2">"</span><span class="k">)</span><span class="s2">"</span>
+<span class="k">done</span>
+</code></pre></div>
+
+<p>Cursor CLI Task discovery needs <strong>project</strong> <code>.cursor/agents/</code> (user-global
+<code>~/.cursor/agents</code> is not enough in headless <code>-p</code>). Prefer the same project layout for
+Claude/Gemini so all three match.</p>
+<h2 id="module">Module</h2>
+<p><code>extensions/cli-provider/</code> — per-agent drivers under <code>agents/</code> (add a new CLI there + register in <code>providers.ts</code>). <code>discoverCliModels()</code> exported for external registries.</p>
+<h2 id="related-pages">Related Pages</h2>
+<ul>
+<li><a href="acpx-provider.html">ACPX Provider Integration</a> — the sibling transport; this extension mirrors its load flow and turn flow.</li>
+<li><a href="configuration.html">Configuration &amp; Settings</a> — the <code>cli_agents</code> key reference.</li>
+<li><a href="external-ai-agents.html">External AI Agents &amp; CLI</a> — running the same CLIs one-shot via <code>myk-pi-tools ai-cli</code>.</li>
+<li><a href="async-internals.html">Async &amp; Runtime Internals</a> — how <code>cli-*</code> providers interact with detached async agents.</li>
+<li><a href="project-settings.html">Project Settings Internals</a> — the settings machinery behind <code>cli_agents</code>.</li>
+</ul>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="async-internals.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Async &amp; Runtime Internals</span>
+                </a>
+
+
+                <a href="extension-commands.html" class="page-nav-link page-nav-next">
+                    <span class="page-nav-label">Next</span>
+                    <span class="page-nav-title">Extension Commands</span>
+                </a>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#settings">Settings</a></li>
+<li><a href="#working-directory-issue-768">Working directory (issue #768)</a></li>
+<li><a href="#load-flow-matches-acpx-provider">Load flow (matches acpx-provider)</a></li>
+<li><a href="#native-createprovider-pi-0840">Native createProvider (pi ≥ 0.84.0)</a><ul>
+<li><a href="#cold-start-default-restore-753">Cold-start default restore (#753)</a></li>
+</ul>
+</li>
+<li><a href="#model-discovery-cli-only">Model discovery (CLI only)</a><ul>
+<li><a href="#modelsdev-metadata-fill-cli-acpx-only">models.dev metadata fill (CLI / ACPX only)</a></li>
+<li><a href="#cli-model-ids-acpx-model-ids">CLI model ids ≠ acpx model ids</a></li>
+</ul>
+</li>
+<li><a href="#turn-flow-matches-acpx-provider">Turn flow (matches acpx-provider)</a><ul>
+<li><a href="#resume-cli-session-contract-issue-661">/resume ↔ CLI session contract (issue #661)</a></li>
+<li><a href="#turn-timeout-none-by-default">Turn timeout (none by default)</a></li>
+<li><a href="#session-directory-picli-sessions">Session directory (~/.pi/cli-sessions/)</a></li>
+</ul>
+</li>
+<li><a href="#streaming-flags">Streaming flags</a></li>
+<li><a href="#provider-ids">Provider ids</a></li>
+<li><a href="#headless-trust-vs-tool-approval">Headless trust vs tool approval</a></li>
+<li><a href="#logging">Logging</a></li>
+<li><a href="#async">Async</a></li>
+<li><a href="#bug-fix-policy">Bug / fix policy</a></li>
+<li><a href="#specialist-agents-for-cli-backends">Specialist agents for CLI backends</a><ul>
+<li><a href="#container-pi-docker">Container (pi-docker)</a></li>
+<li><a href="#native-non-container">Native (non-container)</a></li>
+</ul>
+</li>
+<li><a href="#module">Module</a></li>
+<li><a href="#related-pages">Related Pages</a></li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            Built from <code>docs/*.md</code> by <code>pi-docsite</code>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js?v=66bf87bdd9"></script>
+
+    <script src="assets/search.js?v=66bf87bdd9"></script>
+    <script src="assets/copy.js?v=66bf87bdd9"></script>
+    <script src="assets/callouts.js?v=66bf87bdd9"></script>
+    <script src="assets/scrollspy.js?v=66bf87bdd9"></script>
+    <script src="assets/codelabels.js?v=66bf87bdd9"></script>
+    <script src="assets/github.js?v=66bf87bdd9"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+<!-- generated by pi-docsite -->
+</body>
+</html>

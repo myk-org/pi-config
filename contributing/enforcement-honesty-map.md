@@ -62,4 +62,4 @@ jq -r '.entries | to_entries[] | select(.value.trigger and .value.action or .val
 2. Or evidence accumulates → `memory-promotion.ts` auto-applies high-confidence `block`/`warn`
 3. Ambiguous mechanical lessons stay `proposed` in `promotions.md` until filled in
 
-See also: `dev-docs/memory-architecture.md` Layer 5–6, `rules/35-memory.md`.
+See also: `docs/memory-architecture.md` Layer 5–6, `rules/35-memory.md`.
