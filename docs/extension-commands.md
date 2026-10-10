@@ -23,6 +23,9 @@ the internals that are not visible from usage alone.
 | `/pi-config-settings [project\|global]` | `settings-tui.ts` + `settings-tui-helpers.ts` | Interactive settings editor overlay |
 | `/nvim-changed-files` | `nvim.ts` | Send changed files to nvim quickfix |
 | `/coms` | `coms/coms-wrapper.ts` | P2P agent communication (start/stop/status) |
+| `/coms-queue` | `coms/coms-p2p.ts` | View and kill queued peer messages |
+| `/repair` | `session-validation.ts` | Repair session — fix orphaned tool calls that break API requests |
+| `/tasks` | `pitasks/index.ts` | Manage tasks — view, create, clear completed |
 | `/external-ai-models-refresh` | `extended-autocomplete.ts` | Refresh AI CLI model cache |
 
 ## Cron Delivery Internals

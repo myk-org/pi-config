@@ -52,7 +52,9 @@ For what it looks like from the user side, see [Configuration & Settings](config
 - **Agent lists:** `acpx_agents` and `cli_agents` use multi-select with ☑/☐ toggles.
 - **Agent overrides:** Nested per-agent provider/model editor.
 - **Secret masking:** Keys matching `token|secret|password|auth` are masked in the list and never prefilled in the editor.
-- **JSONC preservation:** The TUI always writes to `.json` (not `.jsonc`) to preserve user comments in `.jsonc` files.
+- **Write format:** The TUI writes plain JSON (atomic write-then-rename) to the scope's settings file — the
+  existing `.jsonc` file when one is present. Comments in the written file are lost on write, by design;
+  the shipped `pi-config-settings.example.jsonc` is the commented reference.
 - **Immediate save:** Each change writes immediately with `clearSettingsCache()`.
 
 Files: `extensions/orchestrator/settings-tui.ts`, `settings-tui-helpers.ts`, `settings-tui-submenus.ts`.

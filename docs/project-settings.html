@@ -394,8 +394,14 @@ For what it looks like from the user side, see <a href="configuration.html">Conf
 </li>
 <li><strong>Agent overrides:</strong> Nested per-agent provider/model editor.</li>
 <li><strong>Secret masking:</strong> Keys matching <code>token|secret|password|auth</code> are masked in the list and never prefilled in the editor.</li>
-<li><strong>JSONC preservation:</strong> The TUI always writes to <code>.json</code> (not <code>.jsonc</code>) to preserve user comments in <code>.jsonc</code> files.</li>
-<li><strong>Immediate save:</strong> Each change writes immediately with <code>clearSettingsCache()</code>.</li>
+<li>
+<p><strong>Write format:</strong> The TUI writes plain JSON (atomic write-then-rename) to the scope's settings file — the
+  existing <code>.jsonc</code> file when one is present. Comments in the written file are lost on write, by design;
+  the shipped <code>pi-config-settings.example.jsonc</code> is the commented reference.</p>
+</li>
+<li>
+<p><strong>Immediate save:</strong> Each change writes immediately with <code>clearSettingsCache()</code>.</p>
+</li>
 </ul>
 <p>Files: <code>extensions/orchestrator/settings-tui.ts</code>, <code>settings-tui-helpers.ts</code>, <code>settings-tui-submenus.ts</code>.</p>
 <h2 id="module">Module</h2>

@@ -161,6 +161,6 @@ runtime value falls back to `user`. The async-status detail header appends
 
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) — the user-facing async and cron workflows this page implements.
 - [Background Memory Consolidation (Dreaming)](background-dreaming.html) — the dream passes that rely on async LLM capability.
-- [Inter-Agent Communication](inter-agent-communication.md) — peer-to-peer messaging between async agents.
+- [Inter-Agent Communication](inter-agent-communication.html) — peer-to-peer messaging between async agents.
 - [CLI Provider Internals](cli-provider.html) — the `cli-*` providers that load in subagent children.
 - [Configuration & Settings](configuration.html) — the async-related settings keys.

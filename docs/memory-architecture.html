@@ -379,8 +379,8 @@ architectural ideas.</p>
 <tr>
 <td>Score index</td>
 <td>Stability score, evidence count, lifecycle, enforcement metadata</td>
-<td><code>.pi/memory/memory-scores.json</code></td>
-<td>Decides which memories stay active and which fade out.</td>
+<td><code>.pi/memory/memory-scores.jsonl</code></td>
+<td>Decides which memories stay active and which fade out. A legacy <code>memory-scores.json</code> is auto-migrated on first access.</td>
 </tr>
 <tr>
 <td>Embedding store</td>
@@ -412,7 +412,7 @@ architectural ideas.</p>
 <ol>
 <li>A memory enters the system from a direct tool call, the Python CLI, or background consolidation.</li>
 <li>The entry is written into a category topic file such as <code>lessons.md</code> or <code>preferences.md</code>.</li>
-<li>The scoring engine rebuilds <code>memory-scores.json</code>, recalculates stability, and assigns a lifecycle state.</li>
+<li>The scoring engine rebuilds <code>memory-scores.jsonl</code>, recalculates stability, and assigns a lifecycle state.</li>
 <li>The embedding layer lazily creates or refreshes local vectors for semantic search.</li>
 <li>On <code>before_agent_start</code>, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, then appends that material to the tail of the system prompt.</li>
 <li>As evidence accumulates, the promotion system proposes stronger structures such as enforcement metadata or reusable skills.</li>
@@ -614,7 +614,7 @@ architectural ideas.</p>
 <p><strong>Tip:</strong> Pinned memories bypass normal decay, and enforced memories are kept active so their guardrails stay intact.</p>
 </blockquote>
 <h3 id="topic-organization-is-separate-from-scoring">Topic organization is separate from scoring</h3>
-<p>Topic files are organized for readability, while <code>memory-scores.json</code> is organized for ranking and lifecycle management. That separation lets Pi:</p>
+<p>Topic files are organized for readability, while <code>memory-scores.jsonl</code> is organized for ranking and lifecycle management. That separation lets Pi:</p>
 <ul>
 <li>reorder and trim injected memory without rewriting your topic structure every turn</li>
 <li>archive cold topic files when their newest entries have aged past roughly two half-lives</li>
@@ -662,8 +662,12 @@ architectural ideas.</p>
 </tr>
 </tbody>
 </table></div>
-<p>Everything is appended to the <strong>tail</strong> of the system prompt, after rules and instructions. That position is
-deliberate: LLM attention follows a U-shaped curve, and the tail of the prompt receives the strongest attention.</p>
+<p>Only the <code>before_agent_start</code> material — the situation report, vector-matched memories, and session
+history — is appended to the <strong>tail</strong> of the system prompt, after rules and instructions. That position is
+deliberate: LLM attention follows a U-shaped curve, and the tail of the prompt receives the strongest attention.
+The other hooks deliver differently: <code>tool_result</code> enforcement acts on the tool result itself (<code>warn</code> appends to
+it, <code>block</code> prevents it), and <code>turn_end</code> verifier violations are sent as follow-up messages that can trigger a
+retry of the turn.</p>
 <p>Retrieval decisions are logged to <code>.pi/data/memory-telemetry.jsonl</code>, and the injected block carries a Ground
 Truth instruction telling the model to trust the provided context over re-deriving it.</p>
 <h3 id="the-situation-report-is-the-runtime-view">The situation report is the runtime view</h3>
@@ -763,6 +767,9 @@ existing entry instead of creating duplicates.</p>
 </tbody>
 </table></div>
 <p>Evidence thresholds are <code>3</code> for enforcement, <code>3</code> for skill, and <code>5</code> for project rule.</p>
+<p>A promotion pass runs at three moments: when a dream completes (<code>onComplete</code>), when <code>memory_reinforce</code>
+pushes an entry across an evidence threshold, and when the dream or <code>memory_consolidate</code> prompt writers
+flag candidates while reorganizing memory.</p>
 <p>The queue is stored in <code>.pi/memory/promotions.md</code> with statuses of <code>proposed</code>, <code>applied</code>, or <code>rejected</code>.</p>
 <p>A few important boundaries keep this safe:</p>
 <ul>
@@ -774,7 +781,7 @@ existing entry instead of creating duplicates.</p>
 <p><strong>Warning:</strong> Enforced memories are text-hash keyed. If background maintenance rewrites the text of an enforced entry, the binding would break, so the system explicitly protects those entries.</p>
 </blockquote>
 <h3 id="provenance-is-merged-through-a-sidecar">Provenance is merged through a sidecar</h3>
-<p>Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it appends a single line of JSON to <code>.pi/memory/provenance-pending.jsonl</code>. The orchestrator then merges that sidecar into <code>memory-scores.json</code> on completion and deletes it. (A <code>.pi/memory/provenance-pending.json</code> from older versions is still read for backward compatibility.)</p>
+<p>Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it appends a single line of JSON to <code>.pi/memory/provenance-pending.jsonl</code>. The orchestrator then merges that sidecar into <code>memory-scores.jsonl</code> on completion and deletes it. (A <code>.pi/memory/provenance-pending.json</code> from older versions is still read for backward compatibility.)</p>
 <p>This keeps the scoring index authoritative while still preserving traceability.</p>
 <p>User-visible effect: a memory can later explain where it came from without forcing every background worker to edit the score file itself.</p>
 <h3 id="legacy-memory-migration-still-exists">Legacy memory migration still exists</h3>

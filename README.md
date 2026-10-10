@@ -305,7 +305,7 @@ See [`pi-config-settings.example.jsonc`](pi-config-settings.example.jsonc) for a
 
 Resolution order: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 
-See `docs/project-settings.md` for the full settings table.
+See `docs/configuration.md` for the full settings table.
 
 #### Reviewer Environment Variables
 
@@ -368,7 +368,7 @@ Rules auto-load alphabetically. Same-filename entries are overridden (project > 
 
 Rules support settings/feature conditionals at prompt assembly (`assembleRuleText` in
 `rule-placeholders.ts`). Full syntax, truthiness, and assembly order:
-**[docs/project-settings.md](docs/project-settings.md)** (Rules assembly).
+**[docs/rules-and-layers.md](docs/rules-and-layers.md)** (Rules assembly).
 
 Markers: `{{IF:key}}…{{/IF}}`, `{{IFNOT:key}}…{{/IFNOT}}`, comparisons
 `{{IF:key==value}}` / `{{IF:key!=value}}`. Whole-file frontmatter: `requires_setting` /

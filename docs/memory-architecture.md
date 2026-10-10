@@ -15,7 +15,7 @@ The memory system is local, file-backed, and layered. Topic files are the source
 | Layer | What it stores | Where it lives | Why it matters |
 |---|---|---|---|
 | Topic files | Human-readable memory entries by category | `.pi/memory/topics/*.md` | This is the canonical memory content. |
-| Score index | Stability score, evidence count, lifecycle, enforcement metadata | `.pi/memory/memory-scores.json` | Decides which memories stay active and which fade out. |
+| Score index | Stability score, evidence count, lifecycle, enforcement metadata | `.pi/memory/memory-scores.jsonl` | Decides which memories stay active and which fade out. A legacy `memory-scores.json` is auto-migrated on first access. |
 | Embedding store | Local vectors for semantic matching | `.pi/memory/embeddings.json` | Lets Pi retrieve related memories even when the wording changes. |
 | Situation report | Token-budgeted summary for prompt injection | Built at runtime | Determines what memory the agent actually sees during a turn. |
 | Promotion queue | Candidates for skills, enforcement, or project rules | `.pi/memory/promotions.md` | Captures repeated patterns that may deserve stronger structure. |
@@ -25,7 +25,7 @@ The memory system is local, file-backed, and layered. Topic files are the source
 
 1. A memory enters the system from a direct tool call, the Python CLI, or background consolidation.
 2. The entry is written into a category topic file such as `lessons.md` or `preferences.md`.
-3. The scoring engine rebuilds `memory-scores.json`, recalculates stability, and assigns a lifecycle state.
+3. The scoring engine rebuilds `memory-scores.jsonl`, recalculates stability, and assigns a lifecycle state.
 4. The embedding layer lazily creates or refreshes local vectors for semantic search.
 5. On `before_agent_start`, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, then appends that material to the tail of the system prompt.
 6. As evidence accumulates, the promotion system proposes stronger structures such as enforcement metadata or reusable skills.
@@ -116,7 +116,7 @@ The system also applies caps so one category cannot crowd out everything else. C
 
 ### Topic organization is separate from scoring
 
-Topic files are organized for readability, while `memory-scores.json` is organized for ranking and lifecycle management. That separation lets Pi:
+Topic files are organized for readability, while `memory-scores.jsonl` is organized for ranking and lifecycle management. That separation lets Pi:
 
 - reorder and trim injected memory without rewriting your topic structure every turn
 - archive cold topic files when their newest entries have aged past roughly two half-lives
@@ -154,8 +154,12 @@ Memory reaches the model through three extension hooks:
 | `tool_result` | Runs memory-based enforcement: trigger matching followed by `block`, `run_after`, or `warn` actions. |
 | `turn_end` | Injects file-change memory reminders (vector search on modified paths), task-focus enforcement when tasks are active but no tool was called, and semantic enforcement verification that can retry the turn on violations. |
 
-Everything is appended to the **tail** of the system prompt, after rules and instructions. That position is
+Only the `before_agent_start` material — the situation report, vector-matched memories, and session
+history — is appended to the **tail** of the system prompt, after rules and instructions. That position is
 deliberate: LLM attention follows a U-shaped curve, and the tail of the prompt receives the strongest attention.
+The other hooks deliver differently: `tool_result` enforcement acts on the tool result itself (`warn` appends to
+it, `block` prevents it), and `turn_end` verifier violations are sent as follow-up messages that can trigger a
+retry of the turn.
 
 Retrieval decisions are logged to `.pi/data/memory-telemetry.jsonl`, and the injected block carries a Ground
 Truth instruction telling the model to trust the provided context over re-deriving it.
@@ -231,6 +235,10 @@ Current promotion destinations are:
 
 Evidence thresholds are `3` for enforcement, `3` for skill, and `5` for project rule.
 
+A promotion pass runs at three moments: when a dream completes (`onComplete`), when `memory_reinforce`
+pushes an entry across an evidence threshold, and when the dream or `memory_consolidate` prompt writers
+flag candidates while reorganizing memory.
+
 The queue is stored in `.pi/memory/promotions.md` with statuses of `proposed`, `applied`, or `rejected`.
 
 A few important boundaries keep this safe:
@@ -243,7 +251,7 @@ A few important boundaries keep this safe:
 
 ### Provenance is merged through a sidecar
 
-Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it appends a single line of JSON to `.pi/memory/provenance-pending.jsonl`. The orchestrator then merges that sidecar into `memory-scores.json` on completion and deletes it. (A `.pi/memory/provenance-pending.json` from older versions is still read for backward compatibility.)
+Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it appends a single line of JSON to `.pi/memory/provenance-pending.jsonl`. The orchestrator then merges that sidecar into `memory-scores.jsonl` on completion and deletes it. (A `.pi/memory/provenance-pending.json` from older versions is still read for backward compatibility.)
 
 This keeps the scoring index authoritative while still preserving traceability.
 
