@@ -1,6 +1,6 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,6 +43,7 @@ function writeModelsJson(dir: string, providerId: string, modelId: string): void
       },
     }),
   );
+  log.debug("fixture models.json written", { dir, providerId });
 }
 
 /**
@@ -66,27 +67,7 @@ function writeProviderExtension(dir: string, extName: string, providerId: string
 }
 `,
   );
-}
-
-/**
- * Temporarily place a models.json in the default internal agent dir (/tmp/pi-sidecar-agent),
- * restoring any pre-existing file afterwards. Used to verify default-dir resolution
- * behaviorally via provider discovery without depending on prior machine state.
- */
-async function withDefaultAgentDirFixture(providerId: string, fn: () => Promise<void>): Promise<void> {
-  const modelsPath = join(INTERNAL_AGENT_DIR, "models.json");
-  const dirExisted = existsSync(INTERNAL_AGENT_DIR);
-  const hadModels = existsSync(modelsPath);
-  const backup = hadModels ? readFileSync(modelsPath, "utf-8") : undefined;
-  try {
-    mkdirSync(INTERNAL_AGENT_DIR, { recursive: true });
-    writeModelsJson(INTERNAL_AGENT_DIR, providerId, `${providerId}-model`);
-    await fn();
-  } finally {
-    if (backup !== undefined) writeFileSync(modelsPath, backup);
-    else rmSync(modelsPath, { force: true });
-    if (!dirExisted) rmSync(INTERNAL_AGENT_DIR, { recursive: true, force: true });
-  }
+  log.debug("fixture provider extension written", { dir, extName, providerId });
 }
 
 describe("resolveInternalAgentDir", () => {
@@ -187,43 +168,19 @@ describe("SessionStore configured agent dir", { concurrency: false }, () => {
     }
   });
 
-  it("discovers providers from the default dir when constructed with no options", async () => {
-    log.debug("testing default agent dir resolution via provider discovery");
-    await withDefaultAgentDirFixture("default-dir-prov-902", async () => {
-      const store = withAgentDirEnv(undefined, () => new SessionStore());
-      try {
-        const providers = await store.getProviders();
-        assert.ok(
-          providers.some((p) => p.provider === "default-dir-prov-902"),
-          `provider from the default agent dir should be listed, got: ${providers.map((p) => p.provider).join(",")}`,
-        );
-      } finally {
-        await store.disposeAll();
-      }
-    });
-  });
-
-  it("does not pick up the default dir's models.json when a configured dir overrides it", async () => {
-    log.debug("testing configured agent dir takes precedence over the default dir");
-    await withDefaultAgentDirFixture("default-dir-prov-902", async () => {
-      const dir = mkdtempSync(join(tmpdir(), "sidecar-agent-dir-override-"));
-      writeModelsJson(dir, "configured-dir-prov-902", "configured-model");
-      const store = new SessionStore({ agentDir: dir });
-      try {
-        const providers = await store.getProviders();
-        assert.ok(
-          providers.some((p) => p.provider === "configured-dir-prov-902"),
-          "provider from the configured agent dir should be listed",
-        );
-        assert.ok(
-          !providers.some((p) => p.provider === "default-dir-prov-902"),
-          "provider from the default agent dir must not be listed when a configured dir overrides it",
-        );
-      } finally {
-        await store.disposeAll();
-        rmSync(dir, { recursive: true, force: true });
-      }
-    });
+  it("initializes provider discovery on the default path with no options and no env", async () => {
+    log.debug("testing default-path store initialization without touching the shared default dir");
+    // The default dir (/tmp/pi-sidecar-agent) is machine-shared and never written
+    // by tests; selection of the default is covered by the resolveInternalAgentDir
+    // unit tests. Here we only verify the no-option/no-env path initializes.
+    const store = withAgentDirEnv(undefined, () => new SessionStore());
+    try {
+      const providers = await store.getProviders();
+      assert.ok(Array.isArray(providers), "getProviders should return an array on the default path");
+      log.debug("default-path initialization verified", { providerCount: providers.length });
+    } finally {
+      await store.disposeAll();
+    }
   });
 
   it("honors PI_SIDECAR_AGENT_DIR at construction", async () => {
