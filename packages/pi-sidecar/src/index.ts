@@ -1,4 +1,4 @@
-export { SessionStore, type CreateSessionOptions, type CustomToolConfig, DEFAULT_TOOLS } from "./sessions.js";
+export { SessionStore, type CreateSessionOptions, type CustomToolConfig, DEFAULT_TOOLS, resolveInternalAgentDir, INTERNAL_AGENT_DIR } from "./sessions.js";
 export { startWatchdog, type WatchdogOptions } from "./watchdog.js";
 export { createHttpToolExecutor, normalizeHttpToolConfig, interpolate, type HttpToolConfig } from "./http-tool-executor.js";
 export { createLogger } from "./logger.js";
@@ -8,7 +8,7 @@ import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { SessionStore, isValidApiKey, createApiKeyRedactor, redactDiagnostic } from "./sessions.js";
+import { SessionStore, isValidApiKey, createApiKeyRedactor, redactDiagnostic, resolveInternalAgentDir } from "./sessions.js";
 import { startWatchdog, type WatchdogOptions } from "./watchdog.js";
 import { assertPiVersionFloor } from "./pi-version.js";
 import { createLogger, logger } from "./logger.js";
@@ -168,6 +168,12 @@ export function startSidecar(options?: {
   host?: string;
   watchdogUrl?: string;
   watchdogOptions?: WatchdogOptions;
+  /**
+   * Agent dir the internal runtime reads models.json/auth.json/settings.json
+   * from (custom pi providers, credentials, and settings for deployments).
+   * Falls back to PI_SIDECAR_AGENT_DIR, then /tmp/pi-sidecar-agent.
+   */
+  agentDir?: string;
   /** Test hook: runs after TCP listen and before `ready` resolves. */
   beforeListenReady?: () => void | Promise<void>;
 }): StartedSidecarHandle {
@@ -247,7 +253,13 @@ export function startSidecar(options?: {
   // redaction matches what Node actually bound, not just the config string.
   let trustBindHost = HOST;
 
-  const store = new SessionStore();
+  // Internal agent dir for the shared registrar runtime (custom providers/
+  // auth/settings). Precedence: explicit option → PI_SIDECAR_AGENT_DIR →
+  // /tmp/pi-sidecar-agent (see resolveInternalAgentDir in sessions.ts).
+  const agentDir = resolveInternalAgentDir(options?.agentDir);
+  log.info(`startSidecar agentDir=${agentDir}`);
+
+  const store = new SessionStore({ agentDir });
 
   // Set true as the first step of shutdown (close()/watchdog onDead), before
   // server.close() or store.disposeAll() run. New requests hit this check

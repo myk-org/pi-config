@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -428,9 +428,46 @@ function resolveExtensionPaths(entries: ExtensionEntry[]): ResolvedExtensions {
  * context window pressure) and use an in-memory settings store (no on-disk
  * config to load/persist for either). Shared factory so the two call sites
  * (ensureInternalRuntime()'s createRuntime, create()) don't drift.
+ *
+ * When an agentDir is given and it contains a settings.json, that file is
+ * parsed and seeded into the in-memory store — deployments can then supply pi
+ * settings (e.g. defaultProvider) next to their custom models.json/auth.json
+ * (see resolveInternalAgentDir). Compaction stays disabled regardless of what
+ * the seeded file says: sidecar sessions are one-shot over HTTP.
+ *
+ * Exported for tests.
  */
-function createSessionSettingsManager(): SettingsManager {
-  return SettingsManager.inMemory({ compaction: { enabled: false } });
+export function createSessionSettingsManager(agentDir?: string): SettingsManager {
+  return SettingsManager.inMemory({ ...readSettingsSeed(agentDir), compaction: { enabled: false } });
+}
+
+/** Read `<agentDir>/settings.json` as seed settings; {} when absent/unparseable. */
+function readSettingsSeed(agentDir?: string): Record<string, unknown> {
+  const log = createLogger("session-settings");
+  if (!agentDir) {
+    log.debug("No agent dir for settings seeding; using empty settings");
+    return {};
+  }
+  const settingsPath = join(agentDir, "settings.json");
+  try {
+    if (!existsSync(settingsPath)) {
+      log.debug(`No settings.json in agent dir; using empty settings: path=${settingsPath}`);
+      return {};
+    }
+    const parsed: unknown = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      log.warn(`settings.json in agent dir is not a JSON object; ignoring: path=${settingsPath}`);
+      return {};
+    }
+    log.info(`Seeded in-memory settings from agent dir: path=${settingsPath}`);
+    return parsed as Record<string, unknown>;
+  } catch (err) {
+    log.warn(
+      `Failed to read/parse settings.json in agent dir; using empty settings: path=${settingsPath}, ` +
+      `error=${err instanceof Error ? err.message : String(err)}`,
+    );
+    return {};
+  }
 }
 
 /** Internal registrar session never receives prompts — system prompt is a placeholder for clarity in logs/dumps. */
@@ -440,7 +477,25 @@ const INTERNAL_REGISTRAR_SYSTEM_PROMPT =
   "ModelRuntime. You are never prompted.";
 
 /** Default agent dir for the internal registrar runtime; independent of per-request agent_dir overrides. */
-const INTERNAL_AGENT_DIR = "/tmp/pi-sidecar-agent";
+export const INTERNAL_AGENT_DIR = "/tmp/pi-sidecar-agent";
+
+/**
+ * Resolve the agent dir the internal registrar runtime reads models.json /
+ * auth.json / settings.json from (and the per-session default agent dir).
+ * Precedence: explicit option → PI_SIDECAR_AGENT_DIR env var (trimmed,
+ * non-empty) → INTERNAL_AGENT_DIR default. The default is an ephemeral,
+ * undocumented-as-config scratch dir — deployments that want to supply custom
+ * providers/settings set the option or the env var to a persistent dir.
+ * Exported for tests.
+ */
+export function resolveInternalAgentDir(explicit?: string): string {
+  const log = createLogger("agent-dir");
+  const fromEnv = process.env.PI_SIDECAR_AGENT_DIR?.trim();
+  const resolved = explicit !== undefined ? explicit : (fromEnv || INTERNAL_AGENT_DIR);
+  const source = explicit !== undefined ? "option" : fromEnv ? "env" : "default";
+  log.debug(`AGENT_DIR_RESOLVED: dir=${resolved}, source=${source}`);
+  return resolved;
+}
 
 /**
  * Builds the CreateAgentSessionRuntimeFactory for the internal registrar
@@ -470,7 +525,7 @@ function createInternalRuntimeFactory(extensionPaths: string[], legacyAmbientPro
   const log = createLogger("internal-runtime-factory");
   log.debug("Internal runtime factory configured", { extensionCount: extensionPaths.length });
   return async ({ cwd, agentDir, sessionManager: runtimeSessionManager, sessionStartEvent }) => {
-    const settingsManager = createSessionSettingsManager();
+    const settingsManager = createSessionSettingsManager(agentDir);
     const services = await createAgentSessionServices({
       cwd,
       agentDir,
@@ -732,6 +787,18 @@ export class SessionStore {
    */
   private _disposed = false;
 
+  /**
+   * Agent dir the internal registrar runtime reads models.json/auth.json/
+   * settings.json from, and the per-session default agent dir. Resolved once
+   * at construction (see resolveInternalAgentDir); per-request agent_dir still
+   * overrides the session ResourceLoader only.
+   */
+  private readonly agentDir: string;
+
+  constructor(options?: { agentDir?: string }) {
+    this.agentDir = resolveInternalAgentDir(options?.agentDir);
+  }
+
   get disposed(): boolean {
     return this._disposed;
   }
@@ -837,7 +904,7 @@ export class SessionStore {
 
         const runtime = await createAgentSessionRuntime(createRuntime, {
           cwd: "/tmp",
-          agentDir: INTERNAL_AGENT_DIR,
+          agentDir: this.agentDir,
           sessionManager,
         });
         // disposeAll() may have run while we were creating — never leave an
@@ -859,7 +926,7 @@ export class SessionStore {
           const log = diagnostic.type === "error" ? logger.error : diagnostic.type === "warning" ? logger.warn : logger.debug;
           log(`[sidecar] INTERNAL_RUNTIME_DIAGNOSTIC: type=${diagnostic.type}, message=${diagnostic.message}`);
         }
-        logger.info(`[sidecar] INTERNAL_RUNTIME_CREATED: extensions=${extensionPaths.length}, agentDir=${INTERNAL_AGENT_DIR}`);
+        logger.info(`[sidecar] INTERNAL_RUNTIME_CREATED: extensions=${extensionPaths.length}, agentDir=${this.agentDir}`);
       })();
     }
     await this.runtimeInit;
@@ -1505,19 +1572,19 @@ export class SessionStore {
     const allToolNames = [...tools, ...customToolNames];
     log.debug(`[sidecar] Tools configured: builtin=${tools.length}, custom=${customTools.length}`);
 
-    const settingsManager = createSessionSettingsManager();
-
     // The Pi SDK's DefaultResourceLoader automatically discovers project-level resources
     // from {cwd}/.pi/ — including skills, prompts, extensions, and themes.
     // It also loads AGENTS.md from {cwd}/ root as project agent instructions.
     // Callers control resource loading by setting `cwd` to a directory containing these files.
     // agent_dir here is per-session ResourceLoader state only (user-level skills/prompts/
-    // agents). It does not reconfigure the shared internal registrar / ModelRuntime
-    // (those always use INTERNAL_AGENT_DIR — see ensureInternalRuntime / AGENTS.md §6).
-    const agentDir = options.agentDir ?? "/tmp/pi-sidecar-agent";
-    if (agentDir !== INTERNAL_AGENT_DIR) {
-      log.debug(`[sidecar] SESSION_AGENT_DIR: session=${id}, custom=true`);
+    // agents) plus, when unset, the configured internal agent dir. An explicit
+    // agent_dir does not reconfigure the shared internal registrar / ModelRuntime
+    // (those use the configured agent dir — see ensureInternalRuntime / AGENTS.md §6).
+    const agentDir = options.agentDir ?? this.agentDir;
+    if (options.agentDir !== undefined) {
+      log.debug(`[sidecar] SESSION_AGENT_DIR: session=${id}, custom=true, dir=${agentDir}`);
     }
+    const settingsManager = createSessionSettingsManager(agentDir);
     const loader = new DefaultResourceLoader({
       cwd: options.cwd,
       agentDir,

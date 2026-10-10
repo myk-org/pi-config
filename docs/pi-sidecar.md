@@ -220,6 +220,78 @@ npx pi-sidecar
 
 Then use providers such as `acpx-cursor` / `cli-claude` (or Python aliases `cursor` / mapped names). Refresh with `POST /models/refresh` after changing env. See [Configuration & Settings](configuration.html) for project-level agent lists used by interactive Pi.
 
+### Custom providers and settings (agent dir)
+
+By default the sidecar's internal runtime keeps its catalog in the ephemeral,
+non-configurable scratch dir `/tmp/pi-sidecar-agent`. Deployments that need to
+register custom pi providers or supply pi settings point the sidecar at a
+persistent **agent dir** instead:
+
+```bash
+# Environment variable (honored by npx pi-sidecar / pi-sidecar-start / node dist/server.js)
+export PI_SIDECAR_AGENT_DIR=/etc/pi-sidecar/agent
+npx pi-sidecar
+```
+
+```ts
+// Or programmatically
+import { startSidecar } from "@myk-org/pi-sidecar";
+startSidecar({ agentDir: "/etc/pi-sidecar/agent" });
+```
+
+Precedence: explicit `agentDir` option → `PI_SIDECAR_AGENT_DIR` (trimmed,
+non-empty) → `/tmp/pi-sidecar-agent`. Resolution is logged at startup. Use an
+absolute path — a relative path resolves against the sidecar process's cwd,
+which differs between the CLI entry and embedded `startSidecar()` callers.
+
+Files honored from the configured dir (read once at process start — restart the
+sidecar after changing them):
+
+| File | Effect |
+|------|--------|
+| `models.json` | Custom pi providers registered on the shared runtime — listed by `GET /models` and `GET /providers`, usable in `POST /sessions` |
+| `auth.json` | Provider credentials for the shared runtime (same format as interactive pi's `auth.json`) |
+| `settings.json` | Seeded into the in-memory settings store for the internal runtime and every session (e.g. `defaultProvider`) |
+
+A `models.json` `apiKey` may reference an environment variable (e.g.
+`"$ENMAAS_API_KEY"`) — the variable must exist in the **sidecar process's**
+environment (pass it through in Docker with `-e` / `Env:`). Worked example —
+an EnMaaS OpenAI-compatible gateway at `/etc/pi-sidecar/agent/models.json`:
+
+```json
+{
+  "providers": {
+    "enmaas": {
+      "baseUrl": "https://enmaas.example.com/v1",
+      "api": "openai-completions",
+      "apiKey": "$ENMAAS_API_KEY",
+      "models": [
+        { "id": "enmaas/gpt-4o", "name": "GPT-4o via EnMaaS" }
+      ]
+    }
+  }
+}
+```
+
+```bash
+export PI_SIDECAR_AGENT_DIR=/etc/pi-sidecar/agent
+export ENMAAS_API_KEY=<your-key>
+npx pi-sidecar
+# GET /models now lists enmaas/gpt-4o (provider "enmaas");
+# POST /sessions accepts {"provider": "enmaas", "model": "enmaas/gpt-4o", ...}
+```
+
+Notes:
+
+- The per-request `agent_dir` field on `POST /sessions` still overrides only the
+  session's resource loading (skills/prompts/agents) — it never reconfigures
+  the shared runtime.
+- There is no REST API change: `/health`, `/models`, `/providers`, and
+  `/sessions` keep their semantics; the configured dir only changes what the
+  runtime is seeded with at startup.
+- Settings seeded from `settings.json` never re-enable compaction — sidecar
+  sessions are short-lived and always run with compaction disabled.
+
 ### Watchdog (companion process)
 
 ```bash
