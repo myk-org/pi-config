@@ -35,6 +35,7 @@ function harness(argv: string[] = ["node", "pi"]) {
     },
   } as any;
   registerModelRestoreOnSessionStart(pi, { argv });
+  log.debug("wiring harness registered", { handlerCount: handlers.size, argv });
   return { handlers, setModelCalls };
 }
 
@@ -50,10 +51,15 @@ async function until(
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (predicate()) return true;
+    if (predicate()) {
+      log.debug("until: predicate held", { elapsedMs: timeoutMs - (deadline - Date.now()) });
+      return true;
+    }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  return predicate();
+  const result = predicate();
+  log.debug("until: deadline reached", { result, timeoutMs });
+  return result;
 }
 
 /** Give a skipped (fire-and-forget) restore time to (not) act. */
@@ -62,6 +68,7 @@ async function settle(ms = 250): Promise<void> {
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+  log.debug("settle complete", { ms });
 }
 
 describe("model-restore-wiring session_start (#901)", () => {

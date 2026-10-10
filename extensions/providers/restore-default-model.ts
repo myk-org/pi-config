@@ -92,6 +92,15 @@ export function hasEnabledModelsScope(
  *    blocks in all cases)
  */
 export function shouldRestoreDefaultModel(opts: RestoreDefaultModelOpts): boolean {
+  const decision = computeShouldRestoreDefaultModel(opts);
+  log.debug("shouldRestoreDefaultModel decision", {
+    reason: typeof opts.reason === "string" ? opts.reason : null,
+    decision,
+  });
+  return decision;
+}
+
+function computeShouldRestoreDefaultModel(opts: RestoreDefaultModelOpts): boolean {
   const reason = typeof opts.reason === "string" ? opts.reason.trim() : "";
 
   const currentProvider = typeof opts.currentProvider === "string"
@@ -518,6 +527,18 @@ export async function restoreDefaultModelOnSessionStart(opts: {
         return true;
       }
     } else {
+      // Empty /new snapshot: any model that appeared is a selection (user or
+      // picker) — abort rather than overwrite it with the saved default.
+      // The baseline path below is only for startup/resume, where the first
+      // live model may be the race-recovered initial pick, not user intent.
+      if (opts.reason === "new") {
+        log.debug(
+          "restore-default-model abort",
+          `empty /new session; live selection appeared ` +
+            `${live.provider}/${live.id} (${phase} attempt ${attempt}/${retries})`,
+        );
+        return true;
+      }
       // Empty snapshot: first non-default live model is baseline, not abort.
       // Only abort when live later *changes* from that mid-flight selection.
       if (!firstSeenLive) {

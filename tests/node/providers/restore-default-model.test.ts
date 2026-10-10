@@ -1317,6 +1317,46 @@ describe("resolveDefaultModel + restoreDefaultModelOnSessionStart", () => {
     assert.equal(polls, 1);
   });
 
+  it("empty /new session: selection appearing mid-retry aborts restore", async () => {
+    const path = join(dir, "settings.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        defaultProvider: "foo",
+        defaultModel: "foo-model",
+      }),
+    );
+    const target = { id: "foo-model", provider: "foo" };
+    let called = false;
+    let polls = 0;
+    const ok = await restoreDefaultModelOnSessionStart({
+      settingsPath: path,
+      reason: "new",
+      argv: ["node", "pi"],
+      retries: 5,
+      delayMs: 10,
+      sleep: async () => {},
+      ctx: {
+        // No initial model at session_start — empty-selection fill case
+        model: undefined,
+        modelRegistry: { find: () => target },
+      },
+      getCurrentModel: () => {
+        polls += 1;
+        // A model is selected while the default is still unresolved —
+        // restore must abort instead of overwriting it on a later retry.
+        return polls <= 1 ? undefined : { id: "bar-model", provider: "bar" };
+      },
+      setModel: async () => {
+        called = true;
+        return true;
+      },
+    });
+    assert.equal(ok, false);
+    assert.equal(called, false);
+    log.debug("empty /new abort verified", { ok, called, polls });
+  });
+
   it("getCurrentModel empty snapshot: first live non-default is baseline, not abort", async () => {
     const path = join(dir, "settings.json");
     writeFileSync(
