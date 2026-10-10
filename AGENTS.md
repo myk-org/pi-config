@@ -82,6 +82,11 @@ A change is complete when ALL pass:
 
 All new or modified code MUST include proper `log.debug/info/warn/error` calls via `createLogger`. No code change is complete without logging.
 
+**Scope:** pi runtime and Node processes — extensions, sidecar, CLI tools, scripts.
+**Exempt:** static browser assets under `*/renderer/static/` copied verbatim into a docs site
+(no bundler, no pi runtime, no session id). Use `console.*` there — a browser page has no chat
+TUI to leak into. Keep such assets consistent with their siblings.
+
 - **info**: key events (boot, shutdown, peer joined/left, connections, state changes)
 - **debug**: internal flow (function entry/exit, decisions, variable state)
 - **warn**: recoverable issues (timeouts, retries, self-heal)
