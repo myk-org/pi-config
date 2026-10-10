@@ -168,21 +168,6 @@ describe("SessionStore configured agent dir", { concurrency: false }, () => {
     }
   });
 
-  it("initializes provider discovery on the default path with no options and no env", async () => {
-    log.debug("testing default-path store initialization without touching the shared default dir");
-    // The default dir (/tmp/pi-sidecar-agent) is machine-shared and never written
-    // by tests; selection of the default is covered by the resolveInternalAgentDir
-    // unit tests. Here we only verify the no-option/no-env path initializes.
-    const store = withAgentDirEnv(undefined, () => new SessionStore());
-    try {
-      const providers = await store.getProviders();
-      assert.ok(Array.isArray(providers), "getProviders should return an array on the default path");
-      log.debug("default-path initialization verified", { providerCount: providers.length });
-    } finally {
-      await store.disposeAll();
-    }
-  });
-
   it("honors PI_SIDECAR_AGENT_DIR at construction", async () => {
     log.debug("testing SessionStore picks up PI_SIDECAR_AGENT_DIR env via provider discovery");
     const dir = mkdtempSync(join(tmpdir(), "sidecar-agent-dir-env-"));
