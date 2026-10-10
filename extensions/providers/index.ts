@@ -637,10 +637,14 @@ export default async function (
   // fire-and-forget so ordering with the summary/thinking handler is benign.
   registerModelRestoreOnSessionStart(pi, {
     argv: testOptions?.argv,
-    onRestoreModel: (model, setSelected) =>
-      lastThinking.restoreModel(model as Model<any>, setSelected),
-    onRestoreSettled: (event, ctx, modelRestore) =>
-      void lastThinking.applyAfterModelRestore(event, ctx, modelRestore),
+    onRestoreModel: (model, setSelected) => {
+      log.debug("onRestoreModel handoff", { provider: model.provider, id: model.id });
+      return lastThinking.restoreModel(model as Model<any>, setSelected);
+    },
+    onRestoreSettled: (event, ctx, modelRestore) => {
+      log.debug("onRestoreSettled handoff", { reason: (event as { reason?: string })?.reason });
+      return void lastThinking.applyAfterModelRestore(event, ctx, modelRestore);
+    },
   });
 
   pi.on("session_start", (event, ctx) => {
