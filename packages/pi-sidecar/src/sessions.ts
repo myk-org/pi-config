@@ -429,20 +429,31 @@ function resolveExtensionPaths(entries: ExtensionEntry[]): ResolvedExtensions {
  * config to load/persist for either). Shared factory so the two call sites
  * (ensureInternalRuntime()'s createRuntime, create()) don't drift.
  *
- * When an agentDir is given and it contains a settings.json, that file is
- * parsed and seeded into the in-memory store — deployments can then supply pi
- * settings (e.g. defaultProvider) next to their custom models.json/auth.json
- * (see resolveInternalAgentDir). Compaction stays disabled regardless of what
- * the seeded file says: sidecar sessions are one-shot over HTTP.
+ * The seed is the STARTUP SNAPSHOT of the deployment agent dir's settings.json
+ * (read once by the SessionStore constructor via readSettingsSeed — see
+ * SessionStore.settingsSeed). It is never re-read and never taken from a
+ * per-request agent_dir: an explicit per-request agent_dir affects
+ * DefaultResourceLoader resource loading only, so sessions cannot diverge from
+ * each other after settings.json edits or partial writes. Deployments that want
+ * to supply pi settings (e.g. defaultProvider) next to their custom
+ * models.json/auth.json restart the sidecar to apply changes. Compaction stays
+ * disabled regardless of what the seed says: sidecar sessions are one-shot over
+ * HTTP.
  *
  * Exported for tests.
  */
-export function createSessionSettingsManager(agentDir?: string): SettingsManager {
-  return SettingsManager.inMemory({ ...readSettingsSeed(agentDir), compaction: { enabled: false } });
+export function createSessionSettingsManager(seed: Record<string, unknown> = {}): SettingsManager {
+  const log = createLogger("session-settings");
+  // Key count only — never settings values, which may carry configuration the
+  // deployment considers sensitive.
+  log.debug("Building in-memory session settings from startup snapshot", { seedKeys: Object.keys(seed).length });
+  return SettingsManager.inMemory({ ...seed, compaction: { enabled: false } });
 }
 
-/** Read `<agentDir>/settings.json` as seed settings; {} when absent/unparseable. */
-function readSettingsSeed(agentDir?: string): Record<string, unknown> {
+/** Read `<agentDir>/settings.json` as seed settings; {} when absent/unparseable.
+ * Called once per process (SessionStore constructor) — the result is the
+ * startup snapshot handed to createSessionSettingsManager. Exported for tests. */
+export function readSettingsSeed(agentDir?: string): Record<string, unknown> {
   const log = createLogger("session-settings");
   if (!agentDir) {
     log.debug("No agent dir for settings seeding; using empty settings");
@@ -521,11 +532,20 @@ export function snapshotLegacyAmbientProviders(
   log.debug("Legacy ambient registrations classified", { registrationCount: registrations.length, legacyCount });
 }
 
-function createInternalRuntimeFactory(extensionPaths: string[], legacyAmbientProviders: WeakSet<Provider>): CreateAgentSessionRuntimeFactory {
+/**
+ * Builds the CreateAgentSessionRuntimeFactory for the internal registrar
+ * runtime (see SessionStore.ensureInternalRuntime()).
+ *
+ * `settingsSeed` is the startup snapshot of the deployment agent dir's
+ * settings.json (SessionStore.settingsSeed) — the settings manager is built
+ * from it, never from the factory's `agentDir` param. That param still goes to
+ * createAgentSessionServices for models.json/auth.json/ResourceLoader loading.
+ */
+function createInternalRuntimeFactory(extensionPaths: string[], legacyAmbientProviders: WeakSet<Provider>, settingsSeed: Record<string, unknown>): CreateAgentSessionRuntimeFactory {
   const log = createLogger("internal-runtime-factory");
-  log.debug("Internal runtime factory configured", { extensionCount: extensionPaths.length });
+  log.debug("Internal runtime factory configured", { extensionCount: extensionPaths.length, settingsSeedKeys: Object.keys(settingsSeed).length });
   return async ({ cwd, agentDir, sessionManager: runtimeSessionManager, sessionStartEvent }) => {
-    const settingsManager = createSessionSettingsManager(agentDir);
+    const settingsManager = createSessionSettingsManager(settingsSeed);
     const services = await createAgentSessionServices({
       cwd,
       agentDir,
@@ -795,8 +815,22 @@ export class SessionStore {
    */
   private readonly agentDir: string;
 
+  /**
+   * Startup snapshot of `<this.agentDir>/settings.json` ({} when absent or
+   * unparseable). Read exactly once, here in the constructor, and used for
+   * every settings manager this store builds (internal registrar runtime and
+   * every user session). Never re-read: sessions must not diverge after
+   * settings.json edits or partial writes — deployments restart the sidecar to
+   * apply settings changes. Per-request agent_dir never contributes settings.
+   */
+  private readonly settingsSeed: Record<string, unknown>;
+
   constructor(options?: { agentDir?: string }) {
     this.agentDir = resolveInternalAgentDir(options?.agentDir);
+    this.settingsSeed = readSettingsSeed(this.agentDir);
+    const log = createLogger("session-store-init");
+    // Path only — no settings contents, no credentials.
+    log.debug("SessionStore constructed", { agentDir: this.agentDir, settingsSeedKeys: Object.keys(this.settingsSeed).length });
   }
 
   get disposed(): boolean {
@@ -900,7 +934,7 @@ export class SessionStore {
         logger.log(`[sidecar] INTERNAL_EXTENSIONS_LOADING: count=${extensionPaths.length}`);
 
         const sessionManager = SessionManager.inMemory();
-        const createRuntime = createInternalRuntimeFactory(extensionPaths, this.legacyAmbientProviders);
+        const createRuntime = createInternalRuntimeFactory(extensionPaths, this.legacyAmbientProviders, this.settingsSeed);
 
         const runtime = await createAgentSessionRuntime(createRuntime, {
           cwd: "/tmp",
@@ -1577,14 +1611,15 @@ export class SessionStore {
     // It also loads AGENTS.md from {cwd}/ root as project agent instructions.
     // Callers control resource loading by setting `cwd` to a directory containing these files.
     // agent_dir here is per-session ResourceLoader state only (user-level skills/prompts/
-    // agents) plus, when unset, the configured internal agent dir. An explicit
-    // agent_dir does not reconfigure the shared internal registrar / ModelRuntime
-    // (those use the configured agent dir — see ensureInternalRuntime / AGENTS.md §6).
+    // agents/extensions) plus, when unset, the configured internal agent dir. An explicit
+    // agent_dir does not reconfigure the shared internal registrar / ModelRuntime and does
+    // NOT contribute session settings — those always come from the startup snapshot of the
+    // deployment agent dir (this.settingsSeed; see AGENTS.md §6).
     const agentDir = options.agentDir ?? this.agentDir;
     if (options.agentDir !== undefined) {
       log.debug(`[sidecar] SESSION_AGENT_DIR: session=${id}, custom=true, dir=${agentDir}`);
     }
-    const settingsManager = createSessionSettingsManager(agentDir);
+    const settingsManager = createSessionSettingsManager(this.settingsSeed);
     const loader = new DefaultResourceLoader({
       cwd: options.cwd,
       agentDir,

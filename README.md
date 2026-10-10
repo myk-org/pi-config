@@ -917,6 +917,10 @@ CLI commands: `npx pi-sidecar` (start server), `npx pi-sidecar-start` (backgroun
 
 `GET /providers` lists registered providers and whether each supports a session API key, even when no models or credentials are available. The Python client exposes this as `await SidecarClient.get_providers()`.
 
+The sidecar's internal agent dir is configurable (startSidecar `agentDir` option / `PI_SIDECAR_AGENT_DIR`, default `/tmp/pi-sidecar-agent`) so
+deployments can supply custom providers, auth, and settings — see
+[`packages/pi-sidecar/README.md`](packages/pi-sidecar/README.md).
+
 See [`packages/pi-sidecar/README.md`](packages/pi-sidecar/README.md) for full documentation.
 See [`packages/pi-sidecar/CONSUMER-GUIDE.md`](packages/pi-sidecar/CONSUMER-GUIDE.md) for integration best practices.
 

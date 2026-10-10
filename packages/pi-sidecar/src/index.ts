@@ -171,6 +171,7 @@ export function startSidecar(options?: {
   /**
    * Agent dir the internal runtime reads models.json/auth.json/settings.json
    * from (custom pi providers, credentials, and settings for deployments).
+   * settings.json is read once at process start — restart to apply changes.
    * Falls back to PI_SIDECAR_AGENT_DIR, then /tmp/pi-sidecar-agent.
    */
   agentDir?: string;
