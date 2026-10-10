@@ -171,6 +171,8 @@ pi-config/
 │   ├── 50-agent-bug-reporting.md
 │   ├── 55-coms-protocol.md
 │   └── 60-task-tracking.md
+├── docs/                           # Hand-written docs source (pi-docsite renders HTML, llms.txt, search index)
+├── contributing/                   # Contributor docs (repo structure, enforcement honesty map, disposition audits)
 ├── myk_pi_tools/                    # Python CLI tooling package
 │   ├── __init__.py
 │   ├── ai_cli/

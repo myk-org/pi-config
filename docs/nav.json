@@ -52,6 +52,20 @@
         "daemon-and-websockets",
         "btw-command"
       ]
+    },
+    {
+      "name": "Architecture",
+      "pages": [
+        "async-internals",
+        "cli-provider"
+      ]
+    },
+    {
+      "name": "Development",
+      "pages": [
+        "extension-commands",
+        "project-settings"
+      ]
     }
   ]
 }

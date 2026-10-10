@@ -262,6 +262,48 @@
                 </ul>
             </div>
 
+            <div class="nav-group">
+                <h3 class="nav-group-title">Architecture</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-internals.html"
+                           class="nav-link">
+                            Async &amp; Runtime Internals
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-provider.html"
+                           class="nav-link">
+                            CLI Provider Internals
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Development</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="extension-commands.html"
+                           class="nav-link">
+                            Extension Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="project-settings.html"
+                           class="nav-link">
+                            Project Settings Internals
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
         </nav>
     </aside>
 
@@ -311,6 +353,11 @@
                     <h1 id="memory-architecture">Memory Architecture</h1>
 <p>Pi’s memory architecture is the layer that turns one-off conversations into durable project knowledge. It matters because it decides what the agent remembers, what it forgets, what gets surfaced automatically in future turns, and when repeated lessons become stronger guardrails instead of loose suggestions.</p>
 <p>The practical result is simple: you spend less time repeating project conventions, and the agent gets better at bringing the right context back at the right moment.</p>
+<blockquote>
+<p><strong>Note:</strong> The implementation is a clean-room TypeScript rewrite inspired by
+<a href="https://github.com/tinyhumansai/openhuman">OpenHuman</a> (MIT licensed) — no code was copied, only the
+architectural ideas.</p>
+</blockquote>
 <h2 id="the-big-picture">The Big Picture</h2>
 <p>The memory system is local, file-backed, and layered. Topic files are the source of truth; everything else is derived from or built around them.</p>
 <div class="table-wrap"><table>
@@ -332,8 +379,8 @@
 <tr>
 <td>Score index</td>
 <td>Stability score, evidence count, lifecycle, enforcement metadata</td>
-<td><code>.pi/memory/memory-scores.json</code></td>
-<td>Decides which memories stay active and which fade out.</td>
+<td><code>.pi/memory/memory-scores.jsonl</code></td>
+<td>Decides which memories stay active and which fade out. A legacy <code>memory-scores.json</code> is auto-migrated on first access.</td>
 </tr>
 <tr>
 <td>Embedding store</td>
@@ -365,7 +412,7 @@
 <ol>
 <li>A memory enters the system from a direct tool call, the Python CLI, or background consolidation.</li>
 <li>The entry is written into a category topic file such as <code>lessons.md</code> or <code>preferences.md</code>.</li>
-<li>The scoring engine rebuilds <code>memory-scores.json</code>, recalculates stability, and assigns a lifecycle state.</li>
+<li>The scoring engine rebuilds <code>memory-scores.jsonl</code>, recalculates stability, and assigns a lifecycle state.</li>
 <li>The embedding layer lazily creates or refreshes local vectors for semantic search.</li>
 <li>On <code>before_agent_start</code>, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, then appends that material to the tail of the system prompt.</li>
 <li>As evidence accumulates, the promotion system proposes stronger structures such as enforcement metadata or reusable skills.</li>
@@ -373,6 +420,69 @@
 <blockquote>
 <p><strong>Note:</strong> The architecture is intentionally split between human-editable topic files and machine-managed indexes. That keeps the memory easy to inspect while still supporting scoring, retrieval, and promotion.</p>
 </blockquote>
+<h3 id="implementation-map">Implementation map</h3>
+<p>Every layer is a standalone module under <code>extensions/orchestrator/</code>:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Component</th>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Scoring engine</td>
+<td><code>memory-scoring.ts</code></td>
+<td>Stability formula, lifecycle states, category budgets, rebuilds the score index.</td>
+</tr>
+<tr>
+<td>Situation report</td>
+<td><code>situation-report.ts</code></td>
+<td>Builds the token-budgeted prompt injection and the capacity header.</td>
+</tr>
+<tr>
+<td>Memory tree</td>
+<td><code>memory-tree.ts</code></td>
+<td>Topic-file organization, hotness scores, cold-topic archiving.</td>
+</tr>
+<tr>
+<td>Embeddings</td>
+<td><code>memory-embeddings.ts</code></td>
+<td>Local vector model, embedding store, hybrid search.</td>
+</tr>
+<tr>
+<td>Memory tools</td>
+<td><code>memory-tools.ts</code></td>
+<td>The <code>memory_*</code> tools exposed to the agent.</td>
+</tr>
+<tr>
+<td>Session search</td>
+<td><code>session-search.ts</code></td>
+<td>Keyword index over past conversation summaries.</td>
+</tr>
+<tr>
+<td>Enforcement rules</td>
+<td><code>enforcement-rules.ts</code></td>
+<td>Code-enforced memories (triggers, actions, verifiers).</td>
+</tr>
+<tr>
+<td>Promotion queue</td>
+<td><code>promotion-queue.ts</code></td>
+<td>Graduates high-evidence memories into stronger structures.</td>
+</tr>
+<tr>
+<td>Preference extractor</td>
+<td><code>preference-extractor.ts</code></td>
+<td>Detects stated preferences in conversation and records them.</td>
+</tr>
+<tr>
+<td>Query classifier</td>
+<td><code>memory-query-class.ts</code></td>
+<td>Classifies the prompt to bias injection priorities.</td>
+</tr>
+</tbody>
+</table></div>
 <h2 id="key-concepts">Key Concepts</h2>
 <h3 id="topic-files-are-the-source-of-truth">Topic files are the source of truth</h3>
 <p>Pi stores memory as Markdown topic files under <code>.pi/memory/topics/</code>, not in a database-first format.</p>
@@ -504,7 +614,7 @@
 <p><strong>Tip:</strong> Pinned memories bypass normal decay, and enforced memories are kept active so their guardrails stay intact.</p>
 </blockquote>
 <h3 id="topic-organization-is-separate-from-scoring">Topic organization is separate from scoring</h3>
-<p>Topic files are organized for readability, while <code>memory-scores.json</code> is organized for ranking and lifecycle management. That separation lets Pi:</p>
+<p>Topic files are organized for readability, while <code>memory-scores.jsonl</code> is organized for ranking and lifecycle management. That separation lets Pi:</p>
 <ul>
 <li>reorder and trim injected memory without rewriting your topic structure every turn</li>
 <li>archive cold topic files when their newest entries have aged past roughly two half-lives</li>
@@ -519,6 +629,8 @@
 <li>Embeddings are cached per process for speed.</li>
 <li>The on-disk store is updated with atomic write-then-rename behavior.</li>
 <li>If the model cannot load, memory features degrade gracefully instead of failing the turn.</li>
+<li>New entries are deduplicated at write time: a candidate whose embedding is at least <code>0.90</code> similar to an existing entry reinforces that entry instead of adding a duplicate.</li>
+<li>Search is hybrid — keyword plus vector — with a keyword-only fallback when the embedding model is unavailable.</li>
 </ul>
 <p>This layer is used in two places:</p>
 <ul>
@@ -526,6 +638,38 @@
 <li>automatic “contextually relevant memories” injection before a turn starts</li>
 </ul>
 <p>That means Pi can still find a useful lesson even when your current prompt does not repeat the exact wording of the original memory.</p>
+<h3 id="the-injection-pipeline-runs-on-three-hooks">The injection pipeline runs on three hooks</h3>
+<p>Memory reaches the model through three extension hooks:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Hook</th>
+<th>What happens</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>before_agent_start</code></td>
+<td>Injects the situation report, vector-matched memories, and relevant session history. Trivial messages such as "ok" or "thanks" are skipped so nothing is wasted on them.</td>
+</tr>
+<tr>
+<td><code>tool_result</code></td>
+<td>Runs memory-based enforcement: trigger matching followed by <code>block</code>, <code>run_after</code>, or <code>warn</code> actions.</td>
+</tr>
+<tr>
+<td><code>turn_end</code></td>
+<td>Injects file-change memory reminders (vector search on modified paths), task-focus enforcement when tasks are active but no tool was called, and semantic enforcement verification that can retry the turn on violations.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Only the <code>before_agent_start</code> material — the situation report, vector-matched memories, and session
+history — is appended to the <strong>tail</strong> of the system prompt, after rules and instructions. That position is
+deliberate: LLM attention follows a U-shaped curve, and the tail of the prompt receives the strongest attention.
+The other hooks deliver differently: <code>tool_result</code> enforcement acts on the tool result itself (<code>warn</code> appends to
+it, <code>block</code> prevents it), and <code>turn_end</code> verifier violations are sent as follow-up messages that can trigger a
+retry of the turn.</p>
+<p>Retrieval decisions are logged to <code>.pi/data/memory-telemetry.jsonl</code>, and the injected block carries a Ground
+Truth instruction telling the model to trust the provided context over re-deriving it.</p>
 <h3 id="the-situation-report-is-the-runtime-view">The situation report is the runtime view</h3>
 <p>The situation report is the text that Pi actually injects into the system prompt. It is built from scored topic entries, not from raw conversation history.</p>
 <p>By default, it targets a 1700-token budget and builds sections such as:</p>
@@ -580,6 +724,15 @@
 <li>a release task gives more weight to decisions and conventions</li>
 <li>a review workflow favors repeated review-related guidance</li>
 </ul>
+<h3 id="session-search-recalls-past-conversations">Session search recalls past conversations</h3>
+<p>Independently of scored memory, <code>session-search.ts</code> maintains a keyword index over past conversation summaries in
+<code>.pi/data/session-search.json</code>. The index is written when a session shuts down, and <code>before_agent_start</code>
+auto-injects matches from relevant past sessions alongside the situation report.</p>
+<p>The agent can also query it directly with the <code>session_search</code> tool — see <a href="commands-and-tools.html">Commands and Tools Reference</a>.</p>
+<h3 id="stated-preferences-are-captured-automatically">Stated preferences are captured automatically</h3>
+<p><code>preference-extractor.ts</code> watches conversation for phrases such as "I prefer …", "always use …", or "never …".
+When it detects one, it adds the preference to memory automatically, and repeated statements reinforce the
+existing entry instead of creating duplicates.</p>
 <h3 id="promotion-turns-repeated-memories-into-stronger-structure">Promotion turns repeated memories into stronger structure</h3>
 <p>When a memory accumulates enough evidence, Pi can promote it.</p>
 <p>Current promotion destinations are:</p>
@@ -614,6 +767,9 @@
 </tbody>
 </table></div>
 <p>Evidence thresholds are <code>3</code> for enforcement, <code>3</code> for skill, and <code>5</code> for project rule.</p>
+<p>A promotion pass runs at three moments: when a dream completes (<code>onComplete</code>), when <code>memory_reinforce</code>
+pushes an entry across an evidence threshold, and when the dream or <code>memory_consolidate</code> prompt writers
+flag candidates while reorganizing memory.</p>
 <p>The queue is stored in <code>.pi/memory/promotions.md</code> with statuses of <code>proposed</code>, <code>applied</code>, or <code>rejected</code>.</p>
 <p>A few important boundaries keep this safe:</p>
 <ul>
@@ -625,7 +781,7 @@
 <p><strong>Warning:</strong> Enforced memories are text-hash keyed. If background maintenance rewrites the text of an enforced entry, the binding would break, so the system explicitly protects those entries.</p>
 </blockquote>
 <h3 id="provenance-is-merged-through-a-sidecar">Provenance is merged through a sidecar</h3>
-<p>Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it appends a single line of JSON to <code>.pi/memory/provenance-pending.jsonl</code>. The orchestrator then merges that sidecar into <code>memory-scores.json</code> on completion and deletes it. (A <code>.pi/memory/provenance-pending.json</code> from older versions is still read for backward compatibility.)</p>
+<p>Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it appends a single line of JSON to <code>.pi/memory/provenance-pending.jsonl</code>. The orchestrator then merges that sidecar into <code>memory-scores.jsonl</code> on completion and deletes it. (A <code>.pi/memory/provenance-pending.json</code> from older versions is still read for backward compatibility.)</p>
 <p>This keeps the scoring index authoritative while still preserving traceability.</p>
 <p>User-visible effect: a memory can later explain where it came from without forcing every background worker to edit the score file itself.</p>
 <h3 id="legacy-memory-migration-still-exists">Legacy memory migration still exists</h3>
@@ -645,10 +801,39 @@
 <li><strong>Old state is still recoverable.</strong> If your project used the older memory database, the Python CLI can migrate it into the current topic-file model.</li>
 <li><strong>Background consolidation stays safe.</strong> Dreaming, provenance merges, and promotion passes operate through sidecars and queues instead of rewriting everything in place.</li>
 </ul>
+<h2 id="review-adjacent-stores">Review-Adjacent Stores</h2>
+<p>Two stores sit at the boundary between memory and the code-review system. They are not part of the scored memory
+model, but they learn from review decisions the same way memory learns from conversation.</p>
+<h3 id="learned-review-preferences">Learned review preferences</h3>
+<p><code>.pi/data/review-guidelines.md</code> holds per-repo review guidelines learned from user skip decisions. When a user
+skips a finding for a generalizable reason — a project convention or an intentional pattern — a one-line guideline
+is appended to this file. All three code-reviewer agents read it before reviewing and suppress matching findings.</p>
+<h3 id="pr-review-store">PR review store</h3>
+<p><code>myk_pi_tools/pr/pr_review_store.py</code> tracks PR review comments in SQLite at <code>.pi/data/pr-reviews.db</code>. It stores
+both posted and skipped findings with status and skip-reason columns, so dismissed items are auto-matched and not
+re-raised in later review cycles.</p>
+<p>Resolution tracking adds two columns:</p>
+<ul>
+<li><code>resolution_status</code> — the LLM evaluation verdict: <code>resolved_fixed</code>, <code>resolved_accepted</code>, <code>resolved_bad_fix</code>, or <code>resolved_no_fix</code></li>
+<li><code>author_response</code> — the author's reply or fix context, kept as an audit trail</li>
+</ul>
+<p>The related CLI commands are <code>myk-pi-tools pr update-resolution</code> (persist verdicts from resolved threads) and
+<code>myk-pi-tools pr get-review-history</code> (dump the full review history across all statuses).</p>
+<p>See <a href="automating-code-reviews.html">Automating Code Reviews</a> for the review workflows that read and write these stores.</p>
+<h2 id="contributor-documentation">Contributor Documentation</h2>
+<p>The repository ships a contributor doc, <code>contributing/enforcement-honesty-map.md</code>, that declares which
+memory-backed enforcement is code-enforced, which is only injected, and which is aspirational.</p>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
 <li>See <a href="curating-project-memory.html">Curating Project Memory</a> for the hands-on workflow for adding, inspecting, and pruning memories.</li>
-<li>See <a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a> for the background process that extracts, reorganizes, and promotes memories over time.</li>
+<li>
+<p>See <a href="commands-and-tools.html">Commands and Tools Reference</a> for the full <code>memory_*</code> tool reference
+  (<code>memory_search</code>, <code>memory_reinforce</code>, <code>memory_add</code>, <code>memory_remove</code>, <code>memory_edit</code>, <code>memory_reflect</code>,
+  <code>memory_consolidate</code>, <code>memory_topics</code>).</p>
+</li>
+<li>
+<p>See <a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a> for the background process that extracts, reorganizes, and promotes memories over time.</p>
+</li>
 <li>See <a href="safety-enforcements.html">Implementing Command Guards</a> for the enforcement side of memories that graduate into hard rules.</li>
 <li>See <a href="configuration.html">Configuration &amp; Settings</a> for the knobs that affect memory timing and runtime behavior.</li>
 <li>See <a href="cli-reference.html">myk_pi_tools CLI Reference</a> for the Python commands that manage topic files and perform legacy migration.</li>
@@ -678,6 +863,7 @@
 <ul>
 <li><a href="#the-big-picture">The Big Picture</a><ul>
 <li><a href="#end-to-end-flow">End-to-end flow</a></li>
+<li><a href="#implementation-map">Implementation map</a></li>
 </ul>
 </li>
 <li><a href="#key-concepts">Key Concepts</a><ul>
@@ -685,14 +871,23 @@
 <li><a href="#scoring-is-what-makes-memory-fade-or-stick">Scoring is what makes memory fade or stick</a></li>
 <li><a href="#topic-organization-is-separate-from-scoring">Topic organization is separate from scoring</a></li>
 <li><a href="#embeddings-are-local-and-file-backed">Embeddings are local and file-backed</a></li>
+<li><a href="#the-injection-pipeline-runs-on-three-hooks">The injection pipeline runs on three hooks</a></li>
 <li><a href="#the-situation-report-is-the-runtime-view">The situation report is the runtime view</a></li>
 <li><a href="#query-classes-bias-what-gets-injected">Query classes bias what gets injected</a></li>
+<li><a href="#session-search-recalls-past-conversations">Session search recalls past conversations</a></li>
+<li><a href="#stated-preferences-are-captured-automatically">Stated preferences are captured automatically</a></li>
 <li><a href="#promotion-turns-repeated-memories-into-stronger-structure">Promotion turns repeated memories into stronger structure</a></li>
 <li><a href="#provenance-is-merged-through-a-sidecar">Provenance is merged through a sidecar</a></li>
 <li><a href="#legacy-memory-migration-still-exists">Legacy memory migration still exists</a></li>
 </ul>
 </li>
 <li><a href="#how-it-affects-the-user">How It Affects the User</a></li>
+<li><a href="#review-adjacent-stores">Review-Adjacent Stores</a><ul>
+<li><a href="#learned-review-preferences">Learned review preferences</a></li>
+<li><a href="#pr-review-store">PR review store</a></li>
+</ul>
+</li>
+<li><a href="#contributor-documentation">Contributor Documentation</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
 </ul>
 </div>

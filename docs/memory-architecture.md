@@ -4,6 +4,10 @@ Pi’s memory architecture is the layer that turns one-off conversations into du
 
 The practical result is simple: you spend less time repeating project conventions, and the agent gets better at bringing the right context back at the right moment.
 
+> **Note:** The implementation is a clean-room TypeScript rewrite inspired by
+> [OpenHuman](https://github.com/tinyhumansai/openhuman) (MIT licensed) — no code was copied, only the
+> architectural ideas.
+
 ## The Big Picture
 
 The memory system is local, file-backed, and layered. Topic files are the source of truth; everything else is derived from or built around them.
@@ -11,7 +15,7 @@ The memory system is local, file-backed, and layered. Topic files are the source
 | Layer | What it stores | Where it lives | Why it matters |
 |---|---|---|---|
 | Topic files | Human-readable memory entries by category | `.pi/memory/topics/*.md` | This is the canonical memory content. |
-| Score index | Stability score, evidence count, lifecycle, enforcement metadata | `.pi/memory/memory-scores.json` | Decides which memories stay active and which fade out. |
+| Score index | Stability score, evidence count, lifecycle, enforcement metadata | `.pi/memory/memory-scores.jsonl` | Decides which memories stay active and which fade out. A legacy `memory-scores.json` is auto-migrated on first access. |
 | Embedding store | Local vectors for semantic matching | `.pi/memory/embeddings.json` | Lets Pi retrieve related memories even when the wording changes. |
 | Situation report | Token-budgeted summary for prompt injection | Built at runtime | Determines what memory the agent actually sees during a turn. |
 | Promotion queue | Candidates for skills, enforcement, or project rules | `.pi/memory/promotions.md` | Captures repeated patterns that may deserve stronger structure. |
@@ -21,12 +25,29 @@ The memory system is local, file-backed, and layered. Topic files are the source
 
 1. A memory enters the system from a direct tool call, the Python CLI, or background consolidation.
 2. The entry is written into a category topic file such as `lessons.md` or `preferences.md`.
-3. The scoring engine rebuilds `memory-scores.json`, recalculates stability, and assigns a lifecycle state.
+3. The scoring engine rebuilds `memory-scores.jsonl`, recalculates stability, and assigns a lifecycle state.
 4. The embedding layer lazily creates or refreshes local vectors for semantic search.
 5. On `before_agent_start`, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, then appends that material to the tail of the system prompt.
 6. As evidence accumulates, the promotion system proposes stronger structures such as enforcement metadata or reusable skills.
 
 > **Note:** The architecture is intentionally split between human-editable topic files and machine-managed indexes. That keeps the memory easy to inspect while still supporting scoring, retrieval, and promotion.
+
+### Implementation map
+
+Every layer is a standalone module under `extensions/orchestrator/`:
+
+| Component | File | Role |
+|---|---|---|
+| Scoring engine | `memory-scoring.ts` | Stability formula, lifecycle states, category budgets, rebuilds the score index. |
+| Situation report | `situation-report.ts` | Builds the token-budgeted prompt injection and the capacity header. |
+| Memory tree | `memory-tree.ts` | Topic-file organization, hotness scores, cold-topic archiving. |
+| Embeddings | `memory-embeddings.ts` | Local vector model, embedding store, hybrid search. |
+| Memory tools | `memory-tools.ts` | The `memory_*` tools exposed to the agent. |
+| Session search | `session-search.ts` | Keyword index over past conversation summaries. |
+| Enforcement rules | `enforcement-rules.ts` | Code-enforced memories (triggers, actions, verifiers). |
+| Promotion queue | `promotion-queue.ts` | Graduates high-evidence memories into stronger structures. |
+| Preference extractor | `preference-extractor.ts` | Detects stated preferences in conversation and records them. |
+| Query classifier | `memory-query-class.ts` | Classifies the prompt to bias injection priorities. |
 
 ## Key Concepts
 
@@ -95,7 +116,7 @@ The system also applies caps so one category cannot crowd out everything else. C
 
 ### Topic organization is separate from scoring
 
-Topic files are organized for readability, while `memory-scores.json` is organized for ranking and lifecycle management. That separation lets Pi:
+Topic files are organized for readability, while `memory-scores.jsonl` is organized for ranking and lifecycle management. That separation lets Pi:
 
 - reorder and trim injected memory without rewriting your topic structure every turn
 - archive cold topic files when their newest entries have aged past roughly two half-lives
@@ -113,6 +134,8 @@ Important details:
 - Embeddings are cached per process for speed.
 - The on-disk store is updated with atomic write-then-rename behavior.
 - If the model cannot load, memory features degrade gracefully instead of failing the turn.
+- New entries are deduplicated at write time: a candidate whose embedding is at least `0.90` similar to an existing entry reinforces that entry instead of adding a duplicate.
+- Search is hybrid — keyword plus vector — with a keyword-only fallback when the embedding model is unavailable.
 
 This layer is used in two places:
 
@@ -120,6 +143,26 @@ This layer is used in two places:
 - automatic “contextually relevant memories” injection before a turn starts
 
 That means Pi can still find a useful lesson even when your current prompt does not repeat the exact wording of the original memory.
+
+### The injection pipeline runs on three hooks
+
+Memory reaches the model through three extension hooks:
+
+| Hook | What happens |
+|---|---|
+| `before_agent_start` | Injects the situation report, vector-matched memories, and relevant session history. Trivial messages such as "ok" or "thanks" are skipped so nothing is wasted on them. |
+| `tool_result` | Runs memory-based enforcement: trigger matching followed by `block`, `run_after`, or `warn` actions. |
+| `turn_end` | Injects file-change memory reminders (vector search on modified paths), task-focus enforcement when tasks are active but no tool was called, and semantic enforcement verification that can retry the turn on violations. |
+
+Only the `before_agent_start` material — the situation report, vector-matched memories, and session
+history — is appended to the **tail** of the system prompt, after rules and instructions. That position is
+deliberate: LLM attention follows a U-shaped curve, and the tail of the prompt receives the strongest attention.
+The other hooks deliver differently: `tool_result` enforcement acts on the tool result itself (`warn` appends to
+it, `block` prevents it), and `turn_end` verifier violations are sent as follow-up messages that can trigger a
+retry of the turn.
+
+Retrieval decisions are logged to `.pi/data/memory-telemetry.jsonl`, and the injected block carries a Ground
+Truth instruction telling the model to trust the provided context over re-deriving it.
 
 ### The situation report is the runtime view
 
@@ -162,6 +205,20 @@ This is why the same project memory can feel different depending on what you are
 - a release task gives more weight to decisions and conventions
 - a review workflow favors repeated review-related guidance
 
+### Session search recalls past conversations
+
+Independently of scored memory, `session-search.ts` maintains a keyword index over past conversation summaries in
+`.pi/data/session-search.json`. The index is written when a session shuts down, and `before_agent_start`
+auto-injects matches from relevant past sessions alongside the situation report.
+
+The agent can also query it directly with the `session_search` tool — see [Commands and Tools Reference](commands-and-tools.html).
+
+### Stated preferences are captured automatically
+
+`preference-extractor.ts` watches conversation for phrases such as "I prefer …", "always use …", or "never …".
+When it detects one, it adds the preference to memory automatically, and repeated statements reinforce the
+existing entry instead of creating duplicates.
+
 ### Promotion turns repeated memories into stronger structure
 
 When a memory accumulates enough evidence, Pi can promote it.
@@ -178,6 +235,10 @@ Current promotion destinations are:
 
 Evidence thresholds are `3` for enforcement, `3` for skill, and `5` for project rule.
 
+A promotion pass runs at three moments: when a dream completes (`onComplete`), when `memory_reinforce`
+pushes an entry across an evidence threshold, and when the dream or `memory_consolidate` prompt writers
+flag candidates while reorganizing memory.
+
 The queue is stored in `.pi/memory/promotions.md` with statuses of `proposed`, `applied`, or `rejected`.
 
 A few important boundaries keep this safe:
@@ -190,7 +251,7 @@ A few important boundaries keep this safe:
 
 ### Provenance is merged through a sidecar
 
-Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it appends a single line of JSON to `.pi/memory/provenance-pending.jsonl`. The orchestrator then merges that sidecar into `memory-scores.json` on completion and deletes it. (A `.pi/memory/provenance-pending.json` from older versions is still read for backward compatibility.)
+Background consolidation can attach metadata such as the source session or what a memory informs. Instead of editing the score file directly, it appends a single line of JSON to `.pi/memory/provenance-pending.jsonl`. The orchestrator then merges that sidecar into `memory-scores.jsonl` on completion and deletes it. (A `.pi/memory/provenance-pending.json` from older versions is still read for backward compatibility.)
 
 This keeps the scoring index authoritative while still preserving traceability.
 
@@ -219,9 +280,44 @@ That matters if you are carrying an older repo or restoring archived state: the 
 - **Old state is still recoverable.** If your project used the older memory database, the Python CLI can migrate it into the current topic-file model.
 - **Background consolidation stays safe.** Dreaming, provenance merges, and promotion passes operate through sidecars and queues instead of rewriting everything in place.
 
+## Review-Adjacent Stores
+
+Two stores sit at the boundary between memory and the code-review system. They are not part of the scored memory
+model, but they learn from review decisions the same way memory learns from conversation.
+
+### Learned review preferences
+
+`.pi/data/review-guidelines.md` holds per-repo review guidelines learned from user skip decisions. When a user
+skips a finding for a generalizable reason — a project convention or an intentional pattern — a one-line guideline
+is appended to this file. All three code-reviewer agents read it before reviewing and suppress matching findings.
+
+### PR review store
+
+`myk_pi_tools/pr/pr_review_store.py` tracks PR review comments in SQLite at `.pi/data/pr-reviews.db`. It stores
+both posted and skipped findings with status and skip-reason columns, so dismissed items are auto-matched and not
+re-raised in later review cycles.
+
+Resolution tracking adds two columns:
+
+- `resolution_status` — the LLM evaluation verdict: `resolved_fixed`, `resolved_accepted`, `resolved_bad_fix`, or `resolved_no_fix`
+- `author_response` — the author's reply or fix context, kept as an audit trail
+
+The related CLI commands are `myk-pi-tools pr update-resolution` (persist verdicts from resolved threads) and
+`myk-pi-tools pr get-review-history` (dump the full review history across all statuses).
+
+See [Automating Code Reviews](automating-code-reviews.html) for the review workflows that read and write these stores.
+
+## Contributor Documentation
+
+The repository ships a contributor doc, `contributing/enforcement-honesty-map.md`, that declares which
+memory-backed enforcement is code-enforced, which is only injected, and which is aspirational.
+
 ## Related Pages
 
 - See [Curating Project Memory](curating-project-memory.html) for the hands-on workflow for adding, inspecting, and pruning memories.
+- See [Commands and Tools Reference](commands-and-tools.html) for the full `memory_*` tool reference
+  (`memory_search`, `memory_reinforce`, `memory_add`, `memory_remove`, `memory_edit`, `memory_reflect`,
+  `memory_consolidate`, `memory_topics`).
 - See [Background Memory Consolidation (Dreaming)](background-dreaming.html) for the background process that extracts, reorganizes, and promotes memories over time.
 - See [Implementing Command Guards](safety-enforcements.html) for the enforcement side of memories that graduate into hard rules.
 - See [Configuration & Settings](configuration.html) for the knobs that affect memory timing and runtime behavior.

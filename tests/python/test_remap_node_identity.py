@@ -58,7 +58,7 @@ def test_resolve_infers_from_bind_mount_probe(tmp_path: Path) -> None:
     r = _run(
         "pi_resolve_host_ids",
         {
-            "PI_HOST_USER": "myakove",
+            "PI_HOST_USER": "hostuser",
             "PI_HOST_HOME": str(tmp_path),
             "PI_HOST_UID": "",
             "PI_HOST_GID": "",
@@ -76,7 +76,7 @@ def test_resolve_does_not_stat_parent_dir(tmp_path: Path) -> None:
     r = _run(
         "pi_resolve_host_ids",
         {
-            "PI_HOST_USER": "myakove",
+            "PI_HOST_USER": "hostuser",
             "PI_HOST_HOME": str(tmp_path),
             "PI_HOST_UID": "",
             "PI_HOST_GID": "",

@@ -162,7 +162,7 @@ def memory_status(ctx: click.Context) -> None:
     """Show enforcement honesty inventory for project memory.
 
     Reports code-tier (trigger/action/verifier), injected topic counts,
-    and open promotion candidates. See dev-docs/enforcement-honesty-map.md.
+    and open promotion candidates. See contributing/enforcement-honesty-map.md.
 
     Examples:
 
@@ -215,4 +215,4 @@ def memory_status(ctx: click.Context) -> None:
         click.echo("- (none)")
     click.echo("")
     click.echo("Tiers: code = hooked; injected = situation report / rules; ")
-    click.echo("aspirational = docs only. See dev-docs/enforcement-honesty-map.md")
+    click.echo("aspirational = docs only. See contributing/enforcement-honesty-map.md")

@@ -262,6 +262,48 @@
                 </ul>
             </div>
 
+            <div class="nav-group">
+                <h3 class="nav-group-title">Architecture</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-internals.html"
+                           class="nav-link">
+                            Async &amp; Runtime Internals
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-provider.html"
+                           class="nav-link">
+                            CLI Provider Internals
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Development</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="extension-commands.html"
+                           class="nav-link">
+                            Extension Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="project-settings.html"
+                           class="nav-link">
+                            Project Settings Internals
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
         </nav>
     </aside>
 
@@ -373,7 +415,7 @@
 </table></div>
 <p>Two things to be clear about, because this is easy to get wrong:</p>
 <ol>
-<li><strong>The ranges are a convention, not enforced behaviour.</strong> The loader contains no numeric range check whatsoever. Nothing rejects a <code>05-*.md</code> file in the user directory or a <code>30-*.md</code> file in the project directory. The ranges appear in <code>README.md</code>, <code>AGENTS.md</code>, and <code>dev-docs/enforcement-honesty-map.md</code>; they are a naming discipline, not a mechanism.</li>
+<li><strong>The ranges are a convention, not enforced behaviour.</strong> The loader contains no numeric range check whatsoever. Nothing rejects a <code>05-*.md</code> file in the user directory or a <code>30-*.md</code> file in the project directory. The ranges appear in <code>README.md</code>, <code>AGENTS.md</code>, and <code>contributing/enforcement-honesty-map.md</code>; they are a naming discipline, not a mechanism.</li>
 <li><strong>Ordering comes from the filename, sorted alphabetically.</strong> After override resolution, the surviving files are sorted with <code>localeCompare</code> and joined in that order. The numeric prefixes are what make that alphabetical order match the intended reading order. This is why <code>00-</code> before <code>60-</code> works: the zero-padded numbers sort lexicographically.</li>
 </ol>
 <h3 id="other-loading-details">Other loading details</h3>
@@ -411,7 +453,7 @@
 </tr>
 <tr>
 <td><code>25-documentation-updates.md</code></td>
-<td>A table mapping change types to the files that must be updated (<code>README.md</code>, <code>dev-docs/repo-structure.md</code>, the routing table, <code>Dockerfile</code>, <code>DEVELOPMENT.md</code>), ending with "documentation drift is a bug".</td>
+<td>A table mapping change types to the files that must be updated (<code>README.md</code>, <code>contributing/repo-structure.md</code>, the routing table, <code>Dockerfile</code>, <code>DEVELOPMENT.md</code>), ending with "documentation drift is a bug".</td>
 </tr>
 <tr>
 <td><code>30-prompt-templates.md</code></td>

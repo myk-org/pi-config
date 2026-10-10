@@ -76,8 +76,8 @@ Use this documentation updates table:
 | Change | Check these files |
 |--------|-------------------|
 | New feature/command/tool | `README.md` (feature table, usage examples) |
-| New or modified extension module | `dev-docs/repo-structure.md` (repository structure) |
-| New agent added/removed | `dev-docs/repo-structure.md`, routing rules, bug reporting agent list |
+| New or modified extension module | `contributing/repo-structure.md` (repository structure) |
+| New agent added/removed | `contributing/repo-structure.md`, routing rules, bug reporting agent list |
 | New prompt template | `README.md` (prompt templates table) |
 | Docker/container changes | `README.md` (Docker section), `Dockerfile` |
 | New CLI tool or dependency | `README.md` (tools table), `Dockerfile` |
@@ -119,7 +119,7 @@ Flag audit failures as `[WARNING]` with the specific checklist item that failed.
 
 ### 5. Cross-File Consistency
 
-- Do README.md, AGENTS.md, and dev-docs agree on commands, structure, and workflows?
+- Do README.md, AGENTS.md, and contributing/ agree on commands, structure, and workflows?
 - Are version numbers, feature lists, and agent counts consistent?
 - Do referenced files actually exist?
 

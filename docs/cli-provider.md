@@ -1,20 +1,12 @@
-# CLI Provider Extension
+# CLI Provider Internals
 
 Registers real CLI tools as pi providers under the `cli-*` namespace, parallel to `acpx-*`.
 
 ## Settings
 
-| Setting | Env | Example |
-|---------|-----|---------|
-| `cli_agents` | `CLI_AGENTS` | `"cursor"` or `["claude","gemini","cursor"]` |
-
-```json
-{
-  "cli_agents": ["claude", "cursor"]
-}
-```
-
-Empty / unset → extension registers nothing.
+The extension is enabled by the `cli_agents` setting (env `CLI_AGENTS`) — a single agent name or an array, for
+example `"cursor"` or `["claude","gemini","cursor"]`. Empty or unset registers nothing. See
+[Configuration & Settings](configuration.html) for the full key reference.
 
 `cli_agents` is coerced with `asStringArray` before `.filter` so a stale/mismatched
 `getSetting` (non-array) cannot crash extension load (issue #651).
@@ -359,3 +351,11 @@ Claude/Gemini so all three match.
 ## Module
 
 `extensions/cli-provider/` — per-agent drivers under `agents/` (add a new CLI there + register in `providers.ts`). `discoverCliModels()` exported for external registries.
+
+## Related Pages
+
+- [ACPX Provider Integration](acpx-provider.html) — the sibling transport; this extension mirrors its load flow and turn flow.
+- [Configuration & Settings](configuration.html) — the `cli_agents` key reference.
+- [External AI Agents & CLI](external-ai-agents.html) — running the same CLIs one-shot via `myk-pi-tools ai-cli`.
+- [Async & Runtime Internals](async-internals.html) — how `cli-*` providers interact with detached async agents.
+- [Project Settings Internals](project-settings.html) — the settings machinery behind `cli_agents`.
