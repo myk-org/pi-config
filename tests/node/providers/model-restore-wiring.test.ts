@@ -24,7 +24,19 @@ type Handler = (event: any, ctx: any) => any;
 const DEFAULT_PROVIDER = "foo";
 const DEFAULT_MODEL = "foo-model";
 
-function harness(argv: string[] = ["node", "pi"]) {
+type RestoreCallbacks = {
+  onRestoreModel?: (
+    model: { id: string; provider: string },
+    setSelected: (model: { id: string; provider: string }) => Promise<boolean>,
+  ) => Promise<boolean>;
+  onRestoreSettled?: (
+    event: unknown,
+    ctx: unknown,
+    modelRestore: Promise<boolean>,
+  ) => void;
+};
+
+function harness(argv: string[] = ["node", "pi"], restore?: RestoreCallbacks) {
   const handlers = new Map<string, Handler>();
   const setModelCalls: Array<{ id: string; provider: string }> = [];
   const pi = {
@@ -34,8 +46,8 @@ function harness(argv: string[] = ["node", "pi"]) {
       return true;
     },
   } as any;
-  registerModelRestoreOnSessionStart(pi, { argv });
-  log.debug("wiring harness registered", { handlerCount: handlers.size, argv });
+  registerModelRestoreOnSessionStart(pi, { argv, ...restore });
+  log.debug("wiring harness registered", { handlerCount: handlers.size, argv, hasCallbacks: !!restore });
   return { handlers, setModelCalls };
 }
 
@@ -185,6 +197,68 @@ describe("model-restore-wiring session_start (#901)", () => {
     assert.deepEqual(setModelCalls, []);
     log.debug("new argv override kept selection", {
       setModelCalls: setModelCalls.length,
+    });
+  });
+
+  it("new with --model in argv and NO selected model still never calls setModel", async () => {
+    // No selected model: only the argv override blocks the restore here, so a
+    // wiring regression that stops forwarding argv would fail this test.
+    const { handlers, setModelCalls } = harness([
+      "node",
+      "pi",
+      "--model",
+      "bar/bar-model",
+    ]);
+    handlers.get("session_start")!(
+      { reason: "new" },
+      { model: undefined, modelRegistry: registry },
+    );
+    await settle();
+    assert.deepEqual(setModelCalls, []);
+    log.debug("new argv override blocked empty-selection fill", {
+      setModelCalls: setModelCalls.length,
+    });
+  });
+
+  it("startup restore reaches onRestoreModel and onRestoreSettled handoff callbacks", async () => {
+    const restoreModelCalls: Array<{ id: string; provider: string }> = [];
+    let settled = false;
+    let settledResult: boolean | undefined;
+    const { handlers, setModelCalls } = harness(["node", "pi"], {
+      onRestoreModel: async (model, setSelected) => {
+        restoreModelCalls.push({ id: model.id, provider: String(model.provider) });
+        // Delegate like lastThinking.restoreModel — selection still happens.
+        return setSelected(model);
+      },
+      onRestoreSettled: (_event, _ctx, modelRestore) => {
+        settled = true;
+        void modelRestore.then((result) => {
+          settledResult = result;
+        });
+      },
+    });
+    handlers.get("session_start")!(
+      { reason: "startup" },
+      {
+        model: { id: "bar-model", provider: "bar" },
+        modelRegistry: registry,
+      },
+    );
+    assert.equal(
+      await until(() => settled && settledResult !== undefined),
+      true,
+      "onRestoreSettled should have received the settled restore promise",
+    );
+    assert.deepEqual(restoreModelCalls, [
+      { id: DEFAULT_MODEL, provider: DEFAULT_PROVIDER },
+    ]);
+    assert.deepEqual(setModelCalls, [
+      { id: DEFAULT_MODEL, provider: DEFAULT_PROVIDER },
+    ]);
+    assert.equal(settledResult, true);
+    log.debug("startup handoff callbacks verified", {
+      restoreModelCalls,
+      settledResult,
     });
   });
 });
