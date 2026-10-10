@@ -75,7 +75,11 @@ export function registerModelRestoreOnSessionStart(
     } catch (err) {
       log.debug(
         "restore-default-model isProjectTrusted failed",
-        err instanceof Error ? err.message : String(err),
+        {
+          cwd,
+          reason,
+          error: err instanceof Error ? err.message : String(err),
+        },
       );
       projectTrusted = false;
     }

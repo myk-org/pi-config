@@ -200,7 +200,7 @@ describe("model-restore-wiring session_start (#901)", () => {
     });
   });
 
-  it("new with --model in argv and NO selected model still never calls setModel", async () => {
+  it("new with --model in argv blocks the empty-selection fill", async () => {
     // No selected model: only the argv override blocks the restore here, so a
     // wiring regression that stops forwarding argv would fail this test.
     const { handlers, setModelCalls } = harness([
@@ -220,16 +220,40 @@ describe("model-restore-wiring session_start (#901)", () => {
     });
   });
 
-  it("startup restore reaches onRestoreModel and onRestoreSettled handoff callbacks", async () => {
+  it("startup restore delegates the selection through onRestoreModel", async () => {
     const restoreModelCalls: Array<{ id: string; provider: string }> = [];
-    let settled = false;
-    let settledResult: boolean | undefined;
     const { handlers, setModelCalls } = harness(["node", "pi"], {
       onRestoreModel: async (model, setSelected) => {
         restoreModelCalls.push({ id: model.id, provider: String(model.provider) });
         // Delegate like lastThinking.restoreModel — selection still happens.
         return setSelected(model);
       },
+    });
+    handlers.get("session_start")!(
+      { reason: "startup" },
+      {
+        model: { id: "bar-model", provider: "bar" },
+        modelRegistry: registry,
+      },
+    );
+    assert.equal(
+      await until(() => setModelCalls.length > 0),
+      true,
+      "setModel should have been called through the onRestoreModel wrapper",
+    );
+    assert.deepEqual(restoreModelCalls, [
+      { id: DEFAULT_MODEL, provider: DEFAULT_PROVIDER },
+    ]);
+    assert.deepEqual(setModelCalls, [
+      { id: DEFAULT_MODEL, provider: DEFAULT_PROVIDER },
+    ]);
+    log.debug("onRestoreModel handoff verified", { restoreModelCalls, setModelCalls });
+  });
+
+  it("startup restore passes the settled restore promise to onRestoreSettled", async () => {
+    let settled = false;
+    let settledResult: boolean | undefined;
+    const { handlers } = harness(["node", "pi"], {
       onRestoreSettled: (_event, _ctx, modelRestore) => {
         settled = true;
         void modelRestore.then((result) => {
@@ -249,16 +273,7 @@ describe("model-restore-wiring session_start (#901)", () => {
       true,
       "onRestoreSettled should have received the settled restore promise",
     );
-    assert.deepEqual(restoreModelCalls, [
-      { id: DEFAULT_MODEL, provider: DEFAULT_PROVIDER },
-    ]);
-    assert.deepEqual(setModelCalls, [
-      { id: DEFAULT_MODEL, provider: DEFAULT_PROVIDER },
-    ]);
     assert.equal(settledResult, true);
-    log.debug("startup handoff callbacks verified", {
-      restoreModelCalls,
-      settledResult,
-    });
+    log.debug("onRestoreSettled handoff verified", { settled, settledResult });
   });
 });
