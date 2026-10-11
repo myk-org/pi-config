@@ -106,7 +106,9 @@ In that case, ask the user to enter a model ID. A canonical builtin always
 supports key-scoped listing on its own host, even when its catalog mixes APIs
 (OpenRouter fronts Anthropic models alongside OpenAI ones); a models.json
 `baseUrl` override or a custom gateway is still refused, so a request-supplied
-endpoint never receives the credential. A listing is only **key-listed**:
+endpoint never receives the credential — unless the admin flagged that custom
+provider `trustKeyScopedListing` in the agent-dir `models.json` (see
+[Custom providers and settings (agent dir)](#custom-providers-and-settings-agent-dir)). A listing is only **key-listed**:
 it does not verify that a prompt will work. Google results require
 `generateContent`; known non-generation OpenAI model families are excluded,
 but remaining IDs are not **prompt-verified**. Do not use static catalog entries
@@ -149,7 +151,7 @@ sidecar after changing them):
 
 | File | Effect |
 |------|--------|
-| `models.json` | Custom pi providers registered on the shared runtime — listed by `GET /models` and `GET /providers`, usable in `POST /sessions` |
+| `models.json` | Custom pi providers registered on the shared runtime — listed by `GET /models` and `GET /providers`, usable in `POST /sessions`; providers flagged `trustKeyScopedListing` also serve `POST /models/for-api-key` |
 | `auth.json` | Provider credentials for the shared runtime (same format as interactive pi's `auth.json`) |
 | `settings.json` | Seeded into the in-memory settings store for the internal runtime and every session (e.g. `defaultProvider`) |
 
@@ -191,6 +193,41 @@ Notes:
   runtime is seeded with at startup.
 - Settings seeded from `settings.json` never re-enable compaction — sidecar
   sessions are short-lived and always run with compaction disabled.
+
+### Key-scoped listing for custom providers (`trustKeyScopedListing`)
+
+By default `POST /models/for-api-key` refuses to send a request-scoped (user)
+key to any host that is not a provider-owned canonical builtin endpoint or a
+literal loopback address, so custom gateways return
+`{"models": [], "modelListingSupported": false}`. An admin can opt a single
+custom provider into key-scoped model listing by flagging it in the agent
+dir's `models.json` (read once at startup — restart the sidecar to apply):
+
+```json
+{
+  "providers": {
+    "enmaas": {
+      "baseUrl": "https://enmaas.example.com/v1",
+      "api": "openai-completions",
+      "apiKey": "$ENMAAS_API_KEY",
+      "trustKeyScopedListing": true,
+      "models": [
+        { "id": "enmaas/gpt-4o", "name": "GPT-4o via EnMaaS" }
+      ]
+    }
+  }
+}
+```
+
+A flagged provider's listing request goes to exactly its configured `baseUrl`
+— the same host the manifest's server credential (`apiKey`) already goes to.
+The flag is honored **only** from this admin-controlled manifest; request- or
+session-level input can never set it, and unflagged providers keep the default
+refusal. URL hygiene is still enforced (no userinfo, query, or hash; only
+`http:`/`https:`), and the provider must declare at least one model with all
+models sharing the provider `baseUrl` (the existing uniformity check). The
+extra field is ignored by pi's provider registration, so it does not affect
+`GET /models` or `POST /sessions`.
 
 ## CLI Commands
 

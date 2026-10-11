@@ -723,3 +723,118 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
     }
   });
 });
+
+/**
+ * trustKeyScopedListing (issue 912): opt-in, per-provider flag in the agent-dir
+ * models.json. The flag is a startup snapshot read by the SessionStore
+ * constructor — the only source the key-scoped listing trust gate accepts.
+ */
+describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
+  const writeManifest = (dir: string, providers: Record<string, Record<string, unknown>>): void => {
+    writeFileSync(join(dir, "models.json"), JSON.stringify({ providers }));
+  };
+
+  /** Same fixture shape as the surrounding SessionStore tests: real runtime over a
+   * temp models.json, store built with that agentDir so the manifest flag is read. */
+  const fixtureStore = async (dir: string) => {
+    const runtime = await ModelRuntime.create({ modelsPath: join(dir, "models.json"), authPath: join(dir, "auth.json"), refreshOnCreate: false });
+    const store = new SessionStore({ agentDir: dir });
+    Object.assign(store, {
+      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
+      modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true,
+    });
+    return store;
+  };
+
+  it("lists a manifest-flagged custom provider against its configured baseUrl; unflagged sibling stays refused", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-flag-"));
+    writeManifest(dir, {
+      flagged912: { baseUrl: "https://flagged.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+        trustKeyScopedListing: true, models: [{ id: "static-only", name: "Static" }] },
+      plain912: { baseUrl: "https://plain.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+        models: [{ id: "static-only", name: "Static" }] },
+    });
+    const store = await fixtureStore(dir);
+    const originalFetch = globalThis.fetch;
+    const fetched: string[] = [];
+    let authorization = "";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      fetched.push(String(input instanceof Request ? input.url : input));
+      const headers = init?.headers as Record<string, string> | undefined;
+      authorization = String(headers?.Authorization ?? "");
+      return new Response(JSON.stringify({ data: [{ id: "new-private-912" }] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      assert.equal((await store.getProviderStatus("flagged912")).supportsSessionApiKey, true);
+      const result = await store.getModelsForApiKey("flagged912", keyA);
+      assert.equal(result.modelListingSupported, true, "a flagged custom provider supports key-scoped listing");
+      assert.deepEqual(result.models.map((model) => model.id), ["new-private-912"]);
+      assert.deepEqual(result.models.map((model) => model.provider), ["flagged912"]);
+      assert.deepEqual(fetched, ["https://flagged.example.test/v1/models"], "listing must target the flagged provider's configured baseUrl");
+      assert.equal(authorization, `Bearer ${keyA}`, "the request key, not the manifest key, must be sent");
+      // An identical provider without the flag keeps today's refusal, with no request.
+      assert.deepEqual(await store.getModelsForApiKey("plain912", keyA), { models: [], modelListingSupported: false });
+      assert.deepEqual(fetched, ["https://flagged.example.test/v1/models"]);
+      noKey(JSON.stringify(result), keyA);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await store.disposeAll();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  for (const [name, baseUrl] of [
+    ["userinfo", "https://user:secret@hygiene.example.test/v1"], // pragma: allowlist secret — synthetic URL, never fetched
+    ["query", "https://hygiene.example.test/v1?x=1"],
+    ["hash", "https://hygiene.example.test/v1#frag"],
+  ] as const) {
+    it(`rejects a flagged provider baseUrl with ${name}`, async () => {
+      const dir = mkdtempSync(join(tmpdir(), `sidecar-912-hygiene-${name}-`));
+      writeManifest(dir, { hygiene912: { baseUrl, api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+        trustKeyScopedListing: true, models: [{ id: "static-only", name: "Static" }] } });
+      const store = await fixtureStore(dir);
+      const originalFetch = globalThis.fetch;
+      let outbound = 0;
+      globalThis.fetch = (async () => { outbound++; throw new Error("unexpected outbound request"); }) as typeof fetch;
+      try {
+        assert.equal((await store.getProviderStatus("hygiene912")).supportsSessionApiKey, true);
+        assert.deepEqual(await store.getModelsForApiKey("hygiene912", keyA), { models: [], modelListingSupported: false });
+        assert.equal(outbound, 0, "the credential must never reach a URL failing hygiene checks");
+      } finally {
+        globalThis.fetch = originalFetch;
+        await store.disposeAll();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("ignores a trustKeyScopedListing flag supplied in the request body", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-body-"));
+    writeManifest(dir, { plain912: { baseUrl: "https://plain.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+      models: [{ id: "static-only", name: "Static" }] } });
+    const offline = process.env.PI_OFFLINE;
+    process.env.PI_OFFLINE = "1";
+    const blocker = createServer();
+    const port = await listen(blocker);
+    await close(blocker);
+    const sidecar = startSidecar({ host: "127.0.0.1", port, agentDir: dir });
+    try {
+      await sidecar.ready;
+      const status = await (await fetch(`http://127.0.0.1:${port}/models/plain912/status`)).json() as { supportsSessionApiKey: boolean };
+      assert.equal(status.supportsSessionApiKey, true, "fixture provider must be key-capable for the refusal path to be reachable");
+      const response = await fetch(`http://127.0.0.1:${port}/models/for-api-key`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "plain912", api_key: keyA, trustKeyScopedListing: true }),
+      });
+      assert.equal(response.status, 200, await response.clone().text());
+      noKey(await response.clone().text(), keyA);
+      assert.deepEqual(await response.json(), { models: [], modelListingSupported: false },
+        "a flag from request input must never grant listing trust");
+    } finally {
+      await sidecar.close();
+      if (offline === undefined) delete process.env.PI_OFFLINE;
+      else process.env.PI_OFFLINE = offline;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

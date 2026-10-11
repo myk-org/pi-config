@@ -59,7 +59,10 @@ ambient CLI/ACPX providers report false.
 key-capable providers. Python `await SidecarClient.get_models_for_api_key(provider, api_key)`
 returns `{ "models": [...], "modelListingSupported": boolean }`. `true` means native
 key-scoped listing ran (an empty list means no models); `false` means no native
-listing, so the user must supply a model ID. The key and result are request-local:
+listing, so the user must supply a model ID. A custom models.json provider the
+admin flagged `trustKeyScopedListing` (agent-dir manifest only — never request or
+session input) also lists, against exactly its configured `baseUrl`. The key and
+result are request-local:
 never cache them or add key-listed models to the shared catalog. Listing does
 not verify that a model can complete a prompt.
 

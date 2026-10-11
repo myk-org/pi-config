@@ -481,6 +481,50 @@ export function readSettingsSeed(agentDir?: string): Record<string, unknown> {
   }
 }
 
+/** Read provider IDs flagged `trustKeyScopedListing: true` from `<agentDir>/models.json`
+ * (empty set when absent/unparseable). Called once per process (SessionStore
+ * constructor) — the same startup snapshot discipline as readSettingsSeed.
+ * This admin-controlled manifest is the ONLY source the key-scoped listing trust
+ * gate accepts; request- or session-level input never contributes. Exported for tests. */
+export function readTrustedKeyScopedProviders(agentDir?: string): Set<string> {
+  const log = createLogger("agent-dir");
+  const trusted = new Set<string>();
+  if (!agentDir) {
+    log.debug("No agent dir for trustKeyScopedListing flags; none loaded");
+    return trusted;
+  }
+  const modelsPath = join(agentDir, "models.json");
+  try {
+    if (!existsSync(modelsPath)) {
+      log.debug(`No models.json in agent dir; no trustKeyScopedListing flags: path=${modelsPath}`);
+      return trusted;
+    }
+    const parsed: unknown = JSON.parse(readFileSync(modelsPath, "utf-8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      log.warn(`models.json in agent dir is not a JSON object; no trustKeyScopedListing flags: path=${modelsPath}`);
+      return trusted;
+    }
+    const providers = (parsed as { providers?: unknown }).providers;
+    if (typeof providers !== "object" || providers === null || Array.isArray(providers)) {
+      log.warn(`models.json in agent dir has no providers object; no trustKeyScopedListing flags: path=${modelsPath}`);
+      return trusted;
+    }
+    for (const [id, config] of Object.entries(providers)) {
+      if (typeof config === "object" && config !== null &&
+          (config as Record<string, unknown>).trustKeyScopedListing === true) {
+        trusted.add(id);
+      }
+    }
+    log.info(`Loaded trustKeyScopedListing flags from agent dir models.json: path=${modelsPath}, flaggedProviders=${trusted.size}`);
+  } catch (err) {
+    log.warn(
+      `Failed to read/parse models.json in agent dir; no trustKeyScopedListing flags honored: path=${modelsPath}, ` +
+      `error=${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return trusted;
+}
+
 /** Internal registrar session never receives prompts — system prompt is a placeholder for clarity in logs/dumps. */
 const INTERNAL_REGISTRAR_SYSTEM_PROMPT =
   "You are the pi-sidecar's internal model registrar session. You exist only to keep the " +
@@ -825,12 +869,23 @@ export class SessionStore {
    */
   private readonly settingsSeed: Record<string, unknown>;
 
+  /**
+   * Startup snapshot of provider IDs flagged `trustKeyScopedListing: true` in
+   * `<this.agentDir>/models.json` (empty when absent or unparseable). Read exactly
+   * once, here in the constructor — same snapshot discipline as settingsSeed.
+   * This admin-controlled manifest is the only source the key-scoped listing
+   * trust gate (getModelsForApiKey) accepts; request/session input never
+   * contributes. Deployments restart the sidecar to apply flag changes.
+   */
+  private readonly trustedKeyScopedProviders: Set<string>;
+
   constructor(options?: { agentDir?: string }) {
     this.agentDir = resolveInternalAgentDir(options?.agentDir);
     this.settingsSeed = readSettingsSeed(this.agentDir);
+    this.trustedKeyScopedProviders = readTrustedKeyScopedProviders(this.agentDir);
     const log = createLogger("session-store-init");
-    // Path only — no settings contents, no credentials.
-    log.debug("SessionStore constructed", { agentDir: this.agentDir, settingsSeedKeys: Object.keys(this.settingsSeed).length });
+    // Path and counts only — no settings contents, no credentials.
+    log.debug("SessionStore constructed", { agentDir: this.agentDir, settingsSeedKeys: Object.keys(this.settingsSeed).length, trustedKeyScopedProviders: this.trustedKeyScopedProviders.size });
   }
 
   get disposed(): boolean {
@@ -1265,14 +1320,23 @@ export class SessionStore {
       log.debug("Provider has no native model listing", { providerId: safeProviderId, modelListingSupported: false });
       return { models: [], modelListingSupported: false };
     }
-    log.debug("Resolved key-scoped listing base", { providerId: safeProviderId, canonicalBuiltin, modelCount: catalog.length });
+    log.debug("Resolved key-scoped listing base", { providerId: safeProviderId, canonicalBuiltin, manifestTrusted: this.trustedKeyScopedProviders.has(providerId), modelCount: catalog.length });
     let url: URL;
     try {
       url = new URL(base);
-      // Only provider-owned canonical hosts or literal loopback; DNS names for
-      // custom gateways can rebind to private addresses after validation.
+      // Only provider-owned canonical hosts, literal loopback, or a custom provider
+      // the admin explicitly flagged in the agent-dir models.json; DNS names for
+      // unflagged custom gateways can rebind to private addresses after validation.
       const loopback = ["127.0.0.1", "[::1]"].includes(url.hostname);
-      const trusted = canonical !== undefined && url.href === new URL(canonical).href;
+      const canonicalTrusted = canonical !== undefined && url.href === new URL(canonical).href;
+      // Admin opt-in (startup manifest snapshot only): a custom (non-canonical)
+      // provider flagged trustKeyScopedListing trusts exactly its configured baseUrl —
+      // the host the manifest's server credential already goes to. Never for builtin
+      // IDs (an overridden builtin keeps its canonical gate) and never a wider grant.
+      const manifestTrusted = this.trustedKeyScopedProviders.has(providerId) && canonical === undefined &&
+        typeof provider.baseUrl === "string" && url.href === new URL(provider.baseUrl).href &&
+        ["http:", "https:"].includes(url.protocol);
+      const trusted = canonicalTrusted || manifestTrusted;
       if ((!loopback && !trusted) || (canonical !== undefined && !trusted) || (loopback && kind !== "openai") ||
           (loopback && !["http:", "https:"].includes(url.protocol)) ||
           url.username || url.password || url.search || url.hash ||
