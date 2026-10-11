@@ -293,6 +293,9 @@ progress. It does not commit, push, create a PR, or post results.
 - Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.
 - Settings CLI: `uv run myk-pi-tools settings get [key ...]` — resolve settings (project → global → env → default). No args = all keys.
+- Reviews address CLI: `uv run myk-pi-tools reviews address` — apply `<path>:<line>|<reply>` mapping rules (or `*|<reply>`) to the newest
+  `pr-*-reviews.json` in `.pi/tmp`, flip statuses (`--set`), then run post + store; validation errors (ambiguous rule, invalid status for
+  Qodo sticky findings) leave the JSON unchanged. Options and exit codes: see README `myk-pi-tools` subcommands.
 - Settings TUI: `/pi-config-settings [project|global]` — interactive settings editor in the pi session.
 - Agent settings injection: use `{{SETTINGS:key1,key2}}` in agent `.md` files — `substituteSettingsPlaceholders` only (not rules `assembleRuleText`). See `docs/project-settings.md`.
   Never instruct agents to read `pi-config-settings.jsonc`/`.json` manually.

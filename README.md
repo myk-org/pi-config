@@ -767,11 +767,29 @@ PI_PIDIFF_ENABLE=false pi
 | `myk-pi-tools pr claude-md`            | Fetch `CLAUDE.md` and `AGENTS.md` content for a PR's repository                                                                                |
 | `myk-pi-tools release create`          | Create a GitHub release with changelog                                                                                                         |
 | `myk-pi-tools db`                      | Review database query commands                                                                                                                 |
-| `myk-pi-tools reviews`                 | Review handling commands                                                                                                                       |
+| `myk-pi-tools reviews`                 | Review handling commands (fetch, poll, address, post, store)                                                                                   |
+| `myk-pi-tools reviews address`         | Apply replies/statuses to a fetched reviews JSON, then post and store it (see below)                                                           |
 | `myk-pi-tools memory`                  | Project memory commands — persistent per-repo learning                                                                                         |
 | `myk-pi-tools ai-cli`                  | AI CLI commands (cursor, claude, gemini)                                                                                                       |
 | `myk-pi-tools coderabbit`              | CodeRabbit commands (check, trigger, retry)                                                                                                    |
 | `myk-pi-tools settings get [key ...]`  | Resolve settings (project → global → env → default). No args = all keys                                                                        |
+
+`reviews address` — bulk-apply replies to a fetched reviews JSON, then post and store it:
+
+```bash
+myk-pi-tools reviews address [--json <reviews.json>] [--replies <mapping.txt>] [--set <status>]
+```
+
+- `--json`: reviews JSON to process (default: newest `pr-*-reviews.json` in `.pi/tmp`)
+- `--replies`: mapping file, one rule per line — `<path>:<line>|<reply>` or `*|<reply>` (matches all pending findings);
+  `#` comments and blank lines ignored
+- `--set`: target status for matched findings — `addressed` (default), `skipped`, `not_addressed`, or `failed`
+- Without `--replies`, pending findings that already carry a reply only get their status flipped (status-only mode)
+- Exit code `0` = replies posted and stored; non-zero = nothing matched, validation failed, or posting failed
+  (the JSON is kept for retry — re-running with the same or a corrected mapping resumes unposted entries)
+- Validation failures change nothing: a rule matching several distinct findings at one location, or a status `post`
+  rejects for Qodo sticky findings (`not_addressed`/`failed`; `skipped` only with an issue-spec-update reply),
+  exits non-zero before the JSON is saved
 
 ### What's protected
 

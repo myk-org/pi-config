@@ -4,6 +4,10 @@ import sys
 
 import click
 
+from myk_pi_tools.logger import create_logger
+
+log = create_logger(__name__)
+
 
 @click.group()
 def reviews() -> None:
@@ -81,12 +85,13 @@ def reviews_address(json_path: str | None, replies: str | None, set_status: str)
     """Apply replies/statuses to a fetched reviews JSON, then post and store.
 
     Loads the reviews JSON (default: newest pr-<N>-reviews.json in .pi/tmp),
-    deduplicates thread + sticky findings by (path, line, body-prefix),
+    deduplicates thread + sticky findings by (path, finding title),
     applies replies from the mapping file, flips matching statuses, then
     runs 'reviews post' + 'reviews store' and prints a compact digest.
     """
     from myk_pi_tools.reviews.address import run
 
+    log.info("reviews address: json=%s replies=%s set=%s", json_path, replies, set_status)
     sys.exit(run(json_path=json_path, replies_file=replies, set_status=set_status))
 
 

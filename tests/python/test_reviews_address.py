@@ -11,6 +11,7 @@ import pytest
 from click.testing import CliRunner
 
 from myk_pi_tools.reviews.address import (
+    AddressError,
     RepliesFileError,
     apply_replies,
     find_default_json,
@@ -61,11 +62,22 @@ def _write_reviews_json(directory: Path, data: dict[str, Any], name: str = "pr-4
 
 
 def _patch_post_store(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
-    """Replace post.run/store.run with recorders; return the call log."""
+    """Replace post.run/store.run with recorders; return the call log.
+
+    The fake post mimics the real one: it stamps posted_at on every
+    non-pending entry it processes, so the address flow's posted-verification
+    sees them as successfully posted.
+    """
     calls: list[tuple[str, str]] = []
 
     def fake_post(path: str) -> None:
         calls.append(("post", path))
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        for src in ("human", "qodo", "coderabbit"):
+            for entry in data.get(src, []):
+                if entry.get("status") not in (None, "pending") and not entry.get("is_auto_skipped"):
+                    entry["posted_at"] = "2025-01-01T00:00:00Z"
+        Path(path).write_text(json.dumps(data), encoding="utf-8")
 
     def fake_store(path: str) -> None:
         calls.append(("store", path))
@@ -198,9 +210,9 @@ def test_apply_replies_no_rules_flips_status_of_replied_entries() -> None:
     """Without a mapping file, pending entries that already have a reply are flipped."""
     data = _sample_data()
     data["qodo"][2]["reply"] = "Removed the unused import in abc1234"
-    groups = apply_replies(data, None, "skipped")
+    groups = apply_replies(data, None, "addressed")
     assert len(groups) == 1
-    assert data["qodo"][2]["status"] == "skipped"
+    assert data["qodo"][2]["status"] == "addressed"
     assert data["qodo"][0]["status"] == "pending"  # no reply -> untouched
 
 
@@ -260,11 +272,11 @@ def test_cli_applies_replies_posts_and_stores(tmp_path: Path, monkeypatch: pytes
 
 
 def test_cli_set_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """--set skipped flips the target status."""
+    """--set skipped flips the target status (spec-update reply passes sticky validation)."""
     _patch_post_store(monkeypatch)
     json_path = _write_reviews_json(tmp_path, _sample_data())
     replies = tmp_path / "replies.txt"
-    replies.write_text("src/a.py:10|By design, documented in internal #782\n", encoding="utf-8")
+    replies.write_text("src/a.py:10|Updated the issue spec, see internal #782\n", encoding="utf-8")
 
     result = CliRunner().invoke(
         reviews, ["address", "--json", str(json_path), "--replies", str(replies), "--set", "skipped"]
@@ -331,3 +343,280 @@ def test_cli_missing_json_exits_nonzero(tmp_path: Path, monkeypatch: pytest.Monk
     result = CliRunner().invoke(reviews, ["address"])
     assert result.exit_code == 1
     assert "not found" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Retry after failed post: unposted entries stay correctable (finding 3)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_replies_updates_unposted_nonpending_entry() -> None:
+    """A rule re-applies to entries a previous run saved but failed to post."""
+    data = _sample_data()
+    for e in data["qodo"][:2]:
+        e["status"] = "addressed"
+        e["reply"] = "old rejected reply"
+    rules = [{"path": "src/a.py", "line": 10, "reply": "corrected in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    for e in data["qodo"][:2]:
+        assert e["reply"] == "corrected in abc1234"
+        assert e["status"] == "addressed"
+
+
+def test_apply_replies_protects_posted_entries() -> None:
+    """Entries with a posted_at marker are never re-addressed."""
+    data = _sample_data()
+    data["qodo"][0]["status"] = "addressed"
+    data["qodo"][0]["reply"] = "posted reply"
+    data["qodo"][0]["posted_at"] = "2025-01-01T00:00:00Z"
+    rules = [{"path": "src/a.py", "line": 10, "reply": "corrected in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert data["qodo"][0]["reply"] == "posted reply"  # posted member untouched
+    assert data["qodo"][1]["reply"] == "corrected in abc1234"  # unposted sticky member updated
+    assert len(groups) == 1
+    assert len(groups[0]) == 1
+
+
+def test_cli_rerun_corrects_reply_of_unposted_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """After a failed post, re-running with a corrected mapping updates and posts."""
+    calls = _patch_post_store(monkeypatch)
+    data = _sample_data()
+    for e in data["qodo"][:2]:
+        e["status"] = "addressed"  # saved by a previous run whose post failed
+        e["reply"] = "old rejected reply"
+    json_path = _write_reviews_json(tmp_path, data)
+    replies = tmp_path / "replies.txt"
+    replies.write_text("src/a.py:10|corrected in abc1234\n", encoding="utf-8")
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(json_path), "--replies", str(replies)])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("post", str(json_path)), ("store", str(json_path))]
+    saved = json.loads(json_path.read_text(encoding="utf-8"))
+    assert saved["qodo"][0]["reply"] == "corrected in abc1234"
+
+
+# ---------------------------------------------------------------------------
+# Status-only mode: paired findings share the group reply (finding 4)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_replies_status_only_copies_group_reply_to_all_members() -> None:
+    """A replied thread + unreplied sticky pair both get the reply before the status flip."""
+    data = _sample_data()
+    data["qodo"][0]["reply"] = "Fixed in abc1234"  # only the thread member carries a reply
+    groups = apply_replies(data, None, "addressed")
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 2
+    for e in data["qodo"][:2]:
+        assert e["reply"] == "Fixed in abc1234"  # post would reject an empty reply otherwise
+        assert e["status"] == "addressed"
+
+
+# ---------------------------------------------------------------------------
+# No-match runs must not consume the JSON (finding 5)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_no_match_keeps_unrelated_addressed_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mapping that matches nothing never posts/stores, even with unposted entries present."""
+    calls = _patch_post_store(monkeypatch)
+    data = _sample_data()
+    data["qodo"][2]["status"] = "skipped"  # previously addressed, unposted, unrelated
+    data["qodo"][2]["reply"] = "Removed the unused import in abc1234"
+    json_path = _write_reviews_json(tmp_path, data)
+    replies = tmp_path / "replies.txt"
+    replies.write_text("src/zzz.py:99|nothing here\n", encoding="utf-8")
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(json_path), "--replies", str(replies)])
+
+    assert result.exit_code == 1
+    assert calls == []  # no post, no store — the JSON is not consumed
+    saved = json.loads(json_path.read_text(encoding="utf-8"))
+    assert saved["qodo"][2]["status"] == "skipped"  # unchanged
+    assert json_path.exists()
+
+
+def test_cli_resume_only_for_rule_matching_unposted_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unposted entry whose reply is finished is only resumed when a rule matches it."""
+    calls = _patch_post_store(monkeypatch)
+    data = _sample_data()
+    data["qodo"][2]["status"] = "skipped"
+    data["qodo"][2]["reply"] = "Removed the unused import in abc1234"
+    json_path = _write_reviews_json(tmp_path, data)
+    replies = tmp_path / "replies.txt"
+    replies.write_text("src/b.py:3|Removed the unused import in abc1234\n", encoding="utf-8")
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(json_path), "--replies", str(replies)])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("post", str(json_path)), ("store", str(json_path))]
+
+
+# ---------------------------------------------------------------------------
+# Unposted addressed entries keep their retry file (finding 6)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_keeps_json_when_post_skips_addressed_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Post exiting 0 while skipping an entry (no thread id) must not lead to store."""
+    calls = _patch_post_store(monkeypatch)
+
+    def skipping_post(path: str) -> None:
+        calls.append(("post", path))  # exits 0 but never stamps posted_at
+
+    monkeypatch.setattr("myk_pi_tools.reviews.post.run", skipping_post)
+    data = _sample_data()
+    data["qodo"][2]["thread_id"] = None  # inline sticky finding, no resolvable thread
+    json_path = _write_reviews_json(tmp_path, data)
+    replies = tmp_path / "replies.txt"
+    replies.write_text("src/b.py:3|Removed the unused import in abc1234\n", encoding="utf-8")
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(json_path), "--replies", str(replies)])
+
+    assert result.exit_code == 1
+    assert ("store", str(json_path)) not in calls
+    saved = json.loads(json_path.read_text(encoding="utf-8"))
+    assert saved["qodo"][2]["status"] == "addressed"  # reply kept for retry
+    assert json_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Invalid status for Qodo sticky findings rejected before persisting (finding 7)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_replies_rejects_invalid_status_for_qodo_sticky() -> None:
+    """--set not_addressed/failed is rejected for sticky findings; nothing changes."""
+    data = _sample_data()
+    rules = [{"path": "src/b.py", "line": 3, "reply": "not fixing this"}]
+    with pytest.raises(AddressError, match="qodo_finding"):
+        apply_replies(data, rules, "not_addressed")
+
+    assert data["qodo"][2]["status"] == "pending"  # nothing was modified
+    assert data["qodo"][2]["reply"] == ""
+
+
+def test_apply_replies_allows_skipped_sticky_with_spec_update_reply() -> None:
+    """'skipped' is allowed for stickies when the reply documents an issue-spec update."""
+    data = _sample_data()
+    rules = [{"path": "src/b.py", "line": 3, "reply": "Updated the issue spec, see internal #782"}]
+    groups = apply_replies(data, rules, "skipped")
+
+    assert len(groups) == 1
+    assert data["qodo"][2]["status"] == "skipped"
+
+
+def test_cli_invalid_sticky_status_changes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The CLI rejects incompatible statuses before saving, posting, or storing."""
+    calls = _patch_post_store(monkeypatch)
+    json_path = _write_reviews_json(tmp_path, _sample_data())
+    replies = tmp_path / "replies.txt"
+    replies.write_text("src/b.py:3|not fixing this\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        reviews, ["address", "--json", str(json_path), "--replies", str(replies), "--set", "failed"]
+    )
+
+    assert result.exit_code == 1
+    assert calls == []
+    saved = json.loads(json_path.read_text(encoding="utf-8"))
+    assert saved["qodo"][2]["status"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# Thread + sticky records with different bodies still pair (finding 8)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_replies_pairs_thread_and_sticky_with_different_bodies() -> None:
+    """Thread bodies carry badge/type markers and different line numbers; sticky
+    bodies are '**Title**' with the range start — still one group."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(
+                line=107,
+                body="1\\. New review helpers skip required structured logs ◔ Observability",
+                thread_id="T1",
+            ),
+            _entry(
+                line=105,
+                body="**New review helpers skip required structured logs**\n\nThe new functions lack logs.",
+                thread_id=None,
+                type="qodo_rule_violation",
+            ),
+        ],
+        "coderabbit": [],
+    }
+    rules = [{"path": "src/a.py", "line": 107, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 2  # pair grouped despite different bodies and lines
+    assert all(e["reply"] == "Fixed in abc1234" for e in groups[0])
+
+
+# ---------------------------------------------------------------------------
+# One rule must not answer multiple distinct findings (finding 9)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_replies_rejects_rule_matching_multiple_findings() -> None:
+    """A specific rule matching two distinct findings at one location fails cleanly."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(body="Fix the loop boundary in parser", thread_id="T1"),
+            _entry(body="Rename variable x to y", thread_id="T2"),
+        ],
+        "coderabbit": [],
+    }
+    rules = [{"path": "src/a.py", "line": 10, "reply": "one reply for both"}]
+    with pytest.raises(AddressError, match="2 distinct findings"):
+        apply_replies(data, rules, "addressed")
+
+    assert data["qodo"][0]["status"] == "pending"  # nothing was modified
+    assert data["qodo"][1]["status"] == "pending"
+
+
+def test_apply_replies_wildcard_still_matches_multiple_findings() -> None:
+    """The wildcard rule is allowed to answer several distinct findings."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(body="Fix the loop boundary in parser", thread_id="T1"),
+            _entry(body="Rename variable x to y", thread_id="T2"),
+        ],
+        "coderabbit": [],
+    }
+    rules = [{"path": None, "line": None, "reply": "all fixed in def5678"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 2
+    assert all(e["status"] == "addressed" for g in groups for e in g)
+
+
+def test_cli_ambiguous_rule_changes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The CLI fails with a clear error and leaves the JSON untouched."""
+    calls = _patch_post_store(monkeypatch)
+    data = _sample_data()
+    data["qodo"].append(_entry(body="Rename variable x to y", thread_id="T2"))
+    json_path = _write_reviews_json(tmp_path, data)
+    replies = tmp_path / "replies.txt"
+    replies.write_text("src/a.py:10|one reply for both\n", encoding="utf-8")
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(json_path), "--replies", str(replies)])
+
+    assert result.exit_code == 1
+    assert "2 distinct findings" in result.output
+    assert calls == []
+    saved = json.loads(json_path.read_text(encoding="utf-8"))
+    assert all(e["status"] == "pending" for e in saved["qodo"])
