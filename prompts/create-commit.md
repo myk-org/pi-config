@@ -31,9 +31,15 @@ This is the immutable source template. NEVER modify it.
 
 | Placeholder | Value |
 |-------------|-------|
-| `{{FILES}}` | Every file to commit from `git status --porcelain=v1 -z` (staged, unstaged, untracked), one hyphen bullet per file, exact paths. NUL-delimited `-z` output avoids quoting ambiguity: for rename records (`R`) list only the NEW path; for quoted C-escaped paths, decode to the real path; keep deleted paths as-is |
-| `{{MESSAGE}}` | The raw arguments — the commit subject. If empty, draft a conventional `type(scope): description` subject from the change set and confirm with the user |
-| `{{BODY}}` | Empty by default. Only fill if the user supplied a body |
+| `{{FILES}}` | Every file to commit, one hyphen bullet per file, exact paths — parse `git status --porcelain=v1 -z` per the rules below |
+| `{{MESSAGE}}` | Commit subject — the FIRST LINE of the raw arguments, nothing more. If empty, draft a conventional `type(scope): description` subject from the change set and confirm with the user |
+| `{{BODY}}` | The remainder of the raw arguments after the first line, if any — never duplicates `{{MESSAGE}}` content. Empty by default |
+
+**Parsing `git status --porcelain=v1 -z`** (NUL-delimited; avoids quote ambiguity):
+
+- Rename (`R`) and copy (`C`) records: list only the NEW/destination path
+- C-escaped quoted paths: decode to the real path; deleted paths: keep as-is
+- Paths containing newlines or control characters: render them in `printf '%q'` shell-escaped form so the bullet keeps one line — git-expert decodes before staging
 
 If `git status` shows files that clearly should not be committed (generated
 artifacts, `.env`, secrets), exclude them from `{{FILES}}` and say so.
