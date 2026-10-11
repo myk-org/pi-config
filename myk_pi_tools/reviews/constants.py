@@ -20,3 +20,18 @@ QODO_TYPE_MAP = {
     "UX issue": "qodo_ux_issue",
     "Cross-repo conflict": "qodo_cross_repo",
 }
+
+# Comment types embedded in review bodies (no GitHub thread of their own —
+# their node_id belongs to a review, not a resolvable thread). post.run
+# handles them through consolidated PR comments and never resolves them.
+BODY_EMBEDDED_COMMENT_TYPES = (
+    frozenset({
+        "outside_diff_comment",
+        "major_comment",
+        "minor_comment",
+        "nitpick_comment",
+        "duplicate_comment",
+        "qodo_reply",
+    })
+    | QODO_STICKY_TYPES
+)

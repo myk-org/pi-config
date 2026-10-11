@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from myk_pi_tools.logger import create_logger
-from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES, QODO_TYPE_MAP
+from myk_pi_tools.reviews.constants import BODY_EMBEDDED_COMMENT_TYPES, QODO_STICKY_TYPES, QODO_TYPE_MAP
 from myk_pi_tools.reviews.status import extract_summary
 
 log = create_logger(__name__)
@@ -207,29 +207,58 @@ def _line_clusters(entries: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
 
     A cluster is one thread record (an entry with its own thread) plus the
     sticky record(s) whose line span overlaps it — a sticky's [line,
-    end_line] span covers its thread's line. Sticky records never merge
+    end_line] span covers its thread's line. Each sticky pairs with at most
+    ONE thread: the overlapping thread whose line is closest to the sticky's
+    line (first thread wins ties) — appending it to every overlapping thread
+    would let one rule match two clusters and be rejected as ambiguous.
+    Sticky records never merge
     with each other through span overlap: chained spans like [10,20],
     [20,30], [30,40] are three separate findings, so a rule for line 35
     cannot reach the line-10 finding (it would instead be ambiguous).
     """
     stickies = [e for e in entries if _is_sticky_record(e)]
-    clusters: list[list[dict[str, Any]]] = []
-    paired: set[int] = set()  # ids of stickies already in a cluster
-    for thread in entries:
-        if _is_sticky_record(thread):
+    threads = [e for e in entries if not _is_sticky_record(e)]
+    pair_of: dict[int, int] = {}  # id(sticky) -> index of its paired thread
+    for sticky in stickies:
+        sticky_span = _line_interval(sticky)
+        sticky_line = sticky.get("line")
+        if sticky_span is None or sticky_line is None:
             continue
-        cluster = [thread]
-        span = _line_interval(thread)
-        if span is not None:
-            for sticky in stickies:
-                sticky_span = _line_interval(sticky)
-                if sticky_span is not None and _spans_overlap(span, sticky_span):
-                    cluster.append(sticky)
-                    paired.add(id(sticky))
-        clusters.append(cluster)
+        for ti, thread in enumerate(threads):
+            thread_span = _line_interval(thread)
+            if thread_span is None or not _spans_overlap(sticky_span, thread_span):
+                continue
+            cur = pair_of.get(id(sticky))
+            if cur is None or abs(thread["line"] - sticky_line) < abs(threads[cur]["line"] - sticky_line):
+                pair_of[id(sticky)] = ti
+    clusters: list[list[dict[str, Any]]] = []
+    for ti, thread in enumerate(threads):
+        clusters.append([thread] + [s for s in stickies if pair_of.get(id(s)) == ti])
     # Stickies containing no thread line stay their own findings
-    clusters.extend([sticky] for sticky in stickies if id(sticky) not in paired)
+    clusters.extend([sticky] for sticky in stickies if id(sticky) not in pair_of)
     return clusters
+
+
+def _contested_sticky_ids(entries: list[dict[str, Any]]) -> set[int]:
+    """Ids of stickies whose span overlaps more than one thread record.
+
+    A contested sticky is paired with its closest thread for updates, but
+    its span must not broaden rule matching: a rule aimed at the other
+    overlapped thread would also match this sticky's cluster, making the
+    rule ambiguous and leaving both findings unaddressable.
+    """
+    threads = [e for e in entries if not _is_sticky_record(e)]
+    contested: set[int] = set()
+    for sticky in entries:
+        if not _is_sticky_record(sticky):
+            continue
+        span = _line_interval(sticky)
+        if span is None:
+            continue
+        overlaps = sum(1 for t in threads if (ts := _line_interval(t)) is not None and _spans_overlap(span, ts))
+        if overlaps > 1:
+            contested.add(id(sticky))
+    return contested
 
 
 def _is_addressable(entry: dict[str, Any]) -> bool:
@@ -263,6 +292,11 @@ def _needs_resolve_retry(source: str, entry: dict[str, Any]) -> bool:
     skipped, and human threads resolve only when addressed.
     """
     if not entry.get("posted_at") or entry.get("resolved_at"):
+        return False
+    # Body-embedded comments (post.py's consolidated-comment types) carry a
+    # review node_id, not a resolvable thread: post.run skips them as already
+    # posted, so treating them as retries would only consume the JSON.
+    if entry.get("type") in BODY_EMBEDDED_COMMENT_TYPES:
         return False
     # post.run derives the thread from node_id when thread_id is missing,
     # so either is a usable resolution handle ("null" placeholders are not).
@@ -345,6 +379,7 @@ def apply_replies(
     rule_cluster_count: dict[int, tuple[dict[str, Any], int]] = {}  # rule index -> (rule, matched clusters)
 
     for entries in groups.values():
+        contested = _contested_sticky_ids(entries)
         for cluster in _line_clusters(entries):
             if rules is None:
                 applicable = [e for e in cluster if e.get("status", "pending") == "pending" and _is_addressable(e)]
@@ -362,9 +397,11 @@ def apply_replies(
             applicable = [e for e in cluster if _is_addressable(e)]
             if not applicable:
                 continue
-            # Match against every cluster member (the pair is one finding)
-            # even when some members are already posted.
-            matched = [(i, r) for i, r in enumerate(rules) if any(_rule_matches(r, e) for e in cluster)]
+            # Match against the cluster's members (the pair is one finding)
+            # even when some are already posted — but a contested sticky's
+            # span must not match rules aimed at its non-paired thread.
+            matchable = [e for e in cluster if id(e) not in contested]
+            matched = [(i, r) for i, r in enumerate(rules) if any(_rule_matches(r, e) for e in matchable)]
             if not matched:
                 continue
             # Most specific rule wins; wildcard is the fallback
@@ -510,6 +547,21 @@ def run(json_path: str | None = None, replies_file: str | None = None, set_statu
         if code != 0:
             eprint(f"reviews post failed (exit {code}) — re-run to retry the resolve")
             return code
+        # Defense in depth: never let store delete the JSON while findings
+        # still await a reply (unposted, not auto-skipped) — the file must
+        # survive for a future run to address them.
+        posted_data = json.loads(path.read_text(encoding="utf-8"))
+        pending = [
+            e
+            for src in SOURCES
+            for e in posted_data.get(src, [])
+            if not e.get("posted_at") and not e.get("is_auto_skipped")
+        ]
+        if pending:
+            eprint(f"{len(pending)} finding(s) still pending — JSON kept: {path}")
+            for _, entry in resume:
+                print(format_digest_line(entry))
+            return 0
         code = _run_step(store.run, str(path))
         if code != 0:
             eprint(f"reviews store failed (exit {code})")

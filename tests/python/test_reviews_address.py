@@ -469,6 +469,11 @@ def test_cli_resumes_posted_unresolved_entries(tmp_path: Path, monkeypatch: pyte
     data["qodo"][0]["status"] = "addressed"
     data["qodo"][0]["reply"] = "Fixed in abc1234"
     data["qodo"][0]["posted_at"] = "2025-01-01T00:00:00Z"  # reply posted, resolve failed
+    data["qodo"][0]["type"] = None  # inline thread record (not a body-embedded type)
+    for e in data["qodo"][1:] + data["coderabbit"]:
+        e["status"] = "addressed"  # everything else already processed: nothing pending
+        e["posted_at"] = "2025-01-01T00:00:00Z"
+        e["resolved_at"] = "2025-01-01T00:00:01Z"
     json_path = _write_reviews_json(tmp_path, data)
 
     result = CliRunner().invoke(reviews, ["address", "--json", str(json_path)])
@@ -479,8 +484,9 @@ def test_cli_resumes_posted_unresolved_entries(tmp_path: Path, monkeypatch: pyte
 
 
 def test_cli_resumes_posted_unresolved_node_only_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A posted-but-unresolved entry with only a node_id is resumed too —
-    post.run derives the thread from the node_id."""
+    """A posted-but-unresolved inline thread with only a node_id is resumed too —
+    post.run derives the thread from the comment node_id (a real inline thread
+    record carries no sticky type; body-embedded types are excluded)."""
     calls = _patch_post_store(monkeypatch)
     data = _sample_data()
     data["qodo"][0]["status"] = "addressed"
@@ -488,6 +494,11 @@ def test_cli_resumes_posted_unresolved_node_only_entry(tmp_path: Path, monkeypat
     data["qodo"][0]["posted_at"] = "2025-01-01T00:00:00Z"  # reply posted, resolve failed
     data["qodo"][0]["thread_id"] = None  # REST-fetched: only the node_id is known
     data["qodo"][0]["node_id"] = "PRRC_kwDOR"
+    data["qodo"][0]["type"] = None  # inline thread, not a body-embedded comment
+    for e in data["qodo"][1:] + data["coderabbit"]:
+        e["status"] = "addressed"  # nothing pending: store may consume the JSON
+        e["posted_at"] = "2025-01-01T00:00:00Z"
+        e["resolved_at"] = "2025-01-01T00:00:01Z"
     json_path = _write_reviews_json(tmp_path, data)
 
     result = CliRunner().invoke(reviews, ["address", "--json", str(json_path)])
@@ -875,3 +886,117 @@ def test_cli_ambiguous_rule_changes_nothing(tmp_path: Path, monkeypatch: pytest.
     assert calls == []
     saved = json.loads(json_path.read_text(encoding="utf-8"))
     assert all(e["status"] == "pending" for e in saved["qodo"])
+
+
+# ---------------------------------------------------------------------------
+# Posted body-embedded comments never consume the JSON (round 4, finding 1)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_posted_body_comment_with_pending_findings_not_consumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A posted body-embedded comment (review node_id, no thread) is not a
+    resolution retry: with no matching rules the run exits no-match and the
+    JSON holding pending findings is kept."""
+    calls = _patch_post_store(monkeypatch)
+    data = _sample_data()
+    data["qodo"][1] = _entry(  # sticky record, posted as a consolidated body comment
+        thread_id=None,
+        node_id="PRRC_kwDOR",  # review node, not a resolvable thread
+        status="addressed",
+        reply="Fixed in abc1234",
+        posted_at="2025-01-01T00:00:00Z",
+    )
+    json_path = _write_reviews_json(tmp_path, data)
+    replies = tmp_path / "replies.txt"
+    replies.write_text("src/zzz.py:99|nothing here\n", encoding="utf-8")
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(json_path), "--replies", str(replies)])
+
+    assert result.exit_code == 1
+    assert "no findings matched" in result.output
+    assert calls == []  # no post, no store — the pending findings survive
+    assert json_path.exists()
+
+
+def test_cli_resume_keeps_json_when_pending_findings_remain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Store must not delete the JSON while unposted findings remain, even
+    when a posted-but-unresolved entry triggers the resume path."""
+    calls = _patch_post_store(monkeypatch)
+    data = _sample_data()
+    data["qodo"][0]["status"] = "addressed"
+    data["qodo"][0]["reply"] = "Fixed in abc1234"
+    data["qodo"][0]["posted_at"] = "2025-01-01T00:00:00Z"  # reply posted, resolve failed
+    data["qodo"][0]["type"] = None  # inline thread: resolvable
+    json_path = _write_reviews_json(tmp_path, data)
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(json_path)])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("post", str(json_path))]  # store skipped: pending findings remain
+    assert "still pending" in result.output
+    assert json_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# A sticky spanning two same-titled threads pairs with one (round 4, finding 2)
+# ---------------------------------------------------------------------------
+
+
+def _overlap_data() -> dict[str, Any]:
+    """Sticky span [230,250] covering two same-titled threads at 235 and 245."""
+    return {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(
+                line=235,
+                body="1\\. Overlapping threads cannot be addressed 📜 Bug ≡ Correctness",
+                thread_id="T1",
+                type=None,
+            ),
+            _entry(
+                line=245,
+                body="2\\. Overlapping threads cannot be addressed 📜 Bug ≡ Correctness",
+                thread_id="T2",
+                type=None,
+            ),
+            _entry(
+                line=230,
+                end_line=250,
+                body="**Overlapping threads cannot be addressed**\n\nThe sticky spans both threads.",
+                thread_id=None,
+                type="qodo_bug",
+            ),
+        ],
+        "coderabbit": [],
+    }
+
+
+def test_apply_replies_rule_at_first_thread_addresses_pair() -> None:
+    """A rule at 235 addresses the first thread plus its paired sticky; the
+    second thread stays untouched and no ambiguity is raised."""
+    data = _overlap_data()
+    rules = [{"path": "src/a.py", "line": 235, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 2  # thread@235 + its paired sticky
+    assert data["qodo"][0]["status"] == "addressed"
+    assert data["qodo"][2]["status"] == "addressed"  # paired sticky updated
+    assert data["qodo"][1]["status"] == "pending"  # second thread untouched
+
+
+def test_apply_replies_rule_at_second_thread_addresses_it_alone() -> None:
+    """A rule at 245 addresses the second thread alone — the contested sticky's
+    span no longer makes the rule ambiguous."""
+    data = _overlap_data()
+    rules = [{"path": "src/a.py", "line": 245, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 1  # thread@245 alone
+    assert data["qodo"][1]["status"] == "addressed"
+    assert data["qodo"][0]["status"] == "pending"
+    assert data["qodo"][2]["status"] == "pending"  # sticky belongs to the first pair
