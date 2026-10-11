@@ -2,14 +2,15 @@
 
 Replaces the bespoke parse-heredocs that autoqodo loops used to hand-write
 every cycle: loads a pr-<N>-reviews.json, deduplicates thread + sticky
-findings for the same finding (path, normalized title), applies
+findings for the same finding (path, finding type, full normalized title,
+clustered by overlapping line spans), applies
 replies from a simple mapping file, then runs the same post + store pair
 the review loop uses and prints a compact digest (one line per finding,
 no raw JSON dump).
 
 Mapping file format (one rule per line; blank lines and '#' comments ignored):
 
-    <path>:<line>|<reply text>   # matches findings at (path, line)
+    <path>:<line>|<reply text>   # matches findings whose line span contains <line>
     *|<reply text>               # matches every pending finding
 
 Entries whose posting failed in a previous run (no ``posted_at`` yet) stay
@@ -29,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from myk_pi_tools.logger import create_logger
-from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES
+from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES, QODO_TYPE_MAP
 from myk_pi_tools.reviews.status import extract_summary
 
 log = create_logger(__name__)
@@ -107,45 +108,112 @@ def parse_replies_file(path: Path) -> list[dict[str, Any]]:
 
 
 # Thread and sticky records for one finding share no explicit linkage field,
-# so the normalized finding title is the derived identifier: inline thread
-# bodies carry '<n>. Title 🐞 Bug ≡ Correctness', sticky bodies '**Title**'.
-# Marker stripping mirrors status.deduplicate_comments (badge emoji + Qodo
-# type/quality glyphs appended after the title). Line numbers are excluded
-# from the key because they shift between records (a sticky's line vs its
-# end_line) and between commits.
+# so the finding identity is derived: inline thread bodies carry
+# '<n>. Title <emoji> Type <emoji> Quality', sticky bodies '**Title**' with the
+# mapped type in entry['type']. The type phrase after the first emoji maps to
+# the same sticky type, so the pair shares a key while findings of different
+# types stay separate. Line numbers are a clustering attribute, not identity:
+# they shift between records (a sticky's [line, end_line] span covers its
+# thread's line) and between commits, but distinct same-titled findings sit at
+# disjoint locations.
 _EMOJI_BADGES_RE = re.compile(r"[\U0001f000-\U0001faff\u2190-\u2bff]")
+_TYPE_PHRASE_RE = re.compile(r"\s*([a-z][a-z\-\s]*)")
 _TRAILING_TYPE_MARKER_RE = re.compile(
     r"\s*\b("
-    r"bug|rule violation|requirement gap|correctness|reliability|"
-    r"maintainability|performance|observability|security"
+    r"bug|rule violation|requirement gap|ux issue|cross-repo conflict|"
+    r"correctness|reliability|maintainability|performance|observability|"
+    r"security|quality|skill insight"
     r")\b\s*$"
 )
+_QODO_TYPE_BY_PHRASE = {phrase.lower(): qtype for phrase, qtype in QODO_TYPE_MAP.items()}
 
 
-def _finding_title(entry: dict[str, Any]) -> str:
-    """Normalized finding title used to pair thread + sticky records."""
-    title = extract_summary(str(entry.get("body") or ""), 120).lower().strip()
+def _clean_title(text: str) -> str:
+    """Strip badge emojis from a raw title and collapse whitespace."""
+    return re.sub(r"\s+", " ", _EMOJI_BADGES_RE.sub("", text).strip())
+
+
+def _finding_identity(source: str, entry: dict[str, Any]) -> tuple[str, str]:
+    """Return (finding type, full normalized title) identifying one finding.
+
+    Sticky records carry the mapped type in ``entry['type']``; inline qodo
+    thread bodies end with '<emoji> Type <emoji> Quality' markers, so the
+    phrase after the first emoji derives the same type and the title is the
+    text before it. The full (untruncated) title keeps distinct long findings
+    apart — truncation is fine for display, not for identity.
+    """
+    raw = extract_summary(str(entry.get("body") or ""), 500).lower().strip()
+    entry_type = entry.get("type")
+    if source != "qodo" and entry_type not in QODO_STICKY_TYPES:
+        return str(entry_type or ""), _clean_title(raw)
+
+    def typed(finding_type: str, title: str) -> tuple[str, str]:
+        # An explicit sticky type (fetch stamps it) beats marker derivation
+        return (str(entry_type), title) if entry_type in QODO_STICKY_TYPES else (finding_type, title)
+
+    marker = _EMOJI_BADGES_RE.search(raw)
+    if marker:
+        title = _clean_title(raw[: marker.start()])
+        phrase_match = _TYPE_PHRASE_RE.match(raw, marker.end())
+        phrase = phrase_match.group(1).strip() if phrase_match else ""
+        return typed(_QODO_TYPE_BY_PHRASE.get(phrase, "qodo_finding"), title)
+    # Legacy bodies without emoji markers: strip trailing type/quality words
+    title, phrase = raw, ""
     prev: str | None = None
     while prev != title:
         prev = title
-        title = _EMOJI_BADGES_RE.sub("", title).strip()
+        word = _TRAILING_TYPE_MARKER_RE.search(title)
         title = _TRAILING_TYPE_MARKER_RE.sub("", title).strip()
-    title = re.sub(r"\s+", " ", title)[:80]
-    log.debug("finding title for %s:%s: %r", entry.get("path"), entry.get("line"), title)
-    return title
+        if word:
+            phrase = word.group(1)
+    return typed(_QODO_TYPE_BY_PHRASE.get(phrase, "qodo_finding"), _clean_title(title))
 
 
-def _dedupe_key(source: str, entry: dict[str, Any]) -> tuple[str, str, str]:
-    """Dedupe key (source, path, title) for thread + sticky findings.
+def _dedupe_key(source: str, entry: dict[str, Any]) -> tuple[str, str, str, str]:
+    """Dedupe key (source, path, finding type, full title) for one finding.
 
-    The line number is excluded (it differs between the thread and sticky
-    records of one finding and shifts between commits); the normalized
-    title groups the thread + sticky pair fetch produces for one Qodo
-    finding while keeping distinct findings separate.
+    The line number is excluded from identity (it differs between the thread
+    and sticky records of one finding and shifts between commits); members of
+    a group are then split into location clusters so distinct same-titled
+    findings at different lines stay separate.
     """
-    key = (source, str(entry.get("path") or ""), _finding_title(entry))
-    log.debug("dedupe key: %s:%s", key[0], key[1])
+    finding_type, title = _finding_identity(source, entry)
+    key = (source, str(entry.get("path") or ""), finding_type, title)
+    log.debug("dedupe key: %s:%s type=%s", key[0], key[1], key[2])
     return key
+
+
+def _line_interval(entry: dict[str, Any]) -> tuple[int, int] | None:
+    """Line span of an entry: [line, end_line] (a sticky's span covers its thread)."""
+    line = entry.get("line")
+    if line is None:
+        return None
+    end = entry.get("end_line")
+    lo, hi = (line, end if end is not None else line)
+    return (min(lo, hi), max(lo, hi))
+
+
+def _line_clusters(entries: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Split a dedupe group into location clusters.
+
+    Members pair when their line spans share a line (a sticky's [line,
+    end_line] span contains its thread's line); entries without a line and
+    disjoint same-titled findings each stay in their own cluster, so a rule
+    for one location can never update another.
+    """
+    spans = [(span, e) for e in entries if (span := _line_interval(e)) is not None]
+    clusters: list[list[dict[str, Any]]] = [[e] for e in entries if _line_interval(e) is None]
+    current: list[dict[str, Any]] = []
+    hi = 0  # only read once current is non-empty, i.e. after a real span set it
+    for span, entry in sorted(spans, key=lambda p: p[0]):
+        if current and span[0] > hi:
+            clusters.append(current)
+            current = []
+        current.append(entry)
+        hi = max(hi, span[1])
+    if current:
+        clusters.append(current)
+    return clusters
 
 
 def _is_addressable(entry: dict[str, Any]) -> bool:
@@ -158,17 +226,42 @@ def _is_addressable(entry: dict[str, Any]) -> bool:
     """
     addressable = not entry.get("is_auto_skipped") and not entry.get("posted_at")
     log.debug(
-        "addressable=%s for %s:%s (status=%s)", addressable, entry.get("path"), entry.get("line"), entry.get("status")
+        "addressable=%s for %s:%s (status=%s, posted=%s, auto_skipped=%s)",
+        addressable,
+        entry.get("path"),
+        entry.get("line"),
+        entry.get("status"),
+        bool(entry.get("posted_at")),
+        bool(entry.get("is_auto_skipped")),
     )
     return addressable
 
 
+def _needs_resolve_retry(source: str, entry: dict[str, Any]) -> bool:
+    """Entry whose reply was posted but whose thread resolve failed.
+
+    post.run stamps ``posted_at`` and exits 1 when the resolve fails so the
+    next run retries the resolve only; without this check a re-run of address
+    would bail out with "no findings matched" before post ever runs.
+    Mirrors post.run: only real threads are resolved, pending entries are
+    skipped, and human threads resolve only when addressed.
+    """
+    if not entry.get("posted_at") or entry.get("resolved_at"):
+        return False
+    if not entry.get("thread_id") or entry.get("is_auto_skipped"):
+        return False
+    if entry.get("status", "pending") == "pending":
+        return False
+    return source != "human" or entry.get("status") == "addressed"
+
+
 def _rule_matches(rule: dict[str, Any], entry: dict[str, Any]) -> bool:
-    """A wildcard rule matches everything; a specific rule matches (path, line)."""
+    """A wildcard rule matches everything; a specific rule matches the entry's line span."""
     if rule["path"] is None:
         matches = True
     else:
-        matches = entry.get("path") == rule["path"] and entry.get("line") == rule["line"]
+        span = _line_interval(entry)
+        matches = entry.get("path") == rule["path"] and span is not None and span[0] <= rule["line"] <= span[1]
     log.debug("rule match=%s for %s:%s", matches, entry.get("path"), entry.get("line"))
     return matches
 
@@ -199,26 +292,29 @@ def apply_replies(
     rules: list[dict[str, Any]] | None,
     set_status: str,
 ) -> list[list[dict[str, Any]]]:
-    """Apply mapping rules to findings, updating whole dedupe groups.
+    """Apply mapping rules to findings, updating whole location clusters.
 
-    A group is every entry sharing a (source, path, title) key —
-    the thread + sticky pair fetch produces for one Qodo finding. When any
-    member matches a rule, every addressable member gets the reply and the
-    target status so the pair stays in sync. With ``rules=None`` (status-only
-    mode), pending entries in a group where any member already carries a
-    reply get that reply copied and their status flipped.
+    A group is every entry sharing a (source, path, finding type, full title)
+    key; each group is split into location clusters (members whose line spans
+    share a line — the thread + sticky pair fetch produces for one Qodo
+    finding). When any member of a cluster matches a rule, every addressable
+    member gets the reply and the target status so the pair stays in sync,
+    while same-titled findings at other lines stay untouched. With
+    ``rules=None`` (status-only mode), pending entries in a cluster where any
+    addressable member already carries a reply get that reply copied and
+    their status flipped.
 
     Addressable entries are not auto-skipped and not yet posted, so a run
     whose post failed can be corrected by re-running with a new mapping.
 
-    Returns the updated groups (one per finding).
+    Returns the updated clusters (one list per finding location).
 
     Raises:
         AddressError: when a specific rule matches more than one distinct
-            finding, or the target status is invalid for a matched Qodo
-            sticky finding. Nothing is modified in that case.
+            finding location, or the target status is invalid for a matched
+            Qodo sticky finding. Nothing is modified in that case.
     """
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
     for source in SOURCES:
         for entry in data.get(source, []):
             groups.setdefault(_dedupe_key(source, entry), []).append(entry)
@@ -227,34 +323,40 @@ def apply_replies(
     # validation failure leaves the JSON completely unchanged.
     plan: list[tuple[list[dict[str, Any]], str]] = []  # (entries, effective reply)
     errors: list[str] = []
-    rule_group_count: dict[int, tuple[dict[str, Any], int]] = {}  # rule index -> (rule, matched groups)
+    rule_cluster_count: dict[int, tuple[dict[str, Any], int]] = {}  # rule index -> (rule, matched clusters)
 
     for entries in groups.values():
-        if rules is None:
-            applicable = [e for e in entries if e.get("status", "pending") == "pending" and _is_addressable(e)]
+        for cluster in _line_clusters(entries):
+            if rules is None:
+                applicable = [e for e in cluster if e.get("status", "pending") == "pending" and _is_addressable(e)]
+                if not applicable:
+                    continue
+                # The reply may live on a non-pending unposted sibling (a
+                # previous run saved it but failed to post): source it from
+                # every addressable member, not just the pending ones.
+                group_reply = next((str(e["reply"]) for e in cluster if _is_addressable(e) and e.get("reply")), "")
+                if not group_reply:
+                    continue
+                plan.append((applicable, group_reply))
+                continue
+
+            applicable = [e for e in cluster if _is_addressable(e)]
             if not applicable:
                 continue
-            group_reply = next((str(e["reply"]) for e in applicable if e.get("reply")), "")
-            if not group_reply:
+            # Match against every cluster member (the pair is one finding)
+            # even when some members are already posted.
+            matched = [(i, r) for i, r in enumerate(rules) if any(_rule_matches(r, e) for e in cluster)]
+            if not matched:
                 continue
-            plan.append((applicable, group_reply))
-            continue
+            # Most specific rule wins; wildcard is the fallback
+            specific = [(i, r) for i, r in matched if r["path"] is not None]
+            rule_idx, rule = (specific or matched)[-1]
+            if rule["path"] is not None:
+                count = rule_cluster_count.get(rule_idx, (rule, 0))[1]
+                rule_cluster_count[rule_idx] = (rule, count + 1)
+            plan.append((applicable, rule["reply"]))
 
-        applicable = [e for e in entries if _is_addressable(e)]
-        if not applicable:
-            continue
-        matched = [(i, r) for i, r in enumerate(rules) if any(_rule_matches(r, e) for e in applicable)]
-        if not matched:
-            continue
-        # Most specific rule wins; wildcard is the fallback
-        specific = [(i, r) for i, r in matched if r["path"] is not None]
-        rule_idx, rule = (specific or matched)[-1]
-        if rule["path"] is not None:
-            count = rule_group_count.get(rule_idx, (rule, 0))[1]
-            rule_group_count[rule_idx] = (rule, count + 1)
-        plan.append((applicable, rule["reply"]))
-
-    for rule, count in rule_group_count.values():
+    for rule, count in rule_cluster_count.values():
         if count > 1:
             log.debug("ambiguous rule %s:%s matches %d findings", rule["path"], rule["line"], count)
             errors.append(
@@ -275,7 +377,7 @@ def apply_replies(
             entry["reply"] = reply
             entry["status"] = set_status
 
-    log.info("Applied status '%s' to %d finding group(s)", set_status, len(plan))
+    log.info("Applied status '%s' to %d finding cluster(s)", set_status, len(plan))
     return [applicable for applicable, _ in plan]
 
 
@@ -371,13 +473,31 @@ def run(json_path: str | None = None, replies_file: str | None = None, set_statu
         return 1
 
     if not groups:
-        # Never fall back to posting unrelated non-pending entries: store
-        # deletes the JSON after a successful insert, which would consume
-        # data this run did not address. Unposted entries that match the
-        # supplied rules are already re-applied above.
-        log.warning("no findings matched; nothing to address")
-        eprint("Error: no findings matched; nothing to address")
-        return 1
+        # Posted-but-unresolved entries: post.run stamped posted_at and exited
+        # 1 when the resolve failed, so a re-run must retry the resolve (post)
+        # and store instead of bailing out with "no findings matched".
+        resume = [(src, e) for src in SOURCES for e in data.get(src, []) if _needs_resolve_retry(src, e)]
+        if not resume:
+            # Never fall back to posting unrelated non-pending entries: store
+            # deletes the JSON after a successful insert, which would consume
+            # data this run did not address. Unposted entries that match the
+            # supplied rules are already re-applied above.
+            log.warning("no findings matched; nothing to address")
+            eprint("Error: no findings matched; nothing to address")
+            return 1
+        log.info("Resuming %d posted-but-unresolved finding(s)", len(resume))
+        eprint(f"Resuming {len(resume)} posted-but-unresolved finding(s) (retrying resolve)")
+        code = _run_step(post.run, str(path))
+        if code != 0:
+            eprint(f"reviews post failed (exit {code}) — re-run to retry the resolve")
+            return code
+        code = _run_step(store.run, str(path))
+        if code != 0:
+            eprint(f"reviews store failed (exit {code})")
+            return code
+        for _, entry in resume:
+            print(format_digest_line(entry))
+        return 0
 
     index_of = {id(e): (src, i) for src in SOURCES for i, e in enumerate(data.get(src, []))}
     _save_json(path, data)

@@ -458,6 +458,43 @@ def test_cli_resume_only_for_rule_matching_unposted_entries(tmp_path: Path, monk
 
 
 # ---------------------------------------------------------------------------
+# Posted-but-unresolved entries are resumed, not abandoned (round 2, finding 5)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_resumes_posted_unresolved_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When only posted-but-unresolved entries remain, post retries the resolve and store runs."""
+    calls = _patch_post_store(monkeypatch)
+    data = _sample_data()
+    data["qodo"][0]["status"] = "addressed"
+    data["qodo"][0]["reply"] = "Fixed in abc1234"
+    data["qodo"][0]["posted_at"] = "2025-01-01T00:00:00Z"  # reply posted, resolve failed
+    json_path = _write_reviews_json(tmp_path, data)
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(json_path)])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("post", str(json_path)), ("store", str(json_path))]
+    assert "Resuming 1 posted-but-unresolved" in result.output
+
+
+def test_cli_no_match_when_everything_posted_or_resolved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Posted-and-resolved entries never trigger the resume path."""
+    calls = _patch_post_store(monkeypatch)
+    data = _sample_data()
+    data["qodo"][0]["status"] = "addressed"
+    data["qodo"][0]["reply"] = "Fixed in abc1234"
+    data["qodo"][0]["posted_at"] = "2025-01-01T00:00:00Z"
+    data["qodo"][0]["resolved_at"] = "2025-01-01T00:00:01Z"
+    json_path = _write_reviews_json(tmp_path, data)
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(json_path)])
+
+    assert result.exit_code == 1
+    assert calls == []  # fully processed: no resume, no post, no store
+
+
+# ---------------------------------------------------------------------------
 # Unposted addressed entries keep their retry file (finding 6)
 # ---------------------------------------------------------------------------
 
@@ -533,20 +570,22 @@ def test_cli_invalid_sticky_status_changes_nothing(tmp_path: Path, monkeypatch: 
 # ---------------------------------------------------------------------------
 
 
-def test_apply_replies_pairs_thread_and_sticky_with_different_bodies() -> None:
-    """Thread bodies carry badge/type markers and different line numbers; sticky
-    bodies are '**Title**' with the range start — still one group."""
+def test_apply_replies_pairs_thread_with_sticky_despite_marker_suffixes() -> None:
+    """Thread bodies carry '<emoji> Type <emoji> Quality' markers after the title;
+    sticky bodies are '**Title**' — still one cluster, and the thread's marker
+    phrase maps to the sticky's finding type."""
     data: dict[str, Any] = {
         "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
         "human": [],
         "qodo": [
             _entry(
                 line=107,
-                body="1\\. New review helpers skip required structured logs ◔ Observability",
+                body="1\\. New review helpers skip required structured logs 📜 Rule violation ≡ Correctness",
                 thread_id="T1",
+                type=None,
             ),
             _entry(
-                line=105,
+                line=107,
                 body="**New review helpers skip required structured logs**\n\nThe new functions lack logs.",
                 thread_id=None,
                 type="qodo_rule_violation",
@@ -558,12 +597,187 @@ def test_apply_replies_pairs_thread_and_sticky_with_different_bodies() -> None:
     groups = apply_replies(data, rules, "addressed")
 
     assert len(groups) == 1
-    assert len(groups[0]) == 2  # pair grouped despite different bodies and lines
+    assert len(groups[0]) == 2  # pair grouped despite the marker suffix
+    assert all(e["reply"] == "Fixed in abc1234" for e in groups[0])
+
+
+def test_apply_replies_pairs_thread_with_sticky_despite_unmapped_type_phrase() -> None:
+    """A thread marker phrase outside QODO_TYPE_MAP (e.g. 'Skill insight') derives
+    qodo_finding — the same fallback fetch uses for the sticky's type."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(
+                line=536,
+                body="6\\. Thread pairing test name uses skill hints 📜 Skill insight ✨ Quality",
+                thread_id="T1",
+                type=None,
+            ),
+            _entry(
+                line=536,
+                body="**Thread pairing test name uses skill hints**\n\nSplit the test.",
+                thread_id=None,
+                type="qodo_finding",
+            ),
+        ],
+        "coderabbit": [],
+    }
+    rules = [{"path": "src/a.py", "line": 536, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 2
+    assert all(e["reply"] == "Fixed in abc1234" for e in groups[0])
+
+
+def test_apply_replies_pairs_thread_with_sticky_despite_line_shift() -> None:
+    """A sticky's [line, end_line] span covers its thread's shifted line — one cluster."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(
+                line=107,
+                body="1\\. New review helpers skip required structured logs 📜 Rule violation ≡ Correctness",
+                thread_id="T1",
+                type=None,
+            ),
+            _entry(
+                line=105,
+                end_line=110,
+                body="**New review helpers skip required structured logs**\n\nThe new functions lack logs.",
+                thread_id=None,
+                type="qodo_rule_violation",
+            ),
+        ],
+        "coderabbit": [],
+    }
+    rules = [{"path": "src/a.py", "line": 107, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 2  # pair grouped despite different lines
     assert all(e["reply"] == "Fixed in abc1234" for e in groups[0])
 
 
 # ---------------------------------------------------------------------------
-# One rule must not answer multiple distinct findings (finding 9)
+# Status-only retries source the group reply from unposted siblings (round 2, finding 1)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_replies_status_only_sources_reply_from_unposted_sibling() -> None:
+    """A non-pending unposted member's reply is copied to its pending pair member."""
+    data = _sample_data()
+    data["qodo"][0]["status"] = "addressed"  # saved by a run whose post failed
+    data["qodo"][0]["reply"] = "Fixed in abc1234"
+    groups = apply_replies(data, None, "addressed")
+
+    assert len(groups) == 1
+    assert data["qodo"][1]["reply"] == "Fixed in abc1234"  # pending sibling completed
+    assert data["qodo"][1]["status"] == "addressed"
+    assert len(groups[0]) == 1  # only the pending member is (re)applied
+
+
+# ---------------------------------------------------------------------------
+# Dedupe key distinguishes finding type and full title (round 2, findings 2-3)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_replies_separates_same_titled_findings_of_different_types() -> None:
+    """Same path + title but different sticky types are distinct findings."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(line=10, body="**Fix the parser**\n\nIt crashes.", thread_id=None, type="qodo_bug"),
+            _entry(line=12, body="**Fix the parser**\n\nIt crashes.", thread_id=None, type="qodo_finding"),
+        ],
+        "coderabbit": [],
+    }
+    rules = [{"path": "src/a.py", "line": 10, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert data["qodo"][0]["status"] == "addressed"
+    assert data["qodo"][1]["status"] == "pending"  # different type: untouched
+
+
+def test_apply_replies_separates_findings_differing_after_80_chars() -> None:
+    """Titles sharing a long prefix but differing after char 80 stay distinct findings."""
+    prefix = "rename the review helper " * 4  # 100 chars: the titles differ only past char 80
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(line=10, body=f"**{prefix}for github**", thread_id=None, type="qodo_bug"),
+            _entry(line=20, body=f"**{prefix}for storage**", thread_id=None, type="qodo_bug"),
+        ],
+        "coderabbit": [],
+    }
+    rules = [{"path": "src/a.py", "line": 10, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert data["qodo"][0]["status"] == "addressed"
+    assert data["qodo"][1]["status"] == "pending"  # differs only after char 80
+
+
+# ---------------------------------------------------------------------------
+# Location rules are scoped to the rule's line cluster (round 2, finding 4)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_replies_location_rule_scopes_to_rule_line() -> None:
+    """A rule for file:10 must not mark a same-titled finding at line 50."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(line=10, body="**Rename variable x**", thread_id="T1"),
+            _entry(line=50, body="**Rename variable x**", thread_id="T2"),
+        ],
+        "coderabbit": [],
+    }
+    rules = [{"path": "src/a.py", "line": 10, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert data["qodo"][0]["status"] == "addressed"
+    assert data["qodo"][1]["status"] == "pending"  # distinct location: untouched
+
+
+def test_apply_replies_location_rule_matches_thread_within_sticky_span() -> None:
+    """A rule at the sticky's start line still reaches the pair's thread line."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(
+                line=240,
+                body="1\\. Status-only retries miss paired replies 📌 Requirement gap ≡ Correctness",
+                thread_id="T1",
+                type=None,
+            ),
+            _entry(
+                line=234,
+                end_line=240,
+                body="**Status-only retries miss paired replies**\n\nThe reply is ignored.",
+                thread_id=None,
+                type="qodo_requirement_gap",
+            ),
+        ],
+        "coderabbit": [],
+    }
+    rules = [{"path": "src/a.py", "line": 234, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 2  # rule at the sticky's line updates the whole pair
+
+
+# ---------------------------------------------------------------------------
+# Ambiguous rules: one rule must not answer multiple distinct findings (finding 9)
 # ---------------------------------------------------------------------------
 
 
