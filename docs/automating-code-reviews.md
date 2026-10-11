@@ -122,6 +122,23 @@ myk-pi-tools reviews pending-update .pi/tmp/owner-repo-123-pending-review.json -
 
 Use this flow when you need custom wrappers, CI experiments, or one-off tooling. See [myk_pi_tools CLI Reference](cli-reference.html) for details.
 
+### Apply replies with `reviews address`
+
+When you already have a fetched reviews JSON and a set of decisions, `reviews address` applies them, posts, and stores in one step — no hand-written JSON editing:
+
+```bash
+myk-pi-tools reviews address --replies .pi/tmp/replies.txt
+```
+
+The replies file maps findings to replies, one per line (`<path>:<line>|<reply>`); a `*` line matches every pending finding:
+
+```text
+src/parser.py:42|Fixed the boundary check in abc1234
+*|All remaining findings fixed in def5678
+```
+
+Matched findings get the reply and status `addressed` (override with `--set skipped`). Thread and sticky duplicates for the same finding are collapsed, the command then runs the same `reviews post` + `reviews store` flow as the loop, and it prints a one-line digest per finding instead of the raw JSON. Without `--json`, the newest `pr-<N>-reviews.json` in `.pi/tmp/` is used. This is the command review-handler loops use instead of writing bespoke parse scripts each cycle.
+
 > **Note:** `reviews status` requires `--output-dir`; without `--pr` it auto-detects the PR from the current branch and otherwise lists the PRs in the local reviews database.
 
 > **Warning:** `--autorabbit` and `--autoqodo` are slash-command flags for `/review-handler`. They are not CLI flags for `myk-pi-tools reviews ...`.

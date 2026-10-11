@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from myk_pi_tools.logger import create_logger
-from myk_pi_tools.reviews.constants import QODO_STICKY_TYPES
+from myk_pi_tools.reviews.constants import BODY_EMBEDDED_COMMENT_TYPES, QODO_STICKY_TYPES
 
 log = create_logger(__name__)
 
@@ -822,18 +822,7 @@ def run(json_path: str) -> None:
             # have no GitHub thread to post to or resolve.
             # They are tracked via the review database only.
             comment_type = thread_data.get("type")
-            if (
-                comment_type
-                in (
-                    "outside_diff_comment",
-                    "major_comment",
-                    "minor_comment",
-                    "nitpick_comment",
-                    "duplicate_comment",
-                    "qodo_reply",
-                )
-                or comment_type in QODO_STICKY_TYPES
-            ):
+            if comment_type in BODY_EMBEDDED_COMMENT_TYPES:
                 if status == "pending":
                     pending_count += 1
                     eprint(f"Skipping {category}[{i}] ({path}): {comment_type} status is pending")

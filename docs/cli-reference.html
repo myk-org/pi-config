@@ -649,6 +649,47 @@ myk-pi-tools<span class="w"> </span>db<span class="w"> </span>query<span class="
 <li>Prints the full normalized JSON payload to stdout.</li>
 <li>Output JSON contains <code>metadata</code>, <code>human</code>, <code>qodo</code>, and <code>coderabbit</code> arrays.</li>
 </ul>
+<h3 id="reviews-address"><code>reviews address</code></h3>
+<p>Applies reply/status updates to a fetched reviews JSON, then posts and stores it.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter / Option</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--json</code></td>
+<td>String</td>
+<td>newest <code>pr-*-reviews.json</code> in <code>.pi/tmp/</code></td>
+<td>Reviews JSON path.</td>
+</tr>
+<tr>
+<td><code>--replies</code></td>
+<td>String</td>
+<td><code>None</code></td>
+<td>Mapping file: <code>&lt;path&gt;:&lt;line&gt;|&lt;reply&gt;</code> lines; a <code>*</code> line matches all pending findings.</td>
+</tr>
+<tr>
+<td><code>--set</code></td>
+<td>Choice</td>
+<td><code>addressed</code></td>
+<td>Target status for matched findings: <code>addressed</code>, <code>skipped</code>, <code>not_addressed</code>, or <code>failed</code>.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>address<span class="w"> </span>--replies<span class="w"> </span>.pi/tmp/replies.txt
+</code></pre></div>
+
+<p><strong>Return value / effect</strong></p>
+<ul>
+<li>Deduplicates thread + sticky findings by (path, line, body-prefix) and applies replies to pending matches.</li>
+<li>Runs the <code>reviews post</code> + <code>reviews store</code> flow, then prints a one-line digest per finding.</li>
+<li>Exits non-zero if nothing matched or if post/store fail.</li>
+</ul>
 <h3 id="reviews-poll"><code>reviews poll</code></h3>
 <p>Polls for new review activity until actionable feedback or approval is detected.</p>
 <div class="table-wrap"><table>
@@ -1185,6 +1226,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 </li>
 <li><a href="#review-handling-myk-pi-tools-reviews">Review Handling (myk-pi-tools reviews)</a><ul>
 <li><a href="#reviews-fetch">reviews fetch</a></li>
+<li><a href="#reviews-address">reviews address</a></li>
 <li><a href="#reviews-poll">reviews poll</a></li>
 <li><a href="#reviews-post">reviews post</a></li>
 <li><a href="#reviews-pending-fetch">reviews pending-fetch</a></li>

@@ -25,17 +25,11 @@ from bs4 import BeautifulSoup
 
 from myk_pi_tools.db.query import ReviewDB, _body_similarity
 from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
-from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
-from myk_pi_tools.utils import merge_paginated_json
 
 # Map Qodo finding types to our type field
-_QODO_TYPE_MAP = {
-    "Bug": "qodo_bug",
-    "Rule violation": "qodo_rule_violation",
-    "Requirement gap": "qodo_requirement_gap",
-    "UX issue": "qodo_ux_issue",
-    "Cross-repo conflict": "qodo_cross_repo",
-}
+from myk_pi_tools.reviews.constants import QODO_TYPE_MAP as _QODO_TYPE_MAP  # noqa: E402
+from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
+from myk_pi_tools.utils import merge_paginated_json
 
 # Known AI reviewer usernames
 QODO_USERS = ["qodo-code-review", "qodo-code-review[bot]"]
