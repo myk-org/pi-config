@@ -15,17 +15,20 @@ Commit and push the current change set.
 
 ```text
 {{MESSAGE}}
-```text
+```
 
 **Commit body** (omit entirely if empty):
 
 ```text
 {{BODY}}
-```text
+```
 
 **Steps:**
 
-1. Stage each file listed above individually (`git add <file>` per file or one command naming every file).
+1. Stage each file listed above individually — always `git add -- <file>`
+   (the `--` terminator is mandatory; never let a path be read as an option),
+   one command naming every file is fine. Quote paths containing spaces or
+   special characters.
 2. Commit with the message (and body if present) above — use a HEREDOC for multi-line.
 3. Push the current branch to origin (set upstream with `-u` if the branch has none).
 4. Report: commit sha, branch, push result.

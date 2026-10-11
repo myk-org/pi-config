@@ -31,7 +31,7 @@ This is the immutable source template. NEVER modify it.
 
 | Placeholder | Value |
 |-------------|-------|
-| `{{FILES}}` | Every file to commit from `git status --porcelain` (staged, unstaged, untracked), one hyphen bullet per file, exact paths |
+| `{{FILES}}` | Every file to commit from `git status --porcelain=v1 -z` (staged, unstaged, untracked), one hyphen bullet per file, exact paths. NUL-delimited `-z` output avoids quoting ambiguity: for rename records (`R`) list only the NEW path; for quoted C-escaped paths, decode to the real path; keep deleted paths as-is |
 | `{{MESSAGE}}` | The raw arguments — the commit subject. If empty, draft a conventional `type(scope): description` subject from the change set and confirm with the user |
 | `{{BODY}}` | Empty by default. Only fill if the user supplied a body |
 
