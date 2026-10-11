@@ -61,7 +61,9 @@ returns `{ "models": [...], "modelListingSupported": boolean }`. `true` means na
 key-scoped listing ran (an empty list means no models); `false` means no native
 listing, so the user must supply a model ID. A custom models.json provider the
 admin flagged `trustKeyScopedListing` (agent-dir manifest only — never request or
-session input) also lists, against exactly its configured `baseUrl`. The key and
+session input) also lists, against exactly its configured `baseUrl`; for such
+a provider `models` is the union of the live listing and the provider's
+manifest-configured `models[]` (manifest entry wins on id collision). The key and
 result are request-local:
 never cache them or add key-listed models to the shared catalog. Listing does
 not verify that a model can complete a prompt.
