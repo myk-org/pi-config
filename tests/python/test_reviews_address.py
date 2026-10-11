@@ -858,6 +858,33 @@ def test_apply_replies_rejects_rule_matching_multiple_findings() -> None:
     assert data["qodo"][1]["status"] == "pending"
 
 
+def test_apply_replies_ambiguity_error_states_real_remedies() -> None:
+    """The ambiguity error names the wildcard and unique path:line remedies.
+
+    Regression guard for the corrected guidance: the message must never again
+    point at a nonexistent "body discriminator" syntax.
+    """
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(body="Fix the loop boundary in parser", thread_id="T1"),
+            _entry(body="Rename variable x to y", thread_id="T2"),
+        ],
+        "coderabbit": [],
+    }
+    rules = [{"path": "src/a.py", "line": 10, "reply": "one reply for both"}]
+    with pytest.raises(AddressError) as exc_info:
+        apply_replies(data, rules, "addressed")
+
+    message = str(exc_info.value)
+    assert "wildcard rule (*)" in message, "the wildcard remedy must be stated"
+    assert "unique to one finding" in message, "the unique path:line remedy must be stated"
+    assert "there is no body-discriminator syntax yet" in message, (
+        "the message must be honest about the nonexistent discriminator syntax"
+    )
+
+
 def test_apply_replies_wildcard_still_matches_multiple_findings() -> None:
     """The wildcard rule is allowed to answer several distinct findings."""
     data: dict[str, Any] = {
