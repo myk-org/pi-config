@@ -473,7 +473,9 @@ def apply_replies(
             log.debug("ambiguous rule %s:%s matches %d findings", rule["path"], rule["line"], count)
             errors.append(
                 f"{rule['path']}:{rule['line']}: rule matches {count} distinct findings at this location — "
-                "it must target exactly one; extend the mapping with a body discriminator to tell them apart"
+                "it must target exactly one. If they need the same reply, use the wildcard rule (*) "
+                "or a mapping line whose path:line is unique to one finding; there is no "
+                "body-discriminator syntax yet"
             )
     for applicable, reply in plan:
         for entry in applicable:
