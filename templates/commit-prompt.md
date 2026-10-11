@@ -13,15 +13,15 @@ Commit and push the current change set.
 
 **Commit message** (subject only — never body content):
 
-```text
+````text
 {{MESSAGE}}
-```
+````
 
 **Commit body** (omit entirely if empty):
 
-```text
+````text
 {{BODY}}
-```
+````
 
 **Steps:**
 

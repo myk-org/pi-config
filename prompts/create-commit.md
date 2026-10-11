@@ -44,7 +44,9 @@ This is the immutable source template. NEVER modify it.
 If `git status` shows files that clearly should not be committed (generated
 artifacts, `.env`, secrets), exclude them from `{{FILES}}` and say so.
 
-Never leave a `{{...}}` token in the output.
+Never leave a `{{...}}` token in the output. If the commit text contains a run of
+four or more backticks, lengthen the template's code fences to exceed it
+(fences must always out-length any backtick run inside).
 
 ### Step 3: Delegate
 
