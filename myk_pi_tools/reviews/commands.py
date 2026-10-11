@@ -67,6 +67,29 @@ def reviews_poll(review_url: str, source: str, output_dir: str) -> None:
     sys.exit(exit_code)
 
 
+@reviews.command("address")
+@click.option("--json", "json_path", default=None, help="Reviews JSON (default: newest pr-*-reviews.json in .pi/tmp)")
+@click.option("--replies", default=None, help="Mapping file: '<path>:<line>|<reply>' lines; '*' matches all pending")
+@click.option(
+    "--set",
+    "set_status",
+    type=click.Choice(["addressed", "skipped", "not_addressed", "failed"]),
+    default="addressed",
+    help="Target status for matched findings (default: addressed)",
+)
+def reviews_address(json_path: str | None, replies: str | None, set_status: str) -> None:
+    """Apply replies/statuses to a fetched reviews JSON, then post and store.
+
+    Loads the reviews JSON (default: newest pr-<N>-reviews.json in .pi/tmp),
+    deduplicates thread + sticky findings by (path, line, body-prefix),
+    applies replies from the mapping file, flips matching statuses, then
+    runs 'reviews post' + 'reviews store' and prints a compact digest.
+    """
+    from myk_pi_tools.reviews.address import run
+
+    sys.exit(run(json_path=json_path, replies_file=replies, set_status=set_status))
+
+
 @reviews.command("post")
 @click.argument("json_path")
 def reviews_post(json_path: str) -> None:

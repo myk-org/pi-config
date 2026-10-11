@@ -149,6 +149,26 @@ myk-pi-tools reviews fetch --output-dir .pi/tmp/
 - Prints the full normalized JSON payload to stdout.
 - Output JSON contains `metadata`, `human`, `qodo`, and `coderabbit` arrays.
 
+### `reviews address`
+
+Applies reply/status updates to a fetched reviews JSON, then posts and stores it.
+
+| Parameter / Option | Type | Default | Description |
+|---|---|---|---|
+| `--json` | String | newest `pr-*-reviews.json` in `.pi/tmp/` | Reviews JSON path. |
+| `--replies` | String | `None` | Mapping file: `<path>:<line>|<reply>` lines; a `*` line matches all pending findings. |
+| `--set` | Choice | `addressed` | Target status for matched findings: `addressed`, `skipped`, `not_addressed`, or `failed`. |
+
+```bash
+myk-pi-tools reviews address --replies .pi/tmp/replies.txt
+```
+
+**Return value / effect**
+
+- Deduplicates thread + sticky findings by (path, line, body-prefix) and applies replies to pending matches.
+- Runs the `reviews post` + `reviews store` flow, then prints a one-line digest per finding.
+- Exits non-zero if nothing matched or if post/store fail.
+
 ### `reviews poll`
 
 Polls for new review activity until actionable feedback or approval is detected.

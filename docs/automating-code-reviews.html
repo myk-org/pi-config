@@ -463,6 +463,17 @@ myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>pending-updat
 </code></pre></div>
 
 <p>Use this flow when you need custom wrappers, CI experiments, or one-off tooling. See <a href="cli-reference.html">myk_pi_tools CLI Reference</a> for details.</p>
+<h3 id="apply-replies-with-reviews-address">Apply replies with <code>reviews address</code></h3>
+<p>When you already have a fetched reviews JSON and a set of decisions, <code>reviews address</code> applies them, posts, and stores in one step — no hand-written JSON editing:</p>
+<div class="highlight"><pre><span></span><code>myk-pi-tools<span class="w"> </span>reviews<span class="w"> </span>address<span class="w"> </span>--replies<span class="w"> </span>.pi/tmp/replies.txt
+</code></pre></div>
+
+<p>The replies file maps findings to replies, one per line (<code>&lt;path&gt;:&lt;line&gt;|&lt;reply&gt;</code>); a <code>*</code> line matches every pending finding:</p>
+<div class="highlight"><pre><span></span><code>src/parser.py:42|Fixed the boundary check in abc1234
+*|All remaining findings fixed in def5678
+</code></pre></div>
+
+<p>Matched findings get the reply and status <code>addressed</code> (override with <code>--set skipped</code>). Thread and sticky duplicates for the same finding are collapsed, the command then runs the same <code>reviews post</code> + <code>reviews store</code> flow as the loop, and it prints a one-line digest per finding instead of the raw JSON. Without <code>--json</code>, the newest <code>pr-&lt;N&gt;-reviews.json</code> in <code>.pi/tmp/</code> is used. This is the command review-handler loops use instead of writing bespoke parse scripts each cycle.</p>
 <blockquote>
 <p><strong>Note:</strong> <code>reviews status</code> requires <code>--output-dir</code>; without <code>--pr</code> it auto-detects the PR from the current branch and otherwise lists the PRs in the local reviews database.</p>
 <p><strong>Warning:</strong> <code>--autorabbit</code> and <code>--autoqodo</code> are slash-command flags for <code>/review-handler</code>. They are not CLI flags for <code>myk-pi-tools reviews ...</code>.</p>
@@ -556,6 +567,7 @@ git<span class="w"> </span>worktree<span class="w"> </span>add<span class="w"> <
 <li><a href="#step-by-step">Step-by-Step</a></li>
 <li><a href="#advanced-usage">Advanced Usage</a><ul>
 <li><a href="#review-with-the-cli-instead-of-the-slash-command">Review with the CLI instead of the slash command</a></li>
+<li><a href="#apply-replies-with-reviews-address">Apply replies with reviews address</a></li>
 <li><a href="#ask-qodo-follow-up-questions">Ask Qodo follow-up questions</a></li>
 <li><a href="#generate-a-review-status-report">Generate a review status report</a></li>
 <li><a href="#run-multiple-pr-review-loops-safely">Run multiple PR review loops safely</a></li>
