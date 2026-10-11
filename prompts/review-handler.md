@@ -466,6 +466,11 @@ myk-pi-tools reviews address --json {json_path} --replies {mapping_file} --set s
 
 The command picks the newest `pr-*-reviews.json` in `.pi/tmp` when `--json` is omitted.
 
+**Multi-group retention:** while any findings remain pending (unposted, not
+auto-skipped), a successful run posts its group but does NOT store — the JSON is
+kept on disk for the remaining status-group runs. The final run (nothing pending)
+stores to the database and consumes the JSON. Run the groups in any order.
+
 **Body comments (outside-diff, major, minor, nitpick, duplicate, qodo sticky):**
 
 Comments that don't have GitHub review threads (e.g., CodeRabbit outside-diff,
@@ -477,14 +482,19 @@ reviewers know their comments were reviewed and won't re-raise them.
 
 **Failure semantics (MANDATORY):**
 
-- **Exit 0** → all matched findings posted, resolved, and stored; the JSON is consumed.
+- **Exit 0** → all matched findings posted and stored. Threads are resolved per the
+  Phase 5 status table — `addressed` (and AI-source `skipped`/`not_addressed`) threads
+  are resolved; **human `skipped`/`not_addressed` threads intentionally stay open** for
+  follow-up. Exit 0 never means every thread is resolved.
 - **Non-zero exit** → the JSON is RETAINED on disk for a corrected re-run.
   Read the printed error:
   - `no findings matched` → a mapping `path:line` matches no pending finding — fix the
     mapping file and re-run. Already-posted entries are never touched again, so re-runs
     are always safe.
   - Post/resolve failures → the output names the entries that failed; re-run the same
-    command — only unposted entries are retried.
+    command. Re-runs retry BOTH unposted entries AND posted-but-unresolved threads
+    (entries with `posted_at` but no resolution are resumed automatically — a failed
+    resolve retries the already-posted thread).
 - **NEVER delete or hand-edit a retained JSON** — correct the mapping file and re-run
   `reviews address`.
 

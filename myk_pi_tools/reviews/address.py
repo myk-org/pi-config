@@ -312,6 +312,20 @@ def _is_addressable(entry: dict[str, Any]) -> bool:
     return addressable
 
 
+def _pending_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Entries across SOURCES without posted_at and not auto-skipped.
+
+    Shared by the resume path and the main path's pre-store guard: as long
+    as any remain, the JSON must survive so a later run can address them
+    (the review handler runs one address call per status group).
+    """
+    pending = [
+        e for src in SOURCES for e in data.get(src, []) if not e.get("posted_at") and not e.get("is_auto_skipped")
+    ]
+    log.debug("%d pending (unposted, not auto-skipped) finding(s)", len(pending))
+    return pending
+
+
 def _needs_resolve_retry(source: str, entry: dict[str, Any]) -> bool:
     """Entry whose reply was posted but whose thread resolve failed.
 
@@ -593,12 +607,7 @@ def run(json_path: str | None = None, replies_file: str | None = None, set_statu
         # still await a reply (unposted, not auto-skipped) — the file must
         # survive for a future run to address them.
         posted_data = json.loads(path.read_text(encoding="utf-8"))
-        pending = [
-            e
-            for src in SOURCES
-            for e in posted_data.get(src, [])
-            if not e.get("posted_at") and not e.get("is_auto_skipped")
-        ]
+        pending = _pending_entries(posted_data)
         if pending:
             eprint(f"{len(pending)} finding(s) still pending — JSON kept: {path}")
             for _, entry in resume:
@@ -640,6 +649,19 @@ def run(json_path: str | None = None, replies_file: str | None = None, set_statu
             f"Error: {len(unposted)} addressed finding(s) were not posted (no resolvable thread) — JSON kept: {path}"
         )
         return 1
+
+    # The review handler runs one address call per status group against this
+    # same JSON: while findings for later groups are still pending (unposted,
+    # not auto-skipped), store must not run — it would delete the JSON and
+    # those groups would fail with "reviews JSON not found".
+    pending = _pending_entries(json.loads(path.read_text(encoding="utf-8")))
+    if pending:
+        log.info("Keeping %s: %d finding(s) still pending for later status groups", path, len(pending))
+        print(f"Addressed {len(digest)} finding(s):")
+        for line in digest:
+            print(line)
+        eprint(f"{len(pending)} finding(s) still pending — JSON kept: {path}")
+        return 0
 
     code = _run_step(store.run, str(path))
     if code != 0:

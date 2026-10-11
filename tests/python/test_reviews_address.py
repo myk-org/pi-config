@@ -251,8 +251,10 @@ def test_format_digest_line_missing_fields() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cli_applies_replies_posts_and_stores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Full happy path: mapping file applied, JSON saved, post+store chained, digest printed."""
+def test_cli_applies_replies_posts_and_keeps_json_for_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mapping applied, JSON saved, post chained — but store is deferred while
+    other findings (b.py, d.py) are still pending, so the file survives for
+    the next status-group run."""
     calls = _patch_post_store(monkeypatch)
     json_path = _write_reviews_json(tmp_path, _sample_data())
     replies = tmp_path / "replies.txt"
@@ -261,7 +263,8 @@ def test_cli_applies_replies_posts_and_stores(tmp_path: Path, monkeypatch: pytes
     result = CliRunner().invoke(reviews, ["address", "--json", str(json_path), "--replies", str(replies)])
 
     assert result.exit_code == 0, result.output
-    assert calls == [("post", str(json_path)), ("store", str(json_path))]
+    assert calls == [("post", str(json_path))]  # store deferred: findings still pending
+    assert "still pending — JSON kept" in result.output
     # File on disk was updated before post ran
     saved = json.loads(json_path.read_text(encoding="utf-8"))
     assert saved["qodo"][0]["status"] == "addressed"
@@ -394,9 +397,11 @@ def test_cli_rerun_corrects_reply_of_unposted_entry(tmp_path: Path, monkeypatch:
     result = CliRunner().invoke(reviews, ["address", "--json", str(json_path), "--replies", str(replies)])
 
     assert result.exit_code == 0, result.output
-    assert calls == [("post", str(json_path)), ("store", str(json_path))]
+    # store deferred: other findings (b.py, d.py) are still pending
+    assert calls == [("post", str(json_path))]
     saved = json.loads(json_path.read_text(encoding="utf-8"))
     assert saved["qodo"][0]["reply"] == "corrected in abc1234"
+    assert json_path.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +459,8 @@ def test_cli_resume_only_for_rule_matching_unposted_entries(tmp_path: Path, monk
     result = CliRunner().invoke(reviews, ["address", "--json", str(json_path), "--replies", str(replies)])
 
     assert result.exit_code == 0, result.output
-    assert calls == [("post", str(json_path)), ("store", str(json_path))]
+    # store deferred: the a.py pair and d.py are still pending
+    assert calls == [("post", str(json_path))]
 
 
 # ---------------------------------------------------------------------------
@@ -945,6 +951,90 @@ def test_cli_resume_keeps_json_when_pending_findings_remain(tmp_path: Path, monk
     assert json_path.exists()
     saved = json.loads(json_path.read_text(encoding="utf-8"))
     assert [e for e in saved["qodo"] if not e.get("posted_at") and not e.get("is_auto_skipped")]
+
+
+# ---------------------------------------------------------------------------
+# Sequential status-group runs must not consume the JSON (review-handler
+# runs one address call per status group against the same JSON)
+# ---------------------------------------------------------------------------
+
+
+def _status_group_data() -> dict[str, Any]:
+    """Two independent findings for two different status groups."""
+    return {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(path="src/a.py", line=10, body="Fix the loop boundary", thread_id="T1", type=None),
+            _entry(path="src/b.py", line=20, body="Unused import os", thread_id="T2", type=None),
+        ],
+        "coderabbit": [],
+    }
+
+
+def test_cli_sequential_status_groups_keep_then_consume_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run 1 (group A only) posts A and keeps the JSON for group B; run 2
+    (group B) posts B and lets store consume the JSON."""
+    calls = _patch_post_store(monkeypatch)
+    json_path = _write_reviews_json(tmp_path, _status_group_data())
+    replies_a = tmp_path / "replies-a.txt"
+    replies_a.write_text("src/a.py:10|Fixed the boundary in abc1234\n", encoding="utf-8")
+    replies_b = tmp_path / "replies-b.txt"
+    replies_b.write_text("src/b.py:20|Updated the issue spec, see internal #782\n", encoding="utf-8")
+
+    result_a = CliRunner().invoke(
+        reviews, ["address", "--json", str(json_path), "--replies", str(replies_a), "--set", "addressed"]
+    )
+
+    assert result_a.exit_code == 0, result_a.output
+    assert calls == [("post", str(json_path))]  # store skipped: group B still pending
+    assert "1 finding(s) still pending — JSON kept" in result_a.output
+    assert json_path.exists()
+    saved = json.loads(json_path.read_text(encoding="utf-8"))
+    assert saved["qodo"][0]["posted_at"]  # group A posted
+    assert not saved["qodo"][1].get("posted_at")  # group B still pending
+    assert saved["qodo"][1]["status"] == "pending"
+
+    result_b = CliRunner().invoke(
+        reviews, ["address", "--json", str(json_path), "--replies", str(replies_b), "--set", "skipped"]
+    )
+
+    assert result_b.exit_code == 0, result_b.output
+    assert calls == [("post", str(json_path)), ("post", str(json_path)), ("store", str(json_path))]
+    saved = json.loads(json_path.read_text(encoding="utf-8"))
+    assert saved["qodo"][1]["status"] == "skipped"
+    assert saved["qodo"][1]["posted_at"]  # group B posted
+    assert "still pending" not in result_b.output
+
+
+def test_cli_full_mapping_consumes_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single run whose mapping covers everything lets store run."""
+    calls = _patch_post_store(monkeypatch)
+    json_path = _write_reviews_json(tmp_path, _status_group_data())
+    replies = tmp_path / "replies.txt"
+    replies.write_text("*|All findings fixed in def5678\n", encoding="utf-8")
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(json_path), "--replies", str(replies)])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("post", str(json_path)), ("store", str(json_path))]
+    assert "still pending" not in result.output
+
+
+def test_cli_auto_skipped_entries_do_not_keep_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Auto-skipped entries are excluded from pending: a run covering every
+    addressable finding still lets store consume the JSON."""
+    calls = _patch_post_store(monkeypatch)
+    data = _status_group_data()
+    data["qodo"].append(_entry(path="src/c.py", line=5, body="Old finding", is_auto_skipped=True))
+    json_path = _write_reviews_json(tmp_path, data)
+    replies = tmp_path / "replies.txt"
+    replies.write_text("*|All findings fixed in def5678\n", encoding="utf-8")
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(json_path), "--replies", str(replies)])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("post", str(json_path)), ("store", str(json_path))]  # store ran despite the auto-skip
 
 
 # ---------------------------------------------------------------------------
