@@ -135,7 +135,7 @@ Format rules:
 **Commit changes:**
 
 1. `git status` to see changes
-2. `git add <specific files>` for each file (NEVER `git add .`)
+2. `git add -- <specific files>` for each file (NEVER `git add .`; the `--` terminator prevents paths being read as options)
 3. Commit with proper format
 4. Report the result
 
