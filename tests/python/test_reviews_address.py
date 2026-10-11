@@ -478,6 +478,25 @@ def test_cli_resumes_posted_unresolved_entries(tmp_path: Path, monkeypatch: pyte
     assert "Resuming 1 posted-but-unresolved" in result.output
 
 
+def test_cli_resumes_posted_unresolved_node_only_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A posted-but-unresolved entry with only a node_id is resumed too —
+    post.run derives the thread from the node_id."""
+    calls = _patch_post_store(monkeypatch)
+    data = _sample_data()
+    data["qodo"][0]["status"] = "addressed"
+    data["qodo"][0]["reply"] = "Fixed in abc1234"
+    data["qodo"][0]["posted_at"] = "2025-01-01T00:00:00Z"  # reply posted, resolve failed
+    data["qodo"][0]["thread_id"] = None  # REST-fetched: only the node_id is known
+    data["qodo"][0]["node_id"] = "PRRC_kwDOR"
+    json_path = _write_reviews_json(tmp_path, data)
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(json_path)])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("post", str(json_path)), ("store", str(json_path))]
+    assert "Resuming 1 posted-but-unresolved" in result.output
+
+
 def test_cli_no_match_when_everything_posted_or_resolved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Posted-and-resolved entries never trigger the resume path."""
     calls = _patch_post_store(monkeypatch)
@@ -745,6 +764,28 @@ def test_apply_replies_location_rule_scopes_to_rule_line() -> None:
     assert len(groups) == 1
     assert data["qodo"][0]["status"] == "addressed"
     assert data["qodo"][1]["status"] == "pending"  # distinct location: untouched
+
+
+def test_apply_replies_chained_spans_stay_separate_findings() -> None:
+    """Chained sticky spans [10,20],[20,30],[30,40] are three findings; a rule
+    for line 35 must not touch the line-10 finding."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(line=10, end_line=20, body="**Rename variable x**", thread_id=None),
+            _entry(line=20, end_line=30, body="**Rename variable x**", thread_id=None),
+            _entry(line=30, end_line=40, body="**Rename variable x**", thread_id=None),
+        ],
+        "coderabbit": [],
+    }
+    rules = [{"path": "src/a.py", "line": 35, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert data["qodo"][0]["status"] == "pending"  # chained overlap is not a pair
+    assert data["qodo"][1]["status"] == "pending"
+    assert data["qodo"][2]["status"] == "addressed"  # only the span containing 35
 
 
 def test_apply_replies_location_rule_matches_thread_within_sticky_span() -> None:

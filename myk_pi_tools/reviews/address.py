@@ -193,26 +193,42 @@ def _line_interval(entry: dict[str, Any]) -> tuple[int, int] | None:
     return (min(lo, hi), max(lo, hi))
 
 
+def _is_sticky_record(entry: dict[str, Any]) -> bool:
+    """Sticky record: no thread of its own, stamped with a sticky type (fetch's rule)."""
+    return not entry.get("thread_id") and entry.get("type") in QODO_STICKY_TYPES
+
+
+def _spans_overlap(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    return a[0] <= b[1] and b[0] <= a[1]
+
+
 def _line_clusters(entries: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     """Split a dedupe group into location clusters.
 
-    Members pair when their line spans share a line (a sticky's [line,
-    end_line] span contains its thread's line); entries without a line and
-    disjoint same-titled findings each stay in their own cluster, so a rule
-    for one location can never update another.
+    A cluster is one thread record (an entry with its own thread) plus the
+    sticky record(s) whose line span overlaps it — a sticky's [line,
+    end_line] span covers its thread's line. Sticky records never merge
+    with each other through span overlap: chained spans like [10,20],
+    [20,30], [30,40] are three separate findings, so a rule for line 35
+    cannot reach the line-10 finding (it would instead be ambiguous).
     """
-    spans = [(span, e) for e in entries if (span := _line_interval(e)) is not None]
-    clusters: list[list[dict[str, Any]]] = [[e] for e in entries if _line_interval(e) is None]
-    current: list[dict[str, Any]] = []
-    hi = 0  # only read once current is non-empty, i.e. after a real span set it
-    for span, entry in sorted(spans, key=lambda p: p[0]):
-        if current and span[0] > hi:
-            clusters.append(current)
-            current = []
-        current.append(entry)
-        hi = max(hi, span[1])
-    if current:
-        clusters.append(current)
+    stickies = [e for e in entries if _is_sticky_record(e)]
+    clusters: list[list[dict[str, Any]]] = []
+    paired: set[int] = set()  # ids of stickies already in a cluster
+    for thread in entries:
+        if _is_sticky_record(thread):
+            continue
+        cluster = [thread]
+        span = _line_interval(thread)
+        if span is not None:
+            for sticky in stickies:
+                sticky_span = _line_interval(sticky)
+                if sticky_span is not None and _spans_overlap(span, sticky_span):
+                    cluster.append(sticky)
+                    paired.add(id(sticky))
+        clusters.append(cluster)
+    # Stickies containing no thread line stay their own findings
+    clusters.extend([sticky] for sticky in stickies if id(sticky) not in paired)
     return clusters
 
 
@@ -248,7 +264,10 @@ def _needs_resolve_retry(source: str, entry: dict[str, Any]) -> bool:
     """
     if not entry.get("posted_at") or entry.get("resolved_at"):
         return False
-    if not entry.get("thread_id") or entry.get("is_auto_skipped"):
+    # post.run derives the thread from node_id when thread_id is missing,
+    # so either is a usable resolution handle ("null" placeholders are not).
+    handle = entry.get("thread_id") or entry.get("node_id")
+    if not handle or handle == "null" or entry.get("is_auto_skipped"):
         return False
     if entry.get("status", "pending") == "pending":
         return False
