@@ -481,6 +481,182 @@ export function readSettingsSeed(agentDir?: string): Record<string, unknown> {
   }
 }
 
+/** Manifest-configured model snapshot for a `trustKeyScopedListing`-flagged
+ * provider: the fields forwarded (mapped) into key-scoped listing responses. */
+export interface ManifestModelSnapshot {
+  id: string;
+  name: string;
+  contextWindow?: number;
+  maxTokens?: number;
+}
+
+/** Startup snapshot of a provider flagged `trustKeyScopedListing: true`:
+ * the pinned baseUrl that granted trust (issue 913 security fix — the runtime
+ * provider is loaded lazily and its baseUrl may differ from the manifest read
+ * at SessionStore construction, so trust must compare against THIS value, not
+ * the live provider) plus the provider's manifest-configured models. */
+export interface TrustedProviderSnapshot {
+  /** Normalized href of the manifest `baseUrl`, or undefined when the manifest
+   * entry has no parseable URL — in which case the flag can never grant trust. */
+  baseUrl?: string;
+  models: ManifestModelSnapshot[];
+}
+
+/** Parse a flagged provider's `models[]` manifest entries into snapshots.
+ * Invalid entries are skipped individually — a malformed sibling must not
+ * silently drop the provider's whole flag — with a warn per skipped entry
+ * (provider id + reason, never a raw entry dump). */
+function readManifestModels(config: Record<string, unknown>, providerId: string): ManifestModelSnapshot[] {
+  const log = createLogger("agent-dir");
+  const raw = config.models;
+  if (!Array.isArray(raw)) return [];
+  const models: ManifestModelSnapshot[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      log.warn("Skipping malformed manifest model entry: not an object", { providerId });
+      continue;
+    }
+    const { id, name, contextWindow, maxTokens } = entry as Record<string, unknown>;
+    if (typeof id !== "string" || !id.trim() || typeof name !== "string") {
+      log.warn("Skipping manifest model entry with invalid id or name", { providerId, modelId: typeof id === "string" ? id : undefined });
+      continue;
+    }
+    const snapshot: ManifestModelSnapshot = { id, name };
+    if (typeof contextWindow === "number" && Number.isSafeInteger(contextWindow) && contextWindow > 0) snapshot.contextWindow = contextWindow;
+    if (typeof maxTokens === "number" && Number.isSafeInteger(maxTokens) && maxTokens > 0) snapshot.maxTokens = maxTokens;
+    models.push(snapshot);
+  }
+  return models;
+}
+
+/** Read provider IDs flagged `trustKeyScopedListing: true` from `<agentDir>/models.json`
+ * (empty map when absent/unparseable), each mapped to a snapshot of that
+ * provider's pinned `baseUrl` and manifest-configured `models[]`. Called once
+ * per process (SessionStore constructor) — the same startup snapshot discipline
+ * as readSettingsSeed. This admin-controlled manifest is the ONLY source the
+ * key-scoped listing trust gate accepts; request- or session-level input never
+ * contributes. Exported for tests. */
+export function readTrustedKeyScopedProviders(agentDir?: string): Map<string, TrustedProviderSnapshot> {
+  const log = createLogger("agent-dir");
+  const trusted = new Map<string, TrustedProviderSnapshot>();
+  if (!agentDir) {
+    log.debug("No agent dir for trustKeyScopedListing flags; none loaded");
+    return trusted;
+  }
+  const modelsPath = join(agentDir, "models.json");
+  try {
+    if (!existsSync(modelsPath)) {
+      log.debug(`No models.json in agent dir; no trustKeyScopedListing flags: path=${modelsPath}`);
+      return trusted;
+    }
+    const parsed: unknown = JSON.parse(readFileSync(modelsPath, "utf-8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      log.warn(`models.json in agent dir is not a JSON object; no trustKeyScopedListing flags: path=${modelsPath}`);
+      return trusted;
+    }
+    const providers = (parsed as { providers?: unknown }).providers;
+    if (typeof providers !== "object" || providers === null || Array.isArray(providers)) {
+      log.warn(`models.json in agent dir has no providers object; no trustKeyScopedListing flags: path=${modelsPath}`);
+      return trusted;
+    }
+    for (const [id, config] of Object.entries(providers)) {
+      if (typeof config === "object" && config !== null &&
+          (config as Record<string, unknown>).trustKeyScopedListing === true) {
+        const record = config as Record<string, unknown>;
+        let baseUrl: string | undefined;
+        if (typeof record.baseUrl === "string") {
+          try {
+            baseUrl = new URL(record.baseUrl).href;
+          } catch {
+            log.warn(`Flagged provider has an unparseable baseUrl; its flag can never grant listing trust: providerId=${id}`);
+          }
+        } else {
+          log.warn(`Flagged provider has no baseUrl; its flag can never grant listing trust: providerId=${id}`);
+        }
+        trusted.set(id, { baseUrl, models: readManifestModels(record, id) });
+      }
+    }
+    log.info(`Loaded trustKeyScopedListing flags from agent dir models.json: path=${modelsPath}, flaggedProviders=${trusted.size}, manifestModels=${trusted.size ? [...trusted.values()].reduce((sum, entry) => sum + entry.models.length, 0) : 0}`);
+  } catch (err) {
+    log.warn(
+      `Failed to read/parse models.json in agent dir; no trustKeyScopedListing flags honored: path=${modelsPath}, ` +
+      `error=${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return trusted;
+}
+
+/** Log-safe form of a URL: origin only (no pathname — path segments can
+ * carry credentials). Never log userinfo, query, hash, or path.
+ * Unparseable/absent → "(unparseable)". */
+function sanitizeUrlForLog(raw: string | undefined): string {
+  const log = createLogger("agent-dir");
+  if (!raw) {
+    log.debug("URL log sanitization: no URL provided");
+    return "(unparseable)";
+  }
+  try {
+    const url = new URL(raw);
+    log.debug("URL log sanitization: origin-only extraction", { origin: url.origin });
+    return url.origin;
+  } catch {
+    log.warn("URL log sanitization: unparseable URL withheld");
+    return "(unparseable)";
+  }
+}
+
+/** Union a flagged provider's manifest-configured models into a successful live
+ * key-scoped listing (issue 912 extension: gateways that list only a subset of
+ * what the admin configured). Dedupe by id — deterministic rule: the
+ * admin-configured manifest entry REPLACES the live entry on collision (explicit
+ * configuration outranks an inferred listing entry, keeping its name and token
+ * limits); manifest-only models are appended after the live entries in manifest
+ * order. Response shape matches live entries: {provider,id,name,source} plus
+ * optional capabilities using the SAME schema as live entries
+ * (inputTokenLimit/outputTokenLimit — manifest contextWindow/maxTokens mapped
+ * onto them), so consumers and create() read a single capability schema.
+ * Provenance: every entry carries `source` — "listing" when the gateway listed
+ * the id for this key (including manifest-wins collisions: the id IS verified
+ * for the key, the manifest only enriched name/limits), "manifest" when the
+ * entry is admin-declared only and NOT verified for this key. */
+function mergeManifestModels(
+  models: Array<{ provider: string; id: string; name: string; source: "listing" | "manifest"; capabilities?: Record<string, unknown> }>,
+  manifest: readonly ManifestModelSnapshot[] | undefined,
+  providerId: string,
+  safeProviderId: string,
+): void {
+  const log = createLogger("agent-dir");
+  if (!manifest || manifest.length === 0) return;
+  const liveCount = models.length;
+  // Snapshot the gateway-listed ids BEFORE merging — indexById below also
+  // accumulates manifest ids, so `source` must derive from this original set
+  // (a duplicate manifest id the gateway never listed is NOT key-verified).
+  const liveIds = new Set(models.map((model) => model.id));
+  const indexById = new Map(models.map((model, index) => [model.id, index]));
+  let replaced = 0;
+  for (const entry of manifest) {
+    // Collision keeps "listing": the gateway did list this id for this key, so
+    // it stays verified even though the manifest supplied the entry's data.
+    const source: "listing" | "manifest" = liveIds.has(entry.id) ? "listing" : "manifest";
+    const model: typeof models[number] = { provider: providerId, id: entry.id, name: entry.name, source };
+    if (entry.contextWindow !== undefined || entry.maxTokens !== undefined) {
+      const capabilities: Record<string, unknown> = {};
+      if (entry.contextWindow !== undefined) capabilities.inputTokenLimit = entry.contextWindow;
+      if (entry.maxTokens !== undefined) capabilities.outputTokenLimit = entry.maxTokens;
+      model.capabilities = capabilities;
+    }
+    const index = indexById.get(entry.id);
+    if (index === undefined) {
+      indexById.set(entry.id, models.length);
+      models.push(model);
+    } else {
+      models[index] = model;
+      replaced++;
+    }
+  }
+  log.debug("Merged manifest models into key-scoped listing", { providerId: safeProviderId, liveCount, manifestCount: manifest.length, appended: models.length - liveCount, deduped: replaced });
+}
+
 /** Internal registrar session never receives prompts — system prompt is a placeholder for clarity in logs/dumps. */
 const INTERNAL_REGISTRAR_SYSTEM_PROMPT =
   "You are the pi-sidecar's internal model registrar session. You exist only to keep the " +
@@ -825,12 +1001,24 @@ export class SessionStore {
    */
   private readonly settingsSeed: Record<string, unknown>;
 
+  /**
+   * Startup snapshot of provider IDs flagged `trustKeyScopedListing: true` in
+   * `<this.agentDir>/models.json` (empty when absent or unparseable), each mapped
+   * to that provider's manifest-configured `models[]` snapshots. Read exactly
+   * once, here in the constructor — same snapshot discipline as settingsSeed.
+   * This admin-controlled manifest is the only source the key-scoped listing
+   * trust gate (getModelsForApiKey) accepts; request/session input never
+   * contributes. Deployments restart the sidecar to apply flag changes.
+   */
+  private readonly trustedKeyScopedProviders: ReadonlyMap<string, TrustedProviderSnapshot>;
+
   constructor(options?: { agentDir?: string }) {
     this.agentDir = resolveInternalAgentDir(options?.agentDir);
     this.settingsSeed = readSettingsSeed(this.agentDir);
+    this.trustedKeyScopedProviders = readTrustedKeyScopedProviders(this.agentDir);
     const log = createLogger("session-store-init");
-    // Path only — no settings contents, no credentials.
-    log.debug("SessionStore constructed", { agentDir: this.agentDir, settingsSeedKeys: Object.keys(this.settingsSeed).length });
+    // Path and counts only — no settings contents, no credentials.
+    log.debug("SessionStore constructed", { agentDir: this.agentDir, settingsSeedKeys: Object.keys(this.settingsSeed).length, trustedKeyScopedProviders: this.trustedKeyScopedProviders.size });
   }
 
   get disposed(): boolean {
@@ -1226,7 +1414,7 @@ export class SessionStore {
   }
 
   /** Query the provider with this request's key, never the shared model registry. */
-  async getModelsForApiKey(providerId: string, apiKey: string): Promise<{ models: Array<{ provider: string; id: string; name: string; capabilities?: Record<string, unknown> }>; modelListingSupported: boolean }> {
+  async getModelsForApiKey(providerId: string, apiKey: string): Promise<{ models: Array<{ provider: string; id: string; name: string; source: "listing" | "manifest"; capabilities?: Record<string, unknown> }>; modelListingSupported: boolean }> {
     const log = createLogger("key-model-discovery");
     if (!isValidApiKey(apiKey) || typeof providerId !== "string" || !providerId.trim()) {
       throw httpError("Invalid provider or api_key", 400);
@@ -1265,14 +1453,35 @@ export class SessionStore {
       log.debug("Provider has no native model listing", { providerId: safeProviderId, modelListingSupported: false });
       return { models: [], modelListingSupported: false };
     }
-    log.debug("Resolved key-scoped listing base", { providerId: safeProviderId, canonicalBuiltin, modelCount: catalog.length });
+    log.debug("Resolved key-scoped listing base", { providerId: safeProviderId, canonicalBuiltin, manifestTrusted: this.trustedKeyScopedProviders.has(providerId), modelCount: catalog.length });
+    let manifestTrusted = false;
     let url: URL;
     try {
       url = new URL(base);
-      // Only provider-owned canonical hosts or literal loopback; DNS names for
-      // custom gateways can rebind to private addresses after validation.
+      // Only provider-owned canonical hosts, literal loopback, or a custom provider
+      // the admin explicitly flagged in the agent-dir models.json; DNS names for
+      // unflagged custom gateways can rebind to private addresses after validation.
       const loopback = ["127.0.0.1", "[::1]"].includes(url.hostname);
-      const trusted = canonical !== undefined && url.href === new URL(canonical).href;
+      const canonicalTrusted = canonical !== undefined && url.href === new URL(canonical).href;
+      // Admin opt-in (startup manifest snapshot only): a custom (non-canonical)
+      // provider flagged trustKeyScopedListing trusts exactly the baseUrl PINNED
+      // in the startup manifest snapshot — the host the manifest's server
+      // credential already went to at snapshot time. The runtime provider is
+      // loaded lazily and may carry a baseUrl from a later models.json edit;
+      // comparing against the snapshot (not the live provider.baseUrl, which
+      // would be vacuously true) ensures an old flag can never authorize a new
+      // host. Never for builtin IDs (an overridden builtin keeps its canonical
+      // gate) and never a wider grant.
+      const snapshot = this.trustedKeyScopedProviders.get(providerId);
+      manifestTrusted = snapshot !== undefined && canonical === undefined && snapshot.baseUrl !== undefined &&
+        url.href === snapshot.baseUrl && ["http:", "https:"].includes(url.protocol);
+      if (manifestTrusted) {
+        log.debug("Key-scoped listing trust granted via pinned manifest baseUrl snapshot", { providerId: safeProviderId });
+      } else if (snapshot !== undefined && canonical === undefined) {
+        // Log only origin + pathname: the pinned URL can carry userinfo/query/hash.
+        log.warn("Flagged provider no longer matches its startup trust snapshot; key-scoped listing refused", { providerId: safeProviderId, pinnedBaseUrl: sanitizeUrlForLog(snapshot.baseUrl) });
+      }
+      const trusted = canonicalTrusted || manifestTrusted;
       if ((!loopback && !trusted) || (canonical !== undefined && !trusted) || (loopback && kind !== "openai") ||
           (loopback && !["http:", "https:"].includes(url.protocol)) ||
           url.username || url.password || url.search || url.hash ||
@@ -1296,7 +1505,7 @@ export class SessionStore {
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10_000);
-    const models: Array<{ provider: string; id: string; name: string; capabilities?: Record<string, unknown> }> = [];
+    const models: Array<{ provider: string; id: string; name: string; source: "listing" | "manifest"; capabilities?: Record<string, unknown> }> = [];
     const seenTokens = new Set<string>();
     try {
       for (let page = 0; page < 10; page++) {
@@ -1342,7 +1551,7 @@ export class SessionStore {
         const name = kind === "google" ? item.displayName : kind === "anthropic" ? item.display_name : item.name;
         if (!id || id.length > 512 || /[\x00-\x1f\x7f]/.test(id) ||
             (name !== undefined && (typeof name !== "string" || name.length > 512 || /[\x00-\x1f\x7f]/.test(name)))) continue;
-        const model: typeof models[number] = { provider: providerId, id, name: name ?? id };
+        const model: typeof models[number] = { provider: providerId, id, name: name ?? id, source: "listing" };
         // Capabilities are included only when returned by this key-scoped upstream.
         if (kind === "google") {
           const capabilities: Record<string, unknown> = {};
@@ -1367,6 +1576,10 @@ export class SessionStore {
       url.searchParams.set(kind === "anthropic" ? "after_id" : "pageToken", token);
       }
       log.debug("Key-scoped model discovery completed", { count: models.length, modelListingSupported: true });
+      // Issue 912 extension: a flagged custom provider's response is the union of
+      // the live listing and its manifest-configured models, so manually
+      // configured models a gateway does not list still reach key-scoped callers.
+      if (manifestTrusted) mergeManifestModels(models, this.trustedKeyScopedProviders.get(providerId)?.models, providerId, safeProviderId);
       return { models, modelListingSupported: true };
     } catch (err) {
       if (err && typeof err === "object" && "statusCode" in err) {
@@ -1459,10 +1672,27 @@ export class SessionStore {
             log.debug("Validating key-discovered model token limit", { session: id, valid });
             return valid ? value : undefined;
           };
-          const contextWindow = positiveLimit(capabilities?.inputTokenLimit);
-          const maxTokens = positiveLimit(capabilities?.outputTokenLimit);
+          // Issue 913: gateway listings (e.g. EnMaaS) often omit token-limit
+          // capabilities. Manifest-declared limits reach this path already
+          // merged into the discovered entry's capabilities under the SAME
+          // inputTokenLimit/outputTokenLimit keys (see mergeManifestModels),
+          // so they are read directly from the entry; the snapshot lookup
+          // below stays only as a fallback for entries that somehow lack limits.
+          const manifestEntry = this.trustedKeyScopedProviders.get(options.provider)?.models.find((entry) => entry.id === discovered.id);
+          const liveContextWindow = positiveLimit(capabilities?.inputTokenLimit);
+          const liveMaxTokens = positiveLimit(capabilities?.outputTokenLimit);
+          const contextWindow = liveContextWindow ?? manifestEntry?.contextWindow;
+          const maxTokens = liveMaxTokens ?? manifestEntry?.maxTokens;
+          if (manifestEntry && (!liveContextWindow || !liveMaxTokens) && contextWindow && maxTokens) {
+            log.debug("Key-discovered model limits sourced from the manifest snapshot", { session: id, providerId: options.provider });
+          }
           if (!contextWindow || !maxTokens) {
-            throw httpError("Model metadata missing reliable input/output token limits for unknown model", 400);
+            // Unknown limits are a hard failure by design — never fabricate defaults.
+            log.error("Key-discovered model has no reliable token limits anywhere; refusing session creation", { session: id, providerId: options.provider });
+            throw httpError(
+              "Model metadata missing reliable input/output token limits for unknown model. " +
+              "Declare the model in the agent-dir models.json with contextWindow and maxTokens " +
+              "to use it with a session API key.", 400);
           }
           model = {
             id: discovered.id, name: discovered.name, provider: options.provider,

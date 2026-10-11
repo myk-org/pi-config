@@ -733,7 +733,7 @@ sidecar after changing them):</p>
 <tbody>
 <tr>
 <td><code>models.json</code></td>
-<td>Custom pi providers registered on the shared runtime — listed by <code>GET /models</code> and <code>GET /providers</code>, usable in <code>POST /sessions</code></td>
+<td>Custom pi providers registered on the shared runtime — listed by <code>GET /models</code> and <code>GET /providers</code>, usable in <code>POST /sessions</code>; providers flagged <code>trustKeyScopedListing</code> also serve <code>POST /models/for-api-key</code></td>
 </tr>
 <tr>
 <td><code>auth.json</code></td>
@@ -787,6 +787,66 @@ npx<span class="w"> </span>pi-sidecar
   sessions are short-lived and always run with compaction disabled.</p>
 </li>
 </ul>
+<h3 id="key-scoped-listing-for-custom-providers-trustkeyscopedlisting">Key-scoped listing for custom providers (<code>trustKeyScopedListing</code>)</h3>
+<p>By default <code>POST /models/for-api-key</code> refuses to send a request-scoped (user)
+key to any host that is not a provider-owned canonical builtin endpoint or a
+literal loopback address, so custom gateways return
+<code>{"models": [], "modelListingSupported": false}</code>. An admin can opt a single
+custom provider into key-scoped model listing by flagging it in the agent
+dir's <code>models.json</code> (read once at startup — restart the sidecar to apply):</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"providers"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"enmaas"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"baseUrl"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://enmaas.example.com/v1"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"api"</span><span class="p">:</span><span class="w"> </span><span class="s2">"openai-completions"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"apiKey"</span><span class="p">:</span><span class="w"> </span><span class="s2">"$ENMAAS_API_KEY"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"trustKeyScopedListing"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"models"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"enmaas/gpt-4o"</span><span class="p">,</span><span class="w"> </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"GPT-4o via EnMaaS"</span><span class="w"> </span><span class="p">}</span>
+<span class="w">      </span><span class="p">]</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>A flagged provider's listing request goes to exactly its configured <code>baseUrl</code>
+— the same host the manifest's server credential (<code>apiKey</code>) already goes to.
+The flag is honored <strong>only</strong> from this admin-controlled manifest; request- or
+session-level input can never set it, and unflagged providers keep the default
+refusal. URL hygiene is still enforced (no userinfo, query, or hash; only
+<code>http:</code>/<code>https:</code>), and the provider must declare at least one model with all
+models sharing the provider <code>baseUrl</code> (the existing uniformity check). The
+extra field is ignored by pi's provider registration, so it does not affect
+<code>GET /models</code> or <code>POST /sessions</code>.</p>
+<p>For a flagged provider whose native listing succeeds, <code>POST
+/models/for-api-key</code> returns the <strong>union</strong> of the live gateway listing and the
+provider's manifest-configured <code>models[]</code> (snapshot at startup, same file
+read as the flag). Real case: an EnMaaS gateway lists 15 models via
+<code>/v1/models</code> but not the manually configured <code>rits/zai-org/glm-5-3</code> — the
+response contains both. Manifest-only models are appended after the live
+entries in the same response shape (<code>provider</code>/<code>id</code>/<code>name</code>/<code>source</code>, plus
+<code>capabilities.inputTokenLimit</code>/<code>capabilities.outputTokenLimit</code> when configured —
+the models.json <code>contextWindow</code>/<code>maxTokens</code> mapped onto the same schema live
+entries use). On an
+id collision the manifest entry wins — the admin explicitly configured it —
+replacing the live entry's name and metadata at the live position. The union
+applies only to that provider's own listing; one provider's manifest models
+never appear in another's response. When the native listing fails or is
+refused (<code>modelListingSupported: false</code>), no union is applied.</p>
+<p>Every entry carries a <code>source</code> provenance discriminator so consumers can
+distinguish verified from admin-declared models: <code>"listing"</code> means the
+gateway listed the id for this key — the id is verified for the credential
+(this includes manifest-wins collision entries: the gateway did list the id,
+and the manifest only supplied the name and token limits). <code>"manifest"</code>
+means the entry is admin-declared in <code>models.json</code> only and was <strong>not</strong>
+verified for this key — a user with a model-restricted key may not be able to
+use it, so consumers must not treat it as accessible until access is confirmed
+with that key.</p>
+<p>A key-listed model used in <code>POST /sessions</code> with an <code>api_key</code> needs token
+limits: when the live listing omits them, the sidecar falls back to the
+manifest-declared <code>contextWindow</code>/<code>maxTokens</code> for that id, and otherwise
+rejects the session with a 400 naming the models.json remedy — limits are
+never fabricated for an unknown model.</p>
 <h3 id="watchdog-companion-process">Watchdog (companion process)</h3>
 <div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">SIDECAR_WATCHDOG_URL</span><span class="o">=</span>http://127.0.0.1:8000/health
 npx<span class="w"> </span>pi-sidecar
@@ -916,6 +976,7 @@ npx<span class="w"> </span>pi-sidecar
 <li><a href="#custom-http-backed-tools">Custom HTTP-backed tools</a></li>
 <li><a href="#acpx-and-cli-model-sources">ACPX and CLI model sources</a></li>
 <li><a href="#custom-providers-and-settings-agent-dir">Custom providers and settings (agent dir)</a></li>
+<li><a href="#key-scoped-listing-for-custom-providers-trustkeyscopedlisting">Key-scoped listing for custom providers (trustKeyScopedListing)</a></li>
 <li><a href="#watchdog-companion-process">Watchdog (companion process)</a></li>
 <li><a href="#docker-process-coupling">Docker / process coupling</a></li>
 <li><a href="#using-vs-extending">Using vs extending</a></li>
