@@ -586,14 +586,21 @@ export function readTrustedKeyScopedProviders(agentDir?: string): Map<string, Tr
   return trusted;
 }
 
-/** Log-safe form of a URL: origin + pathname only. Never log userinfo, query,
- * or hash — those parts can carry credentials. Unparseable/absent → "(unparseable)". */
+/** Log-safe form of a URL: origin only (no pathname — path segments can
+ * carry credentials). Never log userinfo, query, hash, or path.
+ * Unparseable/absent → "(unparseable)". */
 function sanitizeUrlForLog(raw: string | undefined): string {
-  if (!raw) return "(unparseable)";
+  const log = createLogger("agent-dir");
+  if (!raw) {
+    log.debug("URL log sanitization: no URL provided");
+    return "(unparseable)";
+  }
   try {
     const url = new URL(raw);
-    return `${url.origin}${url.pathname}`;
+    log.debug("URL log sanitization: origin-only extraction", { origin: url.origin });
+    return url.origin;
   } catch {
+    log.warn("URL log sanitization: unparseable URL withheld");
     return "(unparseable)";
   }
 }
@@ -617,16 +624,20 @@ function mergeManifestModels(
   manifest: readonly ManifestModelSnapshot[] | undefined,
   providerId: string,
   safeProviderId: string,
-  log: ReturnType<typeof createLogger>,
 ): void {
+  const log = createLogger("agent-dir");
   if (!manifest || manifest.length === 0) return;
   const liveCount = models.length;
+  // Snapshot the gateway-listed ids BEFORE merging — indexById below also
+  // accumulates manifest ids, so `source` must derive from this original set
+  // (a duplicate manifest id the gateway never listed is NOT key-verified).
+  const liveIds = new Set(models.map((model) => model.id));
   const indexById = new Map(models.map((model, index) => [model.id, index]));
   let replaced = 0;
   for (const entry of manifest) {
     // Collision keeps "listing": the gateway did list this id for this key, so
     // it stays verified even though the manifest supplied the entry's data.
-    const source: "listing" | "manifest" = indexById.has(entry.id) ? "listing" : "manifest";
+    const source: "listing" | "manifest" = liveIds.has(entry.id) ? "listing" : "manifest";
     const model: typeof models[number] = { provider: providerId, id: entry.id, name: entry.name, source };
     if (entry.contextWindow !== undefined || entry.maxTokens !== undefined) {
       const capabilities: Record<string, unknown> = {};
@@ -1568,7 +1579,7 @@ export class SessionStore {
       // Issue 912 extension: a flagged custom provider's response is the union of
       // the live listing and its manifest-configured models, so manually
       // configured models a gateway does not list still reach key-scoped callers.
-      if (manifestTrusted) mergeManifestModels(models, this.trustedKeyScopedProviders.get(providerId)?.models, providerId, safeProviderId, log);
+      if (manifestTrusted) mergeManifestModels(models, this.trustedKeyScopedProviders.get(providerId)?.models, providerId, safeProviderId);
       return { models, modelListingSupported: true };
     } catch (err) {
       if (err && typeof err === "object" && "statusCode" in err) {

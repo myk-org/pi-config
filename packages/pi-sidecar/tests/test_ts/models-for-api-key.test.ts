@@ -838,6 +838,40 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
     });
   }
 
+  it("marks duplicate manifest ids as manifest-sourced when the gateway lists neither", async () => {
+    // Regression: indexById accumulates manifest ids during the merge, so a
+    // second manifest entry with the same id must NOT inherit "listing"
+    // provenance from the first — source derives from the pre-merge live set.
+    const dir = mkdtempSync(join(tmpdir(), "sidecar-913-dup-manifest-"));
+    writeManifest(dir, {
+      dup913: { baseUrl: "https://dup.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+        trustKeyScopedListing: true, models: [
+          { id: "dup-913", name: "First Copy", contextWindow: 2048, maxTokens: 512 },
+          { id: "dup-913", name: "Second Copy", contextWindow: 4096, maxTokens: 1024 },
+        ] },
+    });
+    const store = await fixtureStore(dir);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ id: "other-live-913", name: "Other" }] }), { status: 200 })) as typeof fetch;
+    try {
+      const result = await store.getModelsForApiKey("dup913", keyA);
+      assert.equal(result.modelListingSupported, true);
+      const copies = result.models.filter((model) => model.id === "dup-913");
+      assert.equal(copies.length, 1, "duplicate manifest ids collapse to one entry (last wins)");
+      assert.equal(copies[0].name, "Second Copy");
+      assert.equal(copies[0].source, "manifest",
+        "a manifest id the gateway never listed is NOT key-verified, even when duplicated in the manifest");
+      const liveEntry = result.models.find((model) => model.id === "other-live-913")!;
+      assert.equal(liveEntry.source, "listing");
+      noKey(JSON.stringify(result), keyA);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await store.disposeAll();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("unions the live listing with manifest-only models for a flagged provider", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sidecar-912-union-"));
     writeManifest(dir, {
@@ -933,7 +967,7 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
 
   it("redacts credential-bearing parts from the trust-mismatch warning's pinned URL", async () => {
     // The snapshot keeps the full normalized manifest URL (userinfo retained);
-    // the mismatch warn must log only origin + pathname, never the credential.
+    // the mismatch warn must log only the origin, never credential or path.
     const manifestDir = mkdtempSync(join(tmpdir(), "sidecar-913-redact-manifest-"));
     const runtimeDir = mkdtempSync(join(tmpdir(), "sidecar-913-redact-runtime-"));
     writeManifest(manifestDir, { redact913: {
@@ -953,8 +987,9 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
       assert.deepEqual(await store.getModelsForApiKey("redact913", keyA), { models: [], modelListingSupported: false });
       const mismatch = warnings.find((line) => line.includes("no longer matches its startup trust snapshot"));
       assert.ok(mismatch, "the mismatch warning must fire for a repointed runtime URL");
-      assert.ok(mismatch.includes("https://snapshot.example.test/v1"), "the sanitized origin + pathname is logged");
+      assert.ok(mismatch.includes("https://snapshot.example.test"), "the sanitized origin is logged");
       assert.ok(!mismatch.includes("snapshot-secret"), "the credential part must never reach the log");
+      assert.ok(!mismatch.includes("/v1"), "path segments are not logged (they can carry credentials)");
       noKey(warnings.join("\n"), keyA);
     } finally {
       logger.warn = warn;
