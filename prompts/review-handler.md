@@ -371,11 +371,27 @@ No "this looks similar to the one I already fixed."**
 
 If any approved tasks weren't implemented, review with user.
 
-### Phase 5: Persist Decisions
+### Phase 5: Prepare Reply Mappings
 
-Update each JSON entry with `status` and `reply` fields before posting.
+🚨 **NEVER hand-edit the reviews JSON.** No python heredocs, no `jq`, no manual
+`status`/`reply` field mutation. The `myk-pi-tools reviews address` command applies
+replies, flips statuses, posts, and stores in one step — you only prepare mapping files.
 
-**Valid status values:**
+Write one mapping file per target status. Each line targets one finding:
+
+```text
+<path>:<line>|<reply>
+```
+
+- `<path>:<line>` — the finding's fetched `path` and `line`. A thread finding and its
+  paired sticky finding are addressed together automatically (the command handles
+  dedupe and pairing — you never target stickies separately).
+- `*` — matches ALL pending findings (single-line mapping file).
+- Group findings by their target status — Phase 8 runs one `reviews address` call per
+  status group.
+- Posting happens in Phase 8, AFTER commit/push — do not post before the fixes are pushed.
+
+**Valid status values (the `--set` flag for each mapping group):**
 
 | Status | Behavior |
 |--------|----------|
@@ -438,44 +454,39 @@ Skip asking the user — commit and push automatically.
 Code must be pushed before posting replies so that reviewers can see the fixes
 when threads are resolved.
 
-### Phase 8: Post Replies
+### Phase 8: Post Replies (via reviews address)
 
-Post all replies to GitHub and store results in the database.
+Run one `reviews address` call per status group prepared in Phase 5 — each call applies
+the mapping, posts replies, resolves threads, and stores to the database:
+
+```bash
+myk-pi-tools reviews address --json {json_path} --replies {mapping_file} --set addressed
+myk-pi-tools reviews address --json {json_path} --replies {mapping_file} --set skipped
+```
+
+The command picks the newest `pr-*-reviews.json` in `.pi/tmp` when `--json` is omitted.
 
 **Body comments (outside-diff, major, minor, nitpick, duplicate, qodo sticky):**
 
 Comments that don't have GitHub review threads (e.g., CodeRabbit outside-diff,
 major, minor, nitpick, and duplicate comments) are replied to via a single
-consolidated PR comment per reviewer. The comment mentions the reviewer (e.g., `@coderabbitai`)
-and includes sections for each comment with the decision made. This ensures
-automated reviewers know their comments were reviewed and won't re-raise them.
+consolidated PR comment per reviewer — `reviews address` handles this exactly like
+`reviews post` did: the comment mentions the reviewer (e.g., `@coderabbitai`) and
+includes sections for each comment with the decision made. This ensures automated
+reviewers know their comments were reviewed and won't re-raise them.
 
-Post replies to GitHub:
+**Failure semantics (MANDATORY):**
 
-```bash
-myk-pi-tools reviews post {json_path}
-```
-
-If the command exits with a non-zero code, some threads failed to post.
-The command prints an ACTION REQUIRED message with the exact retry command.
-Re-run it to retry — only unposted entries are retried. Repeat until all succeed.
-
-**Output verification (MANDATORY):**
-
-After `reviews post` completes successfully, check the output:
-
-- `Processed N threads` — N should equal the number of entries with status `addressed`, `not_addressed`, `skipped`, or `failed` (everything except `pending`)
-- `Resolved: N` — should be non-zero if any entries have status `addressed` or if AI-source entries have status `skipped`/`not_addressed`
-- If `Processed 0 threads`, the status values in the JSON are wrong — fix them to use valid values from the table above and re-run before proceeding
-- If output shows `Warning: Unknown status`, fix those entries — e.g., `"done"` or `"completed"` are not valid, use `"addressed"` instead
-
-Do NOT proceed to `reviews store` until `reviews post` shows the expected thread count.
-
-Store to database:
-
-```bash
-myk-pi-tools reviews store {json_path}
-```
+- **Exit 0** → all matched findings posted, resolved, and stored; the JSON is consumed.
+- **Non-zero exit** → the JSON is RETAINED on disk for a corrected re-run.
+  Read the printed error:
+  - `no findings matched` → a mapping `path:line` matches no pending finding — fix the
+    mapping file and re-run. Already-posted entries are never touched again, so re-runs
+    are always safe.
+  - Post/resolve failures → the output names the entries that failed; re-run the same
+    command — only unposted entries are retried.
+- **NEVER delete or hand-edit a retained JSON** — correct the mapping file and re-run
+  `reviews address`.
 
 ### Phase 9: Auto Polling Loop (--autorabbit / --autoqodo mode)
 
