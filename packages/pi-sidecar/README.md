@@ -108,7 +108,11 @@ supports key-scoped listing on its own host, even when its catalog mixes APIs
 `baseUrl` override or a custom gateway is still refused, so a request-supplied
 endpoint never receives the credential — unless the admin flagged that custom
 provider `trustKeyScopedListing` in the agent-dir `models.json` (see
-[Custom providers and settings (agent dir)](#custom-providers-and-settings-agent-dir)). A listing is only **key-listed**:
+[Custom providers and settings (agent dir)](#custom-providers-and-settings-agent-dir)) —
+and for such a flagged provider, `models` is the **union** of the live listing
+and the provider's manifest-configured `models[]` from `models.json` (see the
+[`trustKeyScopedListing`](#key-scoped-listing-for-custom-providers-trustkeyscopedlisting)
+section). A listing is only **key-listed**:
 it does not verify that a prompt will work. Google results require
 `generateContent`; known non-generation OpenAI model families are excluded,
 but remaining IDs are not **prompt-verified**. Do not use static catalog entries
@@ -228,6 +232,26 @@ refusal. URL hygiene is still enforced (no userinfo, query, or hash; only
 models sharing the provider `baseUrl` (the existing uniformity check). The
 extra field is ignored by pi's provider registration, so it does not affect
 `GET /models` or `POST /sessions`.
+
+For a flagged provider whose native listing succeeds, `POST
+/models/for-api-key` returns the **union** of the live gateway listing and the
+provider's manifest-configured `models[]` (snapshot at startup, same file
+read as the flag). Real case: an EnMaaS gateway lists 15 models via
+`/v1/models` but not the manually configured `rits/zai-org/glm-5-3` — the
+response contains both. Manifest-only models are appended after the live
+entries in the same response shape (`provider`/`id`/`name`, plus
+`capabilities.contextWindow`/`capabilities.maxTokens` when configured). On an
+id collision the manifest entry wins — the admin explicitly configured it —
+replacing the live entry's name and metadata at the live position. The union
+applies only to that provider's own listing; one provider's manifest models
+never appear in another's response. When the native listing fails or is
+refused (`modelListingSupported: false`), no union is applied.
+
+A key-listed model used in `POST /sessions` with an `api_key` needs token
+limits: when the live listing omits them, the sidecar falls back to the
+manifest-declared `contextWindow`/`maxTokens` for that id, and otherwise
+rejects the session with a 400 naming the models.json remedy — limits are
+never fabricated for an unknown model.
 
 ## CLI Commands
 

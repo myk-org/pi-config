@@ -746,13 +746,24 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
     return store;
   };
 
-  it("lists a manifest-flagged custom provider against its configured baseUrl; unflagged sibling stays refused", async () => {
+  /** Issue 913 fixtures where the startup manifest snapshot (store's agentDir)
+   * and the lazily loaded runtime catalog (runtime's models.json) diverge —
+   * the shape the snapshot-pinning and limits-fallback behaviors guard. */
+  const splitFixtureStore = async (manifestDir: string, runtimeDir: string) => {
+    const runtime = await ModelRuntime.create({ modelsPath: join(runtimeDir, "models.json"), authPath: join(runtimeDir, "auth.json"), refreshOnCreate: false });
+    const store = new SessionStore({ agentDir: manifestDir });
+    Object.assign(store, {
+      internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} },
+      modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true,
+    });
+    return store;
+  };
+
+  it("lists a manifest-flagged custom provider against its configured baseUrl", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sidecar-912-flag-"));
     writeManifest(dir, {
       flagged912: { baseUrl: "https://flagged.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
         trustKeyScopedListing: true, models: [{ id: "static-only", name: "Static" }] },
-      plain912: { baseUrl: "https://plain.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
-        models: [{ id: "static-only", name: "Static" }] },
     });
     const store = await fixtureStore(dir);
     const originalFetch = globalThis.fetch;
@@ -768,14 +779,33 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
       assert.equal((await store.getProviderStatus("flagged912")).supportsSessionApiKey, true);
       const result = await store.getModelsForApiKey("flagged912", keyA);
       assert.equal(result.modelListingSupported, true, "a flagged custom provider supports key-scoped listing");
-      assert.deepEqual(result.models.map((model) => model.id), ["new-private-912"]);
-      assert.deepEqual(result.models.map((model) => model.provider), ["flagged912"]);
+      assert.deepEqual(result.models.map((model) => model.id), ["new-private-912", "static-only"],
+        "live listing plus the provider's manifest-configured model (union)");
+      assert.deepEqual(result.models.map((model) => model.provider), ["flagged912", "flagged912"]);
       assert.deepEqual(fetched, ["https://flagged.example.test/v1/models"], "listing must target the flagged provider's configured baseUrl");
       assert.equal(authorization, `Bearer ${keyA}`, "the request key, not the manifest key, must be sent");
-      // An identical provider without the flag keeps today's refusal, with no request.
-      assert.deepEqual(await store.getModelsForApiKey("plain912", keyA), { models: [], modelListingSupported: false });
-      assert.deepEqual(fetched, ["https://flagged.example.test/v1/models"]);
       noKey(JSON.stringify(result), keyA);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await store.disposeAll();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses key-scoped listing for an unflagged sibling provider without any request", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-plain-"));
+    writeManifest(dir, {
+      plain912: { baseUrl: "https://plain.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+        models: [{ id: "static-only", name: "Static" }] },
+    });
+    const store = await fixtureStore(dir);
+    const originalFetch = globalThis.fetch;
+    let outbound = 0;
+    globalThis.fetch = (async () => { outbound++; throw new Error("unexpected outbound request"); }) as typeof fetch;
+    try {
+      assert.equal((await store.getProviderStatus("plain912")).supportsSessionApiKey, true);
+      assert.deepEqual(await store.getModelsForApiKey("plain912", keyA), { models: [], modelListingSupported: false });
+      assert.equal(outbound, 0, "an identical provider without the flag keeps today's refusal, with no request");
     } finally {
       globalThis.fetch = originalFetch;
       await store.disposeAll();
@@ -807,6 +837,188 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
       }
     });
   }
+
+  it("unions the live listing with manifest-only models for a flagged provider", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-union-"));
+    writeManifest(dir, {
+      union912: { baseUrl: "https://union.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+        trustKeyScopedListing: true, models: [
+          { id: "manifest-only-912", name: "Manifest Only", contextWindow: 8192, maxTokens: 4096 },
+        ] },
+    });
+    const store = await fixtureStore(dir);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ id: "live-only-912", name: "Live Only" }] }), { status: 200 })) as typeof fetch;
+    try {
+      const result = await store.getModelsForApiKey("union912", keyA);
+      assert.equal(result.modelListingSupported, true);
+      assert.deepEqual(result.models.map((model) => model.id), ["live-only-912", "manifest-only-912"],
+        "live listing first, then manifest-only models appended");
+      const manifestEntry = result.models.find((model) => model.id === "manifest-only-912")!;
+      assert.equal(manifestEntry.provider, "union912");
+      assert.equal(manifestEntry.name, "Manifest Only");
+      assert.deepEqual(manifestEntry.capabilities, { contextWindow: 8192, maxTokens: 4096 },
+        "manifest metadata is preserved in the live-entry response shape");
+      const liveEntry = result.models.find((model) => model.id === "live-only-912")!;
+      assert.equal(liveEntry.name, "Live Only");
+      noKey(JSON.stringify(result), keyA);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await store.disposeAll();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dedupes by id with manifest metadata winning over the live entry", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-dedupe-"));
+    writeManifest(dir, {
+      dedupe912: { baseUrl: "https://dedupe.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+        trustKeyScopedListing: true, models: [
+          { id: "shared-912", name: "Manifest Shared", contextWindow: 4096, maxTokens: 1024 },
+        ] },
+    });
+    const store = await fixtureStore(dir);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ id: "shared-912", name: "Live Shared" }] }), { status: 200 })) as typeof fetch;
+    try {
+      const result = await store.getModelsForApiKey("dedupe912", keyA);
+      assert.equal(result.modelListingSupported, true);
+      assert.equal(result.models.length, 1, "an id present in both live and manifest yields a single entry");
+      // Deterministic collision rule: the admin-configured manifest entry replaces
+      // the live one (explicit configuration outranks an inferred listing entry).
+      assert.deepEqual(result.models[0],
+        { provider: "dedupe912", id: "shared-912", name: "Manifest Shared", capabilities: { contextWindow: 4096, maxTokens: 1024 } });
+      noKey(JSON.stringify(result), keyA);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await store.disposeAll();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("pins trust to the startup snapshot baseUrl, refusing a later runtime URL change", async () => {
+    // The flag was granted for the manifest's baseUrl at construction time; the
+    // lazily loaded runtime provider carries a repointed URL (models.json edited
+    // after SessionStore construction). The old flag must not send the user's
+    // key to the new host.
+    const manifestDir = mkdtempSync(join(tmpdir(), "sidecar-913-pin-manifest-"));
+    const runtimeDir = mkdtempSync(join(tmpdir(), "sidecar-913-pin-runtime-"));
+    writeManifest(manifestDir, { pinned913: {
+      baseUrl: "https://snapshot.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+      trustKeyScopedListing: true, models: [{ id: "static-only", name: "Static" }] } });
+    writeManifest(runtimeDir, { pinned913: {
+      baseUrl: "https://repointed.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+      models: [{ id: "static-only", name: "Static" }] } });
+    const store = await splitFixtureStore(manifestDir, runtimeDir);
+    const originalFetch = globalThis.fetch;
+    let outbound = 0;
+    globalThis.fetch = (async () => { outbound++; throw new Error("unexpected outbound request"); }) as typeof fetch;
+    try {
+      assert.equal((await store.getProviderStatus("pinned913")).supportsSessionApiKey, true);
+      assert.deepEqual(await store.getModelsForApiKey("pinned913", keyA), { models: [], modelListingSupported: false },
+        "a flagged provider whose runtime baseUrl differs from the snapshotted one stays refused");
+      assert.equal(outbound, 0, "the user key must never reach the repointed host");
+    } finally {
+      globalThis.fetch = originalFetch;
+      await store.disposeAll();
+      rmSync(manifestDir, { recursive: true, force: true });
+      rmSync(runtimeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to manifest-declared limits when a key-listed model omits them", async () => {
+    // Gateway listings (e.g. EnMaaS) return ids without token-limit capabilities;
+    // the admin declares limits for the same id in the agent-dir models.json.
+    // Here the runtime catalog lacks the id, so create() must resolve it through
+    // the key-scoped listing and take its limits from the manifest snapshot.
+    const manifestDir = mkdtempSync(join(tmpdir(), "sidecar-913-fallback-manifest-"));
+    const runtimeDir = mkdtempSync(join(tmpdir(), "sidecar-913-fallback-runtime-"));
+    writeManifest(manifestDir, { limits913: {
+      baseUrl: "https://limits.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+      trustKeyScopedListing: true, models: [{ id: "live-no-limits-913", name: "Live No Limits", contextWindow: 8192, maxTokens: 4096 }] } });
+    writeManifest(runtimeDir, { limits913: {
+      baseUrl: "https://limits.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+      models: [{ id: "template-913", name: "Template" }] } });
+    const store = await splitFixtureStore(manifestDir, runtimeDir);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ id: "live-no-limits-913", name: "Live No Limits" }] }), { status: 200 })) as typeof fetch;
+    try {
+      const session = await store.create({ provider: "limits913", model: "live-no-limits-913", systemPrompt: "hi", cwd: runtimeDir, agentDir: manifestDir, tools: [], apiKey: keyA });
+      const selected = (store as any).sessions.get(session).session.model;
+      assert.equal(selected?.contextWindow, 8192, "contextWindow must come from the manifest snapshot");
+      assert.equal(selected?.maxTokens, 4096, "maxTokens must come from the manifest snapshot");
+      store.delete(session);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await store.disposeAll();
+      rmSync(manifestDir, { recursive: true, force: true });
+      rmSync(runtimeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("names the models.json remedy when a key-listed model has no limits anywhere", async () => {
+    // Unknown limits are a hard failure by design — no fabricated defaults —
+    // but the 400 must tell the admin how to make the model usable.
+    const manifestDir = mkdtempSync(join(tmpdir(), "sidecar-913-remedy-manifest-"));
+    const runtimeDir = mkdtempSync(join(tmpdir(), "sidecar-913-remedy-runtime-"));
+    writeManifest(manifestDir, { remedy913: {
+      baseUrl: "https://remedy.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+      trustKeyScopedListing: true, models: [{ id: "live-no-limits-913", name: "Live No Limits" }] } });
+    writeManifest(runtimeDir, { remedy913: {
+      baseUrl: "https://remedy.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+      models: [{ id: "template-913", name: "Template" }] } });
+    const store = await splitFixtureStore(manifestDir, runtimeDir);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ id: "live-no-limits-913", name: "Live No Limits" }] }), { status: 200 })) as typeof fetch;
+    try {
+      await assert.rejects(
+        () => store.create({ provider: "remedy913", model: "live-no-limits-913", systemPrompt: "hi", cwd: runtimeDir, agentDir: manifestDir, tools: [], apiKey: keyA }),
+        (error: any) => error.statusCode === 400 &&
+          /metadata missing reliable input\/output token limits/.test(error.message) &&
+          /models\.json/.test(error.message) && /contextWindow/.test(error.message) && /maxTokens/.test(error.message),
+      );
+      assert.equal(store.count(), 0);
+      noKey(JSON.stringify(store), keyA);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await store.disposeAll();
+      rmSync(manifestDir, { recursive: true, force: true });
+      rmSync(runtimeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("never leaks another provider's manifest models into a listing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-cross-"));
+    writeManifest(dir, {
+      crossA912: { baseUrl: "https://cross-a.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+        trustKeyScopedListing: true, models: [{ id: "a-manifest-only-912", name: "A Manifest" }] },
+      crossB912: { baseUrl: "https://cross-b.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+        trustKeyScopedListing: true, models: [{ id: "b-manifest-only-912", name: "B Manifest" }] },
+    });
+    const store = await fixtureStore(dir);
+    const originalFetch = globalThis.fetch;
+    const fetched: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      fetched.push(String(input instanceof Request ? input.url : input));
+      return new Response(JSON.stringify({ data: [{ id: "a-live-912" }] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const result = await store.getModelsForApiKey("crossA912", keyA);
+      assert.equal(result.modelListingSupported, true);
+      assert.deepEqual(result.models.map((model) => model.id), ["a-live-912", "a-manifest-only-912"],
+        "only the requested provider's live listing and manifest models are returned");
+      assert.deepEqual(fetched, ["https://cross-a.example.test/v1/models"]);
+      noKey(JSON.stringify(result), keyA);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await store.disposeAll();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it("ignores a trustKeyScopedListing flag supplied in the request body", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sidecar-912-body-"));
