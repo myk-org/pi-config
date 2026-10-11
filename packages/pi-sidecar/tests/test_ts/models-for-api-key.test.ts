@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { startSidecar } from "../../src/index.js";
-import { SessionStore } from "../../src/sessions.js";
+import { SessionStore, readTrustedKeyScopedProviders } from "../../src/sessions.js";
 import { logger } from "../../src/logger.js";
 
 const keyA = 'local-"\\/key-a'; // pragma: allowlist secret — synthetic test credential
@@ -143,7 +143,7 @@ describe("POST /models/for-api-key", { concurrency: false }, () => {
     const response = await request({ provider: "google", api_key: keyA });
     assert.equal(response.status, 200, await response.clone().text());
     noKey(await response.clone().text(), keyA);
-    assert.deepEqual(await response.json(), { models: [{ provider: "google", id: "gemini-private-839", name: "Private Gemini", capabilities: { supportedGenerationMethods: ["generateContent", "countTokens"], inputTokenLimit: 8192, outputTokenLimit: 2048 } }], modelListingSupported: true });
+    assert.deepEqual(await response.json(), { models: [{ provider: "google", id: "gemini-private-839", name: "Private Gemini", source: "listing", capabilities: { supportedGenerationMethods: ["generateContent", "countTokens"], inputTokenLimit: 8192, outputTokenLimit: 2048 } }], modelListingSupported: true });
     assert.equal(received.at(-1)?.path, "/v1beta/models");
     assert.equal(received.at(-1)?.googleKey, keyA);
     assert.equal(received.at(-1)?.authorization, "");
@@ -158,8 +158,8 @@ describe("POST /models/for-api-key", { concurrency: false }, () => {
     assert.equal(response.status, 200, await response.clone().text());
     noKey(await response.clone().text(), keyB);
     assert.deepEqual(await response.json(), { models: [
-      { provider: "anthropic", id: "claude-private-839", name: "Private Claude" },
-      { provider: "anthropic", id: "claude-other-839", name: "Other" },
+      { provider: "anthropic", id: "claude-private-839", name: "Private Claude", source: "listing" },
+      { provider: "anthropic", id: "claude-other-839", name: "Other", source: "listing" },
     ], modelListingSupported: true });
     assert.equal(received.at(-1)?.path, "/v1/models");
     assert.equal(received.at(-1)?.anthropicKey, keyB);
@@ -858,10 +858,12 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
       const manifestEntry = result.models.find((model) => model.id === "manifest-only-912")!;
       assert.equal(manifestEntry.provider, "union912");
       assert.equal(manifestEntry.name, "Manifest Only");
-      assert.deepEqual(manifestEntry.capabilities, { contextWindow: 8192, maxTokens: 4096 },
-        "manifest metadata is preserved in the live-entry response shape");
+      assert.equal(manifestEntry.source, "manifest", "manifest-only entries are admin-declared, not verified for this key");
+      assert.deepEqual(manifestEntry.capabilities, { inputTokenLimit: 8192, outputTokenLimit: 4096 },
+        "manifest metadata uses the same capability schema as live entries");
       const liveEntry = result.models.find((model) => model.id === "live-only-912")!;
       assert.equal(liveEntry.name, "Live Only");
+      assert.equal(liveEntry.source, "listing", "live-listed entries are verified for this key");
       noKey(JSON.stringify(result), keyA);
     } finally {
       globalThis.fetch = originalFetch;
@@ -887,9 +889,10 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
       assert.equal(result.modelListingSupported, true);
       assert.equal(result.models.length, 1, "an id present in both live and manifest yields a single entry");
       // Deterministic collision rule: the admin-configured manifest entry replaces
-      // the live one (explicit configuration outranks an inferred listing entry).
+      // the live one (explicit configuration outranks an inferred listing entry),
+      // but keeps source "listing" — the gateway did list the id for this key.
       assert.deepEqual(result.models[0],
-        { provider: "dedupe912", id: "shared-912", name: "Manifest Shared", capabilities: { contextWindow: 4096, maxTokens: 1024 } });
+        { provider: "dedupe912", id: "shared-912", name: "Manifest Shared", source: "listing", capabilities: { inputTokenLimit: 4096, outputTokenLimit: 1024 } });
       noKey(JSON.stringify(result), keyA);
     } finally {
       globalThis.fetch = originalFetch;
@@ -928,6 +931,66 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
     }
   });
 
+  it("redacts credential-bearing parts from the trust-mismatch warning's pinned URL", async () => {
+    // The snapshot keeps the full normalized manifest URL (userinfo retained);
+    // the mismatch warn must log only origin + pathname, never the credential.
+    const manifestDir = mkdtempSync(join(tmpdir(), "sidecar-913-redact-manifest-"));
+    const runtimeDir = mkdtempSync(join(tmpdir(), "sidecar-913-redact-runtime-"));
+    writeManifest(manifestDir, { redact913: {
+      baseUrl: "https://user:snapshot-secret@snapshot.example.test/v1", // pragma: allowlist secret — synthetic URL, never fetched
+      api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+      trustKeyScopedListing: true, models: [{ id: "static-only", name: "Static" }] } });
+    writeManifest(runtimeDir, { redact913: {
+      baseUrl: "https://repointed.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+      models: [{ id: "static-only", name: "Static" }] } });
+    const store = await splitFixtureStore(manifestDir, runtimeDir);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => { throw new Error("unexpected outbound request"); }) as typeof fetch;
+    const warn = logger.warn;
+    const warnings: string[] = [];
+    logger.warn = (...args) => { warnings.push(JSON.stringify(args)); };
+    try {
+      assert.deepEqual(await store.getModelsForApiKey("redact913", keyA), { models: [], modelListingSupported: false });
+      const mismatch = warnings.find((line) => line.includes("no longer matches its startup trust snapshot"));
+      assert.ok(mismatch, "the mismatch warning must fire for a repointed runtime URL");
+      assert.ok(mismatch.includes("https://snapshot.example.test/v1"), "the sanitized origin + pathname is logged");
+      assert.ok(!mismatch.includes("snapshot-secret"), "the credential part must never reach the log");
+      noKey(warnings.join("\n"), keyA);
+    } finally {
+      logger.warn = warn;
+      globalThis.fetch = originalFetch;
+      await store.disposeAll();
+      rmSync(manifestDir, { recursive: true, force: true });
+      rmSync(runtimeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("warns per skipped malformed manifest model entry", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-skip-"));
+    writeManifest(dir, { skip912: {
+      baseUrl: "https://skip.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
+      trustKeyScopedListing: true, models: [
+        "not-an-object",
+        { id: "", name: "Empty Id" },
+        { id: "no-name-912" },
+        { id: "valid-912", name: "Valid" },
+      ] } });
+    const warn = logger.warn;
+    const warnings: string[] = [];
+    logger.warn = (...args) => { warnings.push(JSON.stringify(args)); };
+    try {
+      const trusted = readTrustedKeyScopedProviders(dir);
+      assert.deepEqual([...trusted.get("skip912")!.models], [{ id: "valid-912", name: "Valid" }],
+        "only the valid entry survives");
+      assert.ok(warnings.some((line) => line.includes("not an object") && line.includes("skip912")));
+      assert.ok(warnings.some((line) => line.includes("invalid id or name") && line.includes("skip912")));
+      assert.equal(warnings.length, 3, "one warn per skipped entry");
+    } finally {
+      logger.warn = warn;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to manifest-declared limits when a key-listed model omits them", async () => {
     // Gateway listings (e.g. EnMaaS) return ids without token-limit capabilities;
     // the admin declares limits for the same id in the agent-dir models.json.
@@ -943,13 +1006,42 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
       models: [{ id: "template-913", name: "Template" }] } });
     const store = await splitFixtureStore(manifestDir, runtimeDir);
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ data: [{ id: "live-no-limits-913", name: "Live No Limits" }] }), { status: 200 })) as typeof fetch;
+    let completionsBody = "";
+    let completionsAuth = "";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "live-no-limits-913", name: "Live No Limits" }] }), { status: 200 });
+      }
+      // POST chat/completions — minimal OpenAI SSE stream so the session can be
+      // exercised through the public prompt() interface (no private state reads).
+      completionsBody = String(init?.body ?? "");
+      completionsAuth = String(new Headers(init?.headers).get("authorization") ?? "");
+      const chunk = (delta: object, finishReason: string | null, usage?: object) =>
+        `data: ${JSON.stringify({ id: "chatcmpl-913", object: "chat.completion.chunk", created: 1, model: "live-no-limits-913", choices: [{ index: 0, delta, finish_reason: finishReason }], ...(usage ? { usage } : {}) })}\n\n`;
+      const sse = [
+        chunk({ role: "assistant" }, null),
+        chunk({ content: "manifest-limits-session-ok" }, null),
+        chunk({}, "stop", { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 }),
+        "data: [DONE]\n\n",
+      ].join("");
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(encoder.encode(sse)); controller.close(); },
+      });
+      return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
     try {
       const session = await store.create({ provider: "limits913", model: "live-no-limits-913", systemPrompt: "hi", cwd: runtimeDir, agentDir: manifestDir, tools: [], apiKey: keyA });
-      const selected = (store as any).sessions.get(session).session.model;
-      assert.equal(selected?.contextWindow, 8192, "contextWindow must come from the manifest snapshot");
-      assert.equal(selected?.maxTokens, 4096, "maxTokens must come from the manifest snapshot");
+      // Public observable behavior: creation succeeds only with reliable limits
+      // (create() 400s without them — see the remedy test below), and a real
+      // prompt against the session's key-scoped model returns a real reply.
+      const reply = await store.prompt(session, "hi");
+      assert.equal(reply.error, undefined);
+      assert.equal(reply.text, "manifest-limits-session-ok", "the manifest-limited session model must complete a real prompt");
+      assert.ok(completionsBody.includes("\"live-no-limits-913\""), "the prompt must target the key-discovered model id");
+      assert.equal(completionsAuth, `Bearer ${keyA}`, "the prompt must use the session key");
+      noKey(JSON.stringify(reply), keyA);
       store.delete(session);
     } finally {
       globalThis.fetch = originalFetch;

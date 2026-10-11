@@ -63,7 +63,11 @@ listing, so the user must supply a model ID. A custom models.json provider the
 admin flagged `trustKeyScopedListing` (agent-dir manifest only — never request or
 session input) also lists, against exactly its configured `baseUrl`; for such
 a provider `models` is the union of the live listing and the provider's
-manifest-configured `models[]` (manifest entry wins on id collision). The key and
+manifest-configured `models[]` (manifest entry wins on id collision). Each entry
+carries `source: "listing" | "manifest"`: "listing" = the gateway listed the id
+for this key (verified for the credential; manifest-wins collision entries are
+"listing" — the gateway did list the id, the manifest only supplied name/limits);
+"manifest" = admin-declared only, NOT verified for this key. The key and
 result are request-local:
 never cache them or add key-listed models to the shared catalog. Listing does
 not verify that a model can complete a prompt.

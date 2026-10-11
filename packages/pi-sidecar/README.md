@@ -239,13 +239,25 @@ provider's manifest-configured `models[]` (snapshot at startup, same file
 read as the flag). Real case: an EnMaaS gateway lists 15 models via
 `/v1/models` but not the manually configured `rits/zai-org/glm-5-3` — the
 response contains both. Manifest-only models are appended after the live
-entries in the same response shape (`provider`/`id`/`name`, plus
-`capabilities.contextWindow`/`capabilities.maxTokens` when configured). On an
+entries in the same response shape (`provider`/`id`/`name`/`source`, plus
+`capabilities.inputTokenLimit`/`capabilities.outputTokenLimit` when configured —
+the models.json `contextWindow`/`maxTokens` mapped onto the same schema live
+entries use). On an
 id collision the manifest entry wins — the admin explicitly configured it —
 replacing the live entry's name and metadata at the live position. The union
 applies only to that provider's own listing; one provider's manifest models
 never appear in another's response. When the native listing fails or is
 refused (`modelListingSupported: false`), no union is applied.
+
+Every entry carries a `source` provenance discriminator so consumers can
+distinguish verified from admin-declared models: `"listing"` means the
+gateway listed the id for this key — the id is verified for the credential
+(this includes manifest-wins collision entries: the gateway did list the id,
+and the manifest only supplied the name and token limits). `"manifest"`
+means the entry is admin-declared in `models.json` only and was **not**
+verified for this key — a user with a model-restricted key may not be able to
+use it, so consumers must not treat it as accessible until access is confirmed
+with that key.
 
 A key-listed model used in `POST /sessions` with an `api_key` needs token
 limits: when the live listing omits them, the sidecar falls back to the
