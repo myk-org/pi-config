@@ -974,7 +974,7 @@ def _status_group_data() -> dict[str, Any]:
 
 def test_cli_first_status_group_keeps_json_while_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A run covering only group A posts A and keeps the JSON for group B."""
-    calls = _patch_post_store(monkeypatch)
+    _patch_post_store(monkeypatch)
     json_path = _write_reviews_json(tmp_path, _status_group_data())
     replies_a = tmp_path / "replies-a.txt"
     replies_a.write_text("src/a.py:10|Fixed the boundary in abc1234\n", encoding="utf-8")
@@ -984,8 +984,9 @@ def test_cli_first_status_group_keeps_json_while_pending(tmp_path: Path, monkeyp
     )
 
     assert result_a.exit_code == 0, result_a.output
-    assert calls == [("post", str(json_path))]  # store skipped: group B still pending
     assert "1 finding(s) still pending — JSON kept" in result_a.output
+    # Observables: the JSON survives on disk (not consumed), group A posted,
+    # group B untouched.
     assert json_path.exists()
     saved = json.loads(json_path.read_text(encoding="utf-8"))
     assert saved["qodo"][0]["posted_at"]  # group A posted
@@ -996,7 +997,23 @@ def test_cli_first_status_group_keeps_json_while_pending(tmp_path: Path, monkeyp
 def test_cli_final_status_group_consumes_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Once only group B remains (group A posted by an earlier run), the
     final run posts it and lets store consume the JSON."""
-    calls = _patch_post_store(monkeypatch)
+    posted: dict[str, Any] = {}
+
+    def fake_post(path: str) -> None:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        for src in ("human", "qodo", "coderabbit"):
+            for entry in data.get(src, []):
+                if entry.get("status") not in (None, "pending") and not entry.get("is_auto_skipped"):
+                    entry["posted_at"] = "2025-01-01T00:00:00Z"
+        posted["data"] = data  # capture before store deletes the file
+        Path(path).write_text(json.dumps(data), encoding="utf-8")
+
+    def fake_store(path: str) -> None:
+        Path(path).unlink()  # real store.run deletes the JSON after storing
+
+    monkeypatch.setattr("myk_pi_tools.reviews.post.run", fake_post)
+    monkeypatch.setattr("myk_pi_tools.reviews.store.run", fake_store)
+
     data = _status_group_data()
     data["qodo"][0]["posted_at"] = "2025-01-01T00:00:00Z"  # group A already posted by run 1
     data["qodo"][0]["status"] = "addressed"
@@ -1008,9 +1025,11 @@ def test_cli_final_status_group_consumes_json(tmp_path: Path, monkeypatch: pytes
         reviews, ["address", "--json", str(json_path), "--replies", str(replies_b), "--set", "skipped"]
     )
 
+    # Observables: exit 0, the JSON is consumed (gone from disk), and group B
+    # was posted by the post fake (posted_at on the pre-deletion snapshot).
     assert result_b.exit_code == 0, result_b.output
-    assert calls == [("post", str(json_path)), ("store", str(json_path))]
-    saved = json.loads(json_path.read_text(encoding="utf-8"))
+    assert not json_path.exists()
+    saved = posted["data"]
     assert saved["qodo"][1]["status"] == "skipped"
     assert saved["qodo"][1]["posted_at"]  # group B posted
     assert "still pending" not in result_b.output
