@@ -482,10 +482,13 @@ reviewers know their comments were reviewed and won't re-raise them.
 
 **Failure semantics (MANDATORY):**
 
-- **Exit 0** → all matched findings posted and stored. Threads are resolved per the
+- **Exit 0** → all matched findings posted. Threads are resolved per the
   Phase 5 status table — `addressed` (and AI-source `skipped`/`not_addressed`) threads
   are resolved; **human `skipped`/`not_addressed` threads intentionally stay open** for
   follow-up. Exit 0 never means every thread is resolved.
+  Storage happens only on the FINAL group: while pending findings remain the run posts
+  without storing (results live in the retained JSON until the last group's run stores
+  and consumes it).
 - **Non-zero exit** → the JSON is RETAINED on disk for a corrected re-run.
   Read the printed error:
   - `no findings matched` → a mapping `path:line` matches no pending finding — fix the

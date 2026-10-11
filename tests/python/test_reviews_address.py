@@ -972,15 +972,12 @@ def _status_group_data() -> dict[str, Any]:
     }
 
 
-def test_cli_sequential_status_groups_keep_then_consume_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run 1 (group A only) posts A and keeps the JSON for group B; run 2
-    (group B) posts B and lets store consume the JSON."""
+def test_cli_first_status_group_keeps_json_while_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run covering only group A posts A and keeps the JSON for group B."""
     calls = _patch_post_store(monkeypatch)
     json_path = _write_reviews_json(tmp_path, _status_group_data())
     replies_a = tmp_path / "replies-a.txt"
     replies_a.write_text("src/a.py:10|Fixed the boundary in abc1234\n", encoding="utf-8")
-    replies_b = tmp_path / "replies-b.txt"
-    replies_b.write_text("src/b.py:20|Updated the issue spec, see internal #782\n", encoding="utf-8")
 
     result_a = CliRunner().invoke(
         reviews, ["address", "--json", str(json_path), "--replies", str(replies_a), "--set", "addressed"]
@@ -995,12 +992,24 @@ def test_cli_sequential_status_groups_keep_then_consume_json(tmp_path: Path, mon
     assert not saved["qodo"][1].get("posted_at")  # group B still pending
     assert saved["qodo"][1]["status"] == "pending"
 
+
+def test_cli_final_status_group_consumes_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Once only group B remains (group A posted by an earlier run), the
+    final run posts it and lets store consume the JSON."""
+    calls = _patch_post_store(monkeypatch)
+    data = _status_group_data()
+    data["qodo"][0]["posted_at"] = "2025-01-01T00:00:00Z"  # group A already posted by run 1
+    data["qodo"][0]["status"] = "addressed"
+    json_path = _write_reviews_json(tmp_path, data)
+    replies_b = tmp_path / "replies-b.txt"
+    replies_b.write_text("src/b.py:20|Updated the issue spec, see internal #782\n", encoding="utf-8")
+
     result_b = CliRunner().invoke(
         reviews, ["address", "--json", str(json_path), "--replies", str(replies_b), "--set", "skipped"]
     )
 
     assert result_b.exit_code == 0, result_b.output
-    assert calls == [("post", str(json_path)), ("post", str(json_path)), ("store", str(json_path))]
+    assert calls == [("post", str(json_path)), ("store", str(json_path))]
     saved = json.loads(json_path.read_text(encoding="utf-8"))
     assert saved["qodo"][1]["status"] == "skipped"
     assert saved["qodo"][1]["posted_at"]  # group B posted
