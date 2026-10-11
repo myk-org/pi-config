@@ -923,7 +923,12 @@ def test_cli_posted_body_comment_with_pending_findings_not_consumed(
 def test_cli_resume_keeps_json_when_pending_findings_remain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Store must not delete the JSON while unposted findings remain, even
     when a posted-but-unresolved entry triggers the resume path."""
-    calls = _patch_post_store(monkeypatch)
+    _patch_post_store(monkeypatch)
+
+    def deleting_store(path: str) -> None:
+        Path(path).unlink()  # the real store deletes the JSON after inserting
+
+    monkeypatch.setattr("myk_pi_tools.reviews.store.run", deleting_store)
     data = _sample_data()
     data["qodo"][0]["status"] = "addressed"
     data["qodo"][0]["reply"] = "Fixed in abc1234"
@@ -934,9 +939,12 @@ def test_cli_resume_keeps_json_when_pending_findings_remain(tmp_path: Path, monk
     result = CliRunner().invoke(reviews, ["address", "--json", str(json_path)])
 
     assert result.exit_code == 0, result.output
-    assert calls == [("post", str(json_path))]  # store skipped: pending findings remain
     assert "still pending" in result.output
+    # The JSON survives (store never consumed it) and still holds unposted
+    # findings, so a later run with a mapping can address and post them.
     assert json_path.exists()
+    saved = json.loads(json_path.read_text(encoding="utf-8"))
+    assert [e for e in saved["qodo"] if not e.get("posted_at") and not e.get("is_auto_skipped")]
 
 
 # ---------------------------------------------------------------------------
@@ -1000,3 +1008,113 @@ def test_apply_replies_rule_at_second_thread_addresses_it_alone() -> None:
     assert data["qodo"][1]["status"] == "addressed"
     assert data["qodo"][0]["status"] == "pending"
     assert data["qodo"][2]["status"] == "pending"  # sticky belongs to the first pair
+
+
+def test_apply_replies_rule_at_contested_sticky_start_line_addresses_its_pair() -> None:
+    """A rule at the sticky's own reported start line (230) reaches its pair
+    even though the sticky spans two same-titled threads (round 5, finding 10)."""
+    data = _overlap_data()
+    rules = [{"path": "src/a.py", "line": 230, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 2  # the sticky's own cluster: thread@235 + sticky
+    assert data["qodo"][0]["status"] == "addressed"
+    assert data["qodo"][2]["status"] == "addressed"
+    assert data["qodo"][1]["status"] == "pending"  # the other thread untouched
+
+
+def _two_sticky_two_thread_data() -> dict[str, Any]:
+    """Two stickies whose nearest thread is the same one (thread@239), plus a
+    second thread at 245 — the greedy closest-thread rule double-pairs both
+    stickies onto thread@239 and leaves thread@245 without its sticky."""
+    return {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(
+                line=245,
+                body="1\\. Pairing must stay one-to-one 📜 Bug ≡ Correctness",
+                thread_id="T1",
+                type=None,
+            ),
+            _entry(
+                line=239,
+                body="2\\. Pairing must stay one-to-one 📜 Bug ≡ Correctness",
+                thread_id="T2",
+                type=None,
+            ),
+            _entry(
+                line=230,
+                end_line=250,
+                body="**Pairing must stay one-to-one**\n\nThe wide sticky spans both threads.",
+                thread_id=None,
+                type="qodo_bug",
+            ),
+            _entry(
+                line=238,
+                end_line=248,
+                body="**Pairing must stay one-to-one**\n\nThe narrow sticky sits nearer thread@239.",
+                thread_id=None,
+                type="qodo_bug",
+            ),
+        ],
+        "coderabbit": [],
+    }
+
+
+def test_apply_replies_mutual_nearest_keeps_pairing_one_to_one() -> None:
+    """Two stickies competing for one thread form two distinct pairs: the
+    closer sticky wins the contested thread and the displaced sticky pairs
+    with the remaining thread (round 5, finding 8)."""
+    data = _two_sticky_two_thread_data()
+    rules = [{"path": "src/a.py", "line": 245, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 2  # thread@245 pairs with the wide sticky only
+    assert data["qodo"][0]["status"] == "addressed"
+    assert data["qodo"][2]["status"] == "addressed"  # wide sticky: its genuine pair
+    assert data["qodo"][1]["status"] == "pending"  # thread@239 keeps its own sticky
+    assert data["qodo"][3]["status"] == "pending"
+
+
+def test_apply_replies_rule_for_nearest_thread_spares_displaced_sticky() -> None:
+    """A rule for thread@239 — the thread nearest the wide sticky's range
+    start — addresses only that thread and its own sticky; the displaced
+    sticky's reply/status must not change (round 5, finding 9)."""
+    data = _two_sticky_two_thread_data()
+    rules = [{"path": "src/a.py", "line": 239, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 2  # thread@239 + the narrow sticky
+    assert data["qodo"][1]["status"] == "addressed"
+    assert data["qodo"][3]["status"] == "addressed"
+    assert data["qodo"][0]["status"] == "pending"
+    assert data["qodo"][2]["status"] == "pending"  # wide sticky untouched
+
+
+def test_apply_replies_unmatched_contested_sticky_matchable_at_own_line() -> None:
+    """A contested sticky whose both threads paired with closer stickies
+    stays a singleton — still addressable by a rule at its reported line."""
+    data = _two_sticky_two_thread_data()
+    # Two narrow stickies claim both threads, leaving the wide sticky unpaired
+    data["qodo"][3]["line"] = 233
+    data["qodo"][3]["end_line"] = 240  # overlaps thread@239 only
+    data["qodo"].append(
+        _entry(
+            line=243,
+            end_line=247,
+            body="**Pairing must stay one-to-one**\n\nClaims thread@245.",
+            thread_id=None,
+            type="qodo_bug",
+        )
+    )
+    rules = [{"path": "src/a.py", "line": 230, "reply": "Fixed in abc1234"}]
+    groups = apply_replies(data, rules, "addressed")
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 1  # the unmatched wide sticky alone
+    assert data["qodo"][2]["status"] == "addressed"
+    assert all(e["status"] == "pending" for e in data["qodo"] if e is not data["qodo"][2])

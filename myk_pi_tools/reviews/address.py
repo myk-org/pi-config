@@ -202,50 +202,80 @@ def _spans_overlap(a: tuple[int, int], b: tuple[int, int]) -> bool:
     return a[0] <= b[1] and b[0] <= a[1]
 
 
+def _mutual_nearest_pairs(stickies: list[dict[str, Any]], threads: list[dict[str, Any]]) -> dict[int, int]:
+    """One-to-one mutual-nearest pairing of sticky indexes to thread indexes.
+
+    Distance is ``|thread line - sticky line|`` over overlapping spans,
+    ties broken by line then record order. A pair forms only when the sticky
+    and the thread are each other's best available match; matched records
+    leave the pool and the search repeats, so a sticky displaced from its
+    nearest thread (a closer sticky won that thread) still pairs with its
+    next-best thread instead of being double-booked onto the nearest one.
+    """
+    pairs: dict[int, int] = {}  # sticky index -> thread index
+    remaining_s = list(range(len(stickies)))
+    remaining_t = list(range(len(threads)))
+    while remaining_s and remaining_t:
+        best_thread: dict[int, tuple[int, int, int]] = {}  # si -> (dist, thread line, ti)
+        for si in remaining_s:
+            sticky = stickies[si]
+            span, line = _line_interval(sticky), sticky.get("line")
+            if span is None or line is None:
+                continue
+            for ti in remaining_t:
+                thread = threads[ti]
+                tspan, tline = _line_interval(thread), thread.get("line")
+                if tspan is None or tline is None or not _spans_overlap(span, tspan):
+                    continue
+                key = (abs(tline - line), tline, ti)
+                if si not in best_thread or key < best_thread[si]:
+                    best_thread[si] = key
+        best_sticky: dict[int, tuple[int, int, int]] = {}  # ti -> (dist, sticky line, si)
+        for si, (dist, _tline, ti) in best_thread.items():
+            key = (dist, stickies[si]["line"], si)
+            if ti not in best_sticky or key < best_sticky[ti]:
+                best_sticky[ti] = key
+        mutual = {si: ti for si, (_, _, ti) in best_thread.items() if best_sticky.get(ti, (None, None, None))[2] == si}
+        if not mutual:
+            break
+        pairs.update(mutual)
+        remaining_s = [si for si in remaining_s if si not in mutual]
+        remaining_t = [ti for ti in remaining_t if ti not in mutual.values()]
+    return pairs
+
+
 def _line_clusters(entries: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     """Split a dedupe group into location clusters.
 
-    A cluster is one thread record (an entry with its own thread) plus the
-    sticky record(s) whose line span overlaps it — a sticky's [line,
-    end_line] span covers its thread's line. Each sticky pairs with at most
-    ONE thread: the overlapping thread whose line is closest to the sticky's
-    line (first thread wins ties) — appending it to every overlapping thread
-    would let one rule match two clusters and be rejected as ambiguous.
-    Sticky records never merge
-    with each other through span overlap: chained spans like [10,20],
-    [20,30], [30,40] are three separate findings, so a rule for line 35
-    cannot reach the line-10 finding (it would instead be ambiguous).
+    A cluster is one thread record (an entry with its own thread) plus at
+    most one sticky record, paired by mutual-nearest line distance (see
+    ``_mutual_nearest_pairs``): each thread and each sticky pairs at most
+    once, so two same-identity stickies can never collapse onto one thread
+    while that thread's own sticky goes unpaired. Unpaired stickies and
+    threads stay singleton findings — sticky records never merge with each
+    other through span overlap: chained spans like [10,20], [20,30],
+    [30,40] are three separate findings, so a rule for line 35 cannot reach
+    the line-10 finding (it would instead be ambiguous).
     """
     stickies = [e for e in entries if _is_sticky_record(e)]
     threads = [e for e in entries if not _is_sticky_record(e)]
-    pair_of: dict[int, int] = {}  # id(sticky) -> index of its paired thread
-    for sticky in stickies:
-        sticky_span = _line_interval(sticky)
-        sticky_line = sticky.get("line")
-        if sticky_span is None or sticky_line is None:
-            continue
-        for ti, thread in enumerate(threads):
-            thread_span = _line_interval(thread)
-            if thread_span is None or not _spans_overlap(sticky_span, thread_span):
-                continue
-            cur = pair_of.get(id(sticky))
-            if cur is None or abs(thread["line"] - sticky_line) < abs(threads[cur]["line"] - sticky_line):
-                pair_of[id(sticky)] = ti
-    clusters: list[list[dict[str, Any]]] = []
-    for ti, thread in enumerate(threads):
-        clusters.append([thread] + [s for s in stickies if pair_of.get(id(s)) == ti])
-    # Stickies containing no thread line stay their own findings
-    clusters.extend([sticky] for sticky in stickies if id(sticky) not in pair_of)
+    pairs = _mutual_nearest_pairs(stickies, threads)
+    paired: dict[int, dict[str, Any]] = {}  # thread index -> its one sticky
+    for si, ti in pairs.items():
+        paired[ti] = stickies[si]
+    clusters = [[thread, paired[ti]] if ti in paired else [thread] for ti, thread in enumerate(threads)]
+    clusters.extend([sticky] for si, sticky in enumerate(stickies) if si not in pairs)
     return clusters
 
 
 def _contested_sticky_ids(entries: list[dict[str, Any]]) -> set[int]:
     """Ids of stickies whose span overlaps more than one thread record.
 
-    A contested sticky is paired with its closest thread for updates, but
-    its span must not broaden rule matching: a rule aimed at the other
-    overlapped thread would also match this sticky's cluster, making the
-    rule ambiguous and leaving both findings unaddressable.
+    A contested sticky still pairs with its mutual-nearest thread, but its
+    wide span must not match rules aimed at the other overlapped thread:
+    such a sticky only matches a rule placed at its own reported line, so a
+    rule for the other thread addresses that thread alone while the sticky
+    stays reachable at the location fetch reported for it.
     """
     threads = [e for e in entries if not _is_sticky_record(e)]
     contested: set[int] = set()
@@ -308,13 +338,20 @@ def _needs_resolve_retry(source: str, entry: dict[str, Any]) -> bool:
     return source != "human" or entry.get("status") == "addressed"
 
 
-def _rule_matches(rule: dict[str, Any], entry: dict[str, Any]) -> bool:
-    """A wildcard rule matches everything; a specific rule matches the entry's line span."""
+def _rule_matches(rule: dict[str, Any], entry: dict[str, Any], own_line_only: bool = False) -> bool:
+    """A wildcard rule matches everything; a specific rule matches the
+    entry's line span — or only the entry's reported line for a contested
+    sticky whose wide span overlaps another thread's cluster.
+    """
     if rule["path"] is None:
         matches = True
+    elif entry.get("path") != rule["path"]:
+        matches = False
+    elif own_line_only:
+        matches = entry.get("line") == rule["line"]
     else:
         span = _line_interval(entry)
-        matches = entry.get("path") == rule["path"] and span is not None and span[0] <= rule["line"] <= span[1]
+        matches = span is not None and span[0] <= rule["line"] <= span[1]
     log.debug("rule match=%s for %s:%s", matches, entry.get("path"), entry.get("line"))
     return matches
 
@@ -348,8 +385,8 @@ def apply_replies(
     """Apply mapping rules to findings, updating whole location clusters.
 
     A group is every entry sharing a (source, path, finding type, full title)
-    key; each group is split into location clusters (members whose line spans
-    share a line — the thread + sticky pair fetch produces for one Qodo
+    key; each group is split into location clusters (a thread record plus its
+    mutual-nearest sticky record — the pair fetch produces for one Qodo
     finding). When any member of a cluster matches a rule, every addressable
     member gets the reply and the target status so the pair stays in sync,
     while same-titled findings at other lines stay untouched. With
@@ -398,10 +435,15 @@ def apply_replies(
             if not applicable:
                 continue
             # Match against the cluster's members (the pair is one finding)
-            # even when some are already posted — but a contested sticky's
-            # span must not match rules aimed at its non-paired thread.
-            matchable = [e for e in cluster if id(e) not in contested]
-            matched = [(i, r) for i, r in enumerate(rules) if any(_rule_matches(r, e) for e in matchable)]
+            # even when some are already posted. A contested sticky matches
+            # only at its own reported line, so its wide span cannot swallow
+            # rules aimed at the other thread it overlaps — while a rule at
+            # the sticky's reported location still reaches it.
+            matched = [
+                (i, r)
+                for i, r in enumerate(rules)
+                if any(_rule_matches(r, e, own_line_only=id(e) in contested) for e in cluster)
+            ]
             if not matched:
                 continue
             # Most specific rule wins; wildcard is the fallback
