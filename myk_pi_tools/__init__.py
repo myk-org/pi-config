@@ -1,3 +1,3 @@
 """myk-pi-tools: CLI utilities for pi orchestrator plugins."""
 
-__version__ = "4.8.5"
+__version__ = "4.9.0"
