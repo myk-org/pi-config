@@ -414,7 +414,7 @@ architectural ideas.</p>
 <li>The entry is written into a category topic file such as <code>lessons.md</code> or <code>preferences.md</code>.</li>
 <li>The scoring engine rebuilds <code>memory-scores.jsonl</code>, recalculates stability, and assigns a lifecycle state.</li>
 <li>The embedding layer lazily creates or refreshes local vectors for semantic search.</li>
-<li>On <code>before_agent_start</code>, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, then appends that material to the tail of the system prompt.</li>
+<li>On <code>before_agent_start</code>, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, and injects that material as structured system-prompt sections (<code>project_memory</code>, <code>contextual_memories</code>, <code>past_sessions</code>) at the tail of the prompt.</li>
 <li>As evidence accumulates, the promotion system proposes stronger structures such as enforcement metadata or reusable skills.</li>
 </ol>
 <blockquote>
@@ -668,8 +668,12 @@ architectural ideas.</p>
 </tbody>
 </table></div>
 <p>Only the <code>before_agent_start</code> material — the situation report, vector-matched memories, and session
-history — is appended to the <strong>tail</strong> of the system prompt, after rules and instructions. That position is
+history — is injected at the <strong>tail</strong> of the system prompt, after rules and instructions. That position is
 deliberate: LLM attention follows a U-shaped curve, and the tail of the prompt receives the strongest attention.
+Since issue #915 the injection mutates <code>systemPromptOptions.sections</code> instead of replacing the whole
+prompt text: Pi appends a transcript delta for the changed sections, which preserves cached prompt
+prefixes on supporting models. When an earlier handler has forced the full prompt (or an older Pi
+version does not expose sections), the extension falls back to appending to the prompt text.
 The other hooks deliver differently: <code>tool_result</code> enforcement acts on the tool result itself (<code>warn</code> appends to
 it, <code>block</code> prevents it), and <code>turn_end</code> verifier violations are sent as follow-up messages that can trigger a
 retry of the turn.</p>
@@ -731,8 +735,10 @@ Truth instruction telling the model to trust the provided context over re-derivi
 </ul>
 <h3 id="session-search-recalls-past-conversations">Session search recalls past conversations</h3>
 <p>Independently of scored memory, <code>session-search.ts</code> maintains a keyword index over past conversation summaries in
-<code>.pi/data/session-search.json</code>. The index is written when a session shuts down, and <code>before_agent_start</code>
-auto-injects matches from relevant past sessions alongside the situation report.</p>
+<code>.pi/data/session-search.jsonl</code>. At session shutdown the index harvests Pi's own LLM-written compaction and branch
+summaries from the session file (issue #915), falling back to a join of user messages when no summaries exist.
+Compaction summaries whose turn is retried (overflow recovery) are skipped so content is not double-indexed, and
+<code>before_agent_start</code> auto-injects matches from relevant past sessions alongside the situation report.</p>
 <p>The agent can also query it directly with the <code>session_search</code> tool — see <a href="commands-and-tools.html">Commands and Tools Reference</a>.</p>
 <h3 id="stated-preferences-are-captured-automatically">Stated preferences are captured automatically</h3>
 <p><code>preference-extractor.ts</code> watches conversation for phrases such as "I prefer …", "always use …", or "never …".

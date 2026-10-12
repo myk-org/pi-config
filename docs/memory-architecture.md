@@ -27,7 +27,7 @@ The memory system is local, file-backed, and layered. Topic files are the source
 2. The entry is written into a category topic file such as `lessons.md` or `preferences.md`.
 3. The scoring engine rebuilds `memory-scores.jsonl`, recalculates stability, and assigns a lifecycle state.
 4. The embedding layer lazily creates or refreshes local vectors for semantic search.
-5. On `before_agent_start`, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, then appends that material to the tail of the system prompt.
+5. On `before_agent_start`, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, and injects that material as structured system-prompt sections (`project_memory`, `contextual_memories`, `past_sessions`) at the tail of the prompt.
 6. As evidence accumulates, the promotion system proposes stronger structures such as enforcement metadata or reusable skills.
 
 > **Note:** The architecture is intentionally split between human-editable topic files and machine-managed indexes. That keeps the memory easy to inspect while still supporting scoring, retrieval, and promotion.
@@ -156,8 +156,12 @@ Memory reaches the model through three extension hooks:
 | `turn_end` | Injects file-change memory reminders (vector search on modified paths), task-focus enforcement when tasks are active but no tool was called, and semantic enforcement verification that can retry the turn on violations. |
 
 Only the `before_agent_start` material — the situation report, vector-matched memories, and session
-history — is appended to the **tail** of the system prompt, after rules and instructions. That position is
+history — is injected at the **tail** of the system prompt, after rules and instructions. That position is
 deliberate: LLM attention follows a U-shaped curve, and the tail of the prompt receives the strongest attention.
+Since issue #915 the injection mutates `systemPromptOptions.sections` instead of replacing the whole
+prompt text: Pi appends a transcript delta for the changed sections, which preserves cached prompt
+prefixes on supporting models. When an earlier handler has forced the full prompt (or an older Pi
+version does not expose sections), the extension falls back to appending to the prompt text.
 The other hooks deliver differently: `tool_result` enforcement acts on the tool result itself (`warn` appends to
 it, `block` prevents it), and `turn_end` verifier violations are sent as follow-up messages that can trigger a
 retry of the turn.
@@ -209,8 +213,10 @@ This is why the same project memory can feel different depending on what you are
 ### Session search recalls past conversations
 
 Independently of scored memory, `session-search.ts` maintains a keyword index over past conversation summaries in
-`.pi/data/session-search.json`. The index is written when a session shuts down, and `before_agent_start`
-auto-injects matches from relevant past sessions alongside the situation report.
+`.pi/data/session-search.jsonl`. At session shutdown the index harvests Pi's own LLM-written compaction and branch
+summaries from the session file (issue #915), falling back to a join of user messages when no summaries exist.
+Compaction summaries whose turn is retried (overflow recovery) are skipped so content is not double-indexed, and
+`before_agent_start` auto-injects matches from relevant past sessions alongside the situation report.
 
 The agent can also query it directly with the `session_search` tool — see [Commands and Tools Reference](commands-and-tools.html).
 

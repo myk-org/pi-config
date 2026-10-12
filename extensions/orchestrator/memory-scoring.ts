@@ -15,6 +15,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
+import { getSetting } from "./project-settings.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -136,8 +137,13 @@ const CATEGORY_BUDGETS: Record<MemoryCategory, number> = {
 /** Cross-category overflow pool for Provisional entries */
 const OVERFLOW_BUDGET = 6;
 
-/** Total max active entries */
-const MAX_ACTIVE_ENTRIES = 40;
+/** Total max active entries (default; overridable via memory_max_active_entries, issue #915) */
+const DEFAULT_MAX_ACTIVE_ENTRIES = 40;
+
+function getMaxActiveEntries(cwd: string): number {
+  const v = Number(getSetting(cwd, "memory_max_active_entries"));
+  return Number.isFinite(v) && v >= 1 ? Math.floor(v) : DEFAULT_MAX_ACTIVE_ENTRIES;
+}
 
 /** Lifecycle thresholds */
 const TAU_PROMOTE = 1.5;
@@ -506,11 +512,12 @@ function rebuildFromParsed(cwd: string, parsed: ParsedEntry[]): RebuildResult {
       overflow[i]!.entry.lifecycle = "candidate";
     }
 
-    // Step 5: Enforce total cap
+    // Step 5: Enforce total cap (configurable via memory_max_active_entries)
+    const maxActive = getMaxActiveEntries(cwd);
     const allActive = Object.values(s.entries).filter((e) => e.lifecycle === "active");
-    if (allActive.length > MAX_ACTIVE_ENTRIES) {
+    if (allActive.length > maxActive) {
       allActive.sort((a, b) => b.score - a.score);
-      for (let i = MAX_ACTIVE_ENTRIES; i < allActive.length; i++) {
+      for (let i = maxActive; i < allActive.length; i++) {
         allActive[i]!.lifecycle = "provisional";
       }
     }

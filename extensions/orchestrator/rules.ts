@@ -238,7 +238,7 @@ export function registerRules(
 
     // Project memories — situation report (scored, token-budgeted) injected BEFORE rules
     // systemPrompt.length is chars; estimateMemoryBudget converts internally
-    const budget = estimateMemoryBudget(event.systemPrompt?.length ?? 0);
+    const budget = estimateMemoryBudget(event.systemPrompt?.length ?? 0, undefined, ctx.cwd);
     const queryClass =
       !isSubagent && event.prompt && !isSocialCloser(event.prompt)
         ? classifyQueryClass(event.prompt)
@@ -265,7 +265,8 @@ export function registerRules(
                 ]
               : entries;
           const results = await vectorSearch(ctx.cwd, event.prompt, searchPool, topK);
-          const relevant = results.filter(r => r.similarity > 0.65);
+          const injectThreshold = Number(getSetting(ctx.cwd, "memory_inject_similarity")) || 0.65;
+          const relevant = results.filter(r => r.similarity > injectThreshold);
           if (relevant.length > 0) {
             log.info("context_injected", "contextual_memories");
             contextMemories = "\n# Contextually Relevant Memories\n\n" +
@@ -308,9 +309,27 @@ export function registerRules(
     }
 
     if (!extra && !memories && !contextMemories && !sessionContext) return;
-    // Memories at TAIL position (after system prompt) — research proves tail
-    // gets highest LLM attention (U-shaped attention curve). Rules/extra stay
-    // before the prompt for backwards compatibility.
+
+    // Inject as structured system-prompt sections (issue #915): mutating
+    // systemPromptOptions.sections lets pi append a transcript delta that
+    // preserves cached prompt prefixes. Returning a full systemPrompt string
+    // would replace the whole prompt every run and defeat prefix caching.
+    // Custom sections render after cwd — still the tail position, where
+    // attention is highest (U-shaped attention curve).
+    const opts = (event as any).systemPromptOptions;
+    const forced = opts?.forceSystemPrompt !== undefined;
+    const sections = opts?.sections;
+    if (!forced && sections && typeof sections === "object") {
+      if (extra) sections.orchestrator_rules = extra.trim();
+      if (memories) sections.project_memory = memories.trim();
+      if (contextMemories) sections.contextual_memories = contextMemories.trim();
+      if (sessionContext) sections.past_sessions = sessionContext.trim();
+      return;
+    }
+
+    // Fallback: an earlier handler forced the whole prompt, or this pi
+    // version does not expose systemPromptOptions — compose on top of the
+    // current prompt text the legacy way so our context is not lost.
     return { systemPrompt: event.systemPrompt + extra + memories + contextMemories + sessionContext };
   });
 
@@ -322,7 +341,13 @@ export function registerRules(
     log.info("turn_end_enter");
     if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
-    // Retrieval telemetry — detect if injected memories were used in the response
+    // Retrieval telemetry — detect if injected memories were used in the response.
+    // Aborted or errored runs produce truncated responses — counting them as
+    // "memory unused" would skew the telemetry (issue #915).
+    const outcome = (_event as any).outcome as string | undefined;
+    if (outcome === "aborted" || outcome === "error") {
+      lastInjectedMemories = [];
+    }
     try {
       const response = (_event as any).response || (_event as any).assistantMessage || "";
       if (response && lastInjectedMemories.length > 0) {

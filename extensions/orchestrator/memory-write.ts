@@ -34,12 +34,25 @@ import {
 } from "./memory-scoring.js";
 import { CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, readAllTopicEntries, formatTopicLine, invalidateTopicFileCache } from "./memory-tree.js";
 import { embedEntry, vectorSearch } from "./memory-embeddings.js";
+import { getSetting } from "./project-settings.js";
 
 const log = createLogger("memory");
 
-const NEAR_DUPLICATE_THRESHOLD = 0.90;
+const DEFAULT_NEAR_DUPLICATE_THRESHOLD = 0.90;
 /** Vector similarity floor for contradiction candidates (issue #915). */
-const CONFLICT_SIMILARITY_THRESHOLD = 0.55;
+const DEFAULT_CONFLICT_SIMILARITY_THRESHOLD = 0.55;
+
+/** Near-duplicate threshold from settings (issue #915). */
+function getNearDuplicateThreshold(cwd: string): number {
+  const v = Number(getSetting(cwd, "memory_near_duplicate_threshold"));
+  return Number.isFinite(v) && v > 0 && v <= 1 ? v : DEFAULT_NEAR_DUPLICATE_THRESHOLD;
+}
+
+/** Conflict-candidate similarity floor from settings (issue #915). */
+function getConflictSimilarityThreshold(cwd: string): number {
+  const v = Number(getSetting(cwd, "memory_conflict_similarity"));
+  return Number.isFinite(v) && v > 0 && v <= 1 ? v : DEFAULT_CONFLICT_SIMILARITY_THRESHOLD;
+}
 /** Safety-net expiry for session-scoped entries (issue #915). */
 const SESSION_SCOPE_TTL_MS = 24 * 60 * 60 * 1000;
 const VALID_SCOPES: readonly MemoryScope[] = ["session", "task", "project"];
@@ -196,7 +209,7 @@ export async function findContradiction(
     );
     const similar = new Set(
       vectorMatches
-        .filter((vm) => vm.similarity >= CONFLICT_SIMILARITY_THRESHOLD)
+        .filter((vm) => vm.similarity >= getConflictSimilarityThreshold(cwd))
         .map((vm) => `${vm.category}:${vm.text}`),
     );
     if (similar.size > 0) {
@@ -334,7 +347,7 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
     // in sameCategoryEntries, it would match itself with similarity 1.000.
     const vectorMatches = await vectorSearch(cwd, text, sameCategoryEntries, 20);
     for (const vm of vectorMatches) {
-      if (vm.similarity < NEAR_DUPLICATE_THRESHOLD) continue;
+      if (vm.similarity < getNearDuplicateThreshold(cwd)) continue;
       const existingLine = `- [${vm.category}] ${vm.text}`;
       if (reinforce(cwd, existingLine)) {
         const merged = mergeEnforcementFields(cwd, existingLine, input);
