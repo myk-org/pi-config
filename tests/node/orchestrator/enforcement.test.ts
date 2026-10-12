@@ -2286,3 +2286,18 @@ describe("realGitSub — shell-correct quote semantics (Qodo round 4, PR #916)",
     assert.doesNotMatch(out, /if git commit fails \$\(date\) --signoff/);
   });
 });
+
+describe("realGitSub — quoted paren inside command substitution (Qodo round 5, PR #916)", () => {
+  it("detects a push inside $(...) whose argument contains a quoted paren", () => {
+    assert.ok(realGitSub("echo \"$(printf ')'; git push origin main)\"", "push"));
+  });
+  it("flags the protected branch for a push inside such a substitution", () => {
+    assert.equal(pushTargetsProtectedBranch("echo \"$(printf ')'; git push origin main)\"", ["main"]), "main");
+  });
+  it("still tracks nested unquoted parens in a substitution", () => {
+    assert.ok(realGitSub('echo "run $(echo $(git push)) now"', "push"));
+  });
+  it("still masks prose around a plain substitution", () => {
+    assert.ok(!realGitSub('echo "if git commit fails $(date)"', "commit"));
+  });
+});

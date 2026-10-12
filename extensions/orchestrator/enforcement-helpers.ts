@@ -1167,7 +1167,10 @@ function maskQuotedProse(command: string): string {
     for (let k = from; k < to; k++) out[k] = " ";
   };
   /** Blank [from, to) except its $(...) and backtick substitution regions,
-   *  which are restored verbatim from the original command. */
+   *  which are restored verbatim from the original command. The close-paren
+   *  scan is QUOTE-AWARE (Qodo round 5, PR #916): a `)` inside a quoted
+   *  argument of the substitution (`$(printf ')'; git push main)`) does not
+   *  close it — only an unquoted, unescaped paren changes depth. */
   const blankExceptSubstitutions = (from: number, to: number): void => {
     blankRange(from, to);
     let k = from;
@@ -1176,9 +1179,31 @@ function maskQuotedProse(command: string): string {
       if (c === "$" && command[k + 1] === "(") {
         let depth = 1;
         let m = k + 2;
+        let q: string | null = null;
         while (m < to && depth > 0) {
-          if (command[m] === "(") depth++;
-          else if (command[m] === ")") depth--;
+          const d = command[m]!;
+          if (q) {
+            // Inside quotes: only the matching quote closes (double quotes
+            // process backslash escapes; single quotes do not).
+            if (q === '"' && d === "\\") {
+              m += 2;
+              continue;
+            }
+            if (d === q) q = null;
+            m++;
+            continue;
+          }
+          if (d === "'" || d === '"') {
+            q = d;
+            m++;
+            continue;
+          }
+          if (d === "\\") {
+            m += 2;
+            continue;
+          }
+          if (d === "(") depth++;
+          else if (d === ")") depth--;
           m++;
         }
         const stop = depth === 0 ? m : to;
@@ -1336,10 +1361,13 @@ export function pushTargetsProtectedBranch(command: string, protectedBranches: I
       }
       if (!pastSep && token.startsWith("-")) continue; // flag
       if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(token)) continue; // remote URL (https://, ssh://)
-      // Forced-push leading + is part of the refspec syntax, not the ref
+      // Forced-push leading + is part of the refspec syntax, not the ref.
+      // Trailing )/quote characters are substitution or quoting residue
+      // (a push inside $() leaves `main)` — Qodo round 5, PR #916), never
+      // part of a ref name.
       const spec = token.startsWith("+") ? token.slice(1) : token;
       const colon = spec.lastIndexOf(":");
-      const raw = (colon >= 0 ? spec.slice(colon + 1) : spec).trim();
+      const raw = (colon >= 0 ? spec.slice(colon + 1) : spec).trim().replace(/[)"']+$/, "");
       if (!raw) continue;
       const dest = raw.replace(/^refs\/heads\//, "");
       if (pbSet.has(dest)) {
