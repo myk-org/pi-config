@@ -2319,3 +2319,21 @@ describe("pushTargetsProtectedBranch — substitution delimiters vs quoted ref n
     assert.equal(pushTargetsProtectedBranch('echo "Done! git push origin main"', ["main"]), null);
   });
 });
+
+describe("git add argument parsing inside command substitutions (live battery, PR #916)", () => {
+  it("blocks a bulk add inside a substitution (close-paren residue)", () => {
+    assert.ok(hasGitAddBulk('echo "$(git add .)"'));
+    assert.ok(hasGitAddBulk('echo "$(git add -A)"'));
+    assert.ok(hasGitAddBulk('echo "$(git add --all)"'));
+  });
+  it("parses pathspecs inside a substitution without the trailing paren", () => {
+    assert.deepEqual(gitAddPathspecs('echo "$(git add .)"'), ["."]);
+    assert.deepEqual(gitAddPathspecs("echo \"\$(printf ')'; git add .)\""), ["."]);
+  });
+  it("detects a forced add inside a substitution", () => {
+    assert.ok(hasGitAddForce('echo "$(git add -f foo)"'));
+  });
+  it("still ignores prose mentioning a bulk add", () => {
+    assert.ok(!hasGitAddBulk('echo "please git add . now"'));
+  });
+});

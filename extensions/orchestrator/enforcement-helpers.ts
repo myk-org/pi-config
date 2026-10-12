@@ -1355,32 +1355,41 @@ export function stripQuotedSpans(s: string): string {
 
 /** Tokenize a git-add argument region: quote-aware tokens, redirects dropped. */
 function gitAddTokens(region: string): string[] {
-  return tokenize(region).filter((t) => !/[<>]/.test(t));
+  // Empty tokens (an unterminated residual quote yields one) carry no
+  // pathspec and must not reach consumers (Qodo live battery, PR #916).
+  return tokenize(region).filter((t) => t && !/[<>]/.test(t));
 }
 
-/**
- * Destination refs of every real `git push` invocation (Qodo #5, PR #916).
- * Quote-aware tokenization (a quoted "main" is still a refspec), flags and
- * remote URLs skipped, and each refspec reduced to its DESTINATION side —
- * `HEAD:main`, `feature:main`, `+main`, `refs/heads/main`, and plain `main`
- * all yield `main`. Returns the first ref that names a protected branch
- * (full or suffix match), or null when no push target is protected.
- */
+/** Argument regions of every real `git <sub>` invocation with live
+ *  command-substitution close-parens neutralized (the round-6 residue class,
+ *  Qodo PR #916): parses the ORIGINAL text (quoted values survive) but
+ *  blanks every `)` the masked text keeps live — a live `)` is a
+ *  substitution delimiter, never part of an argument. Consumers that
+ *  TOKENIZE arguments use this instead of gitSubArgRegions, so a bulk
+ *  `git add .` inside `$(...)` is not read as the pathspec `.)`.
+ *  A `)` blanked in the masked text sat inside a quoted span — a legal
+ *  filename/ref character — and stays. */
+export function gitSubParseRegions(command: string, sub: string): string[] {
+  return subArgSpans(command, sub).map((s) =>
+    s.text
+      .split("")
+      .map((ch, idx) => (ch === ")" && s.maskedText[idx] === ")" ? " " : ch))
+      .join(""),
+  );
+}
+
+/** Destination refs of every real `git push` invocation (Qodo #5, PR #916).
+ *  Quote-aware tokenization (a quoted "main" is still a refspec), flags and
+ *  remote URLs skipped, and each refspec reduced to its DESTINATION side —
+ *  `HEAD:main`, `feature:main`, `+main`, `refs/heads/main`, and plain `main`
+ *  all yield `main`. Returns the first ref that names a protected branch
+ *  (full or suffix match), or null when no push target is protected. */
 export function pushTargetsProtectedBranch(command: string, protectedBranches: Iterable<string>): string | null {
   const pbSet = new Set(protectedBranches);
-  for (const span of subArgSpans(command, "push")) {
-    // Parse the ORIGINAL region (quoted refspec values like "main" or
-    // 'release)' must survive), but neutralize every `)` that the MASKED
-    // text keeps live — a live `)` is a command-substitution delimiter
-    // (the outer close of `$(...; git push origin main)`), never part of
-    // the ref. A `)` blanked in the masked text sat inside a quoted span,
-    // so it IS part of a (legal) branch name like release) — it stays
-    // (Qodo round 6, PR #916: the previous unconditional trailing trim
-    // mangled quoted branch names ending in `)`).
-    const parseRegion = span.text
-      .split("")
-      .map((ch, idx) => (ch === ")" && span.maskedText[idx] === ")" ? " " : ch))
-      .join("");
+  for (const parseRegion of gitSubParseRegions(command, "push")) {
+    // Quoted refspec values ("main", 'release)') survive because the region
+    // comes from the ORIGINAL text; live substitution `)`s are already
+    // neutralized by gitSubParseRegions (Qodo rounds 5-6, PR #916).
     let pastSep = false;
     for (const token of tokenize(parseRegion)) {
       if (token === "--") {
@@ -1411,7 +1420,7 @@ export function pushTargetsProtectedBranch(command: string, protectedBranches: I
  * invokes no real `git add` at all. Consumers: the gitignore staging guard.
  */
 export function gitAddPathspecs(command: string): string[] | null {
-  const regions = gitSubArgRegions(command, "add");
+  const regions = gitSubParseRegions(command, "add");
   if (regions.length === 0) return null;
   const paths: string[] = [];
   for (const region of regions) {
@@ -1579,7 +1588,7 @@ export function hasGitAddForce(command: string): boolean {
   // Statement-scoped and invocation-scoped: a `-f` in another statement
   // (rm -f) or inside a -m message ("git commit -m 'add -f flag'") is not a
   // `git add --force`.
-  for (const region of gitSubArgRegions(command, "add")) {
+  for (const region of gitSubParseRegions(command, "add")) {
     for (const token of gitAddTokens(region)) {
       if (token === "--") break; // Everything after -- is a pathspec
       if (token === "--force") return true;
@@ -1595,7 +1604,7 @@ export function hasGitAddBulk(command: string): boolean {
   // Statement-scoped: only the arguments of a REAL `git add` invocation count.
   // The old loose match captured across statements and into -m message text
   // ("git commit -m 'add .'" wrongly counted as a bulk add).
-  for (const region of gitSubArgRegions(command, "add")) {
+  for (const region of gitSubParseRegions(command, "add")) {
     for (const token of gitAddTokens(region)) {
       if (token === "--") break; // Everything after -- is a pathspec
       if (token === "." || token === "-A" || token === "--all") return true;
