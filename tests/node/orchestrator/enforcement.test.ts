@@ -2301,3 +2301,21 @@ describe("realGitSub — quoted paren inside command substitution (Qodo round 5,
     assert.ok(!realGitSub('echo "if git commit fails $(date)"', "commit"));
   });
 });
+
+describe("pushTargetsProtectedBranch — substitution delimiters vs quoted ref names (Qodo round 6, PR #916)", () => {
+  it("recognizes a protected branch whose legal name ends with a paren", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin 'release)'", ["release)"]), "release)");
+  });
+  it("does not trim a quoted trailing paren into a different branch", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin 'release)'", ["release"]), null);
+  });
+  it("still detects a push inside $() (delimiter neutralized via masked text)", () => {
+    assert.equal(pushTargetsProtectedBranch("echo \"$(printf ')'; git push origin main)\"", ["main"]), "main");
+  });
+  it("still detects a push inside nested substitutions", () => {
+    assert.equal(pushTargetsProtectedBranch('echo "run $(echo $(git push origin main)) now"', ["main"]), "main");
+  });
+  it("does not flag echoed prose mentioning a protected branch", () => {
+    assert.equal(pushTargetsProtectedBranch('echo "Done! git push origin main"', ["main"]), null);
+  });
+});

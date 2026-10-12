@@ -1315,21 +1315,37 @@ export function gitSubArgRegions(command: string, sub: string): string[] {
   // indices on the masked text are valid on the original, and quoted VALUES
   // (pathspecs, "main" refspecs) stay intact for consumers (Qodo round 2,
   // PR #916).
+  return subArgSpans(command, sub).map((s) => s.text);
+}
+
+/** Argument-region spans of every real `git <sub>` invocation, with start/end
+ *  offsets into the heredoc-stripped command and the aligned masked text —
+ *  consumers that must distinguish substitution syntax from refspec content
+ *  use the masked slice (Qodo round 6, PR #916). */
+function subArgSpans(command: string, sub: string): Array<{ start: number; end: number; text: string; maskedText: string; stripped: string; masked: string }> {
   const stripped = stripHeredocBodies(command);
   const masked = maskQuotedProse(stripped);
   const re = new RegExp(
     `${GIT_BOUNDARY_SRC}${GIT_PREFIX_SRC}${GIT_EXE_SRC}${GIT_FLAGS_SRC}\\s+${sub}\\b`,
     "g",
   );
-  const regions: string[] = [];
+  const spans: Array<{ start: number; end: number; text: string; maskedText: string; stripped: string; masked: string }> = [];
   for (const m of masked.matchAll(re)) {
     const start = (m.index ?? 0) + m[0].length;
     const rest = stripped.slice(start);
     const end = rest.search(/[;&|\n]/);
-    regions.push(end === -1 ? rest : rest.slice(0, end));
+    const stop = end === -1 ? stripped.length : start + end;
+    spans.push({
+      start,
+      end: stop,
+      text: stripped.slice(start, stop),
+      maskedText: masked.slice(start, stop),
+      stripped,
+      masked,
+    });
   }
-  enfLog.debug("gitSubArgRegions", sub, `regions=${regions.length}`);
-  return regions;
+  enfLog.debug("gitSubArgRegions", sub, `regions=${spans.length}`);
+  return spans;
 }
 
 /** Remove quoted spans so message CONTENT never looks like arguments. */
@@ -1352,9 +1368,21 @@ function gitAddTokens(region: string): string[] {
  */
 export function pushTargetsProtectedBranch(command: string, protectedBranches: Iterable<string>): string | null {
   const pbSet = new Set(protectedBranches);
-  for (const region of gitSubArgRegions(command, "push")) {
+  for (const span of subArgSpans(command, "push")) {
+    // Parse the ORIGINAL region (quoted refspec values like "main" or
+    // 'release)' must survive), but neutralize every `)` that the MASKED
+    // text keeps live — a live `)` is a command-substitution delimiter
+    // (the outer close of `$(...; git push origin main)`), never part of
+    // the ref. A `)` blanked in the masked text sat inside a quoted span,
+    // so it IS part of a (legal) branch name like release) — it stays
+    // (Qodo round 6, PR #916: the previous unconditional trailing trim
+    // mangled quoted branch names ending in `)`).
+    const parseRegion = span.text
+      .split("")
+      .map((ch, idx) => (ch === ")" && span.maskedText[idx] === ")" ? " " : ch))
+      .join("");
     let pastSep = false;
-    for (const token of tokenize(region)) {
+    for (const token of tokenize(parseRegion)) {
       if (token === "--") {
         pastSep = true;
         continue;
@@ -1362,12 +1390,9 @@ export function pushTargetsProtectedBranch(command: string, protectedBranches: I
       if (!pastSep && token.startsWith("-")) continue; // flag
       if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(token)) continue; // remote URL (https://, ssh://)
       // Forced-push leading + is part of the refspec syntax, not the ref.
-      // Trailing )/quote characters are substitution or quoting residue
-      // (a push inside $() leaves `main)` — Qodo round 5, PR #916), never
-      // part of a ref name.
       const spec = token.startsWith("+") ? token.slice(1) : token;
       const colon = spec.lastIndexOf(":");
-      const raw = (colon >= 0 ? spec.slice(colon + 1) : spec).trim().replace(/[)"']+$/, "");
+      const raw = (colon >= 0 ? spec.slice(colon + 1) : spec).trim();
       if (!raw) continue;
       const dest = raw.replace(/^refs\/heads\//, "");
       if (pbSet.has(dest)) {
