@@ -137,14 +137,18 @@ function contentWords(text: string): Set<string> {
   return out;
 }
 
-/** True when one text permits what the other forbids (permission flip). */
+/** True when one text permits what the other forbids (permission flip).
+ *  The non-negated side must carry the OPPOSING permission: a candidate that
+ *  mixes negation and permission in its own text ("Enforce via code, not
+ *  rules — code can't be ignored, rules can") must not clash with a neutral
+ *  new entry that merely shares a topic word. */
 function polarityClash(a: string, b: string): boolean {
   const aNeg = NEGATION_RE.test(a);
   const bNeg = NEGATION_RE.test(b);
   if (aNeg === bNeg) return false;
   const aPerm = PERMIT_RE.test(a);
   const bPerm = PERMIT_RE.test(b);
-  return aPerm || bPerm;
+  return aNeg ? bPerm : aPerm;
 }
 
 function sharedContentWords(a: string, b: string): number {

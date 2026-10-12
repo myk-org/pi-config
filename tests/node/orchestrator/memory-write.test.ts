@@ -121,6 +121,22 @@ describe("addMemoryEntry — contradiction gate", () => {
     }
   });
 
+  it("does not clash a neutral entry with a mixed-polarity candidate (issue #915 live FP)", async () => {
+    const cwd = makeCwd();
+    try {
+      // Pinned candidate mixes negation AND permission in its own text;
+      // a topic-adjacent but neutral new entry must NOT be rejected.
+      seedEntry(cwd, "preference", "Enforce via code, not rules — code can't be ignored, rules can", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Test entry for override flow verification — deploy via ad-hoc cp commands",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a permission flip against a non-pinned entry and offers the override path", async () => {
     const cwd = makeCwd();
     try {
