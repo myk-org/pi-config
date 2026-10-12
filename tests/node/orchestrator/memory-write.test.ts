@@ -611,3 +611,35 @@ describe("conflict gate — temporal \"only\" continuations (Qodo round 10, PR #
     }
   });
 });
+
+describe("conflict gate — formatted tool names in \"use only X\" (Qodo round 11, PR #916)", () => {
+  it("refuses a Markdown code-span tool against a pinned prohibition", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never use uv to install dependencies", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Use only `uv` to install dependencies",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses the flip when the formatted only-permission is stored first", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Use only **uv** to install dependencies");
+      const result = await addMemoryEntry(cwd, {
+        text: "Never use uv to install dependencies",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});

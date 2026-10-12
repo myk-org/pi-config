@@ -134,7 +134,7 @@ const PERMIT_RE =
  *  sentence-initial `only` never matches (round 8), and `only after/when/
  *  until/...` is a temporal restriction, not a permission (round 10). */
 const ONLY_PERMIT_RE =
-  /\b(?:use|uses|using|install|installs|installing|run|runs|running|execute|executes|executing|deploy|deploys|deploying|commit|commits|push|pushes|merge|merges|write|writes|call|calls|invoke|invokes)\s+only\s+(?!(?:after|before|when|while|until|once|if|unless|during|upon|prior|in\s+case)\b)[a-z0-9"'-]/i;
+  /\b(?:use|uses|using|install|installs|installing|run|runs|running|execute|executes|executing|deploy|deploys|deploying|commit|commits|push|pushes|merge|merges|write|writes|call|calls|invoke|invokes)\s+only\s+(?!(?:after|before|when|while|until|once|if|unless|during|upon|prior|in\s+case)\b)[a-z0-9"'`_*]/i;
 
 const STOP_WORDS = new Set([
   "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "for", "with",
