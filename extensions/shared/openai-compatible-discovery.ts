@@ -62,6 +62,20 @@ function positiveFiniteNumber(value: unknown, fallback: number): number {
     : fallback;
 }
 
+/** Upper plausibility bound for token counts (Qodo #17, PR #916). Real
+ *  context windows top out in the single-digit millions; misconfigured
+ *  gateways publish Number.MAX_VALUE (9e15), which would overflow every
+ *  downstream token calculation. */
+const MAX_PLAUSIBLE_TOKENS = 10_000_000;
+
+/** Positive finite token count within the plausibility bound — absurd
+ *  values are treated as absent (fallback), not clamped: a 9e15 "window"
+ *  is a misconfiguration, not a real capacity. */
+function plausibleTokenCount(value: unknown, fallback: number): number {
+  const v = positiveFiniteNumber(value, fallback);
+  return v > MAX_PLAUSIBLE_TOKENS ? fallback : v;
+}
+
 /**
  * This is a Pi compatibility declaration, not discovery filtering or a claim
  * that the source endpoint accepts images. The /v1/models payload does not
@@ -540,13 +554,13 @@ export function materializeOpenAiCompatibleModels(
       // both shared-window and independent-budget semantics; summing input
       // and output would overstate it and delay compaction past the real
       // limit (issue: litellm glm 262144+65536 shown as 328k).
-      contextWindow: positiveFiniteNumber(
+      contextWindow: plausibleTokenCount(
         record.contextWindow,
-        positiveFiniteNumber(record.max_input_tokens, PI_STATIC_MODEL_DEFAULTS.contextWindow),
+        plausibleTokenCount(record.max_input_tokens, PI_STATIC_MODEL_DEFAULTS.contextWindow),
       ),
-      maxTokens: positiveFiniteNumber(
+      maxTokens: plausibleTokenCount(
         record.maxTokens,
-        positiveFiniteNumber(record.max_output_tokens, PI_STATIC_MODEL_DEFAULTS.maxTokens),
+        plausibleTokenCount(record.max_output_tokens, PI_STATIC_MODEL_DEFAULTS.maxTokens),
       ),
     };
     // A record whose every supplied component is valid published real prices —

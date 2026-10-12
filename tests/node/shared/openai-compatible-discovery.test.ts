@@ -577,6 +577,17 @@ describe("OpenAI-compatible discovery helpers", () => {
     assert.equal(model.maxTokens, 16_384);
   });
 
+  it("treats implausibly huge token counts (Number.MAX_VALUE) as absent, not clamped (Qodo #17 PR #916)", () => {
+    const [model] = materializeOpenAiCompatibleModels(
+      [{ id: "maxvalue", max_input_tokens: Number.MAX_VALUE, max_output_tokens: Number.MAX_VALUE }],
+      "https://gateway.example/v1",
+      "arbitrary",
+    );
+    // 9e15 would overflow every downstream token calculation — fall back
+    assert.equal(model.contextWindow, 128_000);
+    assert.equal(model.maxTokens, 16_384);
+  });
+
   it("marks an unpriced record as unknown pricing, not free", () => {
     const [model] = materializeOpenAiCompatibleModels(
       [{ id: "gpt-5.6-terra" }],

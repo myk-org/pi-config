@@ -58,7 +58,7 @@
     "group": "Memory"
   },
   "memory_token_budget": {
-    "description": "Token budget for the memory situation report injected into the system prompt",
+    "description": "Token budget for the memory situation report injected into the system prompt (0 disables the report)",
     "type": "number",
     "env": "PI_MEMORY_TOKEN_BUDGET",
     "default": 1700,

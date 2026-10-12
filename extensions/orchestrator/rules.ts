@@ -246,13 +246,20 @@ export function registerRules(
     const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent, budget, queryClass);
 
     // Auto-inject contextually relevant memories via vector search (~2.5ms, in-process)
+    // Session-scoped/expired entries are filtered out first (Qodo #19, PR #916)
+    // — a session rule must not leak into a later session's context.
     const shouldSearch = !isSubagent && !!event.prompt && !isSocialCloser(event.prompt);
     let contextMemories = "";
     if (shouldSearch) {
       try {
         const { vectorSearch } = await import("./memory-embeddings.js");
         const { readAllTopicEntries } = await import("./memory-tree.js");
-        const entries = readAllTopicEntries(ctx.cwd);
+        const { loadScores, entryHash, isEntryActiveForSession } = await import("./memory-scoring.js");
+        const sessionId = (ctx as any).sessionManager?.getSessionId?.();
+        const scores = loadScores(ctx.cwd);
+        const entries = readAllTopicEntries(ctx.cwd).filter(
+          (te) => isEntryActiveForSession(scores.entries[entryHash(`- [${te.category}] ${te.text}`)], sessionId),
+        );
         if (entries.length > 0) {
           const topK = getQueryClassBias(queryClass).vectorTopK;
           const boostCats = new Set(getQueryClassBias(queryClass).boostCategories);
@@ -367,7 +374,7 @@ export function registerRules(
     // Semantic enforcement: check verifier rules against this turn's tool calls
     try {
       const { loadVerifierEntries, checkVerifiers } = await import("./enforcement-rules.js");
-      const verifierEntries = loadVerifierEntries(ctx.cwd);
+      const verifierEntries = loadVerifierEntries(ctx.cwd, (ctx as any).sessionManager?.getSessionId?.());
       if (verifierEntries.length > 0) {
         const rawResults = (_event as any).toolResults;
         if (rawResults && Array.isArray(rawResults) && rawResults.length > 0) {
@@ -407,10 +414,16 @@ export function registerRules(
     const uniquePaths = [...new Set(modifiedPaths)].slice(0, 10);
 
     // Search for memories related to the modified files
+    // (session-scoped/expired entries filtered — Qodo #19, PR #916)
     try {
       const { vectorSearch } = await import("./memory-embeddings.js");
       const { readAllTopicEntries } = await import("./memory-tree.js");
-      const entries = readAllTopicEntries(ctx.cwd);
+      const { loadScores, entryHash, isEntryActiveForSession } = await import("./memory-scoring.js");
+      const sessionId = (ctx as any).sessionManager?.getSessionId?.();
+      const scores = loadScores(ctx.cwd);
+      const entries = readAllTopicEntries(ctx.cwd).filter(
+        (te) => isEntryActiveForSession(scores.entries[entryHash(`- [${te.category}] ${te.text}`)], sessionId),
+      );
       if (entries.length === 0) return;
 
       // Build a search query from modified file paths

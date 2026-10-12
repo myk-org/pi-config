@@ -40,6 +40,7 @@ import {
   seedBranchCacheForTests,
   injectGhBodySignature,
   isRealGhBodyCommand,
+  pushTargetsProtectedBranch,
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
 
 describe("comment signature hook model switches", () => {
@@ -2063,5 +2064,99 @@ describe("injectGhBodySignature", () => {
     const cmd = 'gh pr create --title t --body "say \\"hi\\" there"';
     const out = injectGhBodySignature(cmd, SIG);
     assert.equal(out, `gh pr create --title t --body "say \\"hi\\" there${FOOTER}"`);
+  });
+});
+
+describe("realGitSub / pushTargetsProtectedBranch — wrapper keywords, nested shells, refspecs (Qodo #8/#5, PR #916)", () => {
+  // Wrapper prefixes that take arguments before the wrapped command.
+  it("detects timeout 60 git push", () => {
+    assert.ok(realGitSub("timeout 60 git push origin main", "push"));
+  });
+  it("detects timeout --foreground 30s git commit", () => {
+    assert.ok(realGitSub("timeout --foreground 30s git commit -m x", "commit"));
+  });
+  it("detects nice -n 5 git commit", () => {
+    assert.ok(realGitSub("nice -n 5 git commit -m x", "commit"));
+  });
+  it("detects nohup git push", () => {
+    assert.ok(realGitSub("nohup git push origin main", "push"));
+  });
+  it("detects time git commit", () => {
+    assert.ok(realGitSub("time git commit -m x", "commit"));
+  });
+  it("detects xargs git rm after a pipe", () => {
+    assert.ok(realGitSub("git ls-files | xargs git rm", "rm"));
+  });
+  // Shell condition keywords and negation open command positions.
+  it("detects git commit after if", () => {
+    assert.ok(realGitSub("if git commit -m x; then echo hi; fi", "commit"));
+  });
+  it("detects git commit after while !", () => {
+    assert.ok(realGitSub("while ! git commit -m x; do sleep 1; done", "commit"));
+  });
+  it("detects !git push", () => {
+    assert.ok(realGitSub("!git push origin main", "push"));
+  });
+  it("detects git commit after until", () => {
+    assert.ok(realGitSub("until git commit -m x; do sleep 1; done", "commit"));
+  });
+  // Nested shell strings: quote after bash -c / sh -c / eval is a boundary.
+  it("detects bash -c quoted git commit", () => {
+    assert.ok(realGitSub('bash -c "git commit -m x"', "commit"));
+  });
+  it("detects sh -c single-quoted git push", () => {
+    assert.ok(realGitSub("sh -c 'git push origin main'", "push"));
+  });
+  it("detects eval quoted git commit", () => {
+    assert.ok(realGitSub('eval "git commit -m x"', "commit"));
+  });
+  // False positives stay false.
+  it("does not fire on echo time git commit", () => {
+    assert.ok(!realGitSub("echo time git commit", "commit"));
+  });
+  it("does not fire on != git in test expressions", () => {
+    assert.ok(!realGitSub('[ "$a" != git ]', "commit"));
+  });
+  it("does not fire on git mentioned inside do-echo body", () => {
+    assert.ok(!realGitSub("while read line; do echo git commit; done", "commit"));
+  });
+  it("does not fire on a bare quoted mention", () => {
+    assert.ok(!realGitSub('echo "result: git status"', "commit"));
+  });
+
+  // Push destination refs (protected-branch check, quote- and refspec-aware).
+  const PB = ["main", "master"];
+  it("flags plain push to main", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin main", PB), "main");
+  });
+  it("flags HEAD:main refspec destination", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin HEAD:main", PB), "main");
+  });
+  it("flags feature:main refspec destination", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin feature:main", PB), "main");
+  });
+  it("flags forced +main push", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin +main", PB), "main");
+  });
+  it("flags refs/heads/main destination", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin refs/heads/main", PB), "main");
+  });
+  it("flags quoted \"main\" destination", () => {
+    assert.equal(pushTargetsProtectedBranch('git push origin "main"', PB), "main");
+  });
+  it("flags rtk-wrapped refspec push to main", () => {
+    assert.equal(pushTargetsProtectedBranch("rtk git push origin feature:main", PB), "main");
+  });
+  it("does not flag source-side-only main (main:feature)", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin main:feature", PB), null);
+  });
+  it("does not flag unrelated feature push", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin feature", PB), null);
+  });
+  it("does not flag https URL containing main", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin https://x/main", PB), null);
+  });
+  it("does not flag push with no refspecs", () => {
+    assert.equal(pushTargetsProtectedBranch("git push", PB), null);
   });
 });

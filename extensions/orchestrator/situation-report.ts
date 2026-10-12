@@ -336,10 +336,12 @@ export function buildSituationReport(
 /** Default total token budget for the system prompt (rules + context + memory). */
 const SYSTEM_PROMPT_TOKEN_BUDGET = 8000;
 
-/** Resolve the memory report token budget from settings (issue #915). */
+/** Resolve the memory report token budget from settings (issue #915).
+ *  0 is a valid, honored value — it DISABLES the memory report (Qodo #15,
+ *  PR #916); only missing/non-numeric/negative values fall back to default. */
 export function getMemoryTokenBudget(cwd: string): number {
   const v = Number(getSetting(cwd, "memory_token_budget"));
-  return Number.isFinite(v) && v > 0 ? v : DEFAULT_TOKEN_BUDGET;
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_TOKEN_BUDGET;
 }
 
 /**

@@ -328,18 +328,16 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
           block: true,
           reason: `⛔ Cannot push to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git push in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
         };
-      // Block explicit push to any protected branch (e.g., git push origin v2.10)
-      for (const pb of protectedBranches) {
-        // Protected-branch ref must appear in the push invocation's ARGUMENTS
-        // (statement-scoped, message text stripped) — `git commit -m "push to
-        // main"` is not a push to main.
-        const pbRe = new RegExp(`(?:^|\\s)${pb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
-        if (gitSubArgRegions(command, "push").some((r) => pbRe.test(stripQuotedSpans(r))))
-          return {
-            block: true,
-            reason: `⛔ Cannot push to '${pb}' (protected). Create a feature branch.`,
-          };
-      }
+      // Block explicit push to any protected branch (e.g., git push origin main).
+      // Destination-ref aware (Qodo #5, PR #916): HEAD:main, feature:main,
+      // +main, refs/heads/main, and quoted "main" all count — the SOURCE
+      // side and remote names do not.
+      const pb = pushTargetsProtectedBranch(command, protectedBranches);
+      if (pb)
+        return {
+          block: true,
+          reason: `⛔ Cannot push to '${pb}' (protected). Create a feature branch.`,
+        };
     }
     if (branch) {
       const pr = getPrMergeStatus(branch, gitCwd);
@@ -417,7 +415,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
   pi.on("tool_call", async (event, ctx) => {
     // Memory-based enforcement — block rules checked before execution (all tool types)
     try {
-      const entries = loadEnforcedEntries(ctx.cwd);
+      const entries = loadEnforcedEntries(ctx.cwd, (ctx as any).sessionManager?.getSessionId?.());
       const blockEntries = entries.filter(e => e.action === "block");
       if (blockEntries.length > 0) {
         const toolName = isToolCallEventType("bash", event) ? "bash"
@@ -712,7 +710,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     let entries: ReturnType<typeof loadEnforcedEntries>;
     try {
-      entries = loadEnforcedEntries(ctx.cwd);
+      entries = loadEnforcedEntries(ctx.cwd, (ctx as any).sessionManager?.getSessionId?.());
     } catch (e: any) {
       log.debug("enforcement: loadEnforcedEntries failed:", e?.message?.slice(0, 100));
       return;

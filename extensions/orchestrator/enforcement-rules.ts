@@ -11,6 +11,7 @@ import {
   loadScores,
   getActiveEntries,
   entryHash,
+  isEntryActiveForSession,
   type ScoredEntry,
   type EnforcementTrigger,
   type EnforcementAction,
@@ -54,13 +55,22 @@ export interface ActionResult {
 /**
  * Load all active memory entries that have enforcement fields.
  * Reads from the existing memory-scores.jsonl — no separate storage.
+ * Session-scoped entries only enforce in their own session, and expired
+ * entries never enforce (Qodo #8, PR #916) — a session rule must not block
+ * a later session. When `sessionId` is unknown, session-scoped rules are
+ * excluded entirely (fail closed — they are transient by design).
  */
-export function loadEnforcedEntries(cwd: string): EnforcedEntry[] {
+export function loadEnforcedEntries(cwd: string, sessionId?: string): EnforcedEntry[] {
   // Load ALL entries with trigger+action, not just active/provisional.
   // Enforced rules are code-checked — lifecycle decay should not disable them.
   const scores = loadScores(cwd);
   const all = Object.entries(scores.entries)
-    .filter(([, e]) => e.lifecycle !== "dropped" && e.userState !== "forgotten")
+    .filter(
+      ([, e]) =>
+        e.lifecycle !== "dropped" &&
+        e.userState !== "forgotten" &&
+        isEntryActiveForSession(e, sessionId),
+    )
     .map(([hash, entry]) => ({ hash, entry }));
   // Build hash→text lookup from topic files
   const topicEntries = readAllTopicEntries(cwd);
@@ -92,13 +102,19 @@ export function loadEnforcedEntries(cwd: string): EnforcedEntry[] {
 /**
  * Load entries that have semantic verifiers (for turn_end checking).
  * Reads active entries with a `verifier` field directly, without requiring
- * `trigger` and `action` (which loadEnforcedEntries demands).
+ * `trigger` and `action` (which loadEnforcedEntries demands). Same
+ * session/expiry eligibility as loadEnforcedEntries (Qodo #8, PR #916).
  */
-export function loadVerifierEntries(cwd: string): VerifierEntry[] {
+export function loadVerifierEntries(cwd: string, sessionId?: string): VerifierEntry[] {
   // Same as loadEnforcedEntries — enforced rules bypass lifecycle decay
   const scores = loadScores(cwd);
   const all = Object.entries(scores.entries)
-    .filter(([, e]) => e.lifecycle !== "dropped" && e.userState !== "forgotten")
+    .filter(
+      ([, e]) =>
+        e.lifecycle !== "dropped" &&
+        e.userState !== "forgotten" &&
+        isEntryActiveForSession(e, sessionId),
+    )
     .map(([hash, entry]) => ({ hash, entry }));
   const topicEntries = readAllTopicEntries(cwd);
   const hashToText = new Map<string, string>();

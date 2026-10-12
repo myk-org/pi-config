@@ -122,3 +122,24 @@ describe("buildSituationReport queryClass", () => {
     }
   });
 });
+
+describe("getMemoryTokenBudget — 0 disables the report (Qodo #15 PR #916)", () => {
+  it("honors an explicit 0 budget instead of falling back to the default", async () => {
+    const { getMemoryTokenBudget, buildSituationReport } = await import(
+      "../../../extensions/orchestrator/situation-report.js"
+    );
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "situation-budget-"));
+    try {
+      fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+      fs.writeFileSync(
+        path.join(cwd, ".pi", "pi-config-settings.json"),
+        JSON.stringify({ memory_token_budget: 0 }),
+      );
+      assert.equal(getMemoryTokenBudget(cwd), 0);
+      // A 0 budget produces no report at all
+      assert.equal(buildSituationReport(cwd, 0), "");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});

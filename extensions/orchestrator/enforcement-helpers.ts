@@ -1109,13 +1109,21 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
  * guards (live incident: the git-expert-only commit guard never fired on a
  * direct orchestrator commit). Boundary includes backtick because unescaped
  * backticks are command substitution and DO execute git.
+ *
+ * Qodo #8 (PR #916): boundaries also cover shell condition keywords
+ * (if/while/until/!), negation, and exec-wrappers that take arguments
+ * (timeout/nice/nohup/xargs/time), and an opening quote after `bash -c` /
+ * `sh -c` / `eval` opens a nested command position — `timeout 60 git push`,
+ * `if git commit ...`, `time git commit`, and `bash -c "git commit"` are all
+ * real invocations the old boundary set missed.
  */
-const GIT_BOUNDARY_SRC = /(?:^|[;&|\n(){`]|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source;
-const GIT_SUDO_ENV_SRC = /(?:sudo|env)(?:\s+(?:--\S+\s+(?!git\b)\S+|-[a-zA-Z]\s+(?!git\b)\S+|-\S+|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)))*\s+/.source;
+const GIT_BOUNDARY_SRC =
+  /(?:^|[;&|\n(){`]|!|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b|\bif\b|\bwhile\b|\buntil\b|(?:\b(?:bash|sh|zsh|dash|ksh)\s+(?:-[a-zA-Z]+\s+)*-c\s*|\beval\s*)(?:["'`]\s*)?)\s*/.source;
+const GIT_WRAPPER_SRC = /(?:sudo|env|timeout|nice|nohup|xargs|time)(?:\s+(?!git\b)\S+)*\s+/.source;
 const GIT_ASSIGN_SRC = /[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+/.source;
 const GIT_WRAP_SRC = /(?:command|builtin|exec)\s+/.source;
 const GIT_RTK_SRC = /rtk(?:\s+-\S+)*\s+/.source;
-const GIT_PREFIX_SRC = `(?:${GIT_SUDO_ENV_SRC}|${GIT_ASSIGN_SRC}|${GIT_WRAP_SRC}|${GIT_RTK_SRC})*`;
+const GIT_PREFIX_SRC = `(?:${GIT_WRAPPER_SRC}|${GIT_ASSIGN_SRC}|${GIT_WRAP_SRC}|${GIT_RTK_SRC})*`;
 const GIT_EXE_SRC = /(?:\S*\/)?git\b/.source;
 const GIT_FLAGS_SRC = /(?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*/.source;
 
@@ -1163,6 +1171,37 @@ export function stripQuotedSpans(s: string): string {
 /** Tokenize a git-add argument region: quote-aware tokens, redirects dropped. */
 function gitAddTokens(region: string): string[] {
   return tokenize(region).filter((t) => !/[<>]/.test(t));
+}
+
+/**
+ * Destination refs of every real `git push` invocation (Qodo #5, PR #916).
+ * Quote-aware tokenization (a quoted "main" is still a refspec), flags and
+ * remote URLs skipped, and each refspec reduced to its DESTINATION side —
+ * `HEAD:main`, `feature:main`, `+main`, `refs/heads/main`, and plain `main`
+ * all yield `main`. Returns the first ref that names a protected branch
+ * (full or suffix match), or null when no push target is protected.
+ */
+export function pushTargetsProtectedBranch(command: string, protectedBranches: Iterable<string>): string | null {
+  const pbSet = new Set(protectedBranches);
+  for (const region of gitSubArgRegions(command, "push")) {
+    let pastSep = false;
+    for (const token of tokenize(region)) {
+      if (token === "--") {
+        pastSep = true;
+        continue;
+      }
+      if (!pastSep && token.startsWith("-")) continue; // flag
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(token)) continue; // remote URL (https://, ssh://)
+      // Forced-push leading + is part of the refspec syntax, not the ref
+      const spec = token.startsWith("+") ? token.slice(1) : token;
+      const colon = spec.lastIndexOf(":");
+      const raw = (colon >= 0 ? spec.slice(colon + 1) : spec).trim();
+      if (!raw) continue;
+      const dest = raw.replace(/^refs\/heads\//, "");
+      if (pbSet.has(dest)) return dest;
+    }
+  }
+  return null;
 }
 
 /**

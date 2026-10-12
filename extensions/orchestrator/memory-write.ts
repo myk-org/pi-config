@@ -89,6 +89,7 @@ export interface AddMemoryResult {
 function validateTrigger(trigger: string): string | null {
   const validPrefixes = ["bash_contains ", "bash_regex ", "tool_name ", "file_modified "];
   if (!validPrefixes.some((p) => trigger.startsWith(p))) {
+    log.warn("memory-write: invalid trigger rejected", trigger.slice(0, 80));
     return (
       `Invalid trigger format "${trigger}". Must start with: ` +
       validPrefixes.map((p) => p.trim()).join(", ")
@@ -101,9 +102,11 @@ function validateAction(action: string): string | null {
   const validActions = ["block", "warn"];
   const isRunAfter = action.startsWith("run_after ");
   if (!validActions.includes(action) && !isRunAfter) {
+    log.warn("memory-write: invalid action rejected", action.slice(0, 80));
     return `Invalid action "${action}". Valid: block, warn, run_after <command>`;
   }
   if (isRunAfter && !action.slice("run_after ".length).trim()) {
+    log.warn("memory-write: run_after action without a command rejected");
     return `Invalid action "${action}". run_after requires a command (e.g., 'run_after npm test')`;
   }
   return null;
@@ -172,20 +175,25 @@ export interface ConflictCandidate {
 }
 
 /**
- * Find an existing entry that the new text contradicts.
+ * Find every existing entry that the new text contradicts (Qodo #6,
+ * PR #916). Returning ALL conflicts — not just the best one — matters for
+ * correctness: if a non-pinned entry outranked a pinned one, the pinned
+ * entry escaped the gate entirely and a confirmed override superseded only
+ * the best match, leaving the other contradiction in place.
  *
  * Candidates: same-category entries, pinned entries, and enforced entries
  * (the protected classes), narrowed by vector similarity when the embedding
  * model is available and by content-word overlap otherwise. A candidate is a
  * conflict when permission polarity flips (one forbids, the other permits).
+ * Results are sorted best-first.
  */
 export async function findContradiction(
   cwd: string,
   text: string,
   category: string,
-): Promise<ConflictCandidate | null> {
+): Promise<ConflictCandidate[]> {
   const topicEntries = readAllTopicEntries(cwd);
-  if (topicEntries.length === 0) return null;
+  if (topicEntries.length === 0) return [];
   const scores = loadScores(cwd);
 
   // Protected pool: same category + pinned + enforced. These are the entries
@@ -202,10 +210,13 @@ export async function findContradiction(
       pool.push({ text: te.text, category: te.category, pinned: te.pinned, enforced });
     }
   }
-  if (pool.length === 0) return null;
+  if (pool.length === 0) return [];
 
   // Vector-narrowed candidates (paraphrase-tolerant). Model may be
-  // unavailable — the overlap fallback below still applies.
+  // unavailable — the overlap fallback below still applies. Entries with NO
+  // embedding are never dropped by narrowing (Qodo #7, PR #916): a pinned
+  // or recently added entry that has not been embedded yet must still reach
+  // the overlap check, or it becomes invisible to the conflict gate.
   let candidates = pool;
   let similarityByText = new Map<string, number>();
   try {
@@ -218,24 +229,27 @@ export async function findContradiction(
     similarityByText = new Map(
       vectorMatches.map((vm) => [`${vm.category}:${vm.text}`, vm.similarity]),
     );
+    const matchedKeys = new Set(vectorMatches.map((vm) => `${vm.category}:${vm.text}`));
     const similar = new Set(
       vectorMatches
         .filter((vm) => vm.similarity >= getConflictSimilarityThreshold(cwd))
         .map((vm) => `${vm.category}:${vm.text}`),
     );
-    if (similar.size > 0) {
-      candidates = pool.filter((p) => similar.has(`${p.category}:${p.text}`));
+    if (similar.size > 0 || matchedKeys.size > 0) {
+      // Keep vector-similar entries AND entries the vector search never saw
+      // (no embedding) — the latter fall through to the overlap check.
+      candidates = pool.filter(
+        (p) => similar.has(`${p.category}:${p.text}`) || !matchedKeys.has(`${p.category}:${p.text}`),
+      );
     }
   } catch (err) {
     log.debug("memory-write: conflict vector search unavailable, using overlap fallback", err);
   }
 
-  // Collect every conflicting candidate, then report the BEST match — first
-  // match in file order could be a weaker conflict than the real one
-  // (e.g. "can merge PRs" tripping a deploy lesson before the actual
-  // "user merges" preference).
+  // Collect EVERY conflicting candidate, best score first — first match in
+  // file order could be a weaker conflict than the real one.
   const inVectorSet = candidates !== pool;
-  let best: { candidate: ConflictCandidate; score: number } | null = null;
+  const conflicts: Array<{ candidate: ConflictCandidate; score: number }> = [];
   for (const candidate of candidates) {
     if (!polarityClash(text, candidate.text)) continue;
     // Vector-similar candidates are already topic-related; overlap candidates
@@ -243,12 +257,10 @@ export async function findContradiction(
     const shared = sharedContentWords(text, candidate.text);
     if (!(shared >= 2 || (inVectorSet && shared >= 1))) continue;
     const similarity = similarityByText.get(`${candidate.category}:${candidate.text}`) ?? 0;
-    const score = similarity * 10 + shared;
-    if (!best || score > best.score) {
-      best = { candidate, score };
-    }
+    conflicts.push({ candidate, score: similarity * 10 + shared });
   }
-  return best ? best.candidate : null;
+  conflicts.sort((a, b) => b.score - a.score);
+  return conflicts.map((c) => c.candidate);
 }
 
 // ── Supersession ─────────────────────────────────────────────────────
@@ -288,6 +300,49 @@ function supersedeEntry(cwd: string, category: string, text: string): void {
   } catch (err) {
     log.warn("memory-write: supersede failed:", err);
   }
+}
+
+// ── Dedup + enforcement merge ──────────────────────────────────────────
+
+/** Topic-size cap rejection for a prospective new line, or null when it
+ *  fits. Shared by the conflict-override path (precheck BEFORE superseding,
+ *  Qodo #20 PR #916) and the final write. */
+function topicCapRejection(cwd: string, category: string, entryLine: string): AddMemoryResult | null {
+  const topicName = CATEGORY_TO_TOPIC[category as MemoryCategory];
+  if (!topicName) return null;
+  const topicPath = join(cwd, ".pi", "memory", "topics", `${topicName}.md`);
+  let content = "";
+  if (existsSync(topicPath)) {
+    content = readFileSync(topicPath, "utf-8");
+  } else {
+    const title = topicName.replace(/-/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+    content = `# ${title}\n`;
+  }
+  const newContent = content.trimEnd() + "\n" + entryLine + "\n";
+  if (newContent.length > MAX_TOPIC_CHARS) {
+    return {
+      status: "rejected",
+      message:
+        `Topic "${topicName}" would exceed size limit (${newContent.length}/${MAX_TOPIC_CHARS} chars). ` +
+        `Consolidate or remove entries first using memory_remove.`,
+    };
+  }
+  return null;
+}
+
+/** Scope reconciliation on dedup reinforcement (Qodo #10, PR #916): when an
+ *  entry is restated WITHOUT a scope (or as project), a previous session/task
+ *  scope and its TTL are cleared — the user confirmed the rule is durable.
+ *  A narrower restatement never narrows an existing durable entry. */
+function reconcileScopeOnReinforce(cwd: string, existingLine: string, input: AddMemoryInput): void {
+  if (input.scope && input.scope !== "project") return;
+  mutateScores(cwd, (scores) => {
+    const existing = scores.entries[entryHash(existingLine)];
+    if (!existing || !existing.scope || existing.scope === "project") return;
+    delete existing.scope;
+    delete existing.expiresAt;
+    log.info("memory_scope_reconciled", existingLine.slice(0, 60));
+  });
 }
 
 // ── Dedup + enforcement merge ──────────────────────────────────────────────
@@ -351,6 +406,19 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
       message: `Invalid scope "${input.scope}". Valid: ${VALID_SCOPES.join(", ")}`,
     };
   }
+  // 1b. Marker-shape guard (Qodo #16, PR #916): topic-line markers are
+  // reserved for storage. User text carrying `{#id}`, `*(pinned)*`, or
+  // `*(enforced)*` breaks the parse/hash binding — parsers strip markers,
+  // so the stored line would hash differently from the requested text.
+  if (/\s*\{#[0-9a-f]+\}$/.test(text) || text.includes("*(pinned)*") || text.includes("*(enforced)*")) {
+    return {
+      status: "rejected",
+      message:
+        `Rejected: text contains topic-line markers (\`{#id}\`, \`*(pinned)*\`, \`*(enforced)*\`) — ` +
+        `these are reserved for storage and break hash binding. Store the plain rule text; ` +
+        `pinned/enforced state is set via the \`pinned\`/\`trigger\`+\`action\` parameters.`,
+    };
+  }
 
   // 2. Grant-phrase guardrail — one-off permissions are session instructions,
   // not durable memories (issue #915 incident).
@@ -369,37 +437,67 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   // is refused rather than silently reinforcing the wrong entry. A conflict is
   // a decision point, not a dead end (issue #915): the model asks the user, and
   // a confirmed rule change retries with overrideConflicts, which supersedes
-  // the old entry. Pinned entries are never auto-superseded — they are
+  // ALL the old entries. Pinned entries are never auto-superseded — they are
   // user-explicit and require the user's own memory_remove / memory_edit.
-  const conflict = await findContradiction(cwd, text, category);
-  if (conflict) {
-    if (conflict.pinned) {
+  const conflicts = await findContradiction(cwd, text, category);
+  if (conflicts.length > 0) {
+    const pinned = conflicts.filter((c) => c.pinned);
+    if (pinned.length > 0) {
+      const c = pinned[0]!;
+      const more =
+        conflicts.length > 1
+          ? ` (and ${conflicts.length - 1} other conflicting ${conflicts.length - 1 === 1 ? "entry" : "entries"})`
+          : "";
       return {
         status: "rejected",
         message:
-          `Rejected: contradicts pinned memory "[${conflict.category}] ${conflict.text}". ` +
+          `Rejected: contradicts pinned memory "[${c.category}] ${c.text}"${more}. ` +
           `Pinned entries are user-explicit — ask the user (ask_user). If they confirm the rule ` +
           `changed, they must remove or edit the pinned entry (memory_remove / memory_edit) ` +
           `per their instruction first; overrideConflicts does not apply to pinned entries.`,
       };
     }
+    const conflict = conflicts[0]!;
     if (!input.overrideConflicts) {
+      const more =
+        conflicts.length > 1
+          ? ` (and ${conflicts.length - 1} other conflicting ${conflicts.length - 1 === 1 ? "entry" : "entries"})`
+          : "";
       return {
         status: "rejected",
         message:
           `Rejected: contradicts existing memory "[${conflict.category}] ${conflict.text}"` +
-          `${conflict.enforced ? " (code-enforced)" : ""}. ` +
+          `${conflict.enforced ? " (code-enforced)" : ""}${more}. ` +
           `Ask the user (ask_user) which is correct. If they confirm the rule changed, retry ` +
-          `memory_add with overrideConflicts: true — the old entry will be superseded ` +
+          `memory_add with overrideConflicts: true — the old ${conflicts.length > 1 ? "entries will be" : "entry will be"} superseded ` +
           `(invalidated, with provenance) automatically.`,
       };
     }
-    // Confirmed override — supersede the old entry so no contradiction remains
-    supersedeEntry(cwd, conflict.category, conflict.text);
-    if (!input.derivedFrom) {
-      input.derivedFrom = `supersedes: [${conflict.category}] ${conflict.text}`;
+    // Confirmed override — but verify the new entry is actually writable
+    // BEFORE invalidating anything (Qodo #20, PR #916): superseding first
+    // and then failing the topic-size cap would lose both the old and the
+    // new rule.
+    const entryLine = formatTopicLine(
+      {
+        text,
+        category: category as MemoryCategory,
+        pinned: isPinned,
+        id: newEntryId(),
+      },
+      !!((input.trigger && input.action) || input.verifier),
+    );
+    const capRejection = topicCapRejection(cwd, category, entryLine);
+    if (capRejection) return capRejection;
+    // Supersede every conflicting entry so no contradiction remains
+    for (const c of conflicts) {
+      supersedeEntry(cwd, c.category, c.text);
     }
-    log.info("memory_conflict_override", conflict.text.slice(0, 60));
+    if (!input.derivedFrom) {
+      input.derivedFrom =
+        `supersedes: [${conflict.category}] ${conflict.text}` +
+        (conflicts.length > 1 ? ` (+${conflicts.length - 1} more)` : "");
+    }
+    log.info("memory_conflict_override", conflict.text.slice(0, 60), `count=${conflicts.length}`);
   }
 
   const canonicalLine = `- [${category}] ${text}`;
@@ -422,6 +520,7 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
       if (vm.similarity < getNearDuplicateThreshold(cwd)) continue;
       const existingLine = `- [${vm.category}] ${vm.text}`;
       if (reinforce(cwd, existingLine)) {
+        reconcileScopeOnReinforce(cwd, existingLine, input);
         const merged = mergeEnforcementFields(cwd, existingLine, input);
         const enforcementNote = merged ? " (enforcement fields merged)" : "";
         return {
@@ -441,6 +540,7 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   for (const te of topicEntries) {
     if (te.text !== text || te.category !== category) continue;
     reinforce(cwd, canonicalLine);
+    reconcileScopeOnReinforce(cwd, canonicalLine, input);
     const merged = mergeEnforcementFields(cwd, canonicalLine, input);
     const enforcementNote = merged ? " (enforcement fields merged)" : "";
     return {
@@ -449,21 +549,14 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
     };
   }
 
-  // 5. Topic cap + write
+  // 5. Topic cap + write (cap precheck already ran in the override path;
+  // this re-check is a race safety net — another writer may have appended)
   const topicName = CATEGORY_TO_TOPIC[category as MemoryCategory];
   const topicsDir = join(cwd, ".pi", "memory", "topics");
   const topicPath = join(topicsDir, `${topicName}.md`);
 
   if (!existsSync(topicsDir)) {
     mkdirSync(topicsDir, { recursive: true });
-  }
-
-  let content = "";
-  if (existsSync(topicPath)) {
-    content = readFileSync(topicPath, "utf-8");
-  } else {
-    const title = topicName.replace(/-/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
-    content = `# ${title}\n`;
   }
 
   const isEnforced = !!((input.trigger && input.action) || input.verifier);
@@ -473,15 +566,10 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
     isEnforced,
   );
 
-  const newContent = content.trimEnd() + "\n" + entryLine + "\n";
-  if (newContent.length > MAX_TOPIC_CHARS) {
-    return {
-      status: "rejected",
-      message:
-        `Topic "${topicName}" would exceed size limit (${newContent.length}/${MAX_TOPIC_CHARS} chars). ` +
-        `Consolidate or remove entries first using memory_remove.`,
-    };
-  }
+  const capRejection = topicCapRejection(cwd, category, entryLine);
+  if (capRejection) return capRejection;
+  const content = existsSync(topicPath) ? readFileSync(topicPath, "utf-8") : "";
+  const newContent = (content || `# ${topicName.replace(/-/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())}\n`).trimEnd() + "\n" + entryLine + "\n";
   writeFileSync(topicPath, newContent, "utf-8");
   invalidateTopicFileCache(topicPath);
 
@@ -515,8 +603,11 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
     if (input.verifier) entry.verifier = input.verifier;
     if (input.scope) {
       entry.scope = input.scope as MemoryScope;
-      if (input.scope === "session") {
-        // Safety net: even if dream never runs, session-scoped entries expire.
+      if (input.scope === "session" || input.scope === "task") {
+        // Safety net: even if dream never runs, scoped entries expire. Task
+        // scope has no task-end signal, so it gets the same TTL (Qodo #9,
+        // PR #916) — without it, task-scoped entries behaved as durable
+        // project memories.
         entry.expiresAt = new Date(Date.now() + SESSION_SCOPE_TTL_MS).toISOString();
       }
     }

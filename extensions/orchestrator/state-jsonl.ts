@@ -19,6 +19,9 @@
 
 import { appendFileSync, readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("state-jsonl");
 
 export interface JsonlStateStoreOptions {
   /** Maximum number of lines before automatic compaction (default: 100). */
@@ -26,6 +29,17 @@ export interface JsonlStateStoreOptions {
 }
 
 const DEFAULT_COMPACT_THRESHOLD = 100;
+
+/** Locked-mutation retry policy (Qodo #6, PR #916): retry the locked RMW
+ *  with linear backoff before failing explicitly. Never fall back to an
+ *  unlocked read-modify-write — that can erase a concurrent writer's update. */
+const MUTATE_LOCK_RETRY_ATTEMPTS = 5;
+const MUTATE_LOCK_BACKOFF_MS = 25;
+
+/** Synchronous sleep for lock backoff (Atomics.wait works on Node's main thread). */
+function syncSleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 /**
  * Synchronous JSONL state store.
@@ -129,6 +143,11 @@ export class JsonlStateStore<T> {
       if (this.lineCount >= this.compactThreshold) {
         this.compactInner();
       }
+      // Refresh the cache while still holding the lock: our state IS the
+      // latest, so pairing it with fresh file metadata cannot race a
+      // concurrent writer. Refreshing after lock release could pair this
+      // (now stale) state with a newer writer's size/mtime (Qodo #7, PR #916).
+      this.refreshWriteCache(state);
     });
     if (!locked) {
       // Lock failed — append-only without compaction to prevent data loss.
@@ -136,8 +155,13 @@ export class JsonlStateStore<T> {
       const line = JSON.stringify(state) + "\n";
       appendFileSync(this.filePath, line);
       this.lineCount++;
+      // Another writer may have appended after us, so pairing OUR state
+      // with post-append metadata would be wrong — invalidate instead and
+      // let the next read parse the file fresh (Qodo #7, PR #916).
+      this.cachedState = null;
+      this.cachedSize = -1;
+      log.warn("write lock unavailable — appended unlocked, read cache invalidated", { path: this.filePath });
     }
-    this.refreshWriteCache(state);
   }
 
   /**
@@ -161,24 +185,34 @@ export class JsonlStateStore<T> {
       // Clone so a failed write does not leave the caller's initial mutated
       return apply(JSON.parse(JSON.stringify(initial)) as T);
     };
-    const locked = withFileLock(this.filePath, () => {
-      const current = this.read();
-      if (current === null) {
-        seed();
-        return;
+    // Retry the locked RMW with backoff. An unlocked fallback would append a
+    // snapshot derived from a possibly-stale read and erase a concurrent
+    // writer's reinforcement/enforcement/provenance update (Qodo #6, PR #916).
+    // If the lock stays unavailable, fail explicitly — a refused mutation is
+    // recoverable; a silently clobbered one is not.
+    for (let attempt = 0; ; attempt++) {
+      const locked = withFileLock(this.filePath, () => {
+        const current = this.read();
+        if (current === null) {
+          seed();
+          return;
+        }
+        apply(current);
+      });
+      if (locked) return this.read();
+      if (attempt >= MUTATE_LOCK_RETRY_ATTEMPTS) {
+        log.error("mutate: lock unavailable after retries — refusing unlocked read-modify-write", {
+          path: this.filePath,
+          attempts: attempt + 1,
+        });
+        throw new Error(
+          `JsonlStateStore: could not acquire lock for ${this.filePath} after ${attempt + 1} attempts — ` +
+            `refusing to append a state derived from an unlocked read`,
+        );
       }
-      apply(current);
-    });
-    if (!locked) {
-      // Lock failed — fall back to an unlocked read-modify-write, which is
-      // the pre-mutate behavior (best effort under heavy contention).
-      const current = this.read();
-      if (current === null) {
-        return seed();
-      }
-      return apply(current);
+      log.debug("mutate: lock contention — backing off before retry", { path: this.filePath, attempt });
+      syncSleep(MUTATE_LOCK_BACKOFF_MS * (attempt + 1));
     }
-    return this.read();
   }
 
   /** Compact the JSONL file to a single line containing the latest state.

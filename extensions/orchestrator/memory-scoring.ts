@@ -250,6 +250,27 @@ export function getScoresPath(cwd: string): string {
   return join(cwd, ".pi", "memory", SCORES_FILENAME_JSONL);
 }
 
+/**
+ * Session-aware eligibility for a scored entry (Qodo #8/#19, PR #916).
+ * Session-scoped entries (including code-enforced ones — enforcement is a
+ * WRITE path, grants are not) are only active in their own session: a rule
+ * learned in session A must not block or inject in session B. When the
+ * current session id is unknown, session-scoped entries fail closed (they
+ * are transient by design). Expired entries (any scope) are never active.
+ * Entries without a score record stay visible — nothing is known about them.
+ */
+export function isEntryActiveForSession(entry: ScoredEntry | undefined, currentSessionId?: string): boolean {
+  if (!entry) return true;
+  if (entry.expiresAt) {
+    const t = Date.parse(entry.expiresAt);
+    if (!Number.isNaN(t) && t <= Date.now()) return false;
+  }
+  if (entry.scope === "session") {
+    return !!currentSessionId && !!entry.sourceSession && entry.sourceSession === currentSessionId;
+  }
+  return true;
+}
+
 export function loadScores(cwd: string): ScoresFile {
   const store = getScoresStore(cwd);
   const data = store.read();
@@ -258,8 +279,19 @@ export function loadScores(cwd: string): ScoresFile {
   }
   // One-time key migration (issue #915): re-key legacy FNV-1a 8-hex score
   // keys to SHA-256 so topic lines and score entries stay bound.
+  // Locked migration (Qodo #2, PR #916): transform the LATEST state inside
+  // the cross-process lock — migrating the snapshot loaded above could
+  // append a stale state and erase a concurrent writer's update.
   if (data.hashAlgo !== HASH_ALGO) {
-    migrateScoreKeys(cwd, data);
+    getScoresStore(cwd).mutate<ScoresFile>(
+      (latest) => {
+        if (latest.hashAlgo === HASH_ALGO) return; // a concurrent process already migrated
+        migrateScoreKeysInPlace(cwd, latest);
+      },
+      { entries: {}, lastRebuild: new Date().toISOString(), hashAlgo: HASH_ALGO },
+    );
+    const fresh = store.read();
+    return fresh ?? { entries: {}, lastRebuild: new Date().toISOString(), hashAlgo: HASH_ALGO };
   }
   return data;
 }
@@ -293,13 +325,14 @@ function parseTopicLinesForMigration(cwd: string): { category: string; text: str
   return out;
 }
 
-/** Re-key legacy FNV score keys to SHA-256 keys via topic lines. */
-function migrateScoreKeys(cwd: string, scores: ScoresFile): void {
+/** Re-key legacy FNV score keys to SHA-256 keys via topic lines.
+ *  In-place transform — the caller persists (locked migrate in loadScores,
+ *  Qodo #2 PR #916). */
+function migrateScoreKeysInPlace(cwd: string, scores: ScoresFile): ScoresFile {
   const keys = Object.keys(scores.entries);
   if (keys.length === 0) {
     scores.hashAlgo = HASH_ALGO;
-    saveScores(cwd, scores);
-    return;
+    return scores;
   }
   const lines = parseTopicLinesForMigration(cwd);
   const oldToNew = new Map<string, string>();
@@ -337,8 +370,7 @@ function migrateScoreKeys(cwd: string, scores: ScoresFile): void {
   }
   scores.entries = migrated;
   scores.hashAlgo = HASH_ALGO;
-  // Persist the hashAlgo marker (and any re-keying) so migration runs once.
-  saveScores(cwd, scores);
+  return scores;
 }
 
 export function saveScores(cwd: string, scores: ScoresFile): void {
@@ -606,8 +638,6 @@ const PREFERENCE_PATTERNS: RegExp[] = [
 ];
 
 /** Sentence starts that mark a question, not a statement. */
-const INTERROGATIVE_RE = /^(do|does|did|can|could|should|would|will|are|is|am|was|were|have|has|may)\b/i;
-
 /** One-off permission grant phrasing — session instruction, not a durable preference. */
 const GRANT_PHRASE_RE: RegExp[] = [
   /\byou (can|may)\b/i,
@@ -632,10 +662,17 @@ export function isGrantText(text: string): boolean {
  */
 export function extractPreferences(text: string): string[] {
   const found: string[] = [];
-  const sentences = text.split(/[.!?\n]/).map((s) => s.trim()).filter((s) => s.length >= 15);
+  // Split on sentence terminators but KEEP them (Qodo #21, PR #916): a
+  // sentence is a question only when it ends with "?". The old split
+  // dropped the terminator and then guessed by leading verb — which dropped
+  // imperatives like "Do not use pip" because they start with "do".
+  const sentences = text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 15);
 
   for (const sentence of sentences) {
-    if (INTERROGATIVE_RE.test(sentence)) continue; // question, not a statement
+    if (sentence.endsWith("?")) continue; // question, not a statement
     if (isGrantText(sentence)) continue; // one-off grant, not a preference
     if (PREFERENCE_PATTERNS.some((p) => p.test(sentence))) {
       // Normalize to a clean one-liner

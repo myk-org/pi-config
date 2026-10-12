@@ -20,6 +20,7 @@ import { join } from "node:path";
 import {
   loadScores,
   entryHash,
+  isEntryActiveForSession,
   reinforce,
   mutateScores,
   VALID_CATEGORIES,
@@ -322,6 +323,12 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       // Unified write path (issue #915): validation, grant-phrase guardrail,
       // contradiction gate, dedup, topic cap, scope — all in memory-write.ts.
+      // Session-scoped writes carry the current session id when the caller
+      // did not supply one, so scope eligibility can be evaluated later.
+      if (params.scope === "session" && !params.sourceSession) {
+        const sid = (ctx as any).sessionManager?.getSessionId?.();
+        if (sid) params.sourceSession = sid;
+      }
       const result = await addMemoryEntry(ctx.cwd, params);
       log.info("memory_add", params.category, params.text.slice(0, 60), result.status);
       return { content: [{ type: "text", text: result.message }] };
@@ -419,7 +426,14 @@ function registerMemoryReflect(pi: ExtensionAPI): void {
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const cwd = ctx.cwd;
-      const topicEntries = readAllTopicEntries(cwd);
+      // Session-scoped and expired entries are filtered out first (Qodo #1,
+      // PR #916): recalled context must never surface a one-off session
+      // grant or an entry past its TTL as if it were a standing rule.
+      const sessionId = (ctx as any).sessionManager?.getSessionId?.();
+      const scores0 = loadScores(cwd);
+      const topicEntries = readAllTopicEntries(cwd).filter(
+        (te) => isEntryActiveForSession(scores0.entries[entryHash(`- [${te.category}] ${te.text}`)], sessionId),
+      );
       if (topicEntries.length === 0) {
         return { content: [{ type: "text", text: "No memories to reflect on." }] };
       }

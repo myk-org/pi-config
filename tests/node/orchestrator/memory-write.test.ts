@@ -18,6 +18,7 @@ import {
   saveScores,
   extractPreferences,
   isGrantText,
+  isEntryActiveForSession,
   type ScoredEntry,
 } from "../../../extensions/orchestrator/memory-scoring.js";
 import { readAllTopicEntries } from "../../../extensions/orchestrator/memory-tree.js";
@@ -296,9 +297,156 @@ describe("extractPreferences filters (issue #915)", () => {
     assert.match(out[0]!, /I prefer uv run/);
   });
 
+  it("keeps imperatives starting with a question verb (Qodo #21 PR #916)", () => {
+    // "Do not use pip" was dropped by the old leading-verb question heuristic
+    const out = extractPreferences("Do not use pip for installing dependencies, always use uv run");
+    assert.equal(out.length, 1);
+    assert.match(out[0]!, /Do not use pip/);
+  });
+
+  it("excludes questions that end without a question mark too", () => {
+    const out = extractPreferences("Could you check whether the tests pass");
+    assert.equal(out.length, 0);
+  });
+
   it("isGrantText detects common grant phrasings", () => {
     assert.ok(isGrantText("You may push directly for this release"));
     assert.ok(isGrantText("Go ahead and skip the lint step"));
     assert.ok(!isGrantText("Always run lint before committing"));
+  });
+});
+
+describe("addMemoryEntry — Qodo PR #916 hardening", () => {
+  it("rejects marker-shaped text (id suffix) that would break hash binding", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Deploy via .dev scripts only {#deadbeef12345678}",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /markers/i);
+      assert.equal(readAllTopicEntries(cwd).length, 0);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects marker-shaped text containing *(pinned)*", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Deploy via .dev scripts only *(pinned)*",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /markers/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("cites the pinned entry when both pinned and non-pinned entries conflict", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "NEVER merge code PRs — user merges those", { pinned: true });
+      seedEntry(cwd, "lesson", "Never let the agent merge code PRs");
+      const result = await addMemoryEntry(cwd, {
+        text: "Agent can merge code PRs",
+        category: "preference",
+        overrideConflicts: true,
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+      // Pinned entry untouched either way
+      const texts = readAllTopicEntries(cwd).map((e) => e.text);
+      assert.ok(texts.includes("NEVER merge code PRs — user merges those"));
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("supersedes ALL conflicting entries on override, not only the best match", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests with bare python — always use uv run");
+      seedEntry(cwd, "lesson", "Never allow bare python for running tests");
+      const result = await addMemoryEntry(cwd, {
+        text: "It is fine to run tests with bare python",
+        category: "lesson",
+        overrideConflicts: true,
+      });
+      assert.equal(result.status, "added");
+      const remaining = readAllTopicEntries(cwd).map((e) => e.text);
+      assert.deepEqual(remaining, ["It is fine to run tests with bare python"]);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("gives task-scoped entries the same TTL safety net as session scope", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Workaround note kept until the refactor lands",
+        category: "lesson",
+        scope: "task",
+      });
+      assert.equal(result.status, "added");
+      const scores = loadScores(cwd);
+      const hash = entryHash("- [lesson] Workaround note kept until the refactor lands");
+      assert.equal(scores.entries[hash]!.scope, "task");
+      assert.ok(scores.entries[hash]!.expiresAt, "task-scoped entry must carry expiresAt");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("clears session scope + TTL when the entry is restated as durable", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Session note about flaky test ordering",
+        category: "lesson",
+        scope: "session",
+        sourceSession: "sess-a",
+      });
+      assert.equal(result.status, "added");
+      const hash = entryHash("- [lesson] Session note about flaky test ordering");
+      assert.ok(loadScores(cwd).entries[hash]!.expiresAt);
+
+      // Restate the SAME text without a scope — dedup reinforces and the
+      // scope must be reconciled to durable (no scope, no TTL)
+      const reinforced = await addMemoryEntry(cwd, {
+        text: "Session note about flaky test ordering",
+        category: "lesson",
+      });
+      assert.equal(reinforced.status, "reinforced");
+      const entry = loadScores(cwd).entries[hash]!;
+      assert.ok(!entry.scope, "scope must be cleared on durable restatement");
+      assert.ok(!entry.expiresAt, "TTL must be cleared on durable restatement");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("isEntryActiveForSession — session/expiry eligibility (Qodo PR #916)", () => {
+  it("excludes expired entries regardless of scope", () => {
+    assert.equal(isEntryActiveForSession({ expiresAt: new Date(Date.now() - 1000).toISOString() } as any), false);
+    assert.equal(isEntryActiveForSession({ expiresAt: new Date(Date.now() + 60000).toISOString() } as any), true);
+  });
+
+  it("session-scoped entries are active only in their own session", () => {
+    const entry = { scope: "session", sourceSession: "sess-a" } as any;
+    assert.equal(isEntryActiveForSession(entry, "sess-a"), true);
+    assert.equal(isEntryActiveForSession(entry, "sess-b"), false);
+    // Unknown current session → fail closed (transient by design)
+    assert.equal(isEntryActiveForSession(entry, undefined), false);
+  });
+
+  it("durable entries without a score record stay visible", () => {
+    assert.equal(isEntryActiveForSession(undefined, "sess-a"), true);
+    assert.equal(isEntryActiveForSession({ scope: "project" } as any, "sess-a"), true);
   });
 });
