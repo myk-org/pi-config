@@ -11,7 +11,7 @@
  */
 
 import { createLogger } from "../shared/logger.js";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   type MemoryCategory,
@@ -47,6 +47,14 @@ export interface TopicInfo {
   chars: number;
 }
 
+export interface TopicEntry {
+  text: string;
+  category: MemoryCategory;
+  pinned: boolean;
+  /** Stable id from the trailing `{#id}` marker, when present (enforced entries). */
+  id?: string;
+}
+
 // ── Topic Directory ────────────────────────────────────────────────────────
 
 function getTopicsDir(cwd: string): string {
@@ -56,30 +64,98 @@ function getTopicsDir(cwd: string): string {
 // ── Topic File I/O ─────────────────────────────────────────────────────────
 
 interface TopicFile {
-  entries: { text: string; category: MemoryCategory; pinned: boolean }[];
+  entries: TopicEntry[];
+}
+
+// mtime+size read cache (issue #915): readAllTopicEntries is called several
+// times per turn (situation report, contextual inject, enforcement, tools) —
+// re-reading and re-parsing every topic file each time is wasted work.
+const topicFileCache = new Map<string, { mtimeMs: number; size: number; entries: TopicEntry[] }>();
+
+/** Regex for a topic entry line: category, text, optional markers, optional id. */
+const TOPIC_LINE_RE =
+  /^- \[(preference|lesson|pattern|decision|done|mistake)\] (.+?)(?: \*\(pinned\)\*)?(?: \*\(enforced\)\*)?(?: \{#([0-9a-f]+)\})?$/;
+
+/** Parse one raw topic-file line into an entry, or null when not an entry. */
+export function parseTopicLine(line: string): TopicEntry | null {
+  const match = line.trimEnd().match(TOPIC_LINE_RE);
+  if (!match) return null;
+  // Markers may be duplicated in legacy data — strip remaining copies
+  const rawText = match[2]!
+    .replace(/\s*\*\(pinned\)\*/g, "")
+    .replace(/\s*\*\(enforced\)\*/g, "")
+    .replace(/\s*\{#[0-9a-f]+\}$/g, "")
+    .trim();
+  const entry: TopicEntry = {
+    text: rawText,
+    category: match[1] as MemoryCategory,
+    pinned: line.includes("*(pinned)*"),
+  };
+  if (match[3]) entry.id = match[3];
+  return entry;
+}
+
+/** Build the file line for an entry, including markers and id. */
+export function formatTopicLine(entry: TopicEntry, enforced = false): string {
+  const pin = entry.pinned ? " *(pinned)*" : "";
+  const enf = enforced ? " *(enforced)*" : "";
+  const id = entry.id ? ` {#${entry.id}}` : "";
+  return `- [${entry.category}] ${entry.text}${pin}${enf}${id}`;
+}
+
+/** Match a topic line by category + exact text, ignoring marker variations.
+ *  Returns the raw line, its index, and parsed markers — used by
+ *  memory_remove / memory_edit so they match regardless of pinned/enforced/id
+ *  marker combinations. */
+export function findTopicLine(
+  content: string,
+  category: string,
+  text: string,
+): { line: string; index: number; pinned: boolean; enforced: boolean; id?: string } | null {
+  const lines = content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i]!.trimEnd();
+    const m = trimmed.match(
+      new RegExp(`^- \\[${category}\\] ${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: \\*\\(pinned\\)\\*)?(?: \\*\\(enforced\\)\\*)?(?: \\{#[0-9a-f]+\\})?$`),
+    );
+    if (m) {
+      return {
+        line: trimmed,
+        index: i,
+        pinned: trimmed.includes("*(pinned)*"),
+        enforced: trimmed.includes("*(enforced)*"),
+        id: trimmed.match(/\{#([0-9a-f]+)\}$/)?.[1],
+      };
+    }
+  }
+  return null;
 }
 
 function readTopicFile(path: string): TopicFile {
   if (!existsSync(path)) return { entries: [] };
   try {
-    const content = readFileSync(path, "utf-8");
-    const entries: TopicFile["entries"] = [];
-    for (const line of content.split("\n")) {
-      const match = line.match(/^- \[(preference|lesson|pattern|decision|done|mistake)\] (.+)$/);
-      if (match) {
-        // Strip *(pinned)* and *(enforced)* tags from text (may have duplicates from legacy data)
-        const rawText = match[2]!.replace(/\s*\*\(pinned\)\*/g, "").replace(/\s*\*\(enforced\)\*/g, "").trim();
-        entries.push({
-          text: rawText,
-          category: match[1] as MemoryCategory,
-          pinned: line.includes("*(pinned)*"),
-        });
-      }
+    // Cache hit — unchanged file (same mtime+size) skips re-parsing
+    const st = statSync(path);
+    const cached = topicFileCache.get(path);
+    if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+      return { entries: cached.entries };
     }
+    const content = readFileSync(path, "utf-8");
+    const entries: TopicEntry[] = [];
+    for (const line of content.split("\n")) {
+      const entry = parseTopicLine(line);
+      if (entry) entries.push(entry);
+    }
+    topicFileCache.set(path, { mtimeMs: st.mtimeMs, size: st.size, entries });
     return { entries };
   } catch {
     return { entries: [] };
   }
+}
+
+/** Invalidate the topic-file read cache for a path (call after writing it). */
+export function invalidateTopicFileCache(path: string): void {
+  topicFileCache.delete(path);
 }
 
 // ── Read All Topic Entries ──────────────────────────────────────────────────
@@ -88,11 +164,11 @@ function readTopicFile(path: string): TopicFile {
  * Read all entries from all topic files.
  * This is the primary read path — topics are the source of truth.
  */
-export function readAllTopicEntries(cwd: string): { text: string; category: MemoryCategory; pinned: boolean }[] {
+export function readAllTopicEntries(cwd: string): TopicEntry[] {
   const topicsDir = getTopicsDir(cwd);
   if (!existsSync(topicsDir)) return [];
 
-  const all: { text: string; category: MemoryCategory; pinned: boolean }[] = [];
+  const all: TopicEntry[] = [];
   try {
     const files = readdirSync(topicsDir).filter((f) => f.endsWith(".md"));
     for (const file of files) {

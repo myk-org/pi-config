@@ -17,7 +17,9 @@ Each topic file has format:
     - [category] entry text
 """
 
+import hashlib
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -30,12 +32,12 @@ def log(message: str) -> None:
 
 
 def _entry_hash(text: str) -> str:
-    """FNV-1a hash matching the TypeScript implementation in memory-scoring.ts."""
-    h = 0x811C9DC5
-    for ch in text:
-        h ^= ord(ch)
-        h = (h * 0x01000193) & 0xFFFFFFFF
-    return f"{h:08x}"
+    """SHA-256 entry key matching the TypeScript implementation in memory-scoring.ts.
+
+    Issue #915: replaced FNV-1a (32-bit, collision-prone) with SHA-256 so the
+    Python CLI and the extension agree on score keys.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 CATEGORY_TO_TOPIC: dict[str, str] = {
@@ -169,34 +171,70 @@ class MemoryFile:
             return False
 
         content = topic_path.read_text()
-        pinned_line = f"- [{category}] {summary} *(pinned)*"
-        learned_line = f"- [{category}] {summary}"
+
+        # Marker-agnostic match: pinned/enforced/id combinations (issue #915)
+        pattern = re.compile(
+            rf"^- \[{re.escape(category)}\] {re.escape(summary)}"
+            r"( \*\(pinned\)\*)?( \*\(enforced\)\*)?( \{#[0-9a-f]+\})?$"
+        )
 
         lines = content.splitlines(keepends=True)
-        removed_line: str | None = None
-        for candidate in (pinned_line, learned_line):
-            if any(line.rstrip("\n") == candidate for line in lines):
-                removed_line = candidate
+        removed_index: int | None = None
+        for i, line in enumerate(lines):
+            if pattern.match(line.rstrip("\n")):
+                removed_index = i
                 break
 
-        if removed_line is None:
+        if removed_index is None:
             return False
 
+        removed_line = lines[removed_index].rstrip("\n")
+
         # Remove the line from the topic file
-        new_lines = [line for line in lines if line.rstrip("\n") != removed_line]
+        new_lines = [line for i, line in enumerate(lines) if i != removed_index]
         topic_path.write_text("".join(new_lines))
 
-        # Clean up memory-scores.json
+        # Canonical line (markers stripped) is the score key
+        canonical = re.sub(
+            r"( \*\(pinned\)\*)?( \*\(enforced\)\*)?( \{#[0-9a-f]+\})?$",
+            "",
+            removed_line,
+        )
+        h = _entry_hash(canonical)
+
+        # Clean up the JSONL score store (current) — remove the key from the
+        # latest state and append the updated state as a new line.
+        jsonl_path = self.file_path.parent / "memory-scores.jsonl"
+        if jsonl_path.exists():
+            try:
+                latest = None
+                for raw in jsonl_path.read_text().splitlines():
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        parsed = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(parsed, dict):
+                        latest = parsed
+                if latest is not None and h in latest.get("entries", {}):
+                    del latest["entries"][h]
+                    with jsonl_path.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps(latest) + "\n")
+            except OSError as e:
+                log(f"Failed to clean up memory-scores.jsonl: {e}")
+
+        # Clean up legacy memory-scores.json (pre-JSONL stores)
         scores_path = self.file_path.parent / "memory-scores.json"
         if scores_path.exists():
             try:
                 scores = json.loads(scores_path.read_text())
-                h = _entry_hash(removed_line)
                 if h in scores.get("entries", {}):
                     del scores["entries"][h]
                     scores_path.write_text(json.dumps(scores))
             except (json.JSONDecodeError, OSError) as e:
-                log(f"Failed to clean memory-scores.json: {e}")
+                log(f"Failed to clean up memory-scores.json: {e}")
 
         return True
 

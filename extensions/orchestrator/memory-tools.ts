@@ -19,13 +19,21 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   loadScores,
-  saveScores,
   entryHash,
   reinforce,
+  mutateScores,
   VALID_CATEGORIES,
   type MemoryCategory,
 } from "./memory-scoring.js";
-import { listTopics, readAllTopicEntries, CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, type TopicInfo } from "./memory-tree.js";
+import {
+  listTopics,
+  readAllTopicEntries,
+  CATEGORY_TO_TOPIC,
+  MAX_TOPIC_CHARS,
+  findTopicLine,
+  invalidateTopicFileCache,
+  type TopicInfo,
+} from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memory-embeddings.js";
 import { maybePromoteAfterReinforce } from "./memory-promotion.js";
 import { addMemoryEntry } from "./memory-write.js";
@@ -352,41 +360,35 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
       }
 
       const content = readFileSync(topicPath, "utf-8");
-      const pinnedEnforcedLine = `- [${category}] ${text} *(pinned)* *(enforced)*`;
-      const pinnedLine = `- [${category}] ${text} *(pinned)*`;
-      const enforcedLine = `- [${category}] ${text} *(enforced)*`;
-      const learnedLine = `- [${category}] ${text}`;
 
-      // Find which line matches
-      const lines = content.split("\n");
-      let removedLine: string | null = null;
-      for (const candidate of [pinnedEnforcedLine, pinnedLine, enforcedLine, learnedLine]) {
-        if (lines.some(l => l.trimEnd() === candidate)) {
-          removedLine = candidate;
-          break;
-        }
-      }
-
-      if (!removedLine) {
+      // Marker-agnostic match (pinned/enforced/id combinations, issue #915)
+      const match = findTopicLine(content, category, text);
+      if (!match) {
         return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }] };
       }
 
       // Remove the line and collapse consecutive blank lines
-      const newLines = lines.filter(l => l.trimEnd() !== removedLine);
+      const lines = content.split("\n");
+      const newLines = lines.filter((_, i) => i !== match.index);
       const cleaned = newLines.join("\n").replace(/\n{3,}/g, "\n\n");
       writeFileSync(topicPath, cleaned, "utf-8");
+      invalidateTopicFileCache(topicPath);
 
       // Remove embedding
       removeEmbedding(cwd, text, category);
 
-      // Clean up scores — always use canonical line for hash (no pinned marker)
-      const scores = loadScores(cwd);
+      // Clean up scores — always use canonical line for hash (no markers).
+      // Locked RMW; also drop an id-bound score entry when the line carried one.
       const canonicalLine = `- [${category}] ${text}`;
-      const hash = entryHash(canonicalLine);
-      if (scores.entries[hash]) {
-        delete scores.entries[hash];
-        saveScores(cwd, scores);
-      }
+      const removedId = match.id;
+      mutateScores(cwd, (scores) => {
+        delete scores.entries[entryHash(canonicalLine)];
+        if (removedId) {
+          for (const [hash, entry] of Object.entries(scores.entries)) {
+            if (entry.id === removedId) delete scores.entries[hash];
+          }
+        }
+      });
 
       log.info("memory_remove", category, text.slice(0, 60));
       return {
@@ -503,27 +505,14 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
       }
 
       const content = readFileSync(topicPath, "utf-8");
-      const oldLine = `- [${category}] ${text}`;
-      const oldLinePinnedEnforced = `- [${category}] ${text} *(pinned)* *(enforced)*`;
-      const oldLinePinned = `- [${category}] ${text} *(pinned)*`;
-      const oldLineEnforced = `- [${category}] ${text} *(enforced)*`;
 
-      // Find the matching line
-      const lines = content.split("\n");
-      let matchIndex = -1;
-      let wasPinned = false;
-      let wasEnforced = false;
-      for (let i = 0; i < lines.length; i++) {
-        const trimmed = lines[i].trimEnd();
-        if (trimmed === oldLinePinnedEnforced) { matchIndex = i; wasPinned = true; wasEnforced = true; break; }
-        if (trimmed === oldLinePinned) { matchIndex = i; wasPinned = true; break; }
-        if (trimmed === oldLineEnforced) { matchIndex = i; wasEnforced = true; break; }
-        if (trimmed === oldLine) { matchIndex = i; break; }
-      }
-
-      if (matchIndex === -1) {
+      // Marker-agnostic match (pinned/enforced/id combinations, issue #915)
+      const match = findTopicLine(content, category, text);
+      if (!match) {
         return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }] };
       }
+      const { index: matchIndex, pinned: wasPinned, enforced: wasEnforced, id: wasId } = match;
+      const lines = content.split("\n");
 
       if (op === "update") {
         if (!newText) {
@@ -533,32 +522,36 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         if (newText.includes("\n")) {
           return { content: [{ type: "text", text: "newText must be a single line (no newlines)." }] };
         }
-        // Check topic size cap
-        const currentContent = readFileSync(topicPath, "utf-8");
-        const markers = `${wasPinned ? " *(pinned)*" : ""}${wasEnforced ? " *(enforced)*" : ""}`;
-        const newContent = currentContent.replace(lines[matchIndex], `- [${category}] ${newText}${markers}`);
+        // Check topic size cap. The rewritten line keeps its markers and id
+        // so the enforcement binding survives the text change (issue #915).
+        const markers = `${wasPinned ? " *(pinned)*" : ""}${wasEnforced ? " *(enforced)*" : ""}${wasId ? ` {#${wasId}}` : ""}`;
+        const replacement = `- [${category}] ${newText}${markers}`;
+        const newContent = content.replace(lines[matchIndex]!, replacement);
         if (newContent.length > MAX_TOPIC_CHARS) {
           return { content: [{ type: "text", text: `Update would exceed topic size limit (${newContent.length}/${MAX_TOPIC_CHARS} chars).` }] };
         }
         // Replace the line
-        lines[matchIndex] = `- [${category}] ${newText}${markers}`;
+        lines[matchIndex] = replacement;
         writeFileSync(topicPath, lines.join("\n"), "utf-8");
+        invalidateTopicFileCache(topicPath);
 
-        // Update scores: transfer old entry's score to new entry
-        const scores = loadScores(cwd);
+        // Update scores: transfer old entry's score to the new key, keeping
+        // the stable id (and enforcement fields) — locked RMW (issue #915).
         const oldHash = entryHash(`- [${category}] ${text}`);
         const newHash = entryHash(`- [${category}] ${newText}`);
-        if (scores.entries[oldHash]) {
-          scores.entries[newHash] = { ...scores.entries[oldHash] };
-          delete scores.entries[oldHash];
-        }
-        const target = scores.entries[newHash];
-        if (target) {
-          if (params.sourceSession !== undefined) target.sourceSession = params.sourceSession;
-          if (params.derivedFrom !== undefined) target.derivedFrom = params.derivedFrom;
-          if (params.informs !== undefined) target.informs = params.informs;
-        }
-        saveScores(cwd, scores);
+        mutateScores(cwd, (scores) => {
+          if (scores.entries[oldHash]) {
+            scores.entries[newHash] = { ...scores.entries[oldHash]! };
+            delete scores.entries[oldHash];
+          }
+          const target = scores.entries[newHash];
+          if (target) {
+            if (!target.id && wasId) target.id = wasId;
+            if (params.sourceSession !== undefined) target.sourceSession = params.sourceSession;
+            if (params.derivedFrom !== undefined) target.derivedFrom = params.derivedFrom;
+            if (params.informs !== undefined) target.informs = params.informs;
+          }
+        });
 
         // Update embeddings
         removeEmbedding(cwd, text, category);
@@ -572,14 +565,19 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         lines.splice(matchIndex, 1);
         const cleaned = lines.join("\n").replace(/\n{3,}/g, "\n\n");
         writeFileSync(topicPath, cleaned, "utf-8");
+        invalidateTopicFileCache(topicPath);
 
-        // Clean up scores and embeddings for old entry
-        const scores = loadScores(cwd);
+        // Clean up scores and embeddings for old entry (locked RMW)
         const oldHash = entryHash(`- [${category}] ${text}`);
-        if (scores.entries[oldHash]) {
+        const removedId = wasId;
+        mutateScores(cwd, (scores) => {
           delete scores.entries[oldHash];
-          saveScores(cwd, scores);
-        }
+          if (removedId) {
+            for (const [hash, entry] of Object.entries(scores.entries)) {
+              if (entry.id === removedId) delete scores.entries[hash];
+            }
+          }
+        });
         removeEmbedding(cwd, text, category);
 
         let result = `Invalidated: [${category}] ${text}`;

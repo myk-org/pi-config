@@ -35,12 +35,20 @@ const DEFAULT_COMPACT_THRESHOLD = 100;
  * const store = new JsonlStateStore<MyState>(filePath);
  * const state = store.read();          // null if no state
  * store.write({ ...state, field: 1 }); // appends a line
+ * store.mutate(s => { s.field = 1 });  // locked read-modify-write
  * ```
  */
 export class JsonlStateStore<T> {
   private readonly filePath: string;
   private readonly compactThreshold: number;
   private lineCount: number;
+  // mtime+size read cache (issue #915): parsing the whole file on every
+  // read() is O(file size) — embeddings stores can be multi-MB. The cache
+  // invalidates on our own writes and on external mtime/size changes
+  // (cross-process writers).
+  private cachedState: T | null = null;
+  private cachedMtimeMs = 0;
+  private cachedSize = -1;
 
   constructor(filePath: string, options?: JsonlStateStoreOptions) {
     this.filePath = filePath;
@@ -65,16 +73,47 @@ export class JsonlStateStore<T> {
     }
   }
 
-  /** Read the latest state from the JSONL file. Returns null if no valid state exists. */
+  /** Read the latest state from the JSONL file. Returns null if no valid state exists.
+   *  Cached by mtime+size — repeated reads of an unchanged file do not re-parse. */
   read(): T | null {
-    if (!existsSync(this.filePath)) return null;
-    let raw: string;
-    try {
-      raw = readFileSync(this.filePath, "utf-8");
-    } catch {
+    if (!existsSync(this.filePath)) {
+      this.cachedState = null;
+      this.cachedSize = -1;
       return null;
     }
-    return parseLastValidLine<T>(raw);
+    let raw: string;
+    try {
+      const st = statSync(this.filePath);
+      if (
+        this.cachedState !== null &&
+        this.cachedSize === st.size &&
+        this.cachedMtimeMs === st.mtimeMs
+      ) {
+        return this.cachedState;
+      }
+      raw = readFileSync(this.filePath, "utf-8");
+      const state = parseLastValidLine<T>(raw);
+      this.cachedState = state;
+      this.cachedMtimeMs = st.mtimeMs;
+      this.cachedSize = st.size;
+      return state;
+    } catch {
+      this.cachedState = null;
+      this.cachedSize = -1;
+      return null;
+    }
+  }
+
+  /** Update the read cache after a write or compaction. */
+  private refreshWriteCache(state: T): void {
+    this.cachedState = state;
+    try {
+      const st = statSync(this.filePath);
+      this.cachedMtimeMs = st.mtimeMs;
+      this.cachedSize = st.size;
+    } catch {
+      this.cachedSize = -1;
+    }
   }
 
   /** Append a new state snapshot as a JSON line. Auto-compacts when threshold is exceeded.
@@ -98,6 +137,48 @@ export class JsonlStateStore<T> {
       appendFileSync(this.filePath, line);
       this.lineCount++;
     }
+    this.refreshWriteCache(state);
+  }
+
+  /**
+   * Locked read-modify-write (issue #915): re-reads the latest state under
+   * the cross-process lock, applies the mutator, and writes the result.
+   * Prevents concurrent sessions from clobbering each other's changes
+   * between a load and a save. If the store is empty, `initial` seeds it.
+   *
+   * The mutator may return a new state object or mutate in place and return
+   * undefined. Returns the written state, or null when the store is empty
+   * and no initial value was provided (nothing written).
+   */
+  mutate(fn: (state: T) => T | void, initial?: T): T | null {
+    const apply = (current: T): T => {
+      const out = fn(current);
+      this.write(out === undefined ? current : out);
+      return out === undefined ? current : out;
+    };
+    const seed = (): T | null => {
+      if (initial === undefined) return null;
+      // Clone so a failed write does not leave the caller's initial mutated
+      return apply(JSON.parse(JSON.stringify(initial)) as T);
+    };
+    const locked = withFileLock(this.filePath, () => {
+      const current = this.read();
+      if (current === null) {
+        seed();
+        return;
+      }
+      apply(current);
+    });
+    if (!locked) {
+      // Lock failed — fall back to an unlocked read-modify-write, which is
+      // the pre-mutate behavior (best effort under heavy contention).
+      const current = this.read();
+      if (current === null) {
+        return seed();
+      }
+      return apply(current);
+    }
+    return this.read();
   }
 
   /** Compact the JSONL file to a single line containing the latest state.
@@ -118,6 +199,7 @@ export class JsonlStateStore<T> {
       writeFileSync(tmp, JSON.stringify(state) + "\n");
       renameSync(tmp, this.filePath);
       this.lineCount = 1;
+      this.refreshWriteCache(state);
     } catch {
       // Compaction failure is non-fatal — the JSONL file still has valid data.
       // Silent: no logging because extensions must not use console.* (AGENTS.md policy).

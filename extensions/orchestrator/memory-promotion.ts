@@ -16,9 +16,9 @@ import {
   type ScoredEntry,
   entryHash,
   loadScores,
-  saveScores,
+  mutateScores,
 } from "./memory-scoring.js";
-import { CATEGORY_TO_TOPIC, readAllTopicEntries } from "./memory-tree.js";
+import { CATEGORY_TO_TOPIC, readAllTopicEntries, invalidateTopicFileCache } from "./memory-tree.js";
 import {
   type PromotionCandidate,
   type PromotionCandidatePatch,
@@ -165,15 +165,21 @@ export function markTopicEntryEnforced(
   let content = readFileSync(topicPath, "utf-8");
   const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const lineRe = new RegExp(
-    `^(- \\[${category}\\] ${escaped})((?: \\*\\(pinned\\)\\*)?)((?: \\*\\(enforced\\)\\*)?)(\\s*)$`,
+    `^(- \\[${category}\\] ${escaped})((?: \\*\\(pinned\\)\\*)?)((?: \\*\\(enforced\\)\\*)?)((?: \\{#[0-9a-f]+\\})?)(\\s*)$`,
     "m",
   );
   const m = content.match(lineRe);
   if (!m) return false;
   if (m[3]) return true; // already enforced
 
-  content = content.replace(lineRe, `$1$2 *(enforced)*$4`);
+  // Stable id binding marker (issue #915): keep an existing marker, or add
+  // one from the score entry so enforcement survives later text edits.
+  const scores = loadScores(cwd);
+  const entryId = scores.entries[entryHash(`- [${category}] ${text}`)]?.id;
+  const idMarker = m[4] || (entryId ? ` {#${entryId}}` : "");
+  content = content.replace(lineRe, `$1$2 *(enforced)*${idMarker}$5`);
   writeFileSync(topicPath, content, "utf-8");
+  invalidateTopicFileCache(topicPath);
   return true;
 }
 
@@ -320,7 +326,7 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
 
   const scanned = scanPromotionCandidates(cwd);
   const toQueue: PromotionCandidate[] = [];
-  const scores = loadScores(cwd);
+  const toApply: PromotionCandidate[] = [];
 
   for (const c of scanned) {
     if (c.destination !== "enforcement" || !c.trigger || !c.action) {
@@ -335,25 +341,35 @@ export function applySafePromotions(cwd: string): ApplySafeResult {
     }
 
     const hash = entryHash(`- [${c.category}] ${c.text}`);
-    const entry = scores.entries[hash];
+    const entry = loadScores(cwd).entries[hash];
     if (!entry || hasEnforcement(entry)) {
       toQueue.push({ ...c, status: "proposed" });
       continue;
     }
 
-    entry.trigger = c.trigger as EnforcementTrigger;
-    entry.action = c.action as EnforcementAction;
-    if (c.verifier) entry.verifier = c.verifier;
-    entry.lifecycle = "active";
-    markTopicEntryEnforced(cwd, c.category as MemoryCategory, c.text);
+    toApply.push(c);
+  }
 
-    const appliedCandidate: PromotionCandidate = { ...c, status: "applied" };
-    toQueue.push(appliedCandidate);
+  // Single locked read-modify-write for all applied enforcement fields
+  mutateScores(cwd, (scores) => {
+    for (const c of toApply) {
+      const hash = entryHash(`- [${c.category}] ${c.text}`);
+      const entry = scores.entries[hash];
+      if (!entry || hasEnforcement(entry)) continue;
+
+      entry.trigger = c.trigger as EnforcementTrigger;
+      entry.action = c.action as EnforcementAction;
+      if (c.verifier) entry.verifier = c.verifier;
+      entry.lifecycle = "active";
+    }
+  });
+
+  for (const c of toApply) {
+    markTopicEntryEnforced(cwd, c.category as MemoryCategory, c.text);
+    toQueue.push({ ...c, status: "applied" });
     applied += 1;
     details.push(`enforced: [${c.category}] ${c.text}`);
   }
-
-  saveScores(cwd, scores);
 
   // Append-only / batched status updates — avoid lossy full rewrite and per-item I/O.
   const existing = loadPromotions(cwd);

@@ -27,11 +27,12 @@ import {
   PINNED_SCORE,
   entryHash,
   loadScores,
-  saveScores,
+  mutateScores,
+  newEntryId,
   reinforce,
   isGrantText,
 } from "./memory-scoring.js";
-import { CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, readAllTopicEntries } from "./memory-tree.js";
+import { CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, readAllTopicEntries, formatTopicLine, invalidateTopicFileCache } from "./memory-tree.js";
 import { embedEntry, vectorSearch } from "./memory-embeddings.js";
 
 const log = createLogger("memory");
@@ -220,28 +221,31 @@ export async function findContradiction(
 
 // ── Dedup + enforcement merge ──────────────────────────────────────────────
 
-/** Merge enforcement fields from new input into an existing scored entry. */
+/** Merge enforcement fields from new input into an existing scored entry.
+ *  Locked read-modify-write (issue #915). */
 function mergeEnforcementFields(
   cwd: string,
   existingLine: string,
   input: AddMemoryInput,
 ): boolean {
   if (!input.trigger && !input.action && !input.verifier) return false;
-  const scores = loadScores(cwd);
-  const existing = scores.entries[entryHash(existingLine)];
-  if (!existing) return false;
-  if (input.trigger) existing.trigger = input.trigger as any;
-  if (input.action) {
-    if (input.action.startsWith("run_after ")) {
-      existing.action = "run_after";
-      existing.actionCommand = input.action.slice("run_after ".length);
-    } else if (input.action === "block" || input.action === "warn") {
-      existing.action = input.action;
+  let merged = false;
+  mutateScores(cwd, (scores) => {
+    const existing = scores.entries[entryHash(existingLine)];
+    if (!existing) return;
+    if (input.trigger) existing.trigger = input.trigger as any;
+    if (input.action) {
+      if (input.action.startsWith("run_after ")) {
+        existing.action = "run_after";
+        existing.actionCommand = input.action.slice("run_after ".length);
+      } else if (input.action === "block" || input.action === "warn") {
+        existing.action = input.action;
+      }
     }
-  }
-  if (input.verifier) existing.verifier = input.verifier;
-  saveScores(cwd, scores);
-  return true;
+    if (input.verifier) existing.verifier = input.verifier;
+    merged = true;
+  });
+  return merged;
 }
 
 // ── Main entry point ───────────────────────────────────────────────────────
@@ -378,10 +382,11 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   }
 
   const isEnforced = !!((input.trigger && input.action) || input.verifier);
-  let entryLine = canonicalLine;
-  if (isPinned && isEnforced) entryLine = `- [${category}] ${text} *(pinned)* *(enforced)*`;
-  else if (isPinned) entryLine = `- [${category}] ${text} *(pinned)*`;
-  else if (isEnforced) entryLine = `- [${category}] ${text} *(enforced)*`;
+  const entryId = newEntryId();
+  const entryLine = formatTopicLine(
+    { text, category: category as MemoryCategory, pinned: isPinned, id: entryId },
+    isEnforced,
+  );
 
   const newContent = content.trimEnd() + "\n" + entryLine + "\n";
   if (newContent.length > MAX_TOPIC_CHARS) {
@@ -393,46 +398,49 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
     };
   }
   writeFileSync(topicPath, newContent, "utf-8");
+  invalidateTopicFileCache(topicPath);
 
-  // Score entry — always hash the canonical line (no pinned marker)
-  const scores = loadScores(cwd);
-  const hash = entryHash(canonicalLine);
-  const entry: ScoredEntry = {
-    class: category as MemoryCategory,
-    score: isPinned ? PINNED_SCORE : 1.0,
-    evidenceCount: 1,
-    cue: "explicit",
-    firstSeen: new Date().toISOString(),
-    lastReinforced: new Date().toISOString(),
-    userState: isPinned ? "pinned" : "auto",
-    lifecycle: "active",
-  };
+  // Score entry — always hash the canonical line (no markers). Locked RMW
+  // so concurrent sessions cannot clobber each other (issue #915).
+  mutateScores(cwd, (scores) => {
+    const hash = entryHash(canonicalLine);
+    const entry: ScoredEntry = {
+      class: category as MemoryCategory,
+      score: isPinned ? PINNED_SCORE : 1.0,
+      evidenceCount: 1,
+      cue: "explicit",
+      firstSeen: new Date().toISOString(),
+      lastReinforced: new Date().toISOString(),
+      userState: isPinned ? "pinned" : "auto",
+      lifecycle: "active",
+      id: entryId,
+    };
 
-  if (input.trigger) {
-    entry.trigger = input.trigger as any;
-    if (input.action) {
-      if (input.action.startsWith("run_after ")) {
-        entry.action = "run_after";
-        entry.actionCommand = input.action.slice("run_after ".length);
-      } else if (input.action === "block" || input.action === "warn") {
-        entry.action = input.action;
+    if (input.trigger) {
+      entry.trigger = input.trigger as any;
+      if (input.action) {
+        if (input.action.startsWith("run_after ")) {
+          entry.action = "run_after";
+          entry.actionCommand = input.action.slice("run_after ".length);
+        } else if (input.action === "block" || input.action === "warn") {
+          entry.action = input.action;
+        }
       }
     }
-  }
-  if (input.verifier) entry.verifier = input.verifier;
-  if (input.scope) {
-    entry.scope = input.scope as MemoryScope;
-    if (input.scope === "session") {
-      // Safety net: even if dream never runs, session-scoped entries expire.
-      entry.expiresAt = new Date(Date.now() + SESSION_SCOPE_TTL_MS).toISOString();
+    if (input.verifier) entry.verifier = input.verifier;
+    if (input.scope) {
+      entry.scope = input.scope as MemoryScope;
+      if (input.scope === "session") {
+        // Safety net: even if dream never runs, session-scoped entries expire.
+        entry.expiresAt = new Date(Date.now() + SESSION_SCOPE_TTL_MS).toISOString();
+      }
     }
-  }
-  if (input.sourceSession) entry.sourceSession = input.sourceSession;
-  if (input.derivedFrom) entry.derivedFrom = input.derivedFrom;
-  if (input.informs && input.informs.length > 0) entry.informs = input.informs;
+    if (input.sourceSession) entry.sourceSession = input.sourceSession;
+    if (input.derivedFrom) entry.derivedFrom = input.derivedFrom;
+    if (input.informs && input.informs.length > 0) entry.informs = input.informs;
 
-  scores.entries[hash] = entry;
-  saveScores(cwd, scores);
+    scores.entries[hash] = entry;
+  });
 
   // Embed the new entry for future similarity searches
   await embedEntry(cwd, text, category);
@@ -473,7 +481,7 @@ export function pruneExpiredEntries(cwd: string): number {
     const kept = lines.filter((l) => {
       const m = l.match(/^- \[(preference|lesson|pattern|decision|done|mistake)\] (.+)$/);
       if (!m) return true;
-      const rawText = m[2]!.replace(/\s*\*\(pinned\)\*/g, "").replace(/\s*\*\(enforced\)\*/g, "").trim();
+      const rawText = m[2]!.replace(/\s*\*\(pinned\)\*/g, "").replace(/\s*\*\(enforced\)\*/g, "").replace(/\s*\{#[0-9a-f]+\}$/g, "").trim();
       const hash = entryHash(`- [${m[1]}] ${rawText}`);
       if (!expiredHashes.has(hash)) return true;
       pruned++;
@@ -481,12 +489,15 @@ export function pruneExpiredEntries(cwd: string): number {
     });
     const cleaned = kept.join("\n").replace(/\n{3,}/g, "\n\n");
     writeFileSync(topicPath, cleaned, "utf-8");
+    invalidateTopicFileCache(topicPath);
   }
 
-  for (const hash of expiredHashes) {
-    delete scores.entries[hash];
-  }
-  saveScores(cwd, scores);
+  // Locked removal of the expired score entries
+  mutateScores(cwd, (s) => {
+    for (const hash of expiredHashes) {
+      delete s.entries[hash];
+    }
+  });
   if (pruned > 0) log.info("memory_prune_expired", pruned);
   return pruned;
 }
