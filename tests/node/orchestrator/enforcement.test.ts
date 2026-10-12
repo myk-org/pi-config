@@ -2226,8 +2226,13 @@ describe("realGitSub / injectSignoff — quoted option values, escapes, comments
   it("detects a commit after a comment containing don't", () => {
     assert.ok(realGitSub("# don't do this\n git commit --no-verify -m x\necho 'ok'", "commit"));
   });
-  it("detects a push after an unquoted contraction", () => {
-    assert.ok(realGitSub("echo it's fine; git push origin main; echo 'ok'", "push"));
+  it("does not fire on an apostrophe-paired span — the shell reads it as one quoted word (Qodo round 4, PR #916)", () => {
+    // `echo it's fine; git push origin main; echo 'ok'` is a shell syntax
+    // error (three apostrophes: the first two pair, the third is
+    // unterminated) — git push never executes, so the masked text must not
+    // fire the guards. The round-3 "contraction" heuristic wrongly kept it
+    // visible; shell grammar has no contractions — foo'bar' concatenates.
+    assert.ok(!realGitSub("echo it's fine; git push origin main; echo 'ok'", "push"));
   });
   it("detects a commit after a comment containing an unpaired double quote", () => {
     assert.ok(realGitSub('# says "hello\n git commit -m x', "commit"));
@@ -2253,5 +2258,31 @@ describe("realGitSub / injectSignoff — quoted option values, escapes, comments
     const out = injectSignoff('echo "git commit -F -" | git commit -F -');
     assert.match(out, /git commit --signoff -F -/);
     assert.doesNotMatch(out, /echo "git commit --signoff/);
+  });
+});
+
+describe("realGitSub — shell-correct quote semantics (Qodo round 4, PR #916)", () => {
+  it("does not fire on an echo argument quoted by a mid-word apostrophe", () => {
+    // foo' ; git push origin main' — the apostrophe after foo OPENS a
+    // single-quoted string (shell concatenation); the push text is quoted
+    assert.ok(!realGitSub("echo foo' ; git push origin main'", "push"));
+  });
+  it("does not fire on prose around a substitution inside quotes", () => {
+    // Only $(date) executes; "if git commit fails" is echo text
+    assert.ok(!realGitSub('echo "if git commit fails $(date)"', "commit"));
+  });
+  it("still fires on a real substitution inside quotes", () => {
+    assert.ok(realGitSub('echo "run $(git push) now"', "push"));
+  });
+  it("still fires on a backtick substitution inside quotes", () => {
+    assert.ok(realGitSub('echo "`git commit -m x`"', "commit"));
+  });
+  it("masks an unterminated quoted tail (syntax error, nothing executes)", () => {
+    assert.ok(!realGitSub('echo "unterminated git push text', "push"));
+  });
+  it("does not let prose-with-substitution absorb the DCO signoff", () => {
+    const out = injectSignoff('echo "if git commit fails $(date)" && git commit -m x');
+    assert.match(out, /git commit --signoff -m x/);
+    assert.doesNotMatch(out, /if git commit fails \$\(date\) --signoff/);
   });
 });

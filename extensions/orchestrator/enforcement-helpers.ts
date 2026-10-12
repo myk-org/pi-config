@@ -1139,43 +1139,84 @@ const SHELL_C_PREFIX_RE =
 
 /**
  * Mask quoted PROSE so it can never look like a command boundary (Qodo
- * rounds 2–3, PR #916). A scanner, not a plain regex: pairing quotes with a
- * regex misparses real shell —
- * - a BACKSLASH-ESCAPED quote (\") is a literal character, not a delimiter,
-   so `echo \"; git push origin main; echo \"x\"` still executes git push;
- * - an APOSTROPHE MID-WORD (don't, it's) is a contraction, not an opener —
-   `# don't …` pairing with a later `'ok'` blanked a real `git commit`;
- * - a `#` COMMENT TAIL never executes, so it is blanked to end of line and
-   its quotes cannot pair with code.
- * A quoted span is blanked UNLESS it (a) directly follows a shell `-c`/
- * `eval` prefix — it is a nested command string the boundary regex must
- * see — or (b) contains a backtick or `$(` — command substitution inside
- * quotes still executes — or (c) is unterminated (the shell reads the rest
- * of the line as quoted, so it cannot execute either). The result is
- * LENGTH-PRESERVING so match indices on the masked text are valid on the
- * original string.
+ * rounds 2–4, PR #916). A scanner implementing SHELL quote semantics, not a
+ * plain regex and not heuristics:
+ * - a BACKSLASH outside quotes escapes the next character, so `\"` is a
+ *   literal and `echo \"; git push; echo \"x\"` still executes git push;
+ * - an apostrophe ALWAYS opens a single-quote string outside double quotes
+ *   (shell grammar has no contractions — `foo' ; git push main'`
+ *   concatenates `foo` with the QUOTED text ` ; git push main`, so the
+ *   quoted part is prose, never code). An apostrophe inside a `#` comment
+ *   is irrelevant because comment tails are blanked first;
+ * - a `#` at a word start begins a comment — blanked to end of line so its
+ *   quotes cannot pair with code;
+ * - inside a quoted span only COMMAND SUBSTITUTION (`$(...)`, backticks)
+ *   executes, so a span is blanked EXCEPT its substitution regions —
+ *   `echo "if git commit fails $(date)"` keeps only `$(date)` visible;
+ * - a span that directly follows `bash -c`/`sh -c`/`eval` is a nested
+ *   command string and stays fully visible;
+ * - an UNTERMINATED span is a shell syntax error — nothing executes — so it
+ *   is blanked entirely.
+ * The result is LENGTH-PRESERVING so match indices on the masked text are
+ * valid on the original string.
  */
 function maskQuotedProse(command: string): string {
   const out = command.split("");
+  let maskedSpans = 0;
+  const blankRange = (from: number, to: number): void => {
+    for (let k = from; k < to; k++) out[k] = " ";
+  };
+  /** Blank [from, to) except its $(...) and backtick substitution regions,
+   *  which are restored verbatim from the original command. */
+  const blankExceptSubstitutions = (from: number, to: number): void => {
+    blankRange(from, to);
+    let k = from;
+    while (k < to) {
+      const c = command[k]!;
+      if (c === "$" && command[k + 1] === "(") {
+        let depth = 1;
+        let m = k + 2;
+        while (m < to && depth > 0) {
+          if (command[m] === "(") depth++;
+          else if (command[m] === ")") depth--;
+          m++;
+        }
+        const stop = depth === 0 ? m : to;
+        for (let x = k; x < stop; x++) out[x] = command[x]!;
+        k = stop;
+        continue;
+      }
+      if (c === "`") {
+        let m = k + 1;
+        while (m < to && command[m] !== "`") m++;
+        const stop = m < to ? m + 1 : to;
+        for (let x = k; x < stop; x++) out[x] = command[x]!;
+        k = stop;
+        continue;
+      }
+      k++;
+    }
+  };
   let i = 0;
   while (i < command.length) {
     const ch = command[i]!;
     // Comment tail: `#` at a word start (${...} and =# forms excluded) is a
     // comment — blank to end of line, quotes inside cannot pair with code.
     if (ch === "#" && (i === 0 || /[\s(;&|`]/.test(command[i - 1]!))) {
-      while (i < command.length && command[i] !== "\n") {
-        out[i] = " ";
-        i++;
-      }
+      let j = i;
+      while (j < command.length && command[j] !== "\n") j++;
+      blankRange(i, j);
+      maskedSpans++;
+      i = j;
       continue;
     }
-    // Escaped quotes are literal characters, not delimiters.
-    if ((ch === '"' || ch === "'") && command[i - 1] !== "\\") {
-      // An apostrophe mid-word is a contraction, not a single-quote opener.
-      if (ch === "'" && i > 0 && /[A-Za-z0-9]/.test(command[i - 1]!)) {
-        i++;
-        continue;
-      }
+    // A backslash outside quotes escapes the next char — it can never open
+    // a span (handles \\" and \\').
+    if (ch === "\\") {
+      i += 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
       const quote = ch;
       let j = i + 1;
       let closed = false;
@@ -1194,26 +1235,29 @@ function maskQuotedProse(command: string): string {
         j++;
       }
       const end = closed ? j + 1 : command.length;
-      const span = command.slice(i, end);
-      const keep =
-        !closed ||
-        SHELL_C_PREFIX_RE.test(command.slice(0, i)) ||
-        /`|\$\(/.test(span);
-      if (!keep) {
-        for (let k = i; k < end; k++) out[k] = " ";
+      if (closed && SHELL_C_PREFIX_RE.test(command.slice(0, i))) {
+        // Nested command string — keep fully visible for the boundary regex.
+      } else {
+        // Prose span (or unterminated = syntax error, nothing executes):
+        // blank it except command substitutions, which still execute.
+        blankExceptSubstitutions(i, end);
+        maskedSpans++;
       }
       i = end;
       continue;
     }
     i++;
   }
+  if (maskedSpans > 0) enfLog.debug("maskQuotedProse", "masked", maskedSpans, "chars", command.length);
   return out.join("");
 }
 
 /** Regex matching a REAL `git <sub>` invocation at a shell command position. */
 export function realGitSubRegex(sub: string, capture = false): RegExp {
   const body = `${GIT_BOUNDARY_SRC}${GIT_PREFIX_SRC}${GIT_EXE_SRC}${GIT_FLAGS_SRC}\\s+${sub}\\b`;
-  return new RegExp(capture ? `(${body})` : body);
+  const re = new RegExp(capture ? `(${body})` : body);
+  enfLog.debug("realGitSubRegex built", sub, `capture=${capture}`);
+  return re;
 }
 
 /**
@@ -1226,7 +1270,9 @@ export function realGitSubRegex(sub: string, capture = false): RegExp {
  * the use_worktrees checkout block).
  */
 export function realGitSub(command: string, sub: string): boolean {
-  return realGitSubRegex(sub).test(maskQuotedProse(stripHeredocBodies(command)));
+  const result = realGitSubRegex(sub).test(maskQuotedProse(stripHeredocBodies(command)));
+  enfLog.debug("realGitSub", sub, result);
+  return result;
 }
 
 /**
@@ -1257,6 +1303,7 @@ export function gitSubArgRegions(command: string, sub: string): string[] {
     const end = rest.search(/[;&|\n]/);
     regions.push(end === -1 ? rest : rest.slice(0, end));
   }
+  enfLog.debug("gitSubArgRegions", sub, `regions=${regions.length}`);
   return regions;
 }
 
@@ -1295,7 +1342,10 @@ export function pushTargetsProtectedBranch(command: string, protectedBranches: I
       const raw = (colon >= 0 ? spec.slice(colon + 1) : spec).trim();
       if (!raw) continue;
       const dest = raw.replace(/^refs\/heads\//, "");
-      if (pbSet.has(dest)) return dest;
+      if (pbSet.has(dest)) {
+        enfLog.debug("pushTargetsProtectedBranch", `protected=${dest}`);
+        return dest;
+      }
     }
   }
   return null;
@@ -1322,6 +1372,7 @@ export function gitAddPathspecs(command: string): string[] | null {
       paths.push(token);
     }
   }
+  enfLog.debug("gitAddPathspecs", `paths=${paths.length}`);
   return paths;
 }
 
