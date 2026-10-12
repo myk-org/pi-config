@@ -121,7 +121,7 @@ describe("addMemoryEntry — contradiction gate", () => {
     }
   });
 
-  it("refuses a permission flip against a non-pinned entry and points at memory_edit", async () => {
+  it("refuses a permission flip against a non-pinned entry and offers the override path", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "Never run tests with bare python — always use uv run");
@@ -131,7 +131,46 @@ describe("addMemoryEntry — contradiction gate", () => {
       });
       assert.equal(result.status, "rejected");
       assert.match(result.message, /contradicts existing memory/i);
-      assert.match(result.message, /memory_edit/);
+      assert.match(result.message, /overrideConflicts: true/);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("supersedes the old entry when the user confirms via overrideConflicts", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests with bare python — always use uv run");
+      const result = await addMemoryEntry(cwd, {
+        text: "It is fine to run tests with bare python",
+        category: "lesson",
+        overrideConflicts: true,
+      });
+      assert.equal(result.status, "added");
+      // Old entry gone, new entry present with supersession provenance
+      const remaining = readAllTopicEntries(cwd).map((e) => e.text);
+      assert.deepEqual(remaining, ["It is fine to run tests with bare python"]);
+      const scores = loadScores(cwd);
+      const newHash = entryHash("- [lesson] It is fine to run tests with bare python");
+      assert.match(scores.entries[newHash]!.derivedFrom!, /supersedes/);
+      assert.ok(!scores.entries[entryHash("- [lesson] Never run tests with bare python — always use uv run")]);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("never supersedes a pinned entry, even with overrideConflicts", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "NEVER merge code PRs — user merges those", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Agent can merge code PRs",
+        category: "preference",
+        overrideConflicts: true,
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+      assert.equal(readAllTopicEntries(cwd).length, 1);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

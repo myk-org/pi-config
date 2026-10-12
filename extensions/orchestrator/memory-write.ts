@@ -32,8 +32,8 @@ import {
   reinforce,
   isGrantText,
 } from "./memory-scoring.js";
-import { CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, readAllTopicEntries, formatTopicLine, invalidateTopicFileCache } from "./memory-tree.js";
-import { embedEntry, vectorSearch } from "./memory-embeddings.js";
+import { CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, readAllTopicEntries, formatTopicLine, findTopicLine, invalidateTopicFileCache } from "./memory-tree.js";
+import { embedEntry, removeEmbedding, vectorSearch } from "./memory-embeddings.js";
 import { getSetting } from "./project-settings.js";
 
 const log = createLogger("memory");
@@ -66,6 +66,9 @@ export interface AddMemoryInput {
   verifier?: string;
   /** "session" | "task" | "project" — validated in addMemoryEntry. */
   scope?: string;
+  /** Confirm a conflict override — only set after the user explicitly
+   *  confirmed the rule changed. Supersedes the conflicting (non-pinned) entry. */
+  overrideConflicts?: boolean;
   sourceSession?: string;
   derivedFrom?: string;
   informs?: string[];
@@ -200,12 +203,16 @@ export async function findContradiction(
   // Vector-narrowed candidates (paraphrase-tolerant). Model may be
   // unavailable — the overlap fallback below still applies.
   let candidates = pool;
+  let similarityByText = new Map<string, number>();
   try {
     const vectorMatches = await vectorSearch(
       cwd,
       text,
       pool.map((p) => ({ text: p.text, category: p.category, pinned: p.pinned })),
       20,
+    );
+    similarityByText = new Map(
+      vectorMatches.map((vm) => [`${vm.category}:${vm.text}`, vm.similarity]),
     );
     const similar = new Set(
       vectorMatches
@@ -219,17 +226,64 @@ export async function findContradiction(
     log.debug("memory-write: conflict vector search unavailable, using overlap fallback", err);
   }
 
+  // Collect every conflicting candidate, then report the BEST match — first
+  // match in file order could be a weaker conflict than the real one
+  // (e.g. "can merge PRs" tripping a deploy lesson before the actual
+  // "user merges" preference).
+  const inVectorSet = candidates !== pool;
+  let best: { candidate: ConflictCandidate; score: number } | null = null;
   for (const candidate of candidates) {
     if (!polarityClash(text, candidate.text)) continue;
     // Vector-similar candidates are already topic-related; overlap candidates
     // need corroboration (≥ 2 shared content words).
     const shared = sharedContentWords(text, candidate.text);
-    const inVectorSet = candidates !== pool;
-    if (shared >= 2 || (inVectorSet && shared >= 1)) {
-      return candidate;
+    if (!(shared >= 2 || (inVectorSet && shared >= 1))) continue;
+    const similarity = similarityByText.get(`${candidate.category}:${candidate.text}`) ?? 0;
+    const score = similarity * 10 + shared;
+    if (!best || score > best.score) {
+      best = { candidate, score };
     }
   }
-  return null;
+  return best ? best.candidate : null;
+}
+
+// ── Supersession ─────────────────────────────────────────────────────
+
+/**
+ * Invalidate an entry that a confirmed rule change supersedes: remove the
+ * topic line, score entry, and embedding. Called from the conflict-override
+ * path so no contradiction remains in memory (issue #915).
+ */
+function supersedeEntry(cwd: string, category: string, text: string): void {
+  try {
+    const topicName = CATEGORY_TO_TOPIC[category as MemoryCategory];
+    if (!topicName) return;
+    const topicPath = join(cwd, ".pi", "memory", "topics", `${topicName}.md`);
+    if (!existsSync(topicPath)) return;
+    const content = readFileSync(topicPath, "utf-8");
+    const match = findTopicLine(content, category, text);
+    if (!match) return;
+    const lines = content.split("\n");
+    lines.splice(match.index, 1);
+    writeFileSync(topicPath, lines.join("\n").replace(/\n{3,}/g, "\n\n"), "utf-8");
+    invalidateTopicFileCache(topicPath);
+
+    removeEmbedding(cwd, text, category);
+
+    const canonicalLine = `- [${category}] ${text}`;
+    const removedId = match.id;
+    mutateScores(cwd, (scores) => {
+      delete scores.entries[entryHash(canonicalLine)];
+      if (removedId) {
+        for (const [hash, entry] of Object.entries(scores.entries)) {
+          if (entry.id === removedId) delete scores.entries[hash];
+        }
+      }
+    });
+    log.info("memory_supersede", category, text.slice(0, 60));
+  } catch (err) {
+    log.warn("memory-write: supersede failed:", err);
+  }
 }
 
 // ── Dedup + enforcement merge ──────────────────────────────────────────────
@@ -308,7 +362,11 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   }
 
   // 3. Contradiction gate — before dedup, so a permission-flipping near-duplicate
-  // is refused rather than silently reinforcing the wrong entry.
+  // is refused rather than silently reinforcing the wrong entry. A conflict is
+  // a decision point, not a dead end (issue #915): the model asks the user, and
+  // a confirmed rule change retries with overrideConflicts, which supersedes
+  // the old entry. Pinned entries are never auto-superseded — they are
+  // user-explicit and require the user's own memory_remove / memory_edit.
   const conflict = await findContradiction(cwd, text, category);
   if (conflict) {
     if (conflict.pinned) {
@@ -316,18 +374,28 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
         status: "rejected",
         message:
           `Rejected: contradicts pinned memory "[${conflict.category}] ${conflict.text}". ` +
-          `Pinned entries are user-explicit. If the rule truly changed, ask the user — ` +
-          `they must remove or edit the pinned entry (memory_remove / memory_edit) first.`,
+          `Pinned entries are user-explicit — ask the user (ask_user). If they confirm the rule ` +
+          `changed, they must remove or edit the pinned entry (memory_remove / memory_edit) ` +
+          `per their instruction first; overrideConflicts does not apply to pinned entries.`,
       };
     }
-    return {
-      status: "rejected",
-      message:
-        `Rejected: contradicts existing memory "[${conflict.category}] ${conflict.text}"` +
-        `${conflict.enforced ? " (code-enforced)" : ""}. ` +
-        `If the rule changed, use memory_edit (invalidate the old entry) instead of adding ` +
-        `a contradicting one; otherwise ask the user which is correct.`,
-    };
+    if (!input.overrideConflicts) {
+      return {
+        status: "rejected",
+        message:
+          `Rejected: contradicts existing memory "[${conflict.category}] ${conflict.text}"` +
+          `${conflict.enforced ? " (code-enforced)" : ""}. ` +
+          `Ask the user (ask_user) which is correct. If they confirm the rule changed, retry ` +
+          `memory_add with overrideConflicts: true — the old entry will be superseded ` +
+          `(invalidated, with provenance) automatically.`,
+      };
+    }
+    // Confirmed override — supersede the old entry so no contradiction remains
+    supersedeEntry(cwd, conflict.category, conflict.text);
+    if (!input.derivedFrom) {
+      input.derivedFrom = `supersedes: [${conflict.category}] ${conflict.text}`;
+    }
+    log.info("memory_conflict_override", conflict.text.slice(0, 60));
   }
 
   const canonicalLine = `- [${category}] ${text}`;

@@ -236,8 +236,11 @@ in order:
 1. **Grant-phrase guardrail** — text that reads like a one-off permission ("you can merge this PR",
    "go ahead", "just this once") is rejected: one-off grants are session instructions, not memories.
 2. **Contradiction gate** — an add that flips permission polarity against an existing entry (one text
-   forbids what the other permits, on the same topic) is refused with guidance to use `memory_edit` or
-   ask the user. Contradicting a **pinned** entry always refuses — pinned entries are user-explicit.
+   forbids what the other permits, on the same topic) is refused and the model is told to ask the user.
+   A conflict is a decision point, not a dead end: after the user confirms the rule changed, retrying
+   with `overrideConflicts: true` supersedes the old non-pinned entry (invalidated, with provenance) so
+   no contradiction remains. Contradicting a **pinned** entry always refuses — pinned entries are
+   user-explicit and only the user's own `memory_remove` / `memory_edit` can change them.
 3. **Dedup** — near-duplicates (vector similarity) and exact matches reinforce the existing entry
    instead of creating a second one.
 

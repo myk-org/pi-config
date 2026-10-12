@@ -298,6 +298,11 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
           description: "Scope: 'session' (transient — expires, never injected in later sessions), 'task', or 'project' (default: durable). Only set for genuinely non-durable facts; standing rules are project scope.",
         }),
       ),
+      overrideConflicts: Type.Optional(
+        Type.Boolean({
+          description: "Confirm a conflict override. Set true ONLY after the user explicitly confirmed the rule changed (ask_user). Supersedes the conflicting non-pinned entry automatically. Never applies to pinned entries — those require the user's own memory_remove/memory_edit.",
+        }),
+      ),
       sourceSession: Type.Optional(
         Type.String({
           description: "Optional provenance: session id or basename this memory came from",

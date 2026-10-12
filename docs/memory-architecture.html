@@ -756,8 +756,11 @@ in order:</p>
 </li>
 <li>
 <p><strong>Contradiction gate</strong> — an add that flips permission polarity against an existing entry (one text
-   forbids what the other permits, on the same topic) is refused with guidance to use <code>memory_edit</code> or
-   ask the user. Contradicting a <strong>pinned</strong> entry always refuses — pinned entries are user-explicit.</p>
+   forbids what the other permits, on the same topic) is refused and the model is told to ask the user.
+   A conflict is a decision point, not a dead end: after the user confirms the rule changed, retrying
+   with <code>overrideConflicts: true</code> supersedes the old non-pinned entry (invalidated, with provenance) so
+   no contradiction remains. Contradicting a <strong>pinned</strong> entry always refuses — pinned entries are
+   user-explicit and only the user's own <code>memory_remove</code> / <code>memory_edit</code> can change them.</p>
 </li>
 <li>
 <p><strong>Dedup</strong> — near-duplicates (vector similarity) and exact matches reinforce the existing entry
