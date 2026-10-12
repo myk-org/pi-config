@@ -578,3 +578,36 @@ describe("conflict gate — verb-qualified \"use only X\" (Qodo round 9, PR #916
     }
   });
 });
+
+describe("conflict gate — temporal \"only\" continuations (Qodo round 10, PR #916)", () => {
+  it("lets a temporal restriction coexist with a compatible prohibition", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run migrations until tests pass");
+      const result = await addMemoryEntry(cwd, {
+        text: "Run only after tests pass",
+        category: "lesson",
+      });
+      // Same rule restated — both restrict WHEN, neither permits the action.
+      assert.equal(result.status, "added");
+      assert.equal(readAllTopicEntries(cwd).length, 2);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("still refuses a genuine 'use only X' against a prohibition (round 9 regression)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never use uv to install dependencies", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Use only uv to install dependencies",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});

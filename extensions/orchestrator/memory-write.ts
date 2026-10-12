@@ -127,13 +127,14 @@ const NEGATION_RE =
 const PERMIT_RE =
   /\b(can|may|allowed|permit(ted|s)?|okay|ok|go ahead|feel free|fine to|(is|are|'s) fine|acceptable|safe to|always)\b/i;
 /** Affirmative-exclusive instruction — `only` IMMEDIATELY AFTER an action
- *  verb ("use only uv", "install only via pip"): the sentence exclusively
- *  permits that action's tool, so it opposes a prohibition of the same
- *  action (Qodo round 9, PR #916). Unlike a bare `only`, this shape cannot
- *  be a temporal restriction — "only stage files after tests pass" has
- *  `only` BEFORE the verb and never matches. */
+ *  verb AND followed by a permitted object/tool, not a temporal continuation
+ *  ("use only uv", "install only via pip", "commit only through git-expert"):
+ *  the sentence exclusively permits that action's tool, so it opposes a
+ *  prohibition of the same action (Qodo rounds 9+10, PR #916). A bare or
+ *  sentence-initial `only` never matches (round 8), and `only after/when/
+ *  until/...` is a temporal restriction, not a permission (round 10). */
 const ONLY_PERMIT_RE =
-  /\b(?:use|uses|using|install|installs|installing|run|runs|running|execute|executes|executing|deploy|deploys|deploying|commit|commits|push|pushes|merge|merges|write|writes|call|calls|invoke|invokes)\s+only\b/i;
+  /\b(?:use|uses|using|install|installs|installing|run|runs|running|execute|executes|executing|deploy|deploys|deploying|commit|commits|push|pushes|merge|merges|write|writes|call|calls|invoke|invokes)\s+only\s+(?!(?:after|before|when|while|until|once|if|unless|during|upon|prior|in\s+case)\b)[a-z0-9"'-]/i;
 
 const STOP_WORDS = new Set([
   "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "for", "with",
