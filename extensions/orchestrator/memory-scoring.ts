@@ -24,6 +24,14 @@ export type CueType = "explicit" | "structural" | "behavioral" | "recurrence";
 export type UserState = "auto" | "pinned" | "forgotten";
 export type LifecycleState = "active" | "provisional" | "candidate" | "dropped";
 
+/** Valid memory categories — single source of truth for all memory modules. */
+export const VALID_CATEGORIES: readonly MemoryCategory[] = [
+  "preference", "lesson", "pattern", "decision", "done", "mistake",
+];
+
+/** Scope of a memory entry. Default (absent) is "project" — durable and global. */
+export type MemoryScope = "session" | "task" | "project";
+
 /** Trigger types for enforcement rules */
 export type EnforcementTrigger =
   | `bash_contains ${string}`   // matches if bash command contains the string
@@ -72,6 +80,12 @@ export interface ScoredEntry {
   derivedFrom?: string;
   /** Free-text targets this memory informs (e.g. pr-review, git, skill name) */
   informs?: string[];
+
+  // ── Scope fields (optional; issue #915) ────────────────────────────
+  /** How long this entry applies. Absent = "project" (durable, global). */
+  scope?: MemoryScope;
+  /** ISO timestamp after which this entry is pruned (used with non-project scopes). */
+  expiresAt?: string;
 }
 
 export interface ScoresFile {
@@ -419,15 +433,38 @@ const PREFERENCE_PATTERNS: RegExp[] = [
   /\bmy stack\b/i,
 ];
 
+/** Sentence starts that mark a question, not a statement. */
+const INTERROGATIVE_RE = /^(do|does|did|can|could|should|would|will|are|is|am|was|were|have|has|may)\b/i;
+
+/** One-off permission grant phrasing — session instruction, not a durable preference. */
+const GRANT_PHRASE_RE: RegExp[] = [
+  /\byou (can|may)\b/i,
+  /\bgo ahead\b/i,
+  /\bfeel free\b/i,
+  /\bjust this once\b/i,
+  /\bthis time only\b/i,
+  /\bone[- ]off\b/i,
+  /\bfor (this|that|the) (specific )?(pr|issue|task|ticket|branch|release)\b/i,
+  /\b(this|that|specific) (pr|issue|task|ticket|branch)\b/i,
+];
+
+/** Detect one-off grant phrasing (shared by extractor and memory_add guardrail). */
+export function isGrantText(text: string): boolean {
+  return GRANT_PHRASE_RE.some((re) => re.test(text));
+}
+
 /**
  * Extract preference statements from user text.
- * Returns sentences that match preference patterns.
+ * Questions and one-off permission grants are excluded — they are not
+ * durable preferences (issue #915).
  */
 export function extractPreferences(text: string): string[] {
   const found: string[] = [];
   const sentences = text.split(/[.!?\n]/).map((s) => s.trim()).filter((s) => s.length >= 15);
 
   for (const sentence of sentences) {
+    if (INTERROGATIVE_RE.test(sentence)) continue; // question, not a statement
+    if (isGrantText(sentence)) continue; // one-off grant, not a preference
     if (PREFERENCE_PATTERNS.some((p) => p.test(sentence))) {
       // Normalize to a clean one-liner
       const clean = sentence.replace(/\s+/g, " ").slice(0, 100);

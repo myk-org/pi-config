@@ -3280,9 +3280,10 @@ Every layer is a standalone module under `extensions/orchestrator/`:
 |---|---|---|
 | Scoring engine | `memory-scoring.ts` | Stability formula, lifecycle states, category budgets, rebuilds the score index. |
 | Situation report | `situation-report.ts` | Builds the token-budgeted prompt injection and the capacity header. |
-| Memory tree | `memory-tree.ts` | Topic-file organization, hotness scores, cold-topic archiving. |
+| Memory tree | `memory-tree.ts` | Topic-file organization and hotness scores. |
 | Embeddings | `memory-embeddings.ts` | Local vector model, embedding store, hybrid search. |
 | Memory tools | `memory-tools.ts` | The `memory_*` tools exposed to the agent. |
+| Unified write path | `memory-write.ts` | Single add path with validation, grant guardrail, contradiction gate, dedup, and scope (issue #915). |
 | Session search | `session-search.ts` | Keyword index over past conversation summaries. |
 | Enforcement rules | `enforcement-rules.ts` | Code-enforced memories (triggers, actions, verifiers). |
 | Promotion queue | `promotion-queue.ts` | Graduates high-evidence memories into stronger structures. |
@@ -3456,8 +3457,27 @@ The agent can also query it directly with the `session_search` tool — see [Com
 ### Stated preferences are captured automatically
 
 `preference-extractor.ts` watches conversation for phrases such as "I prefer …", "always use …", or "never …".
-When it detects one, it adds the preference to memory automatically, and repeated statements reinforce the
-existing entry instead of creating duplicates.
+When it detects one, it routes the preference through the unified write path (`memory-write.ts`), so automatic
+extraction gets the same safeguards as an explicit `memory_add`: topic caps, near-duplicate dedup, and the
+contradiction gate. Questions ("Do I always need to…?") and one-off permission grants ("you can merge this PR")
+are filtered out before extraction.
+
+### The write path guards against bad memories
+
+Every producer — `memory_add`, the preference extractor — funnels through `memory-write.ts`, which enforces,
+in order:
+
+1. **Grant-phrase guardrail** — text that reads like a one-off permission ("you can merge this PR",
+   "go ahead", "just this once") is rejected: one-off grants are session instructions, not memories.
+2. **Contradiction gate** — an add that flips permission polarity against an existing entry (one text
+   forbids what the other permits, on the same topic) is refused with guidance to use `memory_edit` or
+   ask the user. Contradicting a **pinned** entry always refuses — pinned entries are user-explicit.
+3. **Dedup** — near-duplicates (vector similarity) and exact matches reinforce the existing entry
+   instead of creating a second one.
+
+Entries can carry a `scope` (`session`, `task`, or `project`, the default). Session-scoped entries get an
+expiry safety net, are never injected into the situation report of a later session, and are pruned by the
+periodic rebuild once expired.
 
 ### Promotion turns repeated memories into stronger structure
 

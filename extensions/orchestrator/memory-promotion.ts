@@ -8,6 +8,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createLogger } from "../shared/logger.js";
 import {
   type EnforcementAction,
   type EnforcementTrigger,
@@ -32,6 +33,8 @@ import {
 export const EVIDENCE_ENFORCEMENT = 3;
 export const EVIDENCE_SKILL = 3;
 export const EVIDENCE_PROJECT_RULE = 5;
+
+const log = createLogger("memory");
 
 export interface InferredEnforcement {
   trigger: EnforcementTrigger;
@@ -418,7 +421,7 @@ export function runPromotionPass(cwd: string): ApplySafeResult {
   try {
     return applySafePromotions(cwd);
   } catch (e: any) {
-    console.debug("[memory-promotion] pass failed:", e?.message || e);
+    log.warn("promotion pass failed:", e?.message || e);
     return { applied: 0, queued: 0, details: [] };
   }
 }

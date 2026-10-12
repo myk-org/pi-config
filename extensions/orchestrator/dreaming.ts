@@ -122,6 +122,9 @@ export function registerDreaming(
       `   - Completed features/PRs merged → [done] → completions.md\n` +
       `   - Patterns or conventions → [pattern] → patterns.md\n` +
       `   - Architectural/design decisions → [decision] → decisions.md\n` +
+      `   QUALITY GATE for extraction: one-off permissions granted in a single session\n` +
+      `   ("you can merge this PR", "skip tests just this once") are session instructions,\n` +
+      `   NOT memories — never extract them. Only standing, repeated rules are durable.\n` +
       `   Do NOT add duplicates of existing entries.\n` +
       `4. Scan past session files for unprocessed knowledge. Check if ${topicsDir}/../.dream-watermark exists.\n` +
       `   If it does, read the timestamp — only process sessions newer than that.\n` +
@@ -131,6 +134,7 @@ export function registerDreaming(
       `5. Reorganize each topic file:\n` +
       `   - Remove duplicate or near-duplicate entries\n` +
       `   - Remove stale/useless entries\n` +
+      `   - Remove session-scoped or expired entries — they are transient by design\n` +
       `   - Keep each file at a reasonable size (aim for under 20 entries per topic)\n` +
       `   - NEVER remove or modify entries marked with *(pinned)*\n` +
       `   - NEVER remove or modify entries marked with *(enforced)* — these have code-enforced triggers/actions that are keyed by text hash. ANY text change destroys the enforcement binding.\n` +

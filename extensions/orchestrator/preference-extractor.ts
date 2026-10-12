@@ -1,19 +1,22 @@
 /**
  * Preference Auto-Extractor — detects user preferences from conversation.
  *
- * Listens to user input and automatically adds detected preference statements
- * to the preferences topic file. Uses pattern matching to find phrases like
- * "I prefer...", "always use...", "never...", etc.
+ * Listens to user input and routes detected preference statements through the
+ * unified memory write path (memory-write.ts, issue #915). Extraction filters
+ * out questions and one-off permission grants; the write path enforces the
+ * topic cap, near-duplicate dedup, and the contradiction gate — the extractor
+ * no longer bypasses any memory_add safeguard.
  *
  * Architecture inspired by OpenHuman (https://github.com/tinyhumansai/openhuman).
  * Clean-room TypeScript implementation under MIT — not a code translation.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { extractPreferences, entryHash, loadScores, saveScores } from "./memory-scoring.js";
-import type { ScoredEntry } from "./memory-scoring.js";
+import { createLogger } from "../shared/logger.js";
+import { extractPreferences, entryHash } from "./memory-scoring.js";
+import { addMemoryEntry } from "./memory-write.js";
+
+const log = createLogger("memory");
 
 // Debounce: don't extract from every message, only meaningful ones
 const MIN_MESSAGE_LENGTH = 20;
@@ -26,7 +29,7 @@ export function registerPreferenceExtractor(pi: ExtensionAPI): void {
   // Only run in the orchestrator, not in subagents
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
 
-  pi.on("input", async (event, ctx) => {
+  pi.on("input", (event, ctx) => {
     const text = event.text;
     if (!text || text.length < MIN_MESSAGE_LENGTH) return;
     // Skip slash commands
@@ -35,72 +38,30 @@ export function registerPreferenceExtractor(pi: ExtensionAPI): void {
     const preferences = extractPreferences(text);
     if (preferences.length === 0) return;
 
-    const topicsDir = join(ctx.cwd, ".pi", "memory", "topics");
-    const prefPath = join(topicsDir, "preferences.md");
-
-    // Ensure topics directory exists
-    if (!existsSync(topicsDir)) {
-      mkdirSync(topicsDir, { recursive: true });
-    }
-
-    // Read existing preferences topic file
-    let content = "";
-    if (existsSync(prefPath)) {
-      content = readFileSync(prefPath, "utf-8");
-    } else {
-      content = "# Preferences\n\n";
-    }
-
-    const scores = loadScores(ctx.cwd);
-    let added = 0;
     const sourceSession =
       (ctx as any).sessionManager?.getSessionId?.() || undefined;
 
     for (const pref of preferences) {
-      const entryLine = `- [preference] ${pref}`;
-      const hash = entryHash(entryLine);
+      const hash = entryHash(`- [preference] ${pref}`);
 
       // Cooldown check
       const lastExtracted = recentExtractions.get(hash);
       if (lastExtracted && Date.now() - lastExtracted < COOLDOWN_MS) continue;
-
-      // Check if already exists
-      if (content.includes(pref)) {
-        // Reinforce existing entry
-        if (scores.entries[hash]) {
-          scores.entries[hash]!.evidenceCount += 1;
-          scores.entries[hash]!.lastReinforced = new Date().toISOString();
-          if (sourceSession && !scores.entries[hash]!.sourceSession) {
-            scores.entries[hash]!.sourceSession = sourceSession;
-          }
-        }
-        recentExtractions.set(hash, Date.now());
-        continue;
-      }
-
-      // Append to preferences topic file
-      content = content.trimEnd() + "\n" + entryLine + "\n";
-
-      // Add score entry
-      scores.entries[hash] = {
-        class: "preference",
-        score: 1.0,
-        evidenceCount: 1,
-        cue: "explicit",
-        firstSeen: new Date().toISOString(),
-        lastReinforced: new Date().toISOString(),
-        userState: "auto",
-        lifecycle: "active",
-        ...(sourceSession ? { sourceSession } : {}),
-      } as ScoredEntry;
-
       recentExtractions.set(hash, Date.now());
-      added++;
-    }
 
-    if (added > 0) {
-      writeFileSync(prefPath, content, "utf-8");
-      saveScores(ctx.cwd, scores);
+      // Fire-and-forget: the write path may load the embedding model on first
+      // use (~2.7s) — never block user input on it.
+      void addMemoryEntry(ctx.cwd, {
+        text: pref,
+        category: "preference",
+        sourceSession,
+      })
+        .then((result) => {
+          log.info("preference_extracted", pref.slice(0, 60), result.status);
+        })
+        .catch((err) => {
+          log.warn("preference extraction failed:", err?.message || err);
+        });
     }
   });
 }

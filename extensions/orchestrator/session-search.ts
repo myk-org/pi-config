@@ -13,7 +13,10 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { createLogger } from "../shared/logger.js";
 import { getProjectDataDir } from "./utils.js";
+
+const log = createLogger("memory");
 
 // ── Storage ────────────────────────────────────────────────────────────────
 
@@ -37,7 +40,7 @@ function loadStore(cwd: string): SessionStore {
   try {
     const raw = JSON.parse(readFileSync(storePath, "utf-8"));
     if (!raw || typeof raw !== "object" || !Array.isArray(raw.entries)) {
-      console.error("[session-search] corrupt store shape, resetting");
+      log.warn("session-search: corrupt store shape, resetting");
       return { entries: [] };
     }
     // Filter to only valid entries
@@ -50,7 +53,7 @@ function loadStore(cwd: string): SessionStore {
     );
     return { entries };
   } catch (err) {
-    console.error("[session-search] corrupt store, resetting:", err);
+    log.warn("session-search: corrupt store, resetting:", err);
     return { entries: [] };
   }
 }
@@ -226,7 +229,7 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
       const sid = sessionId || ctx.sessionManager?.getSessionId?.() || `session-${Date.now()}`;
       indexSessionSummary(cwd, sid, summary);
     } catch (err) {
-      console.error("[session-search] indexing failed on compact:", err);
+      log.warn("session-search: indexing failed on compact:", err);
     }
   });
 
@@ -237,7 +240,7 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
       const summary = sessionMessages.join(" | ").slice(0, 1000);
       indexSessionSummary(sessionCwd, sessionId, summary);
     } catch (err) {
-      console.error("[session-search] indexing failed on shutdown:", err);
+      log.warn("session-search: indexing failed on shutdown:", err);
     }
   });
 }

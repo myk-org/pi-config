@@ -38,6 +38,12 @@ Keep entries short (~100 chars), specific, actionable.
 Use `pinned: true` ONLY when user explicitly says "remember this". Duplicates are auto-reinforced.
 When a correction is mechanical (can be checked by code), add `trigger` + `action` params — see "Code-Enforced Memories" below.
 
+**One-off permissions are NOT memories.** "You can merge this PR", "go ahead and skip tests this time",
+"for this release you may push directly" — these are session instructions for the current task only.
+Never `memory_add` them. The write path rejects grant phrasing and contradictions of pinned entries.
+Only standing, repeated rules are durable. If the user confirms a rule genuinely changed, use
+`memory_edit` to invalidate the old entry instead of adding a contradicting one.
+
 ### `memory_remove` — Remove Outdated Memories
 
 Remove entries that are no longer accurate, relevant, or superseded by newer entries.
@@ -115,6 +121,7 @@ The situation report header shows usage: `# Project Memory [72% — 1,224/1,700 
 | User corrects you | `lesson` | Learned |
 | Multiple fix attempts | `mistake` | Learned |
 | User states a preference | `preference` | Learned |
+| User grants a one-off permission ("you can merge this PR") | — | **NOT a memory** — session instruction only |
 
 ---
 
@@ -165,6 +172,7 @@ If it's knowledge that informs decisions but can't be checked mechanically — p
 - Ideas or requests the user rejected, abandoned, or said "nevermind" to
 - Unfinished conversations where no conclusion was reached
 - User requirements that were never implemented
+- One-off permissions granted for a specific PR, task, or session — session instructions, not durable rules
 
 Only memorize **outcomes** (what happened), not **intentions** (what was discussed but dropped).
 

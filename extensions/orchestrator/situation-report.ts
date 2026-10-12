@@ -20,6 +20,7 @@ import {
 } from "./memory-scoring.js";
 import { listTopics, readAllTopicEntries } from "./memory-tree.js";
 import { formatPromotionsForReport } from "./promotion-queue.js";
+import { pruneExpiredEntries } from "./memory-write.js";
 import {
   type QueryClass,
   getQueryClassBias,
@@ -110,6 +111,15 @@ export function rebuildAndOrganize(cwd: string): void {
   const topicsDir = join(cwd, ".pi", "memory", "topics");
   if (!existsSync(topicsDir)) return;
 
+  // Prune expired scoped entries first (issue #915): session/task-scoped
+  // entries must not outlive their scope. Pruning removes topic lines, so it
+  // must happen before the rebuild re-initializes scores for topic entries.
+  try {
+    pruneExpiredEntries(cwd);
+  } catch {
+    // non-fatal — rebuild continues with whatever entries remain
+  }
+
   const topicEntries = readAllTopicEntries(cwd);
   if (topicEntries.length > 0) {
     rebuild(cwd, topicEntries);
@@ -163,6 +173,9 @@ export function buildSituationReport(
     if (!scored) continue;
     // Only include active and provisional entries
     if (scored.lifecycle !== "active" && scored.lifecycle !== "provisional") continue;
+    // Session-scoped entries are transient (issue #915) — never injected
+    // into the situation report; they expire via pruneExpiredEntries.
+    if (scored.scope === "session") continue;
     entries.push({
       text: te.text,
       category: te.category,

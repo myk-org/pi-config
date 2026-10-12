@@ -444,7 +444,7 @@ architectural ideas.</p>
 <tr>
 <td>Memory tree</td>
 <td><code>memory-tree.ts</code></td>
-<td>Topic-file organization, hotness scores, cold-topic archiving.</td>
+<td>Topic-file organization and hotness scores.</td>
 </tr>
 <tr>
 <td>Embeddings</td>
@@ -455,6 +455,11 @@ architectural ideas.</p>
 <td>Memory tools</td>
 <td><code>memory-tools.ts</code></td>
 <td>The <code>memory_*</code> tools exposed to the agent.</td>
+</tr>
+<tr>
+<td>Unified write path</td>
+<td><code>memory-write.ts</code></td>
+<td>Single add path with validation, grant guardrail, contradiction gate, dedup, and scope (issue #915).</td>
 </tr>
 <tr>
 <td>Session search</td>
@@ -731,8 +736,31 @@ auto-injects matches from relevant past sessions alongside the situation report.
 <p>The agent can also query it directly with the <code>session_search</code> tool — see <a href="commands-and-tools.html">Commands and Tools Reference</a>.</p>
 <h3 id="stated-preferences-are-captured-automatically">Stated preferences are captured automatically</h3>
 <p><code>preference-extractor.ts</code> watches conversation for phrases such as "I prefer …", "always use …", or "never …".
-When it detects one, it adds the preference to memory automatically, and repeated statements reinforce the
-existing entry instead of creating duplicates.</p>
+When it detects one, it routes the preference through the unified write path (<code>memory-write.ts</code>), so automatic
+extraction gets the same safeguards as an explicit <code>memory_add</code>: topic caps, near-duplicate dedup, and the
+contradiction gate. Questions ("Do I always need to…?") and one-off permission grants ("you can merge this PR")
+are filtered out before extraction.</p>
+<h3 id="the-write-path-guards-against-bad-memories">The write path guards against bad memories</h3>
+<p>Every producer — <code>memory_add</code>, the preference extractor — funnels through <code>memory-write.ts</code>, which enforces,
+in order:</p>
+<ol>
+<li>
+<p><strong>Grant-phrase guardrail</strong> — text that reads like a one-off permission ("you can merge this PR",
+   "go ahead", "just this once") is rejected: one-off grants are session instructions, not memories.</p>
+</li>
+<li>
+<p><strong>Contradiction gate</strong> — an add that flips permission polarity against an existing entry (one text
+   forbids what the other permits, on the same topic) is refused with guidance to use <code>memory_edit</code> or
+   ask the user. Contradicting a <strong>pinned</strong> entry always refuses — pinned entries are user-explicit.</p>
+</li>
+<li>
+<p><strong>Dedup</strong> — near-duplicates (vector similarity) and exact matches reinforce the existing entry
+   instead of creating a second one.</p>
+</li>
+</ol>
+<p>Entries can carry a <code>scope</code> (<code>session</code>, <code>task</code>, or <code>project</code>, the default). Session-scoped entries get an
+expiry safety net, are never injected into the situation report of a later session, and are pruned by the
+periodic rebuild once expired.</p>
 <h3 id="promotion-turns-repeated-memories-into-stronger-structure">Promotion turns repeated memories into stronger structure</h3>
 <p>When a memory accumulates enough evidence, Pi can promote it.</p>
 <p>Current promotion destinations are:</p>
@@ -876,6 +904,7 @@ memory-backed enforcement is code-enforced, which is only injected, and which is
 <li><a href="#query-classes-bias-what-gets-injected">Query classes bias what gets injected</a></li>
 <li><a href="#session-search-recalls-past-conversations">Session search recalls past conversations</a></li>
 <li><a href="#stated-preferences-are-captured-automatically">Stated preferences are captured automatically</a></li>
+<li><a href="#the-write-path-guards-against-bad-memories">The write path guards against bad memories</a></li>
 <li><a href="#promotion-turns-repeated-memories-into-stronger-structure">Promotion turns repeated memories into stronger structure</a></li>
 <li><a href="#provenance-is-merged-through-a-sidecar">Provenance is merged through a sidecar</a></li>
 <li><a href="#legacy-memory-migration-still-exists">Legacy memory migration still exists</a></li>

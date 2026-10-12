@@ -10,13 +10,16 @@
  * Clean-room TypeScript implementation under MIT — not a code translation.
  */
 
-import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
+import { createLogger } from "../shared/logger.js";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   type MemoryCategory,
   loadScores,
   entryHash,
 } from "./memory-scoring.js";
+
+const log = createLogger("memory");
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -31,19 +34,6 @@ export const CATEGORY_TO_TOPIC: Record<MemoryCategory, string> = {
   decision: "decisions",
   done: "completions",
   mistake: "mistakes",
-};
-
-/** How old a topic's newest entry must be (relative to half-life) before archival */
-const ARCHIVAL_MULTIPLIER = 2;
-
-/** Half-lives in ms for archival check */
-const HALF_LIVES_MS: Record<string, number> = {
-  preferences: 90 * 86400 * 1000,
-  lessons: 60 * 86400 * 1000,
-  patterns: 30 * 86400 * 1000,
-  decisions: 30 * 86400 * 1000,
-  completions: 14 * 86400 * 1000,
-  mistakes: 14 * 86400 * 1000,
 };
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -61,14 +51,6 @@ export interface TopicInfo {
 
 function getTopicsDir(cwd: string): string {
   return join(cwd, ".pi", "memory", "topics");
-}
-
-function ensureTopicsDir(cwd: string): string {
-  const dir = getTopicsDir(cwd);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  return dir;
 }
 
 // ── Topic File I/O ─────────────────────────────────────────────────────────
@@ -100,50 +82,6 @@ function readTopicFile(path: string): TopicFile {
   }
 }
 
-function writeTopicFile(
-  path: string,
-  topicName: string,
-  entries: TopicFile["entries"],
-): void {
-  const header = `# ${topicName.charAt(0).toUpperCase() + topicName.slice(1)}\n\n`;
-  const lines = entries.map((e) => {
-    const pinTag = e.pinned ? " *(pinned)*" : "";
-    return `- [${e.category}] ${e.text}${pinTag}`;
-  });
-  const content = header + lines.join("\n") + "\n";
-
-  // Enforce token limit — truncate if too long
-  if (content.length > MAX_TOPIC_CHARS) {
-    const truncated = content.slice(0, MAX_TOPIC_CHARS);
-    const lastNewline = truncated.lastIndexOf("\n");
-    writeFileSync(path, truncated.slice(0, lastNewline + 1), "utf-8");
-  } else {
-    writeFileSync(path, content, "utf-8");
-  }
-}
-
-// ── Archival ───────────────────────────────────────────────────────────────
-
-function archiveColdTopics(topicsDir: string, topics: TopicInfo[], now: number): void {
-  for (const topic of topics) {
-    const halfLifeMs = HALF_LIVES_MS[topic.name] || 30 * 86400 * 1000;
-    const threshold = halfLifeMs * ARCHIVAL_MULTIPLIER;
-    const newestMs = new Date(topic.newestEntry).getTime();
-    const age = now - newestMs;
-
-    if (age > threshold && topic.entryCount > 0) {
-      // Check if all entries are non-pinned before archiving
-      const topicFile = readTopicFile(topic.path);
-      const hasPinned = topicFile.entries.some((e) => e.pinned);
-      if (!hasPinned) {
-        try {
-          unlinkSync(topic.path);
-        } catch (e: any) { console.debug("[memory-tree] archive topic delete failed:", e?.message || e); }
-      }
-    }
-  }
-}
-
 // ── Read All Topic Entries ──────────────────────────────────────────────────
 
 /**
@@ -161,7 +99,7 @@ export function readAllTopicEntries(cwd: string): { text: string; category: Memo
       const topicFile = readTopicFile(join(topicsDir, file));
       all.push(...topicFile.entries);
     }
-  } catch (e: any) { console.debug("[memory-tree] read topic entries failed:", e?.message || e); }
+  } catch (e: any) { log.debug("read topic entries failed:", e?.message || e); }
   return all;
 }
 
@@ -206,7 +144,7 @@ export function listTopics(cwd: string): TopicInfo[] {
         chars: readFileSync(path, "utf-8").length,
       });
     }
-  } catch (e: any) { console.debug("[memory-tree] list topics failed:", e?.message || e); }
+  } catch (e: any) { log.debug("list topics failed:", e?.message || e); }
 
   return infos.sort((a, b) => b.hotness - a.hotness);
 }
