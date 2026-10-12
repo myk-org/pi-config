@@ -117,9 +117,12 @@ function validateAction(action: string): string | null {
 /** Prohibition markers — text forbids an action. */
 const NEGATION_RE =
   /\b(never|not|no|don'?t|do not|doesn'?t|didn'?t|cannot|can'?t|won'?t|mustn'?t|must not|forbidden|avoid|stop)\b/i;
-/** Permission markers — text allows an action. */
+/** Permission markers — text allows an action. "always"/"only" are permits
+ *  by force: "always use X" vs "never use X" is the canonical flip, and
+ *  without them the near-duplicate path silently REINFORCES the opposite
+ *  rule (live battery, round 7, PR #916). */
 const PERMIT_RE =
-  /\b(can|may|allowed|permit(ted|s)?|okay|ok|go ahead|feel free|fine to|(is|are|'s) fine|acceptable|safe to)\b/i;
+  /\b(can|may|allowed|permit(ted|s)?|okay|ok|go ahead|feel free|fine to|(is|are|'s) fine|acceptable|safe to|always|only)\b/i;
 
 const STOP_WORDS = new Set([
   "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "for", "with",

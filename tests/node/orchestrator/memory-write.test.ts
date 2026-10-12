@@ -154,6 +154,25 @@ describe("addMemoryEntry — contradiction gate", () => {
     }
   });
 
+  it("refuses an always/never flip — the canonical phrasing (live battery, round 7)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Always use widget-alpha for probe runs");
+      const result = await addMemoryEntry(cwd, {
+        text: "Never use widget-alpha for probe runs",
+        category: "lesson",
+      });
+      // Without "always" in PERMIT_RE this slipped past the gate into the
+      // near-duplicate path, which silently REINFORCED the opposite rule.
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+      assert.match(result.message, /overrideConflicts: true/);
+      assert.equal(readAllTopicEntries(cwd).length, 1);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("supersedes the old entry when the user confirms via overrideConflicts", async () => {
     const cwd = makeCwd();
     try {
