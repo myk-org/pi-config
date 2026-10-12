@@ -138,7 +138,7 @@ describe("addMemoryEntry — contradiction gate", () => {
     }
   });
 
-  it("refuses a permission flip against a non-pinned entry and offers the override path", async () => {
+  it("refuses a permission flip against a non-pinned entry, offering the override path", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "Never run tests with bare python — always use uv run");
@@ -231,13 +231,20 @@ describe("addMemoryEntry — dedup", () => {
     }
   });
 
-  it("validates category and action", async () => {
+  it("rejects an invalid category", async () => {
     const cwd = makeCwd();
     try {
       const badCategory = await addMemoryEntry(cwd, { text: "x", category: "bogus" });
       assert.equal(badCategory.status, "rejected");
       assert.match(badCategory.message, /Invalid category/);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 
+  it("rejects a run_after action without a command", async () => {
+    const cwd = makeCwd();
+    try {
       const badAction = await addMemoryEntry(cwd, {
         text: "Run checks",
         category: "lesson",
@@ -255,7 +262,7 @@ describe("addMemoryEntry — dedup", () => {
 });
 
 describe("pruneExpiredEntries", () => {
-  it("removes expired session-scoped entries from topics and scores", () => {
+  it("prunes expired session-scoped entries from topics with their scores", () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "Durable project lesson");
@@ -346,7 +353,7 @@ describe("addMemoryEntry — Qodo PR #916 hardening", () => {
     }
   });
 
-  it("cites the pinned entry when both pinned and non-pinned entries conflict", async () => {
+  it("cites the pinned entry when pinned entries conflict alongside non-pinned ones", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "preference", "NEVER merge code PRs — user merges those", { pinned: true });
@@ -448,5 +455,41 @@ describe("isEntryActiveForSession — session/expiry eligibility (Qodo PR #916)"
   it("durable entries without a score record stay visible", () => {
     assert.equal(isEntryActiveForSession(undefined, "sess-a"), true);
     assert.equal(isEntryActiveForSession({ scope: "project" } as any, "sess-a"), true);
+  });
+});
+
+describe("sourceSessions — multi-session session-scoped entries (Qodo round 3, PR #916)", () => {
+  it("keeps the entry active in the original session when another session restates it", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Session note about flaky test ordering",
+        category: "lesson",
+        scope: "session",
+        sourceSession: "sess-a",
+      });
+      assert.equal(result.status, "added");
+      const hash = entryHash("- [lesson] Session note about flaky test ordering");
+
+      // Session B restates the same rule
+      const restated = await addMemoryEntry(cwd, {
+        text: "Session note about flaky test ordering",
+        category: "lesson",
+        scope: "session",
+        sourceSession: "sess-b",
+      });
+      assert.equal(restated.status, "reinforced");
+
+      const entry = loadScores(cwd).entries[hash]!;
+      assert.equal(entry.sourceSession, "sess-a", "primary sourceSession must not be overwritten");
+      assert.deepEqual(entry.sourceSessions, ["sess-a", "sess-b"], "restating session must be added");
+
+      // Eligible in BOTH sessions
+      assert.equal(isEntryActiveForSession(entry, "sess-a"), true);
+      assert.equal(isEntryActiveForSession(entry, "sess-b"), true);
+      assert.equal(isEntryActiveForSession(entry, "sess-c"), false);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });

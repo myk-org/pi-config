@@ -79,6 +79,10 @@ export interface ScoredEntry {
   // ── Provenance fields (optional; not injected into situation report) ──
   /** Session id or path basename this memory came from */
   sourceSession?: string;
+  /** Sessions a session-scoped entry was restated in (Qodo round 3, PR #916):
+ *  rebinding must ADD the restating session, never steal the entry from the
+ *  first one. sourceSession stays the original/primary. */
+  sourceSessions?: string[];
   /** Short note or prior entry hash this was derived from */
   derivedFrom?: string;
   /** Free-text targets this memory informs (e.g. pr-review, git, skill name) */
@@ -269,10 +273,14 @@ export function isEntryActiveForSession(entry: ScoredEntry | undefined, currentS
     }
   }
   if (entry.scope === "session") {
-    const active = !!currentSessionId && !!entry.sourceSession && entry.sourceSession === currentSessionId;
+    const known = entry.sourceSession
+      ? [entry.sourceSession, ...(entry.sourceSessions ?? [])]
+      : [...(entry.sourceSessions ?? [])];
+    const active = !!currentSessionId && known.includes(currentSessionId);
     if (!active) {
       memLog.debug("memory_eligibility: session-scoped entry not active for this session", {
         sourceSession: entry.sourceSession,
+        sourceSessions: entry.sourceSessions?.length ?? 0,
         currentSessionId,
       });
     }

@@ -80,7 +80,7 @@ describe("registerPreferenceExtractor — tracked writes, cooldown, shutdown dra
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
-  it("extracts a preference from user input and writes it", async () => {
+  it("writes an extracted preference to the topic file", async () => {
     const h = makeHarness(cwd);
     registerPreferenceExtractor(h.pi);
     await h.emit("input", { text: "Going forward I always want uv run for every Python command" });

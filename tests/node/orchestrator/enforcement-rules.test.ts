@@ -704,24 +704,53 @@ describe("loadEnforcedEntries / loadVerifierEntries — session & expiry eligibi
     return tmpDir;
   }
 
-  it("includes durable rules and excludes other-session and expired rules", () => {
+  it("includes durable rules for every session", () => {
     const tmpDir = makeScopedDir();
     try {
-      const inA = loadEnforcedEntries(tmpDir, "session-a");
-      const textsA = inA.map((e) => e.text);
-      assert.ok(textsA.includes("Durable enforced rule"));
+      for (const sid of ["session-a", "session-b", undefined]) {
+        const texts = loadEnforcedEntries(tmpDir, sid).map((e) => e.text);
+        assert.ok(texts.includes("Durable enforced rule"), `durable rule must enforce (session: ${sid ?? "unknown"})`);
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("enforces a session-scoped rule in its own session", () => {
+    const tmpDir = makeScopedDir();
+    try {
+      const textsA = loadEnforcedEntries(tmpDir, "session-a").map((e) => e.text);
       assert.ok(textsA.includes("Session rule from session A"), "own-session rule must enforce");
-      assert.ok(!textsA.includes("Expired task rule"), "expired rule must not enforce");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 
-      const inB = loadEnforcedEntries(tmpDir, "session-b");
-      const textsB = inB.map((e) => e.text);
-      assert.ok(textsB.includes("Durable enforced rule"));
+  it("excludes a session-scoped rule from another session", () => {
+    const tmpDir = makeScopedDir();
+    try {
+      const textsB = loadEnforcedEntries(tmpDir, "session-b").map((e) => e.text);
       assert.ok(!textsB.includes("Session rule from session A"), "other-session rule must not enforce");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 
-      // Unknown session → fail closed for session-scoped rules
+  it("excludes session-scoped rules when the current session is unknown", () => {
+    const tmpDir = makeScopedDir();
+    try {
       const unknown = loadEnforcedEntries(tmpDir).map((e) => e.text);
-      assert.ok(unknown.includes("Durable enforced rule"));
-      assert.ok(!unknown.includes("Session rule from session A"));
+      assert.ok(!unknown.includes("Session rule from session A"), "unknown session must fail closed");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes expired rules regardless of session", () => {
+    const tmpDir = makeScopedDir();
+    try {
+      const texts = loadEnforcedEntries(tmpDir, "session-a").map((e) => e.text);
+      assert.ok(!texts.includes("Expired task rule"), "expired rule must not enforce");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

@@ -1131,28 +1131,83 @@ const GIT_WRAP_SRC = /(?:command|builtin|exec)\s+/.source;
 const GIT_RTK_SRC = /rtk(?:\s+-\S+)*\s+/.source;
 const GIT_PREFIX_SRC = `(?:${GIT_WRAPPER_SRC}|${GIT_ASSIGN_SRC}|${GIT_WRAP_SRC}|${GIT_RTK_SRC})*`;
 const GIT_EXE_SRC = /(?:\S*\/)?git\b/.source;
-const GIT_FLAGS_SRC = /(?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*/.source;
+const GIT_FLAGS_SRC = /(?:\s+(?:-[a-zA-Z]\s+\S*|-\S+))*/.source;
 
 /** Prefix that opens a nested command string: `bash -lc "..."`, `sh -c '...'`, `eval "..."`. */
 const SHELL_C_PREFIX_RE =
   /(?:\b(?:bash|sh|zsh|dash|ksh)\s+(?:-{1,2}[a-zA-Z][a-zA-Z-]*\s+)*-[a-zA-Z]*c[a-zA-Z]*|\beval)\s*$/;
 
 /**
- * Mask quoted PROSE so it can never look like a command boundary (Qodo round
- * 2, PR #916). A quoted span is replaced with blanks UNLESS it (a) directly
- * follows a shell `-c`/`eval` prefix — it is a nested command string the
- * boundary regex must see — or (b) contains a backtick or `$(` — command
- * substitution inside quotes still executes. Without this, `echo "Done! git
- * push origin main"`, `printf 'if git push origin main'`, and
- * `gh pr create --body "if git commit fails, rerun"` all reached the git
- * guards as if they invoked git.
+ * Mask quoted PROSE so it can never look like a command boundary (Qodo
+ * rounds 2–3, PR #916). A scanner, not a plain regex: pairing quotes with a
+ * regex misparses real shell —
+ * - a BACKSLASH-ESCAPED quote (\") is a literal character, not a delimiter,
+   so `echo \"; git push origin main; echo \"x\"` still executes git push;
+ * - an APOSTROPHE MID-WORD (don't, it's) is a contraction, not an opener —
+   `# don't …` pairing with a later `'ok'` blanked a real `git commit`;
+ * - a `#` COMMENT TAIL never executes, so it is blanked to end of line and
+   its quotes cannot pair with code.
+ * A quoted span is blanked UNLESS it (a) directly follows a shell `-c`/
+ * `eval` prefix — it is a nested command string the boundary regex must
+ * see — or (b) contains a backtick or `$(` — command substitution inside
+ * quotes still executes — or (c) is unterminated (the shell reads the rest
+ * of the line as quoted, so it cannot execute either). The result is
+ * LENGTH-PRESERVING so match indices on the masked text are valid on the
+ * original string.
  */
 function maskQuotedProse(command: string): string {
-  return command.replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, (span: string, offset: number): string => {
-    if (SHELL_C_PREFIX_RE.test(command.slice(0, offset))) return span;
-    if (/`|\$\(/.test(span)) return span;
-    return " ".repeat(span.length);
-  });
+  const out = command.split("");
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i]!;
+    // Comment tail: `#` at a word start (${...} and =# forms excluded) is a
+    // comment — blank to end of line, quotes inside cannot pair with code.
+    if (ch === "#" && (i === 0 || /[\s(;&|`]/.test(command[i - 1]!))) {
+      while (i < command.length && command[i] !== "\n") {
+        out[i] = " ";
+        i++;
+      }
+      continue;
+    }
+    // Escaped quotes are literal characters, not delimiters.
+    if ((ch === '"' || ch === "'") && command[i - 1] !== "\\") {
+      // An apostrophe mid-word is a contraction, not a single-quote opener.
+      if (ch === "'" && i > 0 && /[A-Za-z0-9]/.test(command[i - 1]!)) {
+        i++;
+        continue;
+      }
+      const quote = ch;
+      let j = i + 1;
+      let closed = false;
+      while (j < command.length) {
+        const c = command[j]!;
+        // Inside double quotes a backslash escapes the next char (\" and \\).
+        // Inside single quotes a backslash is literal; only ' terminates.
+        if (quote === '"' && c === "\\") {
+          j += 2;
+          continue;
+        }
+        if (c === quote) {
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      const end = closed ? j + 1 : command.length;
+      const span = command.slice(i, end);
+      const keep =
+        !closed ||
+        SHELL_C_PREFIX_RE.test(command.slice(0, i)) ||
+        /`|\$\(/.test(span);
+      if (!keep) {
+        for (let k = i; k < end; k++) out[k] = " ";
+      }
+      i = end;
+      continue;
+    }
+    i++;
+  }
+  return out.join("");
 }
 
 /** Regex matching a REAL `git <sub>` invocation at a shell command position. */
@@ -1332,19 +1387,31 @@ export function injectSignoff(command: string): string {
   // with isRealGitCommitOrPush so a guarded invocation is always an injectable one.
   const commitRe = realGitSubRegex("commit", true);
 
-  // Pattern A: echo/printf "..." | git commit -F -  (real invocation after last pipe)
+  // Pattern A: echo/printf "..." | git commit -F -  (real invocation after last pipe).
+  // Matching runs on PROSE-MASKED text so a `git commit` mention inside the
+  // echoed string cannot absorb the signoff (Qodo round 3, PR #916); the
+  // splice uses the masked match's index, valid on the raw string because
+  // masking is length-preserving.
   const pipeIdx = command.lastIndexOf("|");
-  if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
+  if (pipeIdx !== -1) {
     const echoPart = command.slice(0, pipeIdx);
     const gitPart = command.slice(pipeIdx);
-    if (SIGNOFF_RE.test(gitPart) || SHORT_S_RE.test(gitPart)) return command;
-    if (!commitRe.test(gitPart)) return command;
-    enfLog.debug("injectSignoff", "pattern A (piped git commit -F -)");
-    return echoPart + gitPart.replace(commitRe, "$1 --signoff");
+    const maskedGit = maskQuotedProse(gitPart);
+    if (/git\s+commit\s+.*-F\s*-/.test(maskedGit)) {
+      if (SIGNOFF_RE.test(gitPart) || SHORT_S_RE.test(gitPart)) return command;
+      const mA = commitRe.exec(maskedGit);
+      if (!mA) return command;
+      enfLog.debug("injectSignoff", "pattern A (piped git commit -F -)");
+      const cutA = pipeIdx + mA.index + mA[1]!.length;
+      return command.slice(0, cutA) + " --signoff" + command.slice(cutA);
+    }
   }
 
-  // Pattern B: bare / inline git commit (no message pipe)
-  const m = commitRe.exec(command);
+  // Pattern B: bare / inline git commit (no message pipe) — matched on the
+  // masked text so prose mentions (echo "if git commit" && git commit -m x)
+  // cannot take the injection; spliced at the masked index (length-preserving).
+  const masked = maskQuotedProse(command);
+  const m = commitRe.exec(masked);
   if (!m) return command;
   // Scope the "already signed" check to the MATCHED real invocation ONLY, not the
   // whole command. The invocation region runs from the start of the match to the
@@ -1396,7 +1463,10 @@ export function injectSignoff(command: string): string {
     .replace(/'[^']*'/g, "''");
   if (SIGNOFF_RE.test(region) || SHORT_S_RE.test(region)) return command;
   enfLog.debug("injectSignoff", "pattern B (inline git commit)");
-  return command.replace(commitRe, "$1 --signoff");
+  // Splice at the masked match position — a raw replace could pick a prose
+  // mention instead of the real invocation (Qodo round 3, PR #916).
+  const cut = m.index + m[1]!.length;
+  return command.slice(0, cut) + " --signoff" + command.slice(cut);
 }
 
 /** Detect git add --force / -f (including combined short options like -fn).

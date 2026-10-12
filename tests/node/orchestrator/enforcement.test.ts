@@ -2161,7 +2161,7 @@ describe("realGitSub / pushTargetsProtectedBranch — wrapper keywords, nested s
   });
 });
 
-describe("realGitSub — combined shell flags and quoted prose (Qodo round 2, PR #916)", () => {
+describe("realGitSub — combined shell flags with quoted prose masked (Qodo round 2, PR #916)", () => {
   // Combined short-flag clusters containing c open a command position too.
   it("detects bash -lc quoted git commit", () => {
     assert.ok(realGitSub('bash -lc "git commit -m x"', "commit"));
@@ -2204,5 +2204,54 @@ describe("realGitSub — combined shell flags and quoted prose (Qodo round 2, PR
   });
   it("sh -ec push to main hits the protected-branch guard", () => {
     assert.equal(pushTargetsProtectedBranch("sh -ec 'git push origin main'", ["main"]), "main");
+  });
+});
+
+describe("realGitSub / injectSignoff — quoted option values, escapes, comments (Qodo round 3, PR #916)", () => {
+  // Quoted git option values must not hide the invocation.
+  it("detects git -C with a quoted value", () => {
+    assert.ok(realGitSub('git -C "/tmp/repo" commit -m x', "commit"));
+  });
+  it("detects git -c with a quoted config value", () => {
+    assert.ok(realGitSub('git -c "user.name=x" commit -m x', "commit"));
+  });
+  it("detects rtk git -C with a quoted value pushing", () => {
+    assert.ok(realGitSub('rtk git -C "/tmp/repo" push origin main', "push"));
+  });
+  // Escaped quotes are literals — the code between them executes.
+  it("detects a push between escaped literal quotes", () => {
+    assert.ok(realGitSub('echo \\"; git push origin main; echo \\"x\\"', "push"));
+  });
+  // Contractions must not open single-quote spans that swallow real code.
+  it("detects a commit after a comment containing don't", () => {
+    assert.ok(realGitSub("# don't do this\n git commit --no-verify -m x\necho 'ok'", "commit"));
+  });
+  it("detects a push after an unquoted contraction", () => {
+    assert.ok(realGitSub("echo it's fine; git push origin main; echo 'ok'", "push"));
+  });
+  it("detects a commit after a comment containing an unpaired double quote", () => {
+    assert.ok(realGitSub('# says "hello\n git commit -m x', "commit"));
+  });
+  // Prose stays masked.
+  it("does not fire on echoed prose with a contraction", () => {
+    assert.ok(!realGitSub("echo \"don't git push to main\"", "push"));
+  });
+  it("does not fire on echoed prose after round-2 fixes", () => {
+    assert.ok(!realGitSub('echo "Done! git push origin main"', "push"));
+  });
+  // Nested shells still fire.
+  it("still fires on bash -lc quoted commit", () => {
+    assert.ok(realGitSub('bash -lc "git commit -m x"', "commit"));
+  });
+  // Signoff injection must target the real commit, not prose mentions.
+  it("injects the signoff into the real commit, not echoed prose", () => {
+    const out = injectSignoff('echo "if git commit" && git commit -m x');
+    assert.match(out, /git commit --signoff -m x/);
+    assert.doesNotMatch(out, /if git commit --signoff/);
+  });
+  it("injects the signoff into the piped git commit, not the echoed text", () => {
+    const out = injectSignoff('echo "git commit -F -" | git commit -F -');
+    assert.match(out, /git commit --signoff -F -/);
+    assert.doesNotMatch(out, /echo "git commit --signoff/);
   });
 });

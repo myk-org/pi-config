@@ -359,10 +359,17 @@ function reconcileScopeOnReinforce(cwd: string, existingLine: string, input: Add
     if (
       input.scope === "session" &&
       existing.scope === "session" &&
-      input.sourceSession &&
-      existing.sourceSession !== input.sourceSession
+      input.sourceSession
     ) {
-      existing.sourceSession = input.sourceSession;
+      // Rebinding ADDS the restating session — it must never steal the entry
+      // from a still-active earlier session (Qodo round 3, PR #916).
+      const known = new Set(
+        [existing.sourceSession, ...(existing.sourceSessions ?? [])].filter((s): s is string => !!s),
+      );
+      if (!known.has(input.sourceSession)) {
+        known.add(input.sourceSession);
+        existing.sourceSessions = [...known];
+      }
       existing.expiresAt = new Date(Date.now() + SESSION_SCOPE_TTL_MS).toISOString();
       log.info("memory_scope_rebound", existingLine.slice(0, 60), input.sourceSession);
     }

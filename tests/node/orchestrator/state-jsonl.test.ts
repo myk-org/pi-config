@@ -469,7 +469,7 @@ describe("createCachedStore corrupt legacy migration", () => {
 });
 
 describe("JsonlStateStore.mutate — lock contention (Qodo round 2, PR #916)", () => {
-  it("retries past a briefly-held lock and preserves the latest state", () => {
+  it("preserves the latest state when a briefly-held lock releases", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jsonl-contention-"));
     try {
       const file = path.join(dir, "state.jsonl");
