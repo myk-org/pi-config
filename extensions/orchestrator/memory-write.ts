@@ -120,12 +120,20 @@ const NEGATION_RE =
 /** Permission markers — text allows an action. "always" is a permit by
  *  force: "always use X" vs "never use X" is the canonical flip, and
  *  without it the near-duplicate path silently REINFORCES the opposite
- *  rule (live battery, round 7, PR #916). "only" is deliberately NOT a
- *  permit marker (Qodo round 8): it is usually a qualifier ("only stage
- *  files after tests pass") and treating it as permission falsely
- *  rejected unrelated restrictions as contradictions. */
+ *  rule (live battery, round 7, PR #916). A bare "only" is deliberately
+ *  NOT here (Qodo round 8): sentence-initial or trailing "only" is a
+ *  restrictive qualifier ("only stage files after tests pass") and
+ *  treating it as permission falsely rejected unrelated restrictions. */
 const PERMIT_RE =
   /\b(can|may|allowed|permit(ted|s)?|okay|ok|go ahead|feel free|fine to|(is|are|'s) fine|acceptable|safe to|always)\b/i;
+/** Affirmative-exclusive instruction — `only` IMMEDIATELY AFTER an action
+ *  verb ("use only uv", "install only via pip"): the sentence exclusively
+ *  permits that action's tool, so it opposes a prohibition of the same
+ *  action (Qodo round 9, PR #916). Unlike a bare `only`, this shape cannot
+ *  be a temporal restriction — "only stage files after tests pass" has
+ *  `only` BEFORE the verb and never matches. */
+const ONLY_PERMIT_RE =
+  /\b(?:use|uses|using|install|installs|installing|run|runs|running|execute|executes|executing|deploy|deploys|deploying|commit|commits|push|pushes|merge|merges|write|writes|call|calls|invoke|invokes)\s+only\b/i;
 
 const STOP_WORDS = new Set([
   "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "for", "with",
@@ -155,8 +163,10 @@ function polarityClash(a: string, b: string): boolean {
   const aNeg = NEGATION_RE.test(a);
   const bNeg = NEGATION_RE.test(b);
   if (aNeg === bNeg) return false;
-  const aPerm = PERMIT_RE.test(a);
-  const bPerm = PERMIT_RE.test(b);
+  // Permits come from PERMIT_RE or the verb-qualified ONLY_PERMIT_RE
+  // ("use only X" — Qodo round 9, PR #916).
+  const aPerm = PERMIT_RE.test(a) || ONLY_PERMIT_RE.test(a);
+  const bPerm = PERMIT_RE.test(b) || ONLY_PERMIT_RE.test(b);
   return aNeg ? bPerm : aPerm;
 }
 

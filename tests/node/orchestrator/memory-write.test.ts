@@ -530,3 +530,51 @@ describe("conflict gate — \"only\" is not a permission marker (Qodo round 8, P
     }
   });
 });
+
+describe("conflict gate — verb-qualified \"use only X\" (Qodo round 9, PR #916)", () => {
+  it("refuses 'use only X' against a pinned prohibition of X (embeddings-independent overlap path)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never use uv to install dependencies", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Use only uv to install dependencies",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+      assert.equal(readAllTopicEntries(cwd).length, 1);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses the flip when the only-permission is stored first", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Use only uv to install dependencies");
+      const result = await addMemoryEntry(cwd, {
+        text: "Never use uv to install dependencies",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("still does not flag sentence-initial 'only' restrictions (round 8 regression)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never use git add . — stage files explicitly");
+      const result = await addMemoryEntry(cwd, {
+        text: "Only stage files after tests pass",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+      assert.equal(readAllTopicEntries(cwd).length, 2);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
