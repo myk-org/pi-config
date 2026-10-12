@@ -532,16 +532,17 @@ export function materializeOpenAiCompatibleModels(
         : PI_STATIC_MODEL_DEFAULTS.reasoning,
       input: materializeInput(record.input),
       cost: materializeCost(record.cost, { provider: providerId, model: safeModelRef(record.id) }),
-      // Native Pi metadata wins. OpenAI-compatible capability APIs may expose
-      // generic input/output capacities, whose sum is Pi's context window.
+      // Native Pi metadata wins. OpenAI-compatible gateways (LiteLLM et al.)
+      // publish max_input_tokens as the input capacity — for shared-window
+      // providers (OpenAI, Anthropic, GLM) that IS the context window, with
+      // output drawn from within it. Pi's status bar and compactor measure
+      // input-side tokens, so max_input_tokens is the correct window under
+      // both shared-window and independent-budget semantics; summing input
+      // and output would overstate it and delay compaction past the real
+      // limit (issue: litellm glm 262144+65536 shown as 328k).
       contextWindow: positiveFiniteNumber(
         record.contextWindow,
-        (() => {
-          const input = positiveFiniteNumber(record.max_input_tokens, 0);
-          const output = positiveFiniteNumber(record.max_output_tokens, 0);
-          const capacity = input > 0 && output > 0 ? input + output : 0;
-          return positiveFiniteNumber(capacity, PI_STATIC_MODEL_DEFAULTS.contextWindow);
-        })(),
+        positiveFiniteNumber(record.max_input_tokens, PI_STATIC_MODEL_DEFAULTS.contextWindow),
       ),
       maxTokens: positiveFiniteNumber(
         record.maxTokens,
