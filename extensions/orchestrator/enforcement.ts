@@ -17,6 +17,7 @@ import { getSetting } from "./project-settings.js";
 import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 import {
   conflictCandidateDirs,
+  pushTargetsProtectedBranch,
 } from "./enforcement-helpers.js";
 import {
   DANGEROUS,
