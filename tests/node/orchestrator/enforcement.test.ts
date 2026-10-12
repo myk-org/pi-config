@@ -2337,3 +2337,18 @@ describe("git add argument parsing inside command substitutions (live battery, P
     assert.ok(!hasGitAddBulk('echo "please git add . now"'));
   });
 });
+
+describe("quoted parens inside substitution content (Qodo round 8, PR #916)", () => {
+  it("keeps a quoted paren inside a substitution as part of the ref name", () => {
+    assert.equal(pushTargetsProtectedBranch("echo \"$(git push origin 'foo)')\"", ["foo)"]), "foo)");
+  });
+  it("does not truncate the ref to the pre-paren part", () => {
+    assert.equal(pushTargetsProtectedBranch("echo \"$(git push origin 'foo)')\"", ["foo"]), null);
+  });
+  it("still neutralizes the substitution closer itself", () => {
+    assert.equal(pushTargetsProtectedBranch("echo \"$(printf ')'; git push origin main)\"", ["main"]), "main");
+  });
+  it("parses a quoted pathspec with paren inside a substitution", () => {
+    assert.deepEqual(gitAddPathspecs('echo "$(git add \'a)b\')"'), ["a)b"]);
+  });
+});

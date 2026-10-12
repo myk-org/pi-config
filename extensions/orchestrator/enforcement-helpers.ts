@@ -1163,6 +1163,12 @@ const SHELL_C_PREFIX_RE =
 function maskQuotedProse(command: string): string {
   const out = command.split("");
   let maskedSpans = 0;
+  /** Sentinel written in place of a substitution's CLOSING delimiter (`)` or
+   *  backtick) in the masked output. It lets consumers distinguish the
+   *  delimiter from a quoted `)` inside the substitution's content — both are
+   * restored verbatim, but only the delimiter becomes SENTINEL (Qodo round
+   *  8, PR #916). NUL cannot occur in a real command string. */
+  const SUBST_CLOSE_SENTINEL = "\x00";
   const blankRange = (from: number, to: number): void => {
     for (let k = from; k < to; k++) out[k] = " ";
   };
@@ -1170,7 +1176,9 @@ function maskQuotedProse(command: string): string {
    *  which are restored verbatim from the original command. The close-paren
    *  scan is QUOTE-AWARE (Qodo round 5, PR #916): a `)` inside a quoted
    *  argument of the substitution (`$(printf ')'; git push main)`) does not
-   *  close it — only an unquoted, unescaped paren changes depth. */
+   *  close it — only an unquoted, unescaped paren changes depth. The closing
+   *  delimiter itself is restored as SUBST_CLOSE_SENTINEL so downstream
+   *  parsers can tell it apart from content parens (Qodo round 8). */
   const blankExceptSubstitutions = (from: number, to: number): void => {
     blankRange(from, to);
     let k = from;
@@ -1180,6 +1188,7 @@ function maskQuotedProse(command: string): string {
         let depth = 1;
         let m = k + 2;
         let q: string | null = null;
+        const closers: number[] = [];
         while (m < to && depth > 0) {
           const d = command[m]!;
           if (q) {
@@ -1203,11 +1212,21 @@ function maskQuotedProse(command: string): string {
             continue;
           }
           if (d === "(") depth++;
-          else if (d === ")") depth--;
+          else if (d === ")") {
+            // EVERY unquoted `)` that decrements depth closes a (possibly
+            // nested) substitution — outer closer and inner closers alike —
+            // so all of them become sentinels (Qodo round 8: a quoted `)`
+            // stays live content).
+            closers.push(m);
+            depth--;
+          }
           m++;
         }
         const stop = depth === 0 ? m : to;
         for (let x = k; x < stop; x++) out[x] = command[x]!;
+        for (const p of closers) {
+          if (p < stop) out[p] = SUBST_CLOSE_SENTINEL;
+        }
         k = stop;
         continue;
       }
@@ -1216,6 +1235,7 @@ function maskQuotedProse(command: string): string {
         while (m < to && command[m] !== "`") m++;
         const stop = m < to ? m + 1 : to;
         for (let x = k; x < stop; x++) out[x] = command[x]!;
+        if (m < to) out[stop - 1] = SUBST_CLOSE_SENTINEL;
         k = stop;
         continue;
       }
@@ -1360,20 +1380,23 @@ function gitAddTokens(region: string): string[] {
   return tokenize(region).filter((t) => t && !/[<>]/.test(t));
 }
 
-/** Argument regions of every real `git <sub>` invocation with live
- *  command-substitution close-parens neutralized (the round-6 residue class,
- *  Qodo PR #916): parses the ORIGINAL text (quoted values survive) but
- *  blanks every `)` the masked text keeps live — a live `)` is a
- *  substitution delimiter, never part of an argument. Consumers that
- *  TOKENIZE arguments use this instead of gitSubArgRegions, so a bulk
- *  `git add .` inside `$(...)` is not read as the pathspec `.)`.
- *  A `)` blanked in the masked text sat inside a quoted span — a legal
- *  filename/ref character — and stays. */
+/** Argument regions of every real `git <sub>` invocation with
+ *  command-substitution CLOSING delimiters neutralized (Qodo rounds 6+8,
+ *  PR #916): parses the ORIGINAL text (quoted values survive) but blanks
+ *  every character the masked text replaced with the substitution-close
+ *  sentinel — the `)`/backtick that ENDS a `$(...)`. A `)` inside the
+ *  substitution's quoted content (a legal branch-name character, e.g.
+ *  `$(git push origin 'foo)')`) is restored verbatim in the masked text
+ *  and therefore STAYS, so the ref `foo)` is compared exactly; a `)` in a
+ *  top-level quoted span (prose-blanked in the masked text) also stays.
+ *  Consumers that TOKENIZE arguments use this instead of
+ *  gitSubArgRegions, so a bulk `git add .` inside `$(...)` is not read as
+ *  the pathspec `.)` while a quoted `foo)` ref is not truncated. */
 export function gitSubParseRegions(command: string, sub: string): string[] {
   return subArgSpans(command, sub).map((s) =>
     s.text
       .split("")
-      .map((ch, idx) => (ch === ")" && s.maskedText[idx] === ")" ? " " : ch))
+      .map((ch, idx) => (s.maskedText[idx] === "\x00" ? " " : ch))
       .join(""),
   );
 }

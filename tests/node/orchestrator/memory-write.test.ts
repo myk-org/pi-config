@@ -512,3 +512,21 @@ describe("sourceSessions — multi-session session-scoped entries (Qodo round 3,
     }
   });
 });
+
+describe("conflict gate — \"only\" is not a permission marker (Qodo round 8, PR #916)", () => {
+  it("does not reject an unrelated \"only\"-qualified restriction as a conflict", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never use git add . — stage files explicitly");
+      const result = await addMemoryEntry(cwd, {
+        text: "Only stage files after tests pass",
+        category: "lesson",
+      });
+      // Both restrictions coexist; \"only\" is a qualifier, not a permit.
+      assert.equal(result.status, "added");
+      assert.equal(readAllTopicEntries(cwd).length, 2);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
