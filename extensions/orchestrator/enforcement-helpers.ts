@@ -7,7 +7,7 @@ import { createLogger } from "../shared/logger.js";
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
-import { DANGEROUS, executableText, getCurrentBranch, hasGitSub, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
+import { DANGEROUS, executableText, getCurrentBranch, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
 enfLog.debug("enforcement-helpers module loaded");
@@ -1094,59 +1094,125 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
 }
 
 /**
- * Detect a REAL `git <sub>` invocation (sub = "commit" or "push") at a shell command
- * position — NOT a substring inside a heredoc body, string argument, or file path.
+ * ── Real git-invocation detection (single source of truth) ─────────────────
  *
- * BUG #3 FIX: `hasGitSub` matches the literal text `git ... commit` ANYWHERE, so
- * writing a file whose CONTENT mentions "git commit" (heredoc body), an echo/string
- * arg like `echo 'run git commit later'`, or a path like `node "/tmp/git commit x.mjs"`
- * wrongly triggered the commit/push guard. This helper narrows detection to genuine
- * invocations by (1) stripping heredoc bodies and (2) requiring `git` at a command
- * boundary (start, or after ; && || | & newline ( { or control-flow keywords).
+ * Shared by isRealGitCommitOrPush (git-expert-only guard), injectSignoff (DCO),
+ * and checkGitProtection's sub-detection in enforcement.ts. The constructions
+ * must never drift: a divergence is either a guard bypass or a corrupted
+ * injection.
  *
- * Security note: we DO NOT attempt full shell quote parsing. We block conservatively
- * — any `git <flags> <sub>` at a command boundary in the (heredoc-stripped) command
- * still blocks. This narrows false-positives without opening a bypass: a real
- * `git commit`/`git push` cannot avoid appearing at a command boundary.
+ * Wrapper prefixes: sudo/env (incl. argument-taking flags), VAR=value
+ * assignments, command/builtin/exec — AND rtk. The user-level rtk extension
+ * rewrites every bash command through `rtk rewrite` BEFORE enforcement
+ * evaluates it (`git commit -m x` arrives as `rtk git commit -m x`), so
+ * without the rtk alternative every wrapped invocation is invisible to the
+ * guards (live incident: the git-expert-only commit guard never fired on a
+ * direct orchestrator commit). Boundary includes backtick because unescaped
+ * backticks are command substitution and DO execute git.
+ */
+const GIT_BOUNDARY_SRC = /(?:^|[;&|\n(){`]|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source;
+const GIT_SUDO_ENV_SRC = /(?:sudo|env)(?:\s+(?:--\S+\s+(?!git\b)\S+|-[a-zA-Z]\s+(?!git\b)\S+|-\S+|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)))*\s+/.source;
+const GIT_ASSIGN_SRC = /[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+/.source;
+const GIT_WRAP_SRC = /(?:command|builtin|exec)\s+/.source;
+const GIT_RTK_SRC = /rtk(?:\s+-\S+)*\s+/.source;
+const GIT_PREFIX_SRC = `(?:${GIT_SUDO_ENV_SRC}|${GIT_ASSIGN_SRC}|${GIT_WRAP_SRC}|${GIT_RTK_SRC})*`;
+const GIT_EXE_SRC = /(?:\S*\/)?git\b/.source;
+const GIT_FLAGS_SRC = /(?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*/.source;
+
+/** Regex matching a REAL `git <sub>` invocation at a shell command position. */
+export function realGitSubRegex(sub: string, capture = false): RegExp {
+  const body = `${GIT_BOUNDARY_SRC}${GIT_PREFIX_SRC}${GIT_EXE_SRC}${GIT_FLAGS_SRC}\\s+${sub}\\b`;
+  return new RegExp(capture ? `(${body})` : body);
+}
+
+/**
+ * True when the command really invokes `git <sub>` — command position only,
+ * any wrapper prefix (sudo/env/assignments/command/builtin/exec/rtk),
+ * heredoc bodies stripped. Replaces the old loose matcher, which matched
+ * `git ... <sub>` ANYWHERE, false-positiving on sub-command names inside -m
+ * messages ("git commit -m 'add sites'" tripped the git-add checks) and in
+ * other statements of a compound command ("git log | grep checkout" tripped
+ * the use_worktrees checkout block).
+ */
+export function realGitSub(command: string, sub: string): boolean {
+  return realGitSubRegex(sub).test(stripHeredocBodies(command));
+}
+
+/**
+ * Argument regions of every real `git <sub>` invocation: the statement-scoped
+ * text after the subcommand, up to the next ; & | or newline — so arguments
+ * of OTHER statements in a compound command are never included
+ * ("git add f.ts && bash .dev/x.sh" must not treat .dev/x.sh as staged).
+ * Regions are raw (quotes intact); consumers inspecting FLAGS must strip
+ * quoted spans first (a -m message is not an argument list).
+ */
+export function gitSubArgRegions(command: string, sub: string): string[] {
+  const stripped = stripHeredocBodies(command);
+  const re = new RegExp(
+    `${GIT_BOUNDARY_SRC}${GIT_PREFIX_SRC}${GIT_EXE_SRC}${GIT_FLAGS_SRC}\\s+${sub}\\b([^;&|\n]*)`,
+    "g",
+  );
+  return [...stripped.matchAll(re)].map((m) => m[1] ?? "");
+}
+
+/** Remove quoted spans so message CONTENT never looks like arguments. */
+export function stripQuotedSpans(s: string): string {
+  return s.replace(/"(?:\\.|[^"\\])*"/g, '""').replace(/'[^']*'/g, "''");
+}
+
+/** Tokenize a git-add argument region: quote-aware tokens, redirects dropped. */
+function gitAddTokens(region: string): string[] {
+  return tokenize(region).filter((t) => !/[<>]/.test(t));
+}
+
+/**
+ * Pathspec tokens of every real `git add` invocation — quote-aware (a quoted
+ * path with spaces is one token), flags and redirects excluded, everything
+ * after `--` included. Empty when the command stages nothing; null when it
+ * invokes no real `git add` at all. Consumers: the gitignore staging guard.
+ */
+export function gitAddPathspecs(command: string): string[] | null {
+  const regions = gitSubArgRegions(command, "add");
+  if (regions.length === 0) return null;
+  const paths: string[] = [];
+  for (const region of regions) {
+    let pastSeparator = false;
+    for (const token of gitAddTokens(region)) {
+      if (token === "--") {
+        pastSeparator = true;
+        continue;
+      }
+      if (!pastSeparator && token.startsWith("-")) continue; // flag
+      paths.push(token);
+    }
+  }
+  return paths;
+}
+
+/**
+ * Detect a REAL `git <sub>` invocation (sub = "commit" or "push") at a shell
+ * command position — NOT a substring inside a heredoc body, string argument,
+ * or file path.
+ *
+ * BUG #3 FIX: the old loose matcher matched the literal text `git ... commit`
+ * ANYWHERE, so writing a file whose CONTENT mentions "git commit" (heredoc body), an
+ * echo/string arg like `echo 'run git commit later'`, or a path like
+ * `node "/tmp/git commit x.mjs"` wrongly triggered the commit/push guard.
+ * This helper narrows detection to genuine invocations by (1) stripping
+ * heredoc bodies and (2) requiring `git` at a command boundary (start, or
+ * after ; && || | & newline ( { backtick or control-flow keywords).
+ *
+ * Security note: we DO NOT attempt full shell quote parsing. We block
+ * conservatively — any `git <flags> <sub>` at a command boundary in the
+ * (heredoc-stripped) command still blocks. This narrows false-positives
+ * without opening a bypass: a real `git commit`/`git push` cannot avoid
+ * appearing at a command boundary.
  */
 export function isRealGitCommitOrPush(command: string): boolean {
   // Strip heredoc bodies so file CONTENT that mentions "git commit" does not count.
   const stripped = stripHeredocBodies(command);
-  // Require git at a command position: start-of-string, or after a statement separator
-  // / pipe / background / newline / subshell-open / brace-group / control-flow keyword.
-  const boundary = /(?:^|[;&|\n(){]|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source;
-  // PREFIX BYPASS FIX: real git invocations can be preceded by allowed prefixes that the
-  // old boundary-only check missed — `sudo git commit`, `env GIT_DIR=x git commit`,
-  // `GIT_DIR=x git commit` (bare VAR=value assignment prefix), `command git commit`,
-  // `builtin`/`exec` wrappers. Allow an optional sequence of these before git:
-  //   - sudo (with flags), env (with flags)
-  //   - one-or-more VAR=value assignments
-  //   - command / builtin / exec wrappers
-  //
-  // SUDO/ENV ARG BYPASS FIX (finding #3): real sudo/env flags TAKE A FOLLOWING
-  // ARGUMENT (`sudo -u root git commit`, `sudo -g grp git commit`, `env -u HOME git
-  // commit`), and env accepts VAR=value operands (`env FOO=bar git commit`). The old
-  // `(?:\s+-\S+)*` only consumed bare flags, so the arg token stopped the prefix early
-  // and these BYPASSED the guard. We now consume, after `sudo`/`env`, a sequence of:
-  //   - `--long ARG` long option taking an argument (`--user root`)
-  //   - `-x ARG`     short option taking an argument (`-u root`, `-g grp`)
-  //   - `-\S+`       bare flag (`-n`, `--preserve-env`, combined `-xyz`)
-  //   - `VAR=value`  env operand (`FOO=bar`)
-  // A `(?!git\b)` guard on the arg-consuming forms prevents swallowing the `git` token
-  // itself; alternatives are ordered specific-first and backtracking resolves the rest.
-  const sudoEnvArg = /(?:sudo|env)(?:\s+(?:--\S+\s+(?!git\b)\S+|-[a-zA-Z]\s+(?!git\b)\S+|-\S+|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)))*\s+/.source;
-  const assignArg = /[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+/.source;
-  const wrapArg = /(?:command|builtin|exec)\s+/.source;
-  const prefix = `(?:${sudoEnvArg}|${assignArg}|${wrapArg})*`;
-  // Allow an optional path prefix on git itself: `/usr/bin/git`, `/bin/git`, etc. The
-  // executable must END in `/git` so that a path ARGUMENT to another program (e.g.
-  // `node "/tmp/git commit test.mjs"`) is NOT matched — there git is not the invoked
-  // command (first token is `node`, "git commit" lives inside a quoted arg).
-  const gitExe = /(?:\S*\/)?git\b/.source;
-  // Then allow git's own flags (git -c k=v, git -C dir, --no-pager, etc.) before the sub.
-  const gitFlags = /(?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*/.source;
   for (const sub of ["commit", "push"]) {
-    if (new RegExp(boundary + prefix + gitExe + gitFlags + `\\s+${sub}\\b`).test(stripped)) {
+    if (realGitSubRegex(sub).test(stripped)) {
       enfLog.debug("git_invocation_detected", sub);
       return true;
     }
@@ -1180,14 +1246,9 @@ export function injectSignoff(command: string): string {
   // Reuse the exact command-position/prefix construction from isRealGitCommitOrPush,
   // capturing everything up to and including the `commit` token so we can insert
   // ` --signoff` immediately after it via a NON-global replace (first real match only).
-  const boundary = /(?:^|[;&|\n(){]|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source;
-  const sudoEnvArg = /(?:sudo|env)(?:\s+(?:--\S+\s+(?!git\b)\S+|-[a-zA-Z]\s+(?!git\b)\S+|-\S+|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)))*\s+/.source;
-  const assignArg = /[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+/.source;
-  const wrapArg = /(?:command|builtin|exec)\s+/.source;
-  const prefix = `(?:${sudoEnvArg}|${assignArg}|${wrapArg})*`;
-  const gitExe = /(?:\S*\/)?git\b/.source;
-  const gitFlags = /(?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*/.source;
-  const commitRe = new RegExp(`(${boundary}${prefix}${gitExe}${gitFlags}\\s+commit\\b)`);
+  // Shared command-position matcher (rtk/wrapper aware) — must stay in lockstep
+  // with isRealGitCommitOrPush so a guarded invocation is always an injectable one.
+  const commitRe = realGitSubRegex("commit", true);
 
   // Pattern A: echo/printf "..." | git commit -F -  (real invocation after last pipe)
   const pipeIdx = command.lastIndexOf("|");
@@ -1259,14 +1320,11 @@ export function injectSignoff(command: string): string {
 /** Detect git add --force / -f (including combined short options like -fn).
  *  Respects -- end-of-options marker and shell separators (&&, ;, |, ||). */
 export function hasGitAddForce(command: string): boolean {
-  if (!hasGitSub(command, "add")) return false;
-  // Split on shell separators to isolate individual statements
-  const statements = command.split(/\s*(?:&&|\|\||[;|])\s*/);
-  for (const stmt of statements) {
-    const addMatch = stmt.match(/\bgit\b.*\badd\b\s+(.*)/);
-    if (!addMatch) continue;
-    const tokens = addMatch[1].split(/\s+/);
-    for (const token of tokens) {
+  // Statement-scoped and invocation-scoped: a `-f` in another statement
+  // (rm -f) or inside a -m message ("git commit -m 'add -f flag'") is not a
+  // `git add --force`.
+  for (const region of gitSubArgRegions(command, "add")) {
+    for (const token of gitAddTokens(region)) {
       if (token === "--") break; // Everything after -- is a pathspec
       if (token === "--force") return true;
       // Short option: -f or combined like -fn, -vf (starts with - but not --)
@@ -1278,15 +1336,14 @@ export function hasGitAddForce(command: string): boolean {
 
 /** Check if a git add command uses bulk-stage tokens (., -A, --all) before the -- separator. */
 export function hasGitAddBulk(command: string): boolean {
-  if (!hasGitSub(command, "add")) return false;
-  const addMatch = command.match(/\bgit\b.*\badd\b\s+(.*)/);
-  if (!addMatch) return false;
-  const args = addMatch[1];
-  // Split tokens, only check before -- (end-of-options marker)
-  const tokens = args.split(/\s+/);
-  for (const token of tokens) {
-    if (token === "--") break; // Everything after -- is a pathspec
-    if (token === "." || token === "-A" || token === "--all") return true;
+  // Statement-scoped: only the arguments of a REAL `git add` invocation count.
+  // The old loose match captured across statements and into -m message text
+  // ("git commit -m 'add .'" wrongly counted as a bulk add).
+  for (const region of gitSubArgRegions(command, "add")) {
+    for (const token of gitAddTokens(region)) {
+      if (token === "--") break; // Everything after -- is a pathspec
+      if (token === "." || token === "-A" || token === "--all") return true;
+    }
   }
   return false;
 }

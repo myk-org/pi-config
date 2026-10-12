@@ -26,6 +26,10 @@ import {
   checkTempFileEnforcement,
   hasGitAddBulk,
   hasGitAddForce,
+  gitAddPathspecs,
+  gitSubArgRegions,
+  stripQuotedSpans,
+  realGitSub,
   isRealGitCommitOrPush,
   injectSignoff,
   stripHeredocBodies,
@@ -1117,6 +1121,92 @@ describe("hasGitAddForce", () => {
   });
   it("does NOT block git add file | grep -f pattern", () => {
     assert.ok(!hasGitAddForce("git add file.ts | grep -f pattern"));
+  });
+});
+
+// ── rtk wrapper + false-positive scoping (git guard hardening) ──
+
+describe("realGitSub / gitAddPathspecs — rtk wrapper and false positives", () => {
+  // rtk rewrites every bash command (`git commit` arrives as `rtk git commit`)
+  // BEFORE enforcement evaluates it — guards must fire on both forms.
+  it("detects rtk git commit", () => {
+    assert.ok(isRealGitCommitOrPush("rtk git commit -m x"));
+  });
+  it("detects rtk git push", () => {
+    assert.ok(isRealGitCommitOrPush("rtk git push origin main"));
+  });
+  it("detects sudo rtk git commit (nested wrappers)", () => {
+    assert.ok(isRealGitCommitOrPush("sudo rtk git commit -m x"));
+  });
+  it("does not fire on rtk git status", () => {
+    assert.ok(!isRealGitCommitOrPush("rtk git status --short"));
+  });
+  it("does not fire on rtk git add", () => {
+    assert.ok(!isRealGitCommitOrPush("rtk git add f.ts"));
+  });
+  it("detects backtick command substitution", () => {
+    assert.ok(isRealGitCommitOrPush("echo `git commit -m x`"));
+  });
+  it("detects $() command substitution", () => {
+    assert.ok(isRealGitCommitOrPush("echo $(git commit -m x)"));
+  });
+
+  // Live false positive: `git add f.ts && bash .dev/x.sh` blocked on .dev/x.sh
+  it("gitAddPathspecs scopes to the git add statement (compound command)", () => {
+    assert.deepEqual(
+      gitAddPathspecs("git add rules/35-memory.md && bash .dev/deploy-rules.sh"),
+      ["rules/35-memory.md"],
+    );
+  });
+  // Live false positive: commit message mentioning paths/words tripped git-add checks
+  it("gitAddPathspecs ignores -m message text", () => {
+    assert.equal(gitAddPathspecs('git commit -m "add sites config"'), null);
+  });
+  it("hasGitAddBulk ignores 'add .' inside a commit message", () => {
+    assert.ok(!hasGitAddBulk('git commit -m "add ."'));
+  });
+  it("hasGitAddBulk detects rtk git add .", () => {
+    assert.ok(hasGitAddBulk("rtk git add ."));
+  });
+  it("hasGitAddForce ignores 'add -f' inside a commit message", () => {
+    assert.ok(!hasGitAddForce('git commit -m "fix add -f flag handling"'));
+  });
+  it("hasGitAddForce detects rtk git add -fn", () => {
+    assert.ok(hasGitAddForce("rtk git add -fn x.txt"));
+  });
+
+  it("--no-verify in message text is not a hooks bypass", () => {
+    assert.ok(
+      !gitSubArgRegions('git commit -m "do not use --no-verify"', "commit").some((r) =>
+        /(?:^|\s)--no-verify\b/.test(stripQuotedSpans(r)),
+      ),
+    );
+  });
+  it("--no-verify as a real argument is detected", () => {
+    assert.ok(
+      gitSubArgRegions("git commit --no-verify -m x", "commit").some((r) =>
+        /(?:^|\s)--no-verify\b/.test(stripQuotedSpans(r)),
+      ),
+    );
+  });
+  it("realGitSub does not match 'checkout' after a pipe (grep)", () => {
+    assert.ok(!realGitSub("git log --oneline | grep checkout", "checkout"));
+  });
+  it("realGitSub detects rtk git checkout", () => {
+    assert.ok(realGitSub("rtk git checkout main", "checkout"));
+  });
+  it("gitAddPathspecs: quoted path with space is one token", () => {
+    assert.deepEqual(gitAddPathspecs('git add "my file.ts"'), ["my file.ts"]);
+  });
+  it("gitAddPathspecs: flags skipped, post--- paths included", () => {
+    assert.deepEqual(gitAddPathspecs("git add -v -N f.ts g.ts"), ["f.ts", "g.ts"]);
+    assert.deepEqual(gitAddPathspecs("git add -- -A flaglike.txt"), ["-A", "flaglike.txt"]);
+  });
+  it("gitAddPathspecs: redirects dropped", () => {
+    assert.deepEqual(gitAddPathspecs("git add f.ts 2>/dev/null"), ["f.ts"]);
+  });
+  it("gitAddPathspecs: null when no real git add", () => {
+    assert.equal(gitAddPathspecs("git status"), null);
   });
 });
 
