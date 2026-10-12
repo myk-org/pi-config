@@ -2160,3 +2160,49 @@ describe("realGitSub / pushTargetsProtectedBranch — wrapper keywords, nested s
     assert.equal(pushTargetsProtectedBranch("git push", PB), null);
   });
 });
+
+describe("realGitSub — combined shell flags and quoted prose (Qodo round 2, PR #916)", () => {
+  // Combined short-flag clusters containing c open a command position too.
+  it("detects bash -lc quoted git commit", () => {
+    assert.ok(realGitSub('bash -lc "git commit -m x"', "commit"));
+  });
+  it("detects sh -ec single-quoted git push", () => {
+    assert.ok(realGitSub("sh -ec 'git push origin main'", "push"));
+  });
+  it("detects bash -xc git commit", () => {
+    assert.ok(realGitSub('bash -xc "git commit --no-verify"', "commit"));
+  });
+  it("detects bash --login -c git commit (long flag before -c)", () => {
+    assert.ok(realGitSub('bash --login -c "git commit -m x"', "commit"));
+  });
+  // Quoted prose mentioning git must never fire the guards.
+  it("does not fire on echo with ! inside quotes", () => {
+    assert.ok(!realGitSub('echo "Done! git push origin main"', "push"));
+  });
+  it("does not fire on printf with if inside quotes", () => {
+    assert.ok(!realGitSub("printf 'if git push origin main'", "push"));
+  });
+  it("does not fire on gh pr create --body prose", () => {
+    assert.ok(!realGitSub('gh pr create --body "if git commit fails, rerun"', "commit"));
+  });
+  it("does not fire on git push mentioned inside a commit message", () => {
+    assert.ok(!realGitSub('git commit -m "if git push origin main"', "push"));
+  });
+  it("does not fire on nested-shell prose inside an echoed string", () => {
+    assert.ok(!realGitSub("echo \"bash -c 'git commit'\"", "commit"));
+  });
+  // Command substitution inside quotes still executes — must keep firing.
+  it("still fires on backtick substitution inside quotes", () => {
+    assert.ok(realGitSub('echo "`git commit -m x`"', "commit"));
+  });
+  it("still fires on $(...) substitution inside quotes", () => {
+    assert.ok(realGitSub('echo "run $(git push) now"', "push"));
+  });
+  // Protected-branch guard shares the masking.
+  it("push prose in a commit message does not hit the protected-branch guard", () => {
+    assert.equal(pushTargetsProtectedBranch('git commit -m "if git push origin main"', ["main"]), null);
+  });
+  it("sh -ec push to main hits the protected-branch guard", () => {
+    assert.equal(pushTargetsProtectedBranch("sh -ec 'git push origin main'", ["main"]), "main");
+  });
+});

@@ -44,6 +44,19 @@ def _entry_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _legacy_fnv_hash(text: str) -> str:
+    """Pre-#915 FNV-1a score key, matching legacyFnvHash in memory-scoring.ts.
+
+    Needed by the score cleanup so removing a topic line also deletes a score
+    entry that was never migrated to its SHA-256 key (Qodo round 2, PR #916).
+    """
+    h = 0x811C9DC5
+    for ch in text:
+        h ^= ord(ch)
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return f"{h:08x}"
+
+
 @contextmanager
 def _jsonl_score_lock(jsonl_path: Path) -> Iterator[None]:
     """Cross-process lock over memory-scores.jsonl, mirroring the TypeScript
@@ -248,6 +261,11 @@ class MemoryFile:
             removed_line,
         )
         h = _entry_hash(canonical)
+        # Pre-#915 stores key entries by FNV-1a — remove BOTH keys so a
+        # not-yet-migrated legacy entry cannot survive as an enforced orphan
+        # that keeps blocking actions after the memory was removed
+        # (Qodo round 2, PR #916).
+        legacy_h = _legacy_fnv_hash(canonical)
 
         # Clean up the JSONL score store (current) — remove the key from the
         # latest state and append the updated state as a new line. The whole
@@ -270,20 +288,23 @@ class MemoryFile:
                             continue
                         if isinstance(parsed, dict):
                             latest = parsed
-                    if latest is not None and h in latest.get("entries", {}):
-                        del latest["entries"][h]
+                    if latest is not None and (h in latest.get("entries", {}) or legacy_h in latest.get("entries", {})):
+                        latest.get("entries", {}).pop(h, None)
+                        latest.get("entries", {}).pop(legacy_h, None)
                         with jsonl_path.open("a", encoding="utf-8") as f:
                             f.write(json.dumps(latest) + "\n")
             except OSError as e:
                 log(f"Failed to clean up memory-scores.jsonl: {e}")
 
-        # Clean up legacy memory-scores.json (pre-JSONL stores)
+        # Clean up legacy memory-scores.json (pre-JSONL stores; keys there are
+        # always legacy FNV — remove both spellings for safety)
         scores_path = self.file_path.parent / "memory-scores.json"
         if scores_path.exists():
             try:
                 scores = json.loads(scores_path.read_text())
-                if h in scores.get("entries", {}):
-                    del scores["entries"][h]
+                if h in scores.get("entries", {}) or legacy_h in scores.get("entries", {}):
+                    scores.get("entries", {}).pop(h, None)
+                    scores.get("entries", {}).pop(legacy_h, None)
                     scores_path.write_text(json.dumps(scores))
             except (json.JSONDecodeError, OSError) as e:
                 log(f"Failed to clean up memory-scores.json: {e}")

@@ -217,29 +217,33 @@ export async function findContradiction(
   // embedding are never dropped by narrowing (Qodo #7, PR #916): a pinned
   // or recently added entry that has not been embedded yet must still reach
   // the overlap check, or it becomes invisible to the conflict gate.
+  // topK covers the WHOLE pool (Qodo round 2, PR #916): with a small topK,
+  // embedded-but-dissimilar entries are absent from the results and were
+  // indistinguishable from unembedded ones.
   let candidates = pool;
+  const similarKeys = new Set<string>();
   let similarityByText = new Map<string, number>();
   try {
     const vectorMatches = await vectorSearch(
       cwd,
       text,
       pool.map((p) => ({ text: p.text, category: p.category, pinned: p.pinned })),
-      20,
+      pool.length,
     );
     similarityByText = new Map(
       vectorMatches.map((vm) => [`${vm.category}:${vm.text}`, vm.similarity]),
     );
     const matchedKeys = new Set(vectorMatches.map((vm) => `${vm.category}:${vm.text}`));
-    const similar = new Set(
-      vectorMatches
-        .filter((vm) => vm.similarity >= getConflictSimilarityThreshold(cwd))
-        .map((vm) => `${vm.category}:${vm.text}`),
-    );
-    if (similar.size > 0 || matchedKeys.size > 0) {
+    for (const vm of vectorMatches) {
+      if (vm.similarity >= getConflictSimilarityThreshold(cwd)) {
+        similarKeys.add(`${vm.category}:${vm.text}`);
+      }
+    }
+    if (similarKeys.size > 0 || matchedKeys.size > 0) {
       // Keep vector-similar entries AND entries the vector search never saw
       // (no embedding) — the latter fall through to the overlap check.
       candidates = pool.filter(
-        (p) => similar.has(`${p.category}:${p.text}`) || !matchedKeys.has(`${p.category}:${p.text}`),
+        (p) => similarKeys.has(`${p.category}:${p.text}`) || !matchedKeys.has(`${p.category}:${p.text}`),
       );
     }
   } catch (err) {
@@ -248,14 +252,17 @@ export async function findContradiction(
 
   // Collect EVERY conflicting candidate, best score first — first match in
   // file order could be a weaker conflict than the real one.
-  const inVectorSet = candidates !== pool;
   const conflicts: Array<{ candidate: ConflictCandidate; score: number }> = [];
   for (const candidate of candidates) {
     if (!polarityClash(text, candidate.text)) continue;
-    // Vector-similar candidates are already topic-related; overlap candidates
-    // need corroboration (≥ 2 shared content words).
+    // Vector-CONFIRMED candidates (similarity ≥ threshold) are already
+    // topically related, so one shared content word corroborates; every
+    // other candidate (unembedded, or vector search unavailable) needs the
+    // strict ≥ 2 corroboration (Qodo round 2, PR #916: a global loose gate
+    // let a single shared word like "main" reject unrelated rules).
     const shared = sharedContentWords(text, candidate.text);
-    if (!(shared >= 2 || (inVectorSet && shared >= 1))) continue;
+    const vectorConfirmed = similarKeys.has(`${candidate.category}:${candidate.text}`);
+    if (!(shared >= 2 || (vectorConfirmed && shared >= 1))) continue;
     const similarity = similarityByText.get(`${candidate.category}:${candidate.text}`) ?? 0;
     conflicts.push({ candidate, score: similarity * 10 + shared });
   }
@@ -333,15 +340,32 @@ function topicCapRejection(cwd: string, category: string, entryLine: string): Ad
 /** Scope reconciliation on dedup reinforcement (Qodo #10, PR #916): when an
  *  entry is restated WITHOUT a scope (or as project), a previous session/task
  *  scope and its TTL are cleared — the user confirmed the rule is durable.
- *  A narrower restatement never narrows an existing durable entry. */
+ *  A narrower restatement never narrows an existing durable entry.
+ *  Qodo round 2 (PR #916): when a session-scoped entry is restated in a
+ *  DIFFERENT session, the entry rebinds to that session (sourceSession +
+ *  fresh TTL) — otherwise the rule the user just restated stays inactive in
+ *  the very session that asked for it. */
 function reconcileScopeOnReinforce(cwd: string, existingLine: string, input: AddMemoryInput): void {
-  if (input.scope && input.scope !== "project") return;
   mutateScores(cwd, (scores) => {
     const existing = scores.entries[entryHash(existingLine)];
-    if (!existing || !existing.scope || existing.scope === "project") return;
-    delete existing.scope;
-    delete existing.expiresAt;
-    log.info("memory_scope_reconciled", existingLine.slice(0, 60));
+    if (!existing) return;
+    if (!input.scope || input.scope === "project") {
+      if (!existing.scope || existing.scope === "project") return;
+      delete existing.scope;
+      delete existing.expiresAt;
+      log.info("memory_scope_reconciled", existingLine.slice(0, 60));
+      return;
+    }
+    if (
+      input.scope === "session" &&
+      existing.scope === "session" &&
+      input.sourceSession &&
+      existing.sourceSession !== input.sourceSession
+    ) {
+      existing.sourceSession = input.sourceSession;
+      existing.expiresAt = new Date(Date.now() + SESSION_SCOPE_TTL_MS).toISOString();
+      log.info("memory_scope_rebound", existingLine.slice(0, 60), input.sourceSession);
+    }
   });
 }
 

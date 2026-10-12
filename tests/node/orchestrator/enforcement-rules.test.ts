@@ -658,3 +658,94 @@ describe("rebuild — orphan preservation for enforced entries", () => {
     }
   });
 });
+
+describe("loadEnforcedEntries / loadVerifierEntries — session & expiry eligibility (Qodo round 2, PR #916)", () => {
+  function makeScopedDir(): string {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "enforcement-rules-scope-"));
+    const memoryDir = path.join(tmpDir, ".pi", "memory");
+    fs.mkdirSync(path.join(memoryDir, "topics"), { recursive: true });
+    fs.writeFileSync(
+      path.join(memoryDir, "topics", "lessons.md"),
+      "# Lessons\n\n" +
+        "- [lesson] Durable enforced rule\n" +
+        "- [lesson] Session rule from session A\n" +
+        "- [lesson] Expired task rule\n",
+    );
+    const now = Date.now();
+    const mk = (extra: Partial<ScoredEntry>): ScoredEntry =>
+      ({
+        class: "lesson",
+        score: 1.0,
+        evidenceCount: 1,
+        cue: "explicit",
+        firstSeen: now,
+        lastReinforced: now,
+        userState: "auto",
+        lifecycle: "active",
+        trigger: "bash_contains deploy",
+        action: "block",
+        ...extra,
+      }) as ScoredEntry;
+    const entries: Record<string, ScoredEntry> = {
+      [entryHash("- [lesson] Durable enforced rule")]: mk({}),
+      [entryHash("- [lesson] Session rule from session A")]: mk({
+        scope: "session",
+        sourceSession: "session-a",
+      }),
+      [entryHash("- [lesson] Expired task rule")]: mk({
+        scope: "task",
+        expiresAt: new Date(now - 1000).toISOString(),
+      }),
+    };
+    fs.writeFileSync(
+      path.join(memoryDir, "memory-scores.jsonl"),
+      JSON.stringify({ entries, lastRebuild: new Date(now).toISOString(), hashAlgo: "sha256-16" }) + "\n",
+    );
+    return tmpDir;
+  }
+
+  it("includes durable rules and excludes other-session and expired rules", () => {
+    const tmpDir = makeScopedDir();
+    try {
+      const inA = loadEnforcedEntries(tmpDir, "session-a");
+      const textsA = inA.map((e) => e.text);
+      assert.ok(textsA.includes("Durable enforced rule"));
+      assert.ok(textsA.includes("Session rule from session A"), "own-session rule must enforce");
+      assert.ok(!textsA.includes("Expired task rule"), "expired rule must not enforce");
+
+      const inB = loadEnforcedEntries(tmpDir, "session-b");
+      const textsB = inB.map((e) => e.text);
+      assert.ok(textsB.includes("Durable enforced rule"));
+      assert.ok(!textsB.includes("Session rule from session A"), "other-session rule must not enforce");
+
+      // Unknown session → fail closed for session-scoped rules
+      const unknown = loadEnforcedEntries(tmpDir).map((e) => e.text);
+      assert.ok(unknown.includes("Durable enforced rule"));
+      assert.ok(!unknown.includes("Session rule from session A"));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies the same eligibility to verifier entries", () => {
+    const tmpDir = makeScopedDir();
+    try {
+      // Rewrite entries as verifier-only (no trigger/action)
+      const memoryDir = path.join(tmpDir, ".pi", "memory");
+      const scores = JSON.parse(fs.readFileSync(path.join(memoryDir, "memory-scores.jsonl"), "utf-8"));
+      for (const entry of Object.values<any>(scores.entries)) {
+        delete entry.trigger;
+        delete entry.action;
+        entry.verifier = "tool_called ask_user before deploy";
+      }
+      fs.writeFileSync(path.join(memoryDir, "memory-scores.jsonl"), JSON.stringify(scores) + "\n");
+
+      const inB = loadVerifierEntries(tmpDir, "session-b").map((e) => e.text);
+      assert.ok(inB.includes("Durable enforced rule"));
+      assert.ok(!inB.includes("Session rule from session A"));
+      assert.ok(!inB.includes("Expired task rule"));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

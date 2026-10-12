@@ -7,6 +7,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { spawn, execSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { JsonlStateStore, parseLastValidLine, createCachedStore } from "../../../extensions/orchestrator/state-jsonl.js";
 
 interface TestState {
@@ -461,5 +465,68 @@ describe("createCachedStore corrupt legacy migration", () => {
     assert.equal(store.read(), null); // Still null — migration was not retried
     // Legacy file still exists
     assert.equal(existsSync(join(dir, "state.json")), true);
+  });
+});
+
+describe("JsonlStateStore.mutate — lock contention (Qodo round 2, PR #916)", () => {
+  it("retries past a briefly-held lock and preserves the latest state", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jsonl-contention-"));
+    try {
+      const file = path.join(dir, "state.jsonl");
+      const store = new JsonlStateStore<{ n: number }>(file);
+      store.write({ n: 1 });
+
+      // Hold the lock from a live child process for ~120ms, then release —
+      // mutate's backoff (25ms steps) must bridge the contention window.
+      const lockPath = file + ".wlock";
+      const holder = spawn("bash", [
+        "-c",
+        `echo $$ > ${JSON.stringify(lockPath)}; sleep 0.12; rm -f ${JSON.stringify(lockPath)}`,
+      ], { stdio: "ignore" });
+      // Give the holder a moment to actually create the lock file
+      const deadline = Date.now() + 2000;
+      while (!fs.existsSync(lockPath) && Date.now() < deadline) {
+        execSync("sleep 0.01");
+      }
+      assert.ok(fs.existsSync(lockPath), "lock file must exist before mutate");
+
+      const out = store.mutate((s) => {
+        s.n = (s.n ?? 0) + 1;
+      });
+      assert.equal(out?.n, 2, "mutate must apply on the latest state after contention");
+      try { holder.kill("SIGKILL"); } catch { /* already exited */ }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails explicitly when the lock stays unavailable instead of appending a stale snapshot", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jsonl-lockfail-"));
+    try {
+      const file = path.join(dir, "state.jsonl");
+      const store = new JsonlStateStore<{ n: number }>(file);
+      store.write({ n: 1 });
+
+      // A LIVE foreign pid holds the lock for longer than the retry window
+      // (~125ms of backoff + fast retry rounds), so mutate must throw.
+      const holder = spawn("bash", ["-c", "sleep 3"], { detached: false, stdio: "ignore" });
+      try {
+        fs.writeFileSync(file + ".wlock", String(holder.pid));
+
+        assert.throws(
+          () => store.mutate(() => {}),
+          /could not acquire lock/,
+          "mutate must throw after exhausting retries — never fall back to an unlocked RMW",
+        );
+        // And the held state must be untouched — no stale snapshot appended
+        const lines = fs.readFileSync(file, "utf-8").trim().split("\n");
+        assert.equal(lines.length, 1, "no extra state line may be appended by a failed mutate");
+      } finally {
+        holder.kill("SIGKILL");
+        try { fs.unlinkSync(file + ".wlock"); } catch { /* already gone */ }
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

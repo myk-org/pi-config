@@ -263,10 +263,20 @@ export function isEntryActiveForSession(entry: ScoredEntry | undefined, currentS
   if (!entry) return true;
   if (entry.expiresAt) {
     const t = Date.parse(entry.expiresAt);
-    if (!Number.isNaN(t) && t <= Date.now()) return false;
+    if (!Number.isNaN(t) && t <= Date.now()) {
+      memLog.debug("memory_eligibility: entry expired", { scope: entry.scope, expiresAt: entry.expiresAt });
+      return false;
+    }
   }
   if (entry.scope === "session") {
-    return !!currentSessionId && !!entry.sourceSession && entry.sourceSession === currentSessionId;
+    const active = !!currentSessionId && !!entry.sourceSession && entry.sourceSession === currentSessionId;
+    if (!active) {
+      memLog.debug("memory_eligibility: session-scoped entry not active for this session", {
+        sourceSession: entry.sourceSession,
+        currentSessionId,
+      });
+    }
+    return active;
   }
   return true;
 }
@@ -681,5 +691,6 @@ export function extractPreferences(text: string): string[] {
     }
   }
 
+  memLog.debug("preference_extraction", { inputChars: text.length, sentences: sentences.length, found: found.length });
   return found.slice(0, 3); // Cap at 3 per message
 }

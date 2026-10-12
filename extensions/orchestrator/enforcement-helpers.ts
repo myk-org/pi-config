@@ -1116,9 +1116,15 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
  * `sh -c` / `eval` opens a nested command position — `timeout 60 git push`,
  * `if git commit ...`, `time git commit`, and `bash -c "git commit"` are all
  * real invocations the old boundary set missed.
+ *
+ * Qodo round 2 (PR #916): the shell alternative accepts ANY c-containing
+ * short-flag cluster (`bash -lc`, `sh -ec`, `bash -xc`) plus long flags
+ * (`bash --login -c`); and quoted PROSE is masked before matching
+ * (maskQuotedProse) so `!`/`if`/`while` inside a `-m` message or an echoed
+ * string can never look like a command boundary.
  */
 const GIT_BOUNDARY_SRC =
-  /(?:^|[;&|\n(){`]|!|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b|\bif\b|\bwhile\b|\buntil\b|(?:\b(?:bash|sh|zsh|dash|ksh)\s+(?:-[a-zA-Z]+\s+)*-c\s*|\beval\s*)(?:["'`]\s*)?)\s*/.source;
+  /(?:^|[;&|\n(){`]|!|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b|\bif\b|\bwhile\b|\buntil\b|(?:\b(?:bash|sh|zsh|dash|ksh)\s+(?:-{1,2}[a-zA-Z][a-zA-Z-]*\s+)*-[a-zA-Z]*c[a-zA-Z]*\s*|\beval\s*)(?:["'`]\s*)?)\s*/.source;
 const GIT_WRAPPER_SRC = /(?:sudo|env|timeout|nice|nohup|xargs|time)(?:\s+(?!git\b)\S+)*\s+/.source;
 const GIT_ASSIGN_SRC = /[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+/.source;
 const GIT_WRAP_SRC = /(?:command|builtin|exec)\s+/.source;
@@ -1126,6 +1132,28 @@ const GIT_RTK_SRC = /rtk(?:\s+-\S+)*\s+/.source;
 const GIT_PREFIX_SRC = `(?:${GIT_WRAPPER_SRC}|${GIT_ASSIGN_SRC}|${GIT_WRAP_SRC}|${GIT_RTK_SRC})*`;
 const GIT_EXE_SRC = /(?:\S*\/)?git\b/.source;
 const GIT_FLAGS_SRC = /(?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*/.source;
+
+/** Prefix that opens a nested command string: `bash -lc "..."`, `sh -c '...'`, `eval "..."`. */
+const SHELL_C_PREFIX_RE =
+  /(?:\b(?:bash|sh|zsh|dash|ksh)\s+(?:-{1,2}[a-zA-Z][a-zA-Z-]*\s+)*-[a-zA-Z]*c[a-zA-Z]*|\beval)\s*$/;
+
+/**
+ * Mask quoted PROSE so it can never look like a command boundary (Qodo round
+ * 2, PR #916). A quoted span is replaced with blanks UNLESS it (a) directly
+ * follows a shell `-c`/`eval` prefix — it is a nested command string the
+ * boundary regex must see — or (b) contains a backtick or `$(` — command
+ * substitution inside quotes still executes. Without this, `echo "Done! git
+ * push origin main"`, `printf 'if git push origin main'`, and
+ * `gh pr create --body "if git commit fails, rerun"` all reached the git
+ * guards as if they invoked git.
+ */
+function maskQuotedProse(command: string): string {
+  return command.replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, (span: string, offset: number): string => {
+    if (SHELL_C_PREFIX_RE.test(command.slice(0, offset))) return span;
+    if (/`|\$\(/.test(span)) return span;
+    return " ".repeat(span.length);
+  });
+}
 
 /** Regex matching a REAL `git <sub>` invocation at a shell command position. */
 export function realGitSubRegex(sub: string, capture = false): RegExp {
@@ -1143,7 +1171,7 @@ export function realGitSubRegex(sub: string, capture = false): RegExp {
  * the use_worktrees checkout block).
  */
 export function realGitSub(command: string, sub: string): boolean {
-  return realGitSubRegex(sub).test(stripHeredocBodies(command));
+  return realGitSubRegex(sub).test(maskQuotedProse(stripHeredocBodies(command)));
 }
 
 /**
@@ -1155,12 +1183,26 @@ export function realGitSub(command: string, sub: string): boolean {
  * quoted spans first (a -m message is not an argument list).
  */
 export function gitSubArgRegions(command: string, sub: string): string[] {
+  // Boundaries are matched on PROSE-MASKED text (a quoted "Done! git push"
+  // must not look like a command position), but the region CONTENT comes
+  // from the original string — masking is length-preserving, so match
+  // indices on the masked text are valid on the original, and quoted VALUES
+  // (pathspecs, "main" refspecs) stay intact for consumers (Qodo round 2,
+  // PR #916).
   const stripped = stripHeredocBodies(command);
+  const masked = maskQuotedProse(stripped);
   const re = new RegExp(
-    `${GIT_BOUNDARY_SRC}${GIT_PREFIX_SRC}${GIT_EXE_SRC}${GIT_FLAGS_SRC}\\s+${sub}\\b([^;&|\n]*)`,
+    `${GIT_BOUNDARY_SRC}${GIT_PREFIX_SRC}${GIT_EXE_SRC}${GIT_FLAGS_SRC}\\s+${sub}\\b`,
     "g",
   );
-  return [...stripped.matchAll(re)].map((m) => m[1] ?? "");
+  const regions: string[] = [];
+  for (const m of masked.matchAll(re)) {
+    const start = (m.index ?? 0) + m[0].length;
+    const rest = stripped.slice(start);
+    const end = rest.search(/[;&|\n]/);
+    regions.push(end === -1 ? rest : rest.slice(0, end));
+  }
+  return regions;
 }
 
 /** Remove quoted spans so message CONTENT never looks like arguments. */
@@ -1248,8 +1290,9 @@ export function gitAddPathspecs(command: string): string[] | null {
  * appearing at a command boundary.
  */
 export function isRealGitCommitOrPush(command: string): boolean {
-  // Strip heredoc bodies so file CONTENT that mentions "git commit" does not count.
-  const stripped = stripHeredocBodies(command);
+  // Strip heredoc bodies so file CONTENT that mentions "git commit" does not count,
+  // and mask quoted prose so "if git commit" inside a -m message does not either.
+  const stripped = maskQuotedProse(stripHeredocBodies(command));
   for (const sub of ["commit", "push"]) {
     if (realGitSubRegex(sub).test(stripped)) {
       enfLog.debug("git_invocation_detected", sub);
