@@ -19,16 +19,25 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   loadScores,
-  saveScores,
   entryHash,
+  isEntryActiveForSession,
   reinforce,
-  getActiveEntries,
-  PINNED_SCORE,
-  type ScoredEntry,
+  mutateScores,
+  VALID_CATEGORIES,
+  type MemoryCategory,
 } from "./memory-scoring.js";
-import { listTopics, readAllTopicEntries, CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, type TopicInfo } from "./memory-tree.js";
+import {
+  listTopics,
+  readAllTopicEntries,
+  CATEGORY_TO_TOPIC,
+  MAX_TOPIC_CHARS,
+  findTopicLine,
+  invalidateTopicFileCache,
+  type TopicInfo,
+} from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memory-embeddings.js";
 import { maybePromoteAfterReinforce } from "./memory-promotion.js";
+import { addMemoryEntry } from "./memory-write.js";
 
 const NEAR_DUPLICATE_THRESHOLD = 0.90;
 
@@ -258,7 +267,8 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
     description:
       "Add a new memory entry. Use proactively when you learn something worth " +
       "remembering: user preferences, environment facts, corrections, conventions, " +
-      "completed work. Keep entries short (one line, ~100 chars max), specific, and actionable.",
+      "completed work. Keep entries short (one line, ~100 chars max), specific, and actionable. " +
+      "One-off permissions (\"you can merge this PR\") are session instructions, NOT memories — never add them.",
     parameters: Type.Object({
       text: Type.String({ description: "The memory entry text (short, specific, actionable)" }),
       category: Type.String({
@@ -281,7 +291,17 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
       ),
       verifier: Type.Optional(
         Type.String({
-          description: "Semantic verifier condition (e.g., 'tool_called ask_user before gh pr merge'). Checked at turn_end.",
+          description: "Semantic verifier condition (e.g., 'tool_called ask_user before pushing to main'). Checked at turn_end.",
+        }),
+      ),
+      scope: Type.Optional(
+        Type.String({
+          description: "Scope: 'session' (transient — expires, never injected in later sessions), 'task', or 'project' (default: durable). Only set for genuinely non-durable facts; standing rules are project scope.",
+        }),
+      ),
+      overrideConflicts: Type.Optional(
+        Type.Boolean({
+          description: "Confirm a conflict override. Set true ONLY after the user explicitly confirmed the rule changed (ask_user). Supersedes the conflicting non-pinned entry automatically. Never applies to pinned entries — those require the user's own memory_remove/memory_edit.",
         }),
       ),
       sourceSession: Type.Optional(
@@ -301,235 +321,17 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const cwd = ctx.cwd;
-      const category = params.category;
-      const text = params.text;
-      const isPinned = params.pinned ?? false;
-
-      // Validate category
-      const validCategories = ["preference", "lesson", "pattern", "decision", "done", "mistake"];
-      if (!validCategories.includes(category)) {
-        return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }] };
+      // Unified write path (issue #915): validation, grant-phrase guardrail,
+      // contradiction gate, dedup, topic cap, scope — all in memory-write.ts.
+      // Session-scoped writes carry the current session id when the caller
+      // did not supply one, so scope eligibility can be evaluated later.
+      if (params.scope === "session" && !params.sourceSession) {
+        const sid = (ctx as any).sessionManager?.getSessionId?.();
+        if (sid) params.sourceSession = sid;
       }
-
-      // Validate enforcement parameters
-      if (params.trigger) {
-        const validPrefixes = ["bash_contains ", "bash_regex ", "tool_name ", "file_modified "];
-        if (!validPrefixes.some(p => params.trigger!.startsWith(p))) {
-          return {
-            content: [{
-              type: "text",
-              text: `Invalid trigger format "${params.trigger}". Must start with: ${validPrefixes.map(p => p.trim()).join(", ")}`,
-            }],
-          };
-        }
-      }
-      if (params.action) {
-        const validActions = ["block", "warn"];
-        const isRunAfter = params.action.startsWith("run_after ");
-        if (!validActions.includes(params.action) && !isRunAfter) {
-          return {
-            content: [{
-              type: "text",
-              text: `Invalid action "${params.action}". Valid: block, warn, run_after <command>`,
-            }],
-          };
-        }
-        if (isRunAfter && !params.action.slice("run_after ".length).trim()) {
-          return {
-            content: [{
-              type: "text",
-              text: `Invalid action "${params.action}". run_after requires a command (e.g., 'run_after npm test')`,
-            }],
-          };
-        }
-      }
-
-      // Canonical line (no markers) — used for hashing/scoring
-      const canonicalLine = `- [${category}] ${text}`;
-      // File line — includes markers for display
-      const isEnforced = !!((params.trigger && params.action) || params.verifier);
-      let entryLine = canonicalLine;
-      if (isPinned && isEnforced) entryLine = `- [${category}] ${text} *(pinned)* *(enforced)*`;
-      else if (isPinned) entryLine = `- [${category}] ${text} *(pinned)*`;
-      else if (isEnforced) entryLine = `- [${category}] ${text} *(enforced)*`;
-
-      // Check for duplicates — vector similarity first, then exact match
-      const topicEntries = readAllTopicEntries(cwd);
-
-      // Check for near-duplicates via vector similarity (catches same lesson with different wording)
-      try {
-        const seen = new Set<string>();
-        const sameCategoryEntries = topicEntries.filter(te => {
-          if (te.category !== category || seen.has(te.text)) return false;
-          seen.add(te.text);
-          return true;
-        });
-        await embedMissing(cwd, sameCategoryEntries);
-        // Do NOT embed the new entry before searching — if the entry already exists
-        // in sameCategoryEntries, it would match itself with similarity 1.000.
-        // embedEntry() is called later after confirming no duplicate.
-        const vectorMatches = await vectorSearch(cwd, text, sameCategoryEntries, 20);
-        for (const vm of vectorMatches) {
-          if (vm.similarity >= NEAR_DUPLICATE_THRESHOLD) {
-            const existingLine = `- [${vm.category}] ${vm.text}`;
-            if (reinforce(cwd, existingLine)) {
-              // Merge enforcement fields into existing entry if new entry has them
-              let merged = false;
-              if (params.trigger || params.action || params.verifier) {
-                const scores = loadScores(cwd);
-                const existingHash = entryHash(existingLine);
-                const existingEntry = scores.entries[existingHash];
-                if (existingEntry) {
-                  if (params.trigger) {
-                    existingEntry.trigger = params.trigger as any;
-                  }
-                  if (params.action) {
-                    if (params.action.startsWith("run_after ")) {
-                      existingEntry.action = "run_after";
-                      existingEntry.actionCommand = params.action.slice("run_after ".length);
-                    } else if (params.action === "block" || params.action === "warn") {
-                      existingEntry.action = params.action;
-                    }
-                  }
-                  if (params.verifier) {
-                    existingEntry.verifier = params.verifier;
-                  }
-                  saveScores(cwd, scores);
-                  merged = true;
-                }
-              }
-              // No removeEmbedding needed — new entry was not embedded before searching
-              const enforcementNote = merged ? " (enforcement fields merged)" : "";
-              return {
-                content: [{
-                  type: "text",
-                  text: `Near-duplicate found (similarity: ${vm.similarity.toFixed(3)}) — reinforced instead: [${vm.category}] ${vm.text}${enforcementNote}`,
-                }],
-              };
-            }
-            // reinforce() failed (score entry missing) — try next candidate
-            continue;
-          }
-        }
-      } catch (err) {
-        log.debug(`memory: memory_add: vector dedup skipped: ${err}`);
-      }
-
-      // Exact match check (fast O(n) string comparison after expensive vector check)
-      for (const te of topicEntries) {
-        if (te.text === text && te.category === category) {
-          // Reinforce instead of duplicating — always use canonical line (no pinned marker)
-          reinforce(cwd, canonicalLine);
-          // Merge enforcement fields into existing entry if new entry has them
-          let merged = false;
-          if (params.trigger || params.action || params.verifier) {
-            const scores = loadScores(cwd);
-            const existingHash = entryHash(canonicalLine);
-            const existingEntry = scores.entries[existingHash];
-            if (existingEntry) {
-              if (params.trigger) {
-                existingEntry.trigger = params.trigger as any;
-              }
-              if (params.action) {
-                if (params.action.startsWith("run_after ")) {
-                  existingEntry.action = "run_after";
-                  existingEntry.actionCommand = params.action.slice("run_after ".length);
-                } else if (params.action === "block" || params.action === "warn") {
-                  existingEntry.action = params.action;
-                }
-              }
-              if (params.verifier) {
-                existingEntry.verifier = params.verifier;
-              }
-              saveScores(cwd, scores);
-              merged = true;
-            }
-          }
-          // No removeEmbedding here — same text/category key as existing entry, embedding is still valid
-          const enforcementNote = merged ? " (enforcement fields merged)" : "";
-          return { content: [{ type: "text", text: `Already exists — reinforced instead: [${category}] ${text}${enforcementNote}` }] };
-        }
-      }
-
-      const topicName = CATEGORY_TO_TOPIC[category as keyof typeof CATEGORY_TO_TOPIC];
-      const topicsDir = join(cwd, ".pi", "memory", "topics");
-      const topicPath = join(topicsDir, `${topicName}.md`);
-
-      // Ensure directory exists
-      if (!existsSync(topicsDir)) {
-        mkdirSync(topicsDir, { recursive: true });
-      }
-
-      // Read or create topic file
-      let content = "";
-      if (existsSync(topicPath)) {
-        content = readFileSync(topicPath, "utf-8");
-      } else {
-        const title = topicName.replace(/-/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
-        content = `# ${title}\n`;
-      }
-
-      // Check topic size cap before writing
-      const newContent = content.trimEnd() + "\n" + entryLine + "\n";
-      if (newContent.length > MAX_TOPIC_CHARS) {
-        return {
-          content: [{
-            type: "text",
-            text: `Topic "${topicName}" would exceed size limit (${newContent.length}/${MAX_TOPIC_CHARS} chars). Consolidate or remove entries first using memory_remove.`,
-          }],
-        };
-      }
-
-      // Append entry
-      content = newContent;
-      writeFileSync(topicPath, content, "utf-8");
-
-      // Add score entry — always hash the canonical line (no pinned marker)
-      const scores = loadScores(cwd);
-      const hash = entryHash(canonicalLine);
-      const entry: ScoredEntry = {
-        class: category,
-        score: isPinned ? PINNED_SCORE : 1.0,
-        evidenceCount: 1,
-        cue: "explicit",
-        firstSeen: new Date().toISOString(),
-        lastReinforced: new Date().toISOString(),
-        userState: isPinned ? "pinned" : "auto",
-        lifecycle: "active",
-      };
-
-      // Add enforcement fields if provided
-      if (params.trigger) {
-        entry.trigger = params.trigger as any;
-        // Parse action — "run_after <cmd>" splits into action + actionCommand
-        if (params.action) {
-          if (params.action.startsWith("run_after ")) {
-            entry.action = "run_after";
-            entry.actionCommand = params.action.slice("run_after ".length);
-          } else if (params.action === "block" || params.action === "warn") {
-            entry.action = params.action;
-          }
-        }
-      }
-      if (params.verifier) {
-        entry.verifier = params.verifier;
-      }
-      if (params.sourceSession) entry.sourceSession = params.sourceSession;
-      if (params.derivedFrom) entry.derivedFrom = params.derivedFrom;
-      if (params.informs && params.informs.length > 0) entry.informs = params.informs;
-
-      scores.entries[hash] = entry;
-      saveScores(cwd, scores);
-
-      // Embed the new entry for future similarity searches
-      await embedEntry(cwd, text, category);
-
-      log.info("memory_add", category, text.slice(0, 60));
-      const pin = isPinned ? " (pinned)" : "";
-      return {
-        content: [{ type: "text", text: `Added: [${category}] ${text}${pin}` }],
-      };
+      const result = await addMemoryEntry(ctx.cwd, params);
+      log.info("memory_add", params.category, params.text.slice(0, 60), result.status);
+      return { content: [{ type: "text", text: result.message }] };
     },
   });
 }
@@ -557,8 +359,8 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
       const text = params.text;
 
       // Validate category
-      const validCategories = ["preference", "lesson", "pattern", "decision", "done", "mistake"];
-      if (!validCategories.includes(category)) {
+      const validCategories = VALID_CATEGORIES;
+      if (!validCategories.includes(category as MemoryCategory)) {
         return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }] };
       }
 
@@ -570,41 +372,35 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
       }
 
       const content = readFileSync(topicPath, "utf-8");
-      const pinnedEnforcedLine = `- [${category}] ${text} *(pinned)* *(enforced)*`;
-      const pinnedLine = `- [${category}] ${text} *(pinned)*`;
-      const enforcedLine = `- [${category}] ${text} *(enforced)*`;
-      const learnedLine = `- [${category}] ${text}`;
 
-      // Find which line matches
-      const lines = content.split("\n");
-      let removedLine: string | null = null;
-      for (const candidate of [pinnedEnforcedLine, pinnedLine, enforcedLine, learnedLine]) {
-        if (lines.some(l => l.trimEnd() === candidate)) {
-          removedLine = candidate;
-          break;
-        }
-      }
-
-      if (!removedLine) {
+      // Marker-agnostic match (pinned/enforced/id combinations, issue #915)
+      const match = findTopicLine(content, category, text);
+      if (!match) {
         return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }] };
       }
 
       // Remove the line and collapse consecutive blank lines
-      const newLines = lines.filter(l => l.trimEnd() !== removedLine);
+      const lines = content.split("\n");
+      const newLines = lines.filter((_, i) => i !== match.index);
       const cleaned = newLines.join("\n").replace(/\n{3,}/g, "\n\n");
       writeFileSync(topicPath, cleaned, "utf-8");
+      invalidateTopicFileCache(topicPath);
 
       // Remove embedding
       removeEmbedding(cwd, text, category);
 
-      // Clean up scores — always use canonical line for hash (no pinned marker)
-      const scores = loadScores(cwd);
+      // Clean up scores — always use canonical line for hash (no markers).
+      // Locked RMW; also drop an id-bound score entry when the line carried one.
       const canonicalLine = `- [${category}] ${text}`;
-      const hash = entryHash(canonicalLine);
-      if (scores.entries[hash]) {
-        delete scores.entries[hash];
-        saveScores(cwd, scores);
-      }
+      const removedId = match.id;
+      mutateScores(cwd, (scores) => {
+        delete scores.entries[entryHash(canonicalLine)];
+        if (removedId) {
+          for (const [hash, entry] of Object.entries(scores.entries)) {
+            if (entry.id === removedId) delete scores.entries[hash];
+          }
+        }
+      });
 
       log.info("memory_remove", category, text.slice(0, 60));
       return {
@@ -621,15 +417,23 @@ function registerMemoryReflect(pi: ExtensionAPI): void {
     name: "memory_reflect",
     label: "Memory Reflect",
     description:
-      "Synthesize an answer from long-term memory. Instead of returning raw entries, " +
-      "this tool searches memory and produces a coherent summary answering the question. " +
-      "Use when you need to understand a pattern, process, or context from past sessions.",
+      "Retrieve memories relevant to a question and return them as structured, " +
+      "ranked context (vector + keyword, with provenance). You synthesize the " +
+      "answer yourself from the returned entries. Use when you need to understand " +
+      "a pattern, process, or context from past sessions.",
     parameters: Type.Object({
       query: Type.String({ description: "Question to answer from memory" }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const cwd = ctx.cwd;
-      const topicEntries = readAllTopicEntries(cwd);
+      // Session-scoped and expired entries are filtered out first (Qodo #1,
+      // PR #916): recalled context must never surface a one-off session
+      // grant or an entry past its TTL as if it were a standing rule.
+      const sessionId = (ctx as any).sessionManager?.getSessionId?.();
+      const scores0 = loadScores(cwd);
+      const topicEntries = readAllTopicEntries(cwd).filter(
+        (te) => isEntryActiveForSession(scores0.entries[entryHash(`- [${te.category}] ${te.text}`)], sessionId),
+      );
       if (topicEntries.length === 0) {
         return { content: [{ type: "text", text: "No memories to reflect on." }] };
       }
@@ -707,8 +511,8 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
       const cwd = ctx.cwd;
       const { op, text, category, newText, supersededBy } = params;
 
-      const validCategories = ["preference", "lesson", "pattern", "decision", "done", "mistake"];
-      if (!validCategories.includes(category)) {
+      const validCategories = VALID_CATEGORIES;
+      if (!validCategories.includes(category as MemoryCategory)) {
         return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }] };
       }
 
@@ -720,27 +524,14 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
       }
 
       const content = readFileSync(topicPath, "utf-8");
-      const oldLine = `- [${category}] ${text}`;
-      const oldLinePinnedEnforced = `- [${category}] ${text} *(pinned)* *(enforced)*`;
-      const oldLinePinned = `- [${category}] ${text} *(pinned)*`;
-      const oldLineEnforced = `- [${category}] ${text} *(enforced)*`;
 
-      // Find the matching line
-      const lines = content.split("\n");
-      let matchIndex = -1;
-      let wasPinned = false;
-      let wasEnforced = false;
-      for (let i = 0; i < lines.length; i++) {
-        const trimmed = lines[i].trimEnd();
-        if (trimmed === oldLinePinnedEnforced) { matchIndex = i; wasPinned = true; wasEnforced = true; break; }
-        if (trimmed === oldLinePinned) { matchIndex = i; wasPinned = true; break; }
-        if (trimmed === oldLineEnforced) { matchIndex = i; wasEnforced = true; break; }
-        if (trimmed === oldLine) { matchIndex = i; break; }
-      }
-
-      if (matchIndex === -1) {
+      // Marker-agnostic match (pinned/enforced/id combinations, issue #915)
+      const match = findTopicLine(content, category, text);
+      if (!match) {
         return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }] };
       }
+      const { index: matchIndex, pinned: wasPinned, enforced: wasEnforced, id: wasId } = match;
+      const lines = content.split("\n");
 
       if (op === "update") {
         if (!newText) {
@@ -750,32 +541,36 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         if (newText.includes("\n")) {
           return { content: [{ type: "text", text: "newText must be a single line (no newlines)." }] };
         }
-        // Check topic size cap
-        const currentContent = readFileSync(topicPath, "utf-8");
-        const markers = `${wasPinned ? " *(pinned)*" : ""}${wasEnforced ? " *(enforced)*" : ""}`;
-        const newContent = currentContent.replace(lines[matchIndex], `- [${category}] ${newText}${markers}`);
+        // Check topic size cap. The rewritten line keeps its markers and id
+        // so the enforcement binding survives the text change (issue #915).
+        const markers = `${wasPinned ? " *(pinned)*" : ""}${wasEnforced ? " *(enforced)*" : ""}${wasId ? ` {#${wasId}}` : ""}`;
+        const replacement = `- [${category}] ${newText}${markers}`;
+        const newContent = content.replace(lines[matchIndex]!, replacement);
         if (newContent.length > MAX_TOPIC_CHARS) {
           return { content: [{ type: "text", text: `Update would exceed topic size limit (${newContent.length}/${MAX_TOPIC_CHARS} chars).` }] };
         }
         // Replace the line
-        lines[matchIndex] = `- [${category}] ${newText}${markers}`;
+        lines[matchIndex] = replacement;
         writeFileSync(topicPath, lines.join("\n"), "utf-8");
+        invalidateTopicFileCache(topicPath);
 
-        // Update scores: transfer old entry's score to new entry
-        const scores = loadScores(cwd);
+        // Update scores: transfer old entry's score to the new key, keeping
+        // the stable id (and enforcement fields) — locked RMW (issue #915).
         const oldHash = entryHash(`- [${category}] ${text}`);
         const newHash = entryHash(`- [${category}] ${newText}`);
-        if (scores.entries[oldHash]) {
-          scores.entries[newHash] = { ...scores.entries[oldHash] };
-          delete scores.entries[oldHash];
-        }
-        const target = scores.entries[newHash];
-        if (target) {
-          if (params.sourceSession !== undefined) target.sourceSession = params.sourceSession;
-          if (params.derivedFrom !== undefined) target.derivedFrom = params.derivedFrom;
-          if (params.informs !== undefined) target.informs = params.informs;
-        }
-        saveScores(cwd, scores);
+        mutateScores(cwd, (scores) => {
+          if (scores.entries[oldHash]) {
+            scores.entries[newHash] = { ...scores.entries[oldHash]! };
+            delete scores.entries[oldHash];
+          }
+          const target = scores.entries[newHash];
+          if (target) {
+            if (!target.id && wasId) target.id = wasId;
+            if (params.sourceSession !== undefined) target.sourceSession = params.sourceSession;
+            if (params.derivedFrom !== undefined) target.derivedFrom = params.derivedFrom;
+            if (params.informs !== undefined) target.informs = params.informs;
+          }
+        });
 
         // Update embeddings
         removeEmbedding(cwd, text, category);
@@ -789,14 +584,19 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         lines.splice(matchIndex, 1);
         const cleaned = lines.join("\n").replace(/\n{3,}/g, "\n\n");
         writeFileSync(topicPath, cleaned, "utf-8");
+        invalidateTopicFileCache(topicPath);
 
-        // Clean up scores and embeddings for old entry
-        const scores = loadScores(cwd);
+        // Clean up scores and embeddings for old entry (locked RMW)
         const oldHash = entryHash(`- [${category}] ${text}`);
-        if (scores.entries[oldHash]) {
+        const removedId = wasId;
+        mutateScores(cwd, (scores) => {
           delete scores.entries[oldHash];
-          saveScores(cwd, scores);
-        }
+          if (removedId) {
+            for (const [hash, entry] of Object.entries(scores.entries)) {
+              if (entry.id === removedId) delete scores.entries[hash];
+            }
+          }
+        });
         removeEmbedding(cwd, text, category);
 
         let result = `Invalidated: [${category}] ${text}`;

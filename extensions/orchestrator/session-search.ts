@@ -1,19 +1,25 @@
 /**
  * Session Search — keyword search over past conversation summaries.
  *
- * Indexes compacted conversation summaries into a JSON file with simple
+ * Indexes conversation summaries (pi's own LLM-written compaction and branch
+ * summaries, harvested from the session file) into a JSONL store with simple
  * keyword matching. Provides a tool for the LLM to recall past discussions
  * at zero LLM cost.
  *
  * Inspired by Hermes Agent's session search layer.
- * Uses JSON storage instead of SQLite for portability (no native deps).
+ * JSONL persistence (issue #915 / #724 pattern) — no native deps.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { createLogger } from "../shared/logger.js";
 import { getProjectDataDir } from "./utils.js";
+import { createCachedStore } from "./state-jsonl.js";
+import type { JsonlStateStore } from "./state-jsonl.js";
+
+const log = createLogger("memory");
 
 // ── Storage ────────────────────────────────────────────────────────────────
 
@@ -27,36 +33,39 @@ interface SessionStore {
   entries: SessionEntry[];
 }
 
+const STORE_FILENAME_JSONL = "session-search.jsonl";
+const LEGACY_STORE_FILENAME = "session-search.json";
+
+function getStore(cwd: string): JsonlStateStore<SessionStore> {
+  return createCachedStore<SessionStore>(
+    getProjectDataDir(cwd), STORE_FILENAME_JSONL, LEGACY_STORE_FILENAME, { compactThreshold: 50 },
+  );
+}
+
 function getStorePath(cwd: string): string {
-  return join(getProjectDataDir(cwd), "session-search.json");
+  return join(getProjectDataDir(cwd), STORE_FILENAME_JSONL);
 }
 
 function loadStore(cwd: string): SessionStore {
-  const storePath = getStorePath(cwd);
-  if (!existsSync(storePath)) return { entries: [] };
-  try {
-    const raw = JSON.parse(readFileSync(storePath, "utf-8"));
-    if (!raw || typeof raw !== "object" || !Array.isArray(raw.entries)) {
-      console.error("[session-search] corrupt store shape, resetting");
-      return { entries: [] };
-    }
-    // Filter to only valid entries
-    const entries = raw.entries.filter(
-      (e: unknown): e is SessionEntry =>
-        typeof e === "object" && e !== null &&
-        typeof (e as any).sessionId === "string" &&
-        typeof (e as any).timestamp === "string" &&
-        typeof (e as any).summary === "string"
-    );
-    return { entries };
-  } catch (err) {
-    console.error("[session-search] corrupt store, resetting:", err);
+  const data = getStore(cwd).read();
+  if (data === null) return { entries: [] };
+  if (!data || typeof data !== "object" || !Array.isArray(data.entries)) {
+    log.warn("session-search: corrupt store shape, resetting");
     return { entries: [] };
   }
+  // Filter to only valid entries
+  const entries = data.entries.filter(
+    (e: unknown): e is SessionEntry =>
+      typeof e === "object" && e !== null &&
+      typeof (e as any).sessionId === "string" &&
+      typeof (e as any).timestamp === "string" &&
+      typeof (e as any).summary === "string"
+  );
+  return { entries };
 }
 
 function saveStore(cwd: string, store: SessionStore): void {
-  writeFileSync(getStorePath(cwd), JSON.stringify(store, null, 2), "utf-8");
+  getStore(cwd).write(store);
 }
 
 // ── Index a session summary ────────────────────────────────────────────────
@@ -87,6 +96,40 @@ export function indexSessionSummary(
   }
 
   saveStore(cwd, store);
+}
+
+// ── Harvest pi session summaries ──────────────────────────────────────────
+
+/**
+ * Extract the LLM-written summaries pi persists in a session JSONL file
+ * (issue #915): compaction summaries and branch summaries are real
+ * summaries, far better input for session search than joined user messages.
+ */
+export function extractSessionSummaries(sessionFilePath: string): string[] {
+  if (!existsSync(sessionFilePath)) return [];
+  try {
+    const raw = readFileSync(sessionFilePath, "utf-8");
+    const summaries: string[] = [];
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const entry = JSON.parse(trimmed);
+        if (
+          (entry?.type === "compaction" || entry?.type === "branch_summary") &&
+          typeof entry?.summary === "string" &&
+          entry.summary.length >= 50
+        ) {
+          summaries.push(entry.summary);
+        }
+      } catch {
+        continue; // skip corrupt/truncated lines
+      }
+    }
+    return summaries;
+  } catch {
+    return [];
+  }
 }
 
 // ── Search sessions ────────────────────────────────────────────────────────
@@ -202,11 +245,13 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
   let sessionMessages: string[] = [];
   let sessionCwd = "";
   let sessionId = "";
+  let sessionFile = "";
 
   pi.on("session_start", (_event, ctx) => {
     sessionMessages = [];
     sessionCwd = ctx.cwd;
     sessionId = ctx.sessionManager?.getSessionId?.() || `session-${Date.now()}`;
+    sessionFile = (ctx as any).sessionManager?.getSessionFile?.() || "";
   });
 
   pi.on("input", (event, _ctx) => {
@@ -220,24 +265,46 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
   // Index compaction summaries when context is compacted
   pi.on("session_compact", (event, ctx) => {
     try {
+      // Overflow retries produce the real summary on the next attempt —
+      // indexing the aborted attempt would duplicate content (issue #915).
+      if ((event as any)?.willRetry) {
+        log.debug("session-search: skipping willRetry compaction summary");
+        return;
+      }
       const summary = event?.compactionEntry?.summary;
       if (!summary || summary.length < 50) return;
       const cwd = sessionCwd || ctx.cwd;
       const sid = sessionId || ctx.sessionManager?.getSessionId?.() || `session-${Date.now()}`;
       indexSessionSummary(cwd, sid, summary);
+      log.debug("session-search: indexed compaction summary", { reason: (event as any)?.reason });
     } catch (err) {
-      console.error("[session-search] indexing failed on compact:", err);
+      log.warn("session-search: indexing failed on compact:", err);
     }
   });
 
-  // Index accumulated messages on session shutdown
-  pi.on("session_shutdown", () => {
+  // Index summaries on session shutdown — prefer pi's own LLM-written
+  // compaction and branch summaries from the session file (issue #915);
+  // fall back to joined user messages when none exist.
+  pi.on("session_shutdown", (_event, ctx) => {
     try {
-      if (sessionMessages.length < 3 || !sessionCwd) return;
+      if (!sessionCwd) return;
+      const file = sessionFile || (ctx ? (ctx as any).sessionManager?.getSessionFile?.() || "" : "");
+      const summaries = file ? extractSessionSummaries(file) : [];
+
+      if (summaries.length > 0) {
+        for (const summary of summaries) {
+          indexSessionSummary(sessionCwd, sessionId, summary);
+        }
+        log.info("session-search: harvested session summaries", summaries.length);
+        return;
+      }
+
+      // Fallback: crude join of user messages (pre-#915 behavior)
+      if (sessionMessages.length < 3) return;
       const summary = sessionMessages.join(" | ").slice(0, 1000);
       indexSessionSummary(sessionCwd, sessionId, summary);
     } catch (err) {
-      console.error("[session-search] indexing failed on shutdown:", err);
+      log.warn("session-search: indexing failed on shutdown:", err);
     }
   });
 }

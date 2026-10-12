@@ -10,7 +10,7 @@
 
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { entryHash, loadScores, saveScores, type MemoryCategory } from "./memory-scoring.js";
+import { entryHash, mutateScores, type MemoryCategory } from "./memory-scoring.js";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
 
@@ -61,22 +61,21 @@ export function mergeProvenancePending(cwd: string): number {
     return 0;
   }
 
-  const scores = loadScores(cwd);
   let updated = 0;
+  // Locked read-modify-write (issue #915)
+  mutateScores(cwd, (scores) => {
+    for (const item of pending.entries) {
+      if (!item?.category || !item?.text) continue;
+      const hash = entryHash(`- [${item.category}] ${item.text}`);
+      const entry = scores.entries[hash];
+      if (!entry) continue;
 
-  for (const item of pending.entries) {
-    if (!item?.category || !item?.text) continue;
-    const hash = entryHash(`- [${item.category}] ${item.text}`);
-    const entry = scores.entries[hash];
-    if (!entry) continue;
-
-    if (item.sourceSession) entry.sourceSession = item.sourceSession;
-    if (item.derivedFrom) entry.derivedFrom = item.derivedFrom;
-    if (item.informs?.length) entry.informs = item.informs;
-    updated += 1;
-  }
-
-  if (updated > 0) saveScores(cwd, scores);
+      if (item.sourceSession) entry.sourceSession = item.sourceSession;
+      if (item.derivedFrom) entry.derivedFrom = item.derivedFrom;
+      if (item.informs?.length) entry.informs = item.informs;
+      updated += 1;
+    }
+  });
 
   // Delete the consumed sidecar
   try { unlinkSync(getProvenancePendingPath(cwd)); } catch { /* ignore */ }

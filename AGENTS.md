@@ -99,6 +99,9 @@ All new or modified code MUST include proper `log.debug/info/warn/error` calls v
 **Exempt:** static browser assets under `*/renderer/static/` copied verbatim into a docs site
 (no bundler, no pi runtime, no session id). Use `console.*` there — a browser page has no chat
 TUI to leak into. Keep such assets consistent with their siblings.
+Also exempt: test files (`tests/`, `packages/*/tests/`, `packages/*/test/`) — tests are not
+runtime code. Use `createLogger` in a test ONLY to inject a logger into code under test that
+requires one (the packaging and pidiff suites do); assertion callbacks never log.
 
 - **info**: key events (boot, shutdown, peer joined/left, connections, state changes)
 - **debug**: internal flow (function entry/exit, decisions, variable state)

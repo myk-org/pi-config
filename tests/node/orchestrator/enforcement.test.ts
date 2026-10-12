@@ -26,6 +26,10 @@ import {
   checkTempFileEnforcement,
   hasGitAddBulk,
   hasGitAddForce,
+  gitAddPathspecs,
+  gitSubArgRegions,
+  stripQuotedSpans,
+  realGitSub,
   isRealGitCommitOrPush,
   injectSignoff,
   stripHeredocBodies,
@@ -36,6 +40,7 @@ import {
   seedBranchCacheForTests,
   injectGhBodySignature,
   isRealGhBodyCommand,
+  pushTargetsProtectedBranch,
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
 
 describe("comment signature hook model switches", () => {
@@ -1120,6 +1125,92 @@ describe("hasGitAddForce", () => {
   });
 });
 
+// ── rtk wrapper + false-positive scoping (git guard hardening) ──
+
+describe("realGitSub / gitAddPathspecs — rtk wrapper and false positives", () => {
+  // rtk rewrites every bash command (`git commit` arrives as `rtk git commit`)
+  // BEFORE enforcement evaluates it — guards must fire on both forms.
+  it("detects rtk git commit", () => {
+    assert.ok(isRealGitCommitOrPush("rtk git commit -m x"));
+  });
+  it("detects rtk git push", () => {
+    assert.ok(isRealGitCommitOrPush("rtk git push origin main"));
+  });
+  it("detects sudo rtk git commit (nested wrappers)", () => {
+    assert.ok(isRealGitCommitOrPush("sudo rtk git commit -m x"));
+  });
+  it("does not fire on rtk git status", () => {
+    assert.ok(!isRealGitCommitOrPush("rtk git status --short"));
+  });
+  it("does not fire on rtk git add", () => {
+    assert.ok(!isRealGitCommitOrPush("rtk git add f.ts"));
+  });
+  it("detects backtick command substitution", () => {
+    assert.ok(isRealGitCommitOrPush("echo `git commit -m x`"));
+  });
+  it("detects $() command substitution", () => {
+    assert.ok(isRealGitCommitOrPush("echo $(git commit -m x)"));
+  });
+
+  // Live false positive: `git add f.ts && bash .dev/x.sh` blocked on .dev/x.sh
+  it("gitAddPathspecs scopes to the git add statement (compound command)", () => {
+    assert.deepEqual(
+      gitAddPathspecs("git add rules/35-memory.md && bash .dev/deploy-rules.sh"),
+      ["rules/35-memory.md"],
+    );
+  });
+  // Live false positive: commit message mentioning paths/words tripped git-add checks
+  it("gitAddPathspecs ignores -m message text", () => {
+    assert.equal(gitAddPathspecs('git commit -m "add sites config"'), null);
+  });
+  it("hasGitAddBulk ignores 'add .' inside a commit message", () => {
+    assert.ok(!hasGitAddBulk('git commit -m "add ."'));
+  });
+  it("hasGitAddBulk detects rtk git add .", () => {
+    assert.ok(hasGitAddBulk("rtk git add ."));
+  });
+  it("hasGitAddForce ignores 'add -f' inside a commit message", () => {
+    assert.ok(!hasGitAddForce('git commit -m "fix add -f flag handling"'));
+  });
+  it("hasGitAddForce detects rtk git add -fn", () => {
+    assert.ok(hasGitAddForce("rtk git add -fn x.txt"));
+  });
+
+  it("--no-verify in message text is not a hooks bypass", () => {
+    assert.ok(
+      !gitSubArgRegions('git commit -m "do not use --no-verify"', "commit").some((r) =>
+        /(?:^|\s)--no-verify\b/.test(stripQuotedSpans(r)),
+      ),
+    );
+  });
+  it("--no-verify as a real argument is detected", () => {
+    assert.ok(
+      gitSubArgRegions("git commit --no-verify -m x", "commit").some((r) =>
+        /(?:^|\s)--no-verify\b/.test(stripQuotedSpans(r)),
+      ),
+    );
+  });
+  it("realGitSub does not match 'checkout' after a pipe (grep)", () => {
+    assert.ok(!realGitSub("git log --oneline | grep checkout", "checkout"));
+  });
+  it("realGitSub detects rtk git checkout", () => {
+    assert.ok(realGitSub("rtk git checkout main", "checkout"));
+  });
+  it("gitAddPathspecs: quoted path with space is one token", () => {
+    assert.deepEqual(gitAddPathspecs('git add "my file.ts"'), ["my file.ts"]);
+  });
+  it("gitAddPathspecs: flags skipped, post--- paths included", () => {
+    assert.deepEqual(gitAddPathspecs("git add -v -N f.ts g.ts"), ["f.ts", "g.ts"]);
+    assert.deepEqual(gitAddPathspecs("git add -- -A flaglike.txt"), ["-A", "flaglike.txt"]);
+  });
+  it("gitAddPathspecs: redirects dropped", () => {
+    assert.deepEqual(gitAddPathspecs("git add f.ts 2>/dev/null"), ["f.ts"]);
+  });
+  it("gitAddPathspecs: null when no real git add", () => {
+    assert.equal(gitAddPathspecs("git status"), null);
+  });
+});
+
 // ── isRealGitCommitOrPush (BUG #3) ──
 
 describe("isRealGitCommitOrPush", () => {
@@ -1973,5 +2064,291 @@ describe("injectGhBodySignature", () => {
     const cmd = 'gh pr create --title t --body "say \\"hi\\" there"';
     const out = injectGhBodySignature(cmd, SIG);
     assert.equal(out, `gh pr create --title t --body "say \\"hi\\" there${FOOTER}"`);
+  });
+});
+
+describe("realGitSub / pushTargetsProtectedBranch — wrapper keywords, nested shells, refspecs (Qodo #8/#5, PR #916)", () => {
+  // Wrapper prefixes that take arguments before the wrapped command.
+  it("detects timeout 60 git push", () => {
+    assert.ok(realGitSub("timeout 60 git push origin main", "push"));
+  });
+  it("detects timeout --foreground 30s git commit", () => {
+    assert.ok(realGitSub("timeout --foreground 30s git commit -m x", "commit"));
+  });
+  it("detects nice -n 5 git commit", () => {
+    assert.ok(realGitSub("nice -n 5 git commit -m x", "commit"));
+  });
+  it("detects nohup git push", () => {
+    assert.ok(realGitSub("nohup git push origin main", "push"));
+  });
+  it("detects time git commit", () => {
+    assert.ok(realGitSub("time git commit -m x", "commit"));
+  });
+  it("detects xargs git rm after a pipe", () => {
+    assert.ok(realGitSub("git ls-files | xargs git rm", "rm"));
+  });
+  // Shell condition keywords and negation open command positions.
+  it("detects git commit after if", () => {
+    assert.ok(realGitSub("if git commit -m x; then echo hi; fi", "commit"));
+  });
+  it("detects git commit after while !", () => {
+    assert.ok(realGitSub("while ! git commit -m x; do sleep 1; done", "commit"));
+  });
+  it("detects !git push", () => {
+    assert.ok(realGitSub("!git push origin main", "push"));
+  });
+  it("detects git commit after until", () => {
+    assert.ok(realGitSub("until git commit -m x; do sleep 1; done", "commit"));
+  });
+  // Nested shell strings: quote after bash -c / sh -c / eval is a boundary.
+  it("detects bash -c quoted git commit", () => {
+    assert.ok(realGitSub('bash -c "git commit -m x"', "commit"));
+  });
+  it("detects sh -c single-quoted git push", () => {
+    assert.ok(realGitSub("sh -c 'git push origin main'", "push"));
+  });
+  it("detects eval quoted git commit", () => {
+    assert.ok(realGitSub('eval "git commit -m x"', "commit"));
+  });
+  // False positives stay false.
+  it("does not fire on echo time git commit", () => {
+    assert.ok(!realGitSub("echo time git commit", "commit"));
+  });
+  it("does not fire on != git in test expressions", () => {
+    assert.ok(!realGitSub('[ "$a" != git ]', "commit"));
+  });
+  it("does not fire on git mentioned inside do-echo body", () => {
+    assert.ok(!realGitSub("while read line; do echo git commit; done", "commit"));
+  });
+  it("does not fire on a bare quoted mention", () => {
+    assert.ok(!realGitSub('echo "result: git status"', "commit"));
+  });
+
+  // Push destination refs (protected-branch check, quote- and refspec-aware).
+  const PB = ["main", "master"];
+  it("flags plain push to main", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin main", PB), "main");
+  });
+  it("flags HEAD:main refspec destination", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin HEAD:main", PB), "main");
+  });
+  it("flags feature:main refspec destination", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin feature:main", PB), "main");
+  });
+  it("flags forced +main push", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin +main", PB), "main");
+  });
+  it("flags refs/heads/main destination", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin refs/heads/main", PB), "main");
+  });
+  it("flags quoted \"main\" destination", () => {
+    assert.equal(pushTargetsProtectedBranch('git push origin "main"', PB), "main");
+  });
+  it("flags rtk-wrapped refspec push to main", () => {
+    assert.equal(pushTargetsProtectedBranch("rtk git push origin feature:main", PB), "main");
+  });
+  it("does not flag source-side-only main (main:feature)", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin main:feature", PB), null);
+  });
+  it("does not flag unrelated feature push", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin feature", PB), null);
+  });
+  it("does not flag https URL containing main", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin https://x/main", PB), null);
+  });
+  it("does not flag push with no refspecs", () => {
+    assert.equal(pushTargetsProtectedBranch("git push", PB), null);
+  });
+});
+
+describe("realGitSub — combined shell flags with quoted prose masked (Qodo round 2, PR #916)", () => {
+  // Combined short-flag clusters containing c open a command position too.
+  it("detects bash -lc quoted git commit", () => {
+    assert.ok(realGitSub('bash -lc "git commit -m x"', "commit"));
+  });
+  it("detects sh -ec single-quoted git push", () => {
+    assert.ok(realGitSub("sh -ec 'git push origin main'", "push"));
+  });
+  it("detects bash -xc git commit", () => {
+    assert.ok(realGitSub('bash -xc "git commit --no-verify"', "commit"));
+  });
+  it("detects bash --login -c git commit (long flag before -c)", () => {
+    assert.ok(realGitSub('bash --login -c "git commit -m x"', "commit"));
+  });
+  // Quoted prose mentioning git must never fire the guards.
+  it("does not fire on echo with ! inside quotes", () => {
+    assert.ok(!realGitSub('echo "Done! git push origin main"', "push"));
+  });
+  it("does not fire on printf with if inside quotes", () => {
+    assert.ok(!realGitSub("printf 'if git push origin main'", "push"));
+  });
+  it("does not fire on gh pr create --body prose", () => {
+    assert.ok(!realGitSub('gh pr create --body "if git commit fails, rerun"', "commit"));
+  });
+  it("does not fire on git push mentioned inside a commit message", () => {
+    assert.ok(!realGitSub('git commit -m "if git push origin main"', "push"));
+  });
+  it("does not fire on nested-shell prose inside an echoed string", () => {
+    assert.ok(!realGitSub("echo \"bash -c 'git commit'\"", "commit"));
+  });
+  // Command substitution inside quotes still executes — must keep firing.
+  it("still fires on backtick substitution inside quotes", () => {
+    assert.ok(realGitSub('echo "`git commit -m x`"', "commit"));
+  });
+  it("still fires on $(...) substitution inside quotes", () => {
+    assert.ok(realGitSub('echo "run $(git push) now"', "push"));
+  });
+  // Protected-branch guard shares the masking.
+  it("push prose in a commit message does not hit the protected-branch guard", () => {
+    assert.equal(pushTargetsProtectedBranch('git commit -m "if git push origin main"', ["main"]), null);
+  });
+  it("sh -ec push to main hits the protected-branch guard", () => {
+    assert.equal(pushTargetsProtectedBranch("sh -ec 'git push origin main'", ["main"]), "main");
+  });
+});
+
+describe("realGitSub / injectSignoff — quoted option values, escapes, comments (Qodo round 3, PR #916)", () => {
+  // Quoted git option values must not hide the invocation.
+  it("detects git -C with a quoted value", () => {
+    assert.ok(realGitSub('git -C "/tmp/repo" commit -m x', "commit"));
+  });
+  it("detects git -c with a quoted config value", () => {
+    assert.ok(realGitSub('git -c "user.name=x" commit -m x', "commit"));
+  });
+  it("detects rtk git -C with a quoted value pushing", () => {
+    assert.ok(realGitSub('rtk git -C "/tmp/repo" push origin main', "push"));
+  });
+  // Escaped quotes are literals — the code between them executes.
+  it("detects a push between escaped literal quotes", () => {
+    assert.ok(realGitSub('echo \\"; git push origin main; echo \\"x\\"', "push"));
+  });
+  // Contractions must not open single-quote spans that swallow real code.
+  it("detects a commit after a comment containing don't", () => {
+    assert.ok(realGitSub("# don't do this\n git commit --no-verify -m x\necho 'ok'", "commit"));
+  });
+  it("does not fire on an apostrophe-paired span — the shell reads it as one quoted word (Qodo round 4, PR #916)", () => {
+    // `echo it's fine; git push origin main; echo 'ok'` is a shell syntax
+    // error (three apostrophes: the first two pair, the third is
+    // unterminated) — git push never executes, so the masked text must not
+    // fire the guards. The round-3 "contraction" heuristic wrongly kept it
+    // visible; shell grammar has no contractions — foo'bar' concatenates.
+    assert.ok(!realGitSub("echo it's fine; git push origin main; echo 'ok'", "push"));
+  });
+  it("detects a commit after a comment containing an unpaired double quote", () => {
+    assert.ok(realGitSub('# says "hello\n git commit -m x', "commit"));
+  });
+  // Prose stays masked.
+  it("does not fire on echoed prose with a contraction", () => {
+    assert.ok(!realGitSub("echo \"don't git push to main\"", "push"));
+  });
+  it("does not fire on echoed prose after round-2 fixes", () => {
+    assert.ok(!realGitSub('echo "Done! git push origin main"', "push"));
+  });
+  // Nested shells still fire.
+  it("still fires on bash -lc quoted commit", () => {
+    assert.ok(realGitSub('bash -lc "git commit -m x"', "commit"));
+  });
+  // Signoff injection must target the real commit, not prose mentions.
+  it("injects the signoff into the real commit, not echoed prose", () => {
+    const out = injectSignoff('echo "if git commit" && git commit -m x');
+    assert.match(out, /git commit --signoff -m x/);
+    assert.doesNotMatch(out, /if git commit --signoff/);
+  });
+  it("injects the signoff into the piped git commit, not the echoed text", () => {
+    const out = injectSignoff('echo "git commit -F -" | git commit -F -');
+    assert.match(out, /git commit --signoff -F -/);
+    assert.doesNotMatch(out, /echo "git commit --signoff/);
+  });
+});
+
+describe("realGitSub — shell-correct quote semantics (Qodo round 4, PR #916)", () => {
+  it("does not fire on an echo argument quoted by a mid-word apostrophe", () => {
+    // foo' ; git push origin main' — the apostrophe after foo OPENS a
+    // single-quoted string (shell concatenation); the push text is quoted
+    assert.ok(!realGitSub("echo foo' ; git push origin main'", "push"));
+  });
+  it("does not fire on prose around a substitution inside quotes", () => {
+    // Only $(date) executes; "if git commit fails" is echo text
+    assert.ok(!realGitSub('echo "if git commit fails $(date)"', "commit"));
+  });
+  it("still fires on a real substitution inside quotes", () => {
+    assert.ok(realGitSub('echo "run $(git push) now"', "push"));
+  });
+  it("still fires on a backtick substitution inside quotes", () => {
+    assert.ok(realGitSub('echo "`git commit -m x`"', "commit"));
+  });
+  it("masks an unterminated quoted tail (syntax error, nothing executes)", () => {
+    assert.ok(!realGitSub('echo "unterminated git push text', "push"));
+  });
+  it("does not let prose-with-substitution absorb the DCO signoff", () => {
+    const out = injectSignoff('echo "if git commit fails $(date)" && git commit -m x');
+    assert.match(out, /git commit --signoff -m x/);
+    assert.doesNotMatch(out, /if git commit fails \$\(date\) --signoff/);
+  });
+});
+
+describe("realGitSub — quoted paren inside command substitution (Qodo round 5, PR #916)", () => {
+  it("detects a push inside $(...) whose argument contains a quoted paren", () => {
+    assert.ok(realGitSub("echo \"$(printf ')'; git push origin main)\"", "push"));
+  });
+  it("flags the protected branch for a push inside such a substitution", () => {
+    assert.equal(pushTargetsProtectedBranch("echo \"$(printf ')'; git push origin main)\"", ["main"]), "main");
+  });
+  it("still tracks nested unquoted parens in a substitution", () => {
+    assert.ok(realGitSub('echo "run $(echo $(git push)) now"', "push"));
+  });
+  it("still masks prose around a plain substitution", () => {
+    assert.ok(!realGitSub('echo "if git commit fails $(date)"', "commit"));
+  });
+});
+
+describe("pushTargetsProtectedBranch — substitution delimiters vs quoted ref names (Qodo round 6, PR #916)", () => {
+  it("recognizes a protected branch whose legal name ends with a paren", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin 'release)'", ["release)"]), "release)");
+  });
+  it("does not trim a quoted trailing paren into a different branch", () => {
+    assert.equal(pushTargetsProtectedBranch("git push origin 'release)'", ["release"]), null);
+  });
+  it("still detects a push inside $() (delimiter neutralized via masked text)", () => {
+    assert.equal(pushTargetsProtectedBranch("echo \"$(printf ')'; git push origin main)\"", ["main"]), "main");
+  });
+  it("still detects a push inside nested substitutions", () => {
+    assert.equal(pushTargetsProtectedBranch('echo "run $(echo $(git push origin main)) now"', ["main"]), "main");
+  });
+  it("does not flag echoed prose mentioning a protected branch", () => {
+    assert.equal(pushTargetsProtectedBranch('echo "Done! git push origin main"', ["main"]), null);
+  });
+});
+
+describe("git add argument parsing inside command substitutions (live battery, PR #916)", () => {
+  it("blocks a bulk add inside a substitution (close-paren residue)", () => {
+    assert.ok(hasGitAddBulk('echo "$(git add .)"'));
+    assert.ok(hasGitAddBulk('echo "$(git add -A)"'));
+    assert.ok(hasGitAddBulk('echo "$(git add --all)"'));
+  });
+  it("parses pathspecs inside a substitution without the trailing paren", () => {
+    assert.deepEqual(gitAddPathspecs('echo "$(git add .)"'), ["."]);
+    assert.deepEqual(gitAddPathspecs("echo \"\$(printf ')'; git add .)\""), ["."]);
+  });
+  it("detects a forced add inside a substitution", () => {
+    assert.ok(hasGitAddForce('echo "$(git add -f foo)"'));
+  });
+  it("still ignores prose mentioning a bulk add", () => {
+    assert.ok(!hasGitAddBulk('echo "please git add . now"'));
+  });
+});
+
+describe("quoted parens inside substitution content (Qodo round 8, PR #916)", () => {
+  it("keeps a quoted paren inside a substitution as part of the ref name", () => {
+    assert.equal(pushTargetsProtectedBranch("echo \"$(git push origin 'foo)')\"", ["foo)"]), "foo)");
+  });
+  it("does not truncate the ref to the pre-paren part", () => {
+    assert.equal(pushTargetsProtectedBranch("echo \"$(git push origin 'foo)')\"", ["foo"]), null);
+  });
+  it("still neutralizes the substitution closer itself", () => {
+    assert.equal(pushTargetsProtectedBranch("echo \"$(printf ')'; git push origin main)\"", ["main"]), "main");
+  });
+  it("parses a quoted pathspec with paren inside a substitution", () => {
+    assert.deepEqual(gitAddPathspecs('echo "$(git add \'a)b\')"'), ["a)b"]);
   });
 });

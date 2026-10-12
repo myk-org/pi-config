@@ -62,6 +62,20 @@ function positiveFiniteNumber(value: unknown, fallback: number): number {
     : fallback;
 }
 
+/** Upper plausibility bound for token counts (Qodo #17, PR #916). Real
+ *  context windows top out in the single-digit millions; misconfigured
+ *  gateways publish Number.MAX_VALUE (9e15), which would overflow every
+ *  downstream token calculation. */
+const MAX_PLAUSIBLE_TOKENS = 10_000_000;
+
+/** Positive finite token count within the plausibility bound — absurd
+ *  values are treated as absent (fallback), not clamped: a 9e15 "window"
+ *  is a misconfiguration, not a real capacity. */
+function plausibleTokenCount(value: unknown, fallback: number): number {
+  const v = positiveFiniteNumber(value, fallback);
+  return v > MAX_PLAUSIBLE_TOKENS ? fallback : v;
+}
+
 /**
  * This is a Pi compatibility declaration, not discovery filtering or a claim
  * that the source endpoint accepts images. The /v1/models payload does not
@@ -532,20 +546,21 @@ export function materializeOpenAiCompatibleModels(
         : PI_STATIC_MODEL_DEFAULTS.reasoning,
       input: materializeInput(record.input),
       cost: materializeCost(record.cost, { provider: providerId, model: safeModelRef(record.id) }),
-      // Native Pi metadata wins. OpenAI-compatible capability APIs may expose
-      // generic input/output capacities, whose sum is Pi's context window.
-      contextWindow: positiveFiniteNumber(
+      // Native Pi metadata wins. OpenAI-compatible gateways (LiteLLM et al.)
+      // publish max_input_tokens as the input capacity — for shared-window
+      // providers (OpenAI, Anthropic, GLM) that IS the context window, with
+      // output drawn from within it. Pi's status bar and compactor measure
+      // input-side tokens, so max_input_tokens is the correct window under
+      // both shared-window and independent-budget semantics; summing input
+      // and output would overstate it and delay compaction past the real
+      // limit (issue: litellm glm 262144+65536 shown as 328k).
+      contextWindow: plausibleTokenCount(
         record.contextWindow,
-        (() => {
-          const input = positiveFiniteNumber(record.max_input_tokens, 0);
-          const output = positiveFiniteNumber(record.max_output_tokens, 0);
-          const capacity = input > 0 && output > 0 ? input + output : 0;
-          return positiveFiniteNumber(capacity, PI_STATIC_MODEL_DEFAULTS.contextWindow);
-        })(),
+        plausibleTokenCount(record.max_input_tokens, PI_STATIC_MODEL_DEFAULTS.contextWindow),
       ),
-      maxTokens: positiveFiniteNumber(
+      maxTokens: plausibleTokenCount(
         record.maxTokens,
-        positiveFiniteNumber(record.max_output_tokens, PI_STATIC_MODEL_DEFAULTS.maxTokens),
+        plausibleTokenCount(record.max_output_tokens, PI_STATIC_MODEL_DEFAULTS.maxTokens),
       ),
     };
     // A record whose every supplied component is valid published real prices —

@@ -21,7 +21,11 @@ export const EMBEDDING_POOLING = "mean";
 // Lazy-loaded pipeline — initialized once per process
 let pipelineInstance: any = null;
 let pipelineLoading: Promise<any> | null = null;
-let modelUnavailable = false;
+// Failed-init backoff (issue #915): a failed model load (offline, corrupt
+// cache) previously retried the full ~2.7s init on EVERY call. Now we back
+// off for 10 minutes before retrying.
+let pipelineFailedAt = 0;
+const PIPELINE_RETRY_BACKOFF_MS = 10 * 60 * 1000;
 
 // In-memory embedding cache for queries
 const queryCache = new Map<string, number[]>();
@@ -82,9 +86,9 @@ function embeddingKey(text: string, category?: string): string {
  * Lazy-loaded on first use, cached for process lifetime.
  */
 async function getPipeline(): Promise<any> {
-  if (modelUnavailable) return null;
   if (pipelineInstance) return pipelineInstance;
   if (pipelineLoading) return pipelineLoading;
+  if (Date.now() - pipelineFailedAt < PIPELINE_RETRY_BACKOFF_MS) return null;
 
   pipelineLoading = (async () => {
     try {
@@ -95,8 +99,9 @@ async function getPipeline(): Promise<any> {
       pipelineInstance = extractor;
       return extractor;
     } catch {
-      // model init failed — vector search will be unavailable
-      // Don't permanently disable — allow retry on next call
+      // model init failed — vector search unavailable until the backoff
+      // window passes, then retried automatically
+      pipelineFailedAt = Date.now();
       return null;
     } finally {
       pipelineLoading = null;
@@ -165,16 +170,6 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 // ── Public API ──────────────────────────────────────────────────────────
-
-/**
- * Initialize the embedding model (call at session start).
- * Downloads the model on first run (~50MB), loads ONNX (~2.7s).
- * Subsequent calls are instant (cached in process memory).
- */
-export async function initEmbeddings(): Promise<boolean> {
-  const pipeline = await getPipeline();
-  return pipeline !== null;
-}
 
 /**
  * Embed a single memory entry and store it. Called on memory_add.
@@ -277,7 +272,6 @@ export async function embedMissing(
  * Check if vector search is available (model can load).
  */
 export async function isVectorSearchAvailable(): Promise<boolean> {
-  if (modelUnavailable) return false;
   const pipeline = await getPipeline();
   return pipeline !== null;
 }

@@ -17,9 +17,15 @@ Each topic file has format:
     - [category] entry text
 """
 
+import hashlib
 import json
+import os
+import re
 import sqlite3
 import sys
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from myk_pi_tools.db.query import _get_git_root
@@ -30,12 +36,68 @@ def log(message: str) -> None:
 
 
 def _entry_hash(text: str) -> str:
-    """FNV-1a hash matching the TypeScript implementation in memory-scoring.ts."""
+    """SHA-256 entry key matching the TypeScript implementation in memory-scoring.ts.
+
+    Issue #915: replaced FNV-1a (32-bit, collision-prone) with SHA-256 so the
+    Python CLI and the extension agree on score keys.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _legacy_fnv_hash(text: str) -> str:
+    """Pre-#915 FNV-1a score key, matching legacyFnvHash in memory-scoring.ts.
+
+    Needed by the score cleanup so removing a topic line also deletes a score
+    entry that was never migrated to its SHA-256 key (Qodo round 2, PR #916).
+    """
     h = 0x811C9DC5
     for ch in text:
         h ^= ord(ch)
         h = (h * 0x01000193) & 0xFFFFFFFF
     return f"{h:08x}"
+
+
+@contextmanager
+def _jsonl_score_lock(jsonl_path: Path) -> Iterator[None]:
+    """Cross-process lock over memory-scores.jsonl, mirroring the TypeScript
+    store's protocol (state-jsonl.ts): a `<file>.wlock` sidecar created with
+    O_EXCL, holding the pid; a dead holder's lock is stolen. Keeps the Python
+    cleanup from appending a stale snapshot over a concurrent TS mutation
+    (Qodo #1, PR #916).
+    """
+    lock_path = Path(str(jsonl_path) + ".wlock")
+    deadline = time.monotonic() + 5.0
+    acquired = False
+    while time.monotonic() < deadline:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            acquired = True
+            break
+        except FileExistsError:
+            try:
+                holder = int(lock_path.read_text().strip())
+            except (OSError, ValueError):
+                holder = 0
+            if holder and holder != os.getpid():
+                try:
+                    os.kill(holder, 0)  # liveness probe
+                except OSError:
+                    try:
+                        lock_path.unlink()  # dead holder — steal
+                    except OSError:
+                        pass
+            time.sleep(0.025)
+    if not acquired:
+        raise OSError(f"could not acquire score lock {lock_path} within 5s")
+    try:
+        yield
+    finally:
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
 
 
 CATEGORY_TO_TOPIC: dict[str, str] = {
@@ -169,34 +231,83 @@ class MemoryFile:
             return False
 
         content = topic_path.read_text()
-        pinned_line = f"- [{category}] {summary} *(pinned)*"
-        learned_line = f"- [{category}] {summary}"
+
+        # Marker-agnostic match: pinned/enforced/id combinations (issue #915)
+        pattern = re.compile(
+            rf"^- \[{re.escape(category)}\] {re.escape(summary)}"
+            r"( \*\(pinned\)\*)?( \*\(enforced\)\*)?( \{#[0-9a-f]+\})?$"
+        )
 
         lines = content.splitlines(keepends=True)
-        removed_line: str | None = None
-        for candidate in (pinned_line, learned_line):
-            if any(line.rstrip("\n") == candidate for line in lines):
-                removed_line = candidate
+        removed_index: int | None = None
+        for i, line in enumerate(lines):
+            if pattern.match(line.rstrip("\n")):
+                removed_index = i
                 break
 
-        if removed_line is None:
+        if removed_index is None:
             return False
 
+        removed_line = lines[removed_index].rstrip("\n")
+
         # Remove the line from the topic file
-        new_lines = [line for line in lines if line.rstrip("\n") != removed_line]
+        new_lines = [line for i, line in enumerate(lines) if i != removed_index]
         topic_path.write_text("".join(new_lines))
 
-        # Clean up memory-scores.json
+        # Canonical line (markers stripped) is the score key
+        canonical = re.sub(
+            r"( \*\(pinned\)\*)?( \*\(enforced\)\*)?( \{#[0-9a-f]+\})?$",
+            "",
+            removed_line,
+        )
+        h = _entry_hash(canonical)
+        # Pre-#915 stores key entries by FNV-1a — remove BOTH keys so a
+        # not-yet-migrated legacy entry cannot survive as an enforced orphan
+        # that keeps blocking actions after the memory was removed
+        # (Qodo round 2, PR #916).
+        legacy_h = _legacy_fnv_hash(canonical)
+
+        # Clean up the JSONL score store (current) — remove the key from the
+        # latest state and append the updated state as a new line. The whole
+        # read-modify-write runs under the same cross-process lock protocol
+        # as the TypeScript store (`.wlock` + O_EXCL + pid liveness), so a
+        # concurrent TS mutation cannot be erased by a stale Python snapshot
+        # (Qodo #1, PR #916).
+        jsonl_path = self.file_path.parent / "memory-scores.jsonl"
+        if jsonl_path.exists():
+            try:
+                with _jsonl_score_lock(jsonl_path):
+                    latest = None
+                    for raw in jsonl_path.read_text().splitlines():
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        try:
+                            parsed = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(parsed, dict):
+                            latest = parsed
+                    if latest is not None and (h in latest.get("entries", {}) or legacy_h in latest.get("entries", {})):
+                        latest.get("entries", {}).pop(h, None)
+                        latest.get("entries", {}).pop(legacy_h, None)
+                        with jsonl_path.open("a", encoding="utf-8") as f:
+                            f.write(json.dumps(latest) + "\n")
+            except OSError as e:
+                log(f"Failed to clean up memory-scores.jsonl: {e}")
+
+        # Clean up legacy memory-scores.json (pre-JSONL stores; keys there are
+        # always legacy FNV — remove both spellings for safety)
         scores_path = self.file_path.parent / "memory-scores.json"
         if scores_path.exists():
             try:
                 scores = json.loads(scores_path.read_text())
-                h = _entry_hash(removed_line)
-                if h in scores.get("entries", {}):
-                    del scores["entries"][h]
+                if h in scores.get("entries", {}) or legacy_h in scores.get("entries", {}):
+                    scores.get("entries", {}).pop(h, None)
+                    scores.get("entries", {}).pop(legacy_h, None)
                     scores_path.write_text(json.dumps(scores))
             except (json.JSONDecodeError, OSError) as e:
-                log(f"Failed to clean memory-scores.json: {e}")
+                log(f"Failed to clean up memory-scores.json: {e}")
 
         return True
 

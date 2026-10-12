@@ -1242,6 +1242,64 @@
 </code></pre></div>
 
 <p>See <a href="background-dreaming.html">Background Memory Consolidation (Dreaming)</a> for details.</p>
+<h3 id="memory-tuning-keys">Memory tuning keys</h3>
+<p>These keys tune the memory system's budgets and similarity gates (issue #915).
+All defaults match the pre-setting hardcoded values.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>memory_token_budget</code></td>
+<td>number</td>
+<td><code>1700</code></td>
+<td><code>PI_MEMORY_TOKEN_BUDGET</code></td>
+<td>Token budget for the situation report injected into the system prompt.</td>
+</tr>
+<tr>
+<td><code>memory_inject_similarity</code></td>
+<td>number</td>
+<td><code>0.65</code></td>
+<td><code>PI_MEMORY_INJECT_SIMILARITY</code></td>
+<td>Vector similarity threshold for contextual memory auto-injection.</td>
+</tr>
+<tr>
+<td><code>memory_near_duplicate_threshold</code></td>
+<td>number</td>
+<td><code>0.9</code></td>
+<td><code>PI_MEMORY_NEAR_DUPLICATE_THRESHOLD</code></td>
+<td>Similarity above which <code>memory_add</code> reinforces an existing entry instead of adding.</td>
+</tr>
+<tr>
+<td><code>memory_conflict_similarity</code></td>
+<td>number</td>
+<td><code>0.55</code></td>
+<td><code>PI_MEMORY_CONFLICT_SIMILARITY</code></td>
+<td>Similarity floor for contradiction candidates in the conflict gate.</td>
+</tr>
+<tr>
+<td><code>memory_max_active_entries</code></td>
+<td>int</td>
+<td><code>40</code></td>
+<td><code>PI_MEMORY_MAX_ACTIVE_ENTRIES</code></td>
+<td>Total cap on active entries applied during rebuild.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"memory_token_budget"</span><span class="p">:</span><span class="w"> </span><span class="mi">2000</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"memory_inject_similarity"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.7</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>See <a href="memory-architecture.html">Memory Architecture</a> for what each gate does.</p>
 <h3 id="internal_operations_provider"><code>internal_operations_provider</code></h3>
 <div class="table-wrap"><table>
 <thead>
@@ -2161,6 +2219,7 @@
 </li>
 <li><a href="#background-async-keys">Background &amp; Async Keys</a><ul>
 <li><a href="#dream_interval_hours">dream_interval_hours</a></li>
+<li><a href="#memory-tuning-keys">Memory tuning keys</a></li>
 <li><a href="#internal_operations_provider">internal_operations_provider</a></li>
 <li><a href="#internal_operations_model">internal_operations_model</a></li>
 <li><a href="#sync_agent_max_seconds">sync_agent_max_seconds</a></li>

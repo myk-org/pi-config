@@ -1,5 +1,6 @@
 """Tests for the memory module."""
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -317,3 +318,29 @@ class TestMemoryStatus:
         assert "code-tier (enforced scores): 1" in result.output
         assert "promotion candidates (proposed): 1" in result.output
         assert "bash_contains git add ." in result.output
+
+
+class TestEntryHashParity:
+    """Issue #915: the Python CLI must agree with the TypeScript hash (SHA-256, 16 hex)."""
+
+    def test_entry_hash_is_sha256_16(self) -> None:
+        line = "- [lesson] Never use `git add .`"
+        expected = hashlib.sha256(line.encode("utf-8")).hexdigest()[:16]
+        assert _entry_hash(line) == expected
+        assert len(_entry_hash(line)) == 16
+
+    def test_entry_hash_is_not_legacy_fnv(self) -> None:
+        # Legacy FNV-1a of this line was 8 hex chars — must not collide with new scheme
+        line = "- [lesson] Keep tests fast"
+        assert len(_entry_hash(line)) == 16
+
+    def test_forget_removes_marker_variants(self, memory_file: MemoryFile) -> None:
+        """forget() matches enforced/pinned/id marker combinations (issue #915)."""
+        topics_dir = memory_file.file_path
+        topics_dir.mkdir(parents=True, exist_ok=True)
+        (topics_dir / "lessons.md").write_text(
+            "# Lessons\n\n- [lesson] Never force-push *(enforced)* {#deadbeef}\n",
+            encoding="utf-8",
+        )
+        assert memory_file.forget("lesson", "Never force-push") is True
+        assert "Never force-push" not in (topics_dir / "lessons.md").read_text()

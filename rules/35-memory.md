@@ -38,6 +38,19 @@ Keep entries short (~100 chars), specific, actionable.
 Use `pinned: true` ONLY when user explicitly says "remember this". Duplicates are auto-reinforced.
 When a correction is mechanical (can be checked by code), add `trigger` + `action` params — see "Code-Enforced Memories" below.
 
+**One-off permissions are NOT memories.** "You can merge this PR", "go ahead and skip tests this time",
+"for this release you may push directly" — these are session instructions for the current task only.
+Never `memory_add` them. The write path rejects grant phrasing and contradictions of pinned entries.
+Only standing, repeated rules are durable.
+
+**Conflicts are decision points, not dead ends.** When `memory_add` reports a contradiction:
+
+1. Ask the user (`ask_user`) which rule is correct — never decide for them.
+2. If they confirm the rule changed, retry `memory_add` with `overrideConflicts: true` —
+   the old non-pinned entry is superseded automatically (invalidated, with provenance).
+3. Pinned entries are never auto-superseded. If the user confirms a pinned rule changed, remove or
+   edit the pinned entry (`memory_remove` / `memory_edit`) per their explicit instruction, then add the new rule.
+
 ### `memory_remove` — Remove Outdated Memories
 
 Remove entries that are no longer accurate, relevant, or superseded by newer entries.
@@ -115,6 +128,7 @@ The situation report header shows usage: `# Project Memory [72% — 1,224/1,700 
 | User corrects you | `lesson` | Learned |
 | Multiple fix attempts | `mistake` | Learned |
 | User states a preference | `preference` | Learned |
+| User grants a one-off permission ("you can merge this PR") | — | **NOT a memory** — session instruction only |
 
 ---
 
@@ -165,6 +179,7 @@ If it's knowledge that informs decisions but can't be checked mechanically — p
 - Ideas or requests the user rejected, abandoned, or said "nevermind" to
 - Unfinished conversations where no conclusion was reached
 - User requirements that were never implemented
+- One-off permissions granted for a specific PR, task, or session — session instructions, not durable rules
 
 Only memorize **outcomes** (what happened), not **intentions** (what was discussed but dropped).
 

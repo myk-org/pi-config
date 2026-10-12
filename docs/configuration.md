@@ -466,6 +466,28 @@ export PI_DREAM_INTERVAL_HOURS=6
 
 See [Background Memory Consolidation (Dreaming)](background-dreaming.html) for details.
 
+### Memory tuning keys
+
+These keys tune the memory system's budgets and similarity gates (issue #915).
+All defaults match the pre-setting hardcoded values.
+
+| Parameter | Type | Default | Environment variable | Description |
+|---|---|---|---|---|
+| `memory_token_budget` | number | `1700` | `PI_MEMORY_TOKEN_BUDGET` | Token budget for the situation report injected into the system prompt. |
+| `memory_inject_similarity` | number | `0.65` | `PI_MEMORY_INJECT_SIMILARITY` | Vector similarity threshold for contextual memory auto-injection. |
+| `memory_near_duplicate_threshold` | number | `0.9` | `PI_MEMORY_NEAR_DUPLICATE_THRESHOLD` | Similarity above which `memory_add` reinforces an existing entry instead of adding. |
+| `memory_conflict_similarity` | number | `0.55` | `PI_MEMORY_CONFLICT_SIMILARITY` | Similarity floor for contradiction candidates in the conflict gate. |
+| `memory_max_active_entries` | int | `40` | `PI_MEMORY_MAX_ACTIVE_ENTRIES` | Total cap on active entries applied during rebuild. |
+
+```json
+{
+  "memory_token_budget": 2000,
+  "memory_inject_similarity": 0.7
+}
+```
+
+See [Memory Architecture](memory-architecture.html) for what each gate does.
+
 ### `internal_operations_provider`
 
 | Parameter | Type | Default | Environment variable | Description | Effect |

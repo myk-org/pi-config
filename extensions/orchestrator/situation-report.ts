@@ -11,6 +11,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { getSetting } from "./project-settings.js";
 import {
   type ScoredEntry,
   type MemoryCategory,
@@ -20,6 +21,7 @@ import {
 } from "./memory-scoring.js";
 import { listTopics, readAllTopicEntries } from "./memory-tree.js";
 import { formatPromotionsForReport } from "./promotion-queue.js";
+import { pruneExpiredEntries } from "./memory-write.js";
 import {
   type QueryClass,
   getQueryClassBias,
@@ -110,6 +112,15 @@ export function rebuildAndOrganize(cwd: string): void {
   const topicsDir = join(cwd, ".pi", "memory", "topics");
   if (!existsSync(topicsDir)) return;
 
+  // Prune expired scoped entries first (issue #915): session/task-scoped
+  // entries must not outlive their scope. Pruning removes topic lines, so it
+  // must happen before the rebuild re-initializes scores for topic entries.
+  try {
+    pruneExpiredEntries(cwd);
+  } catch {
+    // non-fatal — rebuild continues with whatever entries remain
+  }
+
   const topicEntries = readAllTopicEntries(cwd);
   if (topicEntries.length > 0) {
     rebuild(cwd, topicEntries);
@@ -129,9 +140,12 @@ export interface SituationReportOptions {
  */
 export function buildSituationReport(
   cwd: string,
-  tokenBudget: number = DEFAULT_TOKEN_BUDGET,
+  tokenBudget: number = -1,
   options: SituationReportOptions = {},
 ): string {
+  // Budget not passed explicitly (negative) — resolve from settings (issue #915).
+  // An explicit 0 still means "no budget — skip injection".
+  if (tokenBudget < 0) tokenBudget = getMemoryTokenBudget(cwd);
   // Exhausted memory budget — do not inject (avoids divide-by-zero / NaN usage %)
   if (tokenBudget <= 0) return "";
 
@@ -163,6 +177,9 @@ export function buildSituationReport(
     if (!scored) continue;
     // Only include active and provisional entries
     if (scored.lifecycle !== "active" && scored.lifecycle !== "provisional") continue;
+    // Session-scoped entries are transient (issue #915) — never injected
+    // into the situation report; they expire via pruneExpiredEntries.
+    if (scored.scope === "session") continue;
     entries.push({
       text: te.text,
       category: te.category,
@@ -316,21 +333,34 @@ export function buildSituationReport(
   return reportSections.join("\n");
 }
 
-/** Approximate total token budget for the system prompt (rules + context + memory). */
+/** Default total token budget for the system prompt (rules + context + memory). */
 const SYSTEM_PROMPT_TOKEN_BUDGET = 8000;
+
+/** Resolve the memory report token budget from settings (issue #915).
+ *  0 is a valid, honored value — it DISABLES the memory report (Qodo #15,
+ *  PR #916); only missing/non-numeric/negative values fall back to default. */
+export function getMemoryTokenBudget(cwd: string): number {
+  const v = Number(getSetting(cwd, "memory_token_budget"));
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_TOKEN_BUDGET;
+}
 
 /**
  * Estimate available token budget for memory based on system prompt size.
  * Shrinks memory budget when the system prompt is already large.
  */
-export function estimateMemoryBudget(systemPromptLength: number, totalBudget: number = SYSTEM_PROMPT_TOKEN_BUDGET): number {
+export function estimateMemoryBudget(
+  systemPromptLength: number,
+  totalBudget: number = SYSTEM_PROMPT_TOKEN_BUDGET,
+  cwd?: string,
+): number {
   // Memory competes with rules, context files, skills, etc.
   const systemPromptTokens = Math.ceil(systemPromptLength / CHARS_PER_TOKEN);
   const remaining = totalBudget - systemPromptTokens;
   // No budget left — skip memory injection entirely
   if (remaining <= 0) return 0;
-  // Clamp to DEFAULT_TOKEN_BUDGET maximum
-  return Math.min(DEFAULT_TOKEN_BUDGET, remaining);
+  // Clamp to the configured memory budget maximum
+  const max = cwd ? getMemoryTokenBudget(cwd) : DEFAULT_TOKEN_BUDGET;
+  return Math.min(max, remaining);
 }
 
 // ── Formatting ─────────────────────────────────────────────────────────────

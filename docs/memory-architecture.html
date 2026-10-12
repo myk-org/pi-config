@@ -414,7 +414,7 @@ architectural ideas.</p>
 <li>The entry is written into a category topic file such as <code>lessons.md</code> or <code>preferences.md</code>.</li>
 <li>The scoring engine rebuilds <code>memory-scores.jsonl</code>, recalculates stability, and assigns a lifecycle state.</li>
 <li>The embedding layer lazily creates or refreshes local vectors for semantic search.</li>
-<li>On <code>before_agent_start</code>, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, then appends that material to the tail of the system prompt.</li>
+<li>On <code>before_agent_start</code>, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, and injects that material as structured system-prompt sections (<code>project_memory</code>, <code>contextual_memories</code>, <code>past_sessions</code>) at the tail of the prompt.</li>
 <li>As evidence accumulates, the promotion system proposes stronger structures such as enforcement metadata or reusable skills.</li>
 </ol>
 <blockquote>
@@ -444,7 +444,7 @@ architectural ideas.</p>
 <tr>
 <td>Memory tree</td>
 <td><code>memory-tree.ts</code></td>
-<td>Topic-file organization, hotness scores, cold-topic archiving.</td>
+<td>Topic-file organization and hotness scores.</td>
 </tr>
 <tr>
 <td>Embeddings</td>
@@ -455,6 +455,11 @@ architectural ideas.</p>
 <td>Memory tools</td>
 <td><code>memory-tools.ts</code></td>
 <td>The <code>memory_*</code> tools exposed to the agent.</td>
+</tr>
+<tr>
+<td>Unified write path</td>
+<td><code>memory-write.ts</code></td>
+<td>Single add path with validation, grant guardrail, contradiction gate, dedup, and scope (issue #915).</td>
 </tr>
 <tr>
 <td>Session search</td>
@@ -663,8 +668,12 @@ architectural ideas.</p>
 </tbody>
 </table></div>
 <p>Only the <code>before_agent_start</code> material — the situation report, vector-matched memories, and session
-history — is appended to the <strong>tail</strong> of the system prompt, after rules and instructions. That position is
+history — is injected at the <strong>tail</strong> of the system prompt, after rules and instructions. That position is
 deliberate: LLM attention follows a U-shaped curve, and the tail of the prompt receives the strongest attention.
+Since issue #915 the injection mutates <code>systemPromptOptions.sections</code> instead of replacing the whole
+prompt text: Pi appends a transcript delta for the changed sections, which preserves cached prompt
+prefixes on supporting models. When an earlier handler has forced the full prompt (or an older Pi
+version does not expose sections), the extension falls back to appending to the prompt text.
 The other hooks deliver differently: <code>tool_result</code> enforcement acts on the tool result itself (<code>warn</code> appends to
 it, <code>block</code> prevents it), and <code>turn_end</code> verifier violations are sent as follow-up messages that can trigger a
 retry of the turn.</p>
@@ -726,13 +735,41 @@ Truth instruction telling the model to trust the provided context over re-derivi
 </ul>
 <h3 id="session-search-recalls-past-conversations">Session search recalls past conversations</h3>
 <p>Independently of scored memory, <code>session-search.ts</code> maintains a keyword index over past conversation summaries in
-<code>.pi/data/session-search.json</code>. The index is written when a session shuts down, and <code>before_agent_start</code>
-auto-injects matches from relevant past sessions alongside the situation report.</p>
+<code>.pi/data/session-search.jsonl</code>. At session shutdown the index harvests Pi's own LLM-written compaction and branch
+summaries from the session file (issue #915), falling back to a join of user messages when no summaries exist.
+Compaction summaries whose turn is retried (overflow recovery) are skipped so content is not double-indexed, and
+<code>before_agent_start</code> auto-injects matches from relevant past sessions alongside the situation report.</p>
 <p>The agent can also query it directly with the <code>session_search</code> tool — see <a href="commands-and-tools.html">Commands and Tools Reference</a>.</p>
 <h3 id="stated-preferences-are-captured-automatically">Stated preferences are captured automatically</h3>
 <p><code>preference-extractor.ts</code> watches conversation for phrases such as "I prefer …", "always use …", or "never …".
-When it detects one, it adds the preference to memory automatically, and repeated statements reinforce the
-existing entry instead of creating duplicates.</p>
+When it detects one, it routes the preference through the unified write path (<code>memory-write.ts</code>), so automatic
+extraction gets the same safeguards as an explicit <code>memory_add</code>: topic caps, near-duplicate dedup, and the
+contradiction gate. Questions ("Do I always need to…?") and one-off permission grants ("you can merge this PR")
+are filtered out before extraction.</p>
+<h3 id="the-write-path-guards-against-bad-memories">The write path guards against bad memories</h3>
+<p>Every producer — <code>memory_add</code>, the preference extractor — funnels through <code>memory-write.ts</code>, which enforces,
+in order:</p>
+<ol>
+<li>
+<p><strong>Grant-phrase guardrail</strong> — text that reads like a one-off permission ("you can merge this PR",
+   "go ahead", "just this once") is rejected: one-off grants are session instructions, not memories.</p>
+</li>
+<li>
+<p><strong>Contradiction gate</strong> — an add that flips permission polarity against an existing entry (one text
+   forbids what the other permits, on the same topic) is refused and the model is told to ask the user.
+   A conflict is a decision point, not a dead end: after the user confirms the rule changed, retrying
+   with <code>overrideConflicts: true</code> supersedes the old non-pinned entry (invalidated, with provenance) so
+   no contradiction remains. Contradicting a <strong>pinned</strong> entry always refuses — pinned entries are
+   user-explicit and only the user's own <code>memory_remove</code> / <code>memory_edit</code> can change them.</p>
+</li>
+<li>
+<p><strong>Dedup</strong> — near-duplicates (vector similarity) and exact matches reinforce the existing entry
+   instead of creating a second one.</p>
+</li>
+</ol>
+<p>Entries can carry a <code>scope</code> (<code>session</code>, <code>task</code>, or <code>project</code>, the default). Session-scoped entries get an
+expiry safety net, are never injected into the situation report of a later session, and are pruned by the
+periodic rebuild once expired.</p>
 <h3 id="promotion-turns-repeated-memories-into-stronger-structure">Promotion turns repeated memories into stronger structure</h3>
 <p>When a memory accumulates enough evidence, Pi can promote it.</p>
 <p>Current promotion destinations are:</p>
@@ -876,6 +913,7 @@ memory-backed enforcement is code-enforced, which is only injected, and which is
 <li><a href="#query-classes-bias-what-gets-injected">Query classes bias what gets injected</a></li>
 <li><a href="#session-search-recalls-past-conversations">Session search recalls past conversations</a></li>
 <li><a href="#stated-preferences-are-captured-automatically">Stated preferences are captured automatically</a></li>
+<li><a href="#the-write-path-guards-against-bad-memories">The write path guards against bad memories</a></li>
 <li><a href="#promotion-turns-repeated-memories-into-stronger-structure">Promotion turns repeated memories into stronger structure</a></li>
 <li><a href="#provenance-is-merged-through-a-sidecar">Provenance is merged through a sidecar</a></li>
 <li><a href="#legacy-memory-migration-still-exists">Legacy memory migration still exists</a></li>

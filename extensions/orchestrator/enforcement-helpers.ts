@@ -7,7 +7,7 @@ import { createLogger } from "../shared/logger.js";
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
-import { DANGEROUS, executableText, getCurrentBranch, hasGitSub, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
+import { DANGEROUS, executableText, getCurrentBranch, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
 enfLog.debug("enforcement-helpers module loaded");
@@ -1094,59 +1094,398 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
 }
 
 /**
- * Detect a REAL `git <sub>` invocation (sub = "commit" or "push") at a shell command
- * position — NOT a substring inside a heredoc body, string argument, or file path.
+ * ── Real git-invocation detection (single source of truth) ─────────────────
  *
- * BUG #3 FIX: `hasGitSub` matches the literal text `git ... commit` ANYWHERE, so
- * writing a file whose CONTENT mentions "git commit" (heredoc body), an echo/string
- * arg like `echo 'run git commit later'`, or a path like `node "/tmp/git commit x.mjs"`
- * wrongly triggered the commit/push guard. This helper narrows detection to genuine
- * invocations by (1) stripping heredoc bodies and (2) requiring `git` at a command
- * boundary (start, or after ; && || | & newline ( { or control-flow keywords).
+ * Shared by isRealGitCommitOrPush (git-expert-only guard), injectSignoff (DCO),
+ * and checkGitProtection's sub-detection in enforcement.ts. The constructions
+ * must never drift: a divergence is either a guard bypass or a corrupted
+ * injection.
  *
- * Security note: we DO NOT attempt full shell quote parsing. We block conservatively
- * — any `git <flags> <sub>` at a command boundary in the (heredoc-stripped) command
- * still blocks. This narrows false-positives without opening a bypass: a real
- * `git commit`/`git push` cannot avoid appearing at a command boundary.
+ * Wrapper prefixes: sudo/env (incl. argument-taking flags), VAR=value
+ * assignments, command/builtin/exec — AND rtk. The user-level rtk extension
+ * rewrites every bash command through `rtk rewrite` BEFORE enforcement
+ * evaluates it (`git commit -m x` arrives as `rtk git commit -m x`), so
+ * without the rtk alternative every wrapped invocation is invisible to the
+ * guards (live incident: the git-expert-only commit guard never fired on a
+ * direct orchestrator commit). Boundary includes backtick because unescaped
+ * backticks are command substitution and DO execute git.
+ *
+ * Qodo #8 (PR #916): boundaries also cover shell condition keywords
+ * (if/while/until/!), negation, and exec-wrappers that take arguments
+ * (timeout/nice/nohup/xargs/time), and an opening quote after `bash -c` /
+ * `sh -c` / `eval` opens a nested command position — `timeout 60 git push`,
+ * `if git commit ...`, `time git commit`, and `bash -c "git commit"` are all
+ * real invocations the old boundary set missed.
+ *
+ * Qodo round 2 (PR #916): the shell alternative accepts ANY c-containing
+ * short-flag cluster (`bash -lc`, `sh -ec`, `bash -xc`) plus long flags
+ * (`bash --login -c`); and quoted PROSE is masked before matching
+ * (maskQuotedProse) so `!`/`if`/`while` inside a `-m` message or an echoed
+ * string can never look like a command boundary.
+ */
+const GIT_BOUNDARY_SRC =
+  /(?:^|[;&|\n(){`]|!|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b|\bif\b|\bwhile\b|\buntil\b|(?:\b(?:bash|sh|zsh|dash|ksh)\s+(?:-{1,2}[a-zA-Z][a-zA-Z-]*\s+)*-[a-zA-Z]*c[a-zA-Z]*\s*|\beval\s*)(?:["'`]\s*)?)\s*/.source;
+const GIT_WRAPPER_SRC = /(?:sudo|env|timeout|nice|nohup|xargs|time)(?:\s+(?!git\b)\S+)*\s+/.source;
+const GIT_ASSIGN_SRC = /[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+/.source;
+const GIT_WRAP_SRC = /(?:command|builtin|exec)\s+/.source;
+const GIT_RTK_SRC = /rtk(?:\s+-\S+)*\s+/.source;
+const GIT_PREFIX_SRC = `(?:${GIT_WRAPPER_SRC}|${GIT_ASSIGN_SRC}|${GIT_WRAP_SRC}|${GIT_RTK_SRC})*`;
+const GIT_EXE_SRC = /(?:\S*\/)?git\b/.source;
+const GIT_FLAGS_SRC = /(?:\s+(?:-[a-zA-Z]\s+\S*|-\S+))*/.source;
+
+/** Prefix that opens a nested command string: `bash -lc "..."`, `sh -c '...'`, `eval "..."`. */
+const SHELL_C_PREFIX_RE =
+  /(?:\b(?:bash|sh|zsh|dash|ksh)\s+(?:-{1,2}[a-zA-Z][a-zA-Z-]*\s+)*-[a-zA-Z]*c[a-zA-Z]*|\beval)\s*$/;
+
+/**
+ * Mask quoted PROSE so it can never look like a command boundary (Qodo
+ * rounds 2–4, PR #916). A scanner implementing SHELL quote semantics, not a
+ * plain regex and not heuristics:
+ * - a BACKSLASH outside quotes escapes the next character, so `\"` is a
+ *   literal and `echo \"; git push; echo \"x\"` still executes git push;
+ * - an apostrophe ALWAYS opens a single-quote string outside double quotes
+ *   (shell grammar has no contractions — `foo' ; git push main'`
+ *   concatenates `foo` with the QUOTED text ` ; git push main`, so the
+ *   quoted part is prose, never code). An apostrophe inside a `#` comment
+ *   is irrelevant because comment tails are blanked first;
+ * - a `#` at a word start begins a comment — blanked to end of line so its
+ *   quotes cannot pair with code;
+ * - inside a quoted span only COMMAND SUBSTITUTION (`$(...)`, backticks)
+ *   executes, so a span is blanked EXCEPT its substitution regions —
+ *   `echo "if git commit fails $(date)"` keeps only `$(date)` visible;
+ * - a span that directly follows `bash -c`/`sh -c`/`eval` is a nested
+ *   command string and stays fully visible;
+ * - an UNTERMINATED span is a shell syntax error — nothing executes — so it
+ *   is blanked entirely.
+ * The result is LENGTH-PRESERVING so match indices on the masked text are
+ * valid on the original string.
+ */
+function maskQuotedProse(command: string): string {
+  const out = command.split("");
+  let maskedSpans = 0;
+  /** Sentinel written in place of a substitution's CLOSING delimiter (`)` or
+   *  backtick) in the masked output. It lets consumers distinguish the
+   *  delimiter from a quoted `)` inside the substitution's content — both are
+   * restored verbatim, but only the delimiter becomes SENTINEL (Qodo round
+   *  8, PR #916). NUL cannot occur in a real command string. */
+  const SUBST_CLOSE_SENTINEL = "\x00";
+  const blankRange = (from: number, to: number): void => {
+    for (let k = from; k < to; k++) out[k] = " ";
+  };
+  /** Blank [from, to) except its $(...) and backtick substitution regions,
+   *  which are restored verbatim from the original command. The close-paren
+   *  scan is QUOTE-AWARE (Qodo round 5, PR #916): a `)` inside a quoted
+   *  argument of the substitution (`$(printf ')'; git push main)`) does not
+   *  close it — only an unquoted, unescaped paren changes depth. The closing
+   *  delimiter itself is restored as SUBST_CLOSE_SENTINEL so downstream
+   *  parsers can tell it apart from content parens (Qodo round 8). */
+  const blankExceptSubstitutions = (from: number, to: number): void => {
+    blankRange(from, to);
+    let k = from;
+    while (k < to) {
+      const c = command[k]!;
+      if (c === "$" && command[k + 1] === "(") {
+        let depth = 1;
+        let m = k + 2;
+        let q: string | null = null;
+        const closers: number[] = [];
+        while (m < to && depth > 0) {
+          const d = command[m]!;
+          if (q) {
+            // Inside quotes: only the matching quote closes (double quotes
+            // process backslash escapes; single quotes do not).
+            if (q === '"' && d === "\\") {
+              m += 2;
+              continue;
+            }
+            if (d === q) q = null;
+            m++;
+            continue;
+          }
+          if (d === "'" || d === '"') {
+            q = d;
+            m++;
+            continue;
+          }
+          if (d === "\\") {
+            m += 2;
+            continue;
+          }
+          if (d === "(") depth++;
+          else if (d === ")") {
+            // EVERY unquoted `)` that decrements depth closes a (possibly
+            // nested) substitution — outer closer and inner closers alike —
+            // so all of them become sentinels (Qodo round 8: a quoted `)`
+            // stays live content).
+            closers.push(m);
+            depth--;
+          }
+          m++;
+        }
+        const stop = depth === 0 ? m : to;
+        for (let x = k; x < stop; x++) out[x] = command[x]!;
+        for (const p of closers) {
+          if (p < stop) out[p] = SUBST_CLOSE_SENTINEL;
+        }
+        k = stop;
+        continue;
+      }
+      if (c === "`") {
+        let m = k + 1;
+        while (m < to && command[m] !== "`") m++;
+        const stop = m < to ? m + 1 : to;
+        for (let x = k; x < stop; x++) out[x] = command[x]!;
+        if (m < to) out[stop - 1] = SUBST_CLOSE_SENTINEL;
+        k = stop;
+        continue;
+      }
+      k++;
+    }
+  };
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i]!;
+    // Comment tail: `#` at a word start (${...} and =# forms excluded) is a
+    // comment — blank to end of line, quotes inside cannot pair with code.
+    if (ch === "#" && (i === 0 || /[\s(;&|`]/.test(command[i - 1]!))) {
+      let j = i;
+      while (j < command.length && command[j] !== "\n") j++;
+      blankRange(i, j);
+      maskedSpans++;
+      i = j;
+      continue;
+    }
+    // A backslash outside quotes escapes the next char — it can never open
+    // a span (handles \\" and \\').
+    if (ch === "\\") {
+      i += 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      let j = i + 1;
+      let closed = false;
+      while (j < command.length) {
+        const c = command[j]!;
+        // Inside double quotes a backslash escapes the next char (\" and \\).
+        // Inside single quotes a backslash is literal; only ' terminates.
+        if (quote === '"' && c === "\\") {
+          j += 2;
+          continue;
+        }
+        if (c === quote) {
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      const end = closed ? j + 1 : command.length;
+      if (closed && SHELL_C_PREFIX_RE.test(command.slice(0, i))) {
+        // Nested command string — keep fully visible for the boundary regex.
+      } else {
+        // Prose span (or unterminated = syntax error, nothing executes):
+        // blank it except command substitutions, which still execute.
+        blankExceptSubstitutions(i, end);
+        maskedSpans++;
+      }
+      i = end;
+      continue;
+    }
+    i++;
+  }
+  if (maskedSpans > 0) enfLog.debug("maskQuotedProse", "masked", maskedSpans, "chars", command.length);
+  return out.join("");
+}
+
+/** Regex matching a REAL `git <sub>` invocation at a shell command position. */
+export function realGitSubRegex(sub: string, capture = false): RegExp {
+  const body = `${GIT_BOUNDARY_SRC}${GIT_PREFIX_SRC}${GIT_EXE_SRC}${GIT_FLAGS_SRC}\\s+${sub}\\b`;
+  const re = new RegExp(capture ? `(${body})` : body);
+  enfLog.debug("realGitSubRegex built", sub, `capture=${capture}`);
+  return re;
+}
+
+/**
+ * True when the command really invokes `git <sub>` — command position only,
+ * any wrapper prefix (sudo/env/assignments/command/builtin/exec/rtk),
+ * heredoc bodies stripped. Replaces the old loose matcher, which matched
+ * `git ... <sub>` ANYWHERE, false-positiving on sub-command names inside -m
+ * messages ("git commit -m 'add sites'" tripped the git-add checks) and in
+ * other statements of a compound command ("git log | grep checkout" tripped
+ * the use_worktrees checkout block).
+ */
+export function realGitSub(command: string, sub: string): boolean {
+  const result = realGitSubRegex(sub).test(maskQuotedProse(stripHeredocBodies(command)));
+  enfLog.debug("realGitSub", sub, result);
+  return result;
+}
+
+/**
+ * Argument regions of every real `git <sub>` invocation: the statement-scoped
+ * text after the subcommand, up to the next ; & | or newline — so arguments
+ * of OTHER statements in a compound command are never included
+ * ("git add f.ts && bash .dev/x.sh" must not treat .dev/x.sh as staged).
+ * Regions are raw (quotes intact); consumers inspecting FLAGS must strip
+ * quoted spans first (a -m message is not an argument list).
+ */
+export function gitSubArgRegions(command: string, sub: string): string[] {
+  // Boundaries are matched on PROSE-MASKED text (a quoted "Done! git push"
+  // must not look like a command position), but the region CONTENT comes
+  // from the original string — masking is length-preserving, so match
+  // indices on the masked text are valid on the original, and quoted VALUES
+  // (pathspecs, "main" refspecs) stay intact for consumers (Qodo round 2,
+  // PR #916).
+  return subArgSpans(command, sub).map((s) => s.text);
+}
+
+/** Argument-region spans of every real `git <sub>` invocation, with start/end
+ *  offsets into the heredoc-stripped command and the aligned masked text —
+ *  consumers that must distinguish substitution syntax from refspec content
+ *  use the masked slice (Qodo round 6, PR #916). */
+function subArgSpans(command: string, sub: string): Array<{ start: number; end: number; text: string; maskedText: string; stripped: string; masked: string }> {
+  const stripped = stripHeredocBodies(command);
+  const masked = maskQuotedProse(stripped);
+  const re = new RegExp(
+    `${GIT_BOUNDARY_SRC}${GIT_PREFIX_SRC}${GIT_EXE_SRC}${GIT_FLAGS_SRC}\\s+${sub}\\b`,
+    "g",
+  );
+  const spans: Array<{ start: number; end: number; text: string; maskedText: string; stripped: string; masked: string }> = [];
+  for (const m of masked.matchAll(re)) {
+    const start = (m.index ?? 0) + m[0].length;
+    const rest = stripped.slice(start);
+    const end = rest.search(/[;&|\n]/);
+    const stop = end === -1 ? stripped.length : start + end;
+    spans.push({
+      start,
+      end: stop,
+      text: stripped.slice(start, stop),
+      maskedText: masked.slice(start, stop),
+      stripped,
+      masked,
+    });
+  }
+  enfLog.debug("gitSubArgRegions", sub, `regions=${spans.length}`);
+  return spans;
+}
+
+/** Remove quoted spans so message CONTENT never looks like arguments. */
+export function stripQuotedSpans(s: string): string {
+  return s.replace(/"(?:\\.|[^"\\])*"/g, '""').replace(/'[^']*'/g, "''");
+}
+
+/** Tokenize a git-add argument region: quote-aware tokens, redirects dropped. */
+function gitAddTokens(region: string): string[] {
+  // Empty tokens (an unterminated residual quote yields one) carry no
+  // pathspec and must not reach consumers (Qodo live battery, PR #916).
+  return tokenize(region).filter((t) => t && !/[<>]/.test(t));
+}
+
+/** Argument regions of every real `git <sub>` invocation with
+ *  command-substitution CLOSING delimiters neutralized (Qodo rounds 6+8,
+ *  PR #916): parses the ORIGINAL text (quoted values survive) but blanks
+ *  every character the masked text replaced with the substitution-close
+ *  sentinel — the `)`/backtick that ENDS a `$(...)`. A `)` inside the
+ *  substitution's quoted content (a legal branch-name character, e.g.
+ *  `$(git push origin 'foo)')`) is restored verbatim in the masked text
+ *  and therefore STAYS, so the ref `foo)` is compared exactly; a `)` in a
+ *  top-level quoted span (prose-blanked in the masked text) also stays.
+ *  Consumers that TOKENIZE arguments use this instead of
+ *  gitSubArgRegions, so a bulk `git add .` inside `$(...)` is not read as
+ *  the pathspec `.)` while a quoted `foo)` ref is not truncated. */
+export function gitSubParseRegions(command: string, sub: string): string[] {
+  return subArgSpans(command, sub).map((s) =>
+    s.text
+      .split("")
+      .map((ch, idx) => (s.maskedText[idx] === "\x00" ? " " : ch))
+      .join(""),
+  );
+}
+
+/** Destination refs of every real `git push` invocation (Qodo #5, PR #916).
+ *  Quote-aware tokenization (a quoted "main" is still a refspec), flags and
+ *  remote URLs skipped, and each refspec reduced to its DESTINATION side —
+ *  `HEAD:main`, `feature:main`, `+main`, `refs/heads/main`, and plain `main`
+ *  all yield `main`. Returns the first ref that names a protected branch
+ *  (full or suffix match), or null when no push target is protected. */
+export function pushTargetsProtectedBranch(command: string, protectedBranches: Iterable<string>): string | null {
+  const pbSet = new Set(protectedBranches);
+  for (const parseRegion of gitSubParseRegions(command, "push")) {
+    // Quoted refspec values ("main", 'release)') survive because the region
+    // comes from the ORIGINAL text; live substitution `)`s are already
+    // neutralized by gitSubParseRegions (Qodo rounds 5-6, PR #916).
+    let pastSep = false;
+    for (const token of tokenize(parseRegion)) {
+      if (token === "--") {
+        pastSep = true;
+        continue;
+      }
+      if (!pastSep && token.startsWith("-")) continue; // flag
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(token)) continue; // remote URL (https://, ssh://)
+      // Forced-push leading + is part of the refspec syntax, not the ref.
+      const spec = token.startsWith("+") ? token.slice(1) : token;
+      const colon = spec.lastIndexOf(":");
+      const raw = (colon >= 0 ? spec.slice(colon + 1) : spec).trim();
+      if (!raw) continue;
+      const dest = raw.replace(/^refs\/heads\//, "");
+      if (pbSet.has(dest)) {
+        enfLog.debug("pushTargetsProtectedBranch", `protected=${dest}`);
+        return dest;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Pathspec tokens of every real `git add` invocation — quote-aware (a quoted
+ * path with spaces is one token), flags and redirects excluded, everything
+ * after `--` included. Empty when the command stages nothing; null when it
+ * invokes no real `git add` at all. Consumers: the gitignore staging guard.
+ */
+export function gitAddPathspecs(command: string): string[] | null {
+  const regions = gitSubParseRegions(command, "add");
+  if (regions.length === 0) return null;
+  const paths: string[] = [];
+  for (const region of regions) {
+    let pastSeparator = false;
+    for (const token of gitAddTokens(region)) {
+      if (token === "--") {
+        pastSeparator = true;
+        continue;
+      }
+      if (!pastSeparator && token.startsWith("-")) continue; // flag
+      paths.push(token);
+    }
+  }
+  enfLog.debug("gitAddPathspecs", `paths=${paths.length}`);
+  return paths;
+}
+
+/**
+ * Detect a REAL `git <sub>` invocation (sub = "commit" or "push") at a shell
+ * command position — NOT a substring inside a heredoc body, string argument,
+ * or file path.
+ *
+ * BUG #3 FIX: the old loose matcher matched the literal text `git ... commit`
+ * ANYWHERE, so writing a file whose CONTENT mentions "git commit" (heredoc body), an
+ * echo/string arg like `echo 'run git commit later'`, or a path like
+ * `node "/tmp/git commit x.mjs"` wrongly triggered the commit/push guard.
+ * This helper narrows detection to genuine invocations by (1) stripping
+ * heredoc bodies and (2) requiring `git` at a command boundary (start, or
+ * after ; && || | & newline ( { backtick or control-flow keywords).
+ *
+ * Security note: we DO NOT attempt full shell quote parsing. We block
+ * conservatively — any `git <flags> <sub>` at a command boundary in the
+ * (heredoc-stripped) command still blocks. This narrows false-positives
+ * without opening a bypass: a real `git commit`/`git push` cannot avoid
+ * appearing at a command boundary.
  */
 export function isRealGitCommitOrPush(command: string): boolean {
-  // Strip heredoc bodies so file CONTENT that mentions "git commit" does not count.
-  const stripped = stripHeredocBodies(command);
-  // Require git at a command position: start-of-string, or after a statement separator
-  // / pipe / background / newline / subshell-open / brace-group / control-flow keyword.
-  const boundary = /(?:^|[;&|\n(){]|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source;
-  // PREFIX BYPASS FIX: real git invocations can be preceded by allowed prefixes that the
-  // old boundary-only check missed — `sudo git commit`, `env GIT_DIR=x git commit`,
-  // `GIT_DIR=x git commit` (bare VAR=value assignment prefix), `command git commit`,
-  // `builtin`/`exec` wrappers. Allow an optional sequence of these before git:
-  //   - sudo (with flags), env (with flags)
-  //   - one-or-more VAR=value assignments
-  //   - command / builtin / exec wrappers
-  //
-  // SUDO/ENV ARG BYPASS FIX (finding #3): real sudo/env flags TAKE A FOLLOWING
-  // ARGUMENT (`sudo -u root git commit`, `sudo -g grp git commit`, `env -u HOME git
-  // commit`), and env accepts VAR=value operands (`env FOO=bar git commit`). The old
-  // `(?:\s+-\S+)*` only consumed bare flags, so the arg token stopped the prefix early
-  // and these BYPASSED the guard. We now consume, after `sudo`/`env`, a sequence of:
-  //   - `--long ARG` long option taking an argument (`--user root`)
-  //   - `-x ARG`     short option taking an argument (`-u root`, `-g grp`)
-  //   - `-\S+`       bare flag (`-n`, `--preserve-env`, combined `-xyz`)
-  //   - `VAR=value`  env operand (`FOO=bar`)
-  // A `(?!git\b)` guard on the arg-consuming forms prevents swallowing the `git` token
-  // itself; alternatives are ordered specific-first and backtracking resolves the rest.
-  const sudoEnvArg = /(?:sudo|env)(?:\s+(?:--\S+\s+(?!git\b)\S+|-[a-zA-Z]\s+(?!git\b)\S+|-\S+|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)))*\s+/.source;
-  const assignArg = /[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+/.source;
-  const wrapArg = /(?:command|builtin|exec)\s+/.source;
-  const prefix = `(?:${sudoEnvArg}|${assignArg}|${wrapArg})*`;
-  // Allow an optional path prefix on git itself: `/usr/bin/git`, `/bin/git`, etc. The
-  // executable must END in `/git` so that a path ARGUMENT to another program (e.g.
-  // `node "/tmp/git commit test.mjs"`) is NOT matched — there git is not the invoked
-  // command (first token is `node`, "git commit" lives inside a quoted arg).
-  const gitExe = /(?:\S*\/)?git\b/.source;
-  // Then allow git's own flags (git -c k=v, git -C dir, --no-pager, etc.) before the sub.
-  const gitFlags = /(?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*/.source;
+  // Strip heredoc bodies so file CONTENT that mentions "git commit" does not count,
+  // and mask quoted prose so "if git commit" inside a -m message does not either.
+  const stripped = maskQuotedProse(stripHeredocBodies(command));
   for (const sub of ["commit", "push"]) {
-    if (new RegExp(boundary + prefix + gitExe + gitFlags + `\\s+${sub}\\b`).test(stripped)) {
+    if (realGitSubRegex(sub).test(stripped)) {
       enfLog.debug("git_invocation_detected", sub);
       return true;
     }
@@ -1180,28 +1519,35 @@ export function injectSignoff(command: string): string {
   // Reuse the exact command-position/prefix construction from isRealGitCommitOrPush,
   // capturing everything up to and including the `commit` token so we can insert
   // ` --signoff` immediately after it via a NON-global replace (first real match only).
-  const boundary = /(?:^|[;&|\n(){]|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b)\s*/.source;
-  const sudoEnvArg = /(?:sudo|env)(?:\s+(?:--\S+\s+(?!git\b)\S+|-[a-zA-Z]\s+(?!git\b)\S+|-\S+|[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)))*\s+/.source;
-  const assignArg = /[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+/.source;
-  const wrapArg = /(?:command|builtin|exec)\s+/.source;
-  const prefix = `(?:${sudoEnvArg}|${assignArg}|${wrapArg})*`;
-  const gitExe = /(?:\S*\/)?git\b/.source;
-  const gitFlags = /(?:\s+(?:-[a-zA-Z]\s+\S+|-\S+))*/.source;
-  const commitRe = new RegExp(`(${boundary}${prefix}${gitExe}${gitFlags}\\s+commit\\b)`);
+  // Shared command-position matcher (rtk/wrapper aware) — must stay in lockstep
+  // with isRealGitCommitOrPush so a guarded invocation is always an injectable one.
+  const commitRe = realGitSubRegex("commit", true);
 
-  // Pattern A: echo/printf "..." | git commit -F -  (real invocation after last pipe)
+  // Pattern A: echo/printf "..." | git commit -F -  (real invocation after last pipe).
+  // Matching runs on PROSE-MASKED text so a `git commit` mention inside the
+  // echoed string cannot absorb the signoff (Qodo round 3, PR #916); the
+  // splice uses the masked match's index, valid on the raw string because
+  // masking is length-preserving.
   const pipeIdx = command.lastIndexOf("|");
-  if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
+  if (pipeIdx !== -1) {
     const echoPart = command.slice(0, pipeIdx);
     const gitPart = command.slice(pipeIdx);
-    if (SIGNOFF_RE.test(gitPart) || SHORT_S_RE.test(gitPart)) return command;
-    if (!commitRe.test(gitPart)) return command;
-    enfLog.debug("injectSignoff", "pattern A (piped git commit -F -)");
-    return echoPart + gitPart.replace(commitRe, "$1 --signoff");
+    const maskedGit = maskQuotedProse(gitPart);
+    if (/git\s+commit\s+.*-F\s*-/.test(maskedGit)) {
+      if (SIGNOFF_RE.test(gitPart) || SHORT_S_RE.test(gitPart)) return command;
+      const mA = commitRe.exec(maskedGit);
+      if (!mA) return command;
+      enfLog.debug("injectSignoff", "pattern A (piped git commit -F -)");
+      const cutA = pipeIdx + mA.index + mA[1]!.length;
+      return command.slice(0, cutA) + " --signoff" + command.slice(cutA);
+    }
   }
 
-  // Pattern B: bare / inline git commit (no message pipe)
-  const m = commitRe.exec(command);
+  // Pattern B: bare / inline git commit (no message pipe) — matched on the
+  // masked text so prose mentions (echo "if git commit" && git commit -m x)
+  // cannot take the injection; spliced at the masked index (length-preserving).
+  const masked = maskQuotedProse(command);
+  const m = commitRe.exec(masked);
   if (!m) return command;
   // Scope the "already signed" check to the MATCHED real invocation ONLY, not the
   // whole command. The invocation region runs from the start of the match to the
@@ -1253,20 +1599,20 @@ export function injectSignoff(command: string): string {
     .replace(/'[^']*'/g, "''");
   if (SIGNOFF_RE.test(region) || SHORT_S_RE.test(region)) return command;
   enfLog.debug("injectSignoff", "pattern B (inline git commit)");
-  return command.replace(commitRe, "$1 --signoff");
+  // Splice at the masked match position — a raw replace could pick a prose
+  // mention instead of the real invocation (Qodo round 3, PR #916).
+  const cut = m.index + m[1]!.length;
+  return command.slice(0, cut) + " --signoff" + command.slice(cut);
 }
 
 /** Detect git add --force / -f (including combined short options like -fn).
  *  Respects -- end-of-options marker and shell separators (&&, ;, |, ||). */
 export function hasGitAddForce(command: string): boolean {
-  if (!hasGitSub(command, "add")) return false;
-  // Split on shell separators to isolate individual statements
-  const statements = command.split(/\s*(?:&&|\|\||[;|])\s*/);
-  for (const stmt of statements) {
-    const addMatch = stmt.match(/\bgit\b.*\badd\b\s+(.*)/);
-    if (!addMatch) continue;
-    const tokens = addMatch[1].split(/\s+/);
-    for (const token of tokens) {
+  // Statement-scoped and invocation-scoped: a `-f` in another statement
+  // (rm -f) or inside a -m message ("git commit -m 'add -f flag'") is not a
+  // `git add --force`.
+  for (const region of gitSubParseRegions(command, "add")) {
+    for (const token of gitAddTokens(region)) {
       if (token === "--") break; // Everything after -- is a pathspec
       if (token === "--force") return true;
       // Short option: -f or combined like -fn, -vf (starts with - but not --)
@@ -1278,15 +1624,14 @@ export function hasGitAddForce(command: string): boolean {
 
 /** Check if a git add command uses bulk-stage tokens (., -A, --all) before the -- separator. */
 export function hasGitAddBulk(command: string): boolean {
-  if (!hasGitSub(command, "add")) return false;
-  const addMatch = command.match(/\bgit\b.*\badd\b\s+(.*)/);
-  if (!addMatch) return false;
-  const args = addMatch[1];
-  // Split tokens, only check before -- (end-of-options marker)
-  const tokens = args.split(/\s+/);
-  for (const token of tokens) {
-    if (token === "--") break; // Everything after -- is a pathspec
-    if (token === "." || token === "-A" || token === "--all") return true;
+  // Statement-scoped: only the arguments of a REAL `git add` invocation count.
+  // The old loose match captured across statements and into -m message text
+  // ("git commit -m 'add .'" wrongly counted as a bulk add).
+  for (const region of gitSubParseRegions(command, "add")) {
+    for (const token of gitAddTokens(region)) {
+      if (token === "--") break; // Everything after -- is a pathspec
+      if (token === "." || token === "-A" || token === "--all") return true;
+    }
   }
   return false;
 }

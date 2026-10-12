@@ -635,6 +635,28 @@ See [Image Generation](image-generation.html) for details.
 
 See [Background Memory Consolidation (Dreaming)](background-dreaming.html) for details.
 
+### Memory tuning keys
+
+These keys tune the memory system's budgets and similarity gates (issue #915).
+All defaults match the pre-setting hardcoded values.
+
+| Parameter | Type | Default | Environment variable | Description |
+|---|---|---|---|---|
+| `memory_token_budget` | number | `1700` | `PI_MEMORY_TOKEN_BUDGET` | Token budget for the situation report injected into the system prompt. |
+| `memory_inject_similarity` | number | `0.65` | `PI_MEMORY_INJECT_SIMILARITY` | Vector similarity threshold for contextual memory auto-injection. |
+| `memory_near_duplicate_threshold` | number | `0.9` | `PI_MEMORY_NEAR_DUPLICATE_THRESHOLD` | Similarity above which `memory_add` reinforces an existing entry instead of adding. |
+| `memory_conflict_similarity` | number | `0.55` | `PI_MEMORY_CONFLICT_SIMILARITY` | Similarity floor for contradiction candidates in the conflict gate. |
+| `memory_max_active_entries` | int | `40` | `PI_MEMORY_MAX_ACTIVE_ENTRIES` | Total cap on active entries applied during rebuild. |
+
+```json
+    {
+      "memory_token_budget": 2000,
+      "memory_inject_similarity": 0.7
+    }
+```
+
+See [Memory Architecture](memory-architecture.html) for what each gate does.
+
 ### `internal_operations_provider`
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
@@ -3267,7 +3289,7 @@ The memory system is local, file-backed, and layered. Topic files are the source
 2. The entry is written into a category topic file such as `lessons.md` or `preferences.md`.
 3. The scoring engine rebuilds `memory-scores.jsonl`, recalculates stability, and assigns a lifecycle state.
 4. The embedding layer lazily creates or refreshes local vectors for semantic search.
-5. On `before_agent_start`, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, then appends that material to the tail of the system prompt.
+5. On `before_agent_start`, Pi builds a situation report, optionally adds contextually relevant memories and past-session matches, and injects that material as structured system-prompt sections (`project_memory`, `contextual_memories`, `past_sessions`) at the tail of the prompt.
 6. As evidence accumulates, the promotion system proposes stronger structures such as enforcement metadata or reusable skills.
 
 > **Note:** The architecture is intentionally split between human-editable topic files and machine-managed indexes. That keeps the memory easy to inspect while still supporting scoring, retrieval, and promotion.
@@ -3280,9 +3302,10 @@ Every layer is a standalone module under `extensions/orchestrator/`:
 |---|---|---|
 | Scoring engine | `memory-scoring.ts` | Stability formula, lifecycle states, category budgets, rebuilds the score index. |
 | Situation report | `situation-report.ts` | Builds the token-budgeted prompt injection and the capacity header. |
-| Memory tree | `memory-tree.ts` | Topic-file organization, hotness scores, cold-topic archiving. |
+| Memory tree | `memory-tree.ts` | Topic-file organization and hotness scores. |
 | Embeddings | `memory-embeddings.ts` | Local vector model, embedding store, hybrid search. |
 | Memory tools | `memory-tools.ts` | The `memory_*` tools exposed to the agent. |
+| Unified write path | `memory-write.ts` | Single add path with validation, grant guardrail, contradiction gate, dedup, and scope (issue #915). |
 | Session search | `session-search.ts` | Keyword index over past conversation summaries. |
 | Enforcement rules | `enforcement-rules.ts` | Code-enforced memories (triggers, actions, verifiers). |
 | Promotion queue | `promotion-queue.ts` | Graduates high-evidence memories into stronger structures. |
@@ -3395,8 +3418,12 @@ Memory reaches the model through three extension hooks:
 | `turn_end` | Injects file-change memory reminders (vector search on modified paths), task-focus enforcement when tasks are active but no tool was called, and semantic enforcement verification that can retry the turn on violations. |
 
 Only the `before_agent_start` material — the situation report, vector-matched memories, and session
-history — is appended to the **tail** of the system prompt, after rules and instructions. That position is
+history — is injected at the **tail** of the system prompt, after rules and instructions. That position is
 deliberate: LLM attention follows a U-shaped curve, and the tail of the prompt receives the strongest attention.
+Since issue #915 the injection mutates `systemPromptOptions.sections` instead of replacing the whole
+prompt text: Pi appends a transcript delta for the changed sections, which preserves cached prompt
+prefixes on supporting models. When an earlier handler has forced the full prompt (or an older Pi
+version does not expose sections), the extension falls back to appending to the prompt text.
 The other hooks deliver differently: `tool_result` enforcement acts on the tool result itself (`warn` appends to
 it, `block` prevents it), and `turn_end` verifier violations are sent as follow-up messages that can trigger a
 retry of the turn.
@@ -3448,16 +3475,40 @@ This is why the same project memory can feel different depending on what you are
 ### Session search recalls past conversations
 
 Independently of scored memory, `session-search.ts` maintains a keyword index over past conversation summaries in
-`.pi/data/session-search.json`. The index is written when a session shuts down, and `before_agent_start`
-auto-injects matches from relevant past sessions alongside the situation report.
+`.pi/data/session-search.jsonl`. At session shutdown the index harvests Pi's own LLM-written compaction and branch
+summaries from the session file (issue #915), falling back to a join of user messages when no summaries exist.
+Compaction summaries whose turn is retried (overflow recovery) are skipped so content is not double-indexed, and
+`before_agent_start` auto-injects matches from relevant past sessions alongside the situation report.
 
 The agent can also query it directly with the `session_search` tool — see [Commands and Tools Reference](commands-and-tools.html).
 
 ### Stated preferences are captured automatically
 
 `preference-extractor.ts` watches conversation for phrases such as "I prefer …", "always use …", or "never …".
-When it detects one, it adds the preference to memory automatically, and repeated statements reinforce the
-existing entry instead of creating duplicates.
+When it detects one, it routes the preference through the unified write path (`memory-write.ts`), so automatic
+extraction gets the same safeguards as an explicit `memory_add`: topic caps, near-duplicate dedup, and the
+contradiction gate. Questions ("Do I always need to…?") and one-off permission grants ("you can merge this PR")
+are filtered out before extraction.
+
+### The write path guards against bad memories
+
+Every producer — `memory_add`, the preference extractor — funnels through `memory-write.ts`, which enforces,
+in order:
+
+1. **Grant-phrase guardrail** — text that reads like a one-off permission ("you can merge this PR",
+   "go ahead", "just this once") is rejected: one-off grants are session instructions, not memories.
+2. **Contradiction gate** — an add that flips permission polarity against an existing entry (one text
+   forbids what the other permits, on the same topic) is refused and the model is told to ask the user.
+   A conflict is a decision point, not a dead end: after the user confirms the rule changed, retrying
+   with `overrideConflicts: true` supersedes the old non-pinned entry (invalidated, with provenance) so
+   no contradiction remains. Contradicting a **pinned** entry always refuses — pinned entries are
+   user-explicit and only the user's own `memory_remove` / `memory_edit` can change them.
+3. **Dedup** — near-duplicates (vector similarity) and exact matches reinforce the existing entry
+   instead of creating a second one.
+
+Entries can carry a `scope` (`session`, `task`, or `project`, the default). Session-scoped entries get an
+expiry safety net, are never injected into the situation report of a later session, and are pruned by the
+periodic rebuild once expired.
 
 ### Promotion turns repeated memories into stronger structure
 

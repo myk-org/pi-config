@@ -403,12 +403,6 @@ export function getProtectedBranches(cwd?: string): Set<string> {
   }
 }
 
-export function hasGitSub(command: string, sub: string): boolean {
-  return new RegExp(
-    `\\bgit\\b(?:\\s+(?:-[a-zA-Z]\\s+\\S+|-\\S+))*\\s+${sub}\\b`,
-  ).test(command);
-}
-
 /**
  * Split a shell segment into words, honouring quotes and backslash escapes, so
  * `conflicted\ repo` is one word and `-c core.editor="vim -f"` is one option.

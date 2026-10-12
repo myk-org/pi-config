@@ -17,6 +17,7 @@ import { getSetting } from "./project-settings.js";
 import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 import {
   conflictCandidateDirs,
+  pushTargetsProtectedBranch,
 } from "./enforcement-helpers.js";
 import {
   DANGEROUS,
@@ -25,7 +26,6 @@ import {
   getMainBranch,
   getProtectedBranches,
   getPrMergeStatus,
-  hasGitSub,
   isBranchAhead,
   isBranchMerged,
   createsAndResolvesConflict,
@@ -40,16 +40,20 @@ import {
   checkPythonPipBlock,
   checkRemoteExecBlock,
   checkTempFileEnforcement,
+  gitAddPathspecs,
+  gitSubArgRegions,
   hasGitAddBulk,
   hasGitAddForce,
-  isRealGitCommitOrPush,
   injectSignoff,
   injectGhBodySignature,
   isReadOnlyStatement,
+  isRealGitCommitOrPush,
   isRmInProjectTmp,
   normalizeForRepeatCheck,
+  realGitSub,
   resolveEffectiveCwd,
   stripHeredocBodies,
+  stripQuotedSpans,
   escapeForDoubleQuote,
   escapeForSingleQuote,
   commandHasTrailerByName,
@@ -200,19 +204,16 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
   if (getSetting(gitCwd, "use_worktrees")) {
     const mb = getMainBranch(gitCwd) || "main";
     const hint = `Use: git worktree add .worktrees/<name> -b <branch> ${mb}`;
-    if (hasGitSub(command, "checkout") && !/\bgit\b.*\bcheckout\b.*\s--\s/.test(command)) {
+    if (realGitSub(command, "checkout") && !/\bgit\b.*\bcheckout\b.*\s--\s/.test(command)) {
       return { block: true, reason: `⛔ git checkout blocked — use_worktrees is enabled. ${hint}` };
     }
-    if (hasGitSub(command, "switch")) {
+    if (realGitSub(command, "switch")) {
       return { block: true, reason: `⛔ git switch blocked — use_worktrees is enabled. ${hint}` };
     }
   }
 
   // Block git add . / git add -A
-  if (
-    hasGitSub(command, "add") &&
-    hasGitAddBulk(command)
-  ) {
+  if (hasGitAddBulk(command)) {
     return {
       block: true,
       reason:
@@ -228,13 +229,15 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
     };
   }
 
-  // Block staging gitignored files
-  if (hasGitSub(command, "add") && !hasGitAddBulk(command)) {
-    // Extract file paths from git add command
-    const addMatch = command.match(/\bgit\b.*\badd\b\s+(.+)/);
-    if (addMatch) {
-      const files = addMatch[1].split(/\s+/).filter((f) => !f.startsWith("-"));
-      for (const file of files) {
+  // Block staging gitignored files — pathspecs come from the REAL git add
+  // invocation(s) only, statement-scoped and quote-aware. The old loose
+  // extraction captured across statements (`git add f.ts && bash .dev/x.sh`
+  // blocked on .dev/x.sh) and into -m message text (a commit message
+  // mentioning an ignored path blocked the commit).
+  {
+    const staged = gitAddPathspecs(command);
+    if (staged && staged.length > 0) {
+      for (const file of staged) {
         const checkIgnored = runGit(["check-ignore", "-q", file], gitCwd);
         if (checkIgnored.code === 0) {
           return {
@@ -253,7 +256,12 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
       reason: "⛔ Bypassing git hooks via core.hooksPath=/dev/null is forbidden.",
     };
   }
-  if (hasGitSub(command, "commit") && command.includes("--no-verify")) {
+  // --no-verify must appear in the commit invocation's ARGUMENTS — a
+  // message that merely mentions --no-verify is not a hooks bypass.
+  if (
+    realGitSub(command, "commit") &&
+    gitSubArgRegions(command, "commit").some((r) => /(?:^|\s)--no-verify\b/.test(stripQuotedSpans(r)))
+  ) {
     return {
       block: true,
       reason: "⛔ --no-verify forbidden. Pre-commit hooks must run.",
@@ -265,7 +273,7 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
   const protectedBranches = getProtectedBranches(gitCwd);
 
   // Block commits to protected branches (unless allow_push_to_protected is set)
-  if (hasGitSub(command, "commit")) {
+  if (realGitSub(command, "commit")) {
     if (!branch)
       return {
         block: true,
@@ -313,7 +321,7 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
   }
 
   // Block pushes to protected branches
-  if (hasGitSub(command, "push")) {
+  if (realGitSub(command, "push")) {
     // Block if currently on a protected branch
     if (!getSetting(gitCwd, "allow_push_to_protected_branches")) {
       if (branch && protectedBranches.has(branch))
@@ -321,14 +329,16 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
           block: true,
           reason: `⛔ Cannot push to '${branch}' (protected). Create a feature branch.\nHint: If you're combining git checkout + git push in one bash call, split them into SEPARATE bash calls. Branch is checked before execution.`,
         };
-      // Block explicit push to any protected branch (e.g., git push origin v2.10)
-      for (const pb of protectedBranches) {
-        if (new RegExp(`\\bgit\\b.*\\bpush\\b.*\\b${pb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(command))
-          return {
-            block: true,
-            reason: `⛔ Cannot push to '${pb}' (protected). Create a feature branch.`,
-          };
-      }
+      // Block explicit push to any protected branch (e.g., git push origin main).
+      // Destination-ref aware (Qodo #5, PR #916): HEAD:main, feature:main,
+      // +main, refs/heads/main, and quoted "main" all count — the SOURCE
+      // side and remote names do not.
+      const pb = pushTargetsProtectedBranch(command, protectedBranches);
+      if (pb)
+        return {
+          block: true,
+          reason: `⛔ Cannot push to '${pb}' (protected). Create a feature branch.`,
+        };
     }
     if (branch) {
       const pr = getPrMergeStatus(branch, gitCwd);
@@ -406,7 +416,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
   pi.on("tool_call", async (event, ctx) => {
     // Memory-based enforcement — block rules checked before execution (all tool types)
     try {
-      const entries = loadEnforcedEntries(ctx.cwd);
+      const entries = loadEnforcedEntries(ctx.cwd, (ctx as any).sessionManager?.getSessionId?.());
       const blockEntries = entries.filter(e => e.action === "block");
       if (blockEntries.length > 0) {
         const toolName = isToolCallEventType("bash", event) ? "bash"
@@ -661,7 +671,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     // Enforce review loop — block commit unless review state is clean
     // Use resolveEffectiveCwd to detect the worktree from cd commands (e.g., cd .worktrees/issue-622 && git commit)
-    if (process.env.PI_AGENT_NAME === "git-expert" && hasGitSub(command, "commit")) {
+    if (process.env.PI_AGENT_NAME === "git-expert" && realGitSub(command, "commit")) {
       const commitCwd = resolveEffectiveCwd(command, ctx.cwd);
       // Skip review enforcement on version bump branches (release workflow only)
       const commitBranch = getCurrentBranch(commitCwd);
@@ -701,7 +711,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     let entries: ReturnType<typeof loadEnforcedEntries>;
     try {
-      entries = loadEnforcedEntries(ctx.cwd);
+      entries = loadEnforcedEntries(ctx.cwd, (ctx as any).sessionManager?.getSessionId?.());
     } catch (e: any) {
       log.debug("enforcement: loadEnforcedEntries failed:", e?.message?.slice(0, 100));
       return;
