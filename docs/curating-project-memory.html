@@ -501,6 +501,9 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <h3 id="learn-from-review-feedback-automatically">Learn from review feedback automatically</h3>
 <p>When you skip a code review finding for a reason that applies more broadly, Pi can reuse that decision in future reviews so the same kind of complaint does not keep coming back.</p>
 <p>Use this together with your PR workflow, then review the results in later cycles. See <a href="automating-code-reviews.html">Automating Code Reviews</a> for details.</p>
+<h3 id="distill-addressed-review-findings-into-lessons">Distill addressed review findings into lessons</h3>
+<p>When <code>myk-pi-tools reviews address</code> finishes applying replies, the orchestrator distills the findings that were <strong>addressed</strong> (not skipped) from the review database into one-line <code>lesson</code> memories — repo-scoped, concrete, capped at five per run. Each lesson carries finding-id provenance (<code>reviews.db:&lt;finding-id&gt;;&lt;owner&gt;/&lt;repo&gt;</code>), so when the same finding is addressed again the existing lesson is reinforced instead of duplicated: the evidence count becomes the recurrence signal.</p>
+<p>Distillation runs in the background right after the address command completes and never blocks the review flow. Disable it with <code>review_learning: false</code> in your project settings.</p>
 <h3 id="know-when-to-use-memory-versus-hard-guards">Know when to use memory versus hard guards</h3>
 <p>Use memory for guidance such as preferences, patterns, and decisions. Use a command guard when a rule must be enforced mechanically, not just remembered.</p>
 <p>Examples:</p>
@@ -584,6 +587,7 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <li><a href="#consolidate-memory-in-the-background">Consolidate memory in the background</a></li>
 <li><a href="#migrate-older-memory-data-into-topic-files">Migrate older memory data into topic files</a></li>
 <li><a href="#learn-from-review-feedback-automatically">Learn from review feedback automatically</a></li>
+<li><a href="#distill-addressed-review-findings-into-lessons">Distill addressed review findings into lessons</a></li>
 <li><a href="#know-when-to-use-memory-versus-hard-guards">Know when to use memory versus hard guards</a></li>
 </ul>
 </li>

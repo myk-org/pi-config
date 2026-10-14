@@ -93,6 +93,13 @@
     "min": 1,
     "group": "Memory"
   },
+  "review_learning": {
+    "description": "Distill addressed review findings into memory lessons after myk-pi-tools reviews address",
+    "type": "bool",
+    "env": "PI_REVIEW_LEARNING",
+    "default": true,
+    "group": "Memory"
+  },
   "orchestrator_edit_write_block": {
     "description": "Block orchestrator edit/write \u2014 force delegation to specialist subagents",
     "type": "bool",

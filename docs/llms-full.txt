@@ -3776,6 +3776,12 @@ When you skip a code review finding for a reason that applies more broadly, Pi c
 
 Use this together with your PR workflow, then review the results in later cycles. See [Automating Code Reviews](automating-code-reviews.html) for details.
 
+### Distill addressed review findings into lessons
+
+When `myk-pi-tools reviews address` finishes applying replies, the orchestrator distills the findings that were **addressed** (not skipped) from the review database into one-line `lesson` memories — repo-scoped, concrete, capped at five per run. Each lesson carries finding-id provenance (`reviews.db:<finding-id>;<owner>/<repo>`), so when the same finding is addressed again the existing lesson is reinforced instead of duplicated: the evidence count becomes the recurrence signal.
+
+Distillation runs in the background right after the address command completes and never blocks the review flow. Disable it with `review_learning: false` in your project settings.
+
 ### Know when to use memory versus hard guards
 
 Use memory for guidance such as preferences, patterns, and decisions. Use a command guard when a rule must be enforced mechanically, not just remembered.
