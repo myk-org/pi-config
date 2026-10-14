@@ -3294,6 +3294,17 @@ The memory system is local, file-backed, and layered. Topic files are the source
 
 > **Note:** The architecture is intentionally split between human-editable topic files and machine-managed indexes. That keeps the memory easy to inspect while still supporting scoring, retrieval, and promotion.
 
+#### Worktrees share the main checkout’s stores
+
+`.pi/memory` and `.pi/data` are gitignored, so a session running inside a git
+worktree (`.worktrees/<name>`, the parallel-issues workflow) would otherwise see
+empty stores. All memory and data paths are therefore resolved through the
+worktree’s **main checkout** — the parent of `git rev-parse --git-common-dir` —
+matching the Python side’s `get_project_root()`. In the main checkout itself
+this is a no-op (the common dir is `<root>/.git`), so resolution is uniform.
+`.pi/tmp` stays per-cwd by design: pidiff runs one server per cwd and tracks its
+port there, and sharing that across worktrees would collide.
+
 ### Implementation map
 
 Every layer is a standalone module under `extensions/orchestrator/`:

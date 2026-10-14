@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "../shared/logger.js";
+import { getProjectMemoryDir } from "./utils.js";
 import {
   type EnforcementAction,
   type EnforcementTrigger,
@@ -159,7 +160,7 @@ export function markTopicEntryEnforced(
 ): boolean {
   const topicName = CATEGORY_TO_TOPIC[category];
   if (!topicName) return false;
-  const topicPath = join(cwd, ".pi", "memory", "topics", `${topicName}.md`);
+  const topicPath = join(getProjectMemoryDir(cwd), "topics", `${topicName}.md`);
   if (!existsSync(topicPath)) return false;
 
   let content = readFileSync(topicPath, "utf-8");

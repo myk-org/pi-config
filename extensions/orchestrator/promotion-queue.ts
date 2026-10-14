@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
+import { getProjectMemoryDir } from "./utils.js";
 
 export type PromotionDestination =
   | "memory"
@@ -45,7 +46,7 @@ const DESTINATIONS: PromotionDestination[] = [
 const STATUSES: PromotionStatus[] = ["proposed", "applied", "rejected"];
 
 export function getPromotionsPath(cwd: string): string {
-  return join(cwd, ".pi", "memory", "promotions.md");
+  return join(getProjectMemoryDir(cwd), "promotions.md");
 }
 
 /** Stable id from destination + category + text (dedup key). */

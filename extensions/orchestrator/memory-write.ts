@@ -19,6 +19,7 @@
 import { createLogger } from "../shared/logger.js";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { getProjectMemoryDir } from "./utils.js";
 import {
   type MemoryCategory,
   type MemoryScope,
@@ -298,7 +299,7 @@ function supersedeEntry(cwd: string, category: string, text: string): void {
   try {
     const topicName = CATEGORY_TO_TOPIC[category as MemoryCategory];
     if (!topicName) return;
-    const topicPath = join(cwd, ".pi", "memory", "topics", `${topicName}.md`);
+    const topicPath = join(getProjectMemoryDir(cwd), "topics", `${topicName}.md`);
     if (!existsSync(topicPath)) return;
     const content = readFileSync(topicPath, "utf-8");
     const match = findTopicLine(content, category, text);
@@ -334,7 +335,7 @@ function supersedeEntry(cwd: string, category: string, text: string): void {
 function topicCapRejection(cwd: string, category: string, entryLine: string): AddMemoryResult | null {
   const topicName = CATEGORY_TO_TOPIC[category as MemoryCategory];
   if (!topicName) return null;
-  const topicPath = join(cwd, ".pi", "memory", "topics", `${topicName}.md`);
+  const topicPath = join(getProjectMemoryDir(cwd), "topics", `${topicName}.md`);
   let content = "";
   if (existsSync(topicPath)) {
     content = readFileSync(topicPath, "utf-8");
@@ -600,7 +601,7 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   // 5. Topic cap + write (cap precheck already ran in the override path;
   // this re-check is a race safety net — another writer may have appended)
   const topicName = CATEGORY_TO_TOPIC[category as MemoryCategory];
-  const topicsDir = join(cwd, ".pi", "memory", "topics");
+  const topicsDir = join(getProjectMemoryDir(cwd), "topics");
   const topicPath = join(topicsDir, `${topicName}.md`);
 
   if (!existsSync(topicsDir)) {
@@ -683,7 +684,7 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
  * entries cannot outlive their scope (issue #915).
  */
 export function pruneExpiredEntries(cwd: string): number {
-  const topicsDir = join(cwd, ".pi", "memory", "topics");
+  const topicsDir = join(getProjectMemoryDir(cwd), "topics");
   if (!existsSync(topicsDir)) return 0;
   const scores = loadScores(cwd);
   const now = Date.now();

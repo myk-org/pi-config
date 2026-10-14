@@ -69,22 +69,48 @@ export function getPiInvocation(args: string[]): { command: string; args: string
 /** Resolve to the main git repo root when cwd is a worktree.
  *  Uses --git-common-dir → always returns the SHARED repo root.
  *  Use for shared resources: project settings, reviews.db. */
-const repoRootCache = new Map<string, string>();
-
 export function resolveRepoRoot(cwd: string): string {
+  return resolveMainCheckoutRoot(cwd);
+}
+
+const mainCheckoutRootCache = new Map<string, string>();
+
+/**
+ * Resolve the main checkout root (the repo owning the worktree), or null when
+ * `cwd` is not a git repo.
+ *
+ * Runs `git rev-parse --path-format=absolute --git-common-dir` and returns the
+ * PARENT of the git-common-dir. In the main checkout itself the common dir is
+ * `<root>/.git`, so this equals the repo root — callers can use it
+ * unconditionally. `.pi/memory` and `.pi/data` are gitignored, so worktree
+ * sessions must resolve them here to see the shared stores (issue #918).
+ */
+export function tryResolveMainCheckoutRoot(cwd: string): string | null {
   const key = path.resolve(cwd);
-  const cached = repoRootCache.get(key);
-  if (cached !== undefined) return cached;
+  const cached = mainCheckoutRootCache.get(key);
+  if (cached !== undefined) return cached === "" ? null : cached;
+  let root: string | null = null;
   try {
-    const gitCommonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], { cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const gitCommonDir = execFileSync(
+      "git",
+      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+      { cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
     if (gitCommonDir && !gitCommonDir.startsWith("fatal")) {
-      const root = path.dirname(path.resolve(cwd, gitCommonDir));
-      repoRootCache.set(key, root);
-      return root;
+      root = path.dirname(path.resolve(gitCommonDir));
     }
-  } catch {}
-  repoRootCache.set(key, cwd);
-  return cwd;
+  } catch (e: any) {
+    // Expected whenever the cwd is not a git repo, so this is a debug line in a
+    // file log — never console.*, which would dump it into the chat transcript.
+    log.debug("tryResolveMainCheckoutRoot", { cwd: key, reason: e?.message?.slice(0, 200) });
+  }
+  mainCheckoutRootCache.set(key, root ?? "");
+  return root;
+}
+
+/** Main checkout root, or `cwd` itself when not inside a git repo. */
+export function resolveMainCheckoutRoot(cwd: string): string {
+  return tryResolveMainCheckoutRoot(cwd) ?? path.resolve(cwd);
 }
 
 /** Resolve to the current worktree root (or repo root if not in a worktree).
@@ -127,17 +153,32 @@ export function resolveWorktreeRoot(cwd: string): string {
   return tryResolveWorktreeRoot(cwd) ?? cwd;
 }
 
-/** Get project-scoped temp dir under <cwd>/.pi/tmp/ */
+/** Get project-scoped temp dir under <cwd>/.pi/tmp/
+ *  Deliberately NOT worktree-aware: pidiff runs one server per cwd and tracks
+ *  its port in .pi/tmp/pidiff.port — sharing that across worktrees would
+ *  collide (issue #918 decided to leave tmp per-cwd on purpose). */
 export function getProjectTmpDir(cwd: string): string {
   const dir = path.join(cwd, ".pi", "tmp");
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-/** Get project-scoped data dir under <cwd>/.pi/data/ */
+/** Get the shared project data dir under <main-checkout>/.pi/data/.
+ *  Resolves through the main checkout (like Python get_project_root()) so the
+ *  TS and Python sides agree on one .pi/data/reviews.db from worktrees too. */
 export function getProjectDataDir(cwd: string): string {
-  const dir = path.join(cwd, ".pi", "data");
+  const dir = path.join(resolveMainCheckoutRoot(cwd), ".pi", "data");
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
+/** Get the shared project memory dir under <main-checkout>/.pi/memory/.
+ *  Worktree sessions resolve to the main checkout's memory (issue #918):
+ *  .pi/memory is gitignored, so a .worktrees/ session would otherwise start
+ *  from an empty store and both review-learning parts would silently no-op. */
+export function getProjectMemoryDir(cwd: string): string {
+  const dir = path.join(resolveMainCheckoutRoot(cwd), ".pi", "memory");
+  fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 

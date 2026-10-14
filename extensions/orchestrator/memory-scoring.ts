@@ -16,6 +16,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
 import { getSetting } from "./project-settings.js";
+import { getProjectMemoryDir } from "./utils.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -246,12 +247,12 @@ const LEGACY_SCORES_FILENAME = "memory-scores.json";
 
 function getScoresStore(cwd: string): JsonlStateStore<ScoresFile> {
   return createCachedStore<ScoresFile>(
-    join(cwd, ".pi", "memory"), SCORES_FILENAME_JSONL, LEGACY_SCORES_FILENAME, { compactThreshold: 50 },
+    getProjectMemoryDir(cwd), SCORES_FILENAME_JSONL, LEGACY_SCORES_FILENAME, { compactThreshold: 50 },
   );
 }
 
 export function getScoresPath(cwd: string): string {
-  return join(cwd, ".pi", "memory", SCORES_FILENAME_JSONL);
+  return join(getProjectMemoryDir(cwd), SCORES_FILENAME_JSONL);
 }
 
 /**
@@ -320,7 +321,7 @@ export function loadScores(cwd: string): ScoresFile {
  * imports loadScores/entryHash from this module).
  */
 function parseTopicLinesForMigration(cwd: string): { category: string; text: string }[] {
-  const topicsDir = join(cwd, ".pi", "memory", "topics");
+  const topicsDir = join(getProjectMemoryDir(cwd), "topics");
   const out: { category: string; text: string }[] = [];
   if (!existsSync(topicsDir)) return out;
   try {

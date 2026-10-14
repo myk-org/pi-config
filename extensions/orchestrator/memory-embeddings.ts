@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
+import { getProjectMemoryDir } from "./utils.js";
 
 const EMBEDDING_DIM = 384;
 export const EMBEDDING_POOLING = "mean";
@@ -42,12 +43,12 @@ const LEGACY_STORE_FILENAME = "embeddings.json";
 
 function getEmbeddingStore(cwd: string): JsonlStateStore<EmbeddingStore> {
   return createCachedStore<EmbeddingStore>(
-    join(cwd, ".pi", "memory"), STORE_FILENAME_JSONL, LEGACY_STORE_FILENAME, { compactThreshold: 30 },
+    getProjectMemoryDir(cwd), STORE_FILENAME_JSONL, LEGACY_STORE_FILENAME, { compactThreshold: 30 },
   );
 }
 
 function getStorePath(cwd: string): string {
-  return join(cwd, ".pi", "memory", STORE_FILENAME_JSONL);
+  return join(getProjectMemoryDir(cwd), STORE_FILENAME_JSONL);
 }
 
 function loadStore(cwd: string): EmbeddingStore {

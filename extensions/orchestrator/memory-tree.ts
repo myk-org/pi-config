@@ -11,6 +11,7 @@
  */
 
 import { createLogger } from "../shared/logger.js";
+import { getProjectMemoryDir } from "./utils.js";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -58,7 +59,7 @@ export interface TopicEntry {
 // ── Topic Directory ────────────────────────────────────────────────────────
 
 function getTopicsDir(cwd: string): string {
-  return join(cwd, ".pi", "memory", "topics");
+  return join(getProjectMemoryDir(cwd), "topics");
 }
 
 // ── Topic File I/O ─────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { getSetting } from "./project-settings.js";
+import { getProjectMemoryDir } from "./utils.js";
 import {
   type ScoredEntry,
   type MemoryCategory,
@@ -109,7 +110,7 @@ interface MemoryEntryWithText {
  * Called on session_start, every 30 min, and after dreaming.
  */
 export function rebuildAndOrganize(cwd: string): void {
-  const topicsDir = join(cwd, ".pi", "memory", "topics");
+  const topicsDir = join(getProjectMemoryDir(cwd), "topics");
   if (!existsSync(topicsDir)) return;
 
   // Prune expired scoped entries first (issue #915): session/task-scoped
@@ -149,7 +150,7 @@ export function buildSituationReport(
   // Exhausted memory budget — do not inject (avoids divide-by-zero / NaN usage %)
   if (tokenBudget <= 0) return "";
 
-  const topicsDir = join(cwd, ".pi", "memory", "topics");
+  const topicsDir = join(getProjectMemoryDir(cwd), "topics");
   const queryClass: QueryClass = options.queryClass ?? "general";
   const bias = getQueryClassBias(queryClass);
 

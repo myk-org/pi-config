@@ -17,6 +17,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { getProjectMemoryDir } from "./utils.js";
 import {
   loadScores,
   entryHash,
@@ -365,7 +366,7 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
       }
 
       const topicName = CATEGORY_TO_TOPIC[category as keyof typeof CATEGORY_TO_TOPIC];
-      const topicPath = join(cwd, ".pi", "memory", "topics", `${topicName}.md`);
+      const topicPath = join(getProjectMemoryDir(cwd), "topics", `${topicName}.md`);
 
       if (!existsSync(topicPath)) {
         return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }] };
@@ -517,7 +518,7 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
       }
 
       const topicName = CATEGORY_TO_TOPIC[category as keyof typeof CATEGORY_TO_TOPIC];
-      const topicPath = join(cwd, ".pi", "memory", "topics", `${topicName}.md`);
+      const topicPath = join(getProjectMemoryDir(cwd), "topics", `${topicName}.md`);
 
       if (!existsSync(topicPath)) {
         return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }] };
