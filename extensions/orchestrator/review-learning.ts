@@ -1,11 +1,12 @@
 /**
- * review-learning.ts — distill addressed review findings into memory (issue #918 Part A).
+ * review-learning.ts — distill addressed review findings into memory and
+ * recall them at write time (issue #918 Parts A and B).
  *
- * A `tool_result` watcher recognizes `myk-pi-tools reviews address` completions
- * in main-session bash, then (fire-and-forget, never blocking the tool result
- * or the agent loop) distills the ADDRESSED findings for the session's repo
- * from `.pi/data/reviews.db` into one-line `lesson` memory entries via the
- * internal memory write path, with finding-id provenance
+ * Part A — a `tool_result` watcher recognizes `myk-pi-tools reviews address`
+ * completions in main-session bash, then (fire-and-forget, never blocking the
+ * tool result or the agent loop) distills the ADDRESSED findings for the
+ * session's repo from `.pi/data/reviews.db` into one-line `lesson` memory
+ * entries via the internal memory write path, with finding-id provenance
  * (`derivedFrom="reviews.db:<comment-id>;<owner>/<repo>"`) so re-fires
  * (multi-group address runs) reinforce instead of duplicating.
  *
@@ -13,7 +14,16 @@
  * DELETES that JSON on the final status-group run. `skipped` findings are
  * excluded (ack-noise, false positives); only final `addressed` rows distill.
  *
- * GUARD: this hook assumes `reviews address` runs in the main session (both
+ * Part B — write-time recall. Three injection surfaces surface past addressed
+ * findings for files the agent is about to touch, ranked by recurrence:
+ * 1. `before_agent_start` system-prompt section (paths named in the prompt +
+ *    the issue-branch diff),
+ * 2. a first-write `tool_result` hint for paths discovered mid-run,
+ * 3. a `tool_call` rewrite appending the block to subagent task text.
+ * All surfaces omit entirely when empty (zero added tokens), never make model
+ * calls, and never throw.
+ *
+ * GUARD: these hooks assume `reviews address` runs in the main session (both
  * review-handler modes run Phases 2–8 in main-session bash); if address ever
  * moves into a poll worker, this goes blind — move the distillation trigger
  * with it.
@@ -22,12 +32,12 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { getSetting } from "./project-settings.js";
-import { getProjectDataDir } from "./utils.js";
+import { getProjectDataDir, resolveWorktreeRoot } from "./utils.js";
 import { addMemoryEntry } from "./memory-write.js";
 import { entryHash, loadScores, reinforce } from "./memory-scoring.js";
 import { readAllTopicEntries } from "./memory-tree.js";
@@ -412,6 +422,216 @@ export async function writeLessonsToMemory(
   return result;
 }
 
+// ── Write-time recall (issue #918 Part B) ─────────────────────────────────────
+
+/** Path-shaped tokens: `src/api/foo.py`, `docs/readme.md`, `.env.local`. */
+const PATH_TOKEN_RE = /[\w./-]+\.[a-z]{1,4}/gi;
+
+/** Bounded block caps: ~8 lines, ~600 chars — protects the prompt budget. */
+const MAX_BLOCK_LINES = 8;
+const MAX_BLOCK_CHARS = 600;
+/** Per-line gist truncation. */
+const MAX_GIST_CHARS = 120;
+
+const BLOCK_HEADER =
+  "<review-lessons>\nPast review findings for files you're about to touch (addressed N× — avoid repeating):";
+const BLOCK_TAIL = "</review-lessons>";
+
+/** Normalize a repo-relative or absolute path to repo-relative ("/" separators), or null when it escapes the worktree root. */
+export function normalizeRepoRelative(cwd: string, value: string): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().replace(/^\.\//, "").replace(/\/+$/, "");
+  if (!trimmed || trimmed === "." || trimmed === "..") return null;
+  const root = resolveWorktreeRoot(cwd);
+  const abs = isAbsolute(trimmed) ? trimmed : resolve(cwd, trimmed);
+  const rel = relative(root, abs);
+  if (!rel || rel === ".." || rel.startsWith("../") || isAbsolute(rel)) return null;
+  return rel.split(sep).join("/");
+}
+
+/**
+ * Mechanically extract file paths from free text, resolved against `cwd`.
+ * A token survives only when the file exists, or the token names a directory
+ * prefix that exists (e.g. `docs/new-file.md` in an existing `docs/`) — this
+ * filters prose noise like "e.g." and version numbers. URL fragments contain
+ * "//" and are rejected.
+ */
+export function extractPathsFromText(text: string, cwd: string): string[] {
+  if (typeof text !== "string" || !text) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(PATH_TOKEN_RE)) {
+    const token = match[0]!;
+    if (token.includes("//")) continue; // URL path fragments
+    const abs = resolve(cwd, token);
+    if (!existsSync(abs) && !(token.includes("/") && existsSync(dirname(abs)))) continue;
+    const rel = normalizeRepoRelative(cwd, token);
+    if (!rel || seen.has(rel)) continue;
+    seen.add(rel);
+    out.push(rel);
+  }
+  return out;
+}
+
+/**
+ * Paths changed on the current branch vs main: `git diff --name-only main...HEAD`,
+ * falling back to `origin/main...HEAD`. Fresh branches / missing main / no git →
+ * [] (fail-soft by design — the write-time hint covers what this misses).
+ */
+export function branchDiffPaths(cwd: string): string[] {
+  for (const range of ["main...HEAD", "origin/main...HEAD"]) {
+    try {
+      const out = execFileSync("git", ["diff", "--name-only", range], {
+        cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
+      });
+      return out.split("\n").map((line) => line.trim()).filter(Boolean);
+    } catch {
+      // try the next base ref
+    }
+  }
+  return [];
+}
+
+/** First sentence of a comment body, whitespace-collapsed, ≤ `max` chars. */
+export function firstSentence(body: string, max = MAX_GIST_CHARS): string {
+  const text = (body ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  const match = /^(.{2,}?[.!?])(?:\s|$)/.exec(text);
+  const sentence = match?.[1] ?? text;
+  return sentence.length > max ? `${sentence.slice(0, max - 3)}...` : sentence;
+}
+
+/** All addressed comments with a path, across every review/commit SHA. */
+function allAddressedComments(dbPath: string): { id: number; path: string; body: string }[] {
+  const db = openReviewsDb(dbPath);
+  if (!db) return [];
+  try {
+    const rows = db
+      .prepare("SELECT id, path, body FROM comments WHERE status='addressed' AND path IS NOT NULL")
+      .all() as any[];
+    return rows.map((row) => ({ id: Number(row.id), path: String(row.path), body: String(row.body ?? "") }));
+  } catch (error: any) {
+    log.debug("reviews_db_query_failed", { dbPath, reason: String(error?.message ?? error).slice(0, 200) });
+    return [];
+  } finally {
+    db.close();
+  }
+}
+
+/** True when a DB comment path matches an input path (exact, or either side is a dir prefix of the other). */
+function pathMatches(commentPath: string, inputPath: string): boolean {
+  return commentPath === inputPath || commentPath.startsWith(`${inputPath}/`) || inputPath.startsWith(`${commentPath}/`);
+}
+
+export interface PathFindings {
+  /** Repo-relative path the agent is touching. */
+  path: string;
+  /** Addressed-comment occurrences across ALL commit SHAs (recurrence signal). */
+  count: number;
+  /** Lesson text when memory has one for this path, else the top comment's gist. */
+  text: string;
+}
+
+/**
+ * Collect findings relevant to `paths` from both sources:
+ * - reviews DB: addressed comments matching any path (exact + dir-prefix),
+ *   counted across all commit SHAs — recurrence is the ranking signal;
+ * - memory lessons: entries whose `derivedFrom` provenance points at a matched
+ *   DB comment, or whose text mentions a path (cheap scan — lessons already
+ *   carry repo-scoped phrasing).
+ * Ranked by count desc, then path asc. Never throws.
+ */
+export function collectPathFindings(cwd: string, paths: string[]): PathFindings[] {
+  const inputs = [
+    ...new Set(paths.map((p) => normalizeRepoRelative(cwd, p)).filter((p): p is string => Boolean(p))),
+  ];
+  if (inputs.length === 0) return [];
+
+  const dbPath = join(getProjectDataDir(cwd), "reviews.db");
+  const rows = allAddressedComments(dbPath);
+  const counts = new Map<string, number>();
+  const gists = new Map<string, string>();
+  const pathById = new Map<number, string>();
+  for (const row of rows) {
+    pathById.set(row.id, row.path);
+    for (const input of inputs) {
+      if (pathMatches(row.path, input)) {
+        counts.set(input, (counts.get(input) ?? 0) + 1);
+        if (!gists.has(input)) gists.set(input, firstSentence(row.body));
+      }
+    }
+  }
+
+  // Memory lessons: derivedFrom provenance (`reviews.db:<id>;<owner>/<repo>`)
+  // resolving to a matched comment path, or a plain text scan.
+  const lessonByPath = new Map<string, string>();
+  try {
+    const scores = loadScores(cwd);
+    for (const entry of readAllTopicEntries(cwd)) {
+      const hash = entryHash(`- [${entry.category}] ${entry.text}`);
+      const derivedFrom = scores.entries[hash]?.derivedFrom;
+      let matched: string | null = null;
+      const provenance = derivedFrom ? /^reviews\.db:(\d+);/.exec(derivedFrom) : null;
+      if (provenance) {
+        const commentPath = pathById.get(Number(provenance[1]));
+        if (commentPath) matched = inputs.find((input) => pathMatches(commentPath, input)) ?? null;
+      }
+      if (!matched) matched = inputs.find((input) => entry.text.includes(input)) ?? null;
+      if (matched && !lessonByPath.has(matched)) lessonByPath.set(matched, entry.text);
+    }
+  } catch (error: any) {
+    log.debug("lesson_scan_failed", { reason: String(error?.message ?? error).slice(0, 200) });
+  }
+
+  const findings: PathFindings[] = [];
+  for (const input of inputs) {
+    const count = counts.get(input);
+    if (!count && !lessonByPath.has(input)) continue;
+    findings.push({ path: input, count: count ?? 1, text: lessonByPath.get(input) ?? gists.get(input) ?? "" });
+  }
+  findings.sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
+  return findings;
+}
+
+/** Render findings as the bounded `<review-lessons>` block, or null when empty / nothing fits. */
+export function formatFindingsBlock(findings: PathFindings[]): string | null {
+  if (findings.length === 0) return null;
+  let budget = MAX_BLOCK_CHARS - BLOCK_HEADER.length - BLOCK_TAIL.length - 1;
+  const lines: string[] = [];
+  for (const finding of findings) {
+    if (lines.length >= MAX_BLOCK_LINES) break;
+    let line = `- ${finding.path} (${finding.count}×): ${finding.text}`;
+    const cost = (lines.length > 0 ? 1 : 0) + line.length;
+    if (cost > budget) {
+      if (lines.length === 0 && budget > 4) {
+        lines.push(line.slice(0, budget));
+        budget = 0;
+      }
+      break;
+    }
+    lines.push(line);
+    budget -= cost;
+  }
+  if (lines.length === 0) return null;
+  return `${BLOCK_HEADER}\n${lines.join("\n")}\n${BLOCK_TAIL}`;
+}
+
+/** Bounded markdown block of past findings for `paths`, or undefined when empty — the shared query behind all three injection surfaces. */
+export function relevantFindings(cwd: string, paths: string[]): string | undefined {
+  return formatFindingsBlock(collectPathFindings(cwd, paths)) ?? undefined;
+}
+
+/** Extract plain text from a `before_agent_start` custom message (string or content parts). */
+export function customMessageText(message: any): string {
+  if (!message || typeof message !== "object") return "";
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((part: any) => (typeof part?.text === "string" ? part.text : "")).join("\n");
+  }
+  return "";
+}
+
 // ── Extension wiring ───────────────────────────────────────────────────────
 
 export interface ReviewLearningOptions {
@@ -419,11 +639,19 @@ export interface ReviewLearningOptions {
   callModel?: CallModel;
   /** Repo resolution — injectable for tests (default: git remote origin). */
   repoInfo?: (cwd: string) => { owner: string; repo: string } | null;
+  /** Branch-diff path source — injectable for tests (default: git diff main...HEAD). */
+  diffPaths?: (cwd: string) => string[];
 }
 
 export function createReviewLearning(options: ReviewLearningOptions = {}) {
   const callModel = options.callModel ?? callEnmaas;
   const repoInfo = options.repoInfo ?? resolveRepoInfo;
+  const diffPaths = options.diffPaths ?? branchDiffPaths;
+
+  // Write-time recall session state (Part B): paths that already received a
+  // full injection this session, and whether any full block went out yet —
+  // later per-path hints degrade to one-liners to protect the budget.
+  const recall = { injectedPaths: new Set<string>(), fullBlockInjected: false };
 
   /** Full distillation pipeline for one address fire. Settings-gated, fail-soft. */
   const distill = async (cwd: string): Promise<void> => {
@@ -464,8 +692,17 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
   };
 
   const register = (pi: ExtensionAPI): void => {
-    // Subagent children never run `reviews address` (main-session bash by design).
+    // Subagent children never run `reviews address` (main-session bash by design)
+    // and receive their findings via the dispatch rewrite below, not by re-querying.
     if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
+    pi.on("session_start", () => {
+      recall.injectedPaths.clear();
+      recall.fullBlockInjected = false;
+    });
+
+    // Part A — address-fire distillation watcher (first among tool_result
+    // handlers; tests index it as handlers.get("tool_result")[0]).
     pi.on("tool_result", (event: any, ctx: any) => {
       try {
         if (event?.isError) return;
@@ -481,6 +718,89 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
         );
       } catch (error: any) {
         log.warn("tool_result_handler_failed", { reason: String(error?.message ?? error).slice(0, 300) });
+      }
+    });
+
+    // Surface 1 — before_agent_start injection (graft-gate pattern).
+    // Purely mechanical path extraction (prompt tokens + branch diff), sync
+    // DB/git with timeouts, no model calls. Must be fast and never throw —
+    // other before_agent_start handlers (graft gate, rules) must not stall.
+    pi.on("before_agent_start", (event: any, ctx: any) => {
+      try {
+        const cwd = ctx?.cwd;
+        if (typeof cwd !== "string" || !getSetting(cwd, "review_learning")) return;
+        const prompt = event?.messageType === "user" && typeof event.prompt === "string"
+          ? event.prompt
+          : customMessageText(event?.message);
+        const paths = [...extractPathsFromText(prompt, cwd), ...diffPaths(cwd)];
+        const findings = collectPathFindings(cwd, paths);
+        const block = formatFindingsBlock(findings);
+        if (!block) return;
+        for (const finding of findings) recall.injectedPaths.add(finding.path);
+        recall.fullBlockInjected = true;
+        log.info("recall_injected_prompt", { paths: findings.length, chars: block.length });
+        // Prefer a custom prompt section (rules.ts pattern — preserves cached
+        // prompt prefixes); fall back to the graft return shape when a prior
+        // handler forced the whole prompt or sections are unavailable.
+        const opts = event?.systemPromptOptions;
+        const sections = opts?.sections;
+        if (opts?.forceSystemPrompt === undefined && sections && typeof sections === "object") {
+          sections.review_lessons = block;
+          return;
+        }
+        return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
+      } catch (error: any) {
+        log.debug("recall_prompt_failed", { reason: String(error?.message ?? error).slice(0, 300) });
+        return undefined;
+      }
+    });
+
+    // Surface 2 — first-write tool_result hint (graft blastHint pattern):
+    // catches paths discovered mid-run that prompt extraction missed. Appends
+    // once per path per session; one-liners after the first full block.
+    pi.on("tool_result", (event: any, ctx: any) => {
+      try {
+        if (event?.isError) return;
+        const tool = String(event?.toolName ?? "").toLowerCase();
+        if (tool !== "write" && tool !== "edit") return;
+        const cwd = ctx?.cwd;
+        if (typeof cwd !== "string" || !getSetting(cwd, "review_learning")) return;
+        const written = typeof event?.input?.path === "string" ? normalizeRepoRelative(cwd, event.input.path) : null;
+        if (!written || recall.injectedPaths.has(written)) return;
+        const findings = collectPathFindings(cwd, [written]);
+        if (findings.length === 0) return;
+        const top = findings[0]!;
+        recall.injectedPaths.add(written);
+        const hint = recall.fullBlockInjected
+          ? `[review-lessons] ${top.path} (${top.count}×): ${top.text}`
+          : formatFindingsBlock(findings);
+        if (!hint) return;
+        recall.fullBlockInjected = true;
+        log.info("recall_injected_write", { path: written, count: top.count });
+        return { content: [...(event.content ?? []), { type: "text", text: hint }] };
+      } catch (error: any) {
+        log.debug("recall_write_failed", { reason: String(error?.message ?? error).slice(0, 300) });
+      }
+    });
+
+    // Surface 3 — specialist dispatch hook: specialists get no memory
+    // injection, so append the block to the subagent task text (enforcement
+    // tool_call rewrite pattern — mutate input in place, never other args).
+    pi.on("tool_call", (event: any, ctx: any) => {
+      try {
+        if (String(event?.toolName ?? "").toLowerCase() !== "subagent") return;
+        const input = event?.input;
+        if (!input || typeof input.task !== "string" || !input.task.trim()) return;
+        const cwd = typeof input.cwd === "string" && input.cwd.trim() ? input.cwd : ctx?.cwd;
+        if (typeof cwd !== "string" || !getSetting(cwd, "review_learning")) return;
+        const paths = extractPathsFromText(input.task, cwd);
+        if (paths.length === 0) return;
+        const block = relevantFindings(cwd, paths);
+        if (!block) return;
+        input.task = `${input.task}\n\n${block}`;
+        log.info("recall_injected_subagent", { paths: paths.length, chars: block.length });
+      } catch (error: any) {
+        log.debug("recall_subagent_failed", { reason: String(error?.message ?? error).slice(0, 300) });
       }
     });
   };

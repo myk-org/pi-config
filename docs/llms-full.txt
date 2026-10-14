@@ -3782,6 +3782,8 @@ When `myk-pi-tools reviews address` finishes applying replies, the orchestrator 
 
 Distillation runs in the background right after the address command completes and never blocks the review flow. Disable it with `review_learning: false` in your project settings.
 
+The same lessons come back at **write time**. Three injection surfaces query the review database and the lesson store for the files you are about to touch, ranked by how often each path's findings recurred, and append a bounded `<review-lessons>` block: before a turn starts (paths named in your prompt plus the issue-branch diff go into the system prompt as a section), on the first write or edit to a path discovered mid-run (appended to the tool result, once per path per session), and when a task is dispatched to a specialist subagent (appended to the task text). Every surface is mechanical — no model calls — and omits the block entirely when nothing is relevant, so unaffected runs pay zero tokens. The same `review_learning` setting gates all three.
+
 ### Know when to use memory versus hard guards
 
 Use memory for guidance such as preferences, patterns, and decisions. Use a command guard when a rule must be enforced mechanically, not just remembered.
