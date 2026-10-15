@@ -256,6 +256,15 @@ describe("firstSentence", () => {
     const long = "x".repeat(300);
     assert.ok(firstSentence(long).length <= 120);
   });
+
+  it("un-buries gists from badge/HTML soup (real Qodo body)", () => {
+    const body =
+      '<img src="https://www.qodo.ai/wp-content/uploads/2026/01/action-required.png" height="20" alt="Action required"> 1\\.\n' +
+      "**Project settings needs a regression test** The PR changes settings resolution by introducing a new helper.";
+    const gist = firstSentence(body);
+    assert.ok(!gist.includes("<img"), `gist must not contain raw HTML: ${gist}`);
+    assert.ok(gist.startsWith("Project settings needs a regression test"), gist);
+  });
 });
 
 describe("relevantFindings", () => {

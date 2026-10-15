@@ -410,7 +410,12 @@ export function branchDiffPaths(cwd: string): string[] {
 
 /** First sentence of a comment body, whitespace-collapsed, ≤ `max` chars. */
 export function firstSentence(body: string, max = MAX_GIST_CHARS): string {
-  const text = (body ?? "").replace(/\s+/g, " ").trim();
+  // Prefer the un-buried finding title (badges/HTML/Markdown stripped — the
+  // same extraction Part A distills with); fall back to the raw collapsed
+  // body only when no title line can be extracted. Sentence-splitting then
+  // applies to whichever text we got.
+  const title = extractFindingTitle(body);
+  const text = title ?? (body ?? "").replace(/\s+/g, " ").trim();
   if (!text) return "";
   const match = /^(.{2,}?[.!?])(?:\s|$)/.exec(text);
   const sentence = match?.[1] ?? text;
