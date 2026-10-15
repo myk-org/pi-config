@@ -3294,6 +3294,17 @@ The memory system is local, file-backed, and layered. Topic files are the source
 
 > **Note:** The architecture is intentionally split between human-editable topic files and machine-managed indexes. That keeps the memory easy to inspect while still supporting scoring, retrieval, and promotion.
 
+#### Worktrees share the main checkout’s stores
+
+`.pi/memory` and `.pi/data` are gitignored, so a session running inside a git
+worktree (`.worktrees/<name>`, the parallel-issues workflow) would otherwise see
+empty stores. All memory and data paths are therefore resolved through the
+worktree’s **main checkout** — the parent of `git rev-parse --git-common-dir` —
+matching the Python side’s `get_project_root()`. In the main checkout itself
+this is a no-op (the common dir is `<root>/.git`), so resolution is uniform.
+`.pi/tmp` stays per-cwd by design: pidiff runs one server per cwd and tracks its
+port there, and sharing that across worktrees would collide.
+
 ### Implementation map
 
 Every layer is a standalone module under `extensions/orchestrator/`:
@@ -3764,6 +3775,16 @@ If your project still has older memory data from a previous format, run this onc
 When you skip a code review finding for a reason that applies more broadly, Pi can reuse that decision in future reviews so the same kind of complaint does not keep coming back.
 
 Use this together with your PR workflow, then review the results in later cycles. See [Automating Code Reviews](automating-code-reviews.html) for details.
+
+### Distill addressed review findings into lessons
+
+When `myk-pi-tools reviews address` finishes applying replies, the orchestrator distills the findings that were **addressed** (not skipped) from the review database into one-line `lesson` memories — repo-scoped, concrete, capped at five per run. Each lesson carries finding-id provenance (`reviews.db:<finding-id>;<owner>/<repo>`), so when the same finding is addressed again the existing lesson is reinforced instead of duplicated: the evidence count becomes the recurrence signal.
+
+Distillation runs in the background right after the address command completes and never blocks the review flow. Disable it with `review_learning: false` in your project settings.
+
+The same lessons come back at **write time**. Three injection surfaces query the review database and the lesson store for the files you are about to touch, ranked by how often each path's findings recurred, and append a bounded `<review-lessons>` block: before a turn starts (paths named in your prompt plus the issue-branch diff go into the system prompt as a section), on the first write or edit to a path discovered mid-run (appended to the tool result, once per path per session), and when a task is dispatched to a specialist subagent (appended to the task text). Every surface is mechanical — no model calls — and omits the block entirely when nothing is relevant, so unaffected runs pay zero tokens. The same `review_learning` setting gates all three.
+
+Both review-handler modes are covered by the address hook: interactive mode runs `myk-pi-tools reviews address` in Phase 8 directly, and the auto polling loop (`--autorabbit` / `--autoqodo`) replays Phases 2–8 — including address — in the same main session after each poll result returns new comments. The poll worker process itself never calls address (`reviews poll` only fetches and posts status comments via the GitHub API), so the hook sees every address completion in both modes without any special handling.
 
 ### Know when to use memory versus hard guards
 
@@ -5390,19 +5411,19 @@ sidecar after changing them):
 | `settings.json` | Seeded into the in-memory settings store for the internal runtime and every session (e.g. `defaultProvider`) |
 
 A `models.json` `apiKey` may reference an environment variable (e.g.
-`"$ENMAAS_API_KEY"`) — the variable must exist in the **sidecar process's**
+`"$ACME_API_KEY"`) — the variable must exist in the **sidecar process's**
 environment (pass it through in Docker with `-e` / `Env:`). Worked example —
-an EnMaaS OpenAI-compatible gateway at `/etc/pi-sidecar/agent/models.json`:
+an Acme OpenAI-compatible gateway at `/etc/pi-sidecar/agent/models.json`:
 
 ```json
     {
       "providers": {
-        "enmaas": {
-          "baseUrl": "https://enmaas.example.com/v1",
+        "acme": {
+          "baseUrl": "https://acme.example.com/v1",
           "api": "openai-completions",
-          "apiKey": "$ENMAAS_API_KEY",
+          "apiKey": "$ACME_API_KEY",
           "models": [
-            { "id": "enmaas/gpt-4o", "name": "GPT-4o via EnMaaS" }
+            { "id": "acme/gpt-4o", "name": "GPT-4o via Acme" }
           ]
         }
       }
@@ -5411,10 +5432,10 @@ an EnMaaS OpenAI-compatible gateway at `/etc/pi-sidecar/agent/models.json`:
 
 ```bash
     export PI_SIDECAR_AGENT_DIR=/etc/pi-sidecar/agent
-    export ENMAAS_API_KEY=<your-key>
+    export ACME_API_KEY=<your-key>
     npx pi-sidecar
-    # GET /models now lists enmaas/gpt-4o (provider "enmaas");
-    # POST /sessions accepts {"provider": "enmaas", "model": "enmaas/gpt-4o", ...}
+    # GET /models now lists acme/gpt-4o (provider "acme");
+    # POST /sessions accepts {"provider": "acme", "model": "acme/gpt-4o", ...}
 ```
 
 Notes:
@@ -5440,13 +5461,13 @@ dir's `models.json` (read once at startup — restart the sidecar to apply):
 ```json
     {
       "providers": {
-        "enmaas": {
-          "baseUrl": "https://enmaas.example.com/v1",
+        "acme": {
+          "baseUrl": "https://acme.example.com/v1",
           "api": "openai-completions",
-          "apiKey": "$ENMAAS_API_KEY",
+          "apiKey": "$ACME_API_KEY",
           "trustKeyScopedListing": true,
           "models": [
-            { "id": "enmaas/gpt-4o", "name": "GPT-4o via EnMaaS" }
+            { "id": "acme/gpt-4o", "name": "GPT-4o via Acme" }
           ]
         }
       }
@@ -5466,7 +5487,7 @@ extra field is ignored by pi's provider registration, so it does not affect
 For a flagged provider whose native listing succeeds, `POST
 /models/for-api-key` returns the **union** of the live gateway listing and the
 provider's manifest-configured `models[]` (snapshot at startup, same file
-read as the flag). Real case: an EnMaaS gateway lists 15 models via
+read as the flag). Real case: an Acme gateway lists 15 models via
 `/v1/models` but not the manually configured `rits/zai-org/glm-5-3` — the
 response contains both. Manifest-only models are appended after the live
 entries in the same response shape (`provider`/`id`/`name`/`source`, plus

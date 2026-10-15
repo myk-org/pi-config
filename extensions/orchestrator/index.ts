@@ -37,6 +37,7 @@ import { registerSessionSearch } from "./session-search.js";
 import { registerSettingsTui } from "./settings-tui.js";
 import { registerMarkdownTransformer } from "./markdown-transformer.js";
 import { registerGraft } from "./graft.js";
+import { registerReviewLearning } from "./review-learning.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
 import { registerProviderStreamLog } from "../shared/provider-stream-log.js";
@@ -112,6 +113,7 @@ export default function (pi: ExtensionAPI) {
   registerNvim(pi);
   registerPreferenceExtractor(pi);
   registerMemoryTools(pi);
+  registerReviewLearning(pi);
   registerSessionSearch(pi);
   registerSettingsTui(pi);
   registerMarkdownTransformer(pi);

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { entryHash, mutateScores, type MemoryCategory } from "./memory-scoring.js";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
+import { getProjectMemoryDir } from "./utils.js";
 
 export interface ProvenancePendingItem {
   category: MemoryCategory | string;
@@ -31,12 +32,12 @@ const LEGACY_PROVENANCE_FILENAME = "provenance-pending.json";
 
 function getProvenanceStore(cwd: string): JsonlStateStore<ProvenancePendingFile> {
   return createCachedStore<ProvenancePendingFile>(
-    join(cwd, ".pi", "memory"), PROVENANCE_FILENAME_JSONL, LEGACY_PROVENANCE_FILENAME,
+    getProjectMemoryDir(cwd), PROVENANCE_FILENAME_JSONL, LEGACY_PROVENANCE_FILENAME,
   );
 }
 
 export function getProvenancePendingPath(cwd: string): string {
-  return join(cwd, ".pi", "memory", PROVENANCE_FILENAME_JSONL);
+  return join(getProjectMemoryDir(cwd), PROVENANCE_FILENAME_JSONL);
 }
 
 export function writeProvenancePending(

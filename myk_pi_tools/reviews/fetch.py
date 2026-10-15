@@ -819,6 +819,7 @@ def fetch_qodo_sticky_findings(
                 "line": finding.get("line"),
                 "end_line": finding.get("end_line"),
                 "body": f"**{finding.get('title', '')}**\n\n{finding.get('description', '')}",
+                "title": finding.get("title", ""),
                 "quality_label": finding.get("category", ""),
                 "type": _QODO_TYPE_MAP.get(finding.get("finding_type", ""), "qodo_finding"),
                 "source": "qodo",

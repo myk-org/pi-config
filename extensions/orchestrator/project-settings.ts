@@ -100,6 +100,8 @@ interface ProjectSettings {
   pidiff_stale_lock_timeout_ms?: number;
   /** Pidiff: daemon startup timeout in seconds. */
   pidiff_daemon_startup_timeout_s?: number;
+  /** Distill addressed review findings into memory lessons after `reviews address`. Default: true. */
+  review_learning?: boolean;
 }
 
 /** Settings metadata is loaded from settings-keys.json by the cycle-free settings source. */
@@ -150,6 +152,7 @@ const PROJECT_SETTINGS_KEYS: (keyof ProjectSettings)[] = [
   "coms_probe_timeout_ms",
   "pidiff_stale_lock_timeout_ms",
   "pidiff_daemon_startup_timeout_s",
+  "review_learning",
 ];
 for (const key of PROJECT_SETTINGS_KEYS) {
   if (!(key in SETTINGS_KEYS)) {
@@ -482,6 +485,7 @@ export function getSetting(cwd: string, key: "coms_entry_grace_period_ms"): numb
 export function getSetting(cwd: string, key: "coms_probe_timeout_ms"): number;
 export function getSetting(cwd: string, key: "pidiff_stale_lock_timeout_ms"): number;
 export function getSetting(cwd: string, key: "pidiff_daemon_startup_timeout_s"): number;
+export function getSetting(cwd: string, key: "review_learning"): boolean;
 export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
   const settings = getSettings(cwd);
   const def = SETTINGS_KEYS[key];

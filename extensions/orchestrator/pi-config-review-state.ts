@@ -10,12 +10,12 @@
  * On first access, migrates any legacy pi-config-review-state.json automatically.
  */
 
-import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getSetting } from "./project-settings.js";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
-import { resolveWorktreeRoot, getProjectDataDir } from "./utils.js";
+import { resolveWorktreeRoot } from "./utils.js";
 
 type StateTransitionCallback = (state: ReviewState) => void;
 let onTransitionCb: StateTransitionCallback | null = null;
@@ -48,13 +48,21 @@ export interface ReviewState {
 const STATE_FILE_JSONL = "pi-config-review-state.jsonl";
 const LEGACY_STATE_FILE = "pi-config-review-state.json";
 
+/** Per-worktree data dir — deliberately NOT the shared getProjectDataDir:
+ *  review state must stay per-worktree (one review loop per issue branch),
+ *  so it joins the worktree root directly (issue #918 kept this per-cwd). */
+function getWorktreeDataDir(cwd: string): string {
+  const dir = join(resolveWorktreeRoot(cwd), ".pi", "data");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
 function getStore(cwd: string): JsonlStateStore<ReviewState> {
-  const dataDir = getProjectDataDir(resolveWorktreeRoot(cwd));
-  return createCachedStore<ReviewState>(dataDir, STATE_FILE_JSONL, LEGACY_STATE_FILE);
+  return createCachedStore<ReviewState>(getWorktreeDataDir(cwd), STATE_FILE_JSONL, LEGACY_STATE_FILE);
 }
 
 export function statePath(cwd: string): string {
-  return join(getProjectDataDir(resolveWorktreeRoot(cwd)), STATE_FILE_JSONL);
+  return join(getWorktreeDataDir(cwd), STATE_FILE_JSONL);
 }
 
 function defaultState(): ReviewState {
@@ -108,7 +116,7 @@ function acquireLock(cwd: string): boolean {
   const maxRetries = 100;
   for (let i = 0; i < maxRetries; i++) {
     try {
-      getProjectDataDir(resolveWorktreeRoot(cwd));
+      getWorktreeDataDir(cwd);
       writeFileSync(lock, String(process.pid), { flag: "wx" });
       return true;
     } catch {

@@ -220,6 +220,29 @@ describe("session API key", () => {
     }
   });
 
+  it("classifies Vertex-path ADC registrations as ambient even with a legacy string apiKey (#919)", async () => {
+    const vertexPath = resolveExt(
+      "SIDECAR_VERTEX_EXTENSION_PATH", "@myk-org/pi-vertex-claude", "index.ts", "packages/pi-vertex-claude/index.ts",
+    );
+    // Pre-#919 shape: string apiKey carrying the project env var — cannot carry
+    // the ambient marker, so only the extension-path classification catches it.
+    // Self-contained store/runtime: the legacy provider must not leak into the
+    // shared runtime other tests iterate for availability snapshots.
+    const vertex = fauxProvider({ provider: "google-vertex-claude", models: [] });
+    vertex.provider.auth = { apiKey: "$GOOGLE_CLOUD_PROJECT" } as never; // pragma: allowlist secret — synthetic env-var ref, not a credential
+    const isolatedRuntime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
+    const isolatedStore = new SessionStore();
+    Object.assign(isolatedStore, {
+      internalRuntime: { services: { modelRuntime: isolatedRuntime }, dispose: async () => {} },
+      modelRuntime: isolatedRuntime, modelRegistry: new ModelRegistry(isolatedRuntime), _ready: true,
+    });
+    snapshotLegacyAmbientProviders([{ provider: vertex.provider, extensionPath: vertexPath }], (isolatedStore as any).legacyAmbientProviders);
+    isolatedRuntime.registerNativeProvider(vertex.provider);
+    assert.equal((await isolatedStore.getProviderStatus("google-vertex-claude")).supportsSessionApiKey, false);
+    await assert.rejects(() => isolatedStore.create({ provider: "google-vertex-claude", model: "missing", systemPrompt: "hi", cwd, apiKey: secret }),
+      (error: any) => error.statusCode === 400 && /not found for provider/.test(error.message));
+  });
+
   const registerGenericOverLegacy = () => {
     const provider = "cli-legacy";
     const generic = fauxProvider({ provider, models: [{ id: "local" }] });

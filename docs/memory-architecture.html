@@ -420,6 +420,15 @@ architectural ideas.</p>
 <blockquote>
 <p><strong>Note:</strong> The architecture is intentionally split between human-editable topic files and machine-managed indexes. That keeps the memory easy to inspect while still supporting scoring, retrieval, and promotion.</p>
 </blockquote>
+<h4 id="worktrees-share-the-main-checkouts-stores">Worktrees share the main checkout’s stores</h4>
+<p><code>.pi/memory</code> and <code>.pi/data</code> are gitignored, so a session running inside a git
+worktree (<code>.worktrees/&lt;name&gt;</code>, the parallel-issues workflow) would otherwise see
+empty stores. All memory and data paths are therefore resolved through the
+worktree’s <strong>main checkout</strong> — the parent of <code>git rev-parse --git-common-dir</code> —
+matching the Python side’s <code>get_project_root()</code>. In the main checkout itself
+this is a no-op (the common dir is <code>&lt;root&gt;/.git</code>), so resolution is uniform.
+<code>.pi/tmp</code> stays per-cwd by design: pidiff runs one server per cwd and tracks its
+port there, and sharing that across worktrees would collide.</p>
 <h3 id="implementation-map">Implementation map</h3>
 <p>Every layer is a standalone module under <code>extensions/orchestrator/</code>:</p>
 <div class="table-wrap"><table>

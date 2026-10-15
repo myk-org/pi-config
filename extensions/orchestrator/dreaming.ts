@@ -26,7 +26,7 @@ import { setSlot } from "./status-bar.js";
 import { rebuildAndOrganize } from "./situation-report.js";
 import { runPromotionPass } from "./memory-promotion.js";
 import { mergeProvenancePending } from "./memory-provenance.js";
-import { getProjectTmpDir, shouldSkipOneshotShutdownDream } from "./utils.js";
+import { getProjectTmpDir, getProjectMemoryDir, shouldSkipOneshotShutdownDream } from "./utils.js";
 import { fileLog } from "../shared/file-logger.js";
 
 // Scoring rebuild runs every 30 minutes (cheap, no LLM — just rescores and reorganizes)
@@ -101,7 +101,7 @@ export function registerDreaming(
     updateDreamStatus();
     currentDreamId = "";  // Reset until we get the ID from spawnAsyncAgent
     const { agents } = discoverAgents(cwd, "user");
-    const topicsDir = path.join(cwd, ".pi", "memory", "topics");
+    const topicsDir = path.join(getProjectMemoryDir(cwd), "topics");
     const { id } = spawnAsyncAgent(
       "worker",
       `Memory dreaming — analyze session and maintain topic files.\n` +

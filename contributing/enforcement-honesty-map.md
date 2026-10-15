@@ -29,6 +29,26 @@ Declares what is actually code-enforced versus prompt-only. A tier is about
   run in — per-subshell directory stacks, chained `-C` values, conditional `cd`s — and blocks when any is
   conflicted, refusing outright when a Git env var selects the index
 
+- Review-learning address distillation: a `tool_result` watcher in `review-learning.ts` fires on non-error bash
+  results matching `myk-pi-tools reviews address` (`isReviewsAddressCommand`) and distills the addressed findings
+  from `.pi/data/reviews.db` into `lesson` memories with finding-id provenance
+  (`derivedFrom="reviews.db:<id>;<owner>/<repo>"` — re-fires reinforce instead of duplicating, capped at 5 per fire).
+  The **trigger** is code-tier; the **lesson content** is deterministic and model-free (finding-title extraction).
+  Gated by the `review_learning` setting; graceful no-op on missing DB or unparsable remote (log.warn, never
+  throws into the agent loop). Assumes `reviews address` runs in main-session bash — both review-handler modes run
+  Phases 2–8 there; if address ever moves into a poll worker, this goes blind — move the distillation trigger with it
+
+- Review-lesson write-time injection: `before_agent_start` appends a `review_lessons` system-prompt section
+  (`review-learning.ts`) — path extraction is mechanical (prompt path regex + `git diff --name-only main...HEAD`),
+  queries are sync with timeouts, no model calls. Omitted entirely when the query is empty (zero tokens on
+  unaffected runs); gated by `review_learning`; never throws (other `before_agent_start` handlers must not stall)
+
+- Review-lesson first-write hint + subagent task rewrite: in `review-learning.ts`, a `tool_result` handler appends
+  the findings block to the first write/edit of a path not covered by prompt extraction (once per path per session,
+  one-liners after the first full block), and a `tool_call` handler mutates the subagent `task` argument in place to
+  carry the block to specialists (who receive no memory injection). Both omit-when-empty and gated by
+  `review_learning`
+
 Inventory a project’s code-tier memories:
 
 ```bash

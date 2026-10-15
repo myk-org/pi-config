@@ -122,11 +122,11 @@ describe("SessionStore configured agent dir", { concurrency: false }, () => {
       join(dir, "models.json"),
       JSON.stringify({
         providers: {
-          "enmaas-test-902": {
+          "acme-test-902": {
             baseUrl: "http://127.0.0.1:9/v1",
             api: "openai-completions",
             apiKey: "test-key-902", // pragma: allowlist secret — synthetic test credential
-            models: [{ id: "enmaas-model-x", name: "EnMaaS Model X" }],
+            models: [{ id: "acme-model-x", name: "Acme Model X" }],
           },
         },
       }),
@@ -135,18 +135,18 @@ describe("SessionStore configured agent dir", { concurrency: false }, () => {
     try {
       const providers = await store.getProviders();
       assert.ok(
-        providers.some((p) => p.provider === "enmaas-test-902"),
+        providers.some((p) => p.provider === "acme-test-902"),
         `custom provider should be listed, got: ${providers.map((p) => p.provider).join(",")}`,
       );
       const models = await store.getModels();
       assert.ok(
-        models.some((m) => m.provider === "enmaas-test-902" && m.id === "enmaas-model-x"),
-        `custom provider model should be listed, got: ${models.filter((m) => m.provider === "enmaas-test-902").map((m) => m.id).join(",")}`,
+        models.some((m) => m.provider === "acme-test-902" && m.id === "acme-model-x"),
+        `custom provider model should be listed, got: ${models.filter((m) => m.provider === "acme-test-902").map((m) => m.id).join(",")}`,
       );
       // Session creation against the configured provider — creation only, no prompts.
       const sessionId = await store.create({
-        provider: "enmaas-test-902",
-        model: "enmaas-model-x",
+        provider: "acme-test-902",
+        model: "acme-model-x",
         systemPrompt: "test",
         cwd: sessionCwd,
       });
@@ -154,8 +154,8 @@ describe("SessionStore configured agent dir", { concurrency: false }, () => {
       // The provider is key-capable (models.json apiKey auth, not ambient) — creation with a
       // per-session api_key must also succeed.
       const keySessionId = await store.create({
-        provider: "enmaas-test-902",
-        model: "enmaas-model-x",
+        provider: "acme-test-902",
+        model: "acme-model-x",
         systemPrompt: "test",
         cwd: sessionCwd,
         apiKey: "test-key-902", // pragma: allowlist secret — synthetic test credential

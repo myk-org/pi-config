@@ -143,6 +143,16 @@ When you skip a code review finding for a reason that applies more broadly, Pi c
 
 Use this together with your PR workflow, then review the results in later cycles. See [Automating Code Reviews](automating-code-reviews.html) for details.
 
+### Distill addressed review findings into lessons
+
+When `myk-pi-tools reviews address` finishes applying replies, the orchestrator distills the findings that were **addressed** (not skipped) from the review database into one-line `lesson` memories — repo-scoped, concrete, capped at five per run. Each lesson carries finding-id provenance (`reviews.db:<finding-id>;<owner>/<repo>`), so when the same finding is addressed again the existing lesson is reinforced instead of duplicated: the evidence count becomes the recurrence signal.
+
+Distillation runs in the background right after the address command completes and never blocks the review flow. Disable it with `review_learning: false` in your project settings.
+
+The same lessons come back at **write time**. Three injection surfaces query the review database and the lesson store for the files you are about to touch, ranked by how often each path's findings recurred, and append a bounded `<review-lessons>` block: before a turn starts (paths named in your prompt plus the issue-branch diff go into the system prompt as a section), on the first write or edit to a path discovered mid-run (appended to the tool result, once per path per session), and when a task is dispatched to a specialist subagent (appended to the task text). Every surface is mechanical — no model calls — and omits the block entirely when nothing is relevant, so unaffected runs pay zero tokens. The same `review_learning` setting gates all three.
+
+Both review-handler modes are covered by the address hook: interactive mode runs `myk-pi-tools reviews address` in Phase 8 directly, and the auto polling loop (`--autorabbit` / `--autoqodo`) replays Phases 2–8 — including address — in the same main session after each poll result returns new comments. The poll worker process itself never calls address (`reviews poll` only fetches and posts status comments via the GitHub API), so the hook sees every address completion in both modes without any special handling.
+
 ### Know when to use memory versus hard guards
 
 Use memory for guidance such as preferences, patterns, and decisions. Use a command guard when a rule must be enforced mechanically, not just remembered.

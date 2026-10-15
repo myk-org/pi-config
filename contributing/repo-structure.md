@@ -64,6 +64,7 @@ pi-config/
 │   │   ├── pi-config-review-state.ts # Review state machine (review loop enforcement)
 │   │   ├── resolve-agent-model.ts   # Resolve effective model/provider for an agent (priority chain)
 │   │   ├── review-ui.ts             # Review loop TUI — status bar indicator + transcript status cards
+│   │   ├── review-learning.ts      # Distill addressed review findings into memory lessons after `reviews address` (issue #918)
 │   │   ├── rule-placeholders.ts     # Rule assembly: frontmatter gates, {{IF}}/{{IFNOT}} conditionals, {{REVIEW_LOOP_MAX_CYCLES}}
 │   │   ├── rules.ts                 # Rule + memory injection (before_agent_start)
 │   │   ├── session-search.ts            # Keyword search over past conversation summaries

@@ -685,6 +685,25 @@ export function resolveInternalAgentDir(explicit?: string): string {
 }
 
 /**
+ * Ambient-marker value on `apiKey`; string apiKeys cannot carry it (undefined).
+ *
+ * Marker mechanism (issue #919): an ambient-auth provider (ADC, CLI login,
+ * ACPX) opts out of per-session API keys by registering object-form auth whose
+ * apiKey carries `Symbol.for("pi-config.ambientLoginAuth") = true` — only
+ * possible via pi-ai `createProvider` (native registration). Legacy
+ * `registerProvider(name, bag)` registrations use string apiKeys (env-var
+ * refs) that cannot carry the marker; those are classified by extension path
+ * in `snapshotLegacyAmbientProviders` below. A NEW ambient-auth extension must
+ * either register via createProvider with the marker, or load through one of
+ * the path-classified extension entries (add its path there).
+ */
+function ambientMarkerValue(apiKey: unknown): unknown { // pragma: allowlist secret — parameter name, not a credential
+  return typeof apiKey === "object" && apiKey !== null // pragma: allowlist secret — parameter name, not a credential
+    ? Reflect.get(apiKey, Symbol.for("pi-config.ambientLoginAuth"))
+    : undefined;
+}
+
+/**
  * Builds the CreateAgentSessionRuntimeFactory for the internal registrar
  * runtime (see SessionStore.ensureInternalRuntime()). Extracted to a
  * standalone module-level function — rather than an inline closure nested
@@ -699,8 +718,8 @@ export function snapshotLegacyAmbientProviders(
   const log = createLogger("legacy-ambient-providers");
   let legacyCount = 0;
   for (const { provider, extensionPath } of registrations) {
-    if ([PROVIDER_EXTENSION, CLI_PROVIDER_EXTENSION, ACPX_EXTENSION].includes(extensionPath) &&
-        provider.auth.apiKey && Reflect.get(provider.auth.apiKey, Symbol.for("pi-config.ambientLoginAuth")) === undefined) {
+    if ([PROVIDER_EXTENSION, CLI_PROVIDER_EXTENSION, ACPX_EXTENSION, VERTEX_EXTENSION].includes(extensionPath) &&
+        provider.auth.apiKey && ambientMarkerValue(provider.auth.apiKey) === undefined) {
       legacyAmbientProviders.add(provider);
       legacyCount++;
     }
@@ -1337,10 +1356,10 @@ export class SessionStore {
   private supportsSessionApiKey(provider: string): boolean {
     const auth = this.modelRuntime!.getProvider(provider)?.auth?.apiKey;
     const native = this.modelRuntime!.getRegisteredNativeProvider(provider);
-    const ambientMarker = Symbol.for("pi-config.ambientLoginAuth");
+    const nativeApiKey = native?.auth?.apiKey;
     const supported = !HEADLESS_EXCLUDED_PROVIDERS.has(provider) && !!auth &&
-      Reflect.get(auth, ambientMarker) !== true &&
-      !(native?.auth?.apiKey && Reflect.get(native.auth.apiKey, ambientMarker) === true) &&
+      ambientMarkerValue(auth) !== true &&
+      !(nativeApiKey && ambientMarkerValue(nativeApiKey) === true) &&
       !(native && this.legacyAmbientProviders.has(native));
     const log = createLogger("session-key-capability");
     log.debug("Session key capability decided", {
@@ -1672,7 +1691,7 @@ export class SessionStore {
             log.debug("Validating key-discovered model token limit", { session: id, valid });
             return valid ? value : undefined;
           };
-          // Issue 913: gateway listings (e.g. EnMaaS) often omit token-limit
+          // Issue 913: gateway listings (e.g. Acme) often omit token-limit
           // capabilities. Manifest-declared limits reach this path already
           // merged into the discovered entry's capabilities under the SAME
           // inputTokenLimit/outputTokenLimit keys (see mergeManifestModels),
