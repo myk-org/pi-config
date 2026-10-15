@@ -476,7 +476,18 @@ export async function writeLessonsToMemory(
     });
     if (add.status === "added") result.added++;
     else if (add.status === "reinforced") result.reinforced++;
-    else result.rejected++;
+    else {
+      result.rejected++;
+      // Visible, not debug: a rejected lesson is silent knowledge loss — the
+      // contradiction detector occasionally false-positives on review-derived
+      // titles (e.g. "one review can teach another" vs an unrelated pinned
+      // lesson), and without this line the only trace is an aggregate count.
+      log.warn("lesson_rejected", {
+        derivedFrom,
+        text: lesson.text,
+        reason: String((add as { message?: string }).message ?? "").slice(0, 300),
+      });
+    }
     log.debug("lesson_write", { derivedFrom, status: add.status });
   }
   return result;
