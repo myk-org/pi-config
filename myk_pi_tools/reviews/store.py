@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from myk_pi_tools.reviews.title_extraction import extract_finding_title
+
 # Schema for the reviews database
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS reviews (
@@ -44,7 +46,8 @@ CREATE TABLE IF NOT EXISTS comments (
     resolved_at TEXT,
     type TEXT DEFAULT NULL,
     quality_label TEXT DEFAULT NULL,
-    code_diff TEXT DEFAULT NULL
+    code_diff TEXT DEFAULT NULL,
+    title TEXT DEFAULT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_comments_review_id ON comments(review_id);
@@ -101,19 +104,45 @@ def ensure_database_directory(db_path: Path) -> None:
             print(f"Debug: could not chmod {db_dir}: {exc}", file=sys.stderr)
 
 
-def create_tables(conn: sqlite3.Connection) -> None:
-    """Create tables if they don't exist, and apply schema migrations."""
+def create_tables(conn: sqlite3.Connection) -> bool:
+    """Create tables if they don't exist, and apply schema migrations.
+
+    Returns True when the `title` column migration ran (caller logs it).
+    """
     conn.executescript(SCHEMA)
 
     # Migration: add 'type' column to existing databases that lack it
     cursor = conn.execute("PRAGMA table_info(comments)")
     columns = {row[1] for row in cursor.fetchall()}
+    title_migrated = False
     if "type" not in columns:
         conn.execute("ALTER TABLE comments ADD COLUMN type TEXT DEFAULT NULL")
     if "quality_label" not in columns:
         conn.execute("ALTER TABLE comments ADD COLUMN quality_label TEXT DEFAULT NULL")
     if "code_diff" not in columns:
         conn.execute("ALTER TABLE comments ADD COLUMN code_diff TEXT DEFAULT NULL")
+    if "title" not in columns:
+        conn.execute("ALTER TABLE comments ADD COLUMN title TEXT DEFAULT NULL")
+        title_migrated = True
+    return title_migrated
+
+
+def backfill_titles(conn: sqlite3.Connection) -> int:
+    """Fill `comments.title` for rows where it is NULL.
+
+    Runs the deterministic extractor (Python port of the TS engine) over the
+    raw body — the body column is never modified. Rows whose bodies yield no
+    title (badge-only, empty) keep NULL; readers fall back to body extraction
+    for those. Returns the number of rows updated.
+    """
+    cursor = conn.execute("SELECT id, body FROM comments WHERE title IS NULL AND body IS NOT NULL")
+    updated = 0
+    for row_id, body in cursor.fetchall():
+        title = extract_finding_title(body)
+        if title:
+            conn.execute("UPDATE comments SET title = ? WHERE id = ?", (title, row_id))
+            updated += 1
+    return updated
 
 
 def get_current_commit_sha(cwd: Path | None = None) -> str:
@@ -161,13 +190,17 @@ def insert_review(conn: sqlite3.Connection, owner: str, repo: str, pr_number: in
 def insert_comment(conn: sqlite3.Connection, review_id: int, source: str, comment: dict[str, Any]) -> None:
     """Insert a single comment record."""
     cursor = conn.cursor()
+    # Title: the fetched JSON's parsed title when present (Qodo sticky
+    # findings carry it); otherwise the deterministic extraction over the
+    # raw body — so every stored row has a clean title when one exists.
+    title = comment.get("title") or extract_finding_title(comment.get("body"))
     cursor.execute(
         """
         INSERT INTO comments (
             review_id, source, thread_id, node_id, comment_id, author,
             path, line, body, priority, status, reply, skip_reason,
-            posted_at, resolved_at, type, quality_label, code_diff
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            posted_at, resolved_at, type, quality_label, code_diff, title
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             review_id,
@@ -188,6 +221,7 @@ def insert_comment(conn: sqlite3.Connection, review_id: int, source: str, commen
             comment.get("type"),
             comment.get("quality_label"),
             comment.get("code_diff"),
+            title,
         ),
     )
 
@@ -239,7 +273,15 @@ def store_reviews(json_path: Path) -> None:
     try:
         # Enable foreign key constraints for referential integrity
         conn.execute("PRAGMA foreign_keys=ON")
-        create_tables(conn)
+        title_migrated = create_tables(conn)
+
+        # One-shot backfill when the title column just landed (and a cheap
+        # no-op pass for any rows that were never backfilled).
+        backfilled = backfill_titles(conn)
+        if title_migrated:
+            log(f"Migrated: added comments.title, backfilled {backfilled} row(s)")
+        elif backfilled:
+            log(f"Backfilled comments.title for {backfilled} row(s)")
 
         # Insert new review record (append-only, never update)
         # RuntimeError in insert_review handles invalid lastrowid
