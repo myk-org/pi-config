@@ -737,6 +737,38 @@ describe("review-learning hook", () => {
     assert.equal(attempts.length, 3, "marked review is not re-attempted");
   });
 
+  it("overlapping distill fires for the same review serialize — no double lesson writes", async () => {
+    // one review (PR 8) with two distinct findings → two lessons
+    const cwd = makeCwd();
+    const dbPath = path.join(cwd, ".pi", "data", "reviews.db");
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    db.exec(SCHEMA);
+    db.prepare(
+      "INSERT INTO reviews (pr_number, owner, repo, commit_sha, created_at) VALUES (8, 'myk-org', 'demo', 'sha-8', '2026-01-01T00:00:00Z')",
+    ).run();
+    const insert = db.prepare(
+      "INSERT INTO comments (review_id, source, path, line, body, priority, status) VALUES (1, 'qodo', 'src/api.py', ?, ?, 'high', 'addressed')",
+    );
+    insert.run(10, "First overlapping title on the endpoint");
+    insert.run(20, "Second overlapping title on the handler");
+    db.close();
+
+    const attempts: string[][] = [];
+    const writeLessons = async (_cwd: string, lessons: DistilledLesson[]) => {
+      attempts.push(lessons.map((l) => l.text));
+      // slow write — the second concurrent fire MUST wait behind it instead
+      // of reading the pre-write completed-lesson state
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return { added: lessons.length, reinforced: 0, rejected: 0, skipped: 0, completed: lessons.map((l) => l.text) };
+    };
+    const { distill } = createReviewLearning({ repoInfo: () => REPO, writeLessons });
+    await Promise.all([distill(cwd), distill(cwd)]); // two overlapping fires
+    assert.equal(attempts.length, 1, "second fire serializes behind the first, re-reads state, and no-ops");
+    assert.equal(attempts[0]!.length, 2, "first fire writes both lessons exactly once");
+    assert.equal(loadDistilledReviews(path.join(cwd, ".pi", "data")).size, 1, "review marked distilled");
+  });
+
   it("no-ops when the setting is disabled", async () => {
     const cwd = cwdWithDb();
     fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });

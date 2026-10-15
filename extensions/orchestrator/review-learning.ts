@@ -916,6 +916,8 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
   const repoInfo = options.repoInfo ?? resolveRepoInfo;
   const diffPaths = options.diffPaths ?? branchDiffPaths;
   const writeLessons = options.writeLessons ?? writeLessonsToMemory;
+  /** In-flight distill gates per review id — serializes overlapping fires. */
+  const distillLocks = new Map<number, Promise<void>>();
 
   // Write-time recall session state (Part B): paths that already received a
   // full injection this session, paths already checked (findings or not —
@@ -982,6 +984,37 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
         return;
       }
     }
+    // Per-review serialization: overlapping address fires (two bash results
+    // in one turn, a retried command) would otherwise both read the
+    // completed-lesson state before either async write finishes and
+    // double-write the same lessons — inflating counts and evidence. The
+    // second fire waits for the first, then re-reads state (the first may
+    // have just completed the review) before doing any work.
+    const previous = distillLocks.get(review.id) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => (release = resolve));
+    distillLocks.set(review.id, current);
+    try {
+      await previous;
+      if (loadDistilledReviews(dataDir).has(review.id)) {
+        log.debug("skipped_review_already_distilled", { reviewId: review.id, prNumber: review.prNumber, reason: "completed by a concurrent fire" });
+        return;
+      }
+      await distillLockedReview(cwd, review, dataDir, dbPath, repo);
+    } finally {
+      release();
+      if (distillLocks.get(review.id) === current) distillLocks.delete(review.id);
+    }
+  };
+
+  /** The distill pipeline body — runs holding the per-review lock. */
+  const distillLockedReview = async (
+    cwd: string,
+    review: ReviewRow,
+    dataDir: string,
+    dbPath: string,
+    repo: RepoInfo,
+  ): Promise<void> => {
     const findings = getAddressedComments(dbPath, review.id);
     if (findings.length === 0) {
       log.debug("skipped_no_addressed_findings", { reviewId: review.id });
