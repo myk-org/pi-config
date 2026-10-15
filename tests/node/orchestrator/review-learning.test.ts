@@ -7,6 +7,7 @@
  */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +15,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   isReviewsAddressCommand,
   parseGitHubRepo,
+  resolveRepoInfo,
   getLatestReview,
   getAddressedComments,
   rankFindings,
@@ -156,6 +158,30 @@ describe("parseGitHubRepo", () => {
   });
 });
 
+describe("resolveRepoInfo (git remote origin)", () => {
+  function git(cwd: string, ...args: string[]): void {
+    execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+  }
+  function tempRepo(): string {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-repo-"));
+    git(cwd, "init", "-b", "main");
+    return cwd;
+  }
+  it("parses owner/repo from the origin remote", () => {
+    const cwd = tempRepo();
+    git(cwd, "remote", "add", "origin", "git@github.com:myk-org/demo.git");
+    assert.deepEqual(resolveRepoInfo(cwd), { owner: "myk-org", repo: "demo" });
+  });
+  it("fail-soft nulls: no origin, invalid remote, non-repo", () => {
+    const noOrigin = tempRepo();
+    assert.equal(resolveRepoInfo(noOrigin), null);
+    const badRemote = tempRepo();
+    git(badRemote, "remote", "add", "origin", "/just/a/local/path");
+    assert.equal(resolveRepoInfo(badRemote), null);
+    assert.equal(resolveRepoInfo(fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-norepo-"))), null);
+  });
+});
+
 // ── DB queries ─────────────────────────────────────────────────────────────
 
 describe("reviews DB queries", () => {
@@ -227,7 +253,7 @@ describe("distilled-review state", () => {
 });
 
 describe("prNumberFromCommand", () => {
-  it("reads the PR number from the command's --json file", () => {
+  it("reads the PR number only from the command's explicit --json file", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
     fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
     fs.writeFileSync(
@@ -237,17 +263,15 @@ describe("prNumberFromCommand", () => {
     const pr = prNumberFromCommand("myk-pi-tools reviews address --json .pi/tmp/pr-42-reviews.json --set addressed", cwd);
     assert.equal(pr, 42);
   });
-  it("falls back to the newest pr-*-reviews.json in the project tmp dir", () => {
+  it("no --json → null even when leftover pr-*-reviews.json files linger (final runs delete their own)", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
     fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
-    fs.writeFileSync(path.join(cwd, ".pi", "tmp", "pr-1-reviews.json"), JSON.stringify({ metadata: { pr_number: 1 } }));
-    // newest by mtime wins
-    const newer = path.join(cwd, ".pi", "tmp", "pr-2-reviews.json");
-    fs.writeFileSync(newer, JSON.stringify({ metadata: { pr_number: 2 } }));
-    const now = Date.now();
-    fs.utimesSync(newer, new Date(now), new Date(now));
-    fs.utimesSync(path.join(cwd, ".pi", "tmp", "pr-1-reviews.json"), new Date(now - 60000), new Date(now - 60000));
-    assert.equal(prNumberFromCommand("myk-pi-tools reviews address --set addressed", cwd), 2);
+    // a STALE JSON from another PR must never be picked up by a fallback
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "pr-99-reviews.json"),
+      JSON.stringify({ metadata: { pr_number: 99 } }),
+    );
+    assert.equal(prNumberFromCommand("myk-pi-tools reviews address --set addressed", cwd), null);
   });
   it("returns null when nothing is readable", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
@@ -345,6 +369,17 @@ describe("distillLessons", () => {
     const a = finding(1, "high", "Same title on the endpoint");
     const b = { ...finding(2, "high", "Same title on the endpoint"), path: "src/other.py" };
     assert.equal(distillLessons([a, b]).length, 2);
+  });
+  it("keeps distinct findings whose titles first differ past the 100-char display cap", () => {
+    // Same path; titles identical for the first 100+ chars, differing only at
+    // the tail — the truncated DISPLAY text is the same, but the untruncated
+    // identity keeps them two distinct issues (no false recurrence).
+    const base = "A very long finding title that stays identical for well over one hundred characters and then";
+    const a = finding(1, "high", `${base} diverges alpha`);
+    const b = finding(2, "high", `${base} diverges beta`);
+    const lessons = distillLessons([a, b]);
+    assert.equal(lessons.length, 2);
+    assert.deepEqual(lessons.map((l) => l.findingIds), [[1], [2]]);
   });
   it("skips findings whose body yields no title — eligible findings below them still distill", () => {
     const lessons = distillLessons([
@@ -479,6 +514,19 @@ function mockPi() {
   };
 }
 
+/**
+ * Fire EVERY registered tool_result handler and collect return values —
+ * identifies handlers by observable behavior instead of registration order,
+ * so adding or reordering an unrelated handler cannot break these tests.
+ */
+function fireToolResult(
+  handlers: Map<string, Handler[]>,
+  event: Parameters<Handler>[0],
+  ctx: Parameters<Handler>[1],
+): Array<unknown> {
+  return (handlers.get("tool_result") ?? []).map((h) => h(event, ctx));
+}
+
 /** cwd with a seeded reviews.db at the location getProjectDataDir resolves to. */
 function cwdWithDb(): string {
   const cwd = makeCwd();
@@ -505,11 +553,8 @@ describe("review-learning hook", () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
     createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
-    const handler = handlers.get("tool_result")![0]!;
-    handler(
-      { toolName: "bash", input: { command: "uv run --group dev myk-pi-tools reviews address --json x --set addressed" }, isError: false },
-      { cwd },
-    );
+    const results = fireToolResult(handlers, { toolName: "bash", input: { command: "uv run --group dev myk-pi-tools reviews address --json x --set addressed" }, isError: false }, { cwd });
+    assert.ok(results.every((r) => r === undefined), "bash watcher returns no content");
     assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "lesson written");
     assert.deepEqual(lessonsIn(cwd).map((e) => e.text), ["src/api.py: Older PR-10 review finding"]);
   });
@@ -523,37 +568,66 @@ describe("review-learning hook", () => {
     );
     const { pi, handlers } = mockPi();
     createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
-    const handler = handlers.get("tool_result")![0]!;
-    handler(
-      {
-        toolName: "bash",
-        input: { command: "myk-pi-tools reviews address --json .pi/tmp/pr-12-reviews.json --set addressed" },
-        isError: false,
-      },
-      { cwd },
-    );
+    fireToolResult(handlers, {
+      toolName: "bash",
+      input: { command: "myk-pi-tools reviews address --json .pi/tmp/pr-12-reviews.json --set addressed" },
+      isError: false,
+    }, { cwd });
     assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "lesson written");
     assert.deepEqual(lessonsIn(cwd).map((e) => e.text), ["src/api.py: Unhandled None on the endpoint response"]);
+  });
+  it("--json naming a PR with no stored review falls back to newest-for-repo (partial, non-storing run)", async () => {
+    const cwd = cwdWithDb();
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "pr-999-reviews.json"),
+      JSON.stringify({ metadata: { owner: "myk-org", repo: "demo", pr_number: 999 } }),
+    );
+    const { pi, handlers } = mockPi();
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
+    fireToolResult(handlers, {
+      toolName: "bash",
+      input: { command: "myk-pi-tools reviews address --json .pi/tmp/pr-999-reviews.json --set addressed" },
+      isError: false,
+    }, { cwd });
+    assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "fallback distills newest-for-repo review");
+    assert.deepEqual(lessonsIn(cwd).map((e) => e.text), ["src/api.py: Older PR-10 review finding"]);
   });
   it("re-firing for the same review is a no-op — no duplicate lessons, no evidence inflation", async () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
     createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
-    const handler = handlers.get("tool_result")![0]!;
-    handler(
-      { toolName: "bash", input: { command: "myk-pi-tools reviews address --set addressed" }, isError: false },
-      { cwd },
-    );
+    fireToolResult(handlers, { toolName: "bash", input: { command: "myk-pi-tools reviews address --set addressed" }, isError: false }, { cwd });
     assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "first fire writes");
     const hash = entryHash("- [lesson] src/api.py: Older PR-10 review finding");
     const evidenceAfterFirst = loadScores(cwd).entries[hash]!.evidenceCount;
-    handler(
-      { toolName: "bash", input: { command: "myk-pi-tools reviews address --set addressed" }, isError: false },
-      { cwd },
-    );
+    fireToolResult(handlers, { toolName: "bash", input: { command: "myk-pi-tools reviews address --set addressed" }, isError: false }, { cwd });
     await new Promise((resolve) => setTimeout(resolve, 200));
     assert.equal(lessonsIn(cwd).length, 1, "no duplicates");
     assert.equal(loadScores(cwd).entries[hash]!.evidenceCount, evidenceAfterFirst, "no evidence inflation");
+  });
+  it("rejected lesson writes leave the review retryable — next fire retries, success marks it", async () => {
+    const cwd = cwdWithDb();
+    let calls = 0;
+    const written = { added: 0, reinforced: 0, rejected: 1, skipped: 0 };
+    const writeLessons = async () => {
+      calls++;
+      return written;
+    };
+    const { distill } = createReviewLearning({ repoInfo: () => REPO, writeLessons });
+    await distill(cwd);
+    assert.equal(calls, 1, "first fire attempts the write");
+    assert.equal(loadDistilledReviews(path.join(cwd, ".pi", "data")).size, 0, "review NOT marked distilled");
+    await distill(cwd);
+    assert.equal(calls, 2, "rejected review is retried on the next fire");
+    // now succeed — the review completes and the retry stops
+    written.rejected = 0;
+    written.added = 1;
+    await distill(cwd);
+    assert.equal(calls, 3);
+    assert.equal(loadDistilledReviews(path.join(cwd, ".pi", "data")).size, 1, "success marks the review distilled");
+    await distill(cwd);
+    assert.equal(calls, 3, "marked review is not re-attempted");
   });
   it("no-ops when the setting is disabled", async () => {
     const cwd = cwdWithDb();
@@ -575,10 +649,9 @@ describe("review-learning hook", () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
     createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
-    const handler = handlers.get("tool_result")![0]!;
-    handler({ toolName: "bash", input: { command: "myk-pi-tools reviews address --json x" }, isError: true }, { cwd });
-    handler({ toolName: "read", input: { path: "x" }, isError: false }, { cwd });
-    handler({ toolName: "bash", input: { command: "myk-pi-tools reviews store x.json" }, isError: false }, { cwd });
+    fireToolResult(handlers, { toolName: "bash", input: { command: "myk-pi-tools reviews address --json x" }, isError: true }, { cwd });
+    fireToolResult(handlers, { toolName: "read", input: { path: "x" }, isError: false }, { cwd });
+    fireToolResult(handlers, { toolName: "bash", input: { command: "myk-pi-tools reviews store x.json" }, isError: false }, { cwd });
     await new Promise((resolve) => setTimeout(resolve, 150));
     assert.equal(readAllTopicEntries(cwd).length, 0);
   });

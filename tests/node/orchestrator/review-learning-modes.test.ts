@@ -109,6 +109,20 @@ function mockPi() {
   };
 }
 
+/**
+ * Fire EVERY registered tool_result handler — behavior over registration
+ * order, so adding or reordering an unrelated handler cannot break tests.
+ * Returns the first non-undefined result (the write hint on write events;
+ * undefined for bash events, which the watcher handles via scheduling).
+ */
+function fireAllToolResult(handlers: Map<string, Handler[]>, event: any = undefined, ctx: any = undefined): any {
+  if (!event) {
+    // deferred form: returns a function that fires all handlers on demand
+    return (ev: any, c: any) => fireAllToolResult(handlers, ev, c);
+  }
+  return (handlers.get("tool_result") ?? []).map((h) => h(event, ctx)).find((r: any) => r !== undefined);
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -169,7 +183,7 @@ describe("review-learning review-handler modes", () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
     createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
-    const handler = handlers.get("tool_result")![0]!;
+    const handler = fireAllToolResult(handlers);
     handler(
       { toolName: "bash", input: { command: INTERACTIVE_ADDRESS("addressed") }, isError: false },
       { cwd },
@@ -187,7 +201,7 @@ describe("review-learning review-handler modes", () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
     createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
-    const handler = handlers.get("tool_result")![0]!;
+    const handler = fireAllToolResult(handlers);
     handler(
       { toolName: "bash", input: { command: AUTO_ADDRESS("addressed") }, isError: false },
       { cwd },
@@ -200,7 +214,7 @@ describe("review-learning review-handler modes", () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
     createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
-    const handler = handlers.get("tool_result")![0]!;
+    const handler = fireAllToolResult(handlers);
     for (const command of POLL_WORKER_COMMANDS) {
       handler({ toolName: "bash", input: { command }, isError: false }, { cwd });
     }
@@ -212,7 +226,7 @@ describe("review-learning review-handler modes", () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
     createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
-    const handler = handlers.get("tool_result")![0]!;
+    const handler = fireAllToolResult(handlers);
     // first group run (Phase 8: one `reviews address` call per status group)
     handler(
       { toolName: "bash", input: { command: INTERACTIVE_ADDRESS("addressed") }, isError: false },
@@ -236,7 +250,7 @@ describe("review-learning review-handler modes", () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
     createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
-    const handler = handlers.get("tool_result")![0]!;
+    const handler = fireAllToolResult(handlers);
     handler(
       { toolName: "bash", input: { command: INTERACTIVE_ADDRESS("addressed") }, isError: false },
       { cwd },
@@ -273,7 +287,7 @@ describe("review-learning review-handler modes", () => {
     disableSetting(cwd);
     const { pi, handlers } = mockPi();
     createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
-    const handler = handlers.get("tool_result")![0]!;
+    const handler = fireAllToolResult(handlers);
     handler(
       { toolName: "bash", input: { command: INTERACTIVE_ADDRESS("addressed") }, isError: false },
       { cwd },

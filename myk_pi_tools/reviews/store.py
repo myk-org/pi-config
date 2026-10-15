@@ -275,13 +275,14 @@ def store_reviews(json_path: Path) -> None:
         conn.execute("PRAGMA foreign_keys=ON")
         title_migrated = create_tables(conn)
 
-        # One-shot backfill when the title column just landed (and a cheap
-        # no-op pass for any rows that were never backfilled).
-        backfilled = backfill_titles(conn)
+        # Backfill runs ONCE, when the title column just landed — never on
+        # every store (historical rows that yield no title would otherwise be
+        # re-scanned and re-parsed on every store, growing with review
+        # history). Rows that yield no title keep NULL; readers fall back to
+        # body extraction for those. New rows get titles at insert time.
         if title_migrated:
+            backfilled = backfill_titles(conn)
             log(f"Migrated: added comments.title, backfilled {backfilled} row(s)")
-        elif backfilled:
-            log(f"Backfilled comments.title for {backfilled} row(s)")
 
         # Insert new review record (append-only, never update)
         # RuntimeError in insert_review handles invalid lastrowid

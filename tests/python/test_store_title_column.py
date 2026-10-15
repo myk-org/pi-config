@@ -158,3 +158,93 @@ def test_store_reviews_persists_titles_and_backfills_legacy_rows(
         assert legacy_title == "Formatted tool permissions bypass pinned-rule protection"
     finally:
         conn.close()
+
+
+def test_fetch_qodo_sticky_findings_propagates_parsed_titles() -> None:
+    """fetch_qodo_sticky_findings must carry the parsed title into each finding.
+
+    The store prefers `comments.title`; if fetch dropped it, sticky findings
+    would land with NULL titles and readers would re-extract from the
+    synthesized `**title**` body on every read.
+    """
+    from myk_pi_tools.reviews.fetch import fetch_qodo_sticky_findings
+
+    sticky_body = (
+        "<h3>Code Review by Qodo</h3>\n"
+        "<details><summary>  1.  <b>Unhandled None on the endpoint</b> "
+        "<code>🐞 Bug</code> <code>≡ Correctness</code></summary>"
+        "\n<pre>src/api.py:42</pre>\n<code>src/api.py:42</code>\ndesc\n</details>"
+    )
+    comments = [
+        {"id": 4282020651, "user": {"login": "qodo-code-review[bot]"}, "body": sticky_body},
+        # a non-sticky bot comment is ignored entirely
+        {"id": 2, "user": {"login": "qodo-code-review[bot]"}, "body": "some reply"},
+        # a human comment is ignored
+        {"id": 3, "user": {"login": "someone"}, "body": "<h3>Code Review by Qodo</h3>"},
+    ]
+    findings = fetch_qodo_sticky_findings("myk-org", "demo", "42", comments=comments)
+    assert len(findings) == 1, "only the sticky bot comment yields findings"
+    assert findings[0]["title"] == "Unhandled None on the endpoint", "parsed title must propagate"
+    assert findings[0]["body"].startswith("**Unhandled None on the endpoint**")
+
+
+def test_store_reviews_does_not_rescan_null_titles_on_every_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Backfill runs ONCE (at migration); later stores never rescan NULL titles."""
+    from myk_pi_tools.reviews import store
+
+    db_path = tmp_path / ".pi" / "data" / "reviews.db"
+    db_path.parent.mkdir(parents=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(LEGACY_SCHEMA)
+    conn.execute(
+        "INSERT INTO reviews (pr_number, owner, repo, commit_sha, created_at) "
+        "VALUES (41, 'myk-org', 'demo', 'sha-old', '2026-01-01')"
+    )
+    # a badge-only body: yields no title at migration time and never will —
+    # re-scanning it on every store is pure waste that grows with history
+    conn.execute(
+        "INSERT INTO comments (review_id, source, path, line, body, status) "
+        "VALUES (1, 'qodo', 'src/api.py', 1, '<img src=\"https://badge\">', 'addressed')"
+    )
+    conn.commit()
+    conn.close()
+
+    json_path = tmp_path / "pr-42-reviews.json"
+    json_path.write_text(
+        json.dumps({
+            "metadata": {"owner": "myk-org", "repo": "demo", "pr_number": 42},
+            "human": [],
+            "qodo": [],
+            "coderabbit": [],
+        })
+    )
+    monkeypatch.setattr(store, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(store, "get_current_commit_sha", lambda: "sha-new")
+
+    # First store MIGRATES (adds the title column) — exactly one backfill call.
+    calls = []
+    real_backfill = store.backfill_titles
+
+    def _counting_backfill(conn: sqlite3.Connection) -> int:
+        calls.append(1)
+        return real_backfill(conn)
+
+    monkeypatch.setattr(store, "backfill_titles", _counting_backfill)
+    store.store_reviews(json_path)
+    assert calls == [1], "migration run backfills exactly once"
+
+    # Second store: no migration → no backfill call at all.
+    json_path.write_text(
+        json.dumps({
+            "metadata": {"owner": "myk-org", "repo": "demo", "pr_number": 43},
+            "human": [],
+            "qodo": [],
+            "coderabbit": [],
+        })
+    )
+    monkeypatch.setattr(
+        store, "backfill_titles", lambda _conn: (_ for _ in ()).throw(AssertionError("NULL titles rescanned"))
+    )
+    store.store_reviews(json_path)

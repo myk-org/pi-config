@@ -300,6 +300,20 @@ describe("firstSentence", () => {
     assert.ok(!gist.includes("<img"), `gist must not contain raw HTML: ${gist}`);
     assert.ok(gist.startsWith("Project settings needs a regression test"), gist);
   });
+
+  it("keeps a 101–120-character title intact — the gist limit applies exactly once", () => {
+    // A title longer than Part A's 100-char lesson cap but within the 120-char
+    // gist cap must NOT lose content to a double truncation (title extraction
+    // is untruncated now; firstSentence caps at 120 with an ellipsis).
+    const title = `Unhandled error path in the request handler needs a guard ${"x".repeat(48)}`; // 108 chars
+    assert.ok(title.length > 100 && title.length <= 120, `fixture sanity: ${title.length}`);
+    assert.equal(firstSentence(title), title);
+    // beyond 120 chars the gist truncates with an ellipsis marker
+    const over = `${title} plus a longer tail that pushes it past the gist cap`;
+    const gist = firstSentence(over);
+    assert.ok(gist.length <= 120 && gist.endsWith("..."), gist);
+    assert.ok(gist.startsWith("Unhandled error path"), gist);
+  });
 });
 
 describe("relevantFindings", () => {
@@ -330,6 +344,19 @@ describe("relevantFindings", () => {
     const block = relevantFindings(cwd, ["src/api.py"], repoInfo);
     assert.match(block!, /src\/api\.py \(1×\): Missing strip_sensitive_from_response/);
     assert.match(block!, /src\/api\.py \(1×\): Race condition/);
+  });
+  it("findings whose titles first differ past the 100-char display cap stay distinct", () => {
+    const base =
+      "A very long finding title that stays identical for well over one hundred characters and then";
+    const cwd = cwdWithDb([
+      [
+        { path: "src/api.py", body: `${base} diverges alpha` },
+        { path: "src/api.py", body: `${base} diverges beta` },
+      ],
+    ]);
+    const findings = collectPathFindings(cwd, ["src/api.py"], repoInfo);
+    assert.equal(findings.length, 2, "untruncated identity keeps them two issues — no false recurrence");
+    assert.ok(findings.every((f) => f.count === 1));
   });
   it("excludes skipped comments, other repos, and non-matching paths", () => {
     const cwd = cwdWithDb([
@@ -457,11 +484,17 @@ function mockPi() {
 function registerHandlers(cwd: string, diffPaths: () => string[] = () => []) {
   const { pi, handlers } = mockPi();
   createReviewLearning({ repoInfo, diffPaths }).register(pi as any);
-  assert.equal(handlers.get("tool_result")!.length, 2, "bash watcher + write hint");
+  // Handlers are identified by OBSERVABLE BEHAVIOR, never registration
+  // order — fire every tool_result handler and keep whichever returns
+  // content (the write hint; the bash watcher returns undefined for write
+  // events). Adding or reordering an unrelated handler cannot break tests.
+  const allToolResult = handlers.get("tool_result") ?? [];
+  const fireAll = (event: any, ctx: any): any =>
+    allToolResult.map((h) => h(event, ctx)).find((r: any) => r !== undefined);
   return {
     handlers,
     beforeAgentStart: handlers.get("before_agent_start")![0]!,
-    writeHint: handlers.get("tool_result")![1]!,
+    writeHint: fireAll,
     subagentRewrite: handlers.get("tool_call")![0]!,
     sessionStart: handlers.get("session_start")![0]!,
   };
@@ -727,6 +760,27 @@ describe("subagent dispatch rewrite", () => {
     const input = { agent: "backend", task: "Touch src/api.py please", cwd: subCwd };
     subagentRewrite({ toolName: "subagent", input }, { cwd: mainCwd });
     assert.match(input.task, /<review-lessons>/);
+  });
+  it("nested-cwd tasks also match root-relative paths — extraction runs from BOTH cwds", () => {
+    // nested session cwd with its own src/ — the task mentions a ROOT-level
+    // file; existence checks under the nested cwd alone would drop it.
+    const repo = gitRepoWithBranch();
+    const nested = path.join(repo, "packages", "inner");
+    fs.mkdirSync(path.join(nested, "src"), { recursive: true });
+    fs.writeFileSync(path.join(nested, "src", "local.py"), "y = 2\n");
+    // DB finding recorded at the root-relative path, copied to where
+    // getProjectDataDir resolves for the nested cwd (the worktree root)
+    const dbCwd = cwdWithDb([[{ path: "src/api.py", body: "root-level api finding on the module" }]]);
+    const dataDir = getProjectDataDir(nested);
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.copyFileSync(path.join(dbCwd, ".pi", "data", "reviews.db"), path.join(dataDir, "reviews.db"));
+    fs.mkdirSync(path.join(repo, "src"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "src", "api.py"), "x");
+    const { subagentRewrite } = registerHandlers(nested);
+    const input = { tasks: [{ agent: "a", task: "Fix the handler in src/api.py", cwd: nested }] };
+    subagentRewrite({ toolName: "subagent", input }, { cwd: repo });
+    assert.match(input.tasks[0].task, /<review-lessons>/, "root-relative path matched from nested cwd");
+    assert.match(input.tasks[0].task, /src\/api\.py \(1×\)/);
   });
   it("no-ops when nothing is relevant or the tool is not subagent", () => {
     const cwd = cwdWithDb([[{ path: "src/api.py", body: "api finding" }]]);

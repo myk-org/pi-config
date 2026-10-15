@@ -54,14 +54,14 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { getSetting } from "./project-settings.js";
-import { getProjectDataDir, getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
+import { getProjectDataDir, resolveWorktreeRoot } from "./utils.js";
 import { addMemoryEntry } from "./memory-write.js";
 import { entryHash, loadScores } from "./memory-scoring.js";
 import { readAllTopicEntries } from "./memory-tree.js";
@@ -287,35 +287,20 @@ export function markReviewDistilled(dataDir: string, reviewId: number): void {
 
 // ── Addressed-PR identification ────────────────────────────────────────────
 
-/** Newest `pr-*-reviews.json` in the project tmp dir by mtime — mirrors address.py's default discovery. */
-function newestReviewsJson(cwd: string): string | null {
-  try {
-    const dir = getProjectTmpDir(cwd);
-    const candidates = readdirSync(dir).filter((f) => /^pr-\d+-reviews\.json$/.test(f));
-    let best: { file: string; mtime: number } | null = null;
-    for (const file of candidates) {
-      const mtime = statSync(join(dir, file)).mtimeMs;
-      if (!best || mtime > best.mtime) best = { file, mtime };
-    }
-    return best ? join(dir, best.file) : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * PR number of the review an address command targeted: parsed from the
- * command's `--json` file (still on disk for partial runs), else the newest
- * `pr-*-reviews.json` in the project tmp dir (address.py's default). Returns
- * null when neither is readable — callers fall back to newest-for-repo,
- * which is exactly the just-stored review on final (storing) runs.
+ * PR number of the review an address command targeted — ONLY from the
+ * command's explicit `--json` file (still on disk for partial runs).
+ * Deliberately no newest-JSON fallback: the final, storing run deletes its
+ * own pr-<N>-reviews.json before the tool result fires, so a fallback would
+ * pick up a leftover JSON from ANOTHER PR and target the wrong review.
+ * Returns null when absent/unreadable — callers fall back to newest-for-repo,
+ * which is exactly the just-stored row on final (storing) runs.
  */
 export function prNumberFromCommand(command: string | undefined, cwd: string): number | null {
   try {
     const m = /(?:^|\s)--json(?:\s+|=)(\S+)/.exec(command ?? "");
-    const jsonPath = m ? resolve(cwd, m[1]!) : newestReviewsJson(cwd);
-    if (!jsonPath) return null;
-    const pr = Number(JSON.parse(readFileSync(jsonPath, "utf-8"))?.metadata?.pr_number);
+    if (!m) return null;
+    const pr = Number(JSON.parse(readFileSync(resolve(cwd, m[1]!), "utf-8"))?.metadata?.pr_number);
     return Number.isInteger(pr) && pr > 0 ? pr : null;
   } catch {
     return null;
@@ -347,13 +332,16 @@ export function rankFindings(findings: AddressedFinding[]): AddressedFinding[] {
 }
 
 /**
- * Extract the finding's title line from a raw review body — deterministic,
- * no model. Reviewer tools (Qodo, CodeRabbit) write a human-readable title as
- * the first meaningful line, buried in badge images, HTML tags, and Markdown
- * emphasis. Skips badge/label lines, strips markup, returns null when no
- * meaningful line exists. Fallback for legacy DB rows without `comments.title`.
+ * The finding's cleaned title line — UNTRUNCATED (only the body scan is
+ * bounded by MAX_FINDING_BODY_CHARS). Deterministic, no model. Reviewer tools
+ * (Qodo, CodeRabbit) write a human-readable title as the first meaningful
+ * line, buried in badge images, HTML tags, and Markdown emphasis. Skips
+ * badge/label lines, strips markup, returns null when no meaningful line
+ * exists. The untruncated form is the IDENTITY for issue grouping and
+ * dedupe — truncating before grouping would collapse distinct findings
+ * whose titles first differ past the display limit.
  */
-export function extractFindingTitle(body: string): string | null {
+export function cleanTitleLine(body: string): string | null {
   if (typeof body !== "string" || !body.trim()) return null;
   const scan = body.slice(0, MAX_FINDING_BODY_CHARS);
   for (let rawLine of scan.split("\n")) {
@@ -369,9 +357,19 @@ export function extractFindingTitle(body: string): string | null {
     line = line.replace(/[*`#>|]/g, " "); // Markdown emphasis/fence chars (keep _ — identifiers use it)
     line = line.replace(/\s+/g, " ").trim();
     if (line.length < 15) continue; // fragments, separators, leftovers
-    return line.slice(0, MAX_LESSON_CHARS);
+    return line;
   }
   return null;
+}
+
+/**
+ * The finding's display title: the cleaned title line truncated to `max`
+ * (default MAX_LESSON_CHARS — Part A's lesson cap). Legacy-DB fallback for
+ * rows without `comments.title`.
+ */
+export function extractFindingTitle(body: string, max: number = MAX_LESSON_CHARS): string | null {
+  const line = cleanTitleLine(body);
+  return line ? line.slice(0, max) : null;
 }
 
 /** Sanitize one lesson: single line, non-empty, ≤ MAX_LESSON_CHARS. */
@@ -391,26 +389,34 @@ export function lessonFromFinding(f: AddressedFinding): string | null {
   return line && line.length >= 15 ? line : null;
 }
 
+/** Untruncated issue identity for one finding: `<path>: <full title>` (lowercased) — see cleanTitleLine. */
+function findingIdentity(f: AddressedFinding): string | null {
+  const full = cleanTitleLine(f.body) ?? f.title;
+  if (!full) return null;
+  return `${f.path ?? ""}\0${full.toLowerCase()}`;
+}
+
 /**
  * Distill findings into lessons — pure, synchronous, zero model calls.
  * Findings are ranked, lessons extracted and validated for ALL of them, and
  * only then capped at MAX_FINDINGS_PER_FIRE (unusable bodies never consume
- * slots). Findings whose lessons (path + title) collide are duplicates of the
- * same issue — they merge into one lesson that carries every contributing
- * finding id, so provenance lookups can distinguish new occurrences from
- * re-fires.
+ * slots). Findings whose lessons collide are duplicates of the same issue —
+ * they merge into one lesson that carries every contributing finding id, so
+ * provenance lookups can distinguish new occurrences from re-fires. The
+ * dedupe key is the UNTRUNCATED identity (two findings whose titles first
+ * differ past the 100-char display cap stay distinct lessons).
  */
 export function distillLessons(findings: AddressedFinding[]): DistilledLesson[] {
-  const byText = new Map<string, DistilledLesson>();
+  const byIdentity = new Map<string, DistilledLesson>();
   for (const finding of rankFindings(findings)) {
     const text = lessonFromFinding(finding);
     if (!text) continue;
-    const key = text.toLowerCase();
-    const existing = byText.get(key);
+    const key = findingIdentity(finding) ?? text.toLowerCase();
+    const existing = byIdentity.get(key);
     if (existing) existing.findingIds.push(finding.id); // merged duplicate keeps its identity
-    else byText.set(key, { findingIds: [finding.id], text });
+    else byIdentity.set(key, { findingIds: [finding.id], text });
   }
-  return [...byText.values()].slice(0, MAX_FINDINGS_PER_FIRE);
+  return [...byIdentity.values()].slice(0, MAX_FINDINGS_PER_FIRE);
 }
 
 // ── Memory write with provenance dedupe ────────────────────────────────────
@@ -587,9 +593,11 @@ export function branchDiffPaths(cwd: string): string[] {
 export function firstSentence(body: string, max = MAX_GIST_CHARS): string {
   // Prefer the un-buried finding title (badges/HTML/Markdown stripped — the
   // same extraction Part A distills with); fall back to the raw collapsed
-  // body only when no title line can be extracted. Sentence-splitting then
-  // applies to whichever text we got.
-  const title = extractFindingTitle(body);
+  // body only when no title line can be extracted. The UNTRUNCATED title is
+  // used so the gist limit applies exactly once — a 101–120-character title
+  // keeps its full content (with the normal ellipsis beyond 120) instead of
+  // being silently cut at Part A's 100-character lesson cap.
+  const title = cleanTitleLine(body);
   const text = title ?? (body ?? "").replace(/\s+/g, " ").trim();
   if (!text) return "";
   const match = /^(.{2,}?[.!?])(?:\s|$)/.exec(text);
@@ -670,37 +678,22 @@ interface IssueGroup {
 }
 
 /**
- * Normalize one recall input: cwd-based (tool paths) by default, but when
- * only the worktree-root resolution exists (a repo-relative diff path seen
- * from a nested session cwd), prefer the root-based one — the DB stores
- * repo-relative paths, so the diff entry `src/api.py` must not be rebased
- * under `packages/inner/`.
- */
-function normalizeInputPath(cwd: string, value: string): string | null {
-  const cwdRel = normalizeRepoRelative(cwd, value);
-  const rootRel = normalizeRepoRelativeFromRoot(cwd, value);
-  if (cwdRel === null || rootRel === null) return cwdRel ?? rootRel;
-  if (cwdRel === rootRel) return cwdRel;
-  const root = resolveWorktreeRoot(cwd);
-  const rootExists = existsSync(resolve(root, rootRel));
-  const cwdExists = existsSync(resolve(cwd, cwdRel));
-  if (rootExists && !cwdExists) return rootRel;
-  return cwdRel;
-}
-
-/**
  * Collect findings relevant to `paths` — repo-isolated (owner/repo resolved
  * from the git remote, so another repository's reviews in the shared DB never
- * leak into this task) and grouped by distinct issue identity (path + title):
- * each issue is counted and rendered separately, so unrelated findings on one
- * file never masquerade as recurrences of the displayed one.
+ * leak into this task) and grouped by distinct issue identity (path +
+ * UNTRUNCATED title): each issue is counted and rendered separately, so
+ * unrelated findings on one file never masquerade as recurrences of the
+ * displayed one, and findings whose titles first differ past the 100-char
+ * display cap stay distinct.
  *
- * Memory lessons surface only via review provenance (`derivedFrom` matching a
- * matched comment of this repo) — never by bare text mention, so unrelated
- * memories do not appear as review findings. The topic scan runs only when
- * the DB matched at least one comment.
- *
- * Ranked by per-issue count desc, then path asc. Never throws.
+ * Inputs are repo-relative paths: they are normalized against the worktree
+ * ROOT only (never reinterpreted cwd-relative — in a nested session a
+ * repo-relative path must not be rebased onto a nested copy of the file).
+ * Callers with cwd-relative TOOL paths (write/edit inputs) normalize them
+ * cwd-side first. Memory lessons surface only via review provenance
+ * (`derivedFrom` matching a matched comment of this repo) — never by bare
+ * text mention. The topic scan runs only when the DB matched at least one
+ * comment. Ranked by per-issue count desc, then path asc. Never throws.
  */
 export function collectPathFindings(
   cwd: string,
@@ -708,7 +701,9 @@ export function collectPathFindings(
   repoInfoFn: (cwd: string) => RepoInfo | null = resolveRepoInfo,
 ): PathFindings[] {
   const inputs = [
-    ...new Set(paths.map((p) => normalizeInputPath(cwd, p)).filter((p): p is string => Boolean(p))),
+    ...new Set(
+      paths.map((p) => normalizeRepoRelativeFromRoot(cwd, p)).filter((p): p is string => Boolean(p)),
+    ),
   ];
   if (inputs.length === 0) return [];
   const repo = repoInfoFn(cwd);
@@ -717,15 +712,23 @@ export function collectPathFindings(
   const dbPath = join(getProjectDataDir(cwd), "reviews.db");
   const rows = matchedAddressedComments(dbPath, repo.owner, repo.repo, inputs);
 
-  // Group matched comments by distinct issue (path + title identity).
+  // Group matched comments by distinct issue (path + untruncated title identity).
   const issues = new Map<string, IssueGroup>();
   const issueByCommentId = new Map<number, string>();
   for (const row of rows) {
     if (!inputs.some((input) => pathMatches(row.path, input))) continue; // LIKE-wildcard defense
-    const title = row.title ?? extractFindingTitle(row.body);
-    const identity = title ?? `body:${row.body.slice(0, 80)}`;
+    // Identity: the UNTRUNCATED title recovered from the raw body (both
+    // thread and sticky bodies carry the full title line) — never the
+    // 100-char display title, which would collapse distinct findings.
+    const full = cleanTitleLine(row.body) ?? row.title;
+    const identity = full ?? `body:${row.body.slice(0, 120)}`;
     const key = `${row.path}\0${identity.toLowerCase()}`;
-    const group = issues.get(key) ?? { path: row.path, title, body: row.body, ids: [] };
+    const group = issues.get(key) ?? {
+      path: row.path,
+      title: row.title ?? (full ? full.slice(0, MAX_LESSON_CHARS) : null),
+      body: row.body,
+      ids: [],
+    };
     group.ids.push(row.id);
     issues.set(key, group);
     issueByCommentId.set(row.id, key);
@@ -816,11 +819,14 @@ export interface ReviewLearningOptions {
   repoInfo?: (cwd: string) => RepoInfo | null;
   /** Branch-diff path source — injectable for tests (default: git diff main...HEAD). */
   diffPaths?: (cwd: string) => string[];
+  /** Lesson writer — injectable for tests (default: writeLessonsToMemory). */
+  writeLessons?: typeof writeLessonsToMemory;
 }
 
 export function createReviewLearning(options: ReviewLearningOptions = {}) {
   const repoInfo = options.repoInfo ?? resolveRepoInfo;
   const diffPaths = options.diffPaths ?? branchDiffPaths;
+  const writeLessons = options.writeLessons ?? writeLessonsToMemory;
 
   // Write-time recall session state (Part B): paths that already received a
   // full injection this session, paths already checked (findings or not —
@@ -835,9 +841,15 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
 
   /**
    * Full distillation pipeline for one address fire. `command` identifies the
-   * addressed PR (`--json` file → metadata.pr_number). Settings-gated,
-   * fail-soft, and idempotent per review (distilled ids persist under
-   * `.pi/data`).
+   * addressed PR (explicit `--json` file → metadata.pr_number — no newest-JSON
+   * fallback, which could target a leftover file from another PR after the
+   * final run deletes its own). When the PR filter finds nothing (or an
+   * already-distilled row — a partial, non-storing run), fall back to the
+   * newest-for-repo review that has not been distilled: on final (storing)
+   * runs that is exactly the just-stored row. A review whose lesson writes
+   * were REJECTED is not marked distilled — the next fire retries it (a
+   * rejected write is a temporary condition, e.g. a full topic or a
+   * false-positive contradiction, not completion). Settings-gated, fail-soft.
    */
   const distill = async (cwd: string, command?: string): Promise<void> => {
     if (!getSetting(cwd, "review_learning")) {
@@ -851,13 +863,19 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
     }
     const dataDir = getProjectDataDir(cwd);
     const dbPath = join(dataDir, "reviews.db");
+    const distilled = loadDistilledReviews(dataDir);
     const prNumber = prNumberFromCommand(command, cwd);
-    const review = getLatestReview(dbPath, repo.owner, repo.repo, prNumber);
+    let review = prNumber ? getLatestReview(dbPath, repo.owner, repo.repo, prNumber) : null;
+    if (!review || distilled.has(review.id)) {
+      // Safeguard: fall back to the newest not-yet-distilled review for the
+      // repo (the just-stored row on final runs).
+      const newest = getLatestReview(dbPath, repo.owner, repo.repo);
+      if (newest && !distilled.has(newest.id)) review = newest;
+    }
     if (!review) {
       log.debug("skipped_no_review_row", { owner: repo.owner, repo: repo.repo, prNumber });
       return;
     }
-    const distilled = loadDistilledReviews(dataDir);
     if (distilled.has(review.id)) {
       log.debug("skipped_review_already_distilled", { reviewId: review.id, prNumber: review.prNumber });
       return;
@@ -876,7 +894,19 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
       markReviewDistilled(dataDir, review.id);
       return;
     }
-    const written = await writeLessonsToMemory(cwd, lessons, repo);
+    const written = await writeLessons(cwd, lessons, repo);
+    if (written.rejected > 0) {
+      // Rejected writes are retryable, not complete — leave the review
+      // unmarked so the next address fire retries the rejected lessons.
+      log.warn("distill_incomplete", {
+        reviewId: review.id,
+        rejected: written.rejected,
+        added: written.added,
+        reinforced: written.reinforced,
+        skipped: written.skipped,
+      });
+      return;
+    }
     markReviewDistilled(dataDir, review.id);
     log.info("distill_finish", {
       reviewId: review.id,
@@ -1032,7 +1062,13 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
             (typeof input.cwd === "string" && input.cwd.trim() && input.cwd) ||
             ctx?.cwd;
           if (typeof cwd !== "string" || !getSetting(cwd, "review_learning")) continue;
-          const paths = extractPathsFromText(item.task, cwd);
+          // Extract paths relative to BOTH the specialist cwd and the
+          // worktree root: a nested-cwd specialist asked about a root-relative
+          // path (src/api.py) would otherwise lose it — existence is checked
+          // beneath the extraction base only, and the child registers no
+          // recall hooks of its own.
+          const root = resolveWorktreeRoot(cwd);
+          const paths = [...new Set([...extractPathsFromText(item.task, cwd), ...extractPathsFromText(item.task, root)])];
           if (paths.length === 0) continue;
           const block = relevantFindings(cwd, paths, repoInfo);
           if (!block) continue;
