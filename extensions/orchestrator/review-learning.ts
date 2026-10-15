@@ -56,6 +56,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
@@ -889,6 +890,18 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
   };
 
   const register = (pi: ExtensionAPI): void => {
+    // Reload observability: stamp the running module's mtime at registration
+    // (registration re-runs on /reload). Comparing this against the deployed
+    // file's mtime answers "is the session running the deployed code?"
+    // mechanically — no guessing about whether a reload happened.
+    try {
+      log.info("review_learning_loaded", {
+        moduleMtime: statSync(fileURLToPath(import.meta.url)).mtime.toISOString(),
+      });
+    } catch {
+      // never fail registration over a stamp
+    }
+
     // Subagent children never run `reviews address` (main-session bash by design)
     // and receive their findings via the dispatch rewrite below, not by re-querying.
     if (process.env.PI_SUBAGENT_CHILD === "1") return;
