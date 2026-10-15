@@ -3,17 +3,28 @@
  * recall them at write time (issue #918 Parts A and B).
  *
  * Part A — a `tool_result` watcher recognizes `myk-pi-tools reviews address`
- * completions in main-session bash, then (fire-and-forget, never blocking the
- * tool result or the agent loop) distills the ADDRESSED findings for the
- * session's repo from `.pi/data/reviews.db` into one-line `lesson` memory
- * entries via the internal memory write path, with finding-id provenance
- * (`derivedFrom="reviews.db:<comment-id>;<owner>/<repo>"`) so re-fires
- * (multi-group address runs) reinforce instead of duplicating.
+ * completions in main-session bash, then (fire-and-forget — scheduled via
+ * setImmediate so the handler returns before any synchronous I/O starts)
+ * distills the ADDRESSED findings of the review that command stored from
+ * `.pi/data/reviews.db` into one-line `lesson` memory entries via the internal
+ * memory write path, with finding-id provenance
+ * (`derivedFrom="reviews.db:<comment-id>;<owner>/<repo>"`).
+ *
+ * Review selection: the addressed PR is identified from the command's
+ * `--json` file (or the newest `pr-*-reviews.json` in the project tmp dir —
+ * mirroring address.py's default), and the newest stored review row for that
+ * PR is distilled. Already-distilled review ids are tracked in
+ * `.pi/data/review-learning-state.json`, so re-fires (multi-group address
+ * runs, partial runs that did not store) are no-ops — evidence only grows
+ * when a NEW review stores a NEW comment row for the same issue (a real
+ * recurrence, via addMemoryEntry's duplicate detection).
  *
  * Distillation is deterministic and model-free: the reviewer tool's finding
- * title (first meaningful line of the body, un-buried from badges/HTML/
- * Markdown) becomes the lesson, prefixed with the file path; exact title
- * collisions merge as duplicates of one issue. Zero model calls, zero cost,
+ * title (the stored `comments.title` when present — populated by
+ * myk-pi-tools at store time — else the first meaningful line of the body,
+ * un-buried from badges/HTML/Markdown) becomes the lesson, prefixed with the
+ * file path; exact title collisions merge as duplicates of one issue,
+ * carrying every contributing finding id. Zero model calls, zero cost,
  * fully testable (issue #918 decision: script-only engine).
  *
  * Distillation source is the DB, not the pr-*-reviews.json file — address
@@ -21,13 +32,20 @@
  * excluded (ack-noise, false positives); only final `addressed` rows distill.
  *
  * Part B — write-time recall. Three injection surfaces surface past addressed
- * findings for files the agent is about to touch, ranked by recurrence:
+ * findings for files the agent is about to touch, ranked by per-issue
+ * recurrence (same path + title across reviews — distinct issues on one file
+ * are counted and rendered separately, never as recurrences of each other):
  * 1. `before_agent_start` system-prompt section (paths named in the prompt +
- *    the issue-branch diff),
+ *    the issue-branch diff, diff paths resolved against the worktree root so
+ *    nested sessions match repo-relative DB paths),
  * 2. a first-write `tool_result` hint for paths discovered mid-run,
- * 3. a `tool_call` rewrite appending the block to subagent task text.
+ * 3. a `tool_call` rewrite appending the block to subagent task text —
+ *    single mode, `tasks[]` (parallel), and `chain[]` (sequential) alike.
  * All surfaces omit entirely when empty (zero added tokens), never make model
- * calls, and never throw.
+ * calls, and never throw. Recall is repo-isolated (owner/repo from the git
+ * remote) and pushes path/repo filtering into SQL so hook latency does not
+ * grow with the whole review history; paths checked once per session
+ * (findings or not) are never re-queried on later writes.
  *
  * GUARD: these hooks assume `reviews address` runs in the main session (both
  * review-handler modes run Phases 2–8 in main-session bash); if address ever
@@ -36,15 +54,15 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { getSetting } from "./project-settings.js";
-import { getProjectDataDir, resolveWorktreeRoot } from "./utils.js";
+import { getProjectDataDir, getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 import { addMemoryEntry } from "./memory-write.js";
-import { entryHash, loadScores, reinforce } from "./memory-scoring.js";
+import { entryHash, loadScores } from "./memory-scoring.js";
 import { readAllTopicEntries } from "./memory-tree.js";
 
 const log = createLogger("review-learning");
@@ -52,7 +70,8 @@ const log = createLogger("review-learning");
 // ── Constants ──────────────────────────────────────────────────────────────
 
 /** Per-fire caps (issue #918: per-cycle cap ~5 by severity protects the
- *  situation-report budget). */
+ *  situation-report budget). The cap applies AFTER lesson extraction, so
+ *  findings with unusable bodies never consume slots. */
 const MAX_FINDINGS_PER_FIRE = 5;
 const MAX_MEMORY_WRITES_PER_FIRE = 5;
 
@@ -60,6 +79,11 @@ const MAX_MEMORY_WRITES_PER_FIRE = 5;
 const MAX_FINDING_BODY_CHARS = 500;
 /** Hard ceiling on a distilled lesson line. */
 const MAX_LESSON_CHARS = 100;
+
+/** Persisted distilled-review state: `.pi/data/review-learning-state.json`. */
+const STATE_FILE_NAME = "review-learning-state.json";
+/** Cap on tracked review ids — old reviews never re-distill in practice. */
+const MAX_TRACKED_REVIEWS = 200;
 
 // ── Command matching ───────────────────────────────────────────────────────
 
@@ -80,6 +104,11 @@ export function isReviewsAddressCommand(command: unknown): boolean {
 
 // ── Repo resolution ────────────────────────────────────────────────────────
 
+export interface RepoInfo {
+  owner: string;
+  repo: string;
+}
+
 /** Parse `owner/repo` from a git remote URL (https, ssh://, and SCP-like forms). */
 export function parseGitHubRepo(remoteUrl: string): { owner: string; repo: string } | null {
   if (typeof remoteUrl !== "string") return null;
@@ -99,7 +128,7 @@ export function parseGitHubRepo(remoteUrl: string): { owner: string; repo: strin
 }
 
 /** Resolve owner/repo from the session cwd via `git remote get-url origin`. Fail-soft. */
-export function resolveRepoInfo(cwd: string): { owner: string; repo: string } | null {
+export function resolveRepoInfo(cwd: string): RepoInfo | null {
   try {
     const url = execFileSync("git", ["remote", "get-url", "origin"], {
       cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
@@ -117,6 +146,7 @@ export function resolveRepoInfo(cwd: string): { owner: string; repo: string } | 
 
 export interface ReviewRow {
   id: number;
+  prNumber: number;
   commitSha: string;
   owner: string;
   repo: string;
@@ -128,6 +158,8 @@ export interface AddressedFinding {
   line: number | null;
   body: string;
   priority: string | null;
+  /** Clean finding title from the `comments.title` column (null on legacy rows). */
+  title: string | null;
 }
 
 function openReviewsDb(dbPath: string): DatabaseSync | null {
@@ -140,16 +172,28 @@ function openReviewsDb(dbPath: string): DatabaseSync | null {
   }
 }
 
-/** Latest review row for owner/repo (append-only store — highest id is newest). */
-export function getLatestReview(dbPath: string, owner: string, repo: string): ReviewRow | null {
+/**
+ * Newest review row for owner/repo, optionally narrowed to one PR — the review
+ * an `address` command stored (append-only store — highest id is newest).
+ */
+export function getLatestReview(dbPath: string, owner: string, repo: string, prNumber?: number | null): ReviewRow | null {
   const db = openReviewsDb(dbPath);
   if (!db) return null;
   try {
-    const row = db
-      .prepare("SELECT id, commit_sha, owner, repo FROM reviews WHERE owner=? AND repo=? ORDER BY id DESC LIMIT 1")
-      .get(owner, repo) as any;
+    const sql = prNumber
+      ? "SELECT id, pr_number, commit_sha, owner, repo FROM reviews WHERE owner=? AND repo=? AND pr_number=? ORDER BY id DESC LIMIT 1"
+      : "SELECT id, pr_number, commit_sha, owner, repo FROM reviews WHERE owner=? AND repo=? ORDER BY id DESC LIMIT 1";
+    const row = (prNumber
+      ? db.prepare(sql).get(owner, repo, prNumber)
+      : db.prepare(sql).get(owner, repo)) as any;
     if (!row) return null;
-    return { id: Number(row.id), commitSha: String(row.commit_sha), owner: String(row.owner), repo: String(row.repo) };
+    return {
+      id: Number(row.id),
+      prNumber: Number(row.pr_number),
+      commitSha: String(row.commit_sha),
+      owner: String(row.owner),
+      repo: String(row.repo),
+    };
   } catch (error: any) {
     log.debug("reviews_db_query_failed", { dbPath, reason: String(error?.message ?? error).slice(0, 200) });
     return null;
@@ -158,24 +202,49 @@ export function getLatestReview(dbPath: string, owner: string, repo: string): Re
   }
 }
 
-/** Addressed findings for a commit SHA (skipped rows excluded by design). */
-export function getAddressedComments(dbPath: string, commitSha: string): AddressedFinding[] {
+/**
+ * Addressed findings for one review id — the review the address command
+ * stored, not every review sharing its commit SHA (skipped rows excluded by
+ * design). Reads `comments.title` when the column exists (populated by
+ * myk-pi-tools at store time); falls back to body-only selection on legacy
+ * databases, where `title` is null.
+ */
+export function getAddressedComments(dbPath: string, reviewId: number): AddressedFinding[] {
   const db = openReviewsDb(dbPath);
   if (!db) return [];
   try {
-    const rows = db
-      .prepare(
-        "SELECT c.id, c.path, c.line, c.body, c.priority, c.status " +
-          "FROM comments c JOIN reviews r ON c.review_id = r.id " +
-          "WHERE r.commit_sha=? AND c.status='addressed'",
-      )
-      .all(commitSha) as any[];
+    let rows: any[];
+    try {
+      rows = db
+        .prepare(
+          "SELECT c.id, c.path, c.line, c.body, c.priority, c.title " +
+            "FROM comments c WHERE c.review_id=? AND c.status='addressed'",
+        )
+        .all(reviewId) as any[];
+    } catch {
+      // Legacy DB without the `title` column — select without it.
+      rows = db
+        .prepare(
+          "SELECT c.id, c.path, c.line, c.body, c.priority " +
+            "FROM comments c WHERE c.review_id=? AND c.status='addressed'",
+        )
+        .all(reviewId) as any[];
+      return rows.map((row) => ({
+        id: Number(row.id),
+        path: typeof row.path === "string" ? row.path : null,
+        line: row.line === null || row.line === undefined ? null : Number(row.line),
+        body: String(row.body ?? ""),
+        priority: typeof row.priority === "string" ? row.priority : null,
+        title: null,
+      }));
+    }
     return rows.map((row) => ({
       id: Number(row.id),
       path: typeof row.path === "string" ? row.path : null,
       line: row.line === null || row.line === undefined ? null : Number(row.line),
       body: String(row.body ?? ""),
       priority: typeof row.priority === "string" ? row.priority : null,
+      title: typeof row.title === "string" && row.title.trim() ? row.title : null,
     }));
   } catch (error: any) {
     log.debug("reviews_db_query_failed", { dbPath, reason: String(error?.message ?? error).slice(0, 200) });
@@ -185,10 +254,78 @@ export function getAddressedComments(dbPath: string, commitSha: string): Address
   }
 }
 
-// ── Distillation (model call, injectable for tests) ────────────────────────
+// ── Distilled-review state ─────────────────────────────────────────────────
+
+function stateFilePath(dataDir: string): string {
+  return join(dataDir, STATE_FILE_NAME);
+}
+
+/** Review ids already distilled — persisted so partial address runs (no store)
+ *  and re-fires never re-distill the same review. Fail-soft. */
+export function loadDistilledReviews(dataDir: string): Set<number> {
+  try {
+    const raw = JSON.parse(readFileSync(stateFilePath(dataDir), "utf-8"));
+    const ids = Array.isArray(raw?.distilledReviews) ? raw.distilledReviews : [];
+    return new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0));
+  } catch {
+    return new Set();
+  }
+}
+
+/** Record a review id as distilled (bounded — oldest entries drop off). Fail-soft. */
+export function markReviewDistilled(dataDir: string, reviewId: number): void {
+  try {
+    const ids = [...loadDistilledReviews(dataDir), reviewId];
+    const trimmed = ids.slice(-MAX_TRACKED_REVIEWS);
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(stateFilePath(dataDir), `${JSON.stringify({ distilledReviews: trimmed }, null, 2)}\n`);
+  } catch (error: any) {
+    log.debug("distilled_state_write_failed", { reason: String(error?.message ?? error).slice(0, 200) });
+  }
+}
+
+// ── Addressed-PR identification ────────────────────────────────────────────
+
+/** Newest `pr-*-reviews.json` in the project tmp dir by mtime — mirrors address.py's default discovery. */
+function newestReviewsJson(cwd: string): string | null {
+  try {
+    const dir = getProjectTmpDir(cwd);
+    const candidates = readdirSync(dir).filter((f) => /^pr-\d+-reviews\.json$/.test(f));
+    let best: { file: string; mtime: number } | null = null;
+    for (const file of candidates) {
+      const mtime = statSync(join(dir, file)).mtimeMs;
+      if (!best || mtime > best.mtime) best = { file, mtime };
+    }
+    return best ? join(dir, best.file) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * PR number of the review an address command targeted: parsed from the
+ * command's `--json` file (still on disk for partial runs), else the newest
+ * `pr-*-reviews.json` in the project tmp dir (address.py's default). Returns
+ * null when neither is readable — callers fall back to newest-for-repo,
+ * which is exactly the just-stored review on final (storing) runs.
+ */
+export function prNumberFromCommand(command: string | undefined, cwd: string): number | null {
+  try {
+    const m = /(?:^|\s)--json(?:\s+|=)(\S+)/.exec(command ?? "");
+    const jsonPath = m ? resolve(cwd, m[1]!) : newestReviewsJson(cwd);
+    if (!jsonPath) return null;
+    const pr = Number(JSON.parse(readFileSync(jsonPath, "utf-8"))?.metadata?.pr_number);
+    return Number.isInteger(pr) && pr > 0 ? pr : null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Distillation (script-only engine) ──────────────────────────────────────
 
 export interface DistilledLesson {
-  findingId: number;
+  /** Every contributing finding id — merged duplicates keep their identities. */
+  findingIds: number[];
   text: string;
 }
 
@@ -198,11 +335,14 @@ function priorityRank(priority: string | null): number {
   return PRIORITY_ORDER[(priority ?? "").toLowerCase()] ?? 4;
 }
 
-/** Cap to MAX_FINDINGS_PER_FIRE, critical/high first, then by id. */
+/**
+ * Rank ALL findings: critical/high first, then by id. No cap here — the
+ * per-fire cap applies in distillLessons AFTER lesson extraction, so findings
+ * with unusable (badge-only) bodies never consume slots that eligible
+ * findings below them could have used.
+ */
 export function rankFindings(findings: AddressedFinding[]): AddressedFinding[] {
-  return [...findings]
-    .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || a.id - b.id)
-    .slice(0, MAX_FINDINGS_PER_FIRE);
+  return [...findings].sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || a.id - b.id);
 }
 
 /**
@@ -210,7 +350,7 @@ export function rankFindings(findings: AddressedFinding[]): AddressedFinding[] {
  * no model. Reviewer tools (Qodo, CodeRabbit) write a human-readable title as
  * the first meaningful line, buried in badge images, HTML tags, and Markdown
  * emphasis. Skips badge/label lines, strips markup, returns null when no
- * meaningful line exists.
+ * meaningful line exists. Fallback for legacy DB rows without `comments.title`.
  */
 export function extractFindingTitle(body: string): string | null {
   if (typeof body !== "string" || !body.trim()) return null;
@@ -243,7 +383,7 @@ function sanitizeLesson(raw: unknown): string | null {
 
 /** Deterministic lesson line for one finding: `<path>: <title>`. */
 export function lessonFromFinding(f: AddressedFinding): string | null {
-  const title = extractFindingTitle(f.body);
+  const title = f.title ?? extractFindingTitle(f.body);
   if (!title) return null;
   const where = f.path ? `${f.path}: ` : "";
   const line = sanitizeLesson(`${where}${title}`);
@@ -252,30 +392,30 @@ export function lessonFromFinding(f: AddressedFinding): string | null {
 
 /**
  * Distill findings into lessons — pure, synchronous, zero model calls.
- * Findings whose cleaned titles (path + title) collide are duplicates of the
- * same issue (address.py dedupes by title at fetch time; reworded duplicates
- * across sources still collide only when identical) — the first by priority
- * rank wins and carries the provenance; the rest merge into it silently.
+ * Findings are ranked, lessons extracted and validated for ALL of them, and
+ * only then capped at MAX_FINDINGS_PER_FIRE (unusable bodies never consume
+ * slots). Findings whose lessons (path + title) collide are duplicates of the
+ * same issue — they merge into one lesson that carries every contributing
+ * finding id, so provenance lookups can distinguish new occurrences from
+ * re-fires.
  */
 export function distillLessons(findings: AddressedFinding[]): DistilledLesson[] {
-  const seen = new Set<string>();
-  const out: DistilledLesson[] = [];
+  const byText = new Map<string, DistilledLesson>();
   for (const finding of rankFindings(findings)) {
     const text = lessonFromFinding(finding);
     if (!text) continue;
     const key = text.toLowerCase();
-    if (seen.has(key)) continue; // duplicate of an already-distilled lesson
-    seen.add(key);
-    out.push({ findingId: finding.id, text });
+    const existing = byText.get(key);
+    if (existing) existing.findingIds.push(finding.id); // merged duplicate keeps its identity
+    else byText.set(key, { findingIds: [finding.id], text });
   }
-  return out;
+  return [...byText.values()].slice(0, MAX_FINDINGS_PER_FIRE);
 }
-
 
 // ── Memory write with provenance dedupe ────────────────────────────────────
 
 /** Provenance key for a review finding (issue #918: drill-down stays in the DB). */
-export function findingProvenance(findingId: number, repo: { owner: string; repo: string }): string {
+export function findingProvenance(findingId: number, repo: RepoInfo): string {
   return `reviews.db:${findingId};${repo.owner}/${repo.repo}`;
 }
 
@@ -302,26 +442,30 @@ export interface WriteLessonsResult {
   added: number;
   reinforced: number;
   rejected: number;
+  /** Skipped: this exact finding was already distilled (existing provenance). */
+  skipped: number;
 }
 
 /**
  * Write distilled lessons through the internal memory path.
- * Existing `derivedFrom` provenance → reinforce (bump evidence — the
- * recurrence signal); otherwise add as category=lesson with provenance +
- * informs=["review-learning"]. Capped at MAX_MEMORY_WRITES_PER_FIRE.
+ * Existing `derivedFrom` provenance → SKIP (the finding was already distilled;
+ * re-fires must not inflate evidence — review-level tracking normally prevents
+ * reaching this point, this is the belt). New findings whose lesson text
+ * already exists (the same issue re-raised in a NEW review — a real
+ * recurrence) are reinforced by addMemoryEntry's duplicate detection.
+ * Capped at MAX_MEMORY_WRITES_PER_FIRE.
  */
 export async function writeLessonsToMemory(
   cwd: string,
   lessons: DistilledLesson[],
-  repo: { owner: string; repo: string },
+  repo: RepoInfo,
 ): Promise<WriteLessonsResult> {
-  const result: WriteLessonsResult = { added: 0, reinforced: 0, rejected: 0 };
+  const result: WriteLessonsResult = { added: 0, reinforced: 0, rejected: 0, skipped: 0 };
   for (const lesson of lessons.slice(0, MAX_MEMORY_WRITES_PER_FIRE)) {
-    const derivedFrom = findingProvenance(lesson.findingId, repo);
-    const existing = findMemoryLineByDerivedFrom(cwd, derivedFrom);
-    if (existing && reinforce(cwd, existing)) {
-      result.reinforced++;
-      log.debug("lesson_reinforced", { derivedFrom });
+    const derivedFrom = findingProvenance(lesson.findingIds[0]!, repo);
+    if (findMemoryLineByDerivedFrom(cwd, derivedFrom)) {
+      result.skipped++;
+      log.debug("lesson_already_distilled", { derivedFrom });
       continue;
     }
     const add = await addMemoryEntry(cwd, {
@@ -353,13 +497,31 @@ const BLOCK_HEADER =
   "<review-lessons>\nPast review findings for files you're about to touch (addressed N× — avoid repeating):";
 const BLOCK_TAIL = "</review-lessons>";
 
-/** Normalize a repo-relative or absolute path to repo-relative ("/" separators), or null when it escapes the worktree root. */
+/**
+ * Normalize a cwd-relative or absolute path (tool paths) to repo-relative
+ * ("/" separators), or null when it escapes the worktree root.
+ */
 export function normalizeRepoRelative(cwd: string, value: string): string | null {
+  return normalizeAgainst(cwd, value, false);
+}
+
+/**
+ * Normalize a repo-relative or absolute path that came from Git or the review
+ * DB (branch diffs, comment paths) — resolved against the worktree ROOT, not
+ * the session cwd, so a nested session does not rebase `src/api.ts` under its
+ * subdirectory and lose the match against the DB's repo-relative paths.
+ */
+export function normalizeRepoRelativeFromRoot(cwd: string, value: string): string | null {
+  return normalizeAgainst(cwd, value, true);
+}
+
+function normalizeAgainst(cwd: string, value: string, fromRoot: boolean): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim().replace(/^\.\//, "").replace(/\/+$/, "");
   if (!trimmed || trimmed === "." || trimmed === "..") return null;
   const root = resolveWorktreeRoot(cwd);
-  const abs = isAbsolute(trimmed) ? trimmed : resolve(cwd, trimmed);
+  const base = fromRoot ? root : cwd;
+  const abs = isAbsolute(trimmed) ? trimmed : resolve(base, trimmed);
   const rel = relative(root, abs);
   if (!rel || rel === ".." || rel.startsWith("../") || isAbsolute(rel)) return null;
   return rel.split(sep).join("/");
@@ -393,6 +555,7 @@ export function extractPathsFromText(text: string, cwd: string): string[] {
  * Paths changed on the current branch vs main: `git diff --name-only main...HEAD`,
  * falling back to `origin/main...HEAD`. Fresh branches / missing main / no git →
  * [] (fail-soft by design — the write-time hint covers what this misses).
+ * Output is repo-relative — normalize with normalizeRepoRelativeFromRoot.
  */
 export function branchDiffPaths(cwd: string): string[] {
   for (const range of ["main...HEAD", "origin/main...HEAD"]) {
@@ -422,15 +585,49 @@ export function firstSentence(body: string, max = MAX_GIST_CHARS): string {
   return sentence.length > max ? `${sentence.slice(0, max - 3)}...` : sentence;
 }
 
-/** All addressed comments with a path, across every review/commit SHA. */
-function allAddressedComments(dbPath: string): { id: number; path: string; body: string }[] {
+interface MatchedComment {
+  id: number;
+  path: string;
+  body: string;
+  title: string | null;
+}
+
+/**
+ * Addressed comments for owner/repo matching any input path — path and repo
+ * filtering pushed into SQL (hook latency must not grow with the entire
+ * review history), with the `comments.title` column preferred and a
+ * body-only fallback for legacy databases. LIKE patterns are re-verified in
+ * memory (pathMatches) because `_` in paths is a LIKE wildcard.
+ */
+function matchedAddressedComments(dbPath: string, owner: string, repo: string, inputs: string[]): MatchedComment[] {
+  if (inputs.length === 0) return [];
   const db = openReviewsDb(dbPath);
   if (!db) return [];
   try {
-    const rows = db
-      .prepare("SELECT id, path, body FROM comments WHERE status='addressed' AND path IS NOT NULL")
-      .all() as any[];
-    return rows.map((row) => ({ id: Number(row.id), path: String(row.path), body: String(row.body ?? "") }));
+    const conds = inputs.map(() => "(c.path = ? OR c.path LIKE ? ESCAPE '\\' OR ? LIKE c.path || '/%' ESCAPE '\\')").join(" OR ");
+    const params: string[] = [owner, repo];
+    const like = (input: string) => input.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    for (const input of inputs) params.push(input, `${like(input)}/%`, input);
+    const query = (titleCol: string) =>
+      db
+        .prepare(
+          `SELECT c.id, c.path, c.body${titleCol} FROM comments c ` +
+            `JOIN reviews r ON c.review_id = r.id ` +
+            `WHERE r.owner=? AND r.repo=? AND c.status='addressed' AND c.path IS NOT NULL AND (${conds})`,
+        )
+        .all(...params) as any[];
+    let rows: any[];
+    try {
+      rows = query(", c.title");
+    } catch {
+      rows = query(""); // legacy DB without the `title` column
+    }
+    return rows.map((row) => ({
+      id: Number(row.id),
+      path: String(row.path),
+      body: String(row.body ?? ""),
+      title: typeof row.title === "string" && row.title.trim() ? row.title : null,
+    }));
   } catch (error: any) {
     log.debug("reviews_db_query_failed", { dbPath, reason: String(error?.message ?? error).slice(0, 200) });
     return [];
@@ -445,70 +642,109 @@ function pathMatches(commentPath: string, inputPath: string): boolean {
 }
 
 export interface PathFindings {
-  /** Repo-relative path the agent is touching. */
+  /** Repo-relative path of the finding (issue location). */
   path: string;
-  /** Addressed-comment occurrences across ALL commit SHAs (recurrence signal). */
+  /** Recurrences of THIS issue (same path + title) across all reviews. */
   count: number;
-  /** Lesson text when memory has one for this path, else the top comment's gist. */
+  /** Lesson text when memory has one for this issue, else the finding title. */
   text: string;
 }
 
+interface IssueGroup {
+  path: string;
+  title: string | null;
+  body: string;
+  ids: number[];
+}
+
 /**
- * Collect findings relevant to `paths` from both sources:
- * - reviews DB: addressed comments matching any path (exact + dir-prefix),
- *   counted across all commit SHAs — recurrence is the ranking signal;
- * - memory lessons: entries whose `derivedFrom` provenance points at a matched
- *   DB comment, or whose text mentions a path (cheap scan — lessons already
- *   carry repo-scoped phrasing).
- * Ranked by count desc, then path asc. Never throws.
+ * Normalize one recall input: cwd-based (tool paths) by default, but when
+ * only the worktree-root resolution exists (a repo-relative diff path seen
+ * from a nested session cwd), prefer the root-based one — the DB stores
+ * repo-relative paths, so the diff entry `src/api.py` must not be rebased
+ * under `packages/inner/`.
  */
-export function collectPathFindings(cwd: string, paths: string[]): PathFindings[] {
+function normalizeInputPath(cwd: string, value: string): string | null {
+  const cwdRel = normalizeRepoRelative(cwd, value);
+  const rootRel = normalizeRepoRelativeFromRoot(cwd, value);
+  if (cwdRel === null || rootRel === null) return cwdRel ?? rootRel;
+  if (cwdRel === rootRel) return cwdRel;
+  const root = resolveWorktreeRoot(cwd);
+  const rootExists = existsSync(resolve(root, rootRel));
+  const cwdExists = existsSync(resolve(cwd, cwdRel));
+  if (rootExists && !cwdExists) return rootRel;
+  return cwdRel;
+}
+
+/**
+ * Collect findings relevant to `paths` — repo-isolated (owner/repo resolved
+ * from the git remote, so another repository's reviews in the shared DB never
+ * leak into this task) and grouped by distinct issue identity (path + title):
+ * each issue is counted and rendered separately, so unrelated findings on one
+ * file never masquerade as recurrences of the displayed one.
+ *
+ * Memory lessons surface only via review provenance (`derivedFrom` matching a
+ * matched comment of this repo) — never by bare text mention, so unrelated
+ * memories do not appear as review findings. The topic scan runs only when
+ * the DB matched at least one comment.
+ *
+ * Ranked by per-issue count desc, then path asc. Never throws.
+ */
+export function collectPathFindings(
+  cwd: string,
+  paths: string[],
+  repoInfoFn: (cwd: string) => RepoInfo | null = resolveRepoInfo,
+): PathFindings[] {
   const inputs = [
-    ...new Set(paths.map((p) => normalizeRepoRelative(cwd, p)).filter((p): p is string => Boolean(p))),
+    ...new Set(paths.map((p) => normalizeInputPath(cwd, p)).filter((p): p is string => Boolean(p))),
   ];
   if (inputs.length === 0) return [];
+  const repo = repoInfoFn(cwd);
+  if (!repo) return [];
 
   const dbPath = join(getProjectDataDir(cwd), "reviews.db");
-  const rows = allAddressedComments(dbPath);
-  const counts = new Map<string, number>();
-  const gists = new Map<string, string>();
-  const pathById = new Map<number, string>();
+  const rows = matchedAddressedComments(dbPath, repo.owner, repo.repo, inputs);
+
+  // Group matched comments by distinct issue (path + title identity).
+  const issues = new Map<string, IssueGroup>();
+  const issueByCommentId = new Map<number, string>();
   for (const row of rows) {
-    pathById.set(row.id, row.path);
-    for (const input of inputs) {
-      if (pathMatches(row.path, input)) {
-        counts.set(input, (counts.get(input) ?? 0) + 1);
-        if (!gists.has(input)) gists.set(input, firstSentence(row.body));
-      }
-    }
+    if (!inputs.some((input) => pathMatches(row.path, input))) continue; // LIKE-wildcard defense
+    const title = row.title ?? extractFindingTitle(row.body);
+    const identity = title ?? `body:${row.body.slice(0, 80)}`;
+    const key = `${row.path}\0${identity.toLowerCase()}`;
+    const group = issues.get(key) ?? { path: row.path, title, body: row.body, ids: [] };
+    group.ids.push(row.id);
+    issues.set(key, group);
+    issueByCommentId.set(row.id, key);
   }
 
-  // Memory lessons: derivedFrom provenance (`reviews.db:<id>;<owner>/<repo>`)
-  // resolving to a matched comment path, or a plain text scan.
-  const lessonByPath = new Map<string, string>();
-  try {
-    const scores = loadScores(cwd);
-    for (const entry of readAllTopicEntries(cwd)) {
-      const hash = entryHash(`- [${entry.category}] ${entry.text}`);
-      const derivedFrom = scores.entries[hash]?.derivedFrom;
-      let matched: string | null = null;
-      const provenance = derivedFrom ? /^reviews\.db:(\d+);/.exec(derivedFrom) : null;
-      if (provenance) {
-        const commentPath = pathById.get(Number(provenance[1]));
-        if (commentPath) matched = inputs.find((input) => pathMatches(commentPath, input)) ?? null;
+  // Memory lessons: only lesson entries whose reviews.db provenance resolves
+  // to a matched comment of THIS repo (category + provenance + repo suffix).
+  const lessonTextByIssue = new Map<string, string>();
+  if (rows.length > 0) {
+    try {
+      const scores = loadScores(cwd);
+      for (const entry of readAllTopicEntries(cwd)) {
+        if (entry.category !== "lesson") continue;
+        const hash = entryHash(`- [${entry.category}] ${entry.text}`);
+        const derivedFrom = scores.entries[hash]?.derivedFrom;
+        const provenance = derivedFrom ? /^reviews\.db:(\d+);([^/\s]+\/[^\s;]+)$/.exec(derivedFrom) : null;
+        if (!provenance) continue;
+        if (provenance[2] !== `${repo.owner}/${repo.repo}`) continue;
+        const issue = issueByCommentId.get(Number(provenance[1]));
+        if (issue && !lessonTextByIssue.has(issue)) lessonTextByIssue.set(issue, entry.text);
       }
-      if (!matched) matched = inputs.find((input) => entry.text.includes(input)) ?? null;
-      if (matched && !lessonByPath.has(matched)) lessonByPath.set(matched, entry.text);
+    } catch (error: any) {
+      log.debug("lesson_scan_failed", { reason: String(error?.message ?? error).slice(0, 200) });
     }
-  } catch (error: any) {
-    log.debug("lesson_scan_failed", { reason: String(error?.message ?? error).slice(0, 200) });
   }
 
   const findings: PathFindings[] = [];
-  for (const input of inputs) {
-    const count = counts.get(input);
-    if (!count && !lessonByPath.has(input)) continue;
-    findings.push({ path: input, count: count ?? 1, text: lessonByPath.get(input) ?? gists.get(input) ?? "" });
+  for (const [key, group] of issues) {
+    const text = lessonTextByIssue.get(key) ?? group.title ?? firstSentence(group.body);
+    if (!text) continue; // nothing displayable — skip rather than render an empty gist
+    findings.push({ path: group.path, count: group.ids.length, text });
   }
   findings.sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
   return findings;
@@ -537,9 +773,17 @@ export function formatFindingsBlock(findings: PathFindings[]): string | null {
   return `${BLOCK_HEADER}\n${lines.join("\n")}\n${BLOCK_TAIL}`;
 }
 
-/** Bounded markdown block of past findings for `paths`, or undefined when empty — the shared query behind all three injection surfaces. */
-export function relevantFindings(cwd: string, paths: string[]): string | undefined {
-  return formatFindingsBlock(collectPathFindings(cwd, paths)) ?? undefined;
+/**
+ * Bounded markdown block of past findings for `paths`, or undefined when
+ * empty — the shared query behind all three injection surfaces. `repoInfoFn`
+ * is injectable for tests (default: git remote origin).
+ */
+export function relevantFindings(
+  cwd: string,
+  paths: string[],
+  repoInfoFn: (cwd: string) => RepoInfo | null = resolveRepoInfo,
+): string | undefined {
+  return formatFindingsBlock(collectPathFindings(cwd, paths, repoInfoFn)) ?? undefined;
 }
 
 /** Extract plain text from a `before_agent_start` custom message (string or content parts). */
@@ -557,7 +801,7 @@ export function customMessageText(message: any): string {
 
 export interface ReviewLearningOptions {
   /** Repo resolution — injectable for tests (default: git remote origin). */
-  repoInfo?: (cwd: string) => { owner: string; repo: string } | null;
+  repoInfo?: (cwd: string) => RepoInfo | null;
   /** Branch-diff path source — injectable for tests (default: git diff main...HEAD). */
   diffPaths?: (cwd: string) => string[];
 }
@@ -567,12 +811,23 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
   const diffPaths = options.diffPaths ?? branchDiffPaths;
 
   // Write-time recall session state (Part B): paths that already received a
-  // full injection this session, and whether any full block went out yet —
-  // later per-path hints degrade to one-liners to protect the budget.
-  const recall = { injectedPaths: new Set<string>(), fullBlockInjected: false };
+  // full injection this session, paths already checked (findings or not —
+  // a no-findings path must not re-query the DB on every later write), and
+  // whether any full block went out yet — later per-path hints degrade to
+  // one-liners to protect the budget.
+  const recall = {
+    injectedPaths: new Set<string>(),
+    checkedPaths: new Set<string>(),
+    fullBlockInjected: false,
+  };
 
-  /** Full distillation pipeline for one address fire. Settings-gated, fail-soft. */
-  const distill = async (cwd: string): Promise<void> => {
+  /**
+   * Full distillation pipeline for one address fire. `command` identifies the
+   * addressed PR (`--json` file → metadata.pr_number). Settings-gated,
+   * fail-soft, and idempotent per review (distilled ids persist under
+   * `.pi/data`).
+   */
+  const distill = async (cwd: string, command?: string): Promise<void> => {
     if (!getSetting(cwd, "review_learning")) {
       log.debug("disabled_by_setting", { cwd });
       return;
@@ -582,30 +837,43 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
       log.debug("skipped_no_repo", { cwd });
       return;
     }
-    const dbPath = join(getProjectDataDir(cwd), "reviews.db");
-    const review = getLatestReview(dbPath, repo.owner, repo.repo);
+    const dataDir = getProjectDataDir(cwd);
+    const dbPath = join(dataDir, "reviews.db");
+    const prNumber = prNumberFromCommand(command, cwd);
+    const review = getLatestReview(dbPath, repo.owner, repo.repo, prNumber);
     if (!review) {
-      log.debug("skipped_no_review_row", { owner: repo.owner, repo: repo.repo });
+      log.debug("skipped_no_review_row", { owner: repo.owner, repo: repo.repo, prNumber });
       return;
     }
-    const findings = getAddressedComments(dbPath, review.commitSha);
+    const distilled = loadDistilledReviews(dataDir);
+    if (distilled.has(review.id)) {
+      log.debug("skipped_review_already_distilled", { reviewId: review.id, prNumber: review.prNumber });
+      return;
+    }
+    const findings = getAddressedComments(dbPath, review.id);
     if (findings.length === 0) {
-      log.debug("skipped_no_addressed_findings", { commitSha: review.commitSha.slice(0, 12) });
+      log.debug("skipped_no_addressed_findings", { reviewId: review.id });
       return;
     }
-    log.info("distill_start", { owner: repo.owner, repo: repo.repo, findings: findings.length });
+    log.info("distill_start", {
+      owner: repo.owner, repo: repo.repo, prNumber: review.prNumber, reviewId: review.id, findings: findings.length,
+    });
     const lessons = distillLessons(findings);
     if (lessons.length === 0) {
       log.info("distill_finish", { findings: findings.length, lessons: 0, reason: "no lessons distilled" });
+      markReviewDistilled(dataDir, review.id);
       return;
     }
     const written = await writeLessonsToMemory(cwd, lessons, repo);
+    markReviewDistilled(dataDir, review.id);
     log.info("distill_finish", {
+      reviewId: review.id,
       findings: findings.length,
       lessons: lessons.length,
       added: written.added,
       reinforced: written.reinforced,
       rejected: written.rejected,
+      skipped: written.skipped,
     });
   };
 
@@ -616,6 +884,7 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
 
     pi.on("session_start", () => {
       recall.injectedPaths.clear();
+      recall.checkedPaths.clear();
       recall.fullBlockInjected = false;
     });
 
@@ -626,14 +895,19 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
         if (event?.isError) return;
         const tool = String(event?.toolName ?? "").toLowerCase();
         if (tool !== "bash") return;
-        if (!isReviewsAddressCommand(event?.input?.command)) return;
+        const command = event?.input?.command;
+        if (!isReviewsAddressCommand(command)) return;
         log.debug("address_detected", { cwd: ctx?.cwd });
-        // Fire-and-forget (precedent: graft's `void refresh()`) — must not
-        // delay the tool result or the agent loop. All failures are handled
-        // inside `distill` (log.warn, never throw).
-        void distill(ctx.cwd).catch((error) =>
-          log.warn("distill_unexpected_failure", { reason: String((error as any)?.message ?? error).slice(0, 300) }),
-        );
+        // Fire-and-forget, deferred past the handler's synchronous frame —
+        // the tool result must not wait for git exec, SQLite queries, or the
+        // provenance lookup (all sync I/O inside `distill` before its first
+        // await). All failures are handled inside `distill` (log.warn, never
+        // throw).
+        setImmediate(() => {
+          void distill(ctx.cwd, command).catch((error) =>
+            log.warn("distill_unexpected_failure", { reason: String((error as any)?.message ?? error).slice(0, 300) }),
+          );
+        });
       } catch (error: any) {
         log.warn("tool_result_handler_failed", { reason: String(error?.message ?? error).slice(0, 300) });
       }
@@ -641,8 +915,10 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
 
     // Surface 1 — before_agent_start injection (graft-gate pattern).
     // Purely mechanical path extraction (prompt tokens + branch diff), sync
-    // DB/git with timeouts, no model calls. Must be fast and never throw —
-    // other before_agent_start handlers (graft gate, rules) must not stall.
+    // DB/git with timeouts, no model calls. Diff paths are repo-relative —
+    // normalized against the worktree ROOT so nested sessions still match
+    // the DB's repo-relative paths. Must be fast and never throw — other
+    // before_agent_start handlers (graft gate, rules) must not stall.
     pi.on("before_agent_start", (event: any, ctx: any) => {
       try {
         const cwd = ctx?.cwd;
@@ -650,8 +926,11 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
         const prompt = event?.messageType === "user" && typeof event.prompt === "string"
           ? event.prompt
           : customMessageText(event?.message);
-        const paths = [...extractPathsFromText(prompt, cwd), ...diffPaths(cwd)];
-        const findings = collectPathFindings(cwd, paths);
+        const diff = diffPaths(cwd)
+          .map((p) => normalizeRepoRelativeFromRoot(cwd, p))
+          .filter((p): p is string => Boolean(p));
+        const paths = [...extractPathsFromText(prompt, cwd), ...diff];
+        const findings = collectPathFindings(cwd, paths, repoInfo);
         const block = formatFindingsBlock(findings);
         if (!block) return;
         for (const finding of findings) recall.injectedPaths.add(finding.path);
@@ -675,7 +954,9 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
 
     // Surface 2 — first-write tool_result hint (graft blastHint pattern):
     // catches paths discovered mid-run that prompt extraction missed. Appends
-    // once per path per session; one-liners after the first full block.
+    // once per path per session; a path is checked once per session whether
+    // or not it has findings (a no-findings path must not re-query the DB on
+    // every later write); one-liners after the first full block.
     pi.on("tool_result", (event: any, ctx: any) => {
       try {
         if (event?.isError) return;
@@ -684,8 +965,9 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
         const cwd = ctx?.cwd;
         if (typeof cwd !== "string" || !getSetting(cwd, "review_learning")) return;
         const written = typeof event?.input?.path === "string" ? normalizeRepoRelative(cwd, event.input.path) : null;
-        if (!written || recall.injectedPaths.has(written)) return;
-        const findings = collectPathFindings(cwd, [written]);
+        if (!written || recall.injectedPaths.has(written) || recall.checkedPaths.has(written)) return;
+        recall.checkedPaths.add(written);
+        const findings = collectPathFindings(cwd, [written], repoInfo);
         if (findings.length === 0) return;
         const top = findings[0]!;
         recall.injectedPaths.add(written);
@@ -702,21 +984,37 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
     });
 
     // Surface 3 — specialist dispatch hook: specialists get no memory
-    // injection, so append the block to the subagent task text (enforcement
-    // tool_call rewrite pattern — mutate input in place, never other args).
+    // injection, so append the block to each subagent task text — the
+    // top-level task (single mode), every `tasks[]` entry (parallel), and
+    // every `chain[]` entry (sequential), each resolving its own cwd
+    // (item.cwd → input.cwd → ctx.cwd). In-place mutation only (enforcement
+    // tool_call rewrite pattern — never other args).
     pi.on("tool_call", (event: any, ctx: any) => {
       try {
         if (String(event?.toolName ?? "").toLowerCase() !== "subagent") return;
         const input = event?.input;
-        if (!input || typeof input.task !== "string" || !input.task.trim()) return;
-        const cwd = typeof input.cwd === "string" && input.cwd.trim() ? input.cwd : ctx?.cwd;
-        if (typeof cwd !== "string" || !getSetting(cwd, "review_learning")) return;
-        const paths = extractPathsFromText(input.task, cwd);
-        if (paths.length === 0) return;
-        const block = relevantFindings(cwd, paths);
-        if (!block) return;
-        input.task = `${input.task}\n\n${block}`;
-        log.info("recall_injected_subagent", { paths: paths.length, chars: block.length });
+        if (!input || typeof input !== "object") return;
+        const targets: any[] = [];
+        if (typeof input.task === "string" && input.task.trim()) targets.push(input);
+        for (const key of ["tasks", "chain"]) {
+          if (!Array.isArray(input[key])) continue;
+          for (const item of input[key]) {
+            if (item && typeof item === "object" && typeof item.task === "string" && item.task.trim()) targets.push(item);
+          }
+        }
+        for (const item of targets) {
+          const cwd =
+            (typeof item.cwd === "string" && item.cwd.trim() && item.cwd) ||
+            (typeof input.cwd === "string" && input.cwd.trim() && input.cwd) ||
+            ctx?.cwd;
+          if (typeof cwd !== "string" || !getSetting(cwd, "review_learning")) continue;
+          const paths = extractPathsFromText(item.task, cwd);
+          if (paths.length === 0) continue;
+          const block = relevantFindings(cwd, paths, repoInfo);
+          if (!block) continue;
+          item.task = `${item.task}\n\n${block}`;
+          log.info("recall_injected_subagent", { paths: paths.length, chars: block.length });
+        }
       } catch (error: any) {
         log.debug("recall_subagent_failed", { reason: String(error?.message ?? error).slice(0, 300) });
       }

@@ -90,19 +90,29 @@ export function tryResolveMainCheckoutRoot(cwd: string): string | null {
   const cached = mainCheckoutRootCache.get(key);
   if (cached !== undefined) return cached === "" ? null : cached;
   let root: string | null = null;
-  try {
-    const gitCommonDir = execFileSync(
-      "git",
-      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-      { cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] },
-    ).trim();
-    if (gitCommonDir && !gitCommonDir.startsWith("fatal")) {
-      root = path.dirname(path.resolve(gitCommonDir));
+  const runGit = (args: string[]): string | null => {
+    try {
+      const out = execFileSync("git", args, {
+        cwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      return out && !out.startsWith("fatal") ? out : null;
+    } catch {
+      return null;
     }
-  } catch (e: any) {
-    // Expected whenever the cwd is not a git repo, so this is a debug line in a
-    // file log — never console.*, which would dump it into the chat transcript.
-    log.debug("tryResolveMainCheckoutRoot", { cwd: key, reason: e?.message?.slice(0, 200) });
+  };
+  // Preferred form: absolute path, any git version ≥ 2.31.
+  let gitCommonDir = runGit(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  // Older git releases reject --path-format — fall back to the plain form
+  // (relative to cwd) and resolve it, mirroring Python's _get_git_root.
+  if (gitCommonDir === null) gitCommonDir = runGit(["rev-parse", "--git-common-dir"]);
+  if (gitCommonDir !== null) {
+    // Plain-form output may be cwd-relative (older git) — resolve against the
+    // queried cwd, never process.cwd().
+    root = path.dirname(path.resolve(key, gitCommonDir));
+  } else {
+    // Expected whenever the cwd is not a git repo — debug line in a file log,
+    // never console.*, which would dump it into the chat transcript.
+    log.debug("tryResolveMainCheckoutRoot", { cwd: key, reason: "git rev-parse failed (not a repo?)" });
   }
   mainCheckoutRootCache.set(key, root ?? "");
   return root;

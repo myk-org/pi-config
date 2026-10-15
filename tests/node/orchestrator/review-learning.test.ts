@@ -2,8 +2,8 @@
  * Review learning (issue #918 Part A) — address-hook distillation tests.
  * Run: npx tsx --test tests/node/orchestrator/review-learning.test.ts
  *
- * No network: the model call is injected; the registry call path (internal-ops
- * or session model, provider-agnostic) stays untested here by design.
+ * No network, no model calls: findings come from a scratch sqlite reviews DB
+ * (with and without the `comments.title` column) and seeded memory lessons.
  */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -24,6 +24,9 @@ import {
   writeLessonsToMemory,
   findingProvenance,
   createReviewLearning,
+  loadDistilledReviews,
+  markReviewDistilled,
+  prNumberFromCommand,
   type AddressedFinding,
 } from "../../../extensions/orchestrator/review-learning.js";
 import { entryHash, loadScores, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
@@ -59,7 +62,8 @@ CREATE TABLE comments (
     resolved_at TEXT,
     type TEXT DEFAULT NULL,
     quality_label TEXT DEFAULT NULL,
-    code_diff TEXT DEFAULT NULL
+    code_diff TEXT DEFAULT NULL,
+    title TEXT DEFAULT NULL
 );
 `;
 
@@ -79,24 +83,33 @@ function seedDb(): SeededDb {
   const insertComment = db.prepare(
     "INSERT INTO comments (review_id, source, path, line, body, priority, status) VALUES (?, 'qodo', ?, ?, ?, ?, ?)",
   );
-  // review 1: myk-org/demo @ sha-aaa (older)
+  // review 1 (id 1): myk-org/demo PR 10 @ sha-aaa (older)
   insertReview.run(10, "myk-org", "demo", "sha-aaa", "2026-01-01T00:00:00Z");
   insertComment.run(1, "src/api.py", 10, "Missing strip_sensitive_from_response on the endpoint", "critical", "addressed");
   insertComment.run(1, "src/api.py", 42, "Same redaction gap on the list endpoint", "high", "addressed");
   insertComment.run(1, "src/util.py", 5, "Ack-only nit", "low", "skipped");
-  // review 2: other/repo @ sha-bbb (wrong repo — must never be picked)
+  // review 2 (id 2): other/repo PR 11 @ sha-bbb (wrong repo — must never be picked)
   insertReview.run(11, "other", "repo", "sha-bbb", "2026-01-02T00:00:00Z");
   insertComment.run(2, "src/other.py", 1, "Addressed but wrong repo", "critical", "addressed");
-  // review 3: myk-org/demo @ sha-ccc (newest for the repo — the one that must win)
+  // review 3 (id 3): myk-org/demo PR 12 @ sha-ccc (newest for the repo — the one that must win)
   insertReview.run(12, "myk-org", "demo", "sha-ccc", "2026-01-03T00:00:00Z");
   insertComment.run(3, "src/api.py", 7, "Unhandled None on the endpoint response", "high", "addressed");
   insertComment.run(3, "src/api.py", 9, "Skipped false positive", "high", "skipped");
+  // review 4 (id 4): myk-org/demo PR 10 again @ sha-aaa (same PR, older review —
+  // PR-narrowed selection must still pick the newest ROW for the PR)
+  insertReview.run(10, "myk-org", "demo", "sha-aaa2", "2026-01-04T00:00:00Z");
+  insertComment.run(4, "src/api.py", 11, "Older PR-10 review finding", "high", "addressed");
   db.close();
   return { dir, dbPath };
 }
 
-function finding(id: number, priority: string | null, body = `finding ${id}`): AddressedFinding {
-  return { id, path: `src/f${id}.py`, line: id, body, priority };
+function finding(
+  id: number,
+  priority: string | null,
+  body = `finding ${id}`,
+  title: string | null = null,
+): AddressedFinding {
+  return { id, path: `src/f${id}.py`, line: id, body, priority, title };
 }
 
 // ── Command matcher ────────────────────────────────────────────────────────
@@ -150,30 +163,104 @@ describe("reviews DB queries", () => {
     const { dbPath } = seedDb();
     const latest = getLatestReview(dbPath, "myk-org", "demo");
     assert.ok(latest);
-    assert.equal(latest.commitSha, "sha-ccc");
+    assert.equal(latest.commitSha, "sha-aaa2");
+    assert.equal(latest.prNumber, 10);
     assert.equal(getLatestReview(dbPath, "nope", "nope"), null);
     assert.equal(getLatestReview(path.join(dbPath, "missing.db"), "myk-org", "demo"), null);
   });
-  it("getAddressedComments returns only addressed rows for the SHA", () => {
+  it("getLatestReview narrows to the addressed PR — an older PR never wins by repo recency", () => {
     const { dbPath } = seedDb();
-    const aaa = getAddressedComments(dbPath, "sha-aaa");
-    assert.equal(aaa.length, 2);
-    assert.deepEqual(aaa.map((f) => f.priority).sort(), ["critical", "high"]);
-    assert.ok(aaa.every((f) => typeof f.body === "string" && f.path));
-    // the newest demo review's SHA: only its own addressed row, not the older
-    // review's (sha-aaa) and not the other repo's (sha-bbb) — wrong-SHA rows excluded
-    const ccc = getAddressedComments(dbPath, "sha-ccc");
-    assert.equal(ccc.length, 1);
-    assert.equal(ccc[0]!.body, "Unhandled None on the endpoint response");
-    assert.deepEqual(getAddressedComments(dbPath, "sha-zzz"), []);
-    assert.deepEqual(getAddressedComments(path.join(dbPath, "missing.db"), "sha-aaa"), []);
+    // PR 12's newest row is review 3 even though review 4 (PR 10) is newer overall
+    const pr12 = getLatestReview(dbPath, "myk-org", "demo", 12);
+    assert.ok(pr12);
+    assert.equal(pr12.id, 3);
+    assert.equal(pr12.commitSha, "sha-ccc");
+    // PR narrowing with no stored review for that PR → null
+    assert.equal(getLatestReview(dbPath, "myk-org", "demo", 999), null);
+  });
+  it("getAddressedComments returns only addressed rows for the review id", () => {
+    const { dbPath } = seedDb();
+    const review1 = getAddressedComments(dbPath, 1);
+    assert.equal(review1.length, 2);
+    assert.deepEqual(review1.map((f) => f.priority).sort(), ["critical", "high"]);
+    assert.ok(review1.every((f) => typeof f.body === "string" && f.path));
+    // review 3: only its own addressed row — not the older reviews of the same
+    // repo and not the other repo's (selection is by review id, not commit SHA)
+    const review3 = getAddressedComments(dbPath, 3);
+    assert.equal(review3.length, 1);
+    assert.equal(review3[0]!.body, "Unhandled None on the endpoint response");
+    assert.deepEqual(getAddressedComments(dbPath, 999), []);
+    assert.deepEqual(getAddressedComments(path.join(dbPath, "missing.db"), 1), []);
+  });
+  it("getAddressedComments falls back to title-less rows on legacy DBs without the title column", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-legacy-"));
+    const dbPath = path.join(dir, "reviews.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec(SCHEMA.replace(",\n    title TEXT DEFAULT NULL", ""));
+    db.prepare("INSERT INTO reviews (pr_number, owner, repo, commit_sha, created_at) VALUES (1, 'o', 'r', 's', 't')").run();
+    db.prepare(
+      "INSERT INTO comments (review_id, source, path, line, body, priority, status) VALUES (1, 'qodo', 'a.py', 1, 'x', 'high', 'addressed')",
+    ).run();
+    db.close();
+    const rows = getAddressedComments(dbPath, 1);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.title, null);
+  });
+});
+
+// ── Distilled-review state + addressed-PR identification ───────────────────
+
+describe("distilled-review state", () => {
+  it("round-trips review ids and survives reload", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-state-"));
+    assert.equal(loadDistilledReviews(dir).size, 0);
+    markReviewDistilled(dir, 7);
+    markReviewDistilled(dir, 9);
+    assert.deepEqual([...loadDistilledReviews(dir)].sort((a, b) => a - b), [7, 9]);
+  });
+  it("loadDistilledReviews tolerates a missing/corrupt state file", () => {
+    assert.equal(loadDistilledReviews("/nonexistent-dir").size, 0);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-state-"));
+    fs.writeFileSync(path.join(dir, "review-learning-state.json"), "not json{");
+    assert.equal(loadDistilledReviews(dir).size, 0);
+  });
+});
+
+describe("prNumberFromCommand", () => {
+  it("reads the PR number from the command's --json file", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "pr-42-reviews.json"),
+      JSON.stringify({ metadata: { owner: "myk-org", repo: "demo", pr_number: 42 } }),
+    );
+    const pr = prNumberFromCommand("myk-pi-tools reviews address --json .pi/tmp/pr-42-reviews.json --set addressed", cwd);
+    assert.equal(pr, 42);
+  });
+  it("falls back to the newest pr-*-reviews.json in the project tmp dir", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, ".pi", "tmp", "pr-1-reviews.json"), JSON.stringify({ metadata: { pr_number: 1 } }));
+    // newest by mtime wins
+    const newer = path.join(cwd, ".pi", "tmp", "pr-2-reviews.json");
+    fs.writeFileSync(newer, JSON.stringify({ metadata: { pr_number: 2 } }));
+    const now = Date.now();
+    fs.utimesSync(newer, new Date(now), new Date(now));
+    fs.utimesSync(path.join(cwd, ".pi", "tmp", "pr-1-reviews.json"), new Date(now - 60000), new Date(now - 60000));
+    assert.equal(prNumberFromCommand("myk-pi-tools reviews address --set addressed", cwd), 2);
+  });
+  it("returns null when nothing is readable", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    assert.equal(prNumberFromCommand("myk-pi-tools reviews address --json .pi/tmp/gone.json --set addressed", cwd), null);
+    assert.equal(prNumberFromCommand("myk-pi-tools reviews address --set addressed", cwd), null);
+    assert.equal(prNumberFromCommand(undefined, cwd), null);
   });
 });
 
 // ── Ranking ────────────────────────────────────────────────────────────────
 
 describe("rankFindings", () => {
-  it("caps at 5, critical/high first, then by id", () => {
+  it("sorts critical/high first, then by id — no cap (distillLessons caps after extraction)", () => {
     const ranked = rankFindings([
       finding(7, "low"),
       finding(2, "high"),
@@ -183,7 +270,7 @@ describe("rankFindings", () => {
       finding(3, "critical"),
       finding(8, null),
     ]);
-    assert.deepEqual(ranked.map((f) => f.id), [1, 3, 2, 4, 9]);
+    assert.deepEqual(ranked.map((f) => f.id), [1, 3, 2, 4, 9, 7, 8]);
   });
 });
 
@@ -227,6 +314,12 @@ describe("lessonFromFinding", () => {
     const lesson = lessonFromFinding(finding(1, "high", "**Missing redaction guard** on the endpoint\nsecond line"));
     assert.equal(lesson, "src/f1.py: Missing redaction guard on the endpoint");
   });
+  it("prefers the stored title column over body extraction", () => {
+    const lesson = lessonFromFinding(
+      finding(1, "high", '<img src="https://badge">\nirrelevant body', "Stored clean title from the column"),
+    );
+    assert.equal(lesson, "src/f1.py: Stored clean title from the column");
+  });
   it("returns null when no title can be extracted", () => {
     assert.equal(lessonFromFinding(finding(1, "high", '<img src="https://x">')), null);
   });
@@ -239,26 +332,35 @@ describe("distillLessons", () => {
       finding(1, "critical", "Critical issue on the endpoint"),
     ]);
     assert.deepEqual(lessons, [
-      { findingId: 1, text: "src/f1.py: Critical issue on the endpoint" },
-      { findingId: 2, text: "src/f2.py: Medium issue on the endpoint" },
+      { findingIds: [1], text: "src/f1.py: Critical issue on the endpoint" },
+      { findingIds: [2], text: "src/f2.py: Medium issue on the endpoint" },
     ]);
   });
-  it("merges duplicate findings with identical path+title", () => {
+  it("merges duplicate findings with identical path+title, keeping every finding id", () => {
     const a = finding(1, "critical", "Same title on the endpoint");
     const b = { ...finding(2, "high", "Same title on the endpoint"), path: "src/f1.py" };
-    assert.deepEqual(distillLessons([a, b]), [{ findingId: 1, text: "src/f1.py: Same title on the endpoint" }]);
+    assert.deepEqual(distillLessons([a, b]), [{ findingIds: [1, 2], text: "src/f1.py: Same title on the endpoint" }]);
   });
   it("keeps same title under different paths separate", () => {
     const a = finding(1, "high", "Same title on the endpoint");
     const b = { ...finding(2, "high", "Same title on the endpoint"), path: "src/other.py" };
     assert.equal(distillLessons([a, b]).length, 2);
   });
-  it("skips findings whose body yields no title", () => {
+  it("skips findings whose body yields no title — eligible findings below them still distill", () => {
     const lessons = distillLessons([
       finding(1, "high", '<img src="https://badge">'),
       finding(2, "high", "Real issue on the endpoint"),
     ]);
-    assert.deepEqual(lessons, [{ findingId: 2, text: "src/f2.py: Real issue on the endpoint" }]);
+    assert.deepEqual(lessons, [{ findingIds: [2], text: "src/f2.py: Real issue on the endpoint" }]);
+  });
+  it("caps at 5 lessons AFTER extraction — unusable bodies never consume slots", () => {
+    const findings = [
+      ...Array.from({ length: 6 }, (_, i) => finding(i + 1, "critical", '<img src="https://badge">')), // unusable
+      ...Array.from({ length: 6 }, (_, i) => finding(i + 10, "high", `Eligible issue number ${i} on the endpoint`)),
+    ];
+    const lessons = distillLessons(findings);
+    assert.equal(lessons.length, 5);
+    assert.ok(lessons.every((l) => l.text.includes("Eligible issue")), "cap filled by eligible findings only");
   });
   it("returns [] for empty findings", () => {
     assert.deepEqual(distillLessons([]), []);
@@ -306,23 +408,24 @@ afterEach(() => {
 });
 
 describe("writeLessonsToMemory", () => {
-  it("reinforces an existing entry with matching derivedFrom instead of adding", async () => {
+  it("skips an existing entry with matching derivedFrom — no evidence inflation on re-fires", async () => {
     const cwd = makeCwd();
     const provenance = findingProvenance(101, REPO);
     seedLessonEntry(cwd, "existing lesson text", provenance);
-    const result = await writeLessonsToMemory(cwd, [{ findingId: 101, text: "freshly distilled wording" }], REPO);
-    assert.equal(result.reinforced, 1);
+    const result = await writeLessonsToMemory(cwd, [{ findingIds: [101], text: "freshly distilled wording" }], REPO);
+    assert.equal(result.skipped, 1);
     assert.equal(result.added, 0);
-    // no new topic line, evidence bumped
+    assert.equal(result.reinforced, 0);
+    // no new topic line, evidence NOT bumped (re-fire is not a recurrence)
     const entries = readAllTopicEntries(cwd).filter((e) => e.category === "lesson");
     assert.equal(entries.length, 1);
     assert.equal(entries[0]!.text, "existing lesson text");
     const hash = entryHash("- [lesson] existing lesson text");
-    assert.equal(loadScores(cwd).entries[hash]!.evidenceCount, 2);
+    assert.equal(loadScores(cwd).entries[hash]!.evidenceCount, 1);
   });
   it("adds a new lesson with provenance and informs", async () => {
     const cwd = makeCwd();
-    const result = await writeLessonsToMemory(cwd, [{ findingId: 202, text: "new distilled lesson" }], REPO);
+    const result = await writeLessonsToMemory(cwd, [{ findingIds: [202], text: "new distilled lesson" }], REPO);
     assert.equal(result.added, 1);
     const entries = readAllTopicEntries(cwd).filter((e) => e.category === "lesson");
     assert.equal(entries.length, 1);
@@ -333,11 +436,23 @@ describe("writeLessonsToMemory", () => {
     assert.equal(scored.derivedFrom, findingProvenance(202, REPO));
     assert.deepEqual(scored.informs, ["review-learning"]);
   });
+  it("a NEW finding with the same lesson text is a real recurrence — reinforced via duplicate detection", async () => {
+    const cwd = makeCwd();
+    const first = await writeLessonsToMemory(cwd, [{ findingIds: [301], text: "same issue keeps recurring" }], REPO);
+    assert.equal(first.added, 1);
+    // finding 302 = the same issue re-raised in a NEW review (different id, same text)
+    const second = await writeLessonsToMemory(cwd, [{ findingIds: [302], text: "same issue keeps recurring" }], REPO);
+    assert.equal(second.reinforced, 1);
+    assert.equal(second.added, 0);
+    assert.equal(readAllTopicEntries(cwd).filter((e) => e.category === "lesson").length, 1, "still one topic line");
+    const hash = entryHash("- [lesson] same issue keeps recurring");
+    assert.equal(loadScores(cwd).entries[hash]!.evidenceCount, 2, "recurrence bumps evidence");
+  });
   it("caps writes at 5 per fire", async () => {
     const cwd = makeCwd();
-    const lessons = [1, 2, 3, 4, 5, 6, 7].map((id) => ({ findingId: id, text: `lesson ${id}` }));
+    const lessons = [1, 2, 3, 4, 5, 6, 7].map((id) => ({ findingIds: [id], text: `lesson ${id}` }));
     const result = await writeLessonsToMemory(cwd, lessons, REPO);
-    assert.equal(result.added + result.reinforced + result.rejected, 5);
+    assert.equal(result.added + result.reinforced + result.rejected + result.skipped, 5);
     assert.equal(readAllTopicEntries(cwd).filter((e) => e.category === "lesson").length, 5);
   });
   it("findMemoryLineByDerivedFrom returns null when absent", () => {
@@ -383,6 +498,8 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<bool
   return predicate();
 }
 
+const lessonsIn = (cwd: string) => readAllTopicEntries(cwd).filter((e) => e.category === "lesson");
+
 describe("review-learning hook", () => {
   it("distills on a non-error bash tool_result for reviews address", async () => {
     const cwd = cwdWithDb();
@@ -393,9 +510,50 @@ describe("review-learning hook", () => {
       { toolName: "bash", input: { command: "uv run --group dev myk-pi-tools reviews address --json x --set addressed" }, isError: false },
       { cwd },
     );
-    const lessonsIn = () => readAllTopicEntries(cwd).filter((e) => e.category === "lesson");
-    assert.ok(await waitFor(() => lessonsIn().length > 0), "lesson written");
-    assert.deepEqual(lessonsIn().map((e) => e.text), ["src/api.py: Unhandled None on the endpoint response"]);
+    assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "lesson written");
+    assert.deepEqual(lessonsIn(cwd).map((e) => e.text), ["src/api.py: Older PR-10 review finding"]);
+  });
+  it("distills the PR named by the command's --json file, not the newest-for-repo", async () => {
+    const cwd = cwdWithDb();
+    // command addresses PR 12 — its newest review (id 3) must win over review 4
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "pr-12-reviews.json"),
+      JSON.stringify({ metadata: { owner: "myk-org", repo: "demo", pr_number: 12 } }),
+    );
+    const { pi, handlers } = mockPi();
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
+    const handler = handlers.get("tool_result")![0]!;
+    handler(
+      {
+        toolName: "bash",
+        input: { command: "myk-pi-tools reviews address --json .pi/tmp/pr-12-reviews.json --set addressed" },
+        isError: false,
+      },
+      { cwd },
+    );
+    assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "lesson written");
+    assert.deepEqual(lessonsIn(cwd).map((e) => e.text), ["src/api.py: Unhandled None on the endpoint response"]);
+  });
+  it("re-firing for the same review is a no-op — no duplicate lessons, no evidence inflation", async () => {
+    const cwd = cwdWithDb();
+    const { pi, handlers } = mockPi();
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
+    const handler = handlers.get("tool_result")![0]!;
+    handler(
+      { toolName: "bash", input: { command: "myk-pi-tools reviews address --set addressed" }, isError: false },
+      { cwd },
+    );
+    assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "first fire writes");
+    const hash = entryHash("- [lesson] src/api.py: Older PR-10 review finding");
+    const evidenceAfterFirst = loadScores(cwd).entries[hash]!.evidenceCount;
+    handler(
+      { toolName: "bash", input: { command: "myk-pi-tools reviews address --set addressed" }, isError: false },
+      { cwd },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(lessonsIn(cwd).length, 1, "no duplicates");
+    assert.equal(loadScores(cwd).entries[hash]!.evidenceCount, evidenceAfterFirst, "no evidence inflation");
   });
   it("no-ops when the setting is disabled", async () => {
     const cwd = cwdWithDb();
@@ -409,9 +567,9 @@ describe("review-learning hook", () => {
     const cwd = cwdWithDb();
     const { distill } = createReviewLearning({ repoInfo: () => REPO });
     await distill(cwd);
-    const lessons = readAllTopicEntries(cwd).filter((e) => e.category === "lesson");
+    const lessons = lessonsIn(cwd);
     assert.equal(lessons.length, 1);
-    assert.equal(lessons[0]!.text, "src/api.py: Unhandled None on the endpoint response");
+    assert.equal(lessons[0]!.text, "src/api.py: Older PR-10 review finding");
   });
   it("ignores error results, other tools, and non-address commands", async () => {
     const cwd = cwdWithDb();

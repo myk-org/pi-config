@@ -15,6 +15,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   normalizeRepoRelative,
+  normalizeRepoRelativeFromRoot,
   extractPathsFromText,
   branchDiffPaths,
   firstSentence,
@@ -24,6 +25,7 @@ import {
   createReviewLearning,
 } from "../../../extensions/orchestrator/review-learning.js";
 import { entryHash, loadScores, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
+import { getProjectDataDir } from "../../../extensions/orchestrator/utils.js";
 
 // ── Scratch reviews DB (schema mirrors myk_pi_tools/reviews/store.py) ──────
 
@@ -60,6 +62,7 @@ CREATE TABLE comments (
 `;
 
 const REPO = { owner: "myk-org", repo: "demo" };
+const repoInfo = () => REPO;
 
 function makeCwd(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-inject-"));
@@ -70,6 +73,8 @@ interface CommentSeed {
   body: string;
   status?: string;
   priority?: string;
+  owner?: string;
+  repo?: string;
 }
 
 /** cwd with .pi/data/reviews.db seeded with one review per comment batch. */
@@ -86,7 +91,10 @@ function cwdWithDb(batches: CommentSeed[][]): string {
     "INSERT INTO comments (review_id, source, path, line, body, priority, status) VALUES (?, 'qodo', ?, 1, ?, ?, ?)",
   );
   batches.forEach((batch, index) => {
-    const result = insertReview.run(100 + index, REPO.owner, REPO.repo, `sha-${index}`, "2026-01-01T00:00:00Z") as any;
+    const first = batch[0] ?? {};
+    const result = insertReview.run(
+      100 + index, first.owner ?? REPO.owner, first.repo ?? REPO.repo, `sha-${index}`, "2026-01-01T00:00:00Z",
+    ) as any;
     const reviewId = Number(result.lastInsertRowid);
     for (const comment of batch) {
       insertComment.run(reviewId, comment.path, comment.body, comment.priority ?? "high", comment.status ?? "addressed");
@@ -97,13 +105,13 @@ function cwdWithDb(batches: CommentSeed[][]): string {
 }
 
 /** Seed a memory lesson entry (optionally with derivedFrom provenance). */
-function seedLessonEntry(cwd: string, text: string, derivedFrom?: string): void {
+function seedLessonEntry(cwd: string, text: string, derivedFrom?: string, category = "lesson"): void {
   const topicsDir = path.join(cwd, ".pi", "memory", "topics");
   fs.mkdirSync(topicsDir, { recursive: true });
-  fs.appendFileSync(path.join(topicsDir, "lessons.md"), `- [lesson] ${text}\n`);
-  const hash = entryHash(`- [lesson] ${text}`);
+  fs.appendFileSync(path.join(topicsDir, category === "lesson" ? "lessons.md" : "preferences.md"), `- [${category}] ${text}\n`);
+  const hash = entryHash(`- [${category}] ${text}`);
   const entry: ScoredEntry = {
-    class: "lesson",
+    class: category,
     score: 1,
     evidenceCount: 1,
     cue: "explicit",
@@ -180,18 +188,45 @@ describe("normalizeRepoRelative", () => {
   });
 });
 
+describe("normalizeRepoRelativeFromRoot", () => {
+  it("resolves repo-relative diff paths against the worktree root — not a nested session cwd", () => {
+    const repo = gitRepoWithBranch();
+    // nested session: cwd inside a subdirectory that also contains src/
+    const nested = path.join(repo, "packages", "inner");
+    fs.mkdirSync(path.join(nested, "src"), { recursive: true });
+    fs.writeFileSync(path.join(nested, "src", "local.py"), "y = 2\n");
+    // a repo-relative diff entry stays repo-relative from a nested session
+    assert.equal(normalizeRepoRelativeFromRoot(nested, "src/api.py"), "src/api.py");
+    // while a cwd-relative tool path rebases under the session cwd (existing semantics)
+    assert.equal(normalizeRepoRelative(nested, "src/local.py"), "packages/inner/src/local.py");
+  });
+  it("handles absolute paths and escapes like normalizeRepoRelative", () => {
+    const repo = gitRepoWithBranch();
+    assert.equal(normalizeRepoRelativeFromRoot(repo, path.join(repo, "src", "api.py")), "src/api.py");
+    assert.equal(normalizeRepoRelativeFromRoot(repo, "../outside.py"), null);
+    assert.equal(normalizeRepoRelativeFromRoot(repo, ""), null);
+  });
+});
+
 describe("extractPathsFromText", () => {
-  it("keeps existing files and files under existing dirs, drops noise", () => {
+  it("keeps existing files and files under existing dirs", () => {
     const cwd = makeCwd();
     fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
     fs.mkdirSync(path.join(cwd, "docs"), { recursive: true });
     fs.writeFileSync(path.join(cwd, "src", "api.py"), "x");
-    const paths = extractPathsFromText(
-      "Fix src/api.py, add docs/new-file.md, ignore e.g. this and v1.2.0 versions and missing/nope.ts",
-      cwd,
-    );
+    const paths = extractPathsFromText("Fix src/api.py and add docs/new-file.md", cwd);
     // docs/new-file.md: parent docs/ exists and the token has a slash → kept
     assert.deepEqual(paths, ["src/api.py", "docs/new-file.md"]);
+  });
+  it("drops prose noise, versions, and missing paths", () => {
+    const cwd = makeCwd();
+    fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, "src", "api.py"), "x");
+    const paths = extractPathsFromText(
+      "ignore e.g. this and v1.2.0 versions and missing/nope.ts",
+      cwd,
+    );
+    assert.deepEqual(paths, []);
   });
   it("rejects URL fragments and dedupes", () => {
     const cwd = makeCwd();
@@ -268,13 +303,13 @@ describe("firstSentence", () => {
 });
 
 describe("relevantFindings", () => {
-  it("counts addressed comments per path across all SHAs and ranks by recurrence", () => {
+  it("counts a recurring issue (same path + title) across reviews and ranks by recurrence", () => {
     const cwd = cwdWithDb([
       [{ path: "src/api.py", body: "Missing strip_sensitive_from_response on the endpoint" }],
-      [{ path: "src/api.py", body: "Same redaction gap again" }],
-      [{ path: "src/util.py", body: "Only once here" }],
+      [{ path: "src/api.py", body: "Missing strip_sensitive_from_response on the endpoint" }],
+      [{ path: "src/util.py", body: "Only once here on the util module" }],
     ]);
-    const block = relevantFindings(cwd, ["src/util.py", "src/api.py"]);
+    const block = relevantFindings(cwd, ["src/util.py", "src/api.py"], repoInfo);
     assert.ok(block, "block returned");
     assert.match(block!, /<review-lessons>/);
     assert.match(block!, /src\/api\.py \(2×\): Missing strip_sensitive_from_response/);
@@ -282,87 +317,121 @@ describe("relevantFindings", () => {
     assert.ok(block!.indexOf("src/api.py") < block!.indexOf("src/util.py"), "higher count first");
     assert.match(block!, /<\/review-lessons>/);
   });
-  it("excludes skipped comments and non-matching paths", () => {
+  it("distinct issues on one file are counted and rendered separately — never as recurrences of each other", () => {
     const cwd = cwdWithDb([
       [
-        { path: "src/api.py", body: "addressed one", status: "addressed" },
-        { path: "src/api.py", body: "skipped ack noise", status: "skipped" },
-        { path: "other.py", body: "different file entirely" },
+        { path: "src/api.py", body: "Missing strip_sensitive_from_response on the endpoint" },
+        { path: "src/api.py", body: "Race condition on the shared client instance" },
       ],
     ]);
-    const block = relevantFindings(cwd, ["src/api.py"]);
+    const findings = collectPathFindings(cwd, ["src/api.py"], repoInfo);
+    assert.equal(findings.length, 2, "two distinct issues");
+    assert.ok(findings.every((f) => f.count === 1), "each issue counted once");
+    const block = relevantFindings(cwd, ["src/api.py"], repoInfo);
+    assert.match(block!, /src\/api\.py \(1×\): Missing strip_sensitive_from_response/);
+    assert.match(block!, /src\/api\.py \(1×\): Race condition/);
+  });
+  it("excludes skipped comments, other repos, and non-matching paths", () => {
+    const cwd = cwdWithDb([
+      [
+        { path: "src/api.py", body: "addressed one on the endpoint", status: "addressed" },
+        { path: "src/api.py", body: "skipped ack noise entirely", status: "skipped" },
+        { path: "other.py", body: "different file entirely here" },
+        { path: "src/other.py", body: "another repo finding entirely", owner: "other", repo: "repo" },
+      ],
+    ]);
+    const block = relevantFindings(cwd, ["src/api.py"], repoInfo);
     assert.ok(block);
     assert.match(block!, /src\/api\.py \(1×\)/);
     assert.doesNotMatch(block!, /other\.py/);
-    assert.equal(relevantFindings(cwd, ["unrelated.py"]), undefined);
+    assert.equal(relevantFindings(cwd, ["unrelated.py"], repoInfo), undefined);
   });
   it("matches exact and dir-prefix paths both ways", () => {
     const cwd = cwdWithDb([
       [
-        { path: "src/api/foo.py", body: "finding under api dir" },
-        { path: "src/api/bar.py", body: "another under api dir" },
+        { path: "src/api/foo.py", body: "finding under api dir one" },
+        { path: "src/api/bar.py", body: "another under api dir two" },
       ],
     ]);
-    // input dir matches comment files
-    const byDir = collectPathFindings(cwd, ["src/api"]);
-    assert.deepEqual(byDir.map((f) => f.path), ["src/api"]);
-    assert.equal(byDir[0]!.count, 2);
+    // input dir matches comment files — one issue per comment file
+    const byDir = collectPathFindings(cwd, ["src/api"], repoInfo);
+    assert.deepEqual(byDir.map((f) => f.path).sort(), ["src/api/bar.py", "src/api/foo.py"]);
+    assert.ok(byDir.every((f) => f.count === 1));
     // input file matches its own comment exactly
-    const byFile = collectPathFindings(cwd, ["src/api/foo.py"]);
+    const byFile = collectPathFindings(cwd, ["src/api/foo.py"], repoInfo);
     assert.equal(byFile[0]!.count, 1);
+    assert.equal(byFile[0]!.path, "src/api/foo.py");
     // input file matches a comment recorded on its parent dir
-    const cwd2 = cwdWithDb([[{ path: "src/api", body: "recorded on the dir" }]]);
-    assert.equal(collectPathFindings(cwd2, ["src/api/foo.py"])[0]!.count, 1);
+    const cwd2 = cwdWithDb([[{ path: "src/api", body: "recorded on the dir itself" }]]);
+    assert.equal(collectPathFindings(cwd2, ["src/api/foo.py"], repoInfo)[0]!.count, 1);
   });
-  it("returns undefined when the DB is missing or paths are empty", () => {
-    assert.equal(relevantFindings(makeCwd(), ["src/api.py"]), undefined);
+  it("paths with LIKE wildcards (_ %) match exactly, not as patterns", () => {
+    const cwd = cwdWithDb([[{ path: "src/my_file.py", body: "underscore path finding body" }]]);
+    // a sibling whose name differs only in the wildcard position must NOT match
+    const cwd2 = cwdWithDb([[{ path: "src/myXfile.py", body: "wildcard sibling finding" }]]);
+    void cwd2;
+    const findings = collectPathFindings(cwd, ["src/my_file.py"], repoInfo);
+    assert.deepEqual(findings.map((f) => f.path), ["src/my_file.py"]);
+  });
+  it("returns undefined when the DB is missing, repo resolution fails, or paths are empty", () => {
+    assert.equal(relevantFindings(makeCwd(), ["src/api.py"], repoInfo), undefined);
+    // repo resolution failure (no git remote) → no findings, fail-soft
     const cwd = cwdWithDb([[{ path: "src/api.py", body: "x" }]]);
-    assert.equal(relevantFindings(cwd, []), undefined);
-    assert.equal(relevantFindings(cwd, ["../escape.py"]), undefined);
+    assert.equal(relevantFindings(cwd, ["src/api.py"], () => null), undefined);
+    assert.equal(relevantFindings(cwd, [], repoInfo), undefined);
+    assert.equal(relevantFindings(cwd, ["../escape.py"], repoInfo), undefined);
   });
-  it("caps the block at 8 lines and 600 chars", () => {
+  it("caps the block at 8 lines", () => {
     const batch = Array.from({ length: 12 }, (_, i) => ({
       path: `src/m${i}.py`,
       body: `finding ${i}`,
     }));
     const cwd = cwdWithDb([batch]);
-    const block = relevantFindings(cwd, batch.map((b) => b.path));
+    const block = relevantFindings(cwd, batch.map((b) => b.path), repoInfo);
     assert.ok(block);
     const lines = block!.split("\n").filter((l) => l.startsWith("- "));
     assert.equal(lines.length, 8, "line cap enforced with 12 candidate paths");
-    assert.ok(block!.length <= 600, `block is ${block!.length} chars`);
   });
-  it("truncates the block to 600 chars when lines are long", () => {
+  it("caps the block at 600 chars when lines are long", () => {
     const batch = Array.from({ length: 12 }, (_, i) => ({
       path: `src/module-number-${i}.py`,
       body: `a finding body for module ${i} with plenty of words to make the line long`,
     }));
     const cwd = cwdWithDb([batch]);
-    const block = relevantFindings(cwd, batch.map((b) => b.path));
+    const block = relevantFindings(cwd, batch.map((b) => b.path), repoInfo);
     assert.ok(block);
     assert.ok(block!.length <= 600, `block is ${block!.length} chars`);
     assert.ok(block!.split("\n").filter((l) => l.startsWith("- ")).length < 12, "char cap trims lines");
   });
-  it("uses lesson text over comment gist when memory has a matching lesson", () => {
+  it("uses lesson text over comment gist when memory has a provenance-matched lesson", () => {
     const cwd = cwdWithDb([[{ path: "src/api.py", body: "raw comment gist text" }]]);
     seedLessonEntry(cwd, "always redact src/api.py responses", `reviews.db:${commentId(cwd, "src/api.py")};${REPO.owner}/${REPO.repo}`);
-    const findings = collectPathFindings(cwd, ["src/api.py"]);
+    const findings = collectPathFindings(cwd, ["src/api.py"], repoInfo);
     assert.equal(findings[0]!.text, "always redact src/api.py responses");
     assert.equal(findings[0]!.count, 1, "count still comes from the DB");
   });
   it("matches lessons by derivedFrom comment path even when the path is not in the text", () => {
     const cwd = cwdWithDb([[{ path: "src/api.py", body: "gist" }]]);
     seedLessonEntry(cwd, "never trust endpoint payloads", `reviews.db:${commentId(cwd, "src/api.py")};${REPO.owner}/${REPO.repo}`);
-    const findings = collectPathFindings(cwd, ["src/api.py"]);
+    const findings = collectPathFindings(cwd, ["src/api.py"], repoInfo);
     assert.equal(findings[0]!.text, "never trust endpoint payloads");
   });
-  it("matches lessons by plain text scan without provenance", () => {
+  it("ignores lessons without review provenance — a bare text mention is not a review finding", () => {
     const cwd = cwdWithDb([]); // no DB findings at all
     seedLessonEntry(cwd, "run migrations after touching src/schema.sql");
-    const findings = collectPathFindings(cwd, ["src/schema.sql"]);
+    assert.deepEqual(collectPathFindings(cwd, ["src/schema.sql"], repoInfo), []);
+  });
+  it("ignores non-lesson entries and lessons whose provenance names another repo", () => {
+    const cwd = cwdWithDb([[{ path: "src/api.py", body: "gist for the api endpoint" }]]);
+    const id = commentId(cwd, "src/api.py");
+    // a preference that mentions the path with matching provenance — not a lesson
+    seedLessonEntry(cwd, "prefer tabs in src/api.py", `reviews.db:${id};${REPO.owner}/${REPO.repo}`, "preference");
+    // a lesson whose provenance belongs to another repo
+    seedLessonEntry(cwd, "other repo lesson entirely", `reviews.db:${id};other/repo`);
+    const findings = collectPathFindings(cwd, ["src/api.py"], repoInfo);
     assert.equal(findings.length, 1);
-    assert.equal(findings[0]!.text, "run migrations after touching src/schema.sql");
-    assert.equal(findings[0]!.count, 1, "no DB occurrences → count 1");
+    assert.notEqual(findings[0]!.text, "prefer tabs in src/api.py");
+    assert.notEqual(findings[0]!.text, "other repo lesson entirely");
   });
   it("formatFindingsBlock returns null for empty findings", () => {
     assert.equal(formatFindingsBlock([]), null);
@@ -387,7 +456,7 @@ function mockPi() {
 
 function registerHandlers(cwd: string, diffPaths: () => string[] = () => []) {
   const { pi, handlers } = mockPi();
-  createReviewLearning({ repoInfo: () => REPO, diffPaths }).register(pi as any);
+  createReviewLearning({ repoInfo, diffPaths }).register(pi as any);
   assert.equal(handlers.get("tool_result")!.length, 2, "bash watcher + write hint");
   return {
     handlers,
@@ -445,6 +514,24 @@ describe("before_agent_start injection", () => {
     );
     assert.equal(result, undefined);
     assert.match(sections.review_lessons!, /src\/api\.py/);
+  });
+  it("resolves repo-relative diff paths against the worktree root from a nested session cwd", () => {
+    const repo = gitRepoWithBranch();
+    const nested = path.join(repo, "packages", "inner");
+    fs.mkdirSync(nested, { recursive: true });
+    // DB finding recorded at the repo-relative path the diff reports — copied
+    // to wherever getProjectDataDir resolves (the shared main-checkout root)
+    const dbCwd = cwdWithDb([[{ path: "src/api.py", body: "Missing redaction on the endpoint" }]]);
+    const dataDir = getProjectDataDir(nested);
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.copyFileSync(path.join(dbCwd, ".pi", "data", "reviews.db"), path.join(dataDir, "reviews.db"));
+    const sections: Record<string, string> = {};
+    const { beforeAgentStart } = registerHandlers(nested, () => ["src/api.py"]);
+    beforeAgentStart(
+      { messageType: "user", prompt: "just do the task", systemPrompt: "BASE", systemPromptOptions: { sections } },
+      { cwd: nested },
+    );
+    assert.match(sections.review_lessons!, /src\/api\.py \(1×\)/, "diff path matched the DB's repo-relative path");
   });
   it("returns undefined with zero added tokens when nothing is relevant", () => {
     const cwd = cwdWithDb([[{ path: "src/api.py", body: "finding" }]]);
@@ -594,6 +681,42 @@ describe("subagent dispatch rewrite", () => {
     assert.equal(input.agent, "frontend");
     assert.equal(input.cwd, cwd);
     assert.equal(input.model, "provider/m");
+  });
+  it("rewrites every tasks[] entry (parallel mode), each with its own cwd", () => {
+    const mainCwd = cwdWithDb([]);
+    const subA = cwdWithDb([[{ path: "src/api.py", body: "api finding" }]]);
+    fs.mkdirSync(path.join(subA, "src"), { recursive: true });
+    fs.writeFileSync(path.join(subA, "src", "api.py"), "x");
+    const subB = cwdWithDb([[{ path: "src/other.py", body: "other finding" }]]);
+    fs.mkdirSync(path.join(subB, "src"), { recursive: true });
+    fs.writeFileSync(path.join(subB, "src", "other.py"), "x");
+    const { subagentRewrite } = registerHandlers(mainCwd);
+    const input = {
+      tasks: [
+        { agent: "a", task: "Fix src/api.py", cwd: subA },
+        { agent: "b", task: "Fix src/other.py", cwd: subB },
+        { agent: "c", task: "no paths here" },
+      ],
+    };
+    subagentRewrite({ toolName: "subagent", input }, { cwd: mainCwd });
+    assert.match(input.tasks[0].task, /<review-lessons>/);
+    assert.match(input.tasks[0].task, /src\/api\.py/);
+    assert.match(input.tasks[1].task, /<review-lessons>/);
+    assert.match(input.tasks[1].task, /src\/other\.py/);
+    assert.equal(input.tasks[2].task, "no paths here", "irrelevant entries untouched");
+  });
+  it("rewrites every chain[] entry (sequential mode) with per-step cwd resolution", () => {
+    const mainCwd = cwdWithDb([]);
+    const sub = cwdWithDb([[{ path: "src/api.py", body: "api finding" }]]);
+    fs.mkdirSync(path.join(sub, "src"), { recursive: true });
+    fs.writeFileSync(path.join(sub, "src", "api.py"), "x");
+    const { subagentRewrite } = registerHandlers(sub);
+    const input = {
+      cwd: sub,
+      chain: [{ agent: "a", task: "First fix src/api.py" }, { agent: "b", task: "then refactor src/api.py again" }],
+    };
+    subagentRewrite({ toolName: "subagent", input }, { cwd: mainCwd });
+    for (const step of input.chain) assert.match(step.task, /<review-lessons>/);
   });
   it("uses the subagent cwd for the query when provided", () => {
     const mainCwd = cwdWithDb([]); // nothing relevant

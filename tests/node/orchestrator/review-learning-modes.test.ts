@@ -208,7 +208,7 @@ describe("review-learning review-handler modes", () => {
     assert.equal(lessonsIn(cwd).length, 0);
   });
 
-  it("re-firing the same address command reinforces instead of duplicating", async () => {
+  it("re-firing the same address command is a no-op — no duplicates, no evidence inflation", async () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
     createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
@@ -219,14 +219,48 @@ describe("review-learning review-handler modes", () => {
       { cwd },
     );
     assert.ok(await waitFor(() => lessonsIn(cwd).length === 2), "first fire writes");
-    // re-fire (multi-group / Phase 9 replay of the same findings) must dedupe
+    const hash = () => loadScores(cwd).entries[entryHash("- [lesson] " + 'src/api.py: Missing strip_sensitive_from_response on the endpoint')]!;
+    const evidenceAfterFirst = hash().evidenceCount;
+    // re-fire (multi-group / Phase 9 replay of the same findings) — the review
+    // is already distilled, so nothing changes: no new topic lines, no bump
     handler(
       { toolName: "bash", input: { command: AUTO_ADDRESS("addressed") }, isError: false },
       { cwd },
     );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(lessonsIn(cwd).length, 2, "no duplicates");
+    assert.equal(hash().evidenceCount, evidenceAfterFirst, "no evidence inflation on re-fire");
+  });
+
+  it("a NEW review re-raising the same issue is a real recurrence — reinforced, not duplicated", async () => {
+    const cwd = cwdWithDb();
+    const { pi, handlers } = mockPi();
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
+    const handler = handlers.get("tool_result")![0]!;
+    handler(
+      { toolName: "bash", input: { command: INTERACTIVE_ADDRESS("addressed") }, isError: false },
+      { cwd },
+    );
+    assert.ok(await waitFor(() => lessonsIn(cwd).length === 2), "first fire writes");
+    // a later cycle stores a NEW review (new commit SHA) re-raising the same issues
+    const db = new DatabaseSync(path.join(cwd, ".pi", "data", "reviews.db"));
+    const result = db
+      .prepare("INSERT INTO reviews (pr_number, owner, repo, commit_sha, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(325, REPO.owner, REPO.repo, "sha-mode-2", "2026-01-02T00:00:00Z") as any;
+    const insert = db.prepare(
+      "INSERT INTO comments (review_id, source, path, line, body, priority, status) VALUES (?, 'qodo', ?, ?, ?, ?, ?)",
+    );
+    insert.run(Number(result.lastInsertRowid), "src/api.py", 10, "Missing strip_sensitive_from_response on the endpoint", "critical", "addressed");
+    insert.run(Number(result.lastInsertRowid), "src/api.py", 42, "Unhandled None on the list endpoint", "high", "addressed");
+    db.close();
+    handler(
+      { toolName: "bash", input: { command: AUTO_ADDRESS("addressed") }, isError: false },
+      { cwd },
+    );
+    // same issue, new finding ids → duplicate text detection reinforces
     const evidenceBumped = () =>
       loadScores(cwd).entries[entryHash("- [lesson] " + 'src/api.py: Missing strip_sensitive_from_response on the endpoint')]!.evidenceCount >= 2;
-    assert.ok(await waitFor(evidenceBumped), "re-fire reinforces evidence");
+    assert.ok(await waitFor(evidenceBumped), "real recurrence bumps evidence");
     // still exactly two topic lines — no duplicates
     assert.deepEqual(
       lessonsIn(cwd).map((e) => e.text).sort(),

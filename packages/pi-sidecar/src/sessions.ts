@@ -685,14 +685,6 @@ export function resolveInternalAgentDir(explicit?: string): string {
 }
 
 /**
- * Builds the CreateAgentSessionRuntimeFactory for the internal registrar
- * runtime (see SessionStore.ensureInternalRuntime()). Extracted to a
- * standalone module-level function — rather than an inline closure nested
- * inside the class method's async IIFE — so the factory's own logic (wiring
- * settings, extensions, and diagnostics) reads independently of the
- * lazy-init/idempotency plumbing around it.
- */
-/**
  * Ambient-marker value on `apiKey`; string apiKeys cannot carry it (undefined).
  *
  * Marker mechanism (issue #919): an ambient-auth provider (ADC, CLI login,
@@ -711,6 +703,14 @@ function ambientMarkerValue(apiKey: unknown): unknown { // pragma: allowlist sec
     : undefined;
 }
 
+/**
+ * Builds the CreateAgentSessionRuntimeFactory for the internal registrar
+ * runtime (see SessionStore.ensureInternalRuntime()). Extracted to a
+ * standalone module-level function — rather than an inline closure nested
+ * inside the class method's async IIFE — so the factory's own logic (wiring
+ * settings, extensions, and diagnostics) reads independently of the
+ * lazy-init/idempotency plumbing around it.
+ */
 export function snapshotLegacyAmbientProviders(
   registrations: LoadExtensionsResult["runtime"]["pendingNativeProviderRegistrations"],
   legacyAmbientProviders: WeakSet<Provider>,
