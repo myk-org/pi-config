@@ -5411,19 +5411,19 @@ sidecar after changing them):
 | `settings.json` | Seeded into the in-memory settings store for the internal runtime and every session (e.g. `defaultProvider`) |
 
 A `models.json` `apiKey` may reference an environment variable (e.g.
-`"$ENMAAS_API_KEY"`) — the variable must exist in the **sidecar process's**
+`"$ACME_API_KEY"`) — the variable must exist in the **sidecar process's**
 environment (pass it through in Docker with `-e` / `Env:`). Worked example —
-an EnMaaS OpenAI-compatible gateway at `/etc/pi-sidecar/agent/models.json`:
+an Acme OpenAI-compatible gateway at `/etc/pi-sidecar/agent/models.json`:
 
 ```json
     {
       "providers": {
-        "enmaas": {
-          "baseUrl": "https://enmaas.example.com/v1",
+        "acme": {
+          "baseUrl": "https://acme.example.com/v1",
           "api": "openai-completions",
-          "apiKey": "$ENMAAS_API_KEY",
+          "apiKey": "$ACME_API_KEY",
           "models": [
-            { "id": "enmaas/gpt-4o", "name": "GPT-4o via EnMaaS" }
+            { "id": "acme/gpt-4o", "name": "GPT-4o via Acme" }
           ]
         }
       }
@@ -5432,10 +5432,10 @@ an EnMaaS OpenAI-compatible gateway at `/etc/pi-sidecar/agent/models.json`:
 
 ```bash
     export PI_SIDECAR_AGENT_DIR=/etc/pi-sidecar/agent
-    export ENMAAS_API_KEY=<your-key>
+    export ACME_API_KEY=<your-key>
     npx pi-sidecar
-    # GET /models now lists enmaas/gpt-4o (provider "enmaas");
-    # POST /sessions accepts {"provider": "enmaas", "model": "enmaas/gpt-4o", ...}
+    # GET /models now lists acme/gpt-4o (provider "acme");
+    # POST /sessions accepts {"provider": "acme", "model": "acme/gpt-4o", ...}
 ```
 
 Notes:
@@ -5461,13 +5461,13 @@ dir's `models.json` (read once at startup — restart the sidecar to apply):
 ```json
     {
       "providers": {
-        "enmaas": {
-          "baseUrl": "https://enmaas.example.com/v1",
+        "acme": {
+          "baseUrl": "https://acme.example.com/v1",
           "api": "openai-completions",
-          "apiKey": "$ENMAAS_API_KEY",
+          "apiKey": "$ACME_API_KEY",
           "trustKeyScopedListing": true,
           "models": [
-            { "id": "enmaas/gpt-4o", "name": "GPT-4o via EnMaaS" }
+            { "id": "acme/gpt-4o", "name": "GPT-4o via Acme" }
           ]
         }
       }
@@ -5487,7 +5487,7 @@ extra field is ignored by pi's provider registration, so it does not affect
 For a flagged provider whose native listing succeeds, `POST
 /models/for-api-key` returns the **union** of the live gateway listing and the
 provider's manifest-configured `models[]` (snapshot at startup, same file
-read as the flag). Real case: an EnMaaS gateway lists 15 models via
+read as the flag). Real case: an Acme gateway lists 15 models via
 `/v1/models` but not the manually configured `rits/zai-org/glm-5-3` — the
 response contains both. Manifest-only models are appended after the live
 entries in the same response shape (`provider`/`id`/`name`/`source`, plus

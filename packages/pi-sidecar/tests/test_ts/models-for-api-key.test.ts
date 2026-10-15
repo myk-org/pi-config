@@ -1027,7 +1027,7 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
   });
 
   it("falls back to manifest-declared limits when a key-listed model omits them", async () => {
-    // Gateway listings (e.g. EnMaaS) return ids without token-limit capabilities;
+    // Gateway listings (e.g. Acme) return ids without token-limit capabilities;
     // the admin declares limits for the same id in the agent-dir models.json.
     // Here the runtime catalog lacks the id, so create() must resolve it through
     // the key-scoped listing and take its limits from the manifest snapshot.
