@@ -378,7 +378,7 @@ function mockPi() {
 
 function registerHandlers(cwd: string, diffPaths: () => string[] = () => []) {
   const { pi, handlers } = mockPi();
-  createReviewLearning({ callModel: async () => "[]", repoInfo: () => REPO, diffPaths }).register(pi as any);
+  createReviewLearning({ repoInfo: () => REPO, diffPaths }).register(pi as any);
   assert.equal(handlers.get("tool_result")!.length, 2, "bash watcher + write hint");
   return {
     handlers,

@@ -168,10 +168,7 @@ describe("review-learning review-handler modes", () => {
   it("interactive-mode Phase 8 address shape distills lessons with provenance", async () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
-    createReviewLearning({
-      callModel: async () => '["redaction guard required on endpoints", "guard list endpoint against None"]',
-      repoInfo: () => REPO,
-    }).register(pi as any);
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
     const handler = handlers.get("tool_result")![0]!;
     handler(
       { toolName: "bash", input: { command: INTERACTIVE_ADDRESS("addressed") }, isError: false },
@@ -180,7 +177,7 @@ describe("review-learning review-handler modes", () => {
     assert.ok(await waitFor(() => lessonsIn(cwd).length === 2), "two lessons written");
     // finding-id provenance on both score entries
     const scores = loadScores(cwd);
-    for (const [id, text] of [[1, "redaction guard required on endpoints"], [2, "guard list endpoint against None"]] as const) {
+    for (const [id, text] of [[1, 'src/api.py: Missing strip_sensitive_from_response on the endpoint'], [2, 'src/api.py: Unhandled None on the list endpoint']] as const) {
       const hash = entryHash(`- [lesson] ${text}`);
       assert.equal(scores.entries[hash]!.derivedFrom, findingProvenance(id, REPO), `provenance for finding ${id}`);
     }
@@ -189,46 +186,32 @@ describe("review-learning review-handler modes", () => {
   it("auto-mode Phase 9 replay address shape distills lessons (skipped-set variant, --json omitted)", async () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
-    createReviewLearning({
-      callModel: async () => '["redaction guard required on endpoints", "guard list endpoint against None"]',
-      repoInfo: () => REPO,
-    }).register(pi as any);
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
     const handler = handlers.get("tool_result")![0]!;
     handler(
       { toolName: "bash", input: { command: AUTO_ADDRESS("addressed") }, isError: false },
       { cwd },
     );
     assert.ok(await waitFor(() => lessonsIn(cwd).length === 2), "two lessons written from auto-mode replay");
-    assert.equal(loadScores(cwd).entries[entryHash("- [lesson] redaction guard required on endpoints")]!.derivedFrom, findingProvenance(1, REPO));
+    assert.equal(loadScores(cwd).entries[entryHash("- [lesson] " + 'src/api.py: Missing strip_sensitive_from_response on the endpoint')]!.derivedFrom, findingProvenance(1, REPO));
   });
 
   it("poll-worker / fetch / store command shapes never trigger", async () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
-    let calls = 0;
-    createReviewLearning({
-      callModel: async () => {
-        calls++;
-        return '["should never appear"]';
-      },
-      repoInfo: () => REPO,
-    }).register(pi as any);
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
     const handler = handlers.get("tool_result")![0]!;
     for (const command of POLL_WORKER_COMMANDS) {
       handler({ toolName: "bash", input: { command }, isError: false }, { cwd });
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
-    assert.equal(calls, 0);
     assert.equal(lessonsIn(cwd).length, 0);
   });
 
   it("re-firing the same address command reinforces instead of duplicating", async () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
-    createReviewLearning({
-      callModel: async () => '["redaction guard required on endpoints", "guard list endpoint against None"]',
-      repoInfo: () => REPO,
-    }).register(pi as any);
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
     const handler = handlers.get("tool_result")![0]!;
     // first group run (Phase 8: one `reviews address` call per status group)
     handler(
@@ -242,12 +225,12 @@ describe("review-learning review-handler modes", () => {
       { cwd },
     );
     const evidenceBumped = () =>
-      loadScores(cwd).entries[entryHash("- [lesson] redaction guard required on endpoints")]!.evidenceCount >= 2;
+      loadScores(cwd).entries[entryHash("- [lesson] " + 'src/api.py: Missing strip_sensitive_from_response on the endpoint')]!.evidenceCount >= 2;
     assert.ok(await waitFor(evidenceBumped), "re-fire reinforces evidence");
     // still exactly two topic lines — no duplicates
     assert.deepEqual(
       lessonsIn(cwd).map((e) => e.text).sort(),
-      ["guard list endpoint against None", "redaction guard required on endpoints"],
+      ['src/api.py: Unhandled None on the list endpoint', 'src/api.py: Missing strip_sensitive_from_response on the endpoint'].sort(),
     );
   });
 
@@ -255,14 +238,7 @@ describe("review-learning review-handler modes", () => {
     const cwd = cwdWithDb();
     disableSetting(cwd);
     const { pi, handlers } = mockPi();
-    let calls = 0;
-    createReviewLearning({
-      callModel: async () => {
-        calls++;
-        return '["should never appear"]';
-      },
-      repoInfo: () => REPO,
-    }).register(pi as any);
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
     const handler = handlers.get("tool_result")![0]!;
     handler(
       { toolName: "bash", input: { command: INTERACTIVE_ADDRESS("addressed") }, isError: false },
@@ -273,7 +249,6 @@ describe("review-learning review-handler modes", () => {
       { cwd },
     );
     await new Promise((resolve) => setTimeout(resolve, 200));
-    assert.equal(calls, 0);
     assert.equal(lessonsIn(cwd).length, 0);
   });
 });

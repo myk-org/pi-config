@@ -33,8 +33,8 @@ Declares what is actually code-enforced versus prompt-only. A tier is about
   results matching `myk-pi-tools reviews address` (`isReviewsAddressCommand`) and distills the addressed findings
   from `.pi/data/reviews.db` into `lesson` memories with finding-id provenance
   (`derivedFrom="reviews.db:<id>;<owner>/<repo>"` — re-fires reinforce instead of duplicating, capped at 5 per fire).
-  The **trigger** is code-tier; the **lesson content** is model-dependent (in-process EnMaaS call). Gated by the
-  `review_learning` setting; graceful no-op on missing DB, unparsable remote, or model/parse failure (log.warn, never
+  The **trigger** is code-tier; the **lesson content** is deterministic and model-free (finding-title extraction).
+  Gated by the `review_learning` setting; graceful no-op on missing DB or unparsable remote (log.warn, never
   throws into the agent loop). Assumes `reviews address` runs in main-session bash — both review-handler modes run
   Phases 2–8 there; if address ever moves into a poll worker, this goes blind — move the distillation trigger with it
 

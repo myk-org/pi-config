@@ -10,6 +10,12 @@
  * (`derivedFrom="reviews.db:<comment-id>;<owner>/<repo>"`) so re-fires
  * (multi-group address runs) reinforce instead of duplicating.
  *
+ * Distillation is deterministic and model-free: the reviewer tool's finding
+ * title (first meaningful line of the body, un-buried from badges/HTML/
+ * Markdown) becomes the lesson, prefixed with the file path; exact title
+ * collisions merge as duplicates of one issue. Zero model calls, zero cost,
+ * fully testable (issue #918 decision: script-only engine).
+ *
  * Distillation source is the DB, not the pr-*-reviews.json file — address
  * DELETES that JSON on the final status-group run. `skipped` findings are
  * excluded (ack-noise, false positives); only final `addressed` rows distill.
@@ -30,8 +36,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -45,12 +50,6 @@ import { readAllTopicEntries } from "./memory-tree.js";
 const log = createLogger("review-learning");
 
 // ── Constants ──────────────────────────────────────────────────────────────
-
-/** EnMaaS OpenAI-completions gateway (issue #918: small free distillation model). */
-const ENMAAS_BASE_URL = "https://api.enmaas.devshift.net/v1";
-const DEFAULT_MODEL = "rits/zai-org/glm-5-3";
-const ENMAAS_TIMEOUT_MS = 60_000;
-const ENMAAS_MAX_TOKENS = 2000;
 
 /** Per-fire caps (issue #918: per-cycle cap ~5 by severity protects the
  *  situation-report budget). */
@@ -188,9 +187,6 @@ export function getAddressedComments(dbPath: string, commitSha: string): Address
 
 // ── Distillation (model call, injectable for tests) ────────────────────────
 
-export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
-export type CallModel = (messages: ChatMessage[]) => Promise<string>;
-
 export interface DistilledLesson {
   findingId: number;
   text: string;
@@ -209,29 +205,32 @@ export function rankFindings(findings: AddressedFinding[]): AddressedFinding[] {
     .slice(0, MAX_FINDINGS_PER_FIRE);
 }
 
-function buildMessages(ranked: AddressedFinding[], repo: { owner: string; repo: string } | null): ChatMessage[] {
-  const system =
-    "You distill addressed code-review findings into durable, repo-scoped engineering lessons.\n" +
-    "Return ONLY a JSON array of strings — exactly one lesson per finding, in the same order as given.\n" +
-    "Rules for each lesson:\n" +
-    "- ONE line, at most 100 characters\n" +
-    "- concrete and actionable: name the file pattern, API, endpoint, or command involved\n" +
-    `- repo-scoped: mention this repository's domain, e.g. "rootcoz endpoints returning sensitive fields must call strip_sensitive_from_response"\n` +
-    "- no fluff, no markdown, no surrounding quotes";
-  const repoLine = repo ? `${repo.owner}/${repo.repo}` : "(unknown)";
-  const findingLines = ranked.map(
-    (f) =>
-      `- id ${f.id} [${f.priority ?? "unknown"}] ${f.path ?? "(no path)"}:${f.line ?? "?"}\n` +
-      `  ${f.body.slice(0, MAX_FINDING_BODY_CHARS)}`,
-  );
-  const user =
-    `Repository: ${repoLine}\n\n` +
-    `Addressed review findings:\n${findingLines.join("\n")}\n\n` +
-    `Distill each finding into one lesson. Respond with the JSON array only.`;
-  return [
-    { role: "system", content: system },
-    { role: "user", content: user },
-  ];
+/**
+ * Extract the finding's title line from a raw review body — deterministic,
+ * no model. Reviewer tools (Qodo, CodeRabbit) write a human-readable title as
+ * the first meaningful line, buried in badge images, HTML tags, and Markdown
+ * emphasis. Skips badge/label lines, strips markup, returns null when no
+ * meaningful line exists.
+ */
+export function extractFindingTitle(body: string): string | null {
+  if (typeof body !== "string" || !body.trim()) return null;
+  const scan = body.slice(0, MAX_FINDING_BODY_CHARS);
+  for (let rawLine of scan.split("\n")) {
+    let line = rawLine.trim();
+    if (!line) continue;
+    // Badge lines: shield <img>, markdown images, and bare URL lines.
+    if (/^<img\b/i.test(line) || /^!\[[^\]]*\]\([^)]*\)/.test(line) || /^https?:\/\/\S+$/.test(line)) continue;
+    // Drop inline label spans FIRST (Qodo type tags like <code>🐞 Bug</code>)
+    // so their contents do not leak into the title.
+    line = line.replace(/<code\b[^>]*>[\s\S]*?<\/code>/gi, " ");
+    line = line.replace(/<[^>]+>/g, " "); // remaining HTML tags
+    line = line.replace(/^\d+\\?\.\s*/, ""); // leading list number ("1\. ")
+    line = line.replace(/[*`#>|]/g, " "); // Markdown emphasis/fence chars (keep _ — identifiers use it)
+    line = line.replace(/\s+/g, " ").trim();
+    if (line.length < 15) continue; // fragments, separators, leftovers
+    return line.slice(0, MAX_LESSON_CHARS);
+  }
+  return null;
 }
 
 /** Sanitize one lesson: single line, non-empty, ≤ MAX_LESSON_CHARS. */
@@ -242,119 +241,36 @@ function sanitizeLesson(raw: unknown): string | null {
   return oneLine.slice(0, MAX_LESSON_CHARS);
 }
 
-/**
- * Defensively parse the model response into lesson lines.
- * Strips code fences, extracts the outermost JSON array, accepts plain strings
- * or {lesson|text} objects. Throws on unparseable output.
- */
-export function parseLessonsResponse(raw: string): string[] {
-  if (typeof raw !== "string") throw new Error("model response is not a string");
-  let text = raw.trim();
-  const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(text);
-  if (fence) text = fence[1]!.trim();
-  const start = text.indexOf("[");
-  const end = text.lastIndexOf("]");
-  if (start >= 0 && end > start) text = text.slice(start, end + 1);
-  const parsed = JSON.parse(text); // throws on garbage — caller logs and aborts
-  if (!Array.isArray(parsed)) throw new Error("model response is not a JSON array");
-  const lessons: string[] = [];
-  for (const item of parsed) {
-    const raw2 = typeof item === "string" ? item : (item as any)?.lesson ?? (item as any)?.text;
-    const lesson = sanitizeLesson(raw2);
-    if (lesson) lessons.push(lesson);
-  }
-  return lessons;
+/** Deterministic lesson line for one finding: `<path>: <title>`. */
+export function lessonFromFinding(f: AddressedFinding): string | null {
+  const title = extractFindingTitle(f.body);
+  if (!title) return null;
+  const where = f.path ? `${f.path}: ` : "";
+  const line = sanitizeLesson(`${where}${title}`);
+  return line && line.length >= 15 ? line : null;
 }
 
 /**
- * Distill findings into lessons via the injected model call.
- * Model failures and parse failures are graceful: log.warn + empty result,
- * never a throw into the agent loop.
+ * Distill findings into lessons — pure, synchronous, zero model calls.
+ * Findings whose cleaned titles (path + title) collide are duplicates of the
+ * same issue (address.py dedupes by title at fetch time; reworded duplicates
+ * across sources still collide only when identical) — the first by priority
+ * rank wins and carries the provenance; the rest merge into it silently.
  */
-export async function distillFindings(
-  findings: AddressedFinding[],
-  callModel: CallModel,
-  repo: { owner: string; repo: string } | null = null,
-): Promise<DistilledLesson[]> {
-  const ranked = rankFindings(findings);
-  if (ranked.length === 0) return [];
-  let raw: string;
-  try {
-    raw = await callModel(buildMessages(ranked, repo));
-  } catch (error: any) {
-    log.warn("distill_model_failed", { findings: ranked.length, reason: String(error?.message ?? error).slice(0, 200) });
-    return [];
-  }
-  let lessons: string[];
-  try {
-    lessons = parseLessonsResponse(raw);
-  } catch (error: any) {
-    log.warn("distill_parse_failed", { reason: String(error?.message ?? error).slice(0, 200) });
-    return [];
-  }
-  // Index-mapped: the prompt demands one lesson per finding, same order.
+export function distillLessons(findings: AddressedFinding[]): DistilledLesson[] {
+  const seen = new Set<string>();
   const out: DistilledLesson[] = [];
-  for (let i = 0; i < lessons.length && i < ranked.length; i++) {
-    out.push({ findingId: ranked[i]!.id, text: lessons[i]! });
+  for (const finding of rankFindings(findings)) {
+    const text = lessonFromFinding(finding);
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue; // duplicate of an already-distilled lesson
+    seen.add(key);
+    out.push({ findingId: finding.id, text });
   }
   return out;
 }
 
-// ── EnMaaS model call (thin wrapper — the only network touchpoint) ─────────
-
-export function reviewLearningModel(): string {
-  return process.env.REVIEW_LEARNING_MODEL?.trim() || DEFAULT_MODEL;
-}
-
-/** Key resolution: ENMAAS_API_KEY env → ~/.pi/agent/auth.json `EnMaaS.key`. */
-export function resolveEnmaasApiKey(): string | null {
-  const env = process.env.ENMAAS_API_KEY?.trim();
-  if (env) return env;
-  try {
-    const authPath = join(homedir(), ".pi", "agent", "auth.json");
-    if (!existsSync(authPath)) return null;
-    const auth = JSON.parse(readFileSync(authPath, "utf8"));
-    const key = auth?.EnMaaS?.key;
-    return typeof key === "string" && key.trim() ? key.trim() : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * POST {baseUrl}/chat/completions, non-streaming, 60s timeout via
- * AbortSignal.timeout, single retry on 5xx/network error. 4xx fails fast.
- */
-async function callEnmaas(messages: ChatMessage[]): Promise<string> {
-  const key = resolveEnmaasApiKey();
-  if (!key) throw new Error("EnMaaS API key unavailable (ENMAAS_API_KEY or ~/.pi/agent/auth.json EnMaaS.key)");
-  const body = JSON.stringify({ model: reviewLearningModel(), messages, max_tokens: ENMAAS_MAX_TOKENS });
-  let lastError: unknown = new Error("EnMaaS call failed");
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let retryable = false;
-    try {
-      const res = await fetch(`${ENMAAS_BASE_URL}/chat/completions`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-        body,
-        signal: AbortSignal.timeout(ENMAAS_TIMEOUT_MS),
-      });
-      if (res.ok) {
-        const data: any = await res.json();
-        const content = data?.choices?.[0]?.message?.content;
-        return typeof content === "string" ? content : "";
-      }
-      lastError = new Error(`EnMaaS HTTP ${res.status}`);
-      retryable = res.status >= 500;
-    } catch (error) {
-      lastError = error; // network / timeout / abort — retryable
-      retryable = true;
-    }
-    if (!retryable || attempt === 1) throw lastError;
-    log.debug("enmaas_retry", { attempt: attempt + 1, reason: String((lastError as any)?.message ?? lastError).slice(0, 200) });
-  }
-  throw lastError;
-}
 
 // ── Memory write with provenance dedupe ────────────────────────────────────
 
@@ -635,8 +551,6 @@ export function customMessageText(message: any): string {
 // ── Extension wiring ───────────────────────────────────────────────────────
 
 export interface ReviewLearningOptions {
-  /** Model call — injectable for tests (default: EnMaaS fetch wrapper). */
-  callModel?: CallModel;
   /** Repo resolution — injectable for tests (default: git remote origin). */
   repoInfo?: (cwd: string) => { owner: string; repo: string } | null;
   /** Branch-diff path source — injectable for tests (default: git diff main...HEAD). */
@@ -644,7 +558,6 @@ export interface ReviewLearningOptions {
 }
 
 export function createReviewLearning(options: ReviewLearningOptions = {}) {
-  const callModel = options.callModel ?? callEnmaas;
   const repoInfo = options.repoInfo ?? resolveRepoInfo;
   const diffPaths = options.diffPaths ?? branchDiffPaths;
 
@@ -676,7 +589,7 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
       return;
     }
     log.info("distill_start", { owner: repo.owner, repo: repo.repo, findings: findings.length });
-    const lessons = await distillFindings(findings, callModel, repo);
+    const lessons = distillLessons(findings);
     if (lessons.length === 0) {
       log.info("distill_finish", { findings: findings.length, lessons: 0, reason: "no lessons distilled" });
       return;

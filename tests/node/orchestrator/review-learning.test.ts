@@ -2,8 +2,8 @@
  * Review learning (issue #918 Part A) — address-hook distillation tests.
  * Run: npx tsx --test tests/node/orchestrator/review-learning.test.ts
  *
- * No network: the model call is injected; the EnMaaS fetch wrapper is a thin
- * shell around it and stays untested here by design.
+ * No network: the model call is injected; the registry call path (internal-ops
+ * or session model, provider-agnostic) stays untested here by design.
  */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -17,8 +17,9 @@ import {
   getLatestReview,
   getAddressedComments,
   rankFindings,
-  parseLessonsResponse,
-  distillFindings,
+  extractFindingTitle,
+  lessonFromFinding,
+  distillLessons,
   findMemoryLineByDerivedFrom,
   writeLessonsToMemory,
   findingProvenance,
@@ -186,70 +187,81 @@ describe("rankFindings", () => {
   });
 });
 
-// ── Response parsing ───────────────────────────────────────────────────────
+// ── Deterministic distillation (script-only engine — no model) ─────────────
 
-describe("parseLessonsResponse", () => {
-  it("parses plain and fenced JSON arrays of strings", () => {
-    assert.deepEqual(parseLessonsResponse('["a","b"]'), ["a", "b"]);
-    assert.deepEqual(parseLessonsResponse('```json\n["a","b"]\n```'), ["a", "b"]);
-    assert.deepEqual(parseLessonsResponse('Here you go:\n["a"]'), ["a"]);
+describe("extractFindingTitle", () => {
+  it("un-buries the title from real Qodo-shaped bodies", () => {
+    const qodoNumbered =
+      '<img src="https://img.shields.io/badge/High-634FD1" alt="Action required">\n\n' +
+      "1\\. Formatted tool permissions bypass pinned-rule protection <code>\ud83e\ude7e Bug</code> <code>\u2261 Correctness</code>\n\n" +
+      "<pre>ONLY_PERMIT_RE requires the first character...</pre>";
+    assert.equal(
+      extractFindingTitle(qodoNumbered),
+      "Formatted tool permissions bypass pinned-rule protection",
+    );
   });
-  it("accepts {lesson}/{text} objects and sanitizes lines", () => {
-    assert.deepEqual(parseLessonsResponse('[{"lesson":"a"},{"text":"b"}]'), ["a", "b"]);
-    assert.deepEqual(parseLessonsResponse('["  multi\\nline  "]'), ["multi line"]);
-    assert.deepEqual(parseLessonsResponse('["", "   ", null, "x"]'), ["x"]);
-    assert.equal(parseLessonsResponse('["' + "y".repeat(150) + '"]')[0]!.length, 100);
+  it("lifts markdown-bold titles and strips emphasis", () => {
+    const coderabbit = "**Formatted tool permissions bypass pinned-rule protection**\n\n<b><i>ONLY_PERMIT_RE</i></b> requires the first character after only";
+    assert.equal(
+      extractFindingTitle(coderabbit),
+      "Formatted tool permissions bypass pinned-rule protection",
+    );
   });
-  it("throws on unparseable output", () => {
-    assert.throws(() => parseLessonsResponse("not json at all"));
-    assert.throws(() => parseLessonsResponse('{"lessons": "object not array"}'));
+  it("skips badge, image, and URL-only lines", () => {
+    assert.equal(extractFindingTitle('<img src="https://shields.io/badge/x">'), null);
+    assert.equal(extractFindingTitle("![badge](https://img.example/x.svg)"), null);
+    assert.equal(extractFindingTitle("https://example.com/finding/1"), null);
+  });
+  it("rejects fragments shorter than 15 chars and empty bodies", () => {
+    assert.equal(extractFindingTitle("1\\. too short"), null);
+    assert.equal(extractFindingTitle(""), null);
+  });
+  it("caps the title at 100 chars on one line", () => {
+    const title = extractFindingTitle("**" + "y".repeat(150) + "** tail");
+    assert.equal(title!.length, 100);
   });
 });
 
-// ── Distill orchestration (injected model call — no network) ───────────────
+describe("lessonFromFinding", () => {
+  it("prefixes the repo-relative path and sanitizes to one line", () => {
+    const lesson = lessonFromFinding(finding(1, "high", "**Missing redaction guard** on the endpoint\nsecond line"));
+    assert.equal(lesson, "src/f1.py: Missing redaction guard on the endpoint");
+  });
+  it("returns null when no title can be extracted", () => {
+    assert.equal(lessonFromFinding(finding(1, "high", '<img src="https://x">')), null);
+  });
+});
 
-describe("distillFindings", () => {
-  it("maps lessons to findings by order", async () => {
-    const calls: any[] = [];
-    const lessons = await distillFindings(
-      [finding(1, "critical"), finding(2, "high")],
-      async (messages) => {
-        calls.push(messages);
-        return '["lesson for one", "lesson for two"]';
-      },
-      { owner: "myk-org", repo: "demo" },
-    );
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].length, 2);
-    assert.match(calls[0][0].content, /JSON array of strings/);
-    assert.match(calls[0][1].content, /myk-org\/demo/);
+describe("distillLessons", () => {
+  it("derives path-prefixed lessons, ranked by priority", () => {
+    const lessons = distillLessons([
+      finding(2, "medium", "Medium issue on the endpoint"),
+      finding(1, "critical", "Critical issue on the endpoint"),
+    ]);
     assert.deepEqual(lessons, [
-      { findingId: 1, text: "lesson for one" },
-      { findingId: 2, text: "lesson for two" },
+      { findingId: 1, text: "src/f1.py: Critical issue on the endpoint" },
+      { findingId: 2, text: "src/f2.py: Medium issue on the endpoint" },
     ]);
   });
-  it("aborts gracefully on model failure", async () => {
-    const lessons = await distillFindings([finding(1, "high")], async () => {
-      throw new Error("boom");
-    });
-    assert.deepEqual(lessons, []);
+  it("merges duplicate findings with identical path+title", () => {
+    const a = finding(1, "critical", "Same title on the endpoint");
+    const b = { ...finding(2, "high", "Same title on the endpoint"), path: "src/f1.py" };
+    assert.deepEqual(distillLessons([a, b]), [{ findingId: 1, text: "src/f1.py: Same title on the endpoint" }]);
   });
-  it("aborts gracefully on parse failure", async () => {
-    const lessons = await distillFindings([finding(1, "high")], async () => "certainly not json");
-    assert.deepEqual(lessons, []);
+  it("keeps same title under different paths separate", () => {
+    const a = finding(1, "high", "Same title on the endpoint");
+    const b = { ...finding(2, "high", "Same title on the endpoint"), path: "src/other.py" };
+    assert.equal(distillLessons([a, b]).length, 2);
   });
-  it("returns [] for empty findings without calling the model", async () => {
-    let called = 0;
-    const lessons = await distillFindings([], async () => {
-      called++;
-      return "[]";
-    });
-    assert.deepEqual(lessons, []);
-    assert.equal(called, 0);
+  it("skips findings whose body yields no title", () => {
+    const lessons = distillLessons([
+      finding(1, "high", '<img src="https://badge">'),
+      finding(2, "high", "Real issue on the endpoint"),
+    ]);
+    assert.deepEqual(lessons, [{ findingId: 2, text: "src/f2.py: Real issue on the endpoint" }]);
   });
-  it("ignores extra lessons beyond the findings", async () => {
-    const lessons = await distillFindings([finding(5, "high")], async () => '["one","two","three"]');
-    assert.deepEqual(lessons, [{ findingId: 5, text: "one" }]);
+  it("returns [] for empty findings", () => {
+    assert.deepEqual(distillLessons([]), []);
   });
 });
 
@@ -375,10 +387,7 @@ describe("review-learning hook", () => {
   it("distills on a non-error bash tool_result for reviews address", async () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
-    createReviewLearning({
-      callModel: async () => '["redaction guard required on endpoints"]',
-      repoInfo: () => REPO,
-    }).register(pi as any);
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
     const handler = handlers.get("tool_result")![0]!;
     handler(
       { toolName: "bash", input: { command: "uv run --group dev myk-pi-tools reviews address --json x --set addressed" }, isError: false },
@@ -386,57 +395,34 @@ describe("review-learning hook", () => {
     );
     const lessonsIn = () => readAllTopicEntries(cwd).filter((e) => e.category === "lesson");
     assert.ok(await waitFor(() => lessonsIn().length > 0), "lesson written");
-    assert.deepEqual(lessonsIn().map((e) => e.text), ["redaction guard required on endpoints"]);
+    assert.deepEqual(lessonsIn().map((e) => e.text), ["src/api.py: Unhandled None on the endpoint response"]);
   });
   it("no-ops when the setting is disabled", async () => {
     const cwd = cwdWithDb();
     fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
     fs.writeFileSync(path.join(cwd, ".pi", "pi-config-settings.json"), JSON.stringify({ review_learning: false }));
-    const { distill } = createReviewLearning({
-      callModel: async () => {
-        calls++;
-        return '["should never appear"]';
-      },
-      repoInfo: () => REPO,
-    });
-    let calls = 0;
+    const { distill } = createReviewLearning({ repoInfo: () => REPO });
     await distill(cwd);
-    assert.equal(calls, 0);
     assert.equal(readAllTopicEntries(cwd).length, 0);
   });
   it("distills when the setting is enabled (default)", async () => {
     const cwd = cwdWithDb();
-    let calls = 0;
-    const { distill } = createReviewLearning({
-      callModel: async () => {
-        calls++;
-        return '["distilled lesson"]';
-      },
-      repoInfo: () => REPO,
-    });
+    const { distill } = createReviewLearning({ repoInfo: () => REPO });
     await distill(cwd);
-    assert.equal(calls, 1);
     const lessons = readAllTopicEntries(cwd).filter((e) => e.category === "lesson");
     assert.equal(lessons.length, 1);
-    assert.equal(lessons[0]!.text, "distilled lesson");
+    assert.equal(lessons[0]!.text, "src/api.py: Unhandled None on the endpoint response");
   });
   it("ignores error results, other tools, and non-address commands", async () => {
     const cwd = cwdWithDb();
     const { pi, handlers } = mockPi();
-    let calls = 0;
-    createReviewLearning({
-      callModel: async () => {
-        calls++;
-        return '["x"]';
-      },
-      repoInfo: () => REPO,
-    }).register(pi as any);
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
     const handler = handlers.get("tool_result")![0]!;
     handler({ toolName: "bash", input: { command: "myk-pi-tools reviews address --json x" }, isError: true }, { cwd });
     handler({ toolName: "read", input: { path: "x" }, isError: false }, { cwd });
     handler({ toolName: "bash", input: { command: "myk-pi-tools reviews store x.json" }, isError: false }, { cwd });
     await new Promise((resolve) => setTimeout(resolve, 150));
-    assert.equal(calls, 0);
+    assert.equal(readAllTopicEntries(cwd).length, 0);
   });
   it("registers nothing in subagent children", () => {
     const original = process.env.PI_SUBAGENT_CHILD;
