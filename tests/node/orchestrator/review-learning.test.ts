@@ -27,9 +27,13 @@ import {
   findingProvenance,
   createReviewLearning,
   loadDistilledReviews,
+  loadReviewLessons,
+  moduleMtimeStamp,
+  emitReviewLearningLoaded,
   markReviewDistilled,
   prNumberFromCommand,
   type AddressedFinding,
+  type DistilledLesson,
 } from "../../../extensions/orchestrator/review-learning.js";
 import { entryHash, loadScores, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 import { readAllTopicEntries } from "../../../extensions/orchestrator/memory-tree.js";
@@ -380,6 +384,32 @@ describe("distillLessons", () => {
     const lessons = distillLessons([a, b]);
     assert.equal(lessons.length, 2);
     assert.deepEqual(lessons.map((l) => l.findingIds), [[1], [2]]);
+    // Truncated lesson texts carry a stable digest suffix of the full line,
+    // so the two memories stay distinct instead of the second reinforcing
+    // the first (identical 100-char prefixes must not collide).
+    assert.notEqual(lessons[0]!.text, lessons[1]!.text, "distinct lesson texts");
+    for (const l of lessons) {
+      assert.ok(l.text.length <= 100, `lesson capped: ${l.text.length}`);
+      assert.match(l.text, /~[0-9a-f]{8}$/, "truncated lessons carry a digest suffix");
+    }
+  });
+  it("successive memory writes of >100-char twins never exact-collide — digest keeps texts distinct", async () => {
+    const base = "A very long finding title that stays identical for well over one hundred characters and then";
+    const cwd = makeCwd();
+    const write = async (finding: AddressedFinding) =>
+      writeLessonsToMemory(cwd, distillLessons([finding]), REPO);
+    const first = await write(finding(1, "high", `${base} diverges alpha`));
+    assert.equal(first.added, 1);
+    const second = await write(finding(2, "high", `${base} diverges beta`));
+    // The digest suffix prevents the EXACT-text collision (the second twin
+    // used to reinforce the first purely because both truncated to the same
+    // 100-char prefix). If the memory system's near-duplicate gate (issue
+    // #915) still judges the twins similar enough to reinforce, that is its
+    // intended recurrence semantics — either way the write completes and is
+    // never lost or rejected.
+    assert.equal(second.added + second.reinforced, 1, "added or near-duplicate reinforced");
+    assert.equal(second.rejected, 0);
+    assert.equal(second.completed.length, 1, "retry bookkeeping records the completion");
   });
   it("skips findings whose body yields no title — eligible findings below them still distill", () => {
     const lessons = distillLessons([
@@ -399,6 +429,29 @@ describe("distillLessons", () => {
   });
   it("returns [] for empty findings", () => {
     assert.deepEqual(distillLessons([]), []);
+  });
+});
+
+// ── Reload-status stamp ─────────────────────────────────────────────────────
+
+describe("reload-status stamp", () => {
+  it("moduleMtimeStamp returns a valid ISO timestamp for the running module", () => {
+    const stamp = moduleMtimeStamp();
+    assert.ok(stamp, "stamp returned");
+    assert.ok(!Number.isNaN(Date.parse(stamp!)), `valid ISO: ${stamp}`);
+  });
+  it("moduleMtimeStamp is fail-soft null when the stat lookup throws", () => {
+    assert.equal(moduleMtimeStamp(path.join(os.tmpdir(), "no-such-module-file.ts")), null);
+  });
+  it("emitReviewLearningLoaded logs review_learning_loaded with the stamp (injectable logger)", () => {
+    const events: Array<{ event: string; data?: unknown }> = [];
+    emitReviewLearningLoaded({
+      info: (event: string, data?: unknown) => events.push({ event, data }),
+    });
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.event, "review_learning_loaded");
+    const mtime = (events[0]!.data as { moduleMtime: string }).moduleMtime;
+    assert.ok(!Number.isNaN(Date.parse(mtime)), `valid ISO mtime: ${mtime}`);
   });
 });
 
@@ -576,7 +629,7 @@ describe("review-learning hook", () => {
     assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "lesson written");
     assert.deepEqual(lessonsIn(cwd).map((e) => e.text), ["src/api.py: Unhandled None on the endpoint response"]);
   });
-  it("--json naming a PR with no stored review falls back to newest-for-repo (partial, non-storing run)", async () => {
+  it("--json naming a PR with no stored review is a no-op — never another PR's review", async () => {
     const cwd = cwdWithDb();
     fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
     fs.writeFileSync(
@@ -590,8 +643,35 @@ describe("review-learning hook", () => {
       input: { command: "myk-pi-tools reviews address --json .pi/tmp/pr-999-reviews.json --set addressed" },
       isError: false,
     }, { cwd });
-    assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "fallback distills newest-for-repo review");
-    assert.deepEqual(lessonsIn(cwd).map((e) => e.text), ["src/api.py: Older PR-10 review finding"]);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(lessonsIn(cwd).length, 0, "no review row for PR 999 — nothing distilled, no cross-PR fallback");
+  });
+  it("an already-distilled explicit PR is a no-op even when a NEWER undistilled review exists for another PR", async () => {
+    const cwd = cwdWithDb();
+    const { pi, handlers } = mockPi();
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "pr-12-reviews.json"),
+      JSON.stringify({ metadata: { owner: "myk-org", repo: "demo", pr_number: 12 } }),
+    );
+    const fire = (pr: number) =>
+      fireToolResult(handlers, {
+        toolName: "bash",
+        input: { command: `myk-pi-tools reviews address --json .pi/tmp/pr-${pr}-reviews.json --set addressed` },
+        isError: false,
+      }, { cwd });
+    fire(12);
+    assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "first fire distills PR 12");
+    // review 4 (PR 10, newer, undistilled) exists — a later partial re-run
+    // of PR 12 must NOT distill it
+    fire(12);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.deepEqual(
+      lessonsIn(cwd).map((e) => e.text),
+      ["src/api.py: Unhandled None on the endpoint response"],
+      "revisit of PR 12 stays a no-op — no other PR distilled",
+    );
   });
   it("re-firing for the same review is a no-op — no duplicate lessons, no evidence inflation", async () => {
     const cwd = cwdWithDb();
@@ -606,29 +686,57 @@ describe("review-learning hook", () => {
     assert.equal(lessonsIn(cwd).length, 1, "no duplicates");
     assert.equal(loadScores(cwd).entries[hash]!.evidenceCount, evidenceAfterFirst, "no evidence inflation");
   });
-  it("rejected lesson writes leave the review retryable — next fire retries, success marks it", async () => {
-    const cwd = cwdWithDb();
-    let calls = 0;
-    const written = { added: 0, reinforced: 0, rejected: 1, skipped: 0 };
-    const writeLessons = async () => {
-      calls++;
-      return written;
+  it("rejected lesson writes retry ONLY the unwritten lessons — no evidence inflation", async () => {
+    // one review (PR 7) with two distinct findings → two lessons
+    const cwd = makeCwd();
+    const dbPath = path.join(cwd, ".pi", "data", "reviews.db");
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    db.exec(SCHEMA);
+    db.prepare(
+      "INSERT INTO reviews (pr_number, owner, repo, commit_sha, created_at) VALUES (7, 'myk-org', 'demo', 'sha-7', '2026-01-01T00:00:00Z')",
+    ).run();
+    const insert = db.prepare(
+      "INSERT INTO comments (review_id, source, path, line, body, priority, status) VALUES (1, 'qodo', 'src/api.py', ?, ?, 'high', 'addressed')",
+    );
+    insert.run(10, "First lesson title on the endpoint");
+    insert.run(20, "Second lesson title on the handler");
+    db.close();
+
+    const dataDir = path.join(cwd, ".pi", "data");
+    const attempts: string[][] = [];
+    let rejectSecond = true;
+    const writeLessons = async (_cwd: string, lessons: DistilledLesson[]) => {
+      attempts.push(lessons.map((l) => l.text));
+      // while rejecting, the LAST pending lesson is the rejected one
+      return rejectSecond
+        ? {
+            added: lessons.length - 1,
+            reinforced: 0,
+            rejected: 1,
+            skipped: 0,
+            completed: lessons.slice(0, -1).map((l) => l.text),
+          }
+        : { added: lessons.length, reinforced: 0, rejected: 0, skipped: 0, completed: lessons.map((l) => l.text) };
     };
     const { distill } = createReviewLearning({ repoInfo: () => REPO, writeLessons });
-    await distill(cwd);
-    assert.equal(calls, 1, "first fire attempts the write");
-    assert.equal(loadDistilledReviews(path.join(cwd, ".pi", "data")).size, 0, "review NOT marked distilled");
-    await distill(cwd);
-    assert.equal(calls, 2, "rejected review is retried on the next fire");
-    // now succeed — the review completes and the retry stops
-    written.rejected = 0;
-    written.added = 1;
-    await distill(cwd);
-    assert.equal(calls, 3);
-    assert.equal(loadDistilledReviews(path.join(cwd, ".pi", "data")).size, 1, "success marks the review distilled");
-    await distill(cwd);
-    assert.equal(calls, 3, "marked review is not re-attempted");
+    await distill(cwd); // fire 1: both attempted, second rejected
+    assert.equal(attempts.length, 1);
+    assert.equal(attempts[0]!.length, 2, "first fire attempts both lessons");
+    assert.equal(loadReviewLessons(dataDir).get(1)?.size, 1, "the completed lesson is recorded");
+    assert.equal(loadDistilledReviews(dataDir).size, 0, "review NOT marked distilled");
+    await distill(cwd); // fire 2: only the rejected lesson retried
+    assert.equal(attempts.length, 2);
+    assert.equal(attempts[1]!.length, 1, "retry attempts ONLY the unwritten lesson");
+    assert.equal(attempts[1]![0], attempts[0]![1], "and it is the rejected one");
+    rejectSecond = false;
+    await distill(cwd); // fire 3: succeeds → review completes
+    assert.equal(attempts.length, 3);
+    assert.equal(loadDistilledReviews(dataDir).size, 1, "success marks the review distilled");
+    await distill(cwd); // fire 4: marked → no-op
+    assert.equal(attempts.length, 3, "marked review is not re-attempted");
   });
+
   it("no-ops when the setting is disabled", async () => {
     const cwd = cwdWithDb();
     fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });

@@ -273,15 +273,57 @@ export function loadDistilledReviews(dataDir: string): Set<number> {
   }
 }
 
+/**
+ * Lesson texts already successfully written per review — persisted so a
+ * retry after rejected writes re-attempts ONLY the rejected lessons (already
+ * added/reinforced lessons must not be re-processed: reinforcement bumps
+ * evidence without a new occurrence). Fail-soft.
+ */
+export function loadReviewLessons(dataDir: string): Map<number, Set<string>> {
+  const byReview = new Map<number, Set<string>>();
+  try {
+    const raw = JSON.parse(readFileSync(stateFilePath(dataDir), "utf-8"));
+    const entries = raw?.reviewLessons && typeof raw.reviewLessons === "object" ? raw.reviewLessons : {};
+    for (const [id, texts] of Object.entries(entries)) {
+      if (!Array.isArray(texts)) continue;
+      byReview.set(Number(id), new Set(texts.filter((t): t is string => typeof t === "string")));
+    }
+  } catch {
+    // fresh state
+  }
+  return byReview;
+}
+
+function writeStateFile(dataDir: string, distilledReviews: number[], reviewLessons: Map<number, Set<string>>): void {
+  const lessons: Record<string, string[]> = {};
+  const ids = [...reviewLessons.keys()];
+  for (const id of ids.slice(-MAX_TRACKED_REVIEWS)) lessons[String(id)] = [...reviewLessons.get(id)!];
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(
+    stateFilePath(dataDir),
+    `${JSON.stringify({ distilledReviews: distilledReviews.slice(-MAX_TRACKED_REVIEWS), reviewLessons: lessons }, null, 2)}\n`,
+  );
+}
+
 /** Record a review id as distilled (bounded — oldest entries drop off). Fail-soft. */
 export function markReviewDistilled(dataDir: string, reviewId: number): void {
   try {
-    const ids = [...loadDistilledReviews(dataDir), reviewId];
-    const trimmed = ids.slice(-MAX_TRACKED_REVIEWS);
-    mkdirSync(dataDir, { recursive: true });
-    writeFileSync(stateFilePath(dataDir), `${JSON.stringify({ distilledReviews: trimmed }, null, 2)}\n`);
+    writeStateFile(dataDir, [...loadDistilledReviews(dataDir), reviewId], loadReviewLessons(dataDir));
   } catch (error: any) {
     log.debug("distilled_state_write_failed", { reason: String(error?.message ?? error).slice(0, 200) });
+  }
+}
+
+/** Record lesson texts completed for a review (retry bookkeeping). Fail-soft. */
+export function recordReviewLessons(dataDir: string, reviewId: number, texts: string[]): void {
+  try {
+    const byReview = loadReviewLessons(dataDir);
+    const done = byReview.get(reviewId) ?? new Set<string>();
+    for (const t of texts) done.add(t);
+    byReview.set(reviewId, done);
+    writeStateFile(dataDir, [...loadDistilledReviews(dataDir)], byReview);
+  } catch (error: any) {
+    log.debug("review_lessons_state_write_failed", { reason: String(error?.message ?? error).slice(0, 200) });
   }
 }
 
@@ -293,8 +335,8 @@ export function markReviewDistilled(dataDir: string, reviewId: number): void {
  * Deliberately no newest-JSON fallback: the final, storing run deletes its
  * own pr-<N>-reviews.json before the tool result fires, so a fallback would
  * pick up a leftover JSON from ANOTHER PR and target the wrong review.
- * Returns null when absent/unreadable — callers fall back to newest-for-repo,
- * which is exactly the just-stored row on final (storing) runs.
+ * Returns null when absent/unreadable — callers then select the newest
+ * review for the repo (final storing runs), never a different explicit PR.
  */
 export function prNumberFromCommand(command: string | undefined, cwd: string): number | null {
   try {
@@ -377,16 +419,38 @@ function sanitizeLesson(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const oneLine = raw.replace(/\s+/g, " ").trim();
   if (!oneLine) return null;
-  return oneLine.slice(0, MAX_LESSON_CHARS);
+  // NOT capped here — callers decide how to truncate (lessonFromFinding
+  // reserves room for a digest suffix so truncated twins stay distinct).
+  return oneLine;
 }
 
-/** Deterministic lesson line for one finding: `<path>: <title>`. */
+/** Stable short digest (FNV-1a, 8 hex chars) — distinguishes truncated twins. */
+function shortDigest(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+/**
+ * Deterministic lesson line for one finding: `<path>: <title>`, capped at
+ * MAX_LESSON_CHARS. When the full line needs truncation, a stable digest of
+ * the UNTRUNCATED line is appended — two distinct findings whose titles
+ * first differ past the cap must not collapse into one memory entry (their
+ * identical truncated text would make the second write a reinforcement of
+ * the first instead of a distinct lesson).
+ */
 export function lessonFromFinding(f: AddressedFinding): string | null {
   const title = f.title ?? extractFindingTitle(f.body);
   if (!title) return null;
   const where = f.path ? `${f.path}: ` : "";
-  const line = sanitizeLesson(`${where}${title}`);
-  return line && line.length >= 15 ? line : null;
+  const full = sanitizeLesson(`${where}${title}`);
+  if (!full || full.length < 15) return null;
+  if (full.length <= MAX_LESSON_CHARS) return full;
+  const digest = shortDigest(full);
+  return `${full.slice(0, MAX_LESSON_CHARS - digest.length - 1)}~${digest}`;
 }
 
 /** Untruncated issue identity for one finding: `<path>: <full title>` (lowercased) — see cleanTitleLine. */
@@ -451,6 +515,8 @@ export interface WriteLessonsResult {
   rejected: number;
   /** Skipped: this exact finding was already distilled (existing provenance). */
   skipped: number;
+  /** Lesson texts COMPLETED in this call (added/reinforced/skipped — not rejected). */
+  completed: string[];
 }
 
 /**
@@ -467,11 +533,12 @@ export async function writeLessonsToMemory(
   lessons: DistilledLesson[],
   repo: RepoInfo,
 ): Promise<WriteLessonsResult> {
-  const result: WriteLessonsResult = { added: 0, reinforced: 0, rejected: 0, skipped: 0 };
+  const result: WriteLessonsResult = { added: 0, reinforced: 0, rejected: 0, skipped: 0, completed: [] };
   for (const lesson of lessons.slice(0, MAX_MEMORY_WRITES_PER_FIRE)) {
     const derivedFrom = findingProvenance(lesson.findingIds[0]!, repo);
     if (findMemoryLineByDerivedFrom(cwd, derivedFrom)) {
       result.skipped++;
+      result.completed.push(lesson.text);
       log.debug("lesson_already_distilled", { derivedFrom });
       continue;
     }
@@ -495,6 +562,7 @@ export async function writeLessonsToMemory(
         reason: String((add as { message?: string }).message ?? "").slice(0, 300),
       });
     }
+    if (add.status !== "rejected") result.completed.push(lesson.text);
     log.debug("lesson_write", { derivedFrom, status: add.status });
   }
   return result;
@@ -823,6 +891,27 @@ export interface ReviewLearningOptions {
   writeLessons?: typeof writeLessonsToMemory;
 }
 
+/**
+ * The running module's mtime as an ISO stamp — the reload-observability
+ * signal. Fail-soft: returns null when the stat lookup throws (a broken
+ * stamp must never fail registration).
+ */
+export function moduleMtimeStamp(modulePath: string = fileURLToPath(import.meta.url)): string | null {
+  try {
+    return statSync(modulePath).mtime.toISOString();
+  } catch {
+    return null;
+  }
+}
+
+/** Emit the reload-status stamp through `logger` (injectable for tests). */
+export function emitReviewLearningLoaded(
+  logger: { info: (event: string, data?: unknown) => void } = log,
+): void {
+  const moduleMtime = moduleMtimeStamp();
+  if (moduleMtime) logger.info("review_learning_loaded", { moduleMtime });
+}
+
 export function createReviewLearning(options: ReviewLearningOptions = {}) {
   const repoInfo = options.repoInfo ?? resolveRepoInfo;
   const diffPaths = options.diffPaths ?? branchDiffPaths;
@@ -843,13 +932,16 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
    * Full distillation pipeline for one address fire. `command` identifies the
    * addressed PR (explicit `--json` file → metadata.pr_number — no newest-JSON
    * fallback, which could target a leftover file from another PR after the
-   * final run deletes its own). When the PR filter finds nothing (or an
-   * already-distilled row — a partial, non-storing run), fall back to the
-   * newest-for-repo review that has not been distilled: on final (storing)
-   * runs that is exactly the just-stored row. A review whose lesson writes
-   * were REJECTED is not marked distilled — the next fire retries it (a
-   * rejected write is a temporary condition, e.g. a full topic or a
-   * false-positive contradiction, not completion). Settings-gated, fail-soft.
+   * final run deletes its own). Selection is PR-SCOPED when the PR is known:
+   * an explicit PR with no stored review, or one already distilled, is a
+   * no-op — a partial re-run must never distill a review belonging to a
+   * DIFFERENT PR. Repo-wide newest selection happens ONLY when no explicit
+   * target exists (prNumber null), which is exactly the final, storing run
+   * whose JSON was just deleted — the just-stored row. A review whose lesson
+   * writes were REJECTED stays retryable, but only its UNWRITTEN lessons are
+   * re-attempted (completed lessons are persisted per review — re-processing
+   * them would inflate evidence without a new occurrence). Settings-gated,
+   * fail-soft.
    */
   const distill = async (cwd: string, command?: string): Promise<void> => {
     if (!getSetting(cwd, "review_learning")) {
@@ -865,20 +957,30 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
     const dbPath = join(dataDir, "reviews.db");
     const distilled = loadDistilledReviews(dataDir);
     const prNumber = prNumberFromCommand(command, cwd);
-    let review = prNumber ? getLatestReview(dbPath, repo.owner, repo.repo, prNumber) : null;
-    if (!review || distilled.has(review.id)) {
-      // Safeguard: fall back to the newest not-yet-distilled review for the
-      // repo (the just-stored row on final runs).
-      const newest = getLatestReview(dbPath, repo.owner, repo.repo);
-      if (newest && !distilled.has(newest.id)) review = newest;
-    }
-    if (!review) {
-      log.debug("skipped_no_review_row", { owner: repo.owner, repo: repo.repo, prNumber });
-      return;
-    }
-    if (distilled.has(review.id)) {
-      log.debug("skipped_review_already_distilled", { reviewId: review.id, prNumber: review.prNumber });
-      return;
+    let review: ReviewRow | null = null;
+    if (prNumber !== null) {
+      // Explicit target: PR-scoped only — never fall back to another PR.
+      review = getLatestReview(dbPath, repo.owner, repo.repo, prNumber);
+      if (!review) {
+        log.debug("skipped_no_review_row", { owner: repo.owner, repo: repo.repo, prNumber });
+        return;
+      }
+      if (distilled.has(review.id)) {
+        log.debug("skipped_review_already_distilled", { reviewId: review.id, prNumber: review.prNumber });
+        return;
+      }
+    } else {
+      // No explicit target (final storing run deleted its JSON): the newest
+      // not-yet-distilled review for the repo is exactly the just-stored row.
+      review = getLatestReview(dbPath, repo.owner, repo.repo);
+      if (!review) {
+        log.debug("skipped_no_review_row", { owner: repo.owner, repo: repo.repo, prNumber: null });
+        return;
+      }
+      if (distilled.has(review.id)) {
+        log.debug("skipped_review_already_distilled", { reviewId: review.id, prNumber: review.prNumber });
+        return;
+      }
     }
     const findings = getAddressedComments(dbPath, review.id);
     if (findings.length === 0) {
@@ -894,16 +996,26 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
       markReviewDistilled(dataDir, review.id);
       return;
     }
-    const written = await writeLessons(cwd, lessons, repo);
+    // Per-lesson retry bookkeeping: only lessons not yet successfully written.
+    const completed = loadReviewLessons(dataDir).get(review.id) ?? new Set<string>();
+    const pending = lessons.filter((l) => !completed.has(l.text));
+    if (pending.length === 0) {
+      // Everything already written on an earlier fire (rejected then resolved
+      // elsewhere) — the review is complete.
+      markReviewDistilled(dataDir, review.id);
+      log.info("distill_finish", { reviewId: review.id, findings: findings.length, lessons: lessons.length, reason: "all lessons already written" });
+      return;
+    }
+    const written = await writeLessons(cwd, pending, repo);
+    if (written.completed.length > 0) recordReviewLessons(dataDir, review.id, written.completed);
     if (written.rejected > 0) {
-      // Rejected writes are retryable, not complete — leave the review
-      // unmarked so the next address fire retries the rejected lessons.
+      // Rejected writes are retryable, not complete — the review stays
+      // unmarked; the next fire re-attempts ONLY the still-unwritten lessons.
       log.warn("distill_incomplete", {
         reviewId: review.id,
         rejected: written.rejected,
-        added: written.added,
-        reinforced: written.reinforced,
-        skipped: written.skipped,
+        completed: written.completed.length,
+        pending: pending.length,
       });
       return;
     }
@@ -924,13 +1036,7 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
     // (registration re-runs on /reload). Comparing this against the deployed
     // file's mtime answers "is the session running the deployed code?"
     // mechanically — no guessing about whether a reload happened.
-    try {
-      log.info("review_learning_loaded", {
-        moduleMtime: statSync(fileURLToPath(import.meta.url)).mtime.toISOString(),
-      });
-    } catch {
-      // never fail registration over a stamp
-    }
+    emitReviewLearningLoaded();
 
     // Subagent children never run `reviews address` (main-session bash by design)
     // and receive their findings via the dispatch rewrite below, not by re-querying.

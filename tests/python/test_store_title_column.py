@@ -160,30 +160,48 @@ def test_store_reviews_persists_titles_and_backfills_legacy_rows(
         conn.close()
 
 
-def test_fetch_qodo_sticky_findings_propagates_parsed_titles() -> None:
-    """fetch_qodo_sticky_findings must carry the parsed title into each finding.
+STICKY_BODY = (
+    "<h3>Code Review by Qodo</h3>\n"
+    "<details><summary>  1.  <b>Unhandled None on the endpoint</b> "
+    "<code>🐞 Bug</code> <code>≡ Correctness</code></summary>"
+    "\n<pre>src/api.py:42</pre>\n<code>src/api.py:42</code>\ndesc\n</details>"
+)
 
-    The store prefers `comments.title`; if fetch dropped it, sticky findings
-    would land with NULL titles and readers would re-extract from the
-    synthesized `**title**` body on every read.
-    """
+
+def test_fetch_qodo_sticky_findings_filters_eligible_comments() -> None:
+    """Only eligible sticky bot comments yield findings — nothing else."""
     from myk_pi_tools.reviews.fetch import fetch_qodo_sticky_findings
 
-    sticky_body = (
-        "<h3>Code Review by Qodo</h3>\n"
-        "<details><summary>  1.  <b>Unhandled None on the endpoint</b> "
-        "<code>🐞 Bug</code> <code>≡ Correctness</code></summary>"
-        "\n<pre>src/api.py:42</pre>\n<code>src/api.py:42</code>\ndesc\n</details>"
-    )
     comments = [
-        {"id": 4282020651, "user": {"login": "qodo-code-review[bot]"}, "body": sticky_body},
+        {"id": 4282020651, "user": {"login": "qodo-code-review[bot]"}, "body": STICKY_BODY},
         # a non-sticky bot comment is ignored entirely
         {"id": 2, "user": {"login": "qodo-code-review[bot]"}, "body": "some reply"},
         # a human comment is ignored
         {"id": 3, "user": {"login": "someone"}, "body": "<h3>Code Review by Qodo</h3>"},
+        # no user at all is ignored
+        {"id": 4, "body": STICKY_BODY},
     ]
     findings = fetch_qodo_sticky_findings("myk-org", "demo", "42", comments=comments)
     assert len(findings) == 1, "only the sticky bot comment yields findings"
+    assert findings[0]["comment_id"] == 4282020651
+
+
+def test_fetch_qodo_sticky_findings_propagates_parsed_title_and_body() -> None:
+    """The parsed title must reach the finding (the store prefers comments.title).
+
+    If fetch dropped it, sticky findings would land with NULL titles and
+    readers would re-extract from the synthesized `**title**` body on every
+    read.
+    """
+    from myk_pi_tools.reviews.fetch import fetch_qodo_sticky_findings
+
+    findings = fetch_qodo_sticky_findings(
+        "myk-org",
+        "demo",
+        "42",
+        comments=[{"id": 4282020651, "user": {"login": "qodo-code-review[bot]"}, "body": STICKY_BODY}],
+    )
+    assert len(findings) == 1
     assert findings[0]["title"] == "Unhandled None on the endpoint", "parsed title must propagate"
     assert findings[0]["body"].startswith("**Unhandled None on the endpoint**")
 
@@ -248,3 +266,58 @@ def test_store_reviews_does_not_rescan_null_titles_on_every_store(
         store, "backfill_titles", lambda _conn: (_ for _ in ()).throw(AssertionError("NULL titles rescanned"))
     )
     store.store_reviews(json_path)
+
+
+def test_failed_store_after_migration_keeps_the_backfill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A store that fails after the title migration must not lose the backfill.
+
+    sqlite3 ALTER TABLE autocommits, so gating the one-shot backfill on "the
+    column just appeared" loses it when the store's own transaction later
+    rolls back. The backfill+marker commit in their own transaction first.
+    """
+    from myk_pi_tools.reviews import store
+
+    db_path = tmp_path / ".pi" / "data" / "reviews.db"
+    db_path.parent.mkdir(parents=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(LEGACY_SCHEMA)
+    conn.execute(
+        "INSERT INTO reviews (pr_number, owner, repo, commit_sha, created_at) "
+        "VALUES (41, 'myk-org', 'demo', 'sha-old', '2026-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO comments (review_id, source, path, line, body, status) "
+        "VALUES (1, 'qodo', 'src/api.py', 1, ?, 'addressed')",
+        (QODO_BODY,),
+    )
+    conn.commit()
+    conn.close()
+
+    json_path = tmp_path / "pr-42-reviews.json"
+    json_path.write_text(
+        json.dumps({
+            "metadata": {"owner": "myk-org", "repo": "demo", "pr_number": 42},
+            "human": [],
+            "qodo": [],
+            "coderabbit": [],
+        })
+    )
+    monkeypatch.setattr(store, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(store, "get_current_commit_sha", lambda: "sha-new")
+
+    def _boom(*_args: object, **_kwargs: object) -> int:
+        raise sqlite3.OperationalError("simulated store failure")
+
+    monkeypatch.setattr(store, "insert_review", _boom)
+    with pytest.raises(SystemExit):
+        store.store_reviews(json_path)
+
+    # the backfill SURVIVED the failed store (own committed transaction)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        title = conn.execute("SELECT title FROM comments WHERE id = 1").fetchone()[0]
+        marker = conn.execute("SELECT value FROM schema_meta WHERE key = 'title_backfill_rows'").fetchone()
+    finally:
+        conn.close()
+    assert title == "Formatted tool permissions bypass pinned-rule protection", "backfill persisted"
+    assert marker is not None and marker[0] == "1", "marker persisted — later stores never rescan"

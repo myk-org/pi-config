@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from myk_pi_tools.logger import create_logger
 from myk_pi_tools.reviews.title_extraction import extract_finding_title
 
 # Schema for the reviews database
@@ -52,15 +53,17 @@ CREATE TABLE IF NOT EXISTS comments (
 
 CREATE INDEX IF NOT EXISTS idx_comments_review_id ON comments(review_id);
 CREATE INDEX IF NOT EXISTS idx_comments_source ON comments(source);
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);
 CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(owner, repo, pr_number);
 CREATE INDEX IF NOT EXISTS idx_reviews_commit ON reviews(commit_sha);
 """
 
 
-def log(message: str) -> None:
-    """Print message to stderr."""
-    print(message, file=sys.stderr)
+log = create_logger(__name__)
 
 
 def get_project_root() -> Path:
@@ -78,15 +81,15 @@ def get_project_root() -> Path:
             timeout=5,
         )
         if result.returncode != 0:
-            log(f"Error: git rev-parse failed: {result.stderr.strip()}")
+            log.error(f"Error: git rev-parse failed: {result.stderr.strip()}")
             sys.exit(1)
         git_common = Path(result.stdout.strip()).resolve()
         return git_common.parent
     except subprocess.TimeoutExpired:
-        log("Error: git command timed out")
+        log.error("Error: git command timed out")
         sys.exit(1)
     except FileNotFoundError:
-        log("Error: git command not found")
+        log.error("Error: git command not found")
         sys.exit(1)
 
 
@@ -94,7 +97,7 @@ def ensure_database_directory(db_path: Path) -> None:
     """Create database directory with 0700 permissions if needed."""
     db_dir = db_path.parent
     if not db_dir.exists():
-        log(f"Creating directory: {db_dir}")
+        log.info(f"Creating directory: {db_dir}")
         db_dir.mkdir(parents=True, mode=0o700)
     else:
         # Ensure existing directory has correct permissions
@@ -160,15 +163,15 @@ def get_current_commit_sha(cwd: Path | None = None) -> str:
             cwd=cwd,
         )
         if result.returncode != 0:
-            log(f"Warning: Could not get commit SHA: {result.stderr.strip()}")
+            log.warning(f"Warning: Could not get commit SHA: {result.stderr.strip()}")
             return "unknown"
         sha = result.stdout.strip()
         if not sha:
-            log("Warning: Could not get commit SHA: empty output")
+            log.warning("Warning: Could not get commit SHA: empty output")
             return "unknown"
         return sha  # Full SHA for traceability
     except (subprocess.SubprocessError, OSError) as e:
-        log(f"Warning: Could not get commit SHA: {e}")
+        log.warning(f"Warning: Could not get commit SHA: {e}")
         return "unknown"
 
 
@@ -229,15 +232,15 @@ def insert_comment(conn: sqlite3.Connection, review_id: int, source: str, commen
 def store_reviews(json_path: Path) -> None:
     """Store reviews from JSON to SQLite."""
     # Read JSON file
-    log(f"Reading JSON file: {json_path}")
+    log.info(f"Reading JSON file: {json_path}")
     try:
         with open(json_path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        log(f"Error: JSON file not found: {json_path}")
+        log.error(f"Error: JSON file not found: {json_path}")
         sys.exit(1)
     except json.JSONDecodeError as e:
-        log(f"Error: Invalid JSON in file: {e}")
+        log.error(f"Error: Invalid JSON in file: {e}")
         sys.exit(1)
 
     # Extract review metadata (nested in metadata object)
@@ -248,7 +251,7 @@ def store_reviews(json_path: Path) -> None:
     pr_number = int(pr_number_raw) if pr_number_raw else 0
 
     if not owner or not repo or not pr_number:
-        log("Error: JSON missing required fields (owner, repo, pr_number)")
+        log.error("Error: JSON missing required fields (owner, repo, pr_number)")
         sys.exit(1)
 
     # Get project root and database path
@@ -259,11 +262,11 @@ def store_reviews(json_path: Path) -> None:
     # records main's HEAD for every review regardless of the branch under review.
     commit_sha = get_current_commit_sha()
 
-    log(f"Storing reviews for {owner}/{repo}#{pr_number} (commit: {commit_sha[:7]})...")
+    log.info(f"Storing reviews for {owner}/{repo}#{pr_number} (commit: {commit_sha[:7]})...")
 
     db_path = project_root / ".pi" / "data" / "reviews.db"
 
-    log(f"Database: {db_path}")
+    log.info(f"Database: {db_path}")
 
     # Ensure directory exists
     ensure_database_directory(db_path)
@@ -273,16 +276,28 @@ def store_reviews(json_path: Path) -> None:
     try:
         # Enable foreign key constraints for referential integrity
         conn.execute("PRAGMA foreign_keys=ON")
-        title_migrated = create_tables(conn)
+        create_tables(conn)
 
-        # Backfill runs ONCE, when the title column just landed — never on
-        # every store (historical rows that yield no title would otherwise be
-        # re-scanned and re-parsed on every store, growing with review
-        # history). Rows that yield no title keep NULL; readers fall back to
-        # body extraction for those. New rows get titles at insert time.
-        if title_migrated:
+        # One-shot title backfill, tracked by a PERSISTED marker (not by "did
+        # the column just appear"): sqlite3's ALTER TABLE autocommits, so a
+        # store that fails after migrating would otherwise leave the column
+        # present while the backfill UPDATEs roll back with the store's
+        # transaction — every later store would see no migration and the
+        # historical rows would stay NULL forever. The marker is committed in
+        # its own transaction together with the backfill, so a later store
+        # failure cannot lose it, and a failed backfill leaves no marker and
+        # is retried on the next store. Rows that yield no title keep NULL;
+        # readers fall back to body extraction for those. New rows get titles
+        # at insert time.
+        marker = conn.execute("SELECT value FROM schema_meta WHERE key = 'title_backfill_rows'").fetchone()
+        if marker is None:
             backfilled = backfill_titles(conn)
-            log(f"Migrated: added comments.title, backfilled {backfilled} row(s)")
+            conn.execute(
+                "INSERT INTO schema_meta (key, value) VALUES ('title_backfill_rows', ?)",
+                (str(backfilled),),
+            )
+            conn.commit()  # own transaction — survives later store failures
+            log.info(f"Backfilled comments.title for {backfilled} row(s)")
 
         # Insert new review record (append-only, never update)
         # RuntimeError in insert_review handles invalid lastrowid
@@ -305,11 +320,11 @@ def store_reviews(json_path: Path) -> None:
         count_parts = [f"{v} {k}" for k, v in counts.items() if v > 0]
         count_summary = ", ".join(count_parts) if count_parts else "0 comments"
 
-        log(f"Stored review (commit: {commit_sha[:7]}) with {total_comments} comments ({count_summary})")
+        log.info(f"Stored review (commit: {commit_sha[:7]}) with {total_comments} comments ({count_summary})")
 
     except sqlite3.Error as e:
         conn.rollback()
-        log(f"Database error: {e}")
+        log.info(f"Database error: {e}")
         sys.exit(1)
     finally:
         conn.close()
@@ -317,9 +332,9 @@ def store_reviews(json_path: Path) -> None:
     # Delete JSON file after successful storage
     try:
         json_path.unlink()
-        log(f"Deleted JSON file: {json_path}")
+        log.info(f"Deleted JSON file: {json_path}")
     except OSError as e:
-        log(f"Warning: Could not delete JSON file: {e}")
+        log.warning(f"Warning: Could not delete JSON file: {e}")
 
 
 def run(json_path: str) -> None:
@@ -331,7 +346,7 @@ def run(json_path: str) -> None:
     json_path_obj = Path(json_path).resolve()
 
     if not json_path_obj.exists():
-        log(f"Error: JSON file does not exist: {json_path}")
+        log.error(f"Error: JSON file does not exist: {json_path}")
         sys.exit(1)
 
     store_reviews(json_path_obj)
