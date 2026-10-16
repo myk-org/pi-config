@@ -1381,9 +1381,6 @@ export default function (pi: ExtensionAPI) {
 	// ━━ task heartbeat keepalive timer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let taskHeartbeatTimer: NodeJS.Timeout | null = null;
 
-	// ━━ #924 §1: steer reply timeout — lost receipts resolve after 5 min ━━
-	const STEER_TIMEOUT_MS = 300_000;
-
 	// ━━ #924 §6: progress-signal timer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let progressSignalTimer: NodeJS.Timeout | null = null;
 	const PROGRESS_SIGNAL_INTERVAL_MS = 60_000;
@@ -2193,13 +2190,15 @@ Do not respond to this message.`;
 			target_name: target.name,
 			created_at: nowIso(),
 		};
-		// Steers are ack-only: the receiver sends a terminal "steered" receipt
-		// within milliseconds of injection, so the entry is transient. If the
-		// receipt is lost, resolve after STEER_TIMEOUT_MS (not the full
-		// TIMEOUT_MS) so bookkeeping does not linger for 30 minutes. If the
-		// receiver could not inject (idle, cap, failure), the message was
-		// queued normally and the real reply resolves the entry as usual.
-		const effectiveTimeout = params.steer ? Math.min(STEER_TIMEOUT_MS, TIMEOUT_MS) : TIMEOUT_MS;
+		// Steers use the FULL timeout, same as normal sends (Qodo ccd126a8):
+		// the receiver decides at arrival time whether to inject or queue, and
+		// the sender cannot know which happened. An injected steer resolves in
+		// milliseconds via the terminal "steered" receipt; a queued steer
+		// (idle peer, cap reached, injection failure) is answered by the real
+		// reply, which can legitimately take longer than any short timeout.
+		// A short steer-specific timeout would orphan those late replies. The
+		// only cost of the full timeout is a lingering entry when the receipt
+		// is lost — one small object for at most TIMEOUT_MS.
 		entry.timer = setTimeout(() => {
 			if (entry.result) return;
 			entry.result = { error: "timeout" };
@@ -2208,7 +2207,7 @@ Do not respond to this message.`;
 			const pSet = pendingOutbound.get(target.name);
 			if (pSet) { pSet.delete(msg_id); if (pSet.size === 0) pendingOutbound.delete(target.name); }
 			setTimeout(() => { pendingReplies.delete(msg_id); }, 60_000).unref();
-		}, effectiveTimeout);
+		}, TIMEOUT_MS);
 		// Don't keep the event loop alive solely for this timer.
 		try { (entry.timer as any).unref?.(); } catch { /* ignore */ }
 		pendingReplies.set(msg_id, entry);

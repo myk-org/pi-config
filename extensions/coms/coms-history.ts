@@ -13,7 +13,7 @@
  * Size-rotation keeps the file bounded: past HISTORY_MAX_FILE_BYTES the
  * oldest lines are dropped to the last HISTORY_KEEP_BYTES of complete lines.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createLogger } from "../shared/logger.js";
 
@@ -96,12 +96,63 @@ function rotateIfNeeded(filePath: string): void {
 	}
 }
 
+/** Synchronous sleep (Atomics.wait on a fresh SharedArrayBuffer). */
+function syncSleepMs(ms: number): void {
+	try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* best-effort */ }
+}
+
+const HISTORY_LOCK_STALE_MS = 10_000;
+
+/**
+ * Cross-process mutual exclusion for history writes (#924 §5, Qodo ade011fc):
+ * the file is shared by every coms session on the machine, and rotation is a
+ * read-modify-write — an append landing between another process's read and
+ * rewrite would be erased. mkdir is atomic, so a lock directory next to the
+ * file serializes rotate+append across processes. Best-effort by contract:
+ * bounded wait, stale locks (crashed holder) are stolen, and failure to
+ * acquire falls back to a plain append — the worst case is a deferred
+ * rotation, never a lost delivery.
+ */
+function withHistoryLock<T>(filePath: string, fn: (locked: boolean) => T): T {
+	const lockDir = `${filePath}.lock`;
+	const deadline = Date.now() + 200;
+	for (;;) {
+		try {
+			mkdirSync(lockDir);
+			try {
+				return fn(true);
+			} finally {
+				try { rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+			}
+		} catch (error: any) {
+			if (error?.code !== "EEXIST") break;
+			// Steal a stale lock left behind by a crashed holder.
+			try {
+				const lockAge = Date.now() - statSync(lockDir).mtimeMs;
+				if (lockAge > HISTORY_LOCK_STALE_MS) {
+					rmSync(lockDir, { recursive: true, force: true });
+					log.warn("history lock stale — stolen");
+					continue;
+				}
+			} catch { /* lock vanished — retry immediately */ }
+			if (Date.now() >= deadline) break;
+			syncSleepMs(10);
+		}
+	}
+	// Lock unavailable — run unlocked. Rotation is skipped (the caller checks
+	// the locked flag) so the read-modify-write race cannot recur; only the
+	// rotation is deferred, never the append.
+	return fn(false);
+}
+
 /** Append one record. Fail-soft by contract — delivery never waits on history. */
 export function appendHistoryRecord(filePath: string, record: HistoryRecord): boolean {
 	try {
 		mkdirSync(dirname(filePath), { recursive: true });
-		rotateIfNeeded(filePath);
-		appendFileSync(filePath, `${JSON.stringify(record)}\n`, "utf-8");
+		withHistoryLock(filePath, (locked) => {
+			if (locked) rotateIfNeeded(filePath);
+			appendFileSync(filePath, `${JSON.stringify(record)}\n`, "utf-8");
+		});
 		return true;
 	} catch (error) {
 		log.warn(`history append failed (swallowed): ${error instanceof Error ? error.message : String(error)}`);
