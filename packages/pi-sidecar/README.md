@@ -36,6 +36,9 @@ simple JSON API. Ships with a Python client for easy integration.
 - **HTTP-backed tools** — custom tools with `http` config get automatic request execution with parameter interpolation and security hardening
 - **Subagent delegation** — delegate tasks to specialized agents via the `subagent` tool (loaded as a Pi SDK extension)
 - **Watchdog** — opt-in health-check poller for companion backend liveness
+- **Session transcripts** — opt-in JSONL recording of every turn (including
+  full tool-call loops) for offline analysis; see
+  [session transcripts](#session-transcripts)
 - **Localhost-only** — binds to `127.0.0.1` by default; no auth needed behind the network boundary
 
 ## Packages
@@ -264,6 +267,50 @@ limits: when the live listing omits them, the sidecar falls back to the
 manifest-declared `contextWindow`/`maxTokens` for that id, and otherwise
 rejects the session with a 400 naming the models.json remedy — limits are
 never fabricated for an unknown model.
+
+## Session Transcripts
+
+`RECORD_TRANSCRIPTS=1` (off by default) makes the sidecar persist every
+session turn — the user prompt, assistant text, tool calls with their
+arguments, tool results, and aggregated usage — as JSONL under
+`~/.pi/sidecar/transcripts/{session_id}.jsonl`. One line is written per turn,
+plus a `session_header` line on session creation (`created_at`, provider,
+model, redacted system prompt, cwd, custom tool names). Turn records carry
+the full redacted message array plus a `final_text` field with the assembled
+response, usage under its documented names (`input`, `output`, `cache_read`,
+`cache_write`, `cost_usd`, `cost_partial`, `duration_ms`), the stop reason,
+and any collected error events. Prompts that reject without completing still
+leave a turn record (submitted prompt, partial output, errors, usage) so
+failed turns are visible to offline analysis.
+
+Every string in a record — including object property names — passes through
+the session's credential redactor before it is written, and a single record
+is capped at 8 MiB measured in UTF-8 bytes (an oversized record is replaced
+with a small placeholder line). Writes for a session are chained in turn
+order and drained at shutdown, so completed turns are not lost and records
+never interleave. Writes are fail-soft: a transcript failure is logged and
+swallowed, never propagated into the prompt response. When disabled, the
+feature performs zero I/O — no directory is created, no file is touched,
+and no per-turn state is kept.
+
+Retention is enforced opportunistically (at most one scan per minute) on
+session creation **and** while turns are being written, and never deletes
+the transcript of a session that is still open. Files belonging to active
+sessions are excluded from both age and size pruning.
+
+| Env var | Effect |
+|---|---|
+| `RECORD_TRANSCRIPTS` | `1`/`true`/`yes`/`on` enables recording; anything else (or unset) disables it |
+| `PI_SIDECAR_TRANSCRIPTS_DIR` | Override the transcript directory (default `~/.pi/sidecar/transcripts`) |
+| `PI_SIDECAR_TRANSCRIPTS_MAX_AGE_DAYS` | Delete transcript files older than this many days (`0`/unset disables age pruning) |
+| `PI_SIDECAR_TRANSCRIPTS_MAX_SIZE_MB` | Delete oldest transcript files until the directory is under this budget (`0`/unset disables size pruning) |
+
+**Container deployments:** the default directory lives under the user's
+home directory, which is typically ephemeral in containers. Any deployment
+that enables recording (e.g. RootCoz) MUST set `PI_SIDECAR_TRANSCRIPTS_DIR`
+to a writable path on a persisted volume (RootCoz: a subdirectory of its
+`/data` mount), or recorded transcripts are lost when the container is
+replaced.
 
 ## CLI Commands
 

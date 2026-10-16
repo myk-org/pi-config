@@ -27,6 +27,7 @@ import { createLogger, logger } from "./logger.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig } from "./http-tool-executor.js";
 import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
 import { runWithSessionCwd } from "./session-cwd.js";
+import { drainTranscriptWrites, maybeEnforceRetention, queueTurn, transcriptUsage, transcriptsEnabled, writeSessionHeader } from "./transcripts.js";
 
 const fixtureLog = createLogger("session-store");
 const pricingLog = createLogger("session-store");
@@ -895,6 +896,8 @@ interface SessionEntry {
   inFlight: boolean;
   cwd: string;
   redact: (value: string) => string;
+  /** 1-based count of prompts sent to this session — the transcript turn number. */
+  turnCount: number;
   /**
    * Whether the session's model carries real prices. Pi requires numeric prices,
    * so a model whose source published none (key-scoped listing, CLI/ACPX
@@ -1111,6 +1114,7 @@ export class SessionStore {
       cwd,
       redact: (value) => value,
       pricingKnown,
+      turnCount: 0,
     });
   }
 
@@ -1926,8 +1930,24 @@ export class SessionStore {
       throw httpError("Sidecar is shutting down", 503);
     }
 
-    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model) });
+    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0 });
     log.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${customTools.length})`);
+    // Transcript recording (issue #922) — OFF unless RECORD_TRANSCRIPTS is
+    // truthy; the header write is fail-soft and awaited so it precedes any
+    // turn record for this session. Retention runs opportunistically and
+    // never prunes a live session's file (this one included).
+    if (transcriptsEnabled()) {
+      await writeSessionHeader({
+        sessionId: id,
+        provider: options.provider,
+        model: options.model,
+        systemPrompt: options.systemPrompt,
+        cwd: options.cwd,
+        customTools: customTools.map((tool: CustomToolConfig) => tool.name),
+        redact,
+      });
+      maybeEnforceRetention(new Set(this.sessions.keys()));
+    }
     return id;
     } catch (err) {
       const message = redactDiagnostic(err instanceof Error ? err.message : String(err), redact);
@@ -1947,6 +1967,20 @@ export class SessionStore {
 
     entry.lastActivity = Date.now();
     entry.inFlight = true;
+    // Transcript turn state is mutated only when recording is enabled — the
+    // disabled path stays zero-overhead (#923 review).
+    const recordTurn = transcriptsEnabled();
+    let turnNumber = 0;
+    if (recordTurn) {
+      entry.turnCount += 1;
+      turnNumber = entry.turnCount;
+    }
+    let turnWasRecorded = false;
+    // Captured at agent_end; the turn record is QUEUED only after the response
+    // is fully assembled (boundary separators applied, redaction, final
+    // duration) so the transcript's final_text matches the returned text.
+    let turnMessages: unknown[] | null = null;
+    let turnStopReason: string | undefined;
 
     logger.log(`[sidecar] Prompt started: session=${id}, message_length=${message.length}, cwd=${redactDiagnostic(entry.cwd, entry.redact)}`);
 
@@ -2057,6 +2091,15 @@ export class SessionStore {
             }
           }
         }
+
+        // Transcript recording (issue #922): capture the turn payload here;
+        // the record itself is queued after the response is fully assembled
+        // (see below — boundary processing must not diverge from final_text).
+        if (recordTurn) {
+          turnWasRecorded = true;
+          turnMessages = event.messages;
+          turnStopReason = finalAssistant?.stopReason;
+        }
       }
     });
 
@@ -2064,6 +2107,25 @@ export class SessionStore {
       await runWithSessionCwd(entry.cwd, () => entry.session.prompt(message));
     } catch (err: any) {
       logger.error(`[sidecar] Prompt failed: session=${id}, error=${redactDiagnostic(err?.message || String(err), entry.redact)}, stack=${redactDiagnostic(err instanceof Error ? err.stack ?? err.message : String(err), entry.redact)}`);
+      // Transcript fallback (#923 review): a prompt that rejects without an
+      // agent_end event must still leave a record of the attempt — the
+      // submitted user prompt, partial output, collected errors plus the
+      // rejection error, usage, and the assigned turn number — so offline
+      // analysis sees failed turns too. Fail-soft like every transcript write.
+      if (recordTurn && !turnWasRecorded) {
+        const rejectionError = redactDiagnostic(err?.message || "Prompt rejected", entry.redact);
+        queueTurn({
+          sessionId: id,
+          turnNumber,
+          messages: [{ role: "user", content: [{ type: "text", text: message }] }],
+          usage: transcriptUsage({ ...usage, duration_ms: Date.now() - startTime }),
+          stopReason: "error",
+          finalText: responseText || undefined,
+          errors: [rejectionError, ...errors].slice(0, 10),
+          redact: entry.redact,
+        });
+        maybeEnforceRetention(new Set(this.sessions.keys()));
+      }
       // If we captured partial text or error events before the rejection,
       // return structured data instead of throwing — preserves partial state for callers
       if (responseText || errors.length > 0) {
@@ -2167,6 +2229,26 @@ export class SessionStore {
     usage.duration_ms = Date.now() - startTime;
     logger.log(`[sidecar] PROMPT_COMPLETED: session=${id}, text_length=${responseText.length}, deltas=${textDeltaCount}, tokens_in=${usage.input_tokens}, tokens_out=${usage.output_tokens}, duration_ms=${usage.duration_ms}`);
 
+    // Transcript recording (issue #922): queue the turn NOW — after boundary
+    // separators, redaction, and the final duration — so the record's
+    // final_text is exactly the text returned to the caller. Queued on the
+    // session's ordered write chain; heavy work is deferred off this path
+    // inside appendTurn. Usage is mapped to the documented schema names;
+    // collected SDK errors are included alongside the response.
+    if (recordTurn && turnMessages) {
+      queueTurn({
+        sessionId: id,
+        turnNumber,
+        messages: turnMessages,
+        usage: transcriptUsage(usage),
+        stopReason: turnStopReason,
+        finalText: responseText,
+        errors: errors.length > 0 ? [...errors] : undefined,
+        redact: entry.redact,
+      });
+      maybeEnforceRetention(new Set(this.sessions.keys()));
+    }
+
     // If we got errors from the AI, surface them
     if (errors.length > 0) {
       const errorText = errors.join("; ") + (errorsDropped > 0 ? ` [+${errorsDropped} more]` : "");
@@ -2222,6 +2304,7 @@ export class SessionStore {
   async disposeAll(): Promise<void> {
     this._disposed = true;
 
+
     // Await in-flight ensureInternalRuntime() so a runtime that finishes after
     // `_disposed` is set is still assigned (or orphan-disposed) before we tear
     // down — otherwise we could return while createAgentSessionRuntime is still
@@ -2260,6 +2343,12 @@ export class SessionStore {
     this.modelRuntime = undefined;
     this.modelRegistry = undefined;
     this.runtimeInit = undefined;
+
+    // Drain outstanding transcript writes LAST (#923 review): sessions are
+    // disposed above, so fallback records queued by disposal-rejected prompts
+    // are already in flight; the drain re-snapshots until the chains settle
+    // (bounded at 10s, warn-logged on timeout — never reported as success).
+    await drainTranscriptWrites();
   }
 
   cleanupStale(maxAge: number): number {
