@@ -1979,11 +1979,13 @@ Do not respond to this message.`;
 		// Entries keep living ~60s after their reply (coms_get grace period) —
 		// a result already set means the reply landed, so the ⏳ note must not
 		// linger for that whole window.
-		const progressByPeer = new Map<string, string>();
+		const progressByPeer = new Map<string, { note: string; at: string }>();
 		for (const pr of pendingReplies.values()) {
 			if (!pr.progress || !pr.target_name || pr.result) continue;
 			const existing = progressByPeer.get(pr.target_name);
-			if (!existing || existing < pr.progress.at) progressByPeer.set(pr.target_name, pr.progress.note);
+			// Compare timestamp-vs-timestamp (Qodo e4a2a85b): the stored value
+			// is {note, at}, never the note text.
+			if (!existing || pr.progress.at > existing.at) progressByPeer.set(pr.target_name, { note: pr.progress.note, at: pr.progress.at });
 		}
 
 		for (const [sid, card] of peerCards.entries()) {
@@ -1999,7 +2001,7 @@ Do not respond to this message.`;
 				tasks: card.tasks_summary,
 				queue_depth: card.queue_depth ?? 0,
 				busy: card.busy ?? false,
-				progress: progressByPeer.get(card.name),
+				progress: progressByPeer.get(card.name)?.note,
 			});
 		}
 
