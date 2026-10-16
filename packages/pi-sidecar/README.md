@@ -36,6 +36,9 @@ simple JSON API. Ships with a Python client for easy integration.
 - **HTTP-backed tools** — custom tools with `http` config get automatic request execution with parameter interpolation and security hardening
 - **Subagent delegation** — delegate tasks to specialized agents via the `subagent` tool (loaded as a Pi SDK extension)
 - **Watchdog** — opt-in health-check poller for companion backend liveness
+- **Session transcripts** — opt-in JSONL recording of every turn (including
+  full tool-call loops) for offline analysis; see
+  [session transcripts](#session-transcripts)
 - **Localhost-only** — binds to `127.0.0.1` by default; no auth needed behind the network boundary
 
 ## Packages
@@ -264,6 +267,32 @@ limits: when the live listing omits them, the sidecar falls back to the
 manifest-declared `contextWindow`/`maxTokens` for that id, and otherwise
 rejects the session with a 400 naming the models.json remedy — limits are
 never fabricated for an unknown model.
+
+## Session Transcripts
+
+`RECORD_TRANSCRIPTS=1` (off by default) makes the sidecar persist every
+session turn — the user prompt, assistant text, tool calls with their
+arguments, tool results, and aggregated usage — as JSONL under
+`~/.pi/sidecar/transcripts/{session_id}.jsonl`. One line is written per turn,
+plus a `session_header` line on session creation (provider, model, redacted
+system prompt, cwd, custom tool names).
+
+Every string in a record (tool arguments, tool results, nested objects)
+passes through the session's credential redactor before it is written, and a
+single record is capped at 8 MiB (an oversized record is replaced with a
+placeholder line). Writes are fail-soft: a transcript failure is logged and
+swallowed, never propagated into the prompt response. When disabled, the
+feature performs zero I/O — no directory is created, no file is touched.
+
+Retention is enforced opportunistically on session creation when either
+budget is set:
+
+| Env var | Effect |
+|---|---|
+| `RECORD_TRANSCRIPTS` | `1`/`true`/`yes`/`on` enables recording; anything else (or unset) disables it |
+| `PI_SIDECAR_TRANSCRIPTS_DIR` | Override the transcript directory (default `~/.pi/sidecar/transcripts`) |
+| `PI_SIDECAR_TRANSCRIPTS_MAX_AGE_DAYS` | Delete transcript files older than this many days (`0`/unset disables age pruning) |
+| `PI_SIDECAR_TRANSCRIPTS_MAX_SIZE_MB` | Delete oldest transcript files until the directory is under this budget (`0`/unset disables size pruning) |
 
 ## CLI Commands
 

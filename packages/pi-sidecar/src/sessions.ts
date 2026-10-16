@@ -27,6 +27,7 @@ import { createLogger, logger } from "./logger.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig } from "./http-tool-executor.js";
 import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
 import { runWithSessionCwd } from "./session-cwd.js";
+import { appendTurn, enforceRetention, transcriptsEnabled, writeSessionHeader } from "./transcripts.js";
 
 const fixtureLog = createLogger("session-store");
 const pricingLog = createLogger("session-store");
@@ -895,6 +896,8 @@ interface SessionEntry {
   inFlight: boolean;
   cwd: string;
   redact: (value: string) => string;
+  /** 1-based count of prompts sent to this session — the transcript turn number. */
+  turnCount: number;
   /**
    * Whether the session's model carries real prices. Pi requires numeric prices,
    * so a model whose source published none (key-scoped listing, CLI/ACPX
@@ -1111,6 +1114,7 @@ export class SessionStore {
       cwd,
       redact: (value) => value,
       pricingKnown,
+      turnCount: 0,
     });
   }
 
@@ -1926,8 +1930,23 @@ export class SessionStore {
       throw httpError("Sidecar is shutting down", 503);
     }
 
-    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model) });
+    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0 });
     log.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${customTools.length})`);
+    // Transcript recording (issue #922) — OFF unless RECORD_TRANSCRIPTS is
+    // truthy; the header write is fail-soft and awaited so it precedes any
+    // turn record for this session. Retention runs opportunistically.
+    if (transcriptsEnabled()) {
+      await writeSessionHeader({
+        sessionId: id,
+        provider: options.provider,
+        model: options.model,
+        systemPrompt: options.systemPrompt,
+        cwd: options.cwd,
+        customTools: customTools.map((tool: CustomToolConfig) => tool.name),
+        redact,
+      });
+      void enforceRetention();
+    }
     return id;
     } catch (err) {
       const message = redactDiagnostic(err instanceof Error ? err.message : String(err), redact);
@@ -1947,6 +1966,9 @@ export class SessionStore {
 
     entry.lastActivity = Date.now();
     entry.inFlight = true;
+    entry.turnCount += 1;
+    const turnNumber = entry.turnCount;
+    const recordTurn = transcriptsEnabled();
 
     logger.log(`[sidecar] Prompt started: session=${id}, message_length=${message.length}, cwd=${redactDiagnostic(entry.cwd, entry.redact)}`);
 
@@ -2034,6 +2056,24 @@ export class SessionStore {
           } else {
             errorsDropped++;
           }
+        }
+
+        // Transcript recording (issue #922): persist the full turn — every
+        // message including tool calls with arguments and tool results — with
+        // strings passed through this session's redactor. Fire-and-forget:
+        // appendTurn is fail-soft by contract and must never delay or fail
+        // the prompt response. A usage snapshot is taken now (the object keeps
+        // mutating until the response is assembled).
+        if (recordTurn) {
+          const usageSnapshot = { ...usage, duration_ms: Date.now() - startTime };
+          void appendTurn({
+            sessionId: id,
+            turnNumber,
+            messages: event.messages,
+            usage: usageSnapshot,
+            stopReason: finalAssistant?.stopReason,
+            redact: entry.redact,
+          });
         }
 
         // Fallback: if no text_delta was captured, extract from final assistant message
