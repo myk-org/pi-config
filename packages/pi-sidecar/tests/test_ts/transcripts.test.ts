@@ -1,16 +1,22 @@
 /**
  * Transcript recording (issue #922): JSONL session transcripts with full
  * tool-call loops, redaction, retention, and fail-soft writes.
+ * Round-2 (#923 review): header-field + property-name redaction, created_at,
+ * final_text, UTF-8 byte cap, ordered write chains + shutdown drain,
+ * active-session retention exclusion, rejection fallback records.
  */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionStore } from "../../src/sessions.js";
 import {
   appendTurn,
+  drainTranscriptWrites,
   enforceRetention,
+  maybeEnforceRetention,
+  queueTurn,
   redactStructured,
   transcriptsDir,
   transcriptsEnabled,
@@ -67,15 +73,25 @@ describe("redactStructured", () => {
     assert.equal((out.match(/\[REDACTED\]/g) ?? []).length, 2, "both occurrences redacted");
     assert.ok(out.includes('"count":3'), "numbers pass through");
   });
-  it("handles circular references, buffers, and toJSON objects", () => {
+  it("redacts property names keyed by the credential (#923 review)", () => {
+    const input = { toolResult: { "sk-SECRET-1234": "token-value" } };
+    const out = redactStructured(input, REDACT) as Record<string, Record<string, unknown>>;
+    assert.ok(!("sk-SECRET-1234" in out.toolResult), "credential-bearing key must not survive");
+    assert.equal(Object.keys(out.toolResult)[0], "[REDACTED]");
+    assert.equal(out.toolResult["[REDACTED]"], "token-value", "value preserved");
+  });
+  it("handles circular references", () => {
     const circular: Record<string, unknown> = { name: "x" };
     circular.self = circular;
-    const out = redactStructured(
-      { circular, buf: new Uint8Array([1, 2, 3]), when: new Date(0) },
-      (v) => v,
-    ) as Record<string, unknown>;
+    const out = redactStructured({ circular }, (v) => v) as Record<string, unknown>;
     assert.equal((out.circular as Record<string, unknown>).self, "[circular]");
+  });
+  it("replaces binary values with a placeholder", () => {
+    const out = redactStructured({ buf: new Uint8Array([1, 2, 3]) }, (v) => v) as Record<string, unknown>;
     assert.equal(out.buf, "[binary omitted]");
+  });
+  it("serializes toJSON objects (Date)", () => {
+    const out = redactStructured({ when: new Date(0) }, (v) => v) as Record<string, unknown>;
     assert.equal(out.when, "1970-01-01T00:00:00.000Z");
   });
 });
@@ -106,11 +122,12 @@ describe("JSONL records", () => {
       turnNumber: 1,
       messages: [
         { role: "user", content: [{ type: "text", text: "run it" }] },
-        { role: "assistant", content: [{ type: "toolCall", toolCall: { toolCallId: "tc1", toolName: "bash", arguments: { command: "echo hello" } } }] },
+        { role: "assistant", content: [{ type: "toolCall", toolCall: { toolCallId: "tc1", toolName: "bash", arguments: { command: "echo sk-SECRET-1234" } } }] },
         { role: "toolResult", toolCallId: "tc1", content: [{ type: "text", text: "sk-SECRET-1234 done" }] },
       ],
       usage: { input_tokens: 10, output_tokens: 5, cost_usd: 0.001, cost_partial: false },
       stopReason: "end_turn",
+      finalText: "done — sk-SECRET-1234 redacted",
       redact: REDACT,
     });
     const lines = readFileSync(join(dir, "s1.jsonl"), "utf-8").trim().split("\n").map((l) => JSON.parse(l));
@@ -118,6 +135,8 @@ describe("JSONL records", () => {
     assert.equal(lines[0].type, "session_header");
     assert.equal(lines[0].session_id, "s1");
     assert.equal(lines[0].provider, "rits");
+    assert.ok(lines[0].created_at, "header carries created_at (#923 review)");
+    assert.ok(!Number.isNaN(Date.parse(lines[0].created_at)), "created_at is ISO");
     assert.ok(lines[0].system_prompt.includes("[REDACTED]"), "system prompt redacted");
     assert.deepEqual(lines[0].custom_tools, ["fetch_page"]);
     assert.equal(lines[1].type, "turn");
@@ -125,8 +144,28 @@ describe("JSONL records", () => {
     assert.equal(lines[1].messages.length, 3);
     assert.equal(lines[1].messages[1].content[0].toolCall.toolName, "bash", "tool call preserved");
     assert.ok(!JSON.stringify(lines[1]).includes("sk-SECRET-1234"), "turn fully redacted");
+    assert.equal(lines[1].final_text, "done — [REDACTED] redacted", "final_text present and redacted (#923 review)");
     assert.equal(lines[1].stop_reason, "end_turn");
     assert.equal(lines[1].usage.cost_usd, 0.001);
+  });
+
+  it("redacts every caller-supplied header field (#923 review)", async () => {
+    await writeSessionHeader({
+      sessionId: "s-sec",
+      provider: "p-sk-SECRET-1234",
+      model: "m-sk-SECRET-1234",
+      systemPrompt: undefined,
+      cwd: "/tmp/sk-SECRET-1234",
+      customTools: ["tool-sk-SECRET-1234"],
+      redact: REDACT,
+    });
+    const raw = readFileSync(join(dir, "s-sec.jsonl"), "utf-8");
+    assert.ok(!raw.includes("sk-SECRET-1234"), "no header field persists the credential");
+    const header = JSON.parse(raw.trim());
+    assert.equal(header.provider, "p-[REDACTED]");
+    assert.equal(header.model, "m-[REDACTED]");
+    assert.equal(header.cwd, "/tmp/[REDACTED]");
+    assert.deepEqual(header.custom_tools, ["tool-[REDACTED]"]);
   });
 
   it("swallows write failures — a broken directory never throws", async () => {
@@ -137,18 +176,61 @@ describe("JSONL records", () => {
     // reaching here means both failures were swallowed
   });
 
-  it("bounds record size — an oversized message array is replaced, not written in full", async () => {
+  it("bounds record size in UTF-8 bytes — non-ASCII content (#923 review)", async () => {
+    // 3-byte chars: 3M chars = 9 MB > 8 MiB cap while the character count
+    // (3M) stays well under an 8M-character threshold.
     await appendTurn({
-      sessionId: "s3",
+      sessionId: "s-utf8",
       turnNumber: 1,
-      messages: [{ role: "user", content: [{ type: "text", text: "x".repeat(9 * 1024 * 1024) }] }],
+      messages: [{ role: "user", content: [{ type: "text", text: "€".repeat(3 * 1024 * 1024) }] }],
       usage: {},
       redact: (v) => v,
     });
-    const raw = readFileSync(join(dir, "s3.jsonl"), "utf-8");
-    assert.ok(raw.length < 1024, "oversized record replaced with a placeholder line");
+    const raw = readFileSync(join(dir, "s-utf8.jsonl"), "utf-8");
+    assert.ok(Buffer.byteLength(raw, "utf-8") < 1024, "multibyte record replaced with a bounded placeholder");
     const parsed = JSON.parse(raw.trim());
-    assert.equal(parsed.messages, "[record over size cap omitted]");
+    assert.equal(parsed.note, "record over size cap omitted");
+    assert.equal(parsed.session_id, "s-utf8");
+    assert.equal(parsed.turn_number, 1);
+  });
+
+  it("replaces oversized headers with the bounded placeholder too (#923 review)", async () => {
+    await writeSessionHeader({
+      sessionId: "s-big-header",
+      provider: "p",
+      model: "m",
+      systemPrompt: "€".repeat(3 * 1024 * 1024), // 3-byte chars → 9 MB > 8 MiB cap
+      redact: (v) => v,
+    });
+    const raw = readFileSync(join(dir, "s-big-header.jsonl"), "utf-8");
+    assert.ok(Buffer.byteLength(raw, "utf-8") < 1024, "oversized header replaced");
+    const parsed = JSON.parse(raw.trim());
+    assert.equal(parsed.type, "session_header");
+    assert.equal(parsed.note, "record over size cap omitted");
+  });
+
+  it("chains queued turns in turn order (#923 review)", async () => {
+    // Queue three turns back-to-back with no await between them: the
+    // per-session chain must serialize them as 1, 2, 3 regardless of
+    // payload size or scheduling.
+    for (let i = 1; i <= 3; i++) {
+      queueTurn({
+        sessionId: "s-order",
+        turnNumber: i,
+        messages: [{ role: "user", content: [{ type: "text", text: "x".repeat(100_000 * i) }] }],
+        usage: {},
+        redact: (v) => v,
+      });
+    }
+    await drainTranscriptWrites();
+    const lines = readFileSync(join(dir, "s-order.jsonl"), "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(lines.map((l) => l.turn_number), [1, 2, 3], "strict turn order");
+  });
+
+  it("drainTranscriptWrites waits for queued turns (#923 review)", async () => {
+    queueTurn({ sessionId: "s-drain", turnNumber: 1, messages: [], usage: {}, redact: (v) => v });
+    await drainTranscriptWrites();
+    assert.ok(existsSync(join(dir, "s-drain.jsonl")), "record is on disk when drain resolves");
   });
 });
 
@@ -181,12 +263,25 @@ describe("retention", () => {
     writeFileSync(freshPath, "data");
     const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
     const now = new Date();
-    // backdate via utimes
     utimesSync(oldPath, tenDaysAgo, tenDaysAgo);
     utimesSync(freshPath, now, now);
     await enforceRetention();
     assert.ok(!existsSync(oldPath), "old file removed");
     assert.ok(existsSync(freshPath), "fresh file kept");
+  });
+
+  it("never removes an active session's transcript (#923 review)", async () => {
+    process.env.PI_SIDECAR_TRANSCRIPTS_MAX_AGE_DAYS = "7";
+    const activePath = join(dir, "live-session.jsonl");
+    const closedPath = join(dir, "closed-session.jsonl");
+    writeFileSync(activePath, "data");
+    writeFileSync(closedPath, "data");
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    utimesSync(activePath, tenDaysAgo, tenDaysAgo);
+    utimesSync(closedPath, tenDaysAgo, tenDaysAgo);
+    await enforceRetention(new Set(["live-session"]));
+    assert.ok(existsSync(activePath), "active session transcript survives its own age");
+    assert.ok(!existsSync(closedPath), "closed session transcript pruned");
   });
 
   it("removes oldest files until under the size budget", async () => {
@@ -210,6 +305,24 @@ describe("retention", () => {
   it("missing directory is a no-op", async () => {
     process.env.PI_SIDECAR_TRANSCRIPTS_DIR = join(dir, "never-created");
     await enforceRetention();
+  });
+
+  it("maybeEnforceRetention throttles to one scan per interval (#923 review)", async () => {
+    process.env.PI_SIDECAR_TRANSCRIPTS_MAX_AGE_DAYS = "7";
+    const firstPath = join(dir, "first-old.jsonl");
+    const secondPath = join(dir, "second-old.jsonl");
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    writeFileSync(firstPath, "data");
+    utimesSync(firstPath, tenDaysAgo, tenDaysAgo);
+    maybeEnforceRetention(new Set());
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.ok(!existsSync(firstPath), "first scan ran");
+    // Second old file + immediate second call: throttled, must NOT be removed.
+    writeFileSync(secondPath, "data");
+    utimesSync(secondPath, tenDaysAgo, tenDaysAgo);
+    maybeEnforceRetention(new Set());
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.ok(existsSync(secondPath), "second scan throttled within the interval");
   });
 });
 
@@ -237,10 +350,9 @@ describe("store wiring (end-to-end through prompt())", () => {
   });
 
   /** Fixture session whose prompt() emits a realistic agent_end with a tool loop. */
-  function emittingStore(): { store: InstanceType<typeof SessionStore>; id: string } {
+  function emittingStore(id = "s-e2e"): { store: InstanceType<typeof SessionStore>; id: string } {
     const store = new SessionStore();
     let emit: (event: unknown) => void = () => {};
-    const id = "s-e2e";
     (store as any).putSessionFixture(
       id,
       {
@@ -301,15 +413,62 @@ describe("store wiring (end-to-end through prompt())", () => {
     // is identity by design — this asserts the wiring passes entry.redact
     // through to the writer, which for real sessions is the API-key redactor.
     assert.equal(record.messages[1].content[0].toolCall.toolName, "bash");
+    assert.equal(record.final_text, "ran it", "final_text carries the assembled response (#923 review)");
     assert.equal(record.stop_reason, "end_turn");
     assert.equal(record.usage.input_tokens, 15, "usage aggregated across assistant messages");
     // second prompt → turn_number 2 appended to the same file
     await store.prompt(id, "again");
-    assert.ok(await waitForFile(file));
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await waitForFile(file);
+    await drainTranscriptWrites();
     const lines = readFileSync(file, "utf-8").trim().split("\n");
     assert.equal(lines.length, 2, "one line per turn");
     assert.equal(JSON.parse(lines[1]!).turn_number, 2);
+  });
+
+  it("enabled: a rejected prompt still leaves a turn record (#923 review)", async () => {
+    process.env.RECORD_TRANSCRIPTS = "1";
+    const store = new SessionStore();
+    let emit: (event: unknown) => void = () => {};
+    const id = "s-reject";
+    (store as any).putSessionFixture(
+      id,
+      {
+        subscribe: (cb: (event: unknown) => void) => {
+          emit = cb;
+          return () => {};
+        },
+        prompt: async () => {
+          // Partial text, then a rejection with NO agent_end event.
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "partial answer" } });
+          throw new Error("provider exploded mid-turn");
+        },
+        dispose: () => {},
+        abort: async () => {},
+      },
+      "/tmp/job-reject",
+      true,
+    );
+    const result = await store.prompt(id, "hello");
+    assert.ok(result.error, "structured partial result returned");
+    await drainTranscriptWrites();
+    const file = join(dir, "s-reject.jsonl");
+    assert.ok(existsSync(file), "rejection fallback record written");
+    const record = JSON.parse(readFileSync(file, "utf-8").trim());
+    assert.equal(record.type, "turn");
+    assert.equal(record.turn_number, 1, "assigned turn number retained");
+    assert.equal(record.stop_reason, "error");
+    assert.equal(record.final_text, "partial answer", "partial output retained");
+    assert.ok(JSON.stringify(record.errors).includes("provider exploded mid-turn"), "rejection error retained");
+  });
+
+  it("enabled: disposeAll drains pending turn writes (#923 review)", async () => {
+    process.env.RECORD_TRANSCRIPTS = "1";
+    const { store, id } = emittingStore("s-drain-e2e");
+    await store.prompt(id, "run the tool");
+    // Do NOT wait for the file here — disposeAll must drain the write chain.
+    await store.disposeAll();
+    const file = join(dir, "s-drain-e2e.jsonl");
+    assert.ok(existsSync(file), "queued turn survived shutdown via drain");
   });
 });
 
