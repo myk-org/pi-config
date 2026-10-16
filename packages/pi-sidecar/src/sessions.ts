@@ -31,6 +31,7 @@ import { drainTranscriptWrites, maybeEnforceRetention, queueTurn, transcriptUsag
 
 const fixtureLog = createLogger("session-store");
 const pricingLog = createLogger("session-store");
+const recordingLog = createLogger("session-store");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -966,6 +967,45 @@ export interface ProviderStatus {
 
 export class SessionStore {
   private sessions = new Map<string, SessionEntry>();
+
+  /**
+   * Runtime recording override (#935) — INSTANCE state, not module state:
+   * two sidecar servers in one process must not share the toggle, and a
+   * closed server must not leave its override behind for a later instance.
+   * `undefined` means no override; the boot-time env value governs. Set via
+   * POST /transcripts/recording, cleared via /transcripts/recording/reset.
+   * In-memory only: a restart restores the env default by design.
+   */
+  private recordingOverride: boolean | undefined;
+
+  /** Set the runtime override; takes effect for subsequent turns. */
+  setRecordingOverride(enabled: boolean): void {
+    this.recordingOverride = enabled;
+    recordingLog.info(`transcript recording override set: enabled=${enabled}`);
+  }
+
+  /** Drop the runtime override; the env default governs again. */
+  clearRecordingOverride(): void {
+    if (this.recordingOverride === undefined) {
+      recordingLog.debug("transcript recording override cleared: no override was set");
+      return;
+    }
+    this.recordingOverride = undefined;
+    recordingLog.info("transcript recording override cleared; env default restored");
+  }
+
+  /** Effective recording state, with whether it comes from env or override. */
+  recordingState(): { enabled: boolean; source: "env" | "override" } {
+    return {
+      enabled: this.isRecordingEnabled(),
+      source: this.recordingOverride === undefined ? "env" : "override",
+    };
+  }
+
+  /** Env default OR this store's runtime override. */
+  isRecordingEnabled(): boolean {
+    return this.recordingOverride ?? transcriptsEnabled();
+  }
 
   /** Redact only the credential owned by this session. Never expose it to the registrar or other sessions. */
   redactSessionValue(id: string, value: string): string {
@@ -1966,19 +2006,25 @@ export class SessionStore {
       customTools: customTools.map((tool: CustomToolConfig) => tool.name),
       redact,
     };
-    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0, transcriptHeader, headerWritten: false });
+    const newEntry: SessionEntry = { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0, transcriptHeader, headerWritten: false };
+    this.sessions.set(id, newEntry);
     log.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${customTools.length})`);
     // Transcript recording (issue #922) — OFF unless RECORD_TRANSCRIPTS is
     // truthy (or the #935 runtime override is set); the header write is
     // fail-soft and awaited so it precedes any turn record for this session.
     // When recording is disabled at creation, the header is written lazily on
     // the first recorded turn (prompt()) so enabling mid-session still
-    // produces a well-formed file. Retention runs opportunistically and
-    // never prunes a live session's file (this one included).
-    if (transcriptsEnabled()) {
-      await writeSessionHeader(transcriptHeader);
-      this.sessions.get(id)!.headerWritten = true;
-      maybeEnforceRetention(new Set(this.sessions.keys()));
+    // produces a well-formed file. The active-session snapshot is taken
+    // BEFORE the awaited write so a concurrent delete cannot make this
+    // session's fresh file retention-eligible mid-write; headerWritten is
+    // set only when the line actually appended (a swallowed failure retries
+    // on the next recorded turn). The entry is held by reference, not
+    // re-fetched from the map — disposeAll() during the await must not turn
+    // this into a TypeError (Qodo 7a9c1405).
+    if (this.isRecordingEnabled()) {
+      const activeIds = new Set(this.sessions.keys());
+      newEntry.headerWritten = await writeSessionHeader(transcriptHeader);
+      maybeEnforceRetention(activeIds);
     }
     return id;
     } catch (err) {
@@ -2001,7 +2047,7 @@ export class SessionStore {
     entry.inFlight = true;
     // Transcript turn state is mutated only when recording is enabled — the
     // disabled path stays zero-overhead (#923 review).
-    const recordTurn = transcriptsEnabled();
+    const recordTurn = this.isRecordingEnabled();
     let turnNumber = 0;
     if (recordTurn) {
       entry.turnCount += 1;
@@ -2009,11 +2055,15 @@ export class SessionStore {
       // Lazy header (#935): recording was enabled after this session was
       // created, so its header was never written — write it now, before the
       // turn record, keeping the file well-formed. Fail-soft like all
-      // transcript writes; retention runs on first write.
+      // transcript writes; headerWritten flips only on a successful append,
+      // so a swallowed failure retries on the next recorded turn (Qodo
+      // 5ab0db39). Retention gets the pre-await active-session snapshot so a
+      // concurrent delete cannot prune this session's fresh header
+      // mid-flight (Qodo 4d913b74).
       if (!entry.headerWritten) {
-        await writeSessionHeader(entry.transcriptHeader);
-        entry.headerWritten = true;
-        maybeEnforceRetention(new Set(this.sessions.keys()));
+        const activeIds = new Set(this.sessions.keys());
+        entry.headerWritten = await writeSessionHeader(entry.transcriptHeader);
+        maybeEnforceRetention(activeIds);
       }
     }
     let turnWasRecorded = false;

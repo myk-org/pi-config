@@ -13,14 +13,11 @@ import { join } from "node:path";
 import { SessionStore } from "../../src/sessions.js";
 import {
   appendTurn,
-  clearRecordingOverride,
   drainTranscriptWrites,
   enforceRetention,
   maybeEnforceRetention,
   queueTurn,
-  recordingState,
   redactStructured,
-  setRecordingOverride,
   transcriptsDir,
   transcriptsEnabled,
   writeSessionHeader,
@@ -615,34 +612,60 @@ describe("runtime recording override (#935)", () => {
   let dir: string;
   beforeEach(() => {
     for (const key of ENV_KEYS) delete process.env[key];
-    clearRecordingOverride();
     dir = tempTranscriptsDir();
     process.env.PI_SIDECAR_TRANSCRIPTS_DIR = dir;
   });
   afterEach(() => {
     for (const key of ENV_KEYS) delete process.env[key];
-    clearRecordingOverride();
     rmSync(dir, { recursive: true, force: true });
   });
 
   it("override wins over env in both directions; recordingState reports source", () => {
-    assert.deepEqual(recordingState(), { enabled: false, source: "env" }, "off, env, by default");
-    setRecordingOverride(true);
-    assert.equal(transcriptsEnabled(), true, "override true beats env unset");
-    assert.deepEqual(recordingState(), { enabled: true, source: "override" });
+    const store = new SessionStore();
+    assert.deepEqual(store.recordingState(), { enabled: false, source: "env" }, "off, env, by default");
+    store.setRecordingOverride(true);
+    assert.equal(store.isRecordingEnabled(), true, "override true beats env unset");
+    assert.deepEqual(store.recordingState(), { enabled: true, source: "override" });
     process.env.RECORD_TRANSCRIPTS = "1";
-    setRecordingOverride(false);
-    assert.equal(transcriptsEnabled(), false, "override false beats env on");
-    assert.deepEqual(recordingState(), { enabled: false, source: "override" });
+    store.setRecordingOverride(false);
+    assert.equal(store.isRecordingEnabled(), false, "override false beats env on");
+    assert.deepEqual(store.recordingState(), { enabled: false, source: "override" });
   });
 
-  it("reset restores the env default; clearing without an override is a no-op", () => {
+  it("reset restores the env default", () => {
+    const store = new SessionStore();
     process.env.RECORD_TRANSCRIPTS = "1";
-    setRecordingOverride(false);
-    clearRecordingOverride(); // explicit clear
-    assert.deepEqual(recordingState(), { enabled: true, source: "env" });
-    clearRecordingOverride(); // no override set — must not throw
-    assert.deepEqual(recordingState(), { enabled: true, source: "env" });
+    store.setRecordingOverride(false);
+    store.clearRecordingOverride();
+    assert.deepEqual(store.recordingState(), { enabled: true, source: "env" });
+  });
+
+  it("clearing without an override set is a no-op", () => {
+    const store = new SessionStore();
+    store.clearRecordingOverride(); // must not throw
+    assert.deepEqual(store.recordingState(), { enabled: false, source: "env" });
+  });
+
+  it("override state is per store instance, not module-global (Qodo 26046bd3)", () => {
+    const a = new SessionStore();
+    const b = new SessionStore();
+    a.setRecordingOverride(true);
+    assert.deepEqual(a.recordingState(), { enabled: true, source: "override" });
+    assert.deepEqual(b.recordingState(), { enabled: false, source: "env" }, "store b unaffected by store a's override");
+    a.clearRecordingOverride();
+    assert.deepEqual(b.recordingState(), { enabled: false, source: "env" }, "still env-governed after a resets");
+  });
+
+  it("writeSessionHeader reports whether the line appended (Qodo 5ab0db39 contract)", async () => {
+    const ok = await writeSessionHeader({ sessionId: "s-bool-ok", provider: "p", model: "m", redact: REDACT });
+    assert.equal(ok, true, "successful append reports true");
+    // A path whose parent is a regular file: mkdir fails, the write is
+    // swallowed, and the return must be false so callers retry later.
+    const blocker = join(dir, "blocker");
+    writeFileSync(blocker, "not a dir");
+    process.env.PI_SIDECAR_TRANSCRIPTS_DIR = join(blocker, "sub");
+    const failed = await writeSessionHeader({ sessionId: "s-bool-fail", provider: "p", model: "m", redact: REDACT });
+    assert.equal(failed, false, "swallowed failure reports false");
   });
 
   it("enabling mid-session writes the header lazily before the first recorded turn", async () => {
@@ -678,7 +701,7 @@ describe("runtime recording override (#935)", () => {
     await store.prompt(id, "hi");
     assert.equal(readdirSyncSafe(dir).length, 0, "disabled: zero I/O");
 
-    setRecordingOverride(true);
+    store.setRecordingOverride(true);
     await store.prompt(id, "again");
     const file = join(dir, "s-mid-toggle.jsonl");
     assert.ok(await waitForFileLazy(file), "turn written after enabling");
@@ -691,7 +714,7 @@ describe("runtime recording override (#935)", () => {
     assert.equal(lines[1].turn_number, 1, "first recorded turn is turn 1 — disabled prompts do not consume numbers");
 
     // Disabling again stops later turns.
-    setRecordingOverride(false);
+    store.setRecordingOverride(false);
     await store.prompt(id, "third");
     await new Promise((resolve) => setTimeout(resolve, 150));
     const linesAfter = readFileSync(file, "utf-8").trim().split("\n");

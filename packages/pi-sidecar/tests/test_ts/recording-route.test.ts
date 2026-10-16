@@ -68,8 +68,9 @@ describe("/transcripts/recording routes (#935)", () => {
     });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { enabled: true, source: "override" });
+  });
 
-    // The state is visible to a subsequent GET — no restart involved.
+  it("GET reflects an override set by a previous POST — no restart involved", async () => {
     const get = await fetch(`http://127.0.0.1:${port}/transcripts/recording`);
     assert.deepEqual(await get.json(), { enabled: true, source: "override" });
   });
@@ -98,8 +99,9 @@ describe("/transcripts/recording routes (#935)", () => {
     const reset = await fetch(`http://127.0.0.1:${port}/transcripts/recording/reset`, { method: "POST" });
     assert.equal(reset.status, 200);
     assert.deepEqual(await reset.json(), { enabled: false, source: "env" });
+  });
 
-    // Resetting with no override set is still 200 (idempotent).
+  it("POST /reset with no override set is idempotent", async () => {
     const again = await fetch(`http://127.0.0.1:${port}/transcripts/recording/reset`, { method: "POST" });
     assert.equal(again.status, 200);
     assert.deepEqual(await again.json(), { enabled: false, source: "env" });

@@ -38,42 +38,14 @@ function isEnvTruthy(raw: string | undefined): boolean {
 }
 
 /**
- * Runtime recording override (#935). `undefined` means no override — the
- * boot-time env value governs. Set via POST /transcripts/recording, cleared
- * via POST /transcripts/recording/reset. In-memory only: a restart restores
- * the env default by design. Plain boolean assignment is atomic in JS, so
- * concurrent route calls and prompt paths need no locking.
+ * Runtime recording override (#935) lives on the SessionStore instance,
+ * NOT here: two sidecars in one process must not share the flag. This module
+ * only answers for the boot-time env default.
  */
-let recordingOverride: boolean | undefined;
 
-/** Set the runtime override; takes effect for subsequent turns. */
-export function setRecordingOverride(enabled: boolean): void {
-  recordingOverride = enabled;
-  log.info(`transcript recording override set: enabled=${enabled}`);
-}
-
-/** Drop the runtime override; the env default governs again. */
-export function clearRecordingOverride(): void {
-  if (recordingOverride === undefined) {
-    log.debug("transcript recording override cleared: no override was set");
-    return;
-  }
-  recordingOverride = undefined;
-  log.info("transcript recording override cleared; env default restored");
-}
-
-/** Effective recording state, with whether it comes from env or override. */
-export function recordingState(): { enabled: boolean; source: "env" | "override" } {
-  return {
-    enabled: transcriptsEnabled(),
-    source: recordingOverride === undefined ? "env" : "override",
-  };
-}
-
-/** Recording is enabled only when RECORD_TRANSCRIPTS is explicitly truthy
- *  (or the runtime override says so — see recordingOverride, #935). */
+/** Recording is enabled only when RECORD_TRANSCRIPTS is explicitly truthy. */
 export function transcriptsEnabled(): boolean {
-  return recordingOverride ?? isEnvTruthy(process.env.RECORD_TRANSCRIPTS);
+  return isEnvTruthy(process.env.RECORD_TRANSCRIPTS);
 }
 
 /**
@@ -180,10 +152,13 @@ function deferToNextTick(): Promise<void> {
  */
 const transcriptChains = new Map<string, Promise<void>>();
 
-function chainWrite(sessionId: string, write: () => Promise<void>): Promise<void> {
+function chainWrite<T>(sessionId: string, write: () => Promise<T>): Promise<T | undefined> {
+  // Failures resolve to undefined — writers are fail-soft by contract; the
+  // write's own return value (e.g. "actually appended" for the lazy session
+  // header, #935) propagates to callers that retry on failure.
   const chained = (transcriptChains.get(sessionId) ?? Promise.resolve())
     .then(write)
-    .then(() => undefined, () => undefined); // appendTurn/writeSessionHeader are fail-soft; belt and braces
+    .then((v) => v, () => undefined);
   const settled = chained.then(() => {
     if (transcriptChains.get(sessionId) === settled) transcriptChains.delete(sessionId);
   }, () => {
@@ -262,8 +237,11 @@ export async function writeSessionHeader(
     customTools?: string[];
     redact: (value: string) => string;
   },
-): Promise<void> {
-  return chainWrite(header.sessionId, async () => {
+): Promise<boolean> {
+  // Returns true only when the header line was actually appended (#935
+  // review): a swallowed failure resolves false so the caller does not mark
+  // the session's header as written — the next recorded turn retries it.
+  return (await chainWrite(header.sessionId, async () => {
     try {
       const dir = transcriptsDir();
       await mkdir(dir, { recursive: true });
@@ -282,11 +260,14 @@ export async function writeSessionHeader(
       if (line) {
         await appendLine(join(dir, `${header.sessionId}.jsonl`), line);
         log.info(`session header written: session=${header.sessionId}`);
+        return true;
       }
+      return false;
     } catch (error) {
       log.warn(`session header write failed (swallowed): ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
-  });
+  })) === true;
 }
 
 /**
