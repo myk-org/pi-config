@@ -2398,4 +2398,24 @@ git commit -F /tmp/msg`;
     const cmd = 'git commit -m "docs: explain the PI_MODEL variable"';
     assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
   });
+
+  // Qodo 988d3a68: only trailer-SHAPED lines are rewritten — mid-sentence
+  // prose and unrelated compound-command parts stay untouched.
+  it("leaves mid-sentence prose mentioning the identity untouched", () => {
+    const cmd = 'git commit -m "docs: we no longer write PI ($PI_MODEL) in trailers"';
+    assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
+  });
+
+  it("leaves an unrelated echo in a compound command untouched", () => {
+    const cmd = 'git commit -m "fix: x" && echo "saw PI ($PI_MODEL) once"';
+    assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
+  });
+
+  it("fixes the trailer right after the -m opening quote (single-line shape)", () => {
+    const cmd = "git commit -m 'Assisted-by: PI ($PI_MODEL) <noreply@pi.dev>'";
+    const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
+    assert.ok(fixed !== null);
+    assert.ok(fixed.includes("PI (model-x)"));
+    assert.ok(!fixed.includes("$PI_MODEL"));
+  });
 });
