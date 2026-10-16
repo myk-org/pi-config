@@ -106,12 +106,29 @@ Two systems for Pi agents to communicate with each other, activated on-demand vi
 
 | Tool                 | Description                                                     |
 | -------------------- | --------------------------------------------------------------- |
-| `*_list`             | List peer agents with names, models, context usage, queue depth |
-| `*_send`             | Send a prompt to a peer agent                                   |
-| `*_get`              | Non-blocking poll for a response                                |
+| `*_list`             | List peer agents with names, models, context usage, queue depth, busy state |
+| `*_send`             | Send a prompt to a peer agent (supports `steer`, `priority`)    |
+| `*_broadcast`        | Send one prompt to multiple peers at once (`*` = whole project) |
+| `*_history`          | Query past coms traffic (peer, direction, time, status filters) |
+| `*_get`              | Non-blocking poll for a response (surfaces peer progress notes) |
 | `*_await`            | Block until response arrives                                    |
 | `coms_queue_inspect` | Preview owned queued P2P messages before recovery               |
 | `coms_queue_clear`   | Irreversibly clear only an inspect preview                      |
+
+Messaging semantics (#924):
+
+- **Steer** (`coms_send steer: true`) injects a message into a busy peer's
+  in-flight turn — course correction only, ack-only, capped at 5 per turn.
+- **Priority** (`priority: true`) jumps the receiver's queued backlog; it never
+  interrupts an in-flight turn.
+- **Broadcast** (`coms_broadcast`) fans one prompt out to several peers with a
+  per-peer ✓/✗ report; partial failures are reported, never swallowed.
+- **Busy/progress** — peers show `⚙busy` while processing; a peer working on
+  your message sends ~60s progress signals that annotate your pending reply.
+- **History** — every prompt, steer, and reply (both directions) is recorded
+  in `~/.pi/coms/history.jsonl` (fail-soft, size-rotated) and queryable via
+  `coms_history`; defaults to this session's traffic, `all_sessions: true`
+  shows the whole machine's trail.
 
 Queue recovery is explicit. Run `coms_queue_inspect` first and review its
 body-free preview. Then pass its `preview_id` to `coms_queue_clear`.

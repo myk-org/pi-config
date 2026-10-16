@@ -1,6 +1,6 @@
 /**
  * #924 coms enhancements — pure helpers: priority queue insertion, steer cap,
- * broadcast aggregation, busy formatting.
+ * broadcast aggregation, busy formatting, priority-aware drain bundling.
  * Run with: npx tsx --test tests/node/coms/coms-enhancements.test.ts
  */
 import { describe, it } from "node:test";
@@ -11,11 +11,17 @@ import {
 	shouldAcceptSteer,
 	summarizeBroadcast,
 	formatBusyStr,
+	selectSenderBundle,
 } from "../../../extensions/coms/coms-shared.js";
 
 interface TestEntry {
 	msg_id: string;
+	sender_session: string;
 	priority?: boolean;
+}
+
+function entry(msg_id: string, sender: string, priority = false): TestEntry {
+	return { msg_id, sender_session: sender, priority };
 }
 
 describe("insertInboundByPriority (#924 §4)", () => {
@@ -58,13 +64,59 @@ describe("insertInboundByPriority (#924 §4)", () => {
 	});
 });
 
+describe("selectSenderBundle (priority-aware drain bundling)", () => {
+	it("bundles all of the first sender's messages when no foreign priority intervenes", () => {
+		const out = selectSenderBundle([
+			entry("a1", "A"), entry("b1", "B"), entry("a2", "A"),
+		]);
+		assert.deepEqual(out.map((e) => e.msg_id), ["a1", "a2"]);
+	});
+
+	it("stops at another sender's priority entry (Qodo 01d92fb2)", () => {
+		// Queue [prio A, prio B, ordinary A]: ordinary A must NOT drain before prio B.
+		const out = selectSenderBundle([
+			entry("pA", "A", true), entry("pB", "B", true), entry("oA", "A"),
+		]);
+		assert.deepEqual(out.map((e) => e.msg_id), ["pA"]);
+	});
+
+	it("keeps bundling past a foreign non-priority entry", () => {
+		const out = selectSenderBundle([
+			entry("a1", "A"), entry("b1", "B"), entry("a2", "A"),
+		]);
+		assert.deepEqual(out.map((e) => e.msg_id), ["a1", "a2"]);
+	});
+
+	it("same-sender priority entries stay inside the bundle", () => {
+		const out = selectSenderBundle([
+			entry("a1", "A"), entry("a2", "A", true), entry("b1", "B"),
+		]);
+		assert.deepEqual(out.map((e) => e.msg_id), ["a1", "a2"]);
+	});
+
+	it("returns the single head entry when the next entry is a foreign priority", () => {
+		const out = selectSenderBundle([
+			entry("a1", "A"), entry("pB", "B", true),
+		]);
+		assert.deepEqual(out.map((e) => e.msg_id), ["a1"]);
+	});
+
+	it("empty queue yields an empty bundle", () => {
+		assert.deepEqual(selectSenderBundle([]), []);
+	});
+});
+
 describe("shouldAcceptSteer (#924 §1)", () => {
-	it("accepts while under the cap and rejects at the cap", () => {
+	it("accepts while under the cap", () => {
 		assert.equal(shouldAcceptSteer(0), true);
 		assert.equal(shouldAcceptSteer(STEER_CAP_PER_TURN - 1), true);
+	});
+
+	it("rejects at and above the cap", () => {
 		assert.equal(shouldAcceptSteer(STEER_CAP_PER_TURN), false);
 		assert.equal(shouldAcceptSteer(100), false);
 	});
+
 	it("cap is 5 per turn (bug containment, not a security boundary)", () => {
 		assert.equal(STEER_CAP_PER_TURN, 5);
 	});
@@ -84,6 +136,7 @@ describe("summarizeBroadcast (#924 §2)", () => {
 		assert.ok(summary.text.includes("✗ beta — unreachable"));
 		assert.ok(!summary.text.includes("✗ gamma"));
 	});
+
 	it("empty result set reports zero", () => {
 		const summary = summarizeBroadcast([]);
 		assert.equal(summary.sent, 0);
@@ -93,8 +146,11 @@ describe("summarizeBroadcast (#924 §2)", () => {
 });
 
 describe("formatBusyStr (#924 §3)", () => {
-	it("marks busy peers and stays empty otherwise", () => {
+	it("marks busy peers", () => {
 		assert.equal(formatBusyStr(true), " ⚙busy");
+	});
+
+	it("stays empty for non-busy peers", () => {
 		assert.equal(formatBusyStr(false), "");
 		assert.equal(formatBusyStr(undefined), "");
 		assert.equal(formatBusyStr(null), "");

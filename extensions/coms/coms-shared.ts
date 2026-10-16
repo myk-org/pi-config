@@ -874,6 +874,25 @@ export function summarizeBroadcast(results: BroadcastTargetResult[]): {
 /**
  * Busy indicator string for peer cards / coms_list rows (#924 §3 presence).
  */
+/**
+ * #924 §4 + drain bundling: which pending inbounds form the next drain bundle.
+ * Starts from the queue head and takes the first sender's messages, but STOPS
+ * at a priority entry from another sender — an urgent message must never wait
+ * behind the first sender's ordinary traffic. Without the stop, queue order
+ * [prio A, prio B, ordinary A] would drain A's whole bundle (ordinary A
+ * included) before prio B.
+ */
+export function selectSenderBundle<T extends { sender_session: string; priority?: boolean }>(allPending: T[]): T[] {
+	if (allPending.length === 0) return [];
+	const firstSender = allPending[0].sender_session;
+	const bundle: T[] = [];
+	for (const ib of allPending) {
+		if (ib.sender_session === firstSender) { bundle.push(ib); continue; }
+		if (ib.priority) break;
+	}
+	return bundle;
+}
+
 export function formatBusyStr(busy: boolean | undefined | null): string {
 	return busy ? " ⚙busy" : "";
 }

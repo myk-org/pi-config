@@ -19,7 +19,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
-import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, type BroadcastTargetResult } from "./coms-shared.js";
+import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, type BroadcastTargetResult } from "./coms-shared.js";
 import { appendHistoryRecord, queryHistoryRecords, truncatePreview, type HistoryRecord } from "./coms-history.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import * as net from "node:net";
@@ -717,7 +717,15 @@ export default function (pi: ExtensionAPI) {
 	function maybeRefreshWidget(): void {
 		if (!currentCtx?.hasUI) return;
 		const pc = getPendingInboundCount();
-		const key = `pending=${pc}|` + [...peerCards.entries()].map(([k, v]) => `${k}:${v.staleCount}`).sort().join(",");
+		// Include busy state and pending-reply progress notes in the refresh key
+		// so a progress envelope or busy transition re-renders the pool (#924).
+		const busyKey = [...peerCards.entries()].map(([k, v]) => `${k}:${v.staleCount}:${v.busy ? 1 : 0}`).sort().join(",");
+		const progressKey = [...pendingReplies.entries()]
+			.filter(([, pr]) => pr.progress)
+			.map(([id, pr]) => `${id}@${pr.progress!.at}`)
+			.sort()
+			.join(",");
+		const key = `pending=${pc}|busy=${busyKey}|prog=${progressKey}`;
 		if (key === lastPoolSnapshot) return;
 		lastPoolSnapshot = key;
 		try { installPoolWidget(currentCtx); } catch {}
@@ -743,9 +751,14 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	/** #924 §5: append to the local coms history trail. Fail-soft — delivery
-	 *  never waits on history. */
-	function appendComsHistory(record: Omit<HistoryRecord, "ts"> & { ts?: string }): void {
-		appendHistoryRecord(path.join(COMS_DIR, "history.jsonl"), { ts: record.ts ?? nowIso(), ...record });
+	 *  never waits on history. Every record is stamped with this session's id
+	 *  so queries can scope to one session's traffic on the shared file. */
+	function appendComsHistory(record: Omit<HistoryRecord, "ts" | "owner"> & { ts?: string }): void {
+		appendHistoryRecord(path.join(COMS_DIR, "history.jsonl"), {
+			ts: record.ts ?? nowIso(),
+			owner: identity?.coms_session_id,
+			...record,
+		});
 	}
 
 	/** #924 §6: progress signal from the peer processing our prompt. Annotates
@@ -777,46 +790,67 @@ export default function (pi: ExtensionAPI) {
 		if (env.steer && processingInbound && currentInbound && !currentInbound.fulfilled && identity) {
 			if (shouldAcceptSteer(currentInbound.steerCount ?? 0)) {
 				currentInbound.steerCount = (currentInbound.steerCount ?? 0) + 1;
-				ackOk(socket, env.msg_id);
-				log.info("steer_injected", env.msg_id, "into", currentInbound.msg_id, "from", env.sender_name, "count", currentInbound.steerCount);
-				appendComsHistory({
-					direction: "steer",
-					msg_id: env.msg_id,
-					peer: env.sender_name,
-					session: env.sender_session,
-					preview: truncatePreview(env.prompt),
-					status: `injected into ${currentInbound.msg_id}`,
-				});
+				// Inject FIRST — only report success (ack, history, terminal
+				// receipt) after the injection actually landed. A steer that fails
+				// to inject must not be recorded as delivered.
+				let injected = false;
 				try {
 					pi.sendMessage(
 						{
-						customType: `steer from ${sanitizeComsName(env.sender_name)} → ${sanitizeComsName(identity.name)} @ ${sanitizeComsName(env.sender_cwd || "?")}`,
-						content: buildInboundContent(
-							`[STEER from ${sanitizeComsName(env.sender_name)} — mid-turn course correction. Read this BEFORE continuing your current work; it may change instructions.]`,
-							env.prompt,
-							null,
-							env.sender_name,
-							env.sender_cwd,
-						),
-						display: true,
-						details: { msg_id: env.msg_id, steer: true, target_msg_id: currentInbound.msg_id },
-					},
-					{ deliverAs: "followUp", triggerTurn: true },
-				);
+							customType: `steer from ${sanitizeComsName(env.sender_name)} → ${sanitizeComsName(identity.name)} @ ${sanitizeComsName(env.sender_cwd || "?")}`,
+							content: buildInboundContent(
+								`[STEER from ${sanitizeComsName(env.sender_name)} — mid-turn course correction. Read this BEFORE continuing your current work; it may change instructions.]`,
+								env.prompt,
+								null,
+								env.sender_name,
+								env.sender_cwd,
+							),
+							display: true,
+							details: { msg_id: env.msg_id, steer: true, target_msg_id: currentInbound.msg_id },
+						},
+						{ deliverAs: "followUp", triggerTurn: true },
+					);
+					injected = true;
 				} catch (err) {
 					log.warn("steer_inject_failed", env.msg_id, err instanceof Error ? err.message : String(err));
 				}
-				// Terminal receipt for the sender's pending entry: the steer was
-				// delivered mid-turn; no separate response will ever come for it.
-				void sendEnvelope(env.sender_endpoint, {
-					type: "response", msg_id: env.msg_id,
-					sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
-					hops: 0, timestamp: nowIso(),
-					response: null, error: "steered",
-				}).catch(() => { /* best-effort receipt */ });
-				return;
+				if (injected) {
+					ackOk(socket, env.msg_id);
+					log.info("steer_injected", env.msg_id, "into", currentInbound.msg_id, "from", env.sender_name, "count", currentInbound.steerCount);
+					appendComsHistory({
+						direction: "steer",
+						msg_id: env.msg_id,
+						peer: env.sender_name,
+						session: env.sender_session,
+						preview: truncatePreview(env.prompt),
+						status: `injected into ${currentInbound.msg_id}`,
+					});
+					// Terminal receipt for the sender's pending entry: the steer was
+					// delivered mid-turn; no separate response will ever come for it.
+					void sendEnvelope(env.sender_endpoint, {
+						type: "response", msg_id: env.msg_id,
+						sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
+						hops: 0, timestamp: nowIso(),
+						response: null, error: "steered",
+					}).catch(() => { /* best-effort receipt */ });
+					return;
+				}
+				// Injection failed — give the cap slot back and fall through to
+				// the normal queue path so the correction still arrives (late)
+				// and the sender's pending entry resolves via the normal reply.
+				currentInbound.steerCount = Math.max(0, (currentInbound.steerCount ?? 1) - 1);
+				appendComsHistory({
+					direction: "steer",
+					msg_id: env.msg_id,
+						peer: env.sender_name,
+						session: env.sender_session,
+						preview: truncatePreview(env.prompt),
+						status: "steer_failed — queued normally",
+					});
+				log.warn("steer_failed_queued", env.msg_id, "from", env.sender_name);
+			} else {
+				log.warn("steer_cap_exceeded", env.msg_id, "from", env.sender_name, "— queuing normally");
 			}
-			log.warn("steer_cap_exceeded", env.msg_id, "from", env.sender_name, "— queuing normally");
 			// fall through to the normal queue path
 		}
 
@@ -932,8 +966,12 @@ export default function (pi: ExtensionAPI) {
 				error: env.error ?? null,
 			});
 
-			// Skip display for bundled/cleared/steered responses — not user-visible
+			// Skip display for bundled/cleared/steered responses — not user-visible.
+			// Ack FIRST: the receiver's sendEnvelope is still waiting on this
+			// socket's ack — returning before acking would strand its connection
+			// open until its probe timeout.
 			if (env.error === "bundled" || env.error === "queue_cleared" || env.error === "steered") {
+				ackOk(socket, env.msg_id);
 				setTimeout(() => { pendingReplies.delete(env.msg_id); }, 60_000).unref();
 				return;
 			}
@@ -1342,6 +1380,9 @@ export default function (pi: ExtensionAPI) {
 
 	// ━━ task heartbeat keepalive timer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let taskHeartbeatTimer: NodeJS.Timeout | null = null;
+
+	// ━━ #924 §1: steer reply timeout — lost receipts resolve after 5 min ━━
+	const STEER_TIMEOUT_MS = 300_000;
 
 	// ━━ #924 §6: progress-signal timer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let progressSignalTimer: NodeJS.Timeout | null = null;
@@ -1905,8 +1946,17 @@ Do not respond to this message.`;
 			tasks?: { total: number; completed: number; in_progress: number } | null;
 			queue_depth: number;
 			busy: boolean;
+			progress?: string;
 		}
 		const rows: Row[] = [];
+
+		// Latest progress note per target peer from our pending replies (#924 §6)
+		const progressByPeer = new Map<string, string>();
+		for (const pr of pendingReplies.values()) {
+			if (!pr.progress || !pr.target_name) continue;
+			const existing = progressByPeer.get(pr.target_name);
+			if (!existing || existing < pr.progress.at) progressByPeer.set(pr.target_name, pr.progress.note);
+		}
 
 		for (const [sid, card] of peerCards.entries()) {
 			if (identity && sid === identity.coms_session_id) continue;
@@ -1921,6 +1971,7 @@ Do not respond to this message.`;
 				tasks: card.tasks_summary,
 				queue_depth: card.queue_depth ?? 0,
 				busy: card.busy ?? false,
+				progress: progressByPeer.get(card.name),
 			});
 		}
 
@@ -1999,7 +2050,8 @@ Do not respond to this message.`;
 			const tasksPart = renderTasksPart(r.tasks, theme);
 			const queuePart = renderQueuePart(r.queue_depth, theme);
 			const busyPart = r.busy ? " " + theme.fg("warning", "⚙busy") : "";
-			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + tasksPart + queuePart + busyPart + sep + purposePart;
+			const progressPart = r.progress ? " " + theme.fg("dim", `⏳${r.progress}`) : "";
+			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + tasksPart + queuePart + busyPart + progressPart + sep + purposePart;
 			out.push(truncateToWidth(line, width));
 		}
 
@@ -2141,6 +2193,13 @@ Do not respond to this message.`;
 			target_name: target.name,
 			created_at: nowIso(),
 		};
+		// Steers are ack-only: the receiver sends a terminal "steered" receipt
+		// within milliseconds of injection, so the entry is transient. If the
+		// receipt is lost, resolve after STEER_TIMEOUT_MS (not the full
+		// TIMEOUT_MS) so bookkeeping does not linger for 30 minutes. If the
+		// receiver could not inject (idle, cap, failure), the message was
+		// queued normally and the real reply resolves the entry as usual.
+		const effectiveTimeout = params.steer ? Math.min(STEER_TIMEOUT_MS, TIMEOUT_MS) : TIMEOUT_MS;
 		entry.timer = setTimeout(() => {
 			if (entry.result) return;
 			entry.result = { error: "timeout" };
@@ -2149,7 +2208,7 @@ Do not respond to this message.`;
 			const pSet = pendingOutbound.get(target.name);
 			if (pSet) { pSet.delete(msg_id); if (pSet.size === 0) pendingOutbound.delete(target.name); }
 			setTimeout(() => { pendingReplies.delete(msg_id); }, 60_000).unref();
-		}, TIMEOUT_MS);
+		}, effectiveTimeout);
 		// Don't keep the event loop alive solely for this timer.
 		try { (entry.timer as any).unref?.(); } catch { /* ignore */ }
 		pendingReplies.set(msg_id, entry);
@@ -2395,35 +2454,36 @@ Do not respond to this message.`;
 			if (!identity) {
 				throw new Error("coms not initialised");
 			}
-			// Resolve target list — "*" expands to every registry peer in the project.
-			const wanted = new Set<string>();
+			// Resolve target list. "*" expands to every registry peer in the
+			// project — those entries are reused directly (no per-id
+			// re-resolve, which would re-probe every socket N times).
+			const resolved = new Map<string, RegistryEntry>();
 			if (params.targets.includes("*")) {
 				const localEntries = await pruneDeadEntries(identity.project, process.cwd());
 				for (const e of localEntries) {
 					if (e.coms_session_id === identity.coms_session_id) continue;
 					if (e.explicit) continue;
-					wanted.add(e.coms_session_id);
+					resolved.set(e.coms_session_id, e);
 				}
 			}
+			// Named targets resolve individually; an unresolvable name is
+			// reported as a per-target error (never silently dropped).
+			const sendResults: BroadcastTargetResult[] = [];
 			for (const t of params.targets) {
-				if (t !== "*") wanted.add(t);
-			}
-			// Deduplicate resolved peers by session id — same peer named twice
-			// (e.g. "*" plus an explicit name) is one send.
-			const resolved = new Map<string, RegistryEntry>();
-			for (const t of wanted) {
+				if (t === "*") continue;
 				const target = await resolveTarget(t);
 				if (!target) {
 					log.warn("broadcast_target_unresolved", t);
+					sendResults.push({ target: t, status: "error", error: `no live agent matching "${t}"` });
 					continue;
 				}
 				resolved.set(target.coms_session_id, target);
 			}
 			if (resolved.size === 0) {
-				throw new Error(`coms_broadcast: no live agent matching [${params.targets.join(", ")}]`);
+				const detail = sendResults.map((r) => r.error).join("; ");
+				throw new Error(`coms_broadcast: no live agent matching [${params.targets.join(", ")}]${detail ? ` — ${detail}` : ""}`);
 			}
 			// Same-sender inbound block applies per target: auto-capture replies.
-			const sendResults: BroadcastTargetResult[] = [];
 			await Promise.allSettled([...resolved.values()].map(async (target) => {
 				if (processingInbound && currentInbound && !currentInbound.fulfilled && target.coms_session_id === currentInbound.sender_session) {
 					sendResults.push({ target: target.name, status: "error", error: "blocked: auto-capture will reply to this peer" });
@@ -2480,6 +2540,9 @@ Do not respond to this message.`;
 			peer: Type.Optional(Type.String({ description: "Filter by peer name." })),
 			direction: Type.Optional(Type.Union([Type.Literal("out"), Type.Literal("in"), Type.Literal("steer"), Type.Literal("response_out"), Type.Literal("response_in")], { description: "Filter by direction: out=prompts we sent, in=prompts we received, steer=steers we received, response_out=replies we sent, response_in=replies we received." })),
 			msg_id: Type.Optional(Type.String({ description: "Filter by a specific msg_id." })),
+			since: Type.Optional(Type.String({ description: "Inclusive lower bound as an ISO timestamp — drop older records." })),
+			status: Type.Optional(Type.String({ description: "Case-insensitive substring match on record status (e.g. \"queued\", \"replied\", \"error\")." })),
+			all_sessions: Type.Optional(Type.Boolean({ description: "Include every session's records on this machine, not just this session's. Default false." })),
 			limit: Type.Optional(Type.Number({ description: "Max records to return (default 50, max 500). Returns the most recent matching window." })),
 		}),
 		async execute(_callId, params) {
@@ -2487,6 +2550,9 @@ Do not respond to this message.`;
 				peer: params.peer,
 				direction: params.direction,
 				msg_id: params.msg_id,
+				since: params.since,
+				status: params.status,
+				owner: params.all_sessions === true ? undefined : identity?.coms_session_id,
 				limit: params.limit,
 			});
 			const lines = records.map((r) =>
@@ -3282,8 +3348,9 @@ Do not respond to this message.`;
 			// FIFO drain — pick next from same sender (or any sender)
 			const allPending = [...inboundQueue.values()].filter((i) => !i.fulfilled);
 			if (allPending.length > 0) {
-				const firstSender = allPending[0].sender_session;
-				const senderPending = allPending.filter(i => i.sender_session === firstSender);
+				// Bundle the first sender's messages, stopping at another
+				// sender's priority entry (see selectSenderBundle).
+				const senderPending = selectSenderBundle(allPending);
 
 				if (senderPending.length === 1) {
 					currentInbound = senderPending[0];
@@ -3400,12 +3467,11 @@ Do not respond to this message.`;
 
 		maybeRefreshWidget();
 
-		// FIFO drain: collect ALL pending from the same sender and bundle them
+		// FIFO drain: collect pending from the same sender and bundle them,
+		// stopping at another sender's priority entry (see selectSenderBundle)
 		const allPending = [...inboundQueue.values()].filter((i) => !i.fulfilled);
 		if (allPending.length > 0) {
-			// Group by sender — process first sender's messages together
-			const firstSender = allPending[0].sender_session;
-			const senderPending = allPending.filter(i => i.sender_session === firstSender);
+			const senderPending = selectSenderBundle(allPending);
 
 			if (senderPending.length === 1) {
 				// Single message — inject normally

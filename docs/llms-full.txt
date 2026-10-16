@@ -3933,7 +3933,7 @@ For users, that shows up as more predictable behavior:
 
 `coms_send` accepts `steer: true` to inject a message into a peer's in-flight turn instead of queueing it behind the current work. A steer is a course correction: the peer is working from a now-invalid assumption, materially new information arrived, or you need it to stop or deprioritize. The steer is acknowledged but never answered separately — its effect shows up in the reply to the message that started the peer's turn.
 
-Use steers sparingly. They are capped at 5 per turn on the receiver (excess steers fall back to the normal queue) so a buggy sender loop cannot flood one turn's context. Never steer an idle peer (use a normal send), multi-part briefs, or anything that needs its own receipt.
+Use steers sparingly. They are capped at 5 per turn on the receiver (excess steers fall back to the normal queue) so a buggy sender loop cannot flood one turn's context. Never steer an idle peer (use a normal send), multi-part briefs, or anything that needs its own receipt. A steer is acknowledged but never separately answered; if the receiver cannot inject it (idle, cap reached, injection failure), the message is queued normally and answered like any other prompt.
 
 ## Broadcasting to Multiple Peers
 
@@ -3949,7 +3949,7 @@ Peer cards and `coms_list` include a busy indicator (`⚙busy`) whenever the pee
 
 ## Message History
 
-Every prompt and reply — in both directions, steers included — is appended to a local JSONL trail at `~/.pi/coms/history.jsonl` (fail-soft: delivery never waits on history). The `coms_history` tool queries it by peer, direction, or `msg_id` and returns the most recent matching records with per-message status. Use it to answer "what did I send this peer and what came back?" when debugging multi-agent workflows.
+Every prompt and reply — in both directions, steers included — is appended to a local JSONL trail at `~/.pi/coms/history.jsonl` (fail-soft: delivery never waits on history; the file is size-rotated so it stays bounded). The `coms_history` tool queries it by peer, direction, `msg_id`, time range (`since`), or status substring, and returns the most recent matching records. By default it shows only the current session's traffic; `all_sessions: true` shows the whole machine's trail. Use it to answer "what did I send this peer and what came back?" when debugging multi-agent workflows.
 
 ## How It Affects the User
 
