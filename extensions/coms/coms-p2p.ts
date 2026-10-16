@@ -1632,9 +1632,10 @@ Do not respond to this message.`;
 									const existing = peerCards.get(entry.coms_session_id)!;
 									existing.context_used_pct = entry.context_used_pct ?? existing.context_used_pct;
 									existing.queue_depth = entry.queue_depth ?? existing.queue_depth;
+									existing.busy = entry.busy ?? existing.busy;
 									existing.model = entry.model ?? existing.model;
 									existing.staleCount = 0;
-									log.debug("fs_watch_heartbeat_rename", entry.name, "ctx", entry.context_used_pct);
+									log.debug("fs_watch_heartbeat_rename", entry.name, "ctx", entry.context_used_pct, "busy", existing.busy);
 								} else {
 									// New peer
 									const card: AgentCard & { staleCount: number } = {
@@ -1997,7 +1998,8 @@ Do not respond to this message.`;
 
 			const tasksPart = renderTasksPart(r.tasks, theme);
 			const queuePart = renderQueuePart(r.queue_depth, theme);
-			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + tasksPart + queuePart + sep + purposePart;
+			const busyPart = r.busy ? " " + theme.fg("warning", "⚙busy") : "";
+			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + tasksPart + queuePart + busyPart + sep + purposePart;
 			out.push(truncateToWidth(line, width));
 		}
 
@@ -2536,9 +2538,14 @@ Do not respond to this message.`;
 					details: { status: "complete", response: r.response, error: r.error ?? null, queued_msg_ids: r.queued_msg_ids ?? [] },
 				};
 			}
+			// #924 §6: surface the latest progress signal, if any — it annotates
+			// the pending reply and never resolves it.
+			const progressText = entry.progress
+				? ` — ${entry.progress.note} (at ${entry.progress.at})`
+				: "";
 			return {
-				content: [{ type: "text" as const, text: `coms_get: pending` }],
-				details: { status: "pending" },
+				content: [{ type: "text" as const, text: `coms_get: pending${progressText}` }],
+				details: { status: "pending", progress: entry.progress ?? null },
 			};
 		},
 		renderCall(args, theme) {
