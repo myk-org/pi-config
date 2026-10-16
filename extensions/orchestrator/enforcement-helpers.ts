@@ -1676,6 +1676,21 @@ function bodyAlreadySigned(text: string): boolean {
   return false;
 }
 
+/** #932: an agent may write the commit trailer with the literal `$PI_MODEL`
+ *  (typically inside a quoted heredoc, where the shell cannot expand it).
+ *  Rewrite the trailer identity to the resolved model id before the commit
+ *  runs. Returns the fixed command, or null when nothing needed fixing.
+ *  Scoped to `git commit` commands and to the trailer identity pattern, so a
+ *  commit message that legitimately mentions a bare `$PI_MODEL` is untouched. */
+export function fixUnexpandedCommitTrailer(command: string, modelId: string): string | null {
+	if (!command.includes("$PI_MODEL")) return null;
+	if (!/\bgit\s+commit\b/.test(command)) return null;
+	const fixed = command
+		.replaceAll("PI ($PI_MODEL) <noreply@pi.dev>", `PI (${modelId}) <noreply@pi.dev>`)
+		.replaceAll("PI ($PI_MODEL)", `PI (${modelId})`);
+	return fixed === command ? null : fixed;
+}
+
 /** Keep the first standalone valid footer, but use the current operation's model. */
 function normalizeGhBodyFooters(payload: string, signature: string): string {
   let signed = false;

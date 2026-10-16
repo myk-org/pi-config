@@ -45,7 +45,9 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
 
 - If `dco` is `true`: add `--signoff` to `git commit`. Skip if already present.
 - If `commit_trailer` is a string (e.g. `"Assisted-by"`): append trailer to the commit message.
-  Format: `TRAILER: PI (MODEL) <noreply@pi.dev>` using `$PI_MODEL` for model. Skip if already present.
+  Format: `TRAILER: PI (MODEL) <noreply@pi.dev>` — replace MODEL with your actual model id
+  (e.g. `litellm/claude-opus-4-6`). NEVER write the literal string `$PI_MODEL`; quoted heredocs
+  and single-quoted messages do not expand it and the trailer lands broken. Skip if already present.
   If the value contains commas, use the first name.
 - If `use_worktrees` is `true`: BLOCK `git checkout` (except `git checkout -- <file>`) and `git switch`.
   Use `git worktree add .worktrees/NAME -b BRANCH DEFAULT_BRANCH` instead

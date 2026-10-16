@@ -18,6 +18,7 @@ import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 import {
   conflictCandidateDirs,
   pushTargetsProtectedBranch,
+  fixUnexpandedCommitTrailer,
 } from "./enforcement-helpers.js";
 import {
   DANGEROUS,
@@ -99,12 +100,31 @@ function writeRepeatState(state: { lastCmd: string; count: number }): void {
 
 
 
+/** Resolve the model id used in commit/PR trailers (env first, then ctx). */
+function commitTrailerModelId(ctx: any): string {
+  return (process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || (ctx as any).model?.id || "unknown").replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() || "unknown";
+}
+
 /** Inject commit trailer into command (Assisted-by, Co-authored-by, etc.) */
 async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd: string): Promise<EnforcementResult> {
+  // #932: rewrite a literal `$PI_MODEL` in the trailer identity — an agent
+  // following the git-expert trailer instruction may write the placeholder
+  // verbatim (quoted heredocs and single-quoted -m strings never expand it).
+  // This runs BEFORE the setting check and pattern matching so heredoc/-F
+  // commits — which the injection patterns below do not cover — still get a
+  // correct trailer, and the dedup check below sees the already-fixed name.
+  const literalModelId = commitTrailerModelId(ctx);
+  const fixedCommand = fixUnexpandedCommitTrailer(command, literalModelId);
+  if (fixedCommand !== null) {
+    log.info("commit_trailer: replaced unexpanded $PI_MODEL literal with model id", literalModelId);
+    command = fixedCommand;
+    event.input.command = fixedCommand;
+  }
+
   const trailerSetting = getSetting(gitCwd, "commit_trailer");
   if (typeof trailerSetting !== "string") return undefined;
 
-  const modelId = (process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || (ctx as any).model?.id || "unknown").replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() || "unknown";
+  const modelId = commitTrailerModelId(ctx);
 
   const piIdentity = `PI (${modelId}) <noreply@pi.dev>`;
   let trailerName: string;

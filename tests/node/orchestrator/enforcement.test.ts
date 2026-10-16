@@ -18,6 +18,7 @@ import {
   escapeForDoubleQuote,
   escapeForSingleQuote,
   commandHasTrailerByName,
+  fixUnexpandedCommitTrailer,
   resolveEffectiveCwd,
   checkPythonPipBlock,
   setUvAvailable,
@@ -2350,5 +2351,51 @@ describe("quoted parens inside substitution content (Qodo round 8, PR #916)", ()
   });
   it("parses a quoted pathspec with paren inside a substitution", () => {
     assert.deepEqual(gitAddPathspecs('echo "$(git add \'a)b\')"'), ["a)b"]);
+  });
+});
+
+// ── fixUnexpandedCommitTrailer (#932: literal $PI_MODEL in commit trailers) ──
+
+describe("fixUnexpandedCommitTrailer", () => {
+  it("fixes the literal in a quoted-heredoc commit (the #932 shape)", () => {
+    const cmd = `cat <<'EOF' > /tmp/msg
+fix(coms): something
+
+Assisted-by: PI ($PI_MODEL) <noreply@pi.dev>
+EOF
+git commit -F /tmp/msg`;
+    const fixed = fixUnexpandedCommitTrailer(cmd, "rits/zai-org/glm-5-3");
+    assert.ok(fixed !== null);
+    assert.ok(fixed.includes("Assisted-by: PI (rits/zai-org/glm-5-3) <noreply@pi.dev>"));
+    assert.ok(!fixed.includes("$PI_MODEL"));
+  });
+
+  it("fixes the literal in a single-quoted -m message", () => {
+    const cmd = "git commit -m 'fix: x\n\nAssisted-by: PI ($PI_MODEL) <noreply@pi.dev>'";
+    const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
+    assert.ok(fixed !== null);
+    assert.ok(fixed.includes("PI (model-x)"));
+    assert.ok(!fixed.includes("$PI_MODEL"));
+  });
+
+  it("fixes the short identity form without the email too", () => {
+    const cmd = "git commit -F file -m 'Assisted-by: PI ($PI_MODEL)'";
+    const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
+    assert.ok(fixed !== null);
+    assert.ok(fixed.includes("PI (model-x)"));
+  });
+
+  it("returns null when there is nothing to fix", () => {
+    assert.equal(fixUnexpandedCommitTrailer("git commit -m 'fix: x'", "model-x"), null);
+    assert.equal(fixUnexpandedCommitTrailer("git commit -m 'Assisted-by: PI (model-x) <noreply@pi.dev>'", "model-x"), null);
+  });
+
+  it("ignores non-commit commands even when they contain the literal", () => {
+    assert.equal(fixUnexpandedCommitTrailer("echo 'PI ($PI_MODEL)' > file", "model-x"), null);
+  });
+
+  it("leaves a bare $PI_MODEL mention outside the trailer identity untouched", () => {
+    const cmd = 'git commit -m "docs: explain the PI_MODEL variable"';
+    assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
   });
 });
