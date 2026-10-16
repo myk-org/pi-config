@@ -89,7 +89,10 @@ export function redactStructured(value: unknown, redact: (value: string) => stri
     }
   }
   seen.add(value);
-  const out: Record<string, unknown> = {};
+  // Null prototype + own-property assignment: a plain `{}` would silently
+  // drop a `__proto__` key (assignment mutates the prototype instead of
+  // creating an own property), losing a valid JSON field from the record.
+  const out = Object.create(null) as Record<string, unknown>;
   try {
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
       out[redact(key)] = redactStructured(item, redact, seen);
@@ -154,18 +157,55 @@ function chainWrite(sessionId: string, write: () => Promise<void>): Promise<void
 }
 
 /**
- * Await all outstanding transcript writes (bounded: 10s). Called from
- * disposeAll() so shutdown does not lose already-completed turns.
+ * Await all outstanding transcript writes, bounded at 10 seconds. Called
+ * from disposeAll() so shutdown does not lose already-completed turns.
+ * Re-snapshots in a loop: writes queued while draining (e.g. a fallback
+ * record from a prompt rejected by session disposal) are picked up too.
+ * On timeout the loss is WARN-logged, never reported as a successful drain.
  */
 export async function drainTranscriptWrites(): Promise<void> {
-  const pending = [...transcriptChains.values()];
-  if (pending.length === 0) return;
-  const bounded = Promise.race([
-    Promise.allSettled(pending),
-    new Promise<void>((resolve) => setTimeout(resolve, 10_000).unref?.()),
-  ]);
-  await bounded;
-  log.debug(`drained ${pending.length} transcript write chain(s)`);
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const pending = [...transcriptChains.values()];
+    if (pending.length === 0) return;
+    const remaining = deadline - Date.now();
+    let timedOut = remaining <= 0;
+    if (!timedOut) {
+      const timeout = new Promise<"timeout">((resolve) => setTimeout(resolve, remaining, "timeout").unref?.());
+      const winner = await Promise.race([Promise.allSettled(pending).then(() => "done" as const), timeout]);
+      timedOut = winner === "timeout";
+    }
+    if (timedOut) {
+      log.warn(`transcript drain timed out with ${transcriptChains.size} chain(s) still pending — records may be lost`);
+      return;
+    }
+    // loop: writes queued while we waited are picked up by the next snapshot
+  }
+}
+
+/**
+ * Map the sidecar's internal usage aggregate to the documented transcript
+ * field names (issue #922 schema): input, output, cache_read, cache_write,
+ * cost_usd, cost_partial — plus duration_ms. Consumers read these by name.
+ */
+export function transcriptUsage(usage: {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  cost_usd: number | null;
+  cost_partial: boolean;
+  duration_ms: number;
+}): Record<string, unknown> {
+  return {
+    input: usage.input_tokens,
+    output: usage.output_tokens,
+    cache_read: usage.cache_read_tokens,
+    cache_write: usage.cache_write_tokens,
+    cost_usd: usage.cost_usd,
+    cost_partial: usage.cost_partial,
+    duration_ms: usage.duration_ms,
+  };
 }
 
 /**

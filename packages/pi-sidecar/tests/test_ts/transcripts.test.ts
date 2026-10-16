@@ -80,6 +80,18 @@ describe("redactStructured", () => {
     assert.equal(Object.keys(out.toolResult)[0], "[REDACTED]");
     assert.equal(out.toolResult["[REDACTED]"], "token-value", "value preserved");
   });
+  it("preserves a __proto__ own property from JSON payloads (#923 review)", () => {
+    // JSON.parse creates an OWN __proto__ property (unlike an object literal);
+    // the transcript must not silently drop it.
+    const input = JSON.parse('{"a":1,"__proto__":{"x":"v"}}');
+    const out = redactStructured(input, (v) => v) as Record<string, unknown>;
+    assert.ok(Object.prototype.hasOwnProperty.call(out, "__proto__"), "__proto__ own property preserved");
+    // Object literals cannot express an own __proto__ property (the key would
+    // set the prototype), so verify the value and the JSON round-trip instead.
+    const protoProp = (out as { __proto__: { x?: string } }).__proto__;
+    assert.equal(protoProp?.x, "v", "own __proto__ value preserved");
+    assert.ok(JSON.stringify(out).includes('"__proto__"'), "serialized record keeps the field");
+  });
   it("handles circular references", () => {
     const circular: Record<string, unknown> = { name: "x" };
     circular.self = circular;
@@ -415,7 +427,8 @@ describe("store wiring (end-to-end through prompt())", () => {
     assert.equal(record.messages[1].content[0].toolCall.toolName, "bash");
     assert.equal(record.final_text, "ran it", "final_text carries the assembled response (#923 review)");
     assert.equal(record.stop_reason, "end_turn");
-    assert.equal(record.usage.input_tokens, 15, "usage aggregated across assistant messages");
+    assert.equal(record.usage.input, 15, "usage aggregated across assistant messages")
+    assert.equal(record.usage.output, 6, "documented usage field names (#923 review)");
     // second prompt → turn_number 2 appended to the same file
     await store.prompt(id, "again");
     await waitForFile(file);
@@ -458,7 +471,126 @@ describe("store wiring (end-to-end through prompt())", () => {
     assert.equal(record.turn_number, 1, "assigned turn number retained");
     assert.equal(record.stop_reason, "error");
     assert.equal(record.final_text, "partial answer", "partial output retained");
+    assert.equal(record.messages.length, 1, "fallback carries the submitted user prompt (#923 review)");
+    assert.equal(record.messages[0].content[0].text, "hello");
     assert.ok(JSON.stringify(record.errors).includes("provider exploded mid-turn"), "rejection error retained");
+    assert.equal(record.errors[0], "provider exploded mid-turn", "rejection error leads the combined list");
+    assert.equal(record.usage.input, 0, "documented usage names on the fallback path too");
+  });
+
+  it("enabled: multi-message responses get separator-matching final_text (#923 review)", async () => {
+    process.env.RECORD_TRANSCRIPTS = "1";
+    const store = new SessionStore();
+    let emit: (event: unknown) => void = () => {};
+    const id = "s-multi";
+    (store as any).putSessionFixture(
+      id,
+      {
+        subscribe: (cb: (event: unknown) => void) => { emit = cb; return () => {}; },
+        prompt: async () => {
+          emit({ type: "message_start", message: { role: "assistant" } });
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "part one" } });
+          emit({ type: "message_start", message: { role: "assistant" } });
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "part two" } });
+          emit({
+            type: "agent_end",
+            messages: [
+              { role: "user", content: [{ type: "text", text: "hi" }] },
+              { role: "assistant", content: [{ type: "text", text: "part one" }], usage: { input: 3, output: 2 }, stopReason: "end_turn" },
+              { role: "assistant", content: [{ type: "text", text: "part two" }], usage: { input: 3, output: 2 }, stopReason: "end_turn" },
+            ],
+          });
+        },
+        dispose: () => {},
+        abort: async () => {},
+      },
+      "/tmp/job-multi",
+      true,
+    );
+    const result = await store.prompt(id, "hi");
+    assert.equal(result.text, "part one\n\npart two", "boundary separator applied to the response");
+    await drainTranscriptWrites();
+    const record = JSON.parse(readFileSync(join(dir, "s-multi.jsonl"), "utf-8").trim());
+    assert.equal(record.final_text, "part one\n\npart two", "transcript final_text matches the returned text exactly");
+  });
+
+  it("enabled: completed turns with error events keep the errors array (#923 review)", async () => {
+    process.env.RECORD_TRANSCRIPTS = "1";
+    const store = new SessionStore();
+    let emit: (event: unknown) => void = () => {};
+    const id = "s-errmsg";
+    (store as any).putSessionFixture(
+      id,
+      {
+        subscribe: (cb: (event: unknown) => void) => { emit = cb; return () => {}; },
+        prompt: async () => {
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "best effort" } });
+          emit({
+            type: "agent_end",
+            messages: [
+              { role: "user", content: [{ type: "text", text: "hi" }] },
+              { role: "assistant", content: [{ type: "text", text: "best effort" }], usage: { input: 3, output: 2 }, stopReason: "error", errorMessage: "tool timeout" },
+            ],
+          });
+        },
+        dispose: () => {},
+        abort: async () => {},
+      },
+      "/tmp/job-errmsg",
+      true,
+    );
+    const result = await store.prompt(id, "hi");
+    assert.ok(result.error, "caller sees the error");
+    await drainTranscriptWrites();
+    const record = JSON.parse(readFileSync(join(dir, "s-errmsg.jsonl"), "utf-8").trim());
+    assert.ok(JSON.stringify(record.errors).includes("tool timeout"), "collected SDK errors retained in the turn record");
+    assert.equal(record.stop_reason, "error");
+  });
+
+  it("enabled: store.create() writes the session header (real create path, #923 review)", async () => {
+    process.env.RECORD_TRANSCRIPTS = "1";
+    const prevOffline = process.env.PI_OFFLINE;
+    process.env.PI_OFFLINE = "1";
+    const agentDir = mkdtempSync(join(tmpdir(), "sidecar-agent-hdr-923-"));
+    const sessionCwd = mkdtempSync(join(tmpdir(), "sidecar-cwd-hdr-923-"));
+    writeFileSync(
+      join(agentDir, "models.json"),
+      JSON.stringify({
+        providers: {
+          "acme-hdr-923": {
+            baseUrl: "http://127.0.0.1:9/v1",
+            api: "openai-completions",
+            apiKey: "test-key-hdr-923", // pragma: allowlist secret — synthetic test credential
+            models: [{ id: "acme-hdr-model", name: "Acme Hdr Model" }],
+          },
+        },
+      }),
+    );
+    const store = new SessionStore({ agentDir });
+    try {
+      const sessionId = await store.create({
+        provider: "acme-hdr-923",
+        model: "acme-hdr-model",
+        systemPrompt: "transcript header e2e",
+        cwd: sessionCwd,
+      });
+      assert.ok(sessionId, "create() returned a session id");
+      const file = join(dir, `${sessionId}.jsonl`);
+      assert.ok(await waitForFile(file), "header written by the real create() path");
+      const header = JSON.parse(readFileSync(file, "utf-8").trim());
+      assert.equal(header.type, "session_header");
+      assert.equal(header.session_id, sessionId);
+      assert.equal(header.provider, "acme-hdr-923");
+      assert.equal(header.model, "acme-hdr-model");
+      assert.equal(header.system_prompt, "transcript header e2e");
+      assert.ok(header.created_at, "created_at present");
+    } finally {
+      await store.disposeAll();
+      rmSync(agentDir, { recursive: true, force: true });
+      rmSync(sessionCwd, { recursive: true, force: true });
+      if (prevOffline === undefined) delete process.env.PI_OFFLINE;
+      else process.env.PI_OFFLINE = prevOffline;
+    }
   });
 
   it("enabled: disposeAll drains pending turn writes (#923 review)", async () => {

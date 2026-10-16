@@ -27,7 +27,7 @@ import { createLogger, logger } from "./logger.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig } from "./http-tool-executor.js";
 import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
 import { runWithSessionCwd } from "./session-cwd.js";
-import { drainTranscriptWrites, maybeEnforceRetention, queueTurn, transcriptsEnabled, writeSessionHeader } from "./transcripts.js";
+import { drainTranscriptWrites, maybeEnforceRetention, queueTurn, transcriptUsage, transcriptsEnabled, writeSessionHeader } from "./transcripts.js";
 
 const fixtureLog = createLogger("session-store");
 const pricingLog = createLogger("session-store");
@@ -1976,6 +1976,11 @@ export class SessionStore {
       turnNumber = entry.turnCount;
     }
     let turnWasRecorded = false;
+    // Captured at agent_end; the turn record is QUEUED only after the response
+    // is fully assembled (boundary separators applied, redaction, final
+    // duration) so the transcript's final_text matches the returned text.
+    let turnMessages: unknown[] | null = null;
+    let turnStopReason: string | undefined;
 
     logger.log(`[sidecar] Prompt started: session=${id}, message_length=${message.length}, cwd=${redactDiagnostic(entry.cwd, entry.redact)}`);
 
@@ -2087,28 +2092,13 @@ export class SessionStore {
           }
         }
 
-        // Transcript recording (issue #922): persist the full turn — every
-        // message including tool calls with arguments and tool results — with
-        // strings passed through this session's redactor. Queued on the
-        // session's ordered write chain (never out of order, drained at
-        // shutdown); heavy redaction/serialization work is deferred off this
-        // response-critical callback inside appendTurn. A usage snapshot is
-        // taken now (the object keeps mutating until the response is assembled).
-        // responseText is final here — this block runs after the text fallback
-        // extraction above.
+        // Transcript recording (issue #922): capture the turn payload here;
+        // the record itself is queued after the response is fully assembled
+        // (see below — boundary processing must not diverge from final_text).
         if (recordTurn) {
           turnWasRecorded = true;
-          const usageSnapshot = { ...usage, duration_ms: Date.now() - startTime };
-          queueTurn({
-            sessionId: id,
-            turnNumber,
-            messages: event.messages,
-            usage: usageSnapshot,
-            stopReason: finalAssistant?.stopReason,
-            finalText: responseText,
-            redact: entry.redact,
-          });
-          maybeEnforceRetention(new Set(this.sessions.keys()));
+          turnMessages = event.messages;
+          turnStopReason = finalAssistant?.stopReason;
         }
       }
     });
@@ -2118,21 +2108,23 @@ export class SessionStore {
     } catch (err: any) {
       logger.error(`[sidecar] Prompt failed: session=${id}, error=${redactDiagnostic(err?.message || String(err), entry.redact)}, stack=${redactDiagnostic(err instanceof Error ? err.stack ?? err.message : String(err), entry.redact)}`);
       // Transcript fallback (#923 review): a prompt that rejects without an
-      // agent_end event must still leave a record of the attempt — partial
-      // output, errors, usage, and the assigned turn number — so offline
+      // agent_end event must still leave a record of the attempt — the
+      // submitted user prompt, partial output, collected errors plus the
+      // rejection error, usage, and the assigned turn number — so offline
       // analysis sees failed turns too. Fail-soft like every transcript write.
       if (recordTurn && !turnWasRecorded) {
         const rejectionError = redactDiagnostic(err?.message || "Prompt rejected", entry.redact);
         queueTurn({
           sessionId: id,
           turnNumber,
-          messages: [],
-          usage: { ...usage, duration_ms: Date.now() - startTime },
+          messages: [{ role: "user", content: [{ type: "text", text: message }] }],
+          usage: transcriptUsage({ ...usage, duration_ms: Date.now() - startTime }),
           stopReason: "error",
           finalText: responseText || undefined,
-          errors: [rejectionError],
+          errors: [rejectionError, ...errors].slice(0, 10),
           redact: entry.redact,
         });
+        maybeEnforceRetention(new Set(this.sessions.keys()));
       }
       // If we captured partial text or error events before the rejection,
       // return structured data instead of throwing — preserves partial state for callers
@@ -2237,6 +2229,26 @@ export class SessionStore {
     usage.duration_ms = Date.now() - startTime;
     logger.log(`[sidecar] PROMPT_COMPLETED: session=${id}, text_length=${responseText.length}, deltas=${textDeltaCount}, tokens_in=${usage.input_tokens}, tokens_out=${usage.output_tokens}, duration_ms=${usage.duration_ms}`);
 
+    // Transcript recording (issue #922): queue the turn NOW — after boundary
+    // separators, redaction, and the final duration — so the record's
+    // final_text is exactly the text returned to the caller. Queued on the
+    // session's ordered write chain; heavy work is deferred off this path
+    // inside appendTurn. Usage is mapped to the documented schema names;
+    // collected SDK errors are included alongside the response.
+    if (recordTurn && turnMessages) {
+      queueTurn({
+        sessionId: id,
+        turnNumber,
+        messages: turnMessages,
+        usage: transcriptUsage(usage),
+        stopReason: turnStopReason,
+        finalText: responseText,
+        errors: errors.length > 0 ? [...errors] : undefined,
+        redact: entry.redact,
+      });
+      maybeEnforceRetention(new Set(this.sessions.keys()));
+    }
+
     // If we got errors from the AI, surface them
     if (errors.length > 0) {
       const errorText = errors.join("; ") + (errorsDropped > 0 ? ` [+${errorsDropped} more]` : "");
@@ -2292,9 +2304,6 @@ export class SessionStore {
   async disposeAll(): Promise<void> {
     this._disposed = true;
 
-    // Drain outstanding transcript writes (bounded, fail-soft) so completed
-    // turns are not lost at shutdown (#923 review).
-    await drainTranscriptWrites();
 
     // Await in-flight ensureInternalRuntime() so a runtime that finishes after
     // `_disposed` is set is still assigned (or orphan-disposed) before we tear
@@ -2334,6 +2343,12 @@ export class SessionStore {
     this.modelRuntime = undefined;
     this.modelRegistry = undefined;
     this.runtimeInit = undefined;
+
+    // Drain outstanding transcript writes LAST (#923 review): sessions are
+    // disposed above, so fallback records queued by disposal-rejected prompts
+    // are already in flight; the drain re-snapshots until the chains settle
+    // (bounded at 10s, warn-logged on timeout — never reported as success).
+    await drainTranscriptWrites();
   }
 
   cleanupStale(maxAge: number): number {

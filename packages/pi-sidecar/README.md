@@ -277,9 +277,11 @@ arguments, tool results, and aggregated usage — as JSONL under
 plus a `session_header` line on session creation (`created_at`, provider,
 model, redacted system prompt, cwd, custom tool names). Turn records carry
 the full redacted message array plus a `final_text` field with the assembled
-response, the usage snapshot, and the stop reason. Prompts that reject
-without completing still leave a turn record (partial output, errors,
-usage) so failed turns are visible to offline analysis.
+response, usage under its documented names (`input`, `output`, `cache_read`,
+`cache_write`, `cost_usd`, `cost_partial`, `duration_ms`), the stop reason,
+and any collected error events. Prompts that reject without completing still
+leave a turn record (submitted prompt, partial output, errors, usage) so
+failed turns are visible to offline analysis.
 
 Every string in a record — including object property names — passes through
 the session's credential redactor before it is written, and a single record
