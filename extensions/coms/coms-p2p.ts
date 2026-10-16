@@ -684,6 +684,47 @@ export default function (pi: ExtensionAPI) {
 	let currentInbound: InboundContext | null = null;
 	let bundledInbounds: InboundContext[] = [];
 	let processingInbound = false;
+
+	/** Busy state is peer-visible (#924 §3): rewrite the registry entry the
+	 *  moment processingInbound flips so peers' ⚙busy indicators track the
+	 *  transition immediately, not on the next 30s keepalive heartbeat. */
+	function setProcessingInbound(value: boolean): void {
+		if (processingInbound === value) return;
+		processingInbound = value;
+		log.debug("busy_transition", value);
+		writeLiveRegistry();
+	}
+
+	/** Write a live registry entry snapshot (shared by the keepalive timer and
+	 *  busy transitions). Fail-soft. */
+	function writeLiveRegistry(): void {
+		if (!identity || shuttingDown) return;
+		try {
+			const ctx = currentCtx;
+			const live: RegistryEntry = {
+				coms_session_id: identity.coms_session_id,
+				name: identity.name,
+				purpose: identity.purpose,
+				model: ctx?.model?.id ?? identity.model,
+				color: identity.color,
+				pid: process.pid,
+				endpoint: identity.endpoint,
+				cwd: identity.cwd,
+				started_at: nowIso(),
+				explicit: identity.explicit,
+				version: 1,
+				context_used_pct: Math.round(ctx?.getContextUsage()?.percent ?? 0),
+				queue_depth: getPendingInboundCount(),
+				busy: processingInbound,
+				heartbeat_at: nowIso(),
+				pi_session_id: (globalThis as any).__piConfigSessionId || identity.pi_session_id || "",
+			};
+			writeRegistryAtomic(live, identity.project);
+			updatePingWorkerCard();
+		} catch (err) {
+			log.warn("live_registry_write_failed", err instanceof Error ? err.message : String(err));
+		}
+	}
 	/** True when the agent is running a turn NOT triggered by a coms inbound.
 	 *  Set on agent_start, cleared on agent_end. Only true for user-initiated turns. */
 	let agentRunningUserTurn = false;
@@ -905,7 +946,7 @@ export default function (pi: ExtensionAPI) {
 		// mid-turn via followUp — mark as mixed turn for agent_end (#731).
 		inboundSetDuringUserTurn = agentRunningUserTurn;
 		currentInbound = inbound;
-		processingInbound = true;
+		setProcessingInbound(true);
 		try {
 			pi.sendMessage(
 				{
@@ -926,7 +967,7 @@ export default function (pi: ExtensionAPI) {
 			inboundQueue.delete(env.msg_id);
 			maybeRefreshWidget();
 			currentInbound = null;
-			processingInbound = false;
+			setProcessingInbound(false);
 			nack(socket, env.msg_id, "internal error");
 			return;
 		}
@@ -956,6 +997,10 @@ export default function (pi: ExtensionAPI) {
 			} catch (e: any) {
 				log.error("resolve_failed", env.msg_id, e?.message);
 			}
+			// A resolved entry stops rendering its ⏳ progress note — refresh
+			// NOW so the widget drops it the moment the reply lands, instead of
+			// waiting for the next registry/fs-watch event.
+			maybeRefreshWidget();
 			log.debug("handleResponse", env.msg_id, "from", env.sender_session.slice(-8), "error", env.error ?? "none");
 			appendComsHistory({
 				direction: "response_in",
@@ -972,7 +1017,7 @@ export default function (pi: ExtensionAPI) {
 			// open until its probe timeout.
 			if (env.error === "bundled" || env.error === "queue_cleared" || env.error === "steered") {
 				ackOk(socket, env.msg_id);
-				setTimeout(() => { pendingReplies.delete(env.msg_id); }, 60_000).unref();
+				setTimeout(() => { pendingReplies.delete(env.msg_id); maybeRefreshWidget(); }, 60_000).unref();
 				return;
 			}
 
@@ -1004,7 +1049,7 @@ export default function (pi: ExtensionAPI) {
 			} catch { /* best-effort */ }
 
 			// Clean up immediately since response was delivered
-			setTimeout(() => { pendingReplies.delete(env.msg_id); }, 60_000).unref();
+			setTimeout(() => { pendingReplies.delete(env.msg_id); maybeRefreshWidget(); }, 60_000).unref();
 		} else {
 			log.warn("orphan_response", env.msg_id);
 		}
@@ -1674,6 +1719,9 @@ Do not respond to this message.`;
 									existing.model = entry.model ?? existing.model;
 									existing.staleCount = 0;
 									log.debug("fs_watch_heartbeat_rename", entry.name, "ctx", entry.context_used_pct, "busy", existing.busy);
+									// Heartbeats now carry busy transitions (#924 §3) — a card
+									// change must re-render the pool widget, not just update data.
+									maybeRefreshWidget();
 								} else {
 									// New peer
 									const card: AgentCard & { staleCount: number } = {
@@ -1851,34 +1899,14 @@ Do not respond to this message.`;
 						log.error("self_heal_socket_failed", identity.coms_session_id, err instanceof Error ? err.message : String(err));
 					}
 				}
-				const ctx = currentCtx;
 				const missingBeforeWrite = !fs.existsSync(identity.registryFile);
-				const live: RegistryEntry = {
-					coms_session_id: identity.coms_session_id,
-					name: identity.name,
-					purpose: identity.purpose,
-					model: ctx?.model?.id ?? identity.model,
-					color: identity.color,
-					pid: process.pid,
-					endpoint: identity.endpoint,
-					cwd: identity.cwd,
-					started_at: nowIso(),
-					explicit: identity.explicit,
-					version: 1,
-					context_used_pct: Math.round(ctx?.getContextUsage()?.percent ?? 0),
-					queue_depth: getPendingInboundCount(),
-					busy: processingInbound,
-					heartbeat_at: nowIso(),
-					pi_session_id: (globalThis as any).__piConfigSessionId || identity.pi_session_id || "",
-				};
-				writeRegistryAtomic(live, identity.project);
+				writeLiveRegistry();
 				if (missingBeforeWrite) {
 					log.warn("self_heal_registry", identity.coms_session_id);
 					if (!fs.existsSync(identity.registryFile)) {
-						writeRegistryAtomic(live, identity.project);
+						writeLiveRegistry();
 					}
 				}
-				updatePingWorkerCard();
 			} catch {}
 		}, KEEPALIVE_INTERVAL_MS);
 		try { (keepaliveTimer as any).unref?.(); } catch {}
@@ -1947,10 +1975,13 @@ Do not respond to this message.`;
 		}
 		const rows: Row[] = [];
 
-		// Latest progress note per target peer from our pending replies (#924 §6)
+		// Latest progress note per target peer from our pending replies (#924 §6).
+		// Entries keep living ~60s after their reply (coms_get grace period) —
+		// a result already set means the reply landed, so the ⏳ note must not
+		// linger for that whole window.
 		const progressByPeer = new Map<string, string>();
 		for (const pr of pendingReplies.values()) {
-			if (!pr.progress || !pr.target_name) continue;
+			if (!pr.progress || !pr.target_name || pr.result) continue;
 			const existing = progressByPeer.get(pr.target_name);
 			if (!existing || existing < pr.progress.at) progressByPeer.set(pr.target_name, pr.progress.note);
 		}
@@ -2206,7 +2237,7 @@ Do not respond to this message.`;
 			// Clean up timed-out entry from both maps
 			const pSet = pendingOutbound.get(target.name);
 			if (pSet) { pSet.delete(msg_id); if (pSet.size === 0) pendingOutbound.delete(target.name); }
-			setTimeout(() => { pendingReplies.delete(msg_id); }, 60_000).unref();
+			setTimeout(() => { pendingReplies.delete(msg_id); maybeRefreshWidget(); }, 60_000).unref();
 		}, TIMEOUT_MS);
 		// Don't keep the event loop alive solely for this timer.
 		try { (entry.timer as any).unref?.(); } catch { /* ignore */ }
@@ -3091,7 +3122,7 @@ Do not respond to this message.`;
 			agentRunningUserTurn = false;
 			inboundSetDuringUserTurn = false;
 			userMessageDuringInbound = false;
-			processingInbound = false;
+			setProcessingInbound(false);
 			log.debug("agent_end_early", "currentInbound", currentInbound?.msg_id ?? "null", "processingInbound", processingInbound);
 			return;
 		}
@@ -3125,10 +3156,10 @@ Do not respond to this message.`;
 					);
 				} catch {
 					currentInbound = null;
-					processingInbound = false;
+					setProcessingInbound(false);
 				}
 			} else {
-				processingInbound = false;
+				setProcessingInbound(false);
 			}
 			return;
 		}
@@ -3224,10 +3255,10 @@ Do not respond to this message.`;
 								inboundQueue.delete(orphan.msg_id);
 							}
 							currentInbound = null;
-							processingInbound = false;
+							setProcessingInbound(false);
 						}
 					} else {
-						processingInbound = false;
+						setProcessingInbound(false);
 					}
 					return;
 				}
@@ -3292,10 +3323,10 @@ Do not respond to this message.`;
 						inboundQueue.delete(orphan.msg_id);
 					}
 					currentInbound = null;
-					processingInbound = false;
+					setProcessingInbound(false);
 				}
 			} else {
-				processingInbound = false;
+				setProcessingInbound(false);
 			}
 			return;
 		}
@@ -3362,7 +3393,7 @@ Do not respond to this message.`;
 							display: true,
 							details: { msg_id: senderPending[0].msg_id, sender_session: senderPending[0].sender_session, response_schema: senderPending[0].response_schema ?? null },
 						}, { deliverAs: "followUp", triggerTurn: true });
-					} catch { currentInbound = null; bundledInbounds = []; processingInbound = false; }
+					} catch { currentInbound = null; bundledInbounds = []; setProcessingInbound(false); }
 				} else {
 					const primary = senderPending[0];
 					currentInbound = primary;
@@ -3379,10 +3410,10 @@ Do not respond to this message.`;
 							display: true,
 							details: { msg_id: primary.msg_id, sender_session: primary.sender_session, response_schema: primary.response_schema ?? null, bundled_msg_ids: senderPending.map(i => i.msg_id) },
 						}, { deliverAs: "followUp", triggerTurn: true });
-					} catch { currentInbound = null; bundledInbounds = []; processingInbound = false; }
+					} catch { currentInbound = null; bundledInbounds = []; setProcessingInbound(false); }
 				}
 			} else {
-				processingInbound = false;
+				setProcessingInbound(false);
 			}
 			return;
 		}
@@ -3497,7 +3528,7 @@ Do not respond to this message.`;
 					inboundQueue.delete(next.msg_id);
 					currentInbound = null;
 					bundledInbounds = [];
-					processingInbound = false;
+					setProcessingInbound(false);
 				}
 			} else {
 				// Multiple messages from same sender — bundle them
@@ -3534,12 +3565,12 @@ Do not respond to this message.`;
 					}
 					currentInbound = null;
 					bundledInbounds = [];
-					processingInbound = false;
+					setProcessingInbound(false);
 				}
 			}
 		} else {
 			bundledInbounds = [];
-			processingInbound = false;
+			setProcessingInbound(false);
 		}
 	});
 
