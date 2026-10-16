@@ -9,6 +9,7 @@ import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { SessionStore, isValidApiKey, createApiKeyRedactor, redactDiagnostic, resolveInternalAgentDir } from "./sessions.js";
+import { setRecordingOverride, clearRecordingOverride, recordingState } from "./transcripts.js";
 import { startWatchdog, type WatchdogOptions } from "./watchdog.js";
 import { assertPiVersionFloor } from "./pi-version.js";
 import { createLogger, logger } from "./logger.js";
@@ -449,6 +450,43 @@ export function startSidecar(options?: {
         const providers = await store.getProviders();
         logger.debug(`[sidecar] GET /providers 200 ${Date.now() - requestStart}ms: count=${providers.length}`);
         sendJson(res, 200, { providers });
+        return;
+      }
+
+      // GET /transcripts/recording (#935) — effective recording state.
+      // Exact-URL match: "/transcripts/recording/reset" (POST) never lands here.
+      if (method === "GET" && url === "/transcripts/recording") {
+        const state = recordingState();
+        logger.debug(`[sidecar] GET /transcripts/recording 200: enabled=${state.enabled}, source=${state.source}`);
+        sendJson(res, 200, state);
+        return;
+      }
+
+      // POST /transcripts/recording (#935) — runtime override, no restart.
+      // Affects subsequent turns only; in-flight turns complete under the
+      // state captured at their prompt start. Env stays the boot default.
+      if (method === "POST" && url === "/transcripts/recording") {
+        const body = await parseBody(req);
+        if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.enabled !== "boolean") {
+          logger.warn(`[sidecar] POST /transcripts/recording 400: invalid body`);
+          sendJson(res, 400, { error: "Invalid body: expected { \"enabled\": boolean }" });
+          return;
+        }
+        setRecordingOverride(body.enabled);
+        const state = recordingState();
+        logger.info(`[sidecar] POST /transcripts/recording 200: enabled=${state.enabled}, source=override`);
+        sendJson(res, 200, state);
+        return;
+      }
+
+      // POST /transcripts/recording/reset (#935) — drop the override; the
+      // boot-time env default governs again. Checked before any prefix-based
+      // matching could shadow it (currently exact matches only, kept for safety).
+      if (method === "POST" && url === "/transcripts/recording/reset") {
+        clearRecordingOverride();
+        const state = recordingState();
+        logger.info(`[sidecar] POST /transcripts/recording/reset 200: enabled=${state.enabled}, source=${state.source}`);
+        sendJson(res, 200, state);
         return;
       }
 

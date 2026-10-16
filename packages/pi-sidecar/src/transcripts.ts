@@ -9,7 +9,10 @@
  * API-key redactor before it is written.
  *
  * OFF by default (`RECORD_TRANSCRIPTS`): disabled means zero I/O — no
- * directory creation, no file handles, no retention scans. When enabled,
+ * directory creation, no file handles, no retention scans. The env value is
+ * the boot-time default; a runtime override (#935, POST /transcripts/recording)
+ * can flip recording without a restart and affects subsequent turns only.
+ * When enabled,
  * every write is fail-soft: a transcript failure is logged and swallowed,
  * never propagated into the prompt response path.
  *
@@ -34,9 +37,43 @@ function isEnvTruthy(raw: string | undefined): boolean {
   return v === "1" || v === "true" || v === "yes" || v === "on";
 }
 
-/** Recording is enabled only when RECORD_TRANSCRIPTS is explicitly truthy. */
+/**
+ * Runtime recording override (#935). `undefined` means no override — the
+ * boot-time env value governs. Set via POST /transcripts/recording, cleared
+ * via POST /transcripts/recording/reset. In-memory only: a restart restores
+ * the env default by design. Plain boolean assignment is atomic in JS, so
+ * concurrent route calls and prompt paths need no locking.
+ */
+let recordingOverride: boolean | undefined;
+
+/** Set the runtime override; takes effect for subsequent turns. */
+export function setRecordingOverride(enabled: boolean): void {
+  recordingOverride = enabled;
+  log.info(`transcript recording override set: enabled=${enabled}`);
+}
+
+/** Drop the runtime override; the env default governs again. */
+export function clearRecordingOverride(): void {
+  if (recordingOverride === undefined) {
+    log.debug("transcript recording override cleared: no override was set");
+    return;
+  }
+  recordingOverride = undefined;
+  log.info("transcript recording override cleared; env default restored");
+}
+
+/** Effective recording state, with whether it comes from env or override. */
+export function recordingState(): { enabled: boolean; source: "env" | "override" } {
+  return {
+    enabled: transcriptsEnabled(),
+    source: recordingOverride === undefined ? "env" : "override",
+  };
+}
+
+/** Recording is enabled only when RECORD_TRANSCRIPTS is explicitly truthy
+ *  (or the runtime override says so — see recordingOverride, #935). */
 export function transcriptsEnabled(): boolean {
-  return isEnvTruthy(process.env.RECORD_TRANSCRIPTS);
+  return recordingOverride ?? isEnvTruthy(process.env.RECORD_TRANSCRIPTS);
 }
 
 /**

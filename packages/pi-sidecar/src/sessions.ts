@@ -899,6 +899,22 @@ interface SessionEntry {
   /** 1-based count of prompts sent to this session — the transcript turn number. */
   turnCount: number;
   /**
+   * Transcript header state (#935): the create-time header payload (kept so
+   * the header can be written lazily when recording is enabled mid-session)
+   * and whether it has been written yet. The disabled path stays zero-cost —
+   * one object reference and a boolean per session.
+   */
+  transcriptHeader: {
+    sessionId: string;
+    provider: string;
+    model: string;
+    systemPrompt?: string;
+    cwd?: string;
+    customTools?: string[];
+    redact: (value: string) => string;
+  };
+  headerWritten: boolean;
+  /**
    * Whether the session's model carries real prices. Pi requires numeric prices,
    * so a model whose source published none (key-scoped listing, CLI/ACPX
    * discovery without a catalog price) uses zeros for "unknown pricing", not
@@ -1115,6 +1131,17 @@ export class SessionStore {
       redact: (value) => value,
       pricingKnown,
       turnCount: 0,
+      // Fixture sessions carry a placeholder header payload; transcripts
+      // on fixtures are only exercised in dedicated transcript tests that
+      // install real values via putSessionFixture-like setup.
+      transcriptHeader: {
+        sessionId: id,
+        provider: "fixture",
+        model: "fixture",
+        cwd,
+        redact: (value) => value,
+      },
+      headerWritten: false,
     });
   }
 
@@ -1930,22 +1957,27 @@ export class SessionStore {
       throw httpError("Sidecar is shutting down", 503);
     }
 
-    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0 });
+    const transcriptHeader = {
+      sessionId: id,
+      provider: options.provider,
+      model: options.model,
+      systemPrompt: options.systemPrompt,
+      cwd: options.cwd,
+      customTools: customTools.map((tool: CustomToolConfig) => tool.name),
+      redact,
+    };
+    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0, transcriptHeader, headerWritten: false });
     log.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${customTools.length})`);
     // Transcript recording (issue #922) — OFF unless RECORD_TRANSCRIPTS is
-    // truthy; the header write is fail-soft and awaited so it precedes any
-    // turn record for this session. Retention runs opportunistically and
+    // truthy (or the #935 runtime override is set); the header write is
+    // fail-soft and awaited so it precedes any turn record for this session.
+    // When recording is disabled at creation, the header is written lazily on
+    // the first recorded turn (prompt()) so enabling mid-session still
+    // produces a well-formed file. Retention runs opportunistically and
     // never prunes a live session's file (this one included).
     if (transcriptsEnabled()) {
-      await writeSessionHeader({
-        sessionId: id,
-        provider: options.provider,
-        model: options.model,
-        systemPrompt: options.systemPrompt,
-        cwd: options.cwd,
-        customTools: customTools.map((tool: CustomToolConfig) => tool.name),
-        redact,
-      });
+      await writeSessionHeader(transcriptHeader);
+      this.sessions.get(id)!.headerWritten = true;
       maybeEnforceRetention(new Set(this.sessions.keys()));
     }
     return id;
@@ -1974,6 +2006,15 @@ export class SessionStore {
     if (recordTurn) {
       entry.turnCount += 1;
       turnNumber = entry.turnCount;
+      // Lazy header (#935): recording was enabled after this session was
+      // created, so its header was never written — write it now, before the
+      // turn record, keeping the file well-formed. Fail-soft like all
+      // transcript writes; retention runs on first write.
+      if (!entry.headerWritten) {
+        await writeSessionHeader(entry.transcriptHeader);
+        entry.headerWritten = true;
+        maybeEnforceRetention(new Set(this.sessions.keys()));
+      }
     }
     let turnWasRecorded = false;
     // Captured at agent_end; the turn record is QUEUED only after the response

@@ -13,11 +13,14 @@ import { join } from "node:path";
 import { SessionStore } from "../../src/sessions.js";
 import {
   appendTurn,
+  clearRecordingOverride,
   drainTranscriptWrites,
   enforceRetention,
   maybeEnforceRetention,
   queueTurn,
+  recordingState,
   redactStructured,
+  setRecordingOverride,
   transcriptsDir,
   transcriptsEnabled,
   writeSessionHeader,
@@ -417,7 +420,10 @@ describe("store wiring (end-to-end through prompt())", () => {
     assert.equal(result.text, "ran it", "prompt response unaffected");
     const file = join(dir, "s-e2e.jsonl");
     assert.ok(await waitForFile(file), "turn record written");
-    const record = JSON.parse(readFileSync(file, "utf-8").trim());
+    await drainTranscriptWrites();
+    // Fixture sessions get a lazy header on the first recorded turn (#935) —
+    // same well-formed header-then-turn shape as real create() sessions.
+    const record = lastRecord(file);
     assert.equal(record.type, "turn");
     assert.equal(record.turn_number, 1);
     assert.equal(record.messages.length, 4, "full message array persisted");
@@ -434,8 +440,8 @@ describe("store wiring (end-to-end through prompt())", () => {
     await waitForFile(file);
     await drainTranscriptWrites();
     const lines = readFileSync(file, "utf-8").trim().split("\n");
-    assert.equal(lines.length, 2, "one line per turn");
-    assert.equal(JSON.parse(lines[1]!).turn_number, 2);
+    assert.equal(lines.length, 3, "lazy header + one line per turn");
+    assert.equal(JSON.parse(lines[2]!).turn_number, 2);
   });
 
   it("enabled: a rejected prompt still leaves a turn record (#923 review)", async () => {
@@ -466,7 +472,7 @@ describe("store wiring (end-to-end through prompt())", () => {
     await drainTranscriptWrites();
     const file = join(dir, "s-reject.jsonl");
     assert.ok(existsSync(file), "rejection fallback record written");
-    const record = JSON.parse(readFileSync(file, "utf-8").trim());
+    const record = lastRecord(file);
     assert.equal(record.type, "turn");
     assert.equal(record.turn_number, 1, "assigned turn number retained");
     assert.equal(record.stop_reason, "error");
@@ -510,7 +516,7 @@ describe("store wiring (end-to-end through prompt())", () => {
     const result = await store.prompt(id, "hi");
     assert.equal(result.text, "part one\n\npart two", "boundary separator applied to the response");
     await drainTranscriptWrites();
-    const record = JSON.parse(readFileSync(join(dir, "s-multi.jsonl"), "utf-8").trim());
+    const record = lastRecord(join(dir, "s-multi.jsonl"));
     assert.equal(record.final_text, "part one\n\npart two", "transcript final_text matches the returned text exactly");
   });
 
@@ -542,7 +548,7 @@ describe("store wiring (end-to-end through prompt())", () => {
     const result = await store.prompt(id, "hi");
     assert.ok(result.error, "caller sees the error");
     await drainTranscriptWrites();
-    const record = JSON.parse(readFileSync(join(dir, "s-errmsg.jsonl"), "utf-8").trim());
+    const record = lastRecord(join(dir, "s-errmsg.jsonl"));
     assert.ok(JSON.stringify(record.errors).includes("tool timeout"), "collected SDK errors retained in the turn record");
     assert.equal(record.stop_reason, "error");
   });
@@ -603,6 +609,111 @@ describe("store wiring (end-to-end through prompt())", () => {
     assert.ok(existsSync(file), "queued turn survived shutdown via drain");
   });
 });
+
+describe("runtime recording override (#935)", () => {
+  const ENV_KEYS = ["RECORD_TRANSCRIPTS", "PI_SIDECAR_TRANSCRIPTS_DIR"] as const;
+  let dir: string;
+  beforeEach(() => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    clearRecordingOverride();
+    dir = tempTranscriptsDir();
+    process.env.PI_SIDECAR_TRANSCRIPTS_DIR = dir;
+  });
+  afterEach(() => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    clearRecordingOverride();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("override wins over env in both directions; recordingState reports source", () => {
+    assert.deepEqual(recordingState(), { enabled: false, source: "env" }, "off, env, by default");
+    setRecordingOverride(true);
+    assert.equal(transcriptsEnabled(), true, "override true beats env unset");
+    assert.deepEqual(recordingState(), { enabled: true, source: "override" });
+    process.env.RECORD_TRANSCRIPTS = "1";
+    setRecordingOverride(false);
+    assert.equal(transcriptsEnabled(), false, "override false beats env on");
+    assert.deepEqual(recordingState(), { enabled: false, source: "override" });
+  });
+
+  it("reset restores the env default; clearing without an override is a no-op", () => {
+    process.env.RECORD_TRANSCRIPTS = "1";
+    setRecordingOverride(false);
+    clearRecordingOverride(); // explicit clear
+    assert.deepEqual(recordingState(), { enabled: true, source: "env" });
+    clearRecordingOverride(); // no override set — must not throw
+    assert.deepEqual(recordingState(), { enabled: true, source: "env" });
+  });
+
+  it("enabling mid-session writes the header lazily before the first recorded turn", async () => {
+    // Session prompts once with recording off (zero I/O), then recording is
+    // enabled at runtime: the next prompt must produce header-then-turn, in
+    // that order, with turn numbering starting at 1.
+    const store = new SessionStore();
+    let emit: (event: unknown) => void = () => {};
+    const id = "s-mid-toggle";
+    (store as any).putSessionFixture(
+      id,
+      {
+        subscribe: (cb: (event: unknown) => void) => {
+          emit = cb;
+          return () => {};
+        },
+        prompt: async () => {
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
+          emit({
+            type: "agent_end",
+            messages: [
+              { role: "user", content: [{ type: "text", text: "hi" }] },
+              { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input: 3, output: 1 }, stopReason: "end_turn" },
+            ],
+          });
+        },
+        dispose: () => {},
+        abort: async () => {},
+      },
+      "/tmp/mid-toggle",
+      true,
+    );
+    await store.prompt(id, "hi");
+    assert.equal(readdirSyncSafe(dir).length, 0, "disabled: zero I/O");
+
+    setRecordingOverride(true);
+    await store.prompt(id, "again");
+    const file = join(dir, "s-mid-toggle.jsonl");
+    assert.ok(await waitForFileLazy(file), "turn written after enabling");
+    await drainTranscriptWrites();
+    const lines = readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0].type, "session_header", "lazy header precedes first recorded turn");
+    assert.equal(lines[0].session_id, "s-mid-toggle");
+    assert.equal(lines[1].type, "turn");
+    assert.equal(lines[1].turn_number, 1, "first recorded turn is turn 1 — disabled prompts do not consume numbers");
+
+    // Disabling again stops later turns.
+    setRecordingOverride(false);
+    await store.prompt(id, "third");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const linesAfter = readFileSync(file, "utf-8").trim().split("\n");
+    assert.equal(linesAfter.length, 2, "no further turns after disabling");
+    await store.disposeAll();
+  });
+});
+
+async function waitForFileLazy(path: string, timeoutMs = 2000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return false;
+}
+
+/** Last JSONL record in a transcript file (fixture files: lazy header + turns). */
+function lastRecord(file: string): Record<string, any> {
+  const lines = readFileSync(file, "utf-8").trim().split("\n");
+  return JSON.parse(lines[lines.length - 1]!);
+}
 
 function readdirSyncSafe(dir: string): string[] {
   try {

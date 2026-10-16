@@ -165,6 +165,18 @@ class KeyModelDiscovery(TypedDict):
     modelListingSupported: bool
 
 
+class RecordingState(TypedDict):
+    """Effective transcript recording state from /transcripts/recording.
+
+    ``source`` is ``"env"`` when the boot-time default governs, or
+    ``"override"`` when a runtime override (set via ``set_recording``)
+    is in effect.
+    """
+
+    enabled: bool
+    source: str
+
+
 @dataclass
 class AITokenUsage:
     """Token usage data from an AI call."""
@@ -335,6 +347,39 @@ class SidecarClient:
         providers = resp.json()["providers"]
         logger.debug("Fetched %d providers from sidecar", len(providers))
         return providers
+
+    async def get_recording(self) -> RecordingState:
+        """Return the effective transcript recording state and its source."""
+        logger.debug("Fetching transcript recording state")
+        resp = await self._client.get("/transcripts/recording")
+        resp.raise_for_status()
+        state = resp.json()
+        logger.debug("Transcript recording state: enabled=%s source=%s", state.get("enabled"), state.get("source"))
+        return state
+
+    async def set_recording(self, enabled: bool) -> RecordingState:
+        """Set a runtime override for transcript recording (no restart).
+
+        Affects subsequent turns only; the boot-time env value stays the
+        default after a restart. Pass ``False`` to pause, ``True`` to resume.
+        """
+        logger.debug("Setting transcript recording override: enabled=%s", enabled)
+        resp = await self._client.post("/transcripts/recording", json={"enabled": enabled})
+        resp.raise_for_status()
+        state = resp.json()
+        logger.info("Transcript recording override set: enabled=%s", state.get("enabled"))
+        return state
+
+    async def reset_recording(self) -> RecordingState:
+        """Drop the runtime override; the boot-time env default governs again."""
+        logger.debug("Resetting transcript recording override")
+        resp = await self._client.post("/transcripts/recording/reset")
+        resp.raise_for_status()
+        state = resp.json()
+        logger.info(
+            "Transcript recording override reset: enabled=%s source=%s", state.get("enabled"), state.get("source")
+        )
+        return state
 
     async def refresh_models(self) -> list[dict]:
         """Trigger model discovery and return updated list."""
