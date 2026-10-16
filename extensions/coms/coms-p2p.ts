@@ -19,7 +19,8 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
-import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary } from "./coms-shared.js";
+import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, type BroadcastTargetResult } from "./coms-shared.js";
+import { appendHistoryRecord, queryHistoryRecords, truncatePreview, type HistoryRecord } from "./coms-history.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import * as net from "node:net";
 import * as fs from "node:fs";
@@ -49,7 +50,7 @@ const LINE_CAP_BYTES = 64 * 1024;
 
 // ━━ Types ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-type EnvelopeType = "prompt" | "response" | "ping" | "task_update" | "queue_manage" | "task_manage" | "presence";
+type EnvelopeType = "prompt" | "response" | "ping" | "task_update" | "queue_manage" | "task_manage" | "presence" | "progress";
 
 interface Envelope {
 	type: EnvelopeType;
@@ -68,6 +69,10 @@ interface PromptEnvelope extends Envelope {
 	conversation_id?: string | null;
 	response_schema?: object | null;
 	tasks?: Array<{ subject: string; description: string }> | null;
+	/** #924 §4: jump the receiver's inbound queue (queued delivery order). */
+	priority?: boolean;
+	/** #924 §1: inject into the receiver's IN-FLIGHT turn instead of queueing. */
+	steer?: boolean;
 }
 
 interface ResponseEnvelope extends Envelope {
@@ -116,6 +121,15 @@ interface PresenceEnvelope extends Envelope {
 	sender_name: string;
 }
 
+/** #924 §6: mid-turn progress signal from the peer processing our prompt.
+ *  msg_id references the ORIGINAL prompt's msg_id — it never fulfills the
+ *  pending reply, only annotates it. */
+interface ProgressEnvelope extends Envelope {
+	type: "progress";
+	note: string;
+	sender_name: string;
+}
+
 interface AgentCard {
 	name: string;
 	purpose: string;
@@ -123,6 +137,8 @@ interface AgentCard {
 	color: string;
 	context_used_pct: number;
 	queue_depth: number;
+	/** #924 §3: receiver is currently processing a peer inbound. */
+	busy: boolean;
 	tasks_summary?: { total: number; completed: number; in_progress: number } | null;
 }
 
@@ -149,6 +165,8 @@ interface RegistryEntry {
 	// Optional so older entries (pre-heartbeat-refresh) still parse cleanly.
 	context_used_pct?: number;
 	queue_depth?: number;
+	/** #924 §3: peer is processing a peer inbound (heartbeat-refreshed). */
+	busy?: boolean;
 	heartbeat_at?: string;
 	pi_session_id?: string;
 }
@@ -165,6 +183,8 @@ interface PendingReply {
 	created_at?: string;
 	/** Creation time drives body-free recovery previews. */
 	queued_at?: string;
+	/** #924 §6: last progress note received from the peer (never resolves the reply). */
+	progress?: { note: string; at: string };
 }
 
 interface InboundContext {
@@ -181,6 +201,12 @@ interface InboundContext {
 	fulfilled: boolean;
 	/** How many times this inbound was re-injected due to mixed-turn conflict */
 	mixedTurnRetries?: number;
+	/** #924 §4: this inbound was sent with priority (jumps the queue). */
+	priority?: boolean;
+	/** #924 §1: steers accepted into this inbound's turn so far (cap guard). */
+	steerCount?: number;
+	/** #924 §6: last progress-signal emission for this inbound (ms epoch). */
+	lastProgressAt?: number;
 }
 
 function makeEndpoint(sessionId: string): string {
@@ -716,11 +742,82 @@ export default function (pi: ExtensionAPI) {
 		try { socket.end(); } catch { /* ignore */ }
 	}
 
+	/** #924 §5: append to the local coms history trail. Fail-soft — delivery
+	 *  never waits on history. */
+	function appendComsHistory(record: Omit<HistoryRecord, "ts"> & { ts?: string }): void {
+		appendHistoryRecord(path.join(COMS_DIR, "history.jsonl"), { ts: record.ts ?? nowIso(), ...record });
+	}
+
+	/** #924 §6: progress signal from the peer processing our prompt. Annotates
+	 *  the pending reply — NEVER resolves it — and refreshes the widget. */
+	function handleProgress(socket: net.Socket, env: ProgressEnvelope): void {
+		ackOk(socket, env.msg_id);
+		const pending = pendingReplies.get(env.msg_id);
+		if (pending) {
+			pending.progress = { note: env.note, at: env.timestamp };
+			log.debug("progress_received", env.msg_id, env.note);
+			maybeRefreshWidget();
+		} else {
+			log.debug("progress_orphan", env.msg_id, "from", env.sender_name);
+		}
+	}
+
 	function handlePrompt(socket: net.Socket, env: PromptEnvelope): void {
 		// 1. Hop limit check
 		if (typeof env.hops !== "number" || env.hops >= MAX_HOPS) {
 			nack(socket, env.msg_id, "hops exceeded");
 			return;
+		}
+
+		// 1b. STEER (#924 §1): inject into the receiver's IN-FLIGHT turn — never
+		// queued, never fulfilled, FIFO state untouched. The running turn's
+		// agent_end response (to the ORIGINAL msg_id) naturally reflects the
+		// steer. Capped per turn; over-cap steers fall back to the normal queue
+		// path so a buggy sender loop cannot flood one turn's context.
+		if (env.steer && processingInbound && currentInbound && !currentInbound.fulfilled && identity) {
+			if (shouldAcceptSteer(currentInbound.steerCount ?? 0)) {
+				currentInbound.steerCount = (currentInbound.steerCount ?? 0) + 1;
+				ackOk(socket, env.msg_id);
+				log.info("steer_injected", env.msg_id, "into", currentInbound.msg_id, "from", env.sender_name, "count", currentInbound.steerCount);
+				appendComsHistory({
+					direction: "steer",
+					msg_id: env.msg_id,
+					peer: env.sender_name,
+					session: env.sender_session,
+					preview: truncatePreview(env.prompt),
+					status: `injected into ${currentInbound.msg_id}`,
+				});
+				try {
+					pi.sendMessage(
+						{
+						customType: `steer from ${sanitizeComsName(env.sender_name)} → ${sanitizeComsName(identity.name)} @ ${sanitizeComsName(env.sender_cwd || "?")}`,
+						content: buildInboundContent(
+							`[STEER from ${sanitizeComsName(env.sender_name)} — mid-turn course correction. Read this BEFORE continuing your current work; it may change instructions.]`,
+							env.prompt,
+							null,
+							env.sender_name,
+							env.sender_cwd,
+						),
+						display: true,
+						details: { msg_id: env.msg_id, steer: true, target_msg_id: currentInbound.msg_id },
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				);
+				} catch (err) {
+					log.warn("steer_inject_failed", env.msg_id, err instanceof Error ? err.message : String(err));
+				}
+				// Terminal receipt for the sender's pending entry: the steer was
+				// delivered mid-turn; no separate response will ever come for it.
+				void sendEnvelope(env.sender_endpoint, {
+					type: "response", msg_id: env.msg_id,
+					sender_session: identity.coms_session_id, sender_endpoint: identity.endpoint,
+					hops: 0, timestamp: nowIso(),
+					response: null, error: "steered",
+				}).catch(() => { /* best-effort receipt */ });
+				return;
+			}
+			log.warn("steer_cap_exceeded", env.msg_id, "from", env.sender_name, "— queuing normally");
+			// fall through to the normal queue path
 		}
 
 		// 2. Insert into inbound queue (store message content for FIFO re-injection)
@@ -736,8 +833,28 @@ export default function (pi: ExtensionAPI) {
 			response_schema: env.response_schema ?? null,
 			queued_at: nowIso(),
 			fulfilled: false,
+			...(env.priority ? { priority: true } : {}),
 		};
-		inboundQueue.set(env.msg_id, inbound);
+		// PRIORITY (#924 §4): priority prompts jump ahead of the first
+		// non-priority pending inbound; arrival order is preserved among
+			// priorities and everything else. The map is rebuilt because Map
+			// insertion order IS the FIFO order the agent_end drain walks.
+		if (env.priority && inboundQueue.size > 0) {
+			const rebuilt = insertInboundByPriority([...inboundQueue.values()], inbound);
+			inboundQueue.clear();
+			for (const ib of rebuilt) inboundQueue.set(ib.msg_id, ib);
+			log.info("inbound_priority_enqueued", env.msg_id, "from", env.sender_name, "depth", getPendingInboundCount());
+		} else {
+			inboundQueue.set(env.msg_id, inbound);
+		}
+		appendComsHistory({
+			direction: "in",
+			msg_id: env.msg_id,
+			peer: env.sender_name,
+			session: env.sender_session,
+			preview: truncatePreview(env.prompt),
+			status: env.priority ? "queued (priority)" : "queued",
+		});
 		log.debug("recovery_inbound_enqueued", { msgId: env.msg_id, sender: env.sender_name, state: "queued" });
 		maybeRefreshWidget();
 
@@ -806,9 +923,17 @@ export default function (pi: ExtensionAPI) {
 				log.error("resolve_failed", env.msg_id, e?.message);
 			}
 			log.debug("handleResponse", env.msg_id, "from", env.sender_session.slice(-8), "error", env.error ?? "none");
+			appendComsHistory({
+				direction: "response_in",
+				msg_id: env.msg_id,
+				peer: pending.target_name ?? env.sender_session,
+				preview: truncatePreview(typeof env.response === "string" ? env.response : JSON.stringify(env.response ?? "")),
+				status: env.error ? `error: ${env.error}` : "replied",
+				error: env.error ?? null,
+			});
 
-			// Skip display for bundled/cleared responses — not user-visible
-			if (env.error === "bundled" || env.error === "queue_cleared") {
+			// Skip display for bundled/cleared/steered responses — not user-visible
+			if (env.error === "bundled" || env.error === "queue_cleared" || env.error === "steered") {
 				setTimeout(() => { pendingReplies.delete(env.msg_id); }, 60_000).unref();
 				return;
 			}
@@ -860,6 +985,7 @@ export default function (pi: ExtensionAPI) {
 			color: ident?.color ?? "#36F9F6",
 			context_used_pct: pct,
 			queue_depth: getPendingInboundCount(),
+			busy: processingInbound,
 			tasks_summary: await readTaskSummary(currentCtx?.cwd ?? process.cwd(), currentCtx?.sessionManager?.getSessionId?.()),
 		};
 	}
@@ -947,6 +1073,8 @@ export default function (pi: ExtensionAPI) {
 					handleTaskManage(socket, parsed as TaskManageEnvelope);
 				} else if (parsed.type === "presence") {
 					handlePresence(socket, parsed as PresenceEnvelope);
+				} else if (parsed.type === "progress") {
+					handleProgress(socket, parsed as ProgressEnvelope);
 				} else {
 					nack(socket, parsed.msg_id, "unknown type");
 				}
@@ -1215,6 +1343,10 @@ export default function (pi: ExtensionAPI) {
 	// ━━ task heartbeat keepalive timer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let taskHeartbeatTimer: NodeJS.Timeout | null = null;
 
+	// ━━ #924 §6: progress-signal timer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	let progressSignalTimer: NodeJS.Timeout | null = null;
+	const PROGRESS_SIGNAL_INTERVAL_MS = 60_000;
+
 	// ━━ session_start ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	pi.on("session_start", async (_event, ctx) => {
 		applyExtensionDefaults(import.meta.url, ctx);
@@ -1408,6 +1540,7 @@ export default function (pi: ExtensionAPI) {
 				color: entry.color,
 				context_used_pct: entry.context_used_pct ?? 0,
 				queue_depth: entry.queue_depth ?? 0,
+				busy: entry.busy ?? false,
 				tasks_summary: null,
 				staleCount: 0,
 			});
@@ -1434,8 +1567,10 @@ export default function (pi: ExtensionAPI) {
 - Your assistant text IS your reply — auto-captured when your turn ends
 
 ## Available tools
-- coms_list — see connected peers
-- coms_send — send a message to a peer
+- coms_list — see connected peers (incl. busy state and queue depth)
+- coms_send — send a message to a peer (steer=true for mid-turn course correction, priority=true to jump its queue)
+- coms_broadcast — send one prompt to multiple peers at once
+- coms_history — query past coms traffic with this project's peers
 - coms_get — check status of a sent message
 - coms_queue_inspect — preview owned inbound queue items before recovery (no message bodies)
 - coms_queue_clear — irreversibly clear only a prior inspect preview; never clears automatically
@@ -1505,7 +1640,7 @@ Do not respond to this message.`;
 									const card: AgentCard & { staleCount: number } = {
 										name: entry.name, purpose: entry.purpose, model: entry.model,
 										color: entry.color, context_used_pct: entry.context_used_pct ?? 0,
-										queue_depth: entry.queue_depth ?? 0, tasks_summary: null, staleCount: 0,
+										queue_depth: entry.queue_depth ?? 0, busy: entry.busy ?? false, tasks_summary: null, staleCount: 0,
 									};
 									peerCards.set(entry.coms_session_id, card);
 									log.info("fs_watch_peer_added", entry.name, entry.coms_session_id);
@@ -1561,14 +1696,15 @@ Do not respond to this message.`;
 							const existing = peerCards.get(entry.coms_session_id)!;
 							existing.context_used_pct = entry.context_used_pct ?? existing.context_used_pct;
 							existing.queue_depth = entry.queue_depth ?? existing.queue_depth;
+							existing.busy = entry.busy ?? existing.busy;
 							existing.staleCount = 0;
 							existing.model = entry.model ?? existing.model;
-							log.debug("fs_watch_heartbeat", entry.name, "ctx", entry.context_used_pct);
+							log.debug("fs_watch_heartbeat", entry.name, "ctx", entry.context_used_pct, "busy", existing.busy);
 						} else if (entry && entry.coms_session_id && !peerCards.has(entry.coms_session_id)) {
 							const card: AgentCard & { staleCount: number } = {
 								name: entry.name, purpose: entry.purpose, model: entry.model,
 								color: entry.color, context_used_pct: entry.context_used_pct ?? 0,
-								queue_depth: entry.queue_depth ?? 0, tasks_summary: null, staleCount: 0,
+								queue_depth: entry.queue_depth ?? 0, busy: entry.busy ?? false, tasks_summary: null, staleCount: 0,
 							};
 							peerCards.set(entry.coms_session_id, card);
 							log.info("fs_watch_peer_added_via_change", entry.name, entry.coms_session_id);
@@ -1619,6 +1755,31 @@ Do not respond to this message.`;
 		}, TASK_HEARTBEAT_MS);
 		try { (taskHeartbeatTimer as any).unref?.(); } catch {}
 
+		// #924 §6: while processing an inbound, periodically tell the sender
+		// we are still working. The signal ANNOTATES their pending reply —
+		// it never fulfills it. sendEnvelope only (no ctx access), so no
+		// live-ctx guard is required; cleared on shutdown.
+		if (progressSignalTimer) { try { clearInterval(progressSignalTimer); } catch { /* ignore */ } }
+		progressSignalTimer = setInterval(() => {
+			if (!identity || shuttingDown || !processingInbound || !currentInbound || currentInbound.fulfilled) return;
+			const nowMs = Date.now();
+			if (currentInbound.lastProgressAt && nowMs - currentInbound.lastProgressAt < PROGRESS_SIGNAL_INTERVAL_MS) return;
+			currentInbound.lastProgressAt = nowMs;
+			const elapsedSec = Math.max(0, Math.round((nowMs - new Date(currentInbound.queued_at).getTime()) / 1000));
+			log.debug("progress_signal_sent", currentInbound.msg_id, "to", currentInbound.sender_name, "elapsed", elapsedSec);
+			void sendEnvelope(currentInbound.sender_endpoint, {
+				type: "progress",
+				msg_id: currentInbound.msg_id,
+				sender_session: identity.coms_session_id,
+				sender_endpoint: identity.endpoint,
+				hops: 0,
+				timestamp: nowIso(),
+				note: `still processing (${elapsedSec}s since queued)`,
+				sender_name: identity.name,
+			}).catch(() => { /* best-effort */ });
+		}, PROGRESS_SIGNAL_INTERVAL_MS);
+		try { (progressSignalTimer as any).unref?.(); } catch {}
+
 		// Keepalive — write registry heartbeat + socket self-heal
 		keepaliveTimer = setInterval(async () => {
 			if (!identity) return;
@@ -1667,6 +1828,7 @@ Do not respond to this message.`;
 					version: 1,
 					context_used_pct: Math.round(ctx?.getContextUsage()?.percent ?? 0),
 					queue_depth: getPendingInboundCount(),
+					busy: processingInbound,
 					heartbeat_at: nowIso(),
 					pi_session_id: (globalThis as any).__piConfigSessionId || identity.pi_session_id || "",
 				};
@@ -1741,6 +1903,7 @@ Do not respond to this message.`;
 			stale: boolean;
 			tasks?: { total: number; completed: number; in_progress: number } | null;
 			queue_depth: number;
+			busy: boolean;
 		}
 		const rows: Row[] = [];
 
@@ -1756,6 +1919,7 @@ Do not respond to this message.`;
 				stale: (card.staleCount ?? 0) >= 3,
 				tasks: card.tasks_summary,
 				queue_depth: card.queue_depth ?? 0,
+				busy: card.busy ?? false,
 			});
 		}
 
@@ -1907,6 +2071,128 @@ Do not respond to this message.`;
 		return null;
 	}
 
+	/** Shared prompt delivery (#924 §2): builds the envelope (with the sender's
+	 *  task reminder appended), registers the pending reply, sends, auto-creates
+	 *  tasks, and appends to history. Used by coms_send and coms_broadcast. */
+	async function deliverPrompt(
+		target: RegistryEntry,
+		params: {
+			prompt: string;
+			conversation_id?: string;
+			response_schema?: object;
+			tasks?: Array<{ subject: string; description: string }>;
+			steer?: boolean;
+			priority?: boolean;
+		},
+	): Promise<{ msg_id: string; hops: number }> {
+		if (!identity) throw new Error("coms not initialised");
+		const hops = currentInbound ? currentInbound.hops + 1 : 0;
+		if (hops >= MAX_HOPS) {
+			throw new Error(`coms: hop limit reached (${hops} >= ${MAX_HOPS})`);
+		}
+		const msg_id = ulid();
+		// Append sender's active tasks for this peer to the prompt
+		let promptText = params.prompt;
+		try {
+			const { listTasksForSession } = await import("../pitasks/index.js");
+			const targetPiSessionId = target.pi_session_id || target.coms_session_id;
+			const allTasks = listTasksForSession(targetPiSessionId, target.cwd) || [];
+			const myTasks = allTasks.filter((t: any) =>
+				(t.status === "pending" || t.status === "in_progress") &&
+				t.createdBy?.session === identity!.coms_session_id
+			);
+			if (myTasks.length > 0) {
+				const taskLines = myTasks.map((t: any) => `#${t.id} [${t.status}] ${t.subject}`).join("\n");
+				promptText += `\n\n---\nReminder - Tasks assigned to you by ${identity!.name}:\n${taskLines}`;
+			}
+		} catch { /* task store not available — skip */ }
+		const env: PromptEnvelope = {
+			type: "prompt",
+			msg_id,
+			sender_session: identity.coms_session_id,
+			sender_endpoint: identity.endpoint,
+			sender_name: identity.name,
+			sender_cwd: identity.cwd,
+			hops,
+			timestamp: nowIso(),
+			prompt: promptText,
+			conversation_id: params.conversation_id ?? null,
+			response_schema: (params.response_schema as object | undefined) ?? null,
+			tasks: params.tasks ?? null,
+			...(params.steer ? { steer: true } : {}),
+			...(params.priority ? { priority: true } : {}),
+		};
+
+		// Register before sending. A peer may acknowledge and respond before
+		// task creation's dynamic import completes.
+		let resolveFn!: (v: { response?: any; error?: string | null }) => void;
+		let rejectFn!: (e: Error) => void;
+		const promise = new Promise<{ response?: any; error?: string | null }>((res, rej) => {
+			resolveFn = res;
+			rejectFn = rej;
+		});
+		const entry: PendingReply = {
+			resolve: resolveFn,
+			reject: rejectFn,
+			timer: null,
+			promise,
+			target_name: target.name,
+			created_at: nowIso(),
+		};
+		entry.timer = setTimeout(() => {
+			if (entry.result) return;
+			entry.result = { error: "timeout" };
+			try { entry.resolve(entry.result); } catch { /* ignore */ }
+			// Clean up timed-out entry from both maps
+			const pSet = pendingOutbound.get(target.name);
+			if (pSet) { pSet.delete(msg_id); if (pSet.size === 0) pendingOutbound.delete(target.name); }
+			setTimeout(() => { pendingReplies.delete(msg_id); }, 60_000).unref();
+		}, TIMEOUT_MS);
+		// Don't keep the event loop alive solely for this timer.
+		try { (entry.timer as any).unref?.(); } catch { /* ignore */ }
+		pendingReplies.set(msg_id, entry);
+
+		const targetKey = target.name;
+		if (!pendingOutbound.has(targetKey)) pendingOutbound.set(targetKey, new Set());
+		pendingOutbound.get(targetKey)!.add(msg_id);
+
+		try {
+			await sendEnvelope(target.endpoint, env);
+		} catch (error) {
+			pendingReplies.delete(msg_id);
+			pendingOutbound.get(targetKey)?.delete(msg_id);
+			if (pendingOutbound.get(targetKey)?.size === 0) pendingOutbound.delete(targetKey);
+			if (entry.timer) clearTimeout(entry.timer);
+			throw error;
+		}
+		comsSendCalledThisTurn.add(target.coms_session_id);
+
+		if (params.tasks && params.tasks.length > 0 && target.coms_session_id) {
+			try {
+				const count = await createComsInboundTasks(
+					params.tasks,
+					{ sender_session: identity.coms_session_id, sender_name: identity.name, sender_endpoint: identity.endpoint },
+					target.pi_session_id || target.coms_session_id,
+					target.cwd,
+				);
+				if (count > 0) log.info("tasks_auto_created", msg_id, "to", target.name, "count", count);
+			} catch (error) {
+				log.warn("tasks_auto_create_failed", { msg_id, target: target.name, error: error instanceof Error ? error.message : String(error) });
+			}
+		}
+
+		appendComsHistory({
+			direction: "out",
+			msg_id,
+			peer: target.name,
+			session: target.coms_session_id,
+			preview: truncatePreview(promptText),
+			status: [params.steer ? "steer" : null, params.priority ? "priority" : null].filter(Boolean).join("+") || "sent",
+		});
+		log.debug("outbound_prompt", msg_id, "to", target.name, "hops", hops);
+		return { msg_id, hops };
+	}
+
 	// ━━ Tools ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 	pi.registerTool({
@@ -1937,6 +2223,7 @@ Do not respond to this message.`;
 					alive: true,
 					context_used_pct: card.context_used_pct,
 					queue_depth: card.queue_depth ?? 0,
+					busy: card.busy ?? false,
 					color: card.color,
 				}));
 
@@ -1946,7 +2233,8 @@ Do not respond to this message.`;
 					const ctxStr = a.context_used_pct != null ? ` ${a.context_used_pct}%` : " ?%";
 					const live = a.alive ? "●" : "✗";
 					const queueStr = formatQueueStr(a.queue_depth);
-					return `${live} ${a.name} (${a.model})${ctxStr}${queueStr}${a.purpose ? ` — ${a.purpose}` : ""}`;
+					const busyStr = formatBusyStr(a.busy);
+					return `${live} ${a.name} (${a.model})${ctxStr}${queueStr}${busyStr}${a.purpose ? ` — ${a.purpose}` : ""}`;
 				}).join("\n");
 
 			return {
@@ -1972,7 +2260,8 @@ Do not respond to this message.`;
 			const rows = agents.map((a) => {
 				const dot = a.alive ? theme.fg("success", "●") : theme.fg("error", "✗");
 				const pct = a.context_used_pct != null ? `${a.context_used_pct}%` : "?%";
-				return `${dot} ${theme.fg("accent", a.name)} ${theme.fg("dim", a.model)} ${theme.fg("warning", pct)}`;
+				const busy = a.busy ? ` ${theme.fg("warning", "⚙busy")}` : "";
+				return `${dot} ${theme.fg("accent", a.name)} ${theme.fg("dim", a.model)} ${theme.fg("warning", pct)}${busy}`;
 			}).join("\n");
 			return new Text(header + "\n" + rows, 0, 0);
 		},
@@ -1986,7 +2275,14 @@ Do not respond to this message.`;
 			"The response auto-delivers as a followUp message when the peer replies — no polling needed. Use coms_get for non-blocking status checks if needed. " +
 			"Throws if the receiver is unreachable or rejects the envelope.\n\n" +
 			"When delegating multiple work items, use the `tasks` parameter to include structured task definitions. " +
-			"The peer receives them as an instruction to create tasks via TaskCreate and track progress in their task widget.",
+			"The peer receives them as an instruction to create tasks via TaskCreate and track progress in their task widget.\n\n" +
+			"steer=true injects the message into the peer's IN-FLIGHT turn instead of queueing it (#924): use it ONLY for course correction " +
+			"(the peer is working from a now-invalid assumption, materially new information arrived, or a stop/deprioritize request). " +
+			"A steer is acked but never separately answered — its effect shows in the reply to the message that started the peer's turn. " +
+			"Do NOT steer an idle peer (normal send), multi-part briefs, or anything needing its own receipt. " +
+			"Capped at 5 per turn on the receiver; excess steers queue normally.\n\n" +
+			"priority=true jumps the peer's QUEUED message backlog (delivery order, not in-flight turns): use it for urgent " +
+			"messages (e.g. 'stop — the build is broken') that must not wait behind long-running queued work.",
 		parameters: Type.Object({
 			target: Type.String({ description: "Peer name (preferred, scoped to your project) or session_id (global)." }),
 			prompt: Type.String({ description: "The prompt to send." }),
@@ -1996,6 +2292,8 @@ Do not respond to this message.`;
 				subject: Type.String({ description: "Brief task title" }),
 				description: Type.String({ description: "Detailed task description" }),
 			}), { description: "Optional structured tasks to create in the peer's task list." })),
+			steer: Type.Optional(Type.Boolean({ description: "Inject into the peer's in-flight turn (course correction only — see tool description). Default false." })),
+			priority: Type.Optional(Type.Boolean({ description: "Jump the peer's queued message backlog (urgent messages). Default false." })),
 			clearPrevious: Type.Optional(Type.Boolean({ description: "Deprecated and rejected: inspect with coms_queue_inspect, then explicitly clear using preview_id." })),
 		}),
 		async execute(_callId, params) {
@@ -2018,100 +2316,15 @@ Do not respond to this message.`;
 			if (params.clearPrevious) {
 				throw new Error("coms_send clearPrevious is no longer allowed. Inspect with coms_queue_inspect, then explicitly clear with its preview_id.");
 			}
-			const hops = currentInbound ? currentInbound.hops + 1 : 0;
-			if (hops >= MAX_HOPS) {
-				throw new Error(`coms: hop limit reached (${hops} >= ${MAX_HOPS})`);
-			}
-			const msg_id = ulid();
-			// Append sender's active tasks for this peer to the prompt
-			let promptText = params.prompt;
-			try {
-				const { listTasksForSession } = await import("../pitasks/index.js");
-				const targetPiSessionId = target.pi_session_id || target.coms_session_id;
-				const allTasks = listTasksForSession(targetPiSessionId, target.cwd) || [];
-				const myTasks = allTasks.filter((t: any) =>
-					(t.status === "pending" || t.status === "in_progress") &&
-					t.createdBy?.session === identity!.coms_session_id
-				);
-				if (myTasks.length > 0) {
-					const taskLines = myTasks.map((t: any) => `#${t.id} [${t.status}] ${t.subject}`).join("\n");
-					promptText += `\n\n---\nReminder - Tasks assigned to you by ${identity!.name}:\n${taskLines}`;
-				}
-			} catch { /* task store not available — skip */ }
-			const env: PromptEnvelope = {
-				type: "prompt",
-				msg_id,
-				sender_session: identity.coms_session_id,
-				sender_endpoint: identity.endpoint,
-				sender_name: identity.name,
-				sender_cwd: identity.cwd,
-				hops,
-				timestamp: nowIso(),
-				prompt: promptText,
-				conversation_id: params.conversation_id ?? null,
-				response_schema: (params.response_schema as object | undefined) ?? null,
-				tasks: params.tasks ?? null,
-			};
-
-			// Register before sending. A peer may acknowledge and respond before
-			// task creation's dynamic import completes.
-			let resolveFn!: (v: { response?: any; error?: string | null }) => void;
-			let rejectFn!: (e: Error) => void;
-			const promise = new Promise<{ response?: any; error?: string | null }>((res, rej) => {
-				resolveFn = res;
-				rejectFn = rej;
+			const { msg_id, hops } = await deliverPrompt(target, {
+				prompt: params.prompt,
+				conversation_id: params.conversation_id,
+				response_schema: params.response_schema as object | undefined,
+				tasks: params.tasks,
+				steer: params.steer === true,
+				priority: params.priority === true,
 			});
-			const entry: PendingReply = {
-				resolve: resolveFn,
-				reject: rejectFn,
-				timer: null,
-				promise,
-				target_name: target.name,
-				created_at: nowIso(),
-			};
-			entry.timer = setTimeout(() => {
-				if (entry.result) return;
-				entry.result = { error: "timeout" };
-				try { entry.resolve(entry.result); } catch { /* ignore */ }
-				// Clean up timed-out entry from both maps
-				const pSet = pendingOutbound.get(target.name);
-				if (pSet) { pSet.delete(msg_id); if (pSet.size === 0) pendingOutbound.delete(target.name); }
-				setTimeout(() => { pendingReplies.delete(msg_id); }, 60_000).unref();
-			}, TIMEOUT_MS);
-			// Don't keep the event loop alive solely for this timer.
-			try { (entry.timer as any).unref?.(); } catch { /* ignore */ }
-			pendingReplies.set(msg_id, entry);
-
 			const targetKey = target.name;
-			if (!pendingOutbound.has(targetKey)) pendingOutbound.set(targetKey, new Set());
-			pendingOutbound.get(targetKey)!.add(msg_id);
-
-			try {
-				await sendEnvelope(target.endpoint, env);
-			} catch (error) {
-				pendingReplies.delete(msg_id);
-				pendingOutbound.get(targetKey)?.delete(msg_id);
-				if (pendingOutbound.get(targetKey)?.size === 0) pendingOutbound.delete(targetKey);
-				if (entry.timer) clearTimeout(entry.timer);
-				throw error;
-			}
-			comsSendCalledThisTurn.add(target.coms_session_id);
-
-			if (params.tasks && params.tasks.length > 0 && target.coms_session_id) {
-				try {
-					const count = await createComsInboundTasks(
-						params.tasks,
-						{ sender_session: identity.coms_session_id, sender_name: identity.name, sender_endpoint: identity.endpoint },
-						target.pi_session_id || target.coms_session_id,
-						target.cwd,
-					);
-					if (count > 0) log.info("tasks_auto_created", msg_id, "to", target.name, "count", count);
-				} catch (error) {
-					log.warn("tasks_auto_create_failed", { msg_id, target: target.name, error: error instanceof Error ? error.message : String(error) });
-				}
-			}
-
-			log.debug("outbound_prompt", msg_id, "to", target.name, "hops", hops);
 
 			// Peer status from peerCards
 			const peerCard = peerCards.get(target.coms_session_id);
@@ -2154,6 +2367,146 @@ Do not respond to this message.`;
 				theme.fg("warning", d.msg_id),
 				0, 0,
 			);
+		},
+	});
+
+	pi.registerTool({
+		name: "coms_broadcast",
+		label: "Coms Broadcast",
+		description:
+			"Send the same prompt to MULTIPLE peer agents at once (#924). Returns immediately with a per-peer " +
+			"send report (msg_id per peer, or the per-peer error — partial failures are reported, never swallowed). " +
+			"Each peer's response auto-delivers as its own followUp message when that peer replies. " +
+			"Use targets=[\"*\"] to reach every peer in your project. Per-peer response_schema applies to every reply. " +
+			"Prefer this over looping coms_send when several peers must receive the same instruction or question.",
+		parameters: Type.Object({
+			targets: Type.Array(Type.String(), { minItems: 1, description: "Peer names or session_ids. [\"*\"] expands to every peer in your project (explicit peers excluded unless named)." }),
+			prompt: Type.String({ description: "The prompt to send to every target." }),
+			response_schema: Type.Optional(Type.Any({ description: "Optional JSON Schema describing the expected response shape (applies to every peer)." })),
+			tasks: Type.Optional(Type.Array(Type.Object({
+				subject: Type.String({ description: "Brief task title" }),
+				description: Type.String({ description: "Detailed task description" }),
+			}), { description: "Optional structured tasks to create in each peer's task list." })),
+			priority: Type.Optional(Type.Boolean({ description: "Jump each peer's queued message backlog (urgent messages). Default false." })),
+		}),
+		async execute(_callId, params) {
+			if (!identity) {
+				throw new Error("coms not initialised");
+			}
+			// Resolve target list — "*" expands to every registry peer in the project.
+			const wanted = new Set<string>();
+			if (params.targets.includes("*")) {
+				const localEntries = await pruneDeadEntries(identity.project, process.cwd());
+				for (const e of localEntries) {
+					if (e.coms_session_id === identity.coms_session_id) continue;
+					if (e.explicit) continue;
+					wanted.add(e.coms_session_id);
+				}
+			}
+			for (const t of params.targets) {
+				if (t !== "*") wanted.add(t);
+			}
+			// Deduplicate resolved peers by session id — same peer named twice
+			// (e.g. "*" plus an explicit name) is one send.
+			const resolved = new Map<string, RegistryEntry>();
+			for (const t of wanted) {
+				const target = await resolveTarget(t);
+				if (!target) {
+					log.warn("broadcast_target_unresolved", t);
+					continue;
+				}
+				resolved.set(target.coms_session_id, target);
+			}
+			if (resolved.size === 0) {
+				throw new Error(`coms_broadcast: no live agent matching [${params.targets.join(", ")}]`);
+			}
+			// Same-sender inbound block applies per target: auto-capture replies.
+			const sendResults: BroadcastTargetResult[] = [];
+			await Promise.allSettled([...resolved.values()].map(async (target) => {
+				if (processingInbound && currentInbound && !currentInbound.fulfilled && target.coms_session_id === currentInbound.sender_session) {
+					sendResults.push({ target: target.name, status: "error", error: "blocked: auto-capture will reply to this peer" });
+					return;
+				}
+				try {
+					const { msg_id, hops } = await deliverPrompt(target, {
+						prompt: params.prompt,
+						response_schema: params.response_schema as object | undefined,
+						tasks: params.tasks,
+						priority: params.priority === true,
+					});
+					sendResults.push({ target: target.name, msg_id, hops, status: "sent" });
+				} catch (error) {
+					sendResults.push({ target: target.name, status: "error", error: error instanceof Error ? error.message : String(error) });
+				}
+			}));
+			const summary = summarizeBroadcast(sendResults);
+			log.info("broadcast_sent", "targets", resolved.size, "sent", summary.sent, "failed", summary.failed);
+			return {
+				content: [{ type: "text" as const, text: summary.text }],
+				details: { results: sendResults, sent: summary.sent, failed: summary.failed, targets: [...resolved.keys()] },
+			};
+		},
+		renderCall(args, theme) {
+			const tgts = (args as any).targets;
+			const list = Array.isArray(tgts) ? tgts.join(",") : String(tgts ?? "?");
+			return new Text(
+				theme.fg("toolTitle", theme.bold("coms_broadcast")) + theme.fg("dim", ` ${list}`),
+				0, 0,
+			);
+		},
+		renderResult(result, options, theme) {
+			const d = result.details as any;
+			if (!options.expanded || !d) return new Text(theme.fg("accent", `📡 ${d?.sent ?? 0}/${(d?.results ?? []).length} sent`), 0, 0);
+			const rows = (d.results as BroadcastTargetResult[]).map((r) =>
+				r.status === "sent"
+					? `${theme.fg("success", "✓")} ${theme.fg("accent", r.target)} ${theme.fg("dim", r.msg_id ?? "")}`
+					: `${theme.fg("error", "✗")} ${theme.fg("accent", r.target)} ${theme.fg("dim", r.error ?? "error")}`,
+			).join("\n");
+			return new Text(theme.fg("accent", `📡 ${d.sent}/${d.results.length} sent`) + "\n" + rows, 0, 0);
+		},
+	});
+
+	pi.registerTool({
+		name: "coms_history",
+		label: "Coms History",
+		description:
+			"Query the local coms message history trail (#924): prompts sent and received (including steers), " +
+			"and replies in both directions, with per-message status. Use it to answer 'what did I send this peer " +
+			"and what came back?' when debugging multi-agent workflows. Previews are truncated; full content stays " +
+			"in the session transcript. Newest records are returned last.",
+		parameters: Type.Object({
+			peer: Type.Optional(Type.String({ description: "Filter by peer name." })),
+			direction: Type.Optional(Type.Union([Type.Literal("out"), Type.Literal("in"), Type.Literal("steer"), Type.Literal("response_out"), Type.Literal("response_in")], { description: "Filter by direction: out=prompts we sent, in=prompts we received, steer=steers we received, response_out=replies we sent, response_in=replies we received." })),
+			msg_id: Type.Optional(Type.String({ description: "Filter by a specific msg_id." })),
+			limit: Type.Optional(Type.Number({ description: "Max records to return (default 50, max 500). Returns the most recent matching window." })),
+		}),
+		async execute(_callId, params) {
+			const records = queryHistoryRecords(path.join(COMS_DIR, "history.jsonl"), {
+				peer: params.peer,
+				direction: params.direction,
+				msg_id: params.msg_id,
+				limit: params.limit,
+			});
+			const lines = records.map((r) =>
+				`${r.ts} [${r.direction}] ${r.peer} — ${r.preview}${r.status ? ` (${r.status})` : ""} [${r.msg_id}]`);
+			const text = records.length === 0
+				? "No matching coms history records."
+				: `${records.length} record(s) (newest last):\n${lines.join("\n")}`;
+			return {
+				content: [{ type: "text" as const, text }],
+				details: { records, count: records.length },
+			};
+		},
+		renderCall(args, theme) {
+			const peer = (args as any).peer;
+			return new Text(
+				theme.fg("toolTitle", theme.bold("coms_history")) + theme.fg("dim", peer ? ` ${peer}` : ""),
+				0, 0,
+			);
+		},
+		renderResult(result, options, theme) {
+			const d = result.details as any;
+			return new Text(theme.fg("accent", `🕘 ${d?.count ?? 0} record(s)`), 0, 0);
 		},
 	});
 
@@ -3000,6 +3353,14 @@ Do not respond to this message.`;
 		try {
 			await sendEnvelope(inbound.sender_endpoint, respEnv);
 			log.debug("outbound_response", inbound.msg_id, "error", error);
+			appendComsHistory({
+				direction: "response_out",
+				msg_id: inbound.msg_id,
+				peer: inbound.sender_name,
+				preview: truncatePreview(typeof payload === "string" ? payload : JSON.stringify(payload ?? "")),
+				status: error ? `error: ${error}` : "replied",
+				error: error,
+			});
 		} catch (e: any) {
 			log.error("outbound_response_failed", inbound.msg_id, e?.message);
 		}
@@ -3287,6 +3648,7 @@ Do not respond to this message.`;
 		if (fsWatcher) { try { fsWatcher.close(); } catch { /* ignore */ } fsWatcher = null; }
 		if (keepaliveTimer) { try { clearInterval(keepaliveTimer); } catch { /* ignore */ } keepaliveTimer = null; }
 		if (taskHeartbeatTimer) { try { clearInterval(taskHeartbeatTimer); } catch { /* ignore */ } taskHeartbeatTimer = null; }
+		if (progressSignalTimer) { try { clearInterval(progressSignalTimer); } catch { /* ignore */ } progressSignalTimer = null; }
 		// Broadcast "leaving" presence to all known peers (fire-and-forget)
 		if (ident) {
 			for (const [, card] of peerCards) {

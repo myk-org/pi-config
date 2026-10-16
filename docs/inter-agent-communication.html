@@ -415,7 +415,7 @@
 </tr>
 <tr>
 <td>Messaging tools</td>
-<td><code>coms_list</code>, <code>coms_send</code>, <code>coms_get</code></td>
+<td><code>coms_list</code>, <code>coms_send</code>, <code>coms_broadcast</code>, <code>coms_history</code>, <code>coms_get</code></td>
 <td>Agents can discover peers, delegate work, and inspect message state</td>
 </tr>
 <tr>
@@ -486,6 +486,17 @@
 <li>runaway agent-to-agent loops stop instead of spiraling forever</li>
 <li>queue depth is visible in pool output and peer listings, and can be managed with <code>/coms-queue</code></li>
 </ul>
+<h2 id="steering-a-busy-peer">Steering a Busy Peer</h2>
+<p><code>coms_send</code> accepts <code>steer: true</code> to inject a message into a peer's in-flight turn instead of queueing it behind the current work. A steer is a course correction: the peer is working from a now-invalid assumption, materially new information arrived, or you need it to stop or deprioritize. The steer is acknowledged but never answered separately — its effect shows up in the reply to the message that started the peer's turn.</p>
+<p>Use steers sparingly. They are capped at 5 per turn on the receiver (excess steers fall back to the normal queue) so a buggy sender loop cannot flood one turn's context. Never steer an idle peer (use a normal send), multi-part briefs, or anything that needs its own receipt.</p>
+<h2 id="broadcasting-to-multiple-peers">Broadcasting to Multiple Peers</h2>
+<p><code>coms_broadcast(targets, prompt)</code> sends the same prompt to several peers at once and returns a per-peer send report — <code>msg_id</code> per peer, or the per-peer error. Partial failures are reported, never swallowed, and each peer's reply auto-delivers as its own followUp message. <code>targets: ["*"]</code> expands to every peer in your project (explicit peers are excluded unless named by name). Prefer <code>coms_broadcast</code> over looping <code>coms_send</code> when several peers must receive the same instruction or question.</p>
+<h2 id="peer-status-busy-and-progress">Peer Status: Busy and Progress</h2>
+<p>Peer cards and <code>coms_list</code> include a busy indicator (<code>⚙busy</code>) whenever the peer is currently processing an inbound message, alongside queue depth and context usage. While a peer is processing your prompt it also sends a progress signal roughly every 60 seconds — the signal annotates the pending reply in your session (it never resolves it), so long-running work does not look like radio silence.</p>
+<h2 id="priority-messages">Priority Messages</h2>
+<p><code>coms_send</code> and <code>coms_broadcast</code> accept <code>priority: true</code> to jump the receiver's queued message backlog. This affects delivery order only — it never interrupts an in-flight turn (use steer for that). Reserve it for urgent messages, for example "stop — the build is broken", that must not wait behind long-running queued work.</p>
+<h2 id="message-history">Message History</h2>
+<p>Every prompt and reply — in both directions, steers included — is appended to a local JSONL trail at <code>~/.pi/coms/history.jsonl</code> (fail-soft: delivery never waits on history). The <code>coms_history</code> tool queries it by peer, direction, or <code>msg_id</code> and returns the most recent matching records with per-message status. Use it to answer "what did I send this peer and what came back?" when debugging multi-agent workflows.</p>
 <h2 id="how-it-affects-the-user">How It Affects the User</h2>
 <p>The internals mostly stay out of your way, but they explain several behaviors you will notice in daily use.</p>
 <div class="table-wrap"><table>
@@ -515,6 +526,14 @@
 <tr>
 <td><code>/coms</code> shows a different set of peers</td>
 <td>You toggled <code>include_explicit</code> or switched the displayed project</td>
+</tr>
+<tr>
+<td>A peer shows <code>⚙busy</code></td>
+<td>It is currently processing an inbound message</td>
+</tr>
+<tr>
+<td>A pending reply shows a progress note</td>
+<td>The peer sent a progress signal (~60s interval) while still working</td>
 </tr>
 </tbody>
 </table></div>
@@ -589,6 +608,11 @@
 <li><a href="#queueing-and-hop-limits">Queueing and Hop Limits</a></li>
 </ul>
 </li>
+<li><a href="#steering-a-busy-peer">Steering a Busy Peer</a></li>
+<li><a href="#broadcasting-to-multiple-peers">Broadcasting to Multiple Peers</a></li>
+<li><a href="#peer-status-busy-and-progress">Peer Status: Busy and Progress</a></li>
+<li><a href="#priority-messages">Priority Messages</a></li>
+<li><a href="#message-history">Message History</a></li>
 <li><a href="#how-it-affects-the-user">How It Affects the User</a></li>
 <li><a href="#commands">Commands</a></li>
 <li><a href="#related-pages">Related Pages</a></li>
