@@ -807,3 +807,92 @@ export function shouldAnnouncePeerLeft(
 	}
 	return true;
 }
+
+// ━━ #924 coms enhancements: pure helpers ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/**
+ * Max mid-turn steer injections per inbound turn (#924 §1). Not a security
+ * boundary — coms is a trusted mesh — but a buggy peer loop must not inject
+ * unbounded content into one running turn (steers are acked, never responded
+ * to, so nothing else backpressures them). Excess steers queue normally.
+ */
+export const STEER_CAP_PER_TURN = 5;
+
+export interface Prioritizable {
+	priority?: boolean;
+}
+
+/**
+ * Insert an inbound into a FIFO entry list (#924 §4): a priority entry goes
+ * ahead of the FIRST non-priority entry (stable among priorities — arrival
+ * order preserved). Returns a new array; callers rebuild their ordered map.
+ */
+export function insertInboundByPriority<T extends Prioritizable>(entries: T[], item: T): T[] {
+	if (!item.priority) return [...entries, item];
+	const firstNonPriority = entries.findIndex((e) => !e.priority);
+	if (firstNonPriority < 0) return [...entries, item];
+	return [...entries.slice(0, firstNonPriority), item, ...entries.slice(firstNonPriority)];
+}
+
+/**
+ * Whether a mid-turn steer is accepted (#924 §1). Over-cap steers fall back
+ * to the normal queue path with a warning on the receiver.
+ */
+export function shouldAcceptSteer(steerCount: number, cap: number = STEER_CAP_PER_TURN): boolean {
+	return steerCount < cap;
+}
+
+/** Per-target send outcome for coms_broadcast (#924 §2). */
+export interface BroadcastTargetResult {
+	target: string;
+	msg_id?: string;
+	hops?: number;
+	status: "sent" | "error";
+	error?: string;
+}
+
+/**
+ * Aggregate broadcast results (#924 §2): per-peer lines, partial failures
+ * reported individually, never swallowed.
+ */
+export function summarizeBroadcast(results: BroadcastTargetResult[]): {
+	sent: number;
+	failed: number;
+	text: string;
+} {
+	const sent = results.filter((r) => r.status === "sent").length;
+	const failed = results.length - sent;
+	const lines = results.map((r) =>
+		r.status === "sent"
+			? `✓ ${r.target} — ${r.msg_id ?? "?"}`
+			: `✗ ${r.target} — ${r.error ?? "error"}`,
+	);
+	const text = `coms_broadcast → ${sent}/${results.length} sent\n${lines.join("\n")}`;
+	return { sent, failed, text };
+}
+
+/**
+ * Busy indicator string for peer cards / coms_list rows (#924 §3 presence).
+ */
+/**
+ * #924 §4 + drain bundling: which pending inbounds form the next drain bundle.
+ * Starts from the queue head and takes the first sender's messages, but STOPS
+ * at a priority entry from another sender — an urgent message must never wait
+ * behind the first sender's ordinary traffic. Without the stop, queue order
+ * [prio A, prio B, ordinary A] would drain A's whole bundle (ordinary A
+ * included) before prio B.
+ */
+export function selectSenderBundle<T extends { sender_session: string; priority?: boolean }>(allPending: T[]): T[] {
+	if (allPending.length === 0) return [];
+	const firstSender = allPending[0].sender_session;
+	const bundle: T[] = [];
+	for (const ib of allPending) {
+		if (ib.sender_session === firstSender) { bundle.push(ib); continue; }
+		if (ib.priority) break;
+	}
+	return bundle;
+}
+
+export function formatBusyStr(busy: boolean | undefined | null): string {
+	return busy ? " ⚙busy" : "";
+}

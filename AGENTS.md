@@ -261,6 +261,10 @@ progress. It does not commit, push, create a PR, or post results.
 - Graft (`graft_enable=true`) applies to main agents and subagents. Every substantive prompt retrieves from Graft before raw project
   navigation. Children only consume existing graphs; stale graphs remain usable and failures fail open. Main processes own rebuilds under
   the cross-process lock.
+- coms messaging (#924): `coms_send` supports `steer: true` (mid-turn course correction on a busy peer — ack-only, 5/turn cap) and
+  `priority: true` (jump the peer's queued backlog). `coms_broadcast(targets, prompt)` fans out to multiple peers (`["*"]` = project);
+  `coms_history` queries the per-session JSONL trail in `~/.pi/coms/history.jsonl`. Peers emit `⚙busy` state and ~60s progress signals
+  while processing inbound work.
 - COMS queue recovery is irreversible: call `coms_queue_inspect`, review its body-free result, then pass its one-time `preview_id` to
   `coms_queue_clear` or `coms_queue_delete`. Never use `coms_send.clearPrevious`; it is rejected. Preview tokens are owner-bound and
   expire after five minutes. RPC recovery providers retain at most 20 previews per provider and must implement an atomic

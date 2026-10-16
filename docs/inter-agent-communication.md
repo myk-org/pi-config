@@ -22,7 +22,7 @@
 | Launcher wrapper | Registers a session with its name, purpose, model, color, and cwd | Each session appears as a named peer |
 | Registry files | One JSON entry per live session, grouped by project | Peers from other repos stay invisible |
 | Pool widget | Renders connected peers, queue depth, and context usage | You can see who is online and busy at a glance |
-| Messaging tools | `coms_list`, `coms_send`, `coms_get` | Agents can discover peers, delegate work, and inspect message state |
+| Messaging tools | `coms_list`, `coms_send`, `coms_broadcast`, `coms_history`, `coms_get` | Agents can discover peers, delegate work, and inspect message state |
 | Queue and task tools | `coms_queue_*` and `coms_task_*` | Queued messages and delegated tasks can be inspected and edited |
 
 ### Message Flow
@@ -106,6 +106,28 @@ For users, that shows up as more predictable behavior:
 - runaway agent-to-agent loops stop instead of spiraling forever
 - queue depth is visible in pool output and peer listings, and can be managed with `/coms-queue`
 
+## Steering a Busy Peer
+
+`coms_send` accepts `steer: true` to inject a message into a peer's in-flight turn instead of queueing it behind the current work. A steer is a course correction: the peer is working from a now-invalid assumption, materially new information arrived, or you need it to stop or deprioritize. The steer is acknowledged but never answered separately — its effect shows up in the reply to the message that started the peer's turn.
+
+Use steers sparingly. They are capped at 5 per turn on the receiver (excess steers fall back to the normal queue) so a buggy sender loop cannot flood one turn's context. Never steer an idle peer (use a normal send), multi-part briefs, or anything that needs its own receipt. A steer is acknowledged but never separately answered; if the receiver cannot inject it (idle, cap reached, injection failure), the message is queued normally and answered like any other prompt.
+
+## Broadcasting to Multiple Peers
+
+`coms_broadcast(targets, prompt)` sends the same prompt to several peers at once and returns a per-peer send report — `msg_id` per peer, or the per-peer error. Partial failures are reported, never swallowed, and each peer's reply auto-delivers as its own followUp message. `targets: ["*"]` expands to every peer in your project (explicit peers are excluded unless named by name). Prefer `coms_broadcast` over looping `coms_send` when several peers must receive the same instruction or question.
+
+## Peer Status: Busy and Progress
+
+Peer cards and `coms_list` include a busy indicator (`⚙busy`) whenever the peer is currently processing an inbound message, alongside queue depth and context usage. While a peer is processing your prompt it also sends a progress signal roughly every 60 seconds — the signal annotates the pending reply in your session (it never resolves it), so long-running work does not look like radio silence.
+
+## Priority Messages
+
+`coms_send` and `coms_broadcast` accept `priority: true` to jump the receiver's queued message backlog. This affects delivery order only — it never interrupts an in-flight turn (use steer for that). Reserve it for urgent messages, for example "stop — the build is broken", that must not wait behind long-running queued work.
+
+## Message History
+
+Every prompt and reply — in both directions, steers included — is appended to a local JSONL trail at `~/.pi/coms/history.jsonl` (fail-soft: delivery never waits on history; the file is size-rotated so it stays bounded). The `coms_history` tool queries it by peer, direction, `msg_id`, time range (`since`), or status substring, and returns the most recent matching records. By default it shows only the current session's traffic; `all_sessions: true` shows the whole machine's trail. Use it to answer "what did I send this peer and what came back?" when debugging multi-agent workflows.
+
 ## How It Affects the User
 
 The internals mostly stay out of your way, but they explain several behaviors you will notice in daily use.
@@ -117,6 +139,8 @@ The internals mostly stay out of your way, but they explain several behaviors yo
 | A peer disappeared from the list | Its registry entry was removed after failing a socket probe |
 | A delegated task arrives with structure | The sender included `tasks`, and the receiver rendered them as assigned work |
 | `/coms` shows a different set of peers | You toggled `include_explicit` or switched the displayed project |
+| A peer shows `⚙busy` | It is currently processing an inbound message |
+| A pending reply shows a progress note | The peer sent a progress signal (~60s interval) while still working |
 
 A few practical implications are worth remembering:
 
