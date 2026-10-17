@@ -647,7 +647,7 @@ function leadingCondition(clause: string): { words: Set<string>; escape: boolean
   // counting the connective broke the strict-majority coverage test and
   // let "Always force push when on main" through as a fake exception.
   const words = contentWords(lead);
-  for (const tok of m[0]!.toLowerCase().split(/\s+/)) words.delete(tok);
+  for (const tok of m[0]!.toLowerCase().split(/\s+/)) words.delete(stem(tok));
   if (words.size === 0) return empty;
   return { words, escape: m[1]!.toLowerCase() === "unless" };
 }
@@ -786,6 +786,10 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
           log.debug(
             "memory-write: contrastive condition complement coexists",
             neg.slice(0, 80),
+            "vs",
+            perm.slice(0, 80),
+            "covered",
+            [...negCond.words].filter((w) => permWords.has(w)).join("/"),
           );
           continue;
         }
@@ -793,7 +797,16 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         if (negCond.escape ? majority : !majority) {
           log.debug(
             "memory-write: condition-scoped prohibition coexists — permission does not carry the condition",
+            "neg",
             neg.slice(0, 80),
+            "vs",
+            perm.slice(0, 80),
+            "condition",
+            [...negCond.words].join("/"),
+            "covered",
+            `${covered}/${negCond.words.size}`,
+            "escape",
+            negCond.escape,
           );
           continue;
         }
@@ -871,12 +884,16 @@ function isVariantWord(a: string, b: string): boolean {
  *  staging target and the pair stays a distinct-target exclusion. */
 const UNIVERSAL_QUANTIFIERS = new Set(["all", "any", "every", "each"]);
 
-/** Contrastive condition markers (Qodo 6949694b): "outside outage" is
- *  the COMPLEMENT of "when outage" — a permission whose shared condition
- *  words sit under a contrastive marker describes the opposite
- *  circumstance and coexists with the condition-scoped prohibition. */
+/** Contrastive condition markers (Qodo 6949694b, e4a581cf): "outside
+ *  outage" is the COMPLEMENT of "when outage" — a permission whose shared
+ *  condition words sit under a contrastive marker describes the opposite
+ *  circumstance and coexists with the condition-scoped prohibition.
+ *  REGARDLESS-style phrases are deliberately absent: "regardless of",
+ *  "irrespective of", "independently of", and "instead of" mean "in
+ *  every case INCLUDING this one" (or a target substitution), so they
+ *  must NOT escape a condition-scoped ban. */
 const CONTRASTIVE_RE =
-  /\b(outside|except|excepting|besides|apart\s+from|other\s+than|regardless\s+of|irrespective\s+of|independently?\s+of|instead\s+of)\b/i;
+  /\b(outside|except|excepting|besides|apart\s+from|other\s+than)\b/i;
 
 /** Ordered content-word sequence of a clause (same tokenization and
  *  stemming as contentWords, order preserved) — used for positional
@@ -1009,12 +1026,10 @@ export async function findContradiction(
   // file order could be a weaker conflict than the real one.
   const conflicts: Array<{ candidate: ConflictCandidate; score: number }> = [];
   for (const candidate of candidates) {
-    if (!polarityClash(text, candidate.text)) continue;
-    // Vector-CONFIRMED candidates (similarity ≥ threshold) are already
-    // topically related, so one shared content word corroborates; every
-    // other candidate (unembedded, or vector search unavailable) needs the
-    // strict ≥ 2 corroboration (Qodo round 2, PR #916: a global loose gate
-    // let a single shared word like "main" reject unrelated rules).
+    // Cheap corroboration gate FIRST (Qodo be128547): polarityClash is the
+    // expensive step (quotedMask retries, four splitClauses passes, nested
+    // clause loops) and the overlap counts are trivial — running the gate
+    // before the clash check skips it for every unrelated candidate.
     const shared = sharedContentWords(text, candidate.text);
     const vectorConfirmed = similarKeys.has(`${candidate.category}:${candidate.text}`);
     // Short rules (Qodo 2c16ab75): "Never deploy" vs "Always deploy" —
@@ -1025,6 +1040,7 @@ export async function findContradiction(
     const shortPair =
       contentWords(text).size <= 2 && contentWords(candidate.text).size <= 2;
     if (!(shared >= 2 || (vectorConfirmed && shared >= 1) || (shortPair && shared >= 1))) continue;
+    if (!polarityClash(text, candidate.text)) continue;
     const similarity = similarityByText.get(`${candidate.category}:${candidate.text}`) ?? 0;
     conflicts.push({ candidate, score: similarity * 10 + shared });
   }
@@ -1257,7 +1273,6 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   // reinforced returns) surfaces it; a dedup-reinforced write that merges
   // a dead trigger must warn exactly like a fresh add.
   const triggerWarning = toolNameTriggerWarning(input.trigger, input.action);
-  if (triggerWarning) log.warn(`memory-write: ${triggerWarning}`);
   if (input.scope && !VALID_SCOPES.includes(input.scope as MemoryScope)) {
     return {
       status: "rejected",
@@ -1382,6 +1397,7 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
         const merged = mergeEnforcementFields(cwd, existingLine, input);
         const enforcementNote = merged ? " (enforcement fields merged)" : "";
         const reinforcedWarning = reinforcedTriggerWarning(cwd, existingLine, input, triggerWarning);
+        if (reinforcedWarning) log.warn(`memory-write: ${reinforcedWarning}`);
         return {
           status: "reinforced",
           message:
@@ -1403,6 +1419,7 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
     const merged = mergeEnforcementFields(cwd, canonicalLine, input);
     const enforcementNote = merged ? " (enforcement fields merged)" : "";
     const reinforcedWarning = reinforcedTriggerWarning(cwd, canonicalLine, input, triggerWarning);
+    if (reinforcedWarning) log.warn(`memory-write: ${reinforcedWarning}`);
     return {
       status: "reinforced",
       message: `Already exists — reinforced instead: [${category}] ${text}${enforcementNote}${reinforcedWarning ? ` — ${reinforcedWarning}` : ""}`,
@@ -1482,6 +1499,10 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   await embedEntry(cwd, text, category);
 
   log.info("memory_add_entry", category, text.slice(0, 60), input.scope ?? "project");
+  // Advisory logging happens only on COMMITTED writes (Qodo 4d09eeea):
+  // gates may still reject the entry after this point, and a warn line for
+  // a write that never happened misleads ops-log triage.
+  if (triggerWarning) log.warn(`memory-write: ${triggerWarning}`);
   const pin = isPinned ? " (pinned)" : "";
   const scope = input.scope && input.scope !== "project" ? ` (scope: ${input.scope})` : "";
   return {

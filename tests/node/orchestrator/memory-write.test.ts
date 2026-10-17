@@ -1234,7 +1234,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("singular and plural objects converge under stemming (Qodo 833b46be)", async () => {
+  it("singular with plural objects converge under stemming (Qodo 833b46be)", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "Never delete packages", { pinned: true });
@@ -1939,6 +1939,21 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
         category: "lesson",
       });
       assert.notEqual(result.status, "rejected");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("regardless-of wording does not escape a scoped ban (Qodo e4a581cf)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "During an outage, never deploy production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production regardless of outage",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
