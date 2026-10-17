@@ -912,6 +912,9 @@ interface SessionEntry {
     systemPrompt?: string;
     cwd?: string;
     customTools?: string[];
+    /** Session open time — a lazily written header must not report the first
+     *  recorded turn's time as the session's creation time (Qodo 8597d8f7). */
+    createdAt: string;
     redact: (value: string) => string;
   };
   headerWritten: boolean;
@@ -1004,7 +1007,9 @@ export class SessionStore {
 
   /** Env default OR this store's runtime override. */
   isRecordingEnabled(): boolean {
-    return this.recordingOverride ?? transcriptsEnabled();
+    const enabled = this.recordingOverride ?? transcriptsEnabled();
+    recordingLog.debug(`recording decision: enabled=${enabled}, source=${this.recordingOverride === undefined ? "env" : "override"}`);
+    return enabled;
   }
 
   /** Redact only the credential owned by this session. Never expose it to the registrar or other sessions. */
@@ -1179,6 +1184,7 @@ export class SessionStore {
         provider: "fixture",
         model: "fixture",
         cwd,
+        createdAt: new Date().toISOString(),
         redact: (value) => value,
       },
       headerWritten: false,
@@ -2004,6 +2010,7 @@ export class SessionStore {
       systemPrompt: options.systemPrompt,
       cwd: options.cwd,
       customTools: customTools.map((tool: CustomToolConfig) => tool.name),
+      createdAt: new Date().toISOString(),
       redact,
     };
     const newEntry: SessionEntry = { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0, transcriptHeader, headerWritten: false };
@@ -2053,17 +2060,22 @@ export class SessionStore {
       entry.turnCount += 1;
       turnNumber = entry.turnCount;
       // Lazy header (#935): recording was enabled after this session was
-      // created, so its header was never written — write it now, before the
-      // turn record, keeping the file well-formed. Fail-soft like all
-      // transcript writes; headerWritten flips only on a successful append,
-      // so a swallowed failure retries on the next recorded turn (Qodo
-      // 5ab0db39). Retention gets the pre-await active-session snapshot so a
-      // concurrent delete cannot prune this session's fresh header
+      // created, so its header was never written — queue it now. FIRE-AND-
+      // FORGET: the session's write chain orders header-before-turn (the turn
+      // queues at agent_end, behind this write in the same chain), and NOT
+      // awaiting removes the window where abort()/delete()/disposeAll()
+      // could land between inFlight = true and session.prompt (Qodo
+      // ed714b22). headerWritten flips only on a successful append, so a
+      // swallowed failure retries on the next recorded turn (Qodo 5ab0db39).
+      // Retention gets the synchronous pre-write active-session snapshot so
+      // a concurrent delete cannot prune this session's fresh header
       // mid-flight (Qodo 4d913b74).
       if (!entry.headerWritten) {
         const activeIds = new Set(this.sessions.keys());
-        entry.headerWritten = await writeSessionHeader(entry.transcriptHeader);
-        maybeEnforceRetention(activeIds);
+        void writeSessionHeader(entry.transcriptHeader).then((appended) => {
+          entry.headerWritten = appended;
+          if (appended) maybeEnforceRetention(activeIds);
+        });
       }
     }
     let turnWasRecorded = false;

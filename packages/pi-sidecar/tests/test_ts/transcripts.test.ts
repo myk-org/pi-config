@@ -710,6 +710,10 @@ describe("runtime recording override (#935)", () => {
     assert.equal(lines.length, 2);
     assert.equal(lines[0].type, "session_header", "lazy header precedes first recorded turn");
     assert.equal(lines[0].session_id, "s-mid-toggle");
+    assert.ok(
+      Date.parse(lines[0].created_at) < Date.parse(lines[1].timestamp),
+      "lazy header stamps the session's real creation time, not the first recorded turn's (Qodo 8597d8f7)",
+    );
     assert.equal(lines[1].type, "turn");
     assert.equal(lines[1].turn_number, 1, "first recorded turn is turn 1 — disabled prompts do not consume numbers");
 

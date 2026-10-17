@@ -235,6 +235,11 @@ export async function writeSessionHeader(
     systemPrompt?: string;
     cwd?: string;
     customTools?: string[];
+    /** Session open time. When omitted (direct header writes), now is used.
+     *  A lazily written header passes the session's real creation time so
+     *  `created_at` does not report the first recorded turn's time (#935,
+     *  Qodo 8597d8f7). */
+    createdAt?: string;
     redact: (value: string) => string;
   },
 ): Promise<boolean> {
@@ -249,7 +254,7 @@ export async function writeSessionHeader(
       const line = serializeRecord({
         type: "session_header",
         timestamp: now,
-        created_at: now,
+        created_at: header.createdAt ?? now,
         session_id: header.sessionId,
         provider: header.redact(header.provider),
         model: header.redact(header.model),
