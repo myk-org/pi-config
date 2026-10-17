@@ -312,6 +312,25 @@ to a writable path on a persisted volume (RootCoz: a subdirectory of its
 `/data` mount), or recorded transcripts are lost when the container is
 replaced.
 
+### Runtime recording toggle (#935)
+
+The env value is the boot-time default; recording can also be flipped at
+runtime, without a restart, over HTTP:
+
+| Endpoint | Effect |
+|---|---|
+| `GET /transcripts/recording` | `{"enabled": bool, "source": "env" \| "override"}` — the effective state |
+| `POST /transcripts/recording` | `{"enabled": true\|false}` — sets an in-memory override |
+| `POST /transcripts/recording/reset` | Drops the override; the env default governs again |
+
+The override affects **subsequent turns only** — an in-flight turn completes
+under the state captured when its prompt started. A session whose recording
+was enabled mid-session gets its `session_header` written lazily before its
+first recorded turn, so files stay well-formed. The override is in-memory:
+a restart restores the env default. The Python client exposes the same
+surface as `await client.get_recording()`, `await client.set_recording(True)`
+and `await client.reset_recording()`.
+
 ## CLI Commands
 
 After installing `@myk-org/pi-sidecar`, two CLI commands are available:

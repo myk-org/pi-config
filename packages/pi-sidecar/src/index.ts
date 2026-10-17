@@ -452,6 +452,46 @@ export function startSidecar(options?: {
         return;
       }
 
+      // GET /transcripts/recording (#935) — effective recording state.
+      // Exact-URL match: "/transcripts/recording/reset" (POST) never lands here.
+      if (method === "GET" && url === "/transcripts/recording") {
+        const recLog = createLogger("recording-routes");
+        const state = store.recordingState();
+        recLog.debug(`GET /transcripts/recording 200: enabled=${state.enabled}, source=${state.source}`);
+        sendJson(res, 200, state);
+        return;
+      }
+
+      // POST /transcripts/recording (#935) — runtime override, no restart.
+      // Affects subsequent turns only; in-flight turns complete under the
+      // state captured at their prompt start. Env stays the boot default.
+      if (method === "POST" && url === "/transcripts/recording") {
+        const recLog = createLogger("recording-routes");
+        const body = await parseBody(req);
+        if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.enabled !== "boolean") {
+          recLog.warn(`POST /transcripts/recording 400: invalid body`);
+          sendJson(res, 400, { error: "Invalid body: expected { \"enabled\": boolean }" });
+          return;
+        }
+        store.setRecordingOverride(body.enabled);
+        const state = store.recordingState();
+        recLog.info(`POST /transcripts/recording 200: enabled=${state.enabled}, source=override`);
+        sendJson(res, 200, state);
+        return;
+      }
+
+      // POST /transcripts/recording/reset (#935) — drop the override; the
+      // boot-time env default governs again. Idempotent: resetting with no
+      // override set still returns the env-governed state.
+      if (method === "POST" && url === "/transcripts/recording/reset") {
+        const recLog = createLogger("recording-routes");
+        store.clearRecordingOverride();
+        const state = store.recordingState();
+        recLog.info(`POST /transcripts/recording/reset 200: enabled=${state.enabled}, source=${state.source}`);
+        sendJson(res, 200, state);
+        return;
+      }
+
       // GET /models
       if (method === "GET" && url === "/models") {
         const models = await store.getModels();

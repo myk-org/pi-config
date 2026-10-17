@@ -417,7 +417,10 @@ describe("store wiring (end-to-end through prompt())", () => {
     assert.equal(result.text, "ran it", "prompt response unaffected");
     const file = join(dir, "s-e2e.jsonl");
     assert.ok(await waitForFile(file), "turn record written");
-    const record = JSON.parse(readFileSync(file, "utf-8").trim());
+    await drainTranscriptWrites();
+    // Fixture sessions get a lazy header on the first recorded turn (#935) —
+    // same well-formed header-then-turn shape as real create() sessions.
+    const record = lastRecord(file);
     assert.equal(record.type, "turn");
     assert.equal(record.turn_number, 1);
     assert.equal(record.messages.length, 4, "full message array persisted");
@@ -434,8 +437,8 @@ describe("store wiring (end-to-end through prompt())", () => {
     await waitForFile(file);
     await drainTranscriptWrites();
     const lines = readFileSync(file, "utf-8").trim().split("\n");
-    assert.equal(lines.length, 2, "one line per turn");
-    assert.equal(JSON.parse(lines[1]!).turn_number, 2);
+    assert.equal(lines.length, 3, "lazy header + one line per turn");
+    assert.equal(JSON.parse(lines[2]!).turn_number, 2);
   });
 
   it("enabled: a rejected prompt still leaves a turn record (#923 review)", async () => {
@@ -466,7 +469,7 @@ describe("store wiring (end-to-end through prompt())", () => {
     await drainTranscriptWrites();
     const file = join(dir, "s-reject.jsonl");
     assert.ok(existsSync(file), "rejection fallback record written");
-    const record = JSON.parse(readFileSync(file, "utf-8").trim());
+    const record = lastRecord(file);
     assert.equal(record.type, "turn");
     assert.equal(record.turn_number, 1, "assigned turn number retained");
     assert.equal(record.stop_reason, "error");
@@ -510,7 +513,7 @@ describe("store wiring (end-to-end through prompt())", () => {
     const result = await store.prompt(id, "hi");
     assert.equal(result.text, "part one\n\npart two", "boundary separator applied to the response");
     await drainTranscriptWrites();
-    const record = JSON.parse(readFileSync(join(dir, "s-multi.jsonl"), "utf-8").trim());
+    const record = lastRecord(join(dir, "s-multi.jsonl"));
     assert.equal(record.final_text, "part one\n\npart two", "transcript final_text matches the returned text exactly");
   });
 
@@ -542,7 +545,7 @@ describe("store wiring (end-to-end through prompt())", () => {
     const result = await store.prompt(id, "hi");
     assert.ok(result.error, "caller sees the error");
     await drainTranscriptWrites();
-    const record = JSON.parse(readFileSync(join(dir, "s-errmsg.jsonl"), "utf-8").trim());
+    const record = lastRecord(join(dir, "s-errmsg.jsonl"));
     assert.ok(JSON.stringify(record.errors).includes("tool timeout"), "collected SDK errors retained in the turn record");
     assert.equal(record.stop_reason, "error");
   });
@@ -603,6 +606,205 @@ describe("store wiring (end-to-end through prompt())", () => {
     assert.ok(existsSync(file), "queued turn survived shutdown via drain");
   });
 });
+
+describe("runtime recording override (#935)", () => {
+  const ENV_KEYS = ["RECORD_TRANSCRIPTS", "PI_SIDECAR_TRANSCRIPTS_DIR"] as const;
+  let dir: string;
+  beforeEach(() => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    dir = tempTranscriptsDir();
+    process.env.PI_SIDECAR_TRANSCRIPTS_DIR = dir;
+  });
+  afterEach(() => {
+    for (const key of ENV_KEYS) delete process.env[key];
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("override wins over env in both directions; recordingState reports source", () => {
+    const store = new SessionStore();
+    assert.deepEqual(store.recordingState(), { enabled: false, source: "env" }, "off, env, by default");
+    store.setRecordingOverride(true);
+    assert.equal(store.isRecordingEnabled(), true, "override true beats env unset");
+    assert.deepEqual(store.recordingState(), { enabled: true, source: "override" });
+    process.env.RECORD_TRANSCRIPTS = "1";
+    store.setRecordingOverride(false);
+    assert.equal(store.isRecordingEnabled(), false, "override false beats env on");
+    assert.deepEqual(store.recordingState(), { enabled: false, source: "override" });
+  });
+
+  it("reset restores the env default", () => {
+    const store = new SessionStore();
+    process.env.RECORD_TRANSCRIPTS = "1";
+    store.setRecordingOverride(false);
+    store.clearRecordingOverride();
+    assert.deepEqual(store.recordingState(), { enabled: true, source: "env" });
+  });
+
+  it("clearing without an override set is a no-op", () => {
+    const store = new SessionStore();
+    store.clearRecordingOverride(); // must not throw
+    assert.deepEqual(store.recordingState(), { enabled: false, source: "env" });
+  });
+
+  it("override state is per store instance, not module-global (Qodo 26046bd3)", () => {
+    const a = new SessionStore();
+    const b = new SessionStore();
+    a.setRecordingOverride(true);
+    assert.deepEqual(a.recordingState(), { enabled: true, source: "override" });
+    assert.deepEqual(b.recordingState(), { enabled: false, source: "env" }, "store b unaffected by store a's override");
+    a.clearRecordingOverride();
+    assert.deepEqual(b.recordingState(), { enabled: false, source: "env" }, "still env-governed after a resets");
+  });
+
+  it("writeSessionHeader reports whether the line appended (Qodo 5ab0db39 contract)", async () => {
+    const ok = await writeSessionHeader({ sessionId: "s-bool-ok", provider: "p", model: "m", redact: REDACT });
+    assert.equal(ok, true, "successful append reports true");
+    // A path whose parent is a regular file: mkdir fails, the write is
+    // swallowed, and the return must be false so callers retry later.
+    const blocker = join(dir, "blocker");
+    writeFileSync(blocker, "not a dir");
+    process.env.PI_SIDECAR_TRANSCRIPTS_DIR = join(blocker, "sub");
+    const failed = await writeSessionHeader({ sessionId: "s-bool-fail", provider: "p", model: "m", redact: REDACT });
+    assert.equal(failed, false, "swallowed failure reports false");
+  });
+
+  it("a failed header write skips the turn — the transcript stays header-first (Qodo 7dad2203)", async () => {
+    const store = new SessionStore();
+    let emit: (event: unknown) => void = () => {};
+    const id = "s-hdr-fail";
+    (store as any).putSessionFixture(
+      id,
+      {
+        subscribe: (cb: (event: unknown) => void) => {
+          emit = cb;
+          return () => {};
+        },
+        prompt: async () => {
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
+          emit({
+            type: "agent_end",
+            messages: [
+              { role: "user", content: [{ type: "text", text: "hi" }] },
+              { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input: 3, output: 1 }, stopReason: "end_turn" },
+            ],
+          });
+        },
+        dispose: () => {},
+        abort: async () => {},
+      },
+      "/tmp/hdr-fail",
+      true,
+    );
+    store.setRecordingOverride(true);
+    // Break the transcripts dir: its parent is a regular file, so mkdir and
+    // every append fail. The lazy header fire AND the inline turn-slot retry
+    // both fail → the turn is skipped, no file is created.
+    const blocker = join(dir, "blocker");
+    writeFileSync(blocker, "not a dir");
+    process.env.PI_SIDECAR_TRANSCRIPTS_DIR = join(blocker, "sub");
+    await store.prompt(id, "hi");
+    await drainTranscriptWrites();
+    assert.ok(!existsSync(join(blocker, "sub", "s-hdr-fail.jsonl")), "no file when the header cannot be written");
+
+    // Repair the dir: the next recorded prompt retries the header inline and
+    // the file comes back HEADER-FIRST — never turn → header → turn.
+    rmSync(blocker);
+    process.env.PI_SIDECAR_TRANSCRIPTS_DIR = dir;
+    await store.prompt(id, "again");
+    await drainTranscriptWrites();
+    const file = join(dir, "s-hdr-fail.jsonl");
+    assert.ok(existsSync(file), "file written after repair");
+    const lines = readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(lines[0].type, "session_header", "header is the first line after recovery");
+    assert.equal(lines[lines.length - 1].type, "turn");
+    assert.equal(lines.filter((l) => l.type === "session_header").length, 1, "exactly one header");
+    await store.disposeAll();
+  });
+
+  it("enabling mid-session writes the header lazily before the first recorded turn", async () => {
+    // Session prompts once with recording off (zero I/O), then recording is
+    // enabled at runtime: the next prompt must produce header-then-turn, in
+    // that order, with turn numbering starting at 1.
+    const store = new SessionStore();
+    let emit: (event: unknown) => void = () => {};
+    const id = "s-mid-toggle";
+    (store as any).putSessionFixture(
+      id,
+      {
+        subscribe: (cb: (event: unknown) => void) => {
+          emit = cb;
+          return () => {};
+        },
+        prompt: async () => {
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
+          emit({
+            type: "agent_end",
+            messages: [
+              { role: "user", content: [{ type: "text", text: "hi" }] },
+              { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input: 3, output: 1 }, stopReason: "end_turn" },
+            ],
+          });
+        },
+        dispose: () => {},
+        abort: async () => {},
+      },
+      "/tmp/mid-toggle",
+      true,
+    );
+    await store.prompt(id, "hi");
+    assert.equal(readdirSyncSafe(dir).length, 0, "disabled: zero I/O");
+
+    store.setRecordingOverride(true);
+    await store.prompt(id, "again");
+    const file = join(dir, "s-mid-toggle.jsonl");
+    assert.ok(await waitForFileLazy(file), "turn written after enabling");
+    await drainTranscriptWrites();
+    const lines = readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0].type, "session_header", "lazy header precedes first recorded turn");
+    assert.equal(lines[0].session_id, "s-mid-toggle");
+    assert.ok(
+      Date.parse(lines[0].created_at) < Date.parse(lines[1].timestamp),
+      "lazy header stamps the session's real creation time, not the first recorded turn's (Qodo 8597d8f7)",
+    );
+    assert.equal(lines[1].type, "turn");
+    assert.equal(lines[1].turn_number, 1, "first recorded turn is turn 1 — disabled prompts do not consume numbers");
+
+    // Disabling again stops later turns.
+    store.setRecordingOverride(false);
+    await store.prompt(id, "third");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const linesAfter = readFileSync(file, "utf-8").trim().split("\n");
+    assert.equal(linesAfter.length, 2, "no further turns after disabling");
+
+    // Re-enabling and prompting again must not queue a second header: the
+    // synchronous headerPending flag guarantees at-most-one header regardless
+    // of fs timing (Qodo 14c6e560).
+    store.setRecordingOverride(true);
+    await store.prompt(id, "fourth");
+    await drainTranscriptWrites();
+    const linesFinal = readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(linesFinal.filter((l) => l.type === "session_header").length, 1, "exactly one session_header, no duplicates");
+    assert.equal(linesFinal.length, 3, "header + two recorded turns");
+    assert.equal(linesFinal[2].turn_number, 2);
+    await store.disposeAll();
+  });
+});
+
+async function waitForFileLazy(path: string, timeoutMs = 2000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return false;
+}
+
+/** Last JSONL record in a transcript file (fixture files: lazy header + turns). */
+function lastRecord(file: string): Record<string, any> {
+  const lines = readFileSync(file, "utf-8").trim().split("\n");
+  return JSON.parse(lines[lines.length - 1]!);
+}
 
 function readdirSyncSafe(dir: string): string[] {
   try {

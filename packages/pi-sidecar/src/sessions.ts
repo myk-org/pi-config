@@ -27,10 +27,11 @@ import { createLogger, logger } from "./logger.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig } from "./http-tool-executor.js";
 import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
 import { runWithSessionCwd } from "./session-cwd.js";
-import { drainTranscriptWrites, maybeEnforceRetention, queueTurn, transcriptUsage, transcriptsEnabled, writeSessionHeader } from "./transcripts.js";
+import { drainTranscriptWrites, maybeEnforceRetention, queueLazySessionHeader, queueTurn, transcriptUsage, transcriptsEnabled, writeSessionHeader, type TurnHeaderGuard } from "./transcripts.js";
 
 const fixtureLog = createLogger("session-store");
 const pricingLog = createLogger("session-store");
+const recordingLog = createLogger("session-store");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -899,6 +900,32 @@ interface SessionEntry {
   /** 1-based count of prompts sent to this session — the transcript turn number. */
   turnCount: number;
   /**
+   * Transcript header state (#935): the create-time header payload (kept so
+   * the header can be written lazily when recording is enabled mid-session)
+   * and whether it has been written yet. The disabled path stays zero-cost —
+   * one object reference and a boolean per session.
+   */
+  transcriptHeader: {
+    sessionId: string;
+    provider: string;
+    model: string;
+    systemPrompt?: string;
+    cwd?: string;
+    customTools?: string[];
+    /** Session open time — a lazily written header must not report the first
+     *  recorded turn's time as the session's creation time (Qodo 8597d8f7). */
+    createdAt: string;
+    redact: (value: string) => string;
+  };
+  headerWritten: boolean;
+  /**
+   * Synchronous in-flight marker for the lazy header write: set the moment
+   * the fire-and-forget write is queued, so a fast-failing prompt followed
+   * by another prompt cannot queue a second header while the first append
+   * is still pending (Qodo 14c6e560).
+   */
+  headerPending: boolean;
+  /**
    * Whether the session's model carries real prices. Pi requires numeric prices,
    * so a model whose source published none (key-scoped listing, CLI/ACPX
    * discovery without a catalog price) uses zeros for "unknown pricing", not
@@ -950,6 +977,47 @@ export interface ProviderStatus {
 
 export class SessionStore {
   private sessions = new Map<string, SessionEntry>();
+
+  /**
+   * Runtime recording override (#935) — INSTANCE state, not module state:
+   * two sidecar servers in one process must not share the toggle, and a
+   * closed server must not leave its override behind for a later instance.
+   * `undefined` means no override; the boot-time env value governs. Set via
+   * POST /transcripts/recording, cleared via /transcripts/recording/reset.
+   * In-memory only: a restart restores the env default by design.
+   */
+  private recordingOverride: boolean | undefined;
+
+  /** Set the runtime override; takes effect for subsequent turns. */
+  setRecordingOverride(enabled: boolean): void {
+    this.recordingOverride = enabled;
+    recordingLog.info(`transcript recording override set: enabled=${enabled}`);
+  }
+
+  /** Drop the runtime override; the env default governs again. */
+  clearRecordingOverride(): void {
+    if (this.recordingOverride === undefined) {
+      recordingLog.debug("transcript recording override cleared: no override was set");
+      return;
+    }
+    this.recordingOverride = undefined;
+    recordingLog.info("transcript recording override cleared; env default restored");
+  }
+
+  /** Effective recording state, with whether it comes from env or override. */
+  recordingState(): { enabled: boolean; source: "env" | "override" } {
+    return {
+      enabled: this.isRecordingEnabled(),
+      source: this.recordingOverride === undefined ? "env" : "override",
+    };
+  }
+
+  /** Env default OR this store's runtime override. */
+  isRecordingEnabled(): boolean {
+    const enabled = this.recordingOverride ?? transcriptsEnabled();
+    recordingLog.debug(`recording decision: enabled=${enabled}, source=${this.recordingOverride === undefined ? "env" : "override"}`);
+    return enabled;
+  }
 
   /** Redact only the credential owned by this session. Never expose it to the registrar or other sessions. */
   redactSessionValue(id: string, value: string): string {
@@ -1115,6 +1183,19 @@ export class SessionStore {
       redact: (value) => value,
       pricingKnown,
       turnCount: 0,
+      // Fixture sessions carry a placeholder header payload; transcripts
+      // on fixtures are only exercised in dedicated transcript tests that
+      // install real values via putSessionFixture-like setup.
+      transcriptHeader: {
+        sessionId: id,
+        provider: "fixture",
+        model: "fixture",
+        cwd,
+        createdAt: new Date().toISOString(),
+        redact: (value) => value,
+      },
+      headerWritten: false,
+      headerPending: false,
     });
   }
 
@@ -1930,23 +2011,35 @@ export class SessionStore {
       throw httpError("Sidecar is shutting down", 503);
     }
 
-    this.sessions.set(id, { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0 });
+    const transcriptHeader = {
+      sessionId: id,
+      provider: options.provider,
+      model: options.model,
+      systemPrompt: options.systemPrompt,
+      cwd: options.cwd,
+      customTools: customTools.map((tool: CustomToolConfig) => tool.name),
+      createdAt: new Date().toISOString(),
+      redact,
+    };
+    const newEntry: SessionEntry = { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0, transcriptHeader, headerWritten: false, headerPending: false };
+    this.sessions.set(id, newEntry);
     log.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${customTools.length})`);
     // Transcript recording (issue #922) — OFF unless RECORD_TRANSCRIPTS is
-    // truthy; the header write is fail-soft and awaited so it precedes any
-    // turn record for this session. Retention runs opportunistically and
-    // never prunes a live session's file (this one included).
-    if (transcriptsEnabled()) {
-      await writeSessionHeader({
-        sessionId: id,
-        provider: options.provider,
-        model: options.model,
-        systemPrompt: options.systemPrompt,
-        cwd: options.cwd,
-        customTools: customTools.map((tool: CustomToolConfig) => tool.name),
-        redact,
-      });
-      maybeEnforceRetention(new Set(this.sessions.keys()));
+    // truthy (or the #935 runtime override is set); the header write is
+    // fail-soft and awaited so it precedes any turn record for this session.
+    // When recording is disabled at creation, the header is written lazily on
+    // the first recorded turn (prompt()) so enabling mid-session still
+    // produces a well-formed file. The active-session snapshot is taken
+    // BEFORE the awaited write so a concurrent delete cannot make this
+    // session's fresh file retention-eligible mid-write; headerWritten is
+    // set only when the line actually appended (a swallowed failure retries
+    // on the next recorded turn). The entry is held by reference, not
+    // re-fetched from the map — disposeAll() during the await must not turn
+    // this into a TypeError (Qodo 7a9c1405).
+    if (this.isRecordingEnabled()) {
+      const activeIds = new Set(this.sessions.keys());
+      newEntry.headerWritten = await writeSessionHeader(transcriptHeader);
+      maybeEnforceRetention(activeIds);
     }
     return id;
     } catch (err) {
@@ -1969,11 +2062,40 @@ export class SessionStore {
     entry.inFlight = true;
     // Transcript turn state is mutated only when recording is enabled — the
     // disabled path stays zero-overhead (#923 review).
-    const recordTurn = transcriptsEnabled();
+    const recordTurn = this.isRecordingEnabled();
     let turnNumber = 0;
+    // Shared header guard (#935): used by the lazy fire below and by both
+    // queueTurn sites, so header bookkeeping is identical everywhere. The
+    // markWritten callback also clears headerPending — safe from the turn
+    // slot's inline retry, where it is already false.
+    const headerGuard: TurnHeaderGuard = {
+      header: entry.transcriptHeader,
+      isWritten: () => entry.headerWritten,
+      markWritten: (appended) => {
+        entry.headerWritten = appended;
+        entry.headerPending = false;
+      },
+    };
     if (recordTurn) {
       entry.turnCount += 1;
       turnNumber = entry.turnCount;
+      // Lazy header (#935): recording was enabled after this session was
+      // created, so its header was never written — queue it now. FIRE-AND-
+      // FORGET with in-slot bookkeeping: the chain orders header-before-turn
+      // and updates the guard state inside the slot (no microtask lag for
+      // the turn slot's inline check), and NOT awaiting removes the window
+      // where abort()/delete()/disposeAll() could land between inFlight =
+      // true and session.prompt (Qodo ed714b22). A failed write leaves
+      // headerWritten false — the turn slot retries inline and skips the
+      // turn if the retry fails, keeping the file header-first (Qodo
+      // 7dad2203); the next recorded turn retries again (Qodo 5ab0db39).
+      // Retention uses the synchronous pre-write active-session snapshot so
+      // a concurrent delete cannot prune this session's fresh header
+      // mid-flight (Qodo 4d913b74).
+      if (!entry.headerWritten && !entry.headerPending) {
+        entry.headerPending = true;
+        queueLazySessionHeader(headerGuard, new Set(this.sessions.keys()));
+      }
     }
     let turnWasRecorded = false;
     // Captured at agent_end; the turn record is QUEUED only after the response
@@ -2123,6 +2245,7 @@ export class SessionStore {
           finalText: responseText || undefined,
           errors: [rejectionError, ...errors].slice(0, 10),
           redact: entry.redact,
+          ensureHeader: headerGuard,
         });
         maybeEnforceRetention(new Set(this.sessions.keys()));
       }
@@ -2245,6 +2368,7 @@ export class SessionStore {
         finalText: responseText,
         errors: errors.length > 0 ? [...errors] : undefined,
         redact: entry.redact,
+        ensureHeader: headerGuard,
       });
       maybeEnforceRetention(new Set(this.sessions.keys()));
     }

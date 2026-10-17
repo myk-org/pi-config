@@ -20,6 +20,7 @@ from pi_sidecar_client import (
     AIResult,
     AITokenUsage,
     ProviderDiscovery,
+    RecordingState,
     SidecarClient,
     _map_provider_model,
     _redact_api_key,
@@ -80,6 +81,38 @@ def provider_server() -> Iterator[tuple[str, list[str]]]:
                     {"provider": "acpx-cursor", "supportsSessionApiKey": False},
                 ]
             }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", received
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@contextmanager
+def recording_server() -> Iterator[tuple[str, list[str]]]:
+    """Serves GET /transcripts/recording for the #935 client tests."""
+    received: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            received.append(self.path)
+            if self.path != "/transcripts/recording":
+                self.send_error(404)
+                return
+            body = json.dumps({"enabled": False, "source": "env"}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -388,6 +421,36 @@ class TestSidecarClient:
         with pytest.raises(httpx.HTTPStatusError) as exc_info:
             await client.get_providers()
         assert exc_info.value.response.status_code == 503
+
+    # -- recording toggle (#935) --
+    async def test_client_get_recording_returns_state(self) -> None:
+        with recording_server() as (url, _):
+            async with SidecarClient(base_url=url) as client:
+                assert await client.get_recording() == {"enabled": False, "source": "env"}
+
+    def test_client_recording_public_return_type_schema(self) -> None:
+        assert get_type_hints(SidecarClient.get_recording)["return"] == RecordingState
+        assert set(RecordingState.__annotations__) == {"enabled", "source"}
+        assert all(
+            get_type_hints(getattr(SidecarClient, method))["return"] == RecordingState
+            for method in ("get_recording", "set_recording", "reset_recording")
+        )
+
+    async def test_client_set_recording_posts_override(self, client: SidecarClient) -> None:
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"enabled": True, "source": "override"}))
+        assert await client.set_recording(True) == {"enabled": True, "source": "override"}
+        client._client.post.assert_awaited_once_with("/transcripts/recording", json={"enabled": True})
+
+    async def test_client_reset_recording_posts_reset(self, client: SidecarClient) -> None:
+        client._client.post = AsyncMock(return_value=_mock_response(200, {"enabled": False, "source": "env"}))
+        assert await client.reset_recording() == {"enabled": False, "source": "env"}
+        client._client.post.assert_awaited_once_with("/transcripts/recording/reset")
+
+    async def test_client_get_recording_hits_endpoint(self) -> None:
+        with recording_server() as (url, received):
+            async with SidecarClient(base_url=url) as client:
+                await client.get_recording()
+        assert received == ["/transcripts/recording"]
 
     # -- get_model_provider_status --
     async def test_client_get_model_provider_status(self, client: SidecarClient) -> None:
