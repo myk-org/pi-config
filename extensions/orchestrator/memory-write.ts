@@ -897,7 +897,10 @@ function scheduleSpans(clause: string): ScheduleSpan[] {
     if (t === null) continue;
     const rel = b[1]!.toLowerCase();
     if (/^(?:before|by|until)$/.test(rel)) {
-      spans.push({ lo: 0, hi: t, loInc: true, hiInc: rel !== "before" });
+      // A day-opening bound at midnight (Qodo 523788d1): "until midnight"
+      // bans the REST OF THE DAY — minute 0 as the bound end produced an
+      // empty span, so "at noon" looked disjoint from the ban.
+      spans.push({ lo: 0, hi: t === 0 ? 24 * 60 : t, loInc: true, hiInc: rel !== "before" });
     } else {
       spans.push({ lo: t, hi: 24 * 60, loInc: rel === "since", hiInc: true });
     }
@@ -1088,7 +1091,15 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
           (negOnly.length === 1 && UNIVERSAL_QUANTIFIERS.has(negOnly[0]!)) ||
           (permOnly.length === 1 && UNIVERSAL_QUANTIFIERS.has(permOnly[0]!));
         const crossVariant = negOnly.some((a) => permOnly.some((b) => isVariantWord(a, b)));
-        if (!universal && !crossVariant) {
+        // Hypernym coverage (Qodo a849a37a): a diff word that NAMES a
+        // category covering the other side's diff word is not a distinct
+        // target — "Never use npm directly" vs "Always use tools directly"
+        // share the action and the broad permission covers the banned
+        // member, so the pair clashes instead of taking the exclusion.
+        const broadCovers = negOnly.some((a) =>
+          permOnly.some((b) => hypernymCovers(a, b) || hypernymCovers(b, a)),
+        );
+        if (!universal && !crossVariant && !broadCovers) {
           const stemmerOverMerge = negOnly.some((a) => permOnly.some((b) => stem(a) === stem(b)));
           const allMidClause =
             negOnly.every((a) => diffWordIsMidClause(neg, a, permRaw)) &&
@@ -1571,6 +1582,19 @@ function quotedPayloadWords(clause: string): Set<string> {
     for (const w of m[2]!.toLowerCase().match(/[a-z]+/g) ?? []) set.add(w);
   }
   return set;
+}
+
+/** Hypernym coverage (Qodo a849a37a): a category word whose members
+ *  include the other diff word. Stems on both sides — tools stems to
+ *  "tool", package members like npm stay whole. */
+const TOOL_HYPONYMS = new Set([
+  "npm", "npx", "pip", "pip3", "uv", "yarn", "pnpm", "cargo", "deno",
+  "bun", "tox", "pytest", "docker", "podman", "kubectl", "oc", "curl",
+  "wget", "jq", "gh", "make", "mvn", "gradle", "node", "python", "python3",
+]);
+
+function hypernymCovers(a: string, b: string): boolean {
+  return stem(a) === "tool" && TOOL_HYPONYMS.has(stem(b));
 }
 
 function diffWordIsMidClause(clause: string, diff: string, otherWords: Set<string>): boolean {
