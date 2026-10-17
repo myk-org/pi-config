@@ -193,11 +193,21 @@ const STOP_WORDS = new Set([
  *  (sing, thing stay intact) and repairs doubled consonants left by
  *  suffix removal (running→run, committing→commit). */
 function stem(word: string): string {
-  let w = word;
+  // Clipping expansions run FIRST (Qodo d44e182b, 7ed1ea1e): "app" and
+  // "application" are the same target, and expanding before suffix
+  // handling keeps the pair consistent — expanding at the end left k8s →
+  // "kubernetes" unstemmed while a literal "kubernetes" stemmed to
+  // "kubernet", so the synonym never matched.
+  let w = CLIPPING_EXPANSIONS[word] ?? word;
   for (const suffix of ["ing", "ed", "es", "s"]) {
     if (w.length > suffix.length + 2 && w.endsWith(suffix)) {
-      const stem = w.slice(0, -suffix.length);
-      w = /([a-z])\1$/.test(stem) && stem.length > 3 ? stem.slice(0, -1) : stem;
+      const base = w.slice(0, -suffix.length);
+      // Doubled-consonant repair (Qodo 59932c0a): running→runn→run needs
+      // the repair, but ll/ss/ff/zz are letters that double in BASE words
+      // (install→installing keeps both ls) — repairing those split
+      // "installing" from "install".
+      const dbl = /([a-z])\1$/.exec(base);
+      w = dbl && !"lsfz".includes(dbl[1]!) && base.length > 3 ? base.slice(0, -1) : base;
       break;
     }
   }
@@ -205,13 +215,7 @@ function stem(word: string): string {
   // singular "package" kept its e — the pair never matched. Drop a final
   // e on long words so singular/plural/inflected forms converge.
   if (w.endsWith("e") && w.length >= 5) w = w.slice(0, -1);
-  // Clipping expansions (Qodo d44e182b): "app" and "application" are the
-  // same target — without canonicalization the pair appears as a one-word
-  // diff and the distinct-target exclusion skips the clash, letting a
-  // pinned "Never deploy app to production" coexist with "Always deploy
-  // application to production". Unlike inflections these are vocabulary
-  // clippings, so they need an explicit table.
-  return CLIPPING_EXPANSIONS[w] ?? w;
+  return w;
 }
 
 /** Common clippings expanded to their full form during stemming so a
@@ -317,10 +321,13 @@ export function quotedMask(text: string, initialBanned: ReadonlySet<number> = ne
     for (let i = 0; i < src.length; i++) {
       const ch = src[i]!;
       // Backslash-escaped quote chars are CONTENT (Qodo bfca536f): in
-      // `say \"ok; sure\"` the escaped quotes never open or close a span —
-      // treating the second \" as a closing delimiter exposed the rest of
-      // the payload to splitting and polarity detection.
-      const escaped = i > 0 && src[i - 1] === "\\";
+      // `say \"ok; sure\"` the escaped quotes never open or close a span.
+      // Parity matters (Qodo 9468b527): a quote after TWO backslashes is
+      // NOT escaped — the first backslash escapes the second — so it is a
+      // real delimiter.
+      let bs = 0;
+      for (let j = i - 1; j >= 0 && src[j] === "\\"; j--) bs++;
+      const escaped = bs % 2 === 1;
       if (escaped && (OPENING_QUOTES.has(ch) || QUOTE_PARTNER[ch] !== undefined)) {
         out[i] = "\x00";
         continue;
@@ -712,6 +719,12 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
  *  extension (run/running), or final-vowel mutation (carri/carry). */
 function isVariantWord(a: string, b: string): boolean {
   if (a === b) return true;
+  // Clipping pairs are the SAME target by declaration (Qodo 7ed1ea1e):
+  // k8s→kubernetes stems converge via the table, but the RAW forms are
+  // not prefix- or vowel-affine — without this check the distinct-target
+  // exclusion treated them as different objects and let opposing rules
+  // for the same cluster coexist.
+  if (CLIPPING_EXPANSIONS[a] === b || CLIPPING_EXPANSIONS[b] === a) return true;
   if (stem(a) !== stem(b)) return false;
   const [x, y] = a.length <= b.length ? [a, b] : [b, a];
   if (x.length >= 3 && y.startsWith(x)) return true;
@@ -1065,6 +1078,17 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
       .slice("tool_name ".length)
       .replace(/\s+/g, " ")
       .trim();
+    // A blank tool name (all-whitespace payload, Qodo ccce07dd) can
+    // never match a real invocation — reject instead of storing a dead
+    // trigger with an action.
+    if (!tool) {
+      return {
+        status: "rejected",
+        message:
+          `Rejected: trigger "${input.trigger.trim()}" names no tool — ` +
+          `provide the tool name (e.g. "tool_name bash") or use a bash_contains pattern.`,
+      };
+    }
     input = {
       ...input,
       trigger: `tool_name ${tool.toLowerCase() === "bash" ? "bash" : tool}`,

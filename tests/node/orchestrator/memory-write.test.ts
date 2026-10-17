@@ -1621,6 +1621,62 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("-ing forms of ll/ss/ff/zz verbs match their base (Qodo 59932c0a)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never install globally", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Installing globally is fine",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a quote after two backslashes is a real delimiter (Qodo 9468b527)", async () => {
+    const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
+    const even = 'say \\\\"ok; sure\\\\" now';
+    const maskedEven = quotedMask(even);
+    assert.doesNotMatch(maskedEven, /ok; sure/, "even-backslash quote delimits and masks the payload");
+    const odd = 'say \\"ok; sure\\" now';
+    const maskedOdd = quotedMask(odd);
+    assert.match(maskedOdd, /ok; sure/, "odd-backslash quote stays escaped content");
+  });
+
+  it("a blank tool_name trigger is rejected, not stored dead (Qodo ccce07dd)", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "blank tool trigger test",
+        category: "lesson",
+        trigger: "tool_name   ",
+        action: "block",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /names no tool/);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("k8s and kubernetes converge after expansion (Qodo 7ed1ea1e)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy to k8s", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy to kubernetes",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("many unmatched apostrophes do not overflow the mask (Qodo 2a41ba6b)", async () => {
     const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
     const many = "never use npm " + "'".repeat(5000) + " and always run tests";
