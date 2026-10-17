@@ -185,7 +185,6 @@ const STOP_WORDS = new Set([
   "should", "could", "can", "may", "must", "shall", "when", "what", "which",
 ]);
 
-/** Lowercase content words with naive plural stripping, for overlap scoring. */
 /** Light stem so inflected verbs match their base form (Qodo adbd3504):
  *  push/pushing, merge/merges/merging, commit/committed must compare
  *  equal — exact tokens with only a trailing-s strip let reworded
@@ -210,6 +209,8 @@ function stem(word: string): string {
 }
 
 function contentWords(text: string): Set<string> {
+  // Lowercase content words with naive plural stripping, for overlap scoring
+  // (Qodo 10865d53: this doc was stranded above the stem helper).
   const words = text.toLowerCase().match(/[a-z][a-z0-9#-]*/g) ?? [];
   const out = new Set<string>();
   for (const w of words) {
@@ -256,14 +257,6 @@ function polarityClash(a: string, b: string): boolean {
   );
 }
 
-/** Same-length mask: characters inside contraction-safe quoted spans are
- *  replaced with \x00, so separators, polarity words, and permission markers
- *  inside a quoted payload are invisible to clause splitting and marker
- *  regexes (Qodo 652e15cd: 'ok; sure' must not split or permit; Qodo
- *  874f0adc: 'don't use npm' must not prohibit). Quote state opens only at
- *  a non-word boundary and closes only when the next char is not a word
- *  char — apostrophes inside contractions (don't, users') and inside quoted
- *  payloads are content, never delimiters. */
 /** Curly-quote partners (Qodo 9c430f3d): “ ” and ‘ ’ pair with each other;
  *  straight quotes and backticks pair with themselves. */
 const QUOTE_PARTNER: Record<string, string> = {
@@ -274,6 +267,14 @@ const QUOTE_PARTNER: Record<string, string> = {
 };
 const OPENING_QUOTES = new Set(["'", '"', "`", "\u201c", "\u2018"]);
 
+/** Same-length mask: characters inside contraction-safe quoted spans are
+ *  replaced with \x00, so separators, polarity words, and permission markers
+ *  inside a quoted payload are invisible to clause splitting and marker
+ *  regexes (Qodo 652e15cd: 'ok; sure' must not split or permit; Qodo
+ *  874f0adc: 'don't use npm' must not prohibit). Quote state opens only at
+ *  a non-word boundary and closes only when the next char is not a word
+ *  char — apostrophes inside contractions (don't, users') and inside quoted
+ *  payloads are content, never delimiters. */
 function quotedMask(text: string, banned: ReadonlySet<number> = new Set()): string {
   // Word-char classes are UNICODE (Qodo ad3da7c8): an apostrophe after an
   // accented letter (Beyoncé's) must not open a quote span — ASCII \w
@@ -383,7 +384,12 @@ function splitClauses(text: string): string[] {
   // discarded by negation-dominance and the pinned rule then rejected its
   // own exception. A period must be followed by whitespace, so decimals
   // (3.5), file names (file.ts) and ellipses stay intact.
-  const re = /[\n;\u2014\u2013]|\.(?=\s)|\bbut\b|\bhowever\b/gi;
+  // Sentence-ending periods split clauses, but a period after a SINGLE
+  // letter does not — "e.g.", "i.e.", "etc." are abbreviations, and
+  // splitting on them cuts a prohibition in two (Qodo ab8d2a82: "Never run
+  // destructive commands, e.g. rm -rf /" lost its object list from the
+  // clause). Require at least two letters before the period.
+  const re = /[\n;\u2014\u2013]|(?<=[a-z]{2})\.(?=\s)|\bbut\b|\bhowever\b/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(mask))) {
     bounds.push(m.index + m[0].length);
@@ -541,13 +547,25 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
   return false;
 }
 
-/** Morphological variant (run/running, publish/publishes): the shorter
- *  word is a ≥3-char prefix of the longer. The distinct-target exclusion
- *  must not fire for inflection differences — "running tests" and "run
- *  tests" are the same action, not different targets. */
+/** Morphological variant check (Qodo 5a346f0f): the action-word sets are
+ *  already stemmed, so identical inflections (run/running) never appear as
+ *  diffs. What remains: vowel-final mutations the light stemmer misses
+ *  (carried→carri vs carry) and identical stems. It must NOT treat any
+ *  ≥3-char prefix as a variant — "git"/"github" are different tools, and
+ *  the prefix rule made the distinct-target exclusion skip them so a
+ *  pinned "Never use git for pushes" wrongly rejected "Always use github
+ *  for pushes". */
 function isVariantWord(a: string, b: string): boolean {
-  const [x, y] = a.length <= b.length ? [a, b] : [b, a];
-  return x.length >= 3 && y.startsWith(x);
+  if (stem(a) === stem(b)) return true;
+  if (a.length === b.length && a.length >= 4) {
+    const prefix = a.slice(0, -1);
+    return (
+      b.startsWith(prefix) &&
+      /[aeiouy]/.test(a.slice(-1)) &&
+      /[aeiouy]/.test(b.slice(-1))
+    );
+  }
+  return false;
 }
 
 /** Ordered content-word sequence of a clause (same tokenization and
@@ -686,7 +704,14 @@ export async function findContradiction(
     // let a single shared word like "main" reject unrelated rules).
     const shared = sharedContentWords(text, candidate.text);
     const vectorConfirmed = similarKeys.has(`${candidate.category}:${candidate.text}`);
-    if (!(shared >= 2 || (vectorConfirmed && shared >= 1))) continue;
+    // Short rules (Qodo 2c16ab75): "Never deploy" vs "Always deploy" —
+    // the single shared word IS the whole rule, so the strict ≥ 2 gate
+    // would discard the candidate before the clause gate ever sees the
+    // polarity flip. Admit one shared word when BOTH texts are that short
+    // (≤ 2 content words); the clause-level clash thresholds still apply.
+    const shortPair =
+      contentWords(text).size <= 2 && contentWords(candidate.text).size <= 2;
+    if (!(shared >= 2 || (vectorConfirmed && shared >= 1) || (shortPair && shared >= 1))) continue;
     const similarity = similarityByText.get(`${candidate.category}:${candidate.text}`) ?? 0;
     conflicts.push({ candidate, score: similarity * 10 + shared });
   }
@@ -802,8 +827,6 @@ function reconcileScopeOnReinforce(cwd: string, existingLine: string, input: Add
 
 // ── Dedup + enforcement merge ──────────────────────────────────────────────
 
-/** Merge enforcement fields from new input into an existing scored entry.
- *  Locked read-modify-write (issue #915). */
 /** Warn from the EFFECTIVE action on the reinforced path (Qodo 453a818e):
  *  a duplicate that adds a trigger without an action keeps the existing
  *  entry's action alive via mergeEnforcementFields — the write is not a
@@ -829,6 +852,8 @@ function reinforcedTriggerWarning(
   }
 }
 
+/** Merge enforcement fields from new input into an existing scored entry.
+ *  Locked read-modify-write (issue #915). */
 function mergeEnforcementFields(
   cwd: string,
   existingLine: string,

@@ -1263,6 +1263,50 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("short opposing rules with a single action word still clash (Qodo 2c16ab75)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("different services are distinct targets, not variants (Qodo 5a346f0f)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never use git for local pushes", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always use github for local pushes",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("abbreviated examples stay inside the prohibiting clause (Qodo ab8d2a82)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run destructive commands, e.g. rm -rf /", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run rm -rf on stale build dirs",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("mixed-case pi tool names keep their case (Qodo 17b68cf5)", async () => {
     const cwd = makeCwd();
     try {
