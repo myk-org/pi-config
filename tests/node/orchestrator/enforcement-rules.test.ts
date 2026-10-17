@@ -121,6 +121,23 @@ describe("matchToolCall — file_modified trigger", () => {
     const matches = matchToolCall([entry], "write", { path: "src/main.ts" });
     assert.equal(matches.length, 0);
   });
+
+  it("does not match a FAILED edit/write — nothing was modified", () => {
+    const matches = matchToolCall([entry], "edit", { path: "src/main.py" }, true);
+    assert.equal(matches.length, 0);
+  });
+
+  it("tool_name still matches a failed call", () => {
+    const nameEntry = makeEntry("tool_name edit");
+    const matches = matchToolCall([nameEntry], "edit", { path: "src/main.py" }, true);
+    assert.equal(matches.length, 1);
+  });
+
+  it("bash triggers still match a failed bash call — the command ran", () => {
+    const bashEntry = makeEntry("bash_contains rm -rf");
+    const matches = matchToolCall([bashEntry], "bash", { command: "rm -rf /tmp/foo" }, true);
+    assert.equal(matches.length, 1);
+  });
 });
 
 // ── matchToolCall — bash trigger via bash tool ─────────────────────────────

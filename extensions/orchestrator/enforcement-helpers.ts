@@ -1905,3 +1905,13 @@ export function clearBranchCache(): void {
 export function seedBranchCacheForTests(cwd: string, branch: string | null, at?: number): void {
   branchCache.set(cwd, { branch, at: at ?? Date.now() });
 }
+
+/** Diagnostic for a FAILED edit/write skipping file_modified triggers
+ *  (#940, Qodo 2addbfc4): nothing was modified, so file-pattern rules must
+ *  not fire. Logs at debug level itself (Qodo ea636782 — logging
+ *  requirements apply to helpers too) and returns the message for tests. */
+export function failedFileEditSkipMessage(toolName: string, path: string): string {
+  const msg = `enforcement: failed ${toolName} (path=${path}) — skipping file_modified triggers, nothing was modified`;
+  enfLog.debug(msg);
+  return msg;
+}

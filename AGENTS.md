@@ -303,7 +303,9 @@ progress. It does not commit, push, create a PR, or post results.
   so `StartedSidecarHandle.ready` / `.stopped` fatal failures exit 1. Headless Gemini defaults
   `GEMINI_CLI_TRUST_WORKSPACE=true` but preserves an explicit parent value.
 - Extension ops logs (cli-provider, dreaming): `~/.pi/logs/` — never `console.*` (leaks into chat). See `docs/cli-provider.md` Logging
-- Memory system: see `docs/memory-architecture.md`
+- Memory system: see `docs/memory-architecture.md`. The write path has a conflict gate: complementary rules (different targets,
+  restatements, quoted examples) coexist; genuine same-action polarity flips reject with an ask-first message and supersede via
+  `overrideConflicts`
 - Enforcement honesty (code vs injected): see `contributing/enforcement-honesty-map.md`
 - Memory inventory CLI: `uv run myk-pi-tools memory status`
 - Project settings: see `docs/project-settings.md`

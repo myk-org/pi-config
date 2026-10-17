@@ -15,6 +15,16 @@
 workflows from `rules/05-issue-first-workflow.md` or `rules/20-code-review-loop.md`,
 multi-file refactoring, or any work involving more than 2 actions.
 
+**Deferred missions count as multi-step work.** When the user assigns work
+conditional on a future event ("after X", "once Y", "when Z"), create the
+tasks IMMEDIATELY in that same turn — the trigger condition goes in the task
+description, and dependent tasks block on the trigger task. Never carry a
+deferred mission only in conversation memory: compaction or a session
+restart loses it silently.
+
+- ❌ BAD: "after Qodo approves, deploy and test" → acknowledged, no task
+- ✅ GOOD: `TaskCreate("Deploy X locally — trigger: Qodo R6 clean")` + blocked follow-ups
+
 **Skip tasks for:** single-step actions, questions/explanations, `/btw` side questions, or trivial fixes.
 
 ---
