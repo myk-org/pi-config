@@ -744,7 +744,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
         action: "block",
       });
       assert.equal(result.status, "added");
-      assert.match(result.message, /blocks EVERY bash call/i);
+      assert.match(result.message, /EVERY bash call/i);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
@@ -882,6 +882,88 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       });
       assert.equal(result.status, "added");
       assert.match(result.message, /names a shell command/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("single-word actions still clash across polarity (Qodo 8f4191ef)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy; keep audit logs", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy; keep audit logs",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("colons do not detach the object from a polarized action (Qodo 0ae964c1)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never publish: npm packages; always publish: PyPI packages", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always publish npm packages",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("broad permissions do not align with narrower ones (Qodo 8ec45667)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never publish PyPI packages; always publish packages", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Never publish PyPI packages; always publish npm packages",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("tool_name bash warns for ANY action, not just block (Qodo b2f6f0e6)", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Run tests inside bash only",
+        category: "lesson",
+        trigger: "tool_name bash",
+        action: "warn",
+      });
+      assert.equal(result.status, "added");
+      assert.match(result.message, /EVERY bash call/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("whitespace-padded tool_name triggers are canonicalized, not dead (Qodo dfbdbf1c)", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Run linters inside bash only",
+        category: "lesson",
+        trigger: "tool_name  bash ",
+        action: "warn",
+      });
+      assert.equal(result.status, "added");
+      const scored = JSON.parse(
+        fs.readFileSync(path.join(cwd, ".pi", "memory", "memory-scores.jsonl"), "utf8").trim().split("\n").pop()!,
+      ) as { entries: Record<string, { trigger?: string }> };
+      const [entry] = Object.values(scored.entries);
+      assert.equal(entry?.trigger, "tool_name bash");
+      assert.match(result.message, /EVERY bash call/i);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

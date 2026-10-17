@@ -137,8 +137,8 @@ function toolNameTriggerWarning(trigger: string | undefined, action: string | un
   if (SHELL_COMMAND_TOOL_NAMES.has(tool)) {
     return `warning: trigger "tool_name ${tool}" names a shell command, not a pi tool — ${tool} runs inside bash, so this trigger never fires; use a bash_contains pattern for the specific command instead`;
   }
-  if (tool === "bash" && action === "block") {
-    return `warning: trigger "tool_name bash" with action block blocks EVERY bash call — usually over-broad; prefer a bash_contains pattern targeting the specific command`;
+  if (tool === "bash") {
+    return `warning: trigger "tool_name bash" with action ${action ?? "(none)"} applies to EVERY bash call — usually over-broad; prefer a bash_contains pattern targeting the specific command`;
   }
   return null;
 }
@@ -250,11 +250,14 @@ function quotedMask(text: string): string {
  *  QUOTE-AWARE (Qodo 652e15cd): separators inside quoted payloads do not
  *  split — the mask is same-length, so the mask's split indices slice the
  *  original text and clauses keep their RAW content (quoted tool names
- *  remain action objects for the overlap check). */
+ *  remain action objects for the overlap check). Colons do NOT split (Qodo
+ *  0ae964c1): words after a colon routinely complete the preceding action
+ *  ("Never publish: npm packages"), and label prefixes merging into the
+ *  following clause is harmless — labels carry no polarity markers. */
 function splitClauses(text: string): string[] {
   const mask = quotedMask(text);
   const bounds: number[] = [0];
-  const re = /[\n;\u2014\u2013]|\bbut\b|\bhowever\b|: /g;
+  const re = /[\n;\u2014\u2013]|\bbut\b|\bhowever\b/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(mask))) {
     bounds.push(m.index + m[0].length);
@@ -283,24 +286,53 @@ function permissionClauses(text: string): string[] {
  *  packages" share only the generic action (publish, package) — 2 of 3 — so
  *  swapped compound rules still conflict; an exact or lightly reworded
  *  restatement agrees and dedup reinforces it. */
-function clausesAgree(x: string, y: string): boolean {
-  const shared = sharedContentWords(x, y);
-  if (shared < 2) return false;
-  const shorter = Math.min(contentWords(x).size, contentWords(y).size);
-  return shared >= Math.ceil(shorter * 0.8);
+/** Action words: clause content minus polarity markers (Qodo 8f4191ef).
+ *  "Never deploy" and "Always deploy" must compare as the SAME single-word
+ *  action — polarity words never count toward action overlap, and a clash
+ *  is not skipped just because one clause adds objects the other omits. */
+const ACTION_MARKER_WORDS_RE =
+  /\b(?:never|always|not|no|don'?t|do\s+not|doesn'?t|didn'?t|cannot|can'?t|won'?t|mustn'?t|must\s+not|forbidden|avoid|stop|can|may|might|allowed|allow|permits?|permitted|okay|ok|go\s+ahead|feel\s+free|fine|acceptable|safe\s+to|only|but|however)\b/gi;
+
+function actionWords(clause: string): Set<string> {
+  return contentWords(clause.replace(ACTION_MARKER_WORDS_RE, " "));
 }
 
-/** A prohibition from A and a permission from B clash only when their
- *  CLAUSES share the action (≥ 2 content words) — global polarity with
- *  different objects is a complementary rule, not a contradiction (#936).
- *  Clause alignment (Qodo f464da16): when B ALSO forbids what A forbids and
- *  A ALSO permits what B permits (restatement-grade, see clausesAgree), the
- *  two entries restate the same compound rule — the gate must not reject it;
- *  dedup reinforces it instead. */
+function sharedActionWords(x: string, y: string): number {
+  const wx = actionWords(x);
+  let shared = 0;
+  for (const w of actionWords(y)) {
+    if (wx.has(w)) shared++;
+  }
+  return shared;
+}
+
+/** Restatement-grade clause alignment. Measured against the LONGER clause
+ *  too (Qodo 8ec45667): a broad permission ("always publish") must not
+ *  align with a narrower one ("always publish npm packages") — alignment is
+ *  reserved for near-identical restatements so genuine conflicts cannot
+ *  hide behind a short, generic clause. */
+function clausesAgree(x: string, y: string): boolean {
+  const shared = sharedActionWords(x, y);
+  if (shared < 2) return false;
+  const longer = Math.max(actionWords(x).size, actionWords(y).size);
+  return shared >= Math.ceil(longer * 0.8);
+}
+
+/** A prohibition from A and a permission from B clash when their CLAUSES
+ *  share the action — global polarity with different objects is a
+ *  complementary rule, not a contradiction (#936). A single shared action
+ *  word counts only when it IS the whole action ("Never deploy" vs "Always
+ *  deploy", Qodo 8f4191ef); longer clauses still need ≥ 2 shared action
+ *  words. Clause alignment (Qodo f464da16): when B ALSO forbids what A
+ *  forbids and A ALSO permits what B permits (restatement-grade, see
+ *  clausesAgree), the two entries restate the same compound rule — the gate
+ *  must not reject it; dedup reinforces it instead. */
 function polarizedClausesClash(negA: string[], permA: string[], negB: string[], permB: string[]): boolean {
   for (const neg of negA) {
     for (const perm of permB) {
-      if (sharedContentWords(neg, perm) < 2) continue;
+      const shared = sharedActionWords(neg, perm);
+      const shorter = Math.min(actionWords(neg).size, actionWords(perm).size);
+      if (!(shared >= 2 || (shared >= 1 && shared === shorter))) continue;
       const negAgrees = negB.some((n) => clausesAgree(neg, n));
       const permAgrees = permA.some((p) => clausesAgree(perm, p));
       if (negAgrees && permAgrees) continue;
@@ -568,6 +600,20 @@ function mergeEnforcementFields(
  * See module header for the safeguard order.
  */
 export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promise<AddMemoryResult> {
+  // Canonicalize tool_name triggers (Qodo dfbdbf1c): the enforcement matcher
+  // compares the configured name EXACTLY, so trailing or doubled whitespace
+  // ("tool_name bash ") makes the trigger silently dead while writers
+  // believe it covers every call. Normalize before validation, warning, and
+  // storage so the stored trigger is the one that actually matches.
+  if (input.trigger?.startsWith("tool_name ")) {
+    input = {
+      ...input,
+      trigger: `tool_name ${input.trigger
+        .slice("tool_name ".length)
+        .replace(/\s+/g, " ")
+        .trim()}`,
+    };
+  }
   const category = input.category;
   const text = input.text;
   const isPinned = input.pinned ?? false;
