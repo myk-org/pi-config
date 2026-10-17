@@ -22,6 +22,7 @@ import {
   type ScoredEntry,
 } from "../../../extensions/orchestrator/memory-scoring.js";
 import { readAllTopicEntries } from "../../../extensions/orchestrator/memory-tree.js";
+import { loadEnforcedEntries } from "../../../extensions/orchestrator/enforcement-rules.js";
 
 function makeCwd(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "memory-write-"));
@@ -31,7 +32,7 @@ function seedEntry(
   cwd: string,
   category: string,
   text: string,
-  opts: { pinned?: boolean } = {},
+  opts: { pinned?: boolean; trigger?: string; action?: string } = {},
 ): void {
   const topicFile: Record<string, string> = {
     preference: "preferences.md",
@@ -57,6 +58,8 @@ function seedEntry(
     lastReinforced: new Date().toISOString(),
     userState: opts.pinned ? "pinned" : "auto",
     lifecycle: "active",
+    ...(opts.trigger ? { trigger: opts.trigger as any } : {}),
+    ...(opts.action ? { action: opts.action as any } : {}),
   };
   const scores = loadScores(cwd);
   scores.entries[hash] = entry;
@@ -958,11 +961,12 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
         action: "warn",
       });
       assert.equal(result.status, "added");
-      const scored = JSON.parse(
-        fs.readFileSync(path.join(cwd, ".pi", "memory", "memory-scores.jsonl"), "utf8").trim().split("\n").pop()!,
-      ) as { entries: Record<string, { trigger?: string }> };
-      const [entry] = Object.values(scored.entries);
-      assert.equal(entry?.trigger, "tool_name bash");
+      // Verify through the enforcement loader — the consumer of the stored
+      // trigger — not the score-file internals (Qodo 309f268e).
+      const enforced = loadEnforcedEntries(cwd);
+      const entry = enforced.find((e) => e.trigger === "tool_name bash");
+      assert.ok(entry, "canonical trigger must load for enforcement");
+      assert.equal(entry!.action, "warn");
       assert.match(result.message, /EVERY bash call/i);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
@@ -1210,6 +1214,69 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
         category: "lesson",
       });
       assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("capitalized tool_name triggers canonicalize to the matching form (Qodo 53d6b3d0)", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Lint runs inside bash only",
+        category: "lesson",
+        trigger: "tool_name BASH",
+        action: "block",
+      });
+      assert.equal(result.status, "added");
+      const enforced = loadEnforcedEntries(cwd);
+      assert.ok(enforced.some((e) => e.trigger === "tool_name bash"), "must store the lowercase form the matcher compares");
+      assert.match(result.message, /EVERY bash call/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("escaped quotes stay inside the payload (Qodo bfca536f)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "pattern", 'reply "say \\"ok; sure\\"; never emit prose" to health checks', { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always emit prose",
+        category: "pattern",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("sentence-ending periods split multi-sentence rules (Qodo d59a6de5)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never push to main. You can push to feature branches.", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always push to feature branches",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reinforced triggers warn from the EFFECTIVE action (Qodo 453a818e)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Run linters inside bash only", { trigger: "tool_name bash", action: "warn" });
+      const result = await addMemoryEntry(cwd, {
+        text: "Run linters inside bash only",
+        category: "lesson",
+        trigger: "tool_name bash",
+      });
+      assert.equal(result.status, "reinforced");
+      assert.doesNotMatch(result.message, /has no action — it will never fire/i);
+      assert.match(result.message, /EVERY bash call/i);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

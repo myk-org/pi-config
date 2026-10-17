@@ -275,6 +275,15 @@ function quotedMask(text: string, banned: ReadonlySet<number> = new Set()): stri
   let openIndex = -1;
   for (let i = 0; i < src.length; i++) {
     const ch = src[i]!;
+    // Backslash-escaped quote chars are CONTENT (Qodo bfca536f): in
+    // `say \"ok; sure\"` the escaped quotes never open or close a span —
+    // treating the second \" as a closing delimiter exposed the rest of
+    // the payload to splitting and polarity detection.
+    const escaped = i > 0 && src[i - 1] === "\\";
+    if (escaped && (OPENING_QUOTES.has(ch) || QUOTE_PARTNER[ch] !== undefined)) {
+      out[i] = "\x00";
+      continue;
+    }
     if (quote === null) {
       if (!banned.has(i) && OPENING_QUOTES.has(ch) && !BOUNDARY_CHAR.test(i > 0 ? src[i - 1]! : "")) {
         quote = ch;
@@ -357,8 +366,13 @@ function splitClauses(text: string): string[] {
   }
   const bounds: number[] = [0];
   // Case-insensitive (Qodo eb263200): "However," and "BUT" must split
-  // exactly like their lowercase spellings.
-  const re = /[\n;\u2014\u2013]|\bbut\b|\bhowever\b/gi;
+  // exactly like their lowercase spellings. Sentence-ending periods split
+  // too (Qodo d59a6de5): "Never push to main. You can push to feature
+  // branches." must not stay one clause — its permission sentence was
+  // discarded by negation-dominance and the pinned rule then rejected its
+  // own exception. A period must be followed by whitespace, so decimals
+  // (3.5), file names (file.ts) and ellipses stay intact.
+  const re = /[\n;\u2014\u2013]|\.(?=\s)|\bbut\b|\bhowever\b/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(mask))) {
     bounds.push(m.index + m[0].length);
@@ -774,6 +788,31 @@ function reconcileScopeOnReinforce(cwd: string, existingLine: string, input: Add
 
 /** Merge enforcement fields from new input into an existing scored entry.
  *  Locked read-modify-write (issue #915). */
+/** Warn from the EFFECTIVE action on the reinforced path (Qodo 453a818e):
+ *  a duplicate that adds a trigger without an action keeps the existing
+ *  entry's action alive via mergeEnforcementFields — the write is not a
+ *  dead trigger, so the base no-action warning must be recomputed against
+ *  the merged entry. */
+function reinforcedTriggerWarning(
+  cwd: string,
+  existingLine: string,
+  input: AddMemoryInput,
+  base: string | null,
+): string | null {
+  if (!base || input.action) return base;
+  try {
+    const existing = loadScores(cwd).entries[entryHash(existingLine)];
+    if (!existing?.action) return base;
+    const effective =
+      existing.action === "run_after" && existing.actionCommand
+        ? `run_after ${existing.actionCommand}`
+        : existing.action;
+    return toolNameTriggerWarning(input.trigger, effective);
+  } catch {
+    return base;
+  }
+}
+
 function mergeEnforcementFields(
   cwd: string,
   existingLine: string,
@@ -806,18 +845,21 @@ function mergeEnforcementFields(
  * See module header for the safeguard order.
  */
 export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promise<AddMemoryResult> {
-  // Canonicalize tool_name triggers (Qodo dfbdbf1c): the enforcement matcher
-  // compares the configured name EXACTLY, so trailing or doubled whitespace
-  // ("tool_name bash ") makes the trigger silently dead while writers
-  // believe it covers every call. Normalize before validation, warning, and
-  // storage so the stored trigger is the one that actually matches.
+  // Canonicalize tool_name triggers (Qodo dfbdbf1c, 53d6b3d0): the
+  // enforcement matcher compares the configured name EXACTLY and
+  // case-sensitively against lowercase pi tool names, so trailing or
+  // doubled whitespace ("tool_name bash ") or capitalization ("tool_name
+  // Bash") makes the trigger silently dead while writers believe it
+  // covers every call. Normalize to the lowercase canonical form before
+  // validation, warning, and storage.
   if (input.trigger?.startsWith("tool_name ")) {
     input = {
       ...input,
       trigger: `tool_name ${input.trigger
         .slice("tool_name ".length)
         .replace(/\s+/g, " ")
-        .trim()}`,
+        .trim()
+        .toLowerCase()}`,
     };
   }
   const category = input.category;
@@ -968,11 +1010,12 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
         reconcileScopeOnReinforce(cwd, existingLine, input);
         const merged = mergeEnforcementFields(cwd, existingLine, input);
         const enforcementNote = merged ? " (enforcement fields merged)" : "";
+        const reinforcedWarning = reinforcedTriggerWarning(cwd, existingLine, input, triggerWarning);
         return {
           status: "reinforced",
           message:
             `Near-duplicate found (similarity: ${vm.similarity.toFixed(3)}) — reinforced instead: ` +
-            `[${vm.category}] ${vm.text}${enforcementNote}${triggerWarning ? ` — ${triggerWarning}` : ""}`,
+            `[${vm.category}] ${vm.text}${enforcementNote}${reinforcedWarning ? ` — ${reinforcedWarning}` : ""}`,
         };
       }
       // reinforce() failed (score entry missing) — try next candidate
@@ -988,9 +1031,10 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
     reconcileScopeOnReinforce(cwd, canonicalLine, input);
     const merged = mergeEnforcementFields(cwd, canonicalLine, input);
     const enforcementNote = merged ? " (enforcement fields merged)" : "";
+    const reinforcedWarning = reinforcedTriggerWarning(cwd, canonicalLine, input, triggerWarning);
     return {
       status: "reinforced",
-      message: `Already exists — reinforced instead: [${category}] ${text}${enforcementNote}${triggerWarning ? ` — ${triggerWarning}` : ""}`,
+      message: `Already exists — reinforced instead: [${category}] ${text}${enforcementNote}${reinforcedWarning ? ` — ${reinforcedWarning}` : ""}`,
     };
   }
 
