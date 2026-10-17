@@ -1249,6 +1249,20 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("demonstratives stay stop words after stemming (Qodo 72013bb5)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never push these branches", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always push these tags",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("mixed-case pi tool names keep their case (Qodo 17b68cf5)", async () => {
     const cwd = makeCwd();
     try {

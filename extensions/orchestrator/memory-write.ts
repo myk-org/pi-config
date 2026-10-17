@@ -213,6 +213,11 @@ function contentWords(text: string): Set<string> {
   const words = text.toLowerCase().match(/[a-z][a-z0-9#-]*/g) ?? [];
   const out = new Set<string>();
   for (const w of words) {
+    // Stop-word check on the RAW form too (Qodo 72013bb5): stem drops the
+    // silent e (these→thes, those→thos), and the stemmed forms are not in
+    // STOP_WORDS — the demonstratives then counted as shared content words
+    // and manufactured clause overlap.
+    if (STOP_WORDS.has(w)) continue;
     const norm = stem(w);
     if (norm.length >= 2 && !STOP_WORDS.has(norm)) out.add(norm);
   }
@@ -552,6 +557,7 @@ function orderedContentWords(clause: string): string[] {
   const words = clause.toLowerCase().match(/[a-z][a-z0-9#-]*/g) ?? [];
   const out: string[] = [];
   for (const w of words) {
+    if (STOP_WORDS.has(w)) continue;
     const norm = stem(w);
     if (norm.length >= 2 && !STOP_WORDS.has(norm) && !out.includes(norm)) out.push(norm);
   }
