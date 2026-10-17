@@ -741,7 +741,13 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
 
 
-    let matches = matchToolCall(entries, toolName, input, (event as any).isError === true);
+    // Failed edit/write calls skip file_modified matching (#940) — log the
+    // decision so silent trigger skips are diagnosable (Qodo 2addbfc4).
+    const isToolCallError = (event as any).isError === true;
+    if (isToolCallError && (toolName === "edit" || toolName === "write") && input?.path) {
+      log.debug(`enforcement: failed ${toolName} (path=${input.path}) — skipping file_modified triggers, nothing was modified`);
+    }
+    let matches = matchToolCall(entries, toolName, input, isToolCallError);
 
     // For subagent results, extract actual bash commands from the subagent's
     // tool call messages (structured data only — no prose text fallback).

@@ -237,20 +237,22 @@ const QUOTE_PARTNER: Record<string, string> = {
 const OPENING_QUOTES = new Set(["'", '"', "`", "\u201c", "\u2018"]);
 
 function quotedMask(text: string): string {
+  // Word-char classes are UNICODE (Qodo ad3da7c8): an apostrophe after an
+  // accented letter (Beyoncé's) must not open a quote span — ASCII \w
+  // would miss é and mask the rest of the text, hiding real prohibitions.
+  const WORD_CHAR = /[\p{L}\p{N}_]/u;
+  const BOUNDARY_CHAR = /[\p{L}\p{N}_'"\u2018\u2019\u201c\u201d]/u;
   const chars = text.split("");
   let quote: string | null = null;
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i]!;
     if (quote === null) {
-      if (
-        OPENING_QUOTES.has(ch) &&
-        !/[\w'"\u2018\u2019\u201c\u201d]/.test(i > 0 ? chars[i - 1]! : "")
-      ) {
+      if (OPENING_QUOTES.has(ch) && !BOUNDARY_CHAR.test(i > 0 ? chars[i - 1]! : "")) {
         quote = ch;
         chars[i] = "\x00";
       }
     } else if (ch === (QUOTE_PARTNER[quote] ?? quote)) {
-      if (!/\w/.test(chars[i + 1] ?? "")) quote = null;
+      if (!WORD_CHAR.test(chars[i + 1] ?? "")) quote = null;
       chars[i] = "\x00";
     } else {
       chars[i] = "\x00";
@@ -287,9 +289,17 @@ function negationClauses(text: string): string[] {
   return splitClauses(text).filter((c) => NEGATION_RE.test(quotedMask(c)));
 }
 
+/** Permission clauses — a clause that ALSO matches a negation marker is a
+ *  prohibition, not a permission (Qodo e788f4b2): "may not", "can't",
+ *  "not allowed", "not okay" contain permit words (may/can/allowed/okay)
+ *  but mean the opposite. Without this, a pinned "You may not merge PRs"
+ *  counts as its own permission and rejects the faithful restatement
+ *  "Never merge PRs". */
 function permissionClauses(text: string): string[] {
   return splitClauses(text).filter(
-    (c) => PERMIT_RE.test(quotedMask(c)) || ONLY_PERMIT_RE.test(quotedMask(c)),
+    (c) =>
+      !NEGATION_RE.test(quotedMask(c)) &&
+      (PERMIT_RE.test(quotedMask(c)) || ONLY_PERMIT_RE.test(quotedMask(c))),
   );
 }
 
@@ -310,13 +320,26 @@ function actionWords(clause: string): Set<string> {
   return contentWords(clause.replace(ACTION_MARKER_WORDS_RE, " "));
 }
 
-function sharedActionWords(x: string, y: string): number {
-  const wx = actionWords(x);
+/** Masked action words: quoted payload content does not count (Qodo
+ *  c92087ed). Used for the NEGATION side of a clash candidate and for
+ *  agreement — an example quoted inside a prohibition ("Never inspect logs
+ *  containing 'use npm'") is content of the rule about logs, not the
+ *  prohibited action itself. The permission side stays RAW so a quoted
+ *  tool name remains the permitted object ("use only `uv`"). */
+function maskedActionWords(clause: string): Set<string> {
+  return contentWords(quotedMask(clause).replace(ACTION_MARKER_WORDS_RE, " "));
+}
+
+function sharedCount(ax: Set<string>, ay: Set<string>): number {
   let shared = 0;
-  for (const w of actionWords(y)) {
-    if (wx.has(w)) shared++;
+  for (const w of ay) {
+    if (ax.has(w)) shared++;
   }
   return shared;
+}
+
+function sharedActionWords(x: string, y: string): number {
+  return sharedCount(actionWords(x), actionWords(y));
 }
 
 /** Restatement-grade clause alignment. Measured against the LONGER clause
@@ -325,9 +348,11 @@ function sharedActionWords(x: string, y: string): number {
  *  reserved for near-identical restatements so genuine conflicts cannot
  *  hide behind a short, generic clause. */
 function clausesAgree(x: string, y: string): boolean {
-  const shared = sharedActionWords(x, y);
+  const mx = maskedActionWords(x);
+  const my = maskedActionWords(y);
+  const shared = sharedCount(mx, my);
   if (shared < 2) return false;
-  const longer = Math.max(actionWords(x).size, actionWords(y).size);
+  const longer = Math.max(mx.size, my.size);
   return shared >= Math.ceil(longer * 0.8);
 }
 
@@ -343,8 +368,13 @@ function clausesAgree(x: string, y: string): boolean {
 function polarizedClausesClash(negA: string[], permA: string[], negB: string[], permB: string[]): boolean {
   for (const neg of negA) {
     for (const perm of permB) {
-      const shared = sharedActionWords(neg, perm);
-      const shorter = Math.min(actionWords(neg).size, actionWords(perm).size);
+      // Negation side masked (Qodo c92087ed), permission side raw: quoted
+      // content inside a prohibition is incidental, while a quoted tool
+      // name is the permitted object.
+      const negWords = maskedActionWords(neg);
+      const permWords = actionWords(perm);
+      const shared = sharedCount(negWords, permWords);
+      const shorter = Math.min(negWords.size, permWords.size);
       if (!(shared >= 2 || (shared >= 1 && shared === shorter))) continue;
       const negAgrees = negB.some((n) => clausesAgree(neg, n));
       const permAgrees = permA.some((p) => clausesAgree(perm, p));

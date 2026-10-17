@@ -996,4 +996,47 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("‘may not’ clauses are prohibitions, so restatements reinforce (Qodo e788f4b2)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "You may not merge PRs without review", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Never merge PRs without review",
+        category: "lesson",
+      });
+      assert.notEqual(result.status, "rejected", `must not be rejected: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("possessives after accented letters do not open quote spans (Qodo ad3da7c8)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Beyoncé's rule: never publish secrets", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always publish secrets",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("quoted examples inside a prohibition are not its action (Qodo c92087ed)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never inspect logs containing 'use npm'", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always use npm for installs",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
