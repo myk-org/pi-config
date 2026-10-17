@@ -300,8 +300,8 @@ export function quotedMask(text: string, initialBanned: ReadonlySet<number> = ne
   // Word-char classes are UNICODE (Qodo ad3da7c8): an apostrophe after an
   // accented letter (Beyoncé's) must not open a quote span — ASCII \w
   // would miss é and mask the rest of the text, hiding real prohibitions.
-  const WORD_CHAR = /[\p{L}\p{N}_]/u;
-  const BOUNDARY_CHAR = /[\p{L}\p{N}_'"\u2018\u2019\u201c\u201d]/u;
+  const WORD_CHAR = /[\p{L}\p{N}_\uD800-\uDFFF]/u;
+  const BOUNDARY_CHAR = /[\p{L}\p{N}_'"\u2018\u2019\u201c\u201d\uD800-\uDFFF]/u;
   const src = text.split("");
   const banned = new Set(initialBanned);
   // Iterative retry, not recursion (Qodo 2a41ba6b): each unclosed opener
@@ -517,18 +517,36 @@ function rawActionWords(clause: string): Set<string> {
  *  has words before its marker, but they are the action, not a condition.
  *  Uses String.search so the shared global marker regex's lastIndex is
  *  not consumed. */
-function leadingCondition(clause: string): Set<string> {
+/** Fixed adverbial idioms that BEGIN with a subordinator word but carry
+ *  no condition (Qodo 7c839ae6): "Once again, never push" is a discourse
+ *  marker, not a scoped ban. */
+const LEADING_CONDITION_IDIOMS =
+  /^(?:once\s+again|after\s+all|when\s+in\s+doubt|in\s+any\s+case|if\s+anything|when\s+all\s+is\s+said)\b/i;
+
+/** Leading condition of a clause: the content words BEFORE the first
+ *  polarity marker (live battery, #936). "When npm whoami fails with E401
+ *  during a release, never continue publishing" — the words ahead of
+ *  "never" are the CONDITION the prohibition is scoped to. Only spans
+ *  containing a conditional subordinator count: "Pushing to main is okay"
+ *  has words before its marker, but they are the action, not a condition.
+ *  `escape` marks UNLESS-led clauses (Qodo 7c839ae6): "Unless the user
+ *  says otherwise, never push" is a GENERAL ban whose condition is the
+ *  escape hatch, not the scope — it inverts which permissions coexist.
+ *  Uses String.search so the shared global marker regex's lastIndex is
+ *  not consumed. */
+function leadingCondition(clause: string): { words: Set<string>; escape: boolean } {
+  const empty = { words: new Set<string>(), escape: false };
   const idx = clause.search(ACTION_MARKER_WORDS_RE);
-  if (idx <= 0) return new Set<string>();
+  if (idx <= 0) return empty;
   const lead = clause.slice(0, idx);
+  if (LEADING_CONDITION_IDIOMS.test(lead)) return empty;
   // Only true subordinators count (Qodo 4da6e3e5): "on" and "where" are
   // plain prepositions — "Agents on this repo must never push to main"
   // has no condition before the marker, and treating the subject phrase
   // as one let "Always push to main" coexist with the pinned ban.
-  if (!/\b(?:when|if|unless|whenever|once|after|before|during|upon|while|in\s+case)\b/i.test(lead)) {
-    return new Set<string>();
-  }
-  return contentWords(lead);
+  const m = lead.match(/\b(when|if|unless|whenever|once|after|before|during|upon|while|in\s+case)\b/i);
+  if (!m) return empty;
+  return { words: contentWords(lead), escape: m[1]!.toLowerCase() === "unless" };
 }
 
 /** Masked action words: quoted payload content does not count (Qodo
@@ -637,14 +655,21 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       // condition-scoped PERMISSION against a general prohibition stays a
       // conflict ("After /release ALWAYS publish to PyPI" vs "never publish
       // to PyPI" must still reject — the mandate instructs what the ban
-      // forbids). The scopes match only when the permission covers ≥ 80% of
-      // the condition, so "When it is Friday, never deploy" still clashes
-      // with "Always deploy on Fridays" but not with "Always deploy".
+      // forbids). The scopes match when the permission covers a STRICT
+      // MAJORITY of the condition words (Qodo 6b17d4ae): "When deploying
+      // service to production, never use npm" still rejects "Always use
+      // npm when deploying to production" (2 of 3 condition words) while
+      // the E401 failure condition (2 of 6) stays an exception. UNLESS-led
+      // clauses invert (Qodo 7c839ae6): "Unless the user says otherwise,
+      // never push to main" is a GENERAL ban with an escape hatch — it
+      // coexists only with a permission that carries the escape condition,
+      // and rejects an unconditioned "Always push to main".
       const negCond = leadingCondition(neg);
-      if (negCond.size > 0) {
+      if (negCond.words.size > 0) {
         const permWords = contentWords(perm);
-        const covered = [...negCond].filter((w) => permWords.has(w)).length;
-        if (covered / negCond.size < 0.8) {
+        const covered = [...negCond.words].filter((w) => permWords.has(w)).length;
+        const majority = covered * 2 > negCond.words.size;
+        if (negCond.escape ? majority : !majority) {
           log.debug(
             "memory-write: condition-scoped prohibition coexists — permission does not carry the condition",
             neg.slice(0, 80),

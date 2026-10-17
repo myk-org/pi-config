@@ -1482,6 +1482,80 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("reworded same-condition permissions still clash (Qodo 6b17d4ae)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When deploying service to production, never use npm", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always use npm when deploying to production",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("astral-plane possessives do not open quote spans (Qodo 2fb3b831)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "𝒜's rule: Never deploy prod's artifact", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy prod's artifact",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("unless-led bans are general and reject unconditioned opposites (Qodo 7c839ae6)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Unless the user says otherwise, never push to main", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always push to main",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("unless-led bans coexist with permissions carrying the escape (Qodo 7c839ae6)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Unless the user says otherwise, never push to main", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "When the user says otherwise, always push to main",
+        category: "lesson",
+      });
+      assert.notEqual(result.status, "rejected", `must not be rejected: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("subordinator-initial idioms are discourse, not conditions (Qodo 7c839ae6)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Once again, never push to main", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always push to main",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("many unmatched apostrophes do not overflow the mask (Qodo 2a41ba6b)", async () => {
     const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
     const many = "never use npm " + "'".repeat(5000) + " and always run tests";
