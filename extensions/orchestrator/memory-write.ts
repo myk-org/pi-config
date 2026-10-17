@@ -544,19 +544,23 @@ function splitClauses(text: string): string[] {
   // it is carried into the next clause through a pending buffer and only
   // attaches to the previous clause when nothing follows it.
   const out: string[] = [];
-  let pending = "";
+  // Marker-only fragments accumulate in an ARRAY (Qodo 7fbe8f27):
+  // concatenating into a string per fragment made runs of marker-only
+  // clauses quadratic on oversized writes.
+  let pending: string[] = [];
   for (const clause of clauses) {
     const markerOnly = clause.trim().length > 0 && actionWords(clause).size === 0;
     if (markerOnly) {
-      pending = `${pending} ${clause}`.trim();
+      pending.push(clause);
     } else {
-      out.push(`${pending} ${clause}`.trim());
-      pending = "";
+      out.push([...pending, clause].join(" "));
+      pending = [];
     }
   }
-  if (pending) {
-    if (out.length > 0) out[out.length - 1] = `${out[out.length - 1]} ${pending}`.trim();
-    else out.push(pending);
+  if (pending.length > 0) {
+    const joined = pending.join(" ");
+    if (out.length > 0) out[out.length - 1] = `${out[out.length - 1]} ${joined}`.trim();
+    else out.push(joined);
   }
   return out;
 }
@@ -644,7 +648,7 @@ const CONDITION_BOUNDARY_RE =
  *  says otherwise, never push" is a GENERAL ban whose condition is the
  *  escape hatch, not the scope — it inverts which permissions coexist. */
 function leadingCondition(clause: string): { words: Set<string>; escape: boolean } {
-  const empty = { words: new Set<string>(), escape: false };
+  const empty = { words: new Set<string>(), escape: false, relation: null as string | null };
   // Scan the MASKED clause (Qodo d87c13dd): a quoted subordinator —
   // 'Publish "when battery" logs, never publish packages' — must not
   // turn an unscoped prohibition into a condition-scoped exception; the
@@ -687,7 +691,11 @@ function leadingCondition(clause: string): { words: Set<string>; escape: boolean
   const words = contentWords(lead);
   for (const tok of m[0]!.toLowerCase().split(/\s+/)) words.delete(stem(tok));
   if (words.size === 0) return empty;
-  return { words, escape: m[1]!.toLowerCase() === "unless" };
+  return {
+    words,
+    escape: m[1]!.toLowerCase() === "unless",
+    relation: m[1]!.toLowerCase().replace(/\s+/g, " "),
+  };
 }
 
 /** Time-like qualifier words (Qodo 4ff8e53d): a trailing schedule must
@@ -712,17 +720,26 @@ function trailingCondition(clause: string): { words: Set<string>; timeLike: bool
   const last = markers[markers.length - 1]!;
   const tail = masked.slice(last.index! + last[0].length).trim();
   const tm =
-    /\b(?:at|before|after|during|until|till|by|between|upon|past|since|on)\s+([a-z0-9\s\x00]*)$/i.exec(
+    /\b(?:at|before|after|during|until|till|by|between|upon|past|since|on)\s+([a-z0-9:\s\x00]*)$/i.exec(
       tail,
     );
   if (!tm) return empty;
-  // Digit-aware raw tokens, stemmed but NOT stop-word filtered: "2am"
-  // tokenizes to "am" in the letter-led content tokenizer and "am" is a
-  // stop word, which emptied the schedule set (Qodo 16473e6e live debug).
-  const tokens = (tm[1]!.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
-    (w) => w.length >= 2,
+  // Clock times tokenize as WHOLE units (Qodo dddbbb1d): "2:30pm" must
+  // be one token or colon-times collapse into shared "30pm" fragments
+  // and separate schedules look identical. Word tokens come from the
+  // phrase with the clock times stripped out, stemmed but NOT stop-word
+  // filtered ("2am" letter-tokenizes to the stop word "am", Qodo
+  // 16473e6e live debug).
+  const phrase = tm[1]!;
+  const timeToks = (phrase.match(/\d{1,2}:\d{2}(?:am|pm)?|\d{1,2}(?:am|pm)/gi) ?? []).map((t) =>
+    t.toLowerCase(),
   );
-  return { words: new Set<string>(tokens.map((w) => stem(w))), timeLike: TIMEWORD_RE.test(tm[1]!) };
+  const stripped = phrase.replace(/\d{1,2}:\d{2}(?:am|pm)?|\d{1,2}(?:am|pm)/gi, " ");
+  const wordToks = (stripped.toLowerCase().match(/[a-z]+/g) ?? []).filter((w) => w.length >= 2);
+  return {
+    words: new Set<string>([...timeToks, ...wordToks.map((w) => stem(w))]),
+    timeLike: TIMEWORD_RE.test(phrase),
+  };
 }
 
 /** Parse a clock time ("2am", "3pm", "14:00") to minutes past midnight. */
@@ -899,7 +916,31 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       const negCond = leadingCondition(neg);
       if (negCond.words.size > 0) {
         const permWords = contentWords(perm);
-        const covered = [...negCond.words].filter((w) => permWords.has(w)).length;
+        const coveredWords = [...negCond.words].filter((w) => permWords.has(w));
+        const covered = coveredWords.length;
+        // Different temporal relations to the same event (Qodo 94c761d3):
+        // "During maintenance, never run tests" is concurrent with the
+        // maintenance window; "Always run tests after maintenance" is
+        // post-event — different scopes coexist, while "when Friday" vs
+        // "on Fridays" (both concurrent) keeps the clash.
+        const negGroup = negCond.relation ? TEMPORAL_GROUP[negCond.relation] : undefined;
+        if (negGroup && covered > 0) {
+          const permRel = permRelationTo(perm, coveredWords);
+          const permGroup = permRel ? TEMPORAL_GROUP[permRel] : undefined;
+          if (permGroup && permGroup !== negGroup) {
+            log.debug(
+              "memory-write: different temporal relations to the same event coexist",
+              neg.slice(0, 80),
+              "vs",
+              perm.slice(0, 80),
+              "relations",
+              negCond.relation,
+              "vs",
+              permRel,
+            );
+            continue;
+          }
+        }
         // Contrastive complement (Qodo 6949694b, ae4d616b): "Always deploy
         // production outside outage" shares the outage condition word but
         // under a contrastive marker — it describes the OPPOSITE
@@ -964,10 +1005,15 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       if (negTrail.words.size > 0 && negTrail.timeLike) {
         const permTrail = trailingCondition(perm);
         const scheduleOverlap = [...negTrail.words].some((w) => permTrail.words.has(w));
-        // Temporal inclusion (Qodo c5f680b8): different time tokens do not
-        // mean disjoint schedules — a point "at 2am" lies inside "before
-        // 3am", so the schedules overlap and the clash stands.
-        const inclusion = pointWithinBound(neg, perm) || pointWithinBound(perm, neg);
+        // Temporal inclusion (Qodo c5f680b8, 283e8097): different time
+        // tokens do not mean disjoint schedules — a point "at 2am" lies
+        // inside "before 3am", and two bounds overlap when their
+        // intervals intersect ("before 3am" vs "after 1am" share
+        // [1am,3am)), so the schedules overlap and the clash stands.
+        const inclusion =
+          pointWithinBound(neg, perm) ||
+          pointWithinBound(perm, neg) ||
+          boundsOverlap(neg, perm);
         if (permTrail.words.size > 0 && !scheduleOverlap && !inclusion) {
           log.debug(
             "memory-write: disjoint trailing schedules coexist",
@@ -1038,7 +1084,11 @@ function isVariantWord(a: string, b: string): boolean {
   const s = stem(a);
   if ((a === `${s}ing` && b === `${s}e`) || (b === `${s}ing` && a === `${s}e`)) return true;
   const [x, y] = a.length <= b.length ? [a, b] : [b, a];
-  if (x.length >= 3 && y.startsWith(x)) return true;
+  // A single trailing "e" is NOT an inflection extension (Qodo 48899e67):
+  // code/cod stem-equal only because silent-e dropping manufactured the
+  // match — they are different targets. Real extensions (run/running,
+  // commit/commits) are longer or a plural s.
+  if (x.length >= 3 && y.startsWith(x) && y.slice(x.length) !== "e") return true;
   if (a.length === b.length && a.length >= 4) {
     const prefix = a.slice(0, -1);
     return (
@@ -1107,7 +1157,10 @@ const ACTION_VERB_STEMS = new Set(
  *  an action verb that the other clause also carries (Qodo 45fea51b). */
 function trailingObjectDiff(clause: string, diff: string, otherRawWords: Set<string>): boolean {
   const cleaned = clause.replace(ACTION_MARKER_WORDS_RE, " ").toLowerCase();
-  const words = cleaned.replace(/-/g, " ").match(/[a-z][a-z0-9#]*/g) ?? [];
+  // Digit-aware tokens (Qodo 283e8097): "3am" is letter-led-regex invisible,
+  // which left "before" as the final word and fired the trailing-object
+  // exclusion for schedule prepositions.
+  const words = cleaned.replace(/-/g, " ").match(/[a-z0-9#]+/g) ?? [];
   const filtered = words.filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
   const idx = filtered.lastIndexOf(diff);
   if (idx < 1 || idx !== filtered.length - 1) return false;
@@ -1117,6 +1170,54 @@ function trailingObjectDiff(clause: string, diff: string, otherRawWords: Set<str
   // The verb must be shared with the other side — it is the common
   // action whose object differs.
   return [...otherRawWords].some((o) => stem(o) === prevStem);
+}
+
+/** Temporal relation groups (Qodo 94c761d3): relations pointing at the
+ *  same event with DIFFERENT semantics describe different scopes —
+ *  "during maintenance" (concurrent) vs "after maintenance" (post) — and
+ *  coexist; "when Friday" and "on Fridays" are both concurrent and stay
+ *  a clash. */
+const TEMPORAL_GROUP: Record<string, string> = {
+  when: "concurrent", on: "concurrent", at: "concurrent", in: "concurrent",
+  while: "concurrent", during: "concurrent",
+  after: "post", since: "post", past: "post",
+  before: "pre", until: "pre", by: "pre",
+};
+
+/** A clause's bound schedule ("before 3am", "after 1am") as an interval
+ *  [lo, hi] in minutes past midnight, when present. */
+function boundInterval(clause: string): { lo: number; hi: number } | null {
+  const bound =
+    /\b(before|by|until|after|since|past)\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)\b/i.exec(
+      quotedMask(clause),
+    );
+  if (!bound) return null;
+  const t = parseTimeToken(bound[2]!);
+  if (t === null) return null;
+  return /^(?:before|by|until)$/i.test(bound[1]!) ? { lo: 0, hi: t } : { lo: t, hi: 24 * 60 };
+}
+
+/** True when two BOUND schedules overlap (Qodo 283e8097): "never before
+ *  3am" bans [0,3am) and "always after 1am" permits (1am,24h) — the
+ *  interval [1am,3am) is governed by both, so the clash stands. Touching
+ *  intervals ("before 3am" vs "after 3am") do not overlap. */
+function boundsOverlap(aClause: string, bClause: string): boolean {
+  const a = boundInterval(aClause);
+  const b = boundInterval(bClause);
+  if (!a || !b) return false;
+  return a.lo < b.hi && b.lo < a.hi;
+}
+
+/** The permission's temporal relation toward a covered condition word —
+ *  "after maintenance" relates "post" to the maintenance event. */
+function permRelationTo(perm: string, coveredWords: string[]): string | null {
+  const masked = quotedMask(perm);
+  for (const w of coveredWords) {
+    for (const rel of ["after", "before", "during", "until", "since", "past", "on", "at", "when", "while"]) {
+      if (new RegExp(`\\b${rel}\\s+${w}`, "i").test(masked)) return rel;
+    }
+  }
+  return null;
 }
 
 function diffWordIsMidClause(clause: string, diff: string, otherWords: Set<string>): boolean {

@@ -2197,6 +2197,63 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("overlapping bound schedules conflict (Qodo 283e8097)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests before 3am", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests after 1am",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("code and cod are distinct targets (Qodo 48899e67)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never store code", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always store cod",
+        category: "lesson",
+      });
+      assert.notEqual(result.status, "rejected", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("colon clock times are whole schedule tokens (Qodo dddbbb1d)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests at 2:30pm", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests at 4:30pm",
+        category: "lesson",
+      });
+      assert.notEqual(result.status, "rejected", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("post-event permissions coexist with during-event bans (Qodo 94c761d3)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "During maintenance, never run tests", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests after maintenance",
+        category: "lesson",
+      });
+      assert.notEqual(result.status, "rejected", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("many unmatched apostrophes do not overflow the mask (Qodo 2a41ba6b)", async () => {
     const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
     const many = "never use npm " + "'".repeat(5000) + " and always run tests";
