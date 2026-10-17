@@ -600,6 +600,19 @@ files organized by category (lessons, preferences, patterns, decisions, completi
 - **Pinned** — user-requested memories (via `/remember`), never auto-removed
 - **Learned** — auto-extracted by dreaming, can be reorganized/removed
 
+**Code-enforced memories and trigger warnings** — a memory with a `trigger`
+(`bash_contains`, `bash_regex`, `tool_name`, `file_modified`) and an `action`
+(`block`, `warn`, `run_after <command>`) is enforced by runtime hooks; the LLM
+cannot ignore it. When you store one, the write response may carry a warning:
+
+- `tool_name <shell-command>` (curl, npm, python, …) — names a shell command,
+  not a pi tool: commands run inside `bash`, so the trigger never fires. Use a
+  `bash_contains` pattern for the specific command instead.
+- `tool_name bash` — fires on EVERY bash call; usually over-broad. Prefer a
+  `bash_contains` pattern targeting the specific command.
+- A trigger without an action — never fires at all; add `block`, `warn`, or
+  `run_after <command>` for enforcement to load it.
+
 The `.pi/memory/` directory is auto-added to the global gitignore in the container
 (along with `.pi/`, `.worktrees/`, `.cursor/agents/`, `.claude/agents/`, and
 `.gemini/agents/`). This repo's `.gitignore` also ignores those three `*/agents/`

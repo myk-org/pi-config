@@ -182,11 +182,32 @@ const STOP_WORDS = new Set([
 ]);
 
 /** Lowercase content words with naive plural stripping, for overlap scoring. */
+/** Light stem so inflected verbs match their base form (Qodo adbd3504):
+ *  push/pushing, merge/merges/merging, commit/committed must compare
+ *  equal — exact tokens with only a trailing-s strip let reworded
+ *  opposites ("Never push to main" vs "Pushing to main is okay") slip
+ *  past the gate. Strips -ing/-ed/-es/-s with a min-stem-length guard
+ *  (sing, thing stay intact) and repairs doubled consonants left by
+ *  suffix removal (running→run, committing→commit). */
+function stem(word: string): string {
+  let w = word;
+  for (const suffix of ["ing", "ed", "es", "s"]) {
+    if (w.length > suffix.length + 2 && w.endsWith(suffix)) {
+      const stem = w.slice(0, -suffix.length);
+      if (/([a-z])\1$/.test(stem) && stem.length > 3) {
+        return stem.slice(0, -1);
+      }
+      return stem;
+    }
+  }
+  return w;
+}
+
 function contentWords(text: string): Set<string> {
   const words = text.toLowerCase().match(/[a-z][a-z0-9#-]*/g) ?? [];
   const out = new Set<string>();
   for (const w of words) {
-    const norm = w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w;
+    const norm = stem(w);
     if (norm.length >= 2 && !STOP_WORDS.has(norm)) out.add(norm);
   }
   return out;
@@ -501,13 +522,13 @@ function isVariantWord(a: string, b: string): boolean {
 }
 
 /** Ordered content-word sequence of a clause (same tokenization and
- *  normalization as contentWords, order preserved) — used for positional
+ *  stemming as contentWords, order preserved) — used for positional
  *  checks in the distinct-target exclusion. */
 function orderedContentWords(clause: string): string[] {
   const words = clause.toLowerCase().match(/[a-z][a-z0-9#-]*/g) ?? [];
   const out: string[] = [];
   for (const w of words) {
-    const norm = w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w;
+    const norm = stem(w);
     if (norm.length >= 2 && !STOP_WORDS.has(norm) && !out.includes(norm)) out.push(norm);
   }
   return out;

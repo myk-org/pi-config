@@ -1186,6 +1186,21 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("reworded verbs still match their pinned prohibition (Qodo adbd3504)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never push to main", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Pushing to main is okay",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("quoted examples in a permission are not its action (Qodo 29a4da4e)", async () => {
     const cwd = makeCwd();
     try {
