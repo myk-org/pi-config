@@ -668,6 +668,59 @@ describe("runtime recording override (#935)", () => {
     assert.equal(failed, false, "swallowed failure reports false");
   });
 
+  it("a failed header write skips the turn — the transcript stays header-first (Qodo 7dad2203)", async () => {
+    const store = new SessionStore();
+    let emit: (event: unknown) => void = () => {};
+    const id = "s-hdr-fail";
+    (store as any).putSessionFixture(
+      id,
+      {
+        subscribe: (cb: (event: unknown) => void) => {
+          emit = cb;
+          return () => {};
+        },
+        prompt: async () => {
+          emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
+          emit({
+            type: "agent_end",
+            messages: [
+              { role: "user", content: [{ type: "text", text: "hi" }] },
+              { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input: 3, output: 1 }, stopReason: "end_turn" },
+            ],
+          });
+        },
+        dispose: () => {},
+        abort: async () => {},
+      },
+      "/tmp/hdr-fail",
+      true,
+    );
+    store.setRecordingOverride(true);
+    // Break the transcripts dir: its parent is a regular file, so mkdir and
+    // every append fail. The lazy header fire AND the inline turn-slot retry
+    // both fail → the turn is skipped, no file is created.
+    const blocker = join(dir, "blocker");
+    writeFileSync(blocker, "not a dir");
+    process.env.PI_SIDECAR_TRANSCRIPTS_DIR = join(blocker, "sub");
+    await store.prompt(id, "hi");
+    await drainTranscriptWrites();
+    assert.ok(!existsSync(join(blocker, "sub", "s-hdr-fail.jsonl")), "no file when the header cannot be written");
+
+    // Repair the dir: the next recorded prompt retries the header inline and
+    // the file comes back HEADER-FIRST — never turn → header → turn.
+    rmSync(blocker);
+    process.env.PI_SIDECAR_TRANSCRIPTS_DIR = dir;
+    await store.prompt(id, "again");
+    await drainTranscriptWrites();
+    const file = join(dir, "s-hdr-fail.jsonl");
+    assert.ok(existsSync(file), "file written after repair");
+    const lines = readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(lines[0].type, "session_header", "header is the first line after recovery");
+    assert.equal(lines[lines.length - 1].type, "turn");
+    assert.equal(lines.filter((l) => l.type === "session_header").length, 1, "exactly one header");
+    await store.disposeAll();
+  });
+
   it("enabling mid-session writes the header lazily before the first recorded turn", async () => {
     // Session prompts once with recording off (zero I/O), then recording is
     // enabled at runtime: the next prompt must produce header-then-turn, in

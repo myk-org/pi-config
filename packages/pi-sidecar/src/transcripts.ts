@@ -233,52 +233,91 @@ export function transcriptUsage(usage: {
  * passes through the session redactor: caller-supplied metadata must never
  * persist a credential in cleartext.
  */
+/** Header payload for `writeSessionHeader` and inline turn-slot retries. */
+export interface SessionHeaderInput {
+  sessionId: string;
+  provider: string;
+  model: string;
+  systemPrompt?: string;
+  cwd?: string;
+  customTools?: string[];
+  /** Session open time. When omitted (direct header writes), now is used.
+   *  A lazily written header passes the session's real creation time so
+   *  `created_at` does not report the first recorded turn's time (#935,
+   *  Qodo 8597d8f7). */
+  createdAt?: string;
+  redact: (value: string) => string;
+}
+
+/**
+ * Header guard for queued turns (#935, Qodo 7dad2203): a turn whose session
+ * header is not written at slot-execution time retries the header INLINE,
+ * in the same chain slot, immediately before the turn record. If that retry
+ * fails the turn is SKIPPED — the file never reads turn → session_header →
+ * turn, so a consumer treating the first line as the header always sees a
+ * well-formed transcript (header-first, or no turns at all).
+ */
+export interface TurnHeaderGuard {
+  header: SessionHeaderInput;
+  /** Whether the header is known written. Evaluated inside the turn's chain
+   *  slot, after any earlier header write in the same chain has settled. */
+  isWritten(): boolean;
+  /** Record the outcome of an inline header attempt. */
+  markWritten(appended: boolean): void;
+}
+
+/** Raw header writer — NOT chained; call only inside a chain slot (deadlock
+ *  otherwise) or via writeSessionHeader. Fail-soft, returns append success. */
+async function writeHeaderLine(header: SessionHeaderInput): Promise<boolean> {
+  try {
+    const dir = transcriptsDir();
+    await mkdir(dir, { recursive: true });
+    const now = new Date().toISOString();
+    const line = serializeRecord({
+      type: "session_header",
+      timestamp: now,
+      created_at: header.createdAt ?? now,
+      session_id: header.sessionId,
+      provider: header.redact(header.provider),
+      model: header.redact(header.model),
+      system_prompt: header.systemPrompt ? header.redact(header.systemPrompt) : undefined,
+      cwd: header.cwd ? header.redact(header.cwd) : undefined,
+      custom_tools: (header.customTools ?? []).map((name) => header.redact(name)),
+    });
+    if (line) {
+      await appendLine(join(dir, `${header.sessionId}.jsonl`), line);
+      log.info(`session header written: session=${header.sessionId}`);
+      return true;
+    }
+    return false;
+  } catch (error) {
+    log.warn(`session header write failed (swallowed): ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+/**
+ * Queue the lazy header write with IN-SLOT bookkeeping (#935): the guard's
+ * state is updated inside the chain slot itself, so any later slot — a
+ * queued turn reading isWritten() — sees the settled outcome with no
+ * microtask lag. Retention runs only after a successful append, with the
+ * caller's pre-write active-session snapshot (Qodo 4d913b74).
+ */
+export function queueLazySessionHeader(guard: TurnHeaderGuard, activeIds: Set<string>): void {
+  void chainWrite(guard.header.sessionId, async () => {
+    const appended = await writeHeaderLine(guard.header);
+    guard.markWritten(appended);
+    if (appended) maybeEnforceRetention(activeIds);
+  });
+}
+
 export async function writeSessionHeader(
-  header: {
-    sessionId: string;
-    provider: string;
-    model: string;
-    systemPrompt?: string;
-    cwd?: string;
-    customTools?: string[];
-    /** Session open time. When omitted (direct header writes), now is used.
-     *  A lazily written header passes the session's real creation time so
-     *  `created_at` does not report the first recorded turn's time (#935,
-     *  Qodo 8597d8f7). */
-    createdAt?: string;
-    redact: (value: string) => string;
-  },
+  header: SessionHeaderInput,
 ): Promise<boolean> {
   // Returns true only when the header line was actually appended (#935
   // review): a swallowed failure resolves false so the caller does not mark
   // the session's header as written — the next recorded turn retries it.
-  return (await chainWrite(header.sessionId, async () => {
-    try {
-      const dir = transcriptsDir();
-      await mkdir(dir, { recursive: true });
-      const now = new Date().toISOString();
-      const line = serializeRecord({
-        type: "session_header",
-        timestamp: now,
-        created_at: header.createdAt ?? now,
-        session_id: header.sessionId,
-        provider: header.redact(header.provider),
-        model: header.redact(header.model),
-        system_prompt: header.systemPrompt ? header.redact(header.systemPrompt) : undefined,
-        cwd: header.cwd ? header.redact(header.cwd) : undefined,
-        custom_tools: (header.customTools ?? []).map((name) => header.redact(name)),
-      });
-      if (line) {
-        await appendLine(join(dir, `${header.sessionId}.jsonl`), line);
-        log.info(`session header written: session=${header.sessionId}`);
-        return true;
-      }
-      return false;
-    } catch (error) {
-      log.warn(`session header write failed (swallowed): ${error instanceof Error ? error.message : String(error)}`);
-      return false;
-    }
-  })) === true;
+  return (await chainWrite(header.sessionId, () => writeHeaderLine(header))) === true;
 }
 
 /**
@@ -345,9 +384,25 @@ export function queueTurn(
     finalText?: string;
     errors?: string[];
     redact: (value: string) => string;
+    /** Optional header guard (#935, Qodo 7dad2203) — see TurnHeaderGuard. */
+    ensureHeader?: TurnHeaderGuard;
   },
 ): void {
-  void chainWrite(turn.sessionId, () => appendTurn(turn));
+  void chainWrite(turn.sessionId, async () => {
+    if (turn.ensureHeader && !turn.ensureHeader.isWritten()) {
+      // The session header is not written (the create-time or lazy fire
+      // failed, or never ran). Retry it INLINE, in this turn's chain slot,
+      // so a success puts the header immediately before the turn; a failure
+      // SKIPS the turn — the file never reads turn → session_header → turn.
+      const appended = await writeHeaderLine(turn.ensureHeader.header);
+      turn.ensureHeader.markWritten(appended);
+      if (!appended) {
+        log.warn(`turn ${turn.turnNumber} skipped for session=${turn.sessionId}: session header could not be written — transcript stays header-first`);
+        return;
+      }
+    }
+    await appendTurn(turn);
+  });
 }
 
 /** Retention scan throttle: at most one scan per minute from the turn path. */

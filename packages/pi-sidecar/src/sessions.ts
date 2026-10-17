@@ -27,7 +27,7 @@ import { createLogger, logger } from "./logger.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig } from "./http-tool-executor.js";
 import { resolveExtensionPathDetailed } from "./resolve-extension-path.js";
 import { runWithSessionCwd } from "./session-cwd.js";
-import { drainTranscriptWrites, maybeEnforceRetention, queueTurn, transcriptUsage, transcriptsEnabled, writeSessionHeader } from "./transcripts.js";
+import { drainTranscriptWrites, maybeEnforceRetention, queueLazySessionHeader, queueTurn, transcriptUsage, transcriptsEnabled, writeSessionHeader, type TurnHeaderGuard } from "./transcripts.js";
 
 const fixtureLog = createLogger("session-store");
 const pricingLog = createLogger("session-store");
@@ -2064,28 +2064,37 @@ export class SessionStore {
     // disabled path stays zero-overhead (#923 review).
     const recordTurn = this.isRecordingEnabled();
     let turnNumber = 0;
+    // Shared header guard (#935): used by the lazy fire below and by both
+    // queueTurn sites, so header bookkeeping is identical everywhere. The
+    // markWritten callback also clears headerPending — safe from the turn
+    // slot's inline retry, where it is already false.
+    const headerGuard: TurnHeaderGuard = {
+      header: entry.transcriptHeader,
+      isWritten: () => entry.headerWritten,
+      markWritten: (appended) => {
+        entry.headerWritten = appended;
+        entry.headerPending = false;
+      },
+    };
     if (recordTurn) {
       entry.turnCount += 1;
       turnNumber = entry.turnCount;
       // Lazy header (#935): recording was enabled after this session was
       // created, so its header was never written — queue it now. FIRE-AND-
-      // FORGET: the session's write chain orders header-before-turn (the turn
-      // queues at agent_end, behind this write in the same chain), and NOT
-      // awaiting removes the window where abort()/delete()/disposeAll()
-      // could land between inFlight = true and session.prompt (Qodo
-      // ed714b22). headerWritten flips only on a successful append, so a
-      // swallowed failure retries on the next recorded turn (Qodo 5ab0db39).
-      // Retention gets the synchronous pre-write active-session snapshot so
+      // FORGET with in-slot bookkeeping: the chain orders header-before-turn
+      // and updates the guard state inside the slot (no microtask lag for
+      // the turn slot's inline check), and NOT awaiting removes the window
+      // where abort()/delete()/disposeAll() could land between inFlight =
+      // true and session.prompt (Qodo ed714b22). A failed write leaves
+      // headerWritten false — the turn slot retries inline and skips the
+      // turn if the retry fails, keeping the file header-first (Qodo
+      // 7dad2203); the next recorded turn retries again (Qodo 5ab0db39).
+      // Retention uses the synchronous pre-write active-session snapshot so
       // a concurrent delete cannot prune this session's fresh header
       // mid-flight (Qodo 4d913b74).
       if (!entry.headerWritten && !entry.headerPending) {
         entry.headerPending = true;
-        const activeIds = new Set(this.sessions.keys());
-        void writeSessionHeader(entry.transcriptHeader).then((appended) => {
-          entry.headerWritten = appended;
-          entry.headerPending = false;
-          if (appended) maybeEnforceRetention(activeIds);
-        });
+        queueLazySessionHeader(headerGuard, new Set(this.sessions.keys()));
       }
     }
     let turnWasRecorded = false;
@@ -2236,6 +2245,7 @@ export class SessionStore {
           finalText: responseText || undefined,
           errors: [rejectionError, ...errors].slice(0, 10),
           redact: entry.redact,
+          ensureHeader: headerGuard,
         });
         maybeEnforceRetention(new Set(this.sessions.keys()));
       }
@@ -2358,6 +2368,7 @@ export class SessionStore {
         finalText: responseText,
         errors: errors.length > 0 ? [...errors] : undefined,
         redact: entry.redact,
+        ensureHeader: headerGuard,
       });
       maybeEnforceRetention(new Set(this.sessions.keys()));
     }
