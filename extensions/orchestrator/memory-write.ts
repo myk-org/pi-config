@@ -949,9 +949,17 @@ function schedulesOverlap(aClause: string, bClause: string): boolean {
         (y.lo < x.hi || (y.lo === x.hi && y.loInc && x.hiInc)),
     ),
   );
-  if (timeOverlap) return true;
   const da = weekdaySet(aClause);
   const db = weekdaySet(bClause);
+  // Different weekdays veto a time-only overlap (Qodo cd6e169a):
+  // "Monday at 2am" and "Tuesday at 2am" share the clock time but not
+  // the day — the schedules are disjoint.
+  if (da && db) {
+    let shared = false;
+    for (const d of da) if (db.has(d)) shared = true;
+    return shared;
+  }
+  if (timeOverlap) return true;
   if (!da || !db) return false;
   for (const d of da) if (db.has(d)) return true;
   return false;
@@ -1274,7 +1282,18 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         // points inside bounds or ranges, and overlapping bounds keep the
         // clash while touching strict bounds stay disjoint.
         const inclusion = schedulesOverlap(neg, perm);
-        if (permTrail.words.size > 0 && !scheduleOverlap && !inclusion) {
+        // A shared token under DISJOINT weekdays is still disjoint (Qodo
+        // cd6e169a): "Monday at 2am" and "Tuesday at 2am" share the
+        // clock token but never the same day — the token shortcut must
+        // not keep the clash.
+        const dayDisjoint = (() => {
+          const da = weekdaySet(neg);
+          const db = weekdaySet(perm);
+          if (!da || !db) return false;
+          for (const d of da) if (db.has(d)) return false;
+          return true;
+        })();
+        if (permTrail.words.size > 0 && (dayDisjoint || (!scheduleOverlap && !inclusion))) {
           log.debug(
             "memory-write: disjoint trailing schedules coexist",
             neg.slice(0, 80),

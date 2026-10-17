@@ -2707,4 +2707,17 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("different weekdays veto a shared clock time (Qodo cd6e169a)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests on Monday at 2am", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests on Tuesday at 2am",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
