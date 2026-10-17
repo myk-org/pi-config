@@ -919,6 +919,13 @@ interface SessionEntry {
   };
   headerWritten: boolean;
   /**
+   * Synchronous in-flight marker for the lazy header write: set the moment
+   * the fire-and-forget write is queued, so a fast-failing prompt followed
+   * by another prompt cannot queue a second header while the first append
+   * is still pending (Qodo 14c6e560).
+   */
+  headerPending: boolean;
+  /**
    * Whether the session's model carries real prices. Pi requires numeric prices,
    * so a model whose source published none (key-scoped listing, CLI/ACPX
    * discovery without a catalog price) uses zeros for "unknown pricing", not
@@ -1188,6 +1195,7 @@ export class SessionStore {
         redact: (value) => value,
       },
       headerWritten: false,
+      headerPending: false,
     });
   }
 
@@ -2013,7 +2021,7 @@ export class SessionStore {
       createdAt: new Date().toISOString(),
       redact,
     };
-    const newEntry: SessionEntry = { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0, transcriptHeader, headerWritten: false };
+    const newEntry: SessionEntry = { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0, transcriptHeader, headerWritten: false, headerPending: false };
     this.sessions.set(id, newEntry);
     log.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${customTools.length})`);
     // Transcript recording (issue #922) — OFF unless RECORD_TRANSCRIPTS is
@@ -2070,10 +2078,12 @@ export class SessionStore {
       // Retention gets the synchronous pre-write active-session snapshot so
       // a concurrent delete cannot prune this session's fresh header
       // mid-flight (Qodo 4d913b74).
-      if (!entry.headerWritten) {
+      if (!entry.headerWritten && !entry.headerPending) {
+        entry.headerPending = true;
         const activeIds = new Set(this.sessions.keys());
         void writeSessionHeader(entry.transcriptHeader).then((appended) => {
           entry.headerWritten = appended;
+          entry.headerPending = false;
           if (appended) maybeEnforceRetention(activeIds);
         });
       }

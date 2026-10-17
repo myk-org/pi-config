@@ -723,6 +723,17 @@ describe("runtime recording override (#935)", () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
     const linesAfter = readFileSync(file, "utf-8").trim().split("\n");
     assert.equal(linesAfter.length, 2, "no further turns after disabling");
+
+    // Re-enabling and prompting again must not queue a second header: the
+    // synchronous headerPending flag guarantees at-most-one header regardless
+    // of fs timing (Qodo 14c6e560).
+    store.setRecordingOverride(true);
+    await store.prompt(id, "fourth");
+    await drainTranscriptWrites();
+    const linesFinal = readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(linesFinal.filter((l) => l.type === "session_header").length, 1, "exactly one session_header, no duplicates");
+    assert.equal(linesFinal.length, 3, "header + two recorded turns");
+    assert.equal(linesFinal[2].turn_number, 2);
     await store.disposeAll();
   });
 });
