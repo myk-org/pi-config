@@ -208,13 +208,18 @@ function stem(word: string): string {
   // "kubernetes" unstemmed while a literal "kubernetes" stemmed to
   // "kubernet", so the synonym never matched.
   let w = CLIPPING_EXPANSIONS[word] ?? word;
+  // Short-suffix threshold (Qodo d14f222c, f5cdc461): inflected forms of
+  // SHORT verbs — use/using/used, move/moving — must reach their base.
+  // ing/ed/es relax to suffix+1 ("using" strips), while a bare "s" keeps
+  // the stricter +2 so "news"-class words stay whole.
   for (const suffix of ["ing", "ed", "es", "s"]) {
     // -ss bases keep their final s (Qodo f6030e64): pass/process/access
     // are not plurals — stripping the s split them from their own
     // inflected forms (passing keeps "ss" because the doubled-consonant
     // repair skips s, while the base lost one).
     if (suffix === "s" && w.endsWith("ss")) break;
-    if (w.length > suffix.length + 2 && w.endsWith(suffix)) {
+    const minLen = suffix.length + (suffix === "s" ? 2 : 1);
+    if (w.length > minLen && w.endsWith(suffix)) {
       const base = w.slice(0, -suffix.length);
       // Doubled-consonant repair (Qodo 59932c0a): running→runn→run needs
       // the repair, but ll/ss/ff/zz are letters that double in BASE words
@@ -227,12 +232,20 @@ function stem(word: string): string {
   }
   // Silent-e (Qodo 833b46be): "packages" strips -es to "packag" while
   // singular "package" kept its e — the pair never matched. Drop a final
-  // e on long words so singular/plural/inflected forms converge.
-  if (w.endsWith("e") && w.length >= 5) w = w.slice(0, -1);
+  // e on words of three letters or more (Qodo d14f222c) so short verbs
+  // converge with their clipped inflections — use/using both reach "us".
+  if (w.endsWith("e") && w.length >= 3) w = w.slice(0, -1);
   // Second expansion pass (Qodo 9253c632): plurals of clippings — repos,
   // apps, docs, configs — miss the pre-strip table and only lose their s;
   // expanding the stripped base rejoins them with the singular expansion.
-  return CLIPPING_EXPANSIONS[w] ?? w;
+  w = CLIPPING_EXPANSIONS[w] ?? w;
+  // y/i convergence (Qodo f5cdc461) runs AFTER expansion so expanded
+  // forms normalize too: "entries" strips -es to "entri" while singular
+  // "entry" kept its y, and repo/repos both expand to "repository" —
+  // normalizing a final y to i joins every spelling of the same target
+  // (carry/carried, apply/applied, study/studies).
+  if (w.endsWith("y") && w.length >= 3) w = w.slice(0, -1) + "i";
+  return w;
 }
 
 /** Common clippings expanded to their full form during stemming so a
@@ -572,7 +585,7 @@ function rawActionWords(clause: string): Set<string> {
  *  no condition (Qodo 7c839ae6): "Once again, never push" is a discourse
  *  marker, not a scoped ban. */
 const LEADING_CONDITION_IDIOMS =
-  /^(?:once\s+again|after\s+all|when\s+in\s+doubt|in\s+any\s+case|if\s+anything|when\s+all\s+is\s+said)\b/i;
+  /^(?:once\s+again|after\s+all|when\s+in\s+doubt|if\s+in\s+doubt|if\s+possible|in\s+any\s+case|if\s+anything|when\s+all\s+is\s+said)\b/i;
 
 /** Polarity markers that END a leading condition (Qodo d689acbf): unlike
  *  ACTION_MARKER_WORDS_RE this excludes qualifier and discourse words
@@ -610,7 +623,14 @@ function leadingCondition(clause: string): { words: Set<string>; escape: boolean
   // as one let "Always push to main" coexist with the pinned ban.
   const m = lead.match(/\b(when|if|unless|whenever|once|after|before|during|upon|while|in\s+case)\b/i);
   if (!m) return empty;
-  return { words: contentWords(lead), escape: m[1]!.toLowerCase() === "unless" };
+  // The subordinator itself is not condition content (Qodo 6566bcde):
+  // "If on main, never force push" has condition {main}, not {if, main} —
+  // counting the connective broke the strict-majority coverage test and
+  // let "Always force push when on main" through as a fake exception.
+  const words = contentWords(lead);
+  for (const tok of m[0]!.toLowerCase().split(/\s+/)) words.delete(tok);
+  if (words.size === 0) return empty;
+  return { words, escape: m[1]!.toLowerCase() === "unless" };
 }
 
 /** Masked action words: quoted payload content does not count (Qodo
@@ -692,12 +712,13 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       // Multi-word targets are distinct too (Qodo 46dd1ccb): "production
       // builds" vs "staging environment builds" differ by MORE than one
       // word per side — the sides are different targets unless some cross
-      // pair is a variant, a universal qualifier spans them, or a diff is
-      // leading/trailing (temporals and qualifiers stay inside the clash).
+      // pair is a variant, a sole-diff universal qualifier spans them, or
+      // a diff is leading/trailing (temporals and qualifiers stay inside
+      // the clash).
       if (negOnly.length >= 1 && permOnly.length >= 1) {
         const universal =
-          negOnly.some((w) => UNIVERSAL_QUANTIFIERS.has(w)) ||
-          permOnly.some((w) => UNIVERSAL_QUANTIFIERS.has(w));
+          (negOnly.length === 1 && UNIVERSAL_QUANTIFIERS.has(negOnly[0]!)) ||
+          (permOnly.length === 1 && UNIVERSAL_QUANTIFIERS.has(permOnly[0]!));
         const crossVariant = negOnly.some((a) => permOnly.some((b) => isVariantWord(a, b)));
         if (!universal && !crossVariant) {
           const stemmerOverMerge = negOnly.some((a) => permOnly.some((b) => stem(a) === stem(b)));
@@ -738,6 +759,17 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       if (negCond.words.size > 0) {
         const permWords = contentWords(perm);
         const covered = [...negCond.words].filter((w) => permWords.has(w)).length;
+        // Contrastive complement (Qodo 6949694b): "Always deploy production
+        // outside outage" shares the outage condition word but under a
+        // contrastive marker — it describes the OPPOSITE circumstance and
+        // coexists with "When outage, never deploy production".
+        if (CONTRASTIVE_RE.test(perm) && covered > 0) {
+          log.debug(
+            "memory-write: contrastive condition complement coexists",
+            neg.slice(0, 80),
+          );
+          continue;
+        }
         const majority = covered * 2 > negCond.words.size;
         if (negCond.escape ? majority : !majority) {
           log.debug(
@@ -791,6 +823,14 @@ function isVariantWord(a: string, b: string): boolean {
   // coexist.
   if (clipCanonical(a) === clipCanonical(b)) return true;
   if (stem(a) !== stem(b)) return false;
+  // Stem-equal raw pairs that are pure inflection ALTERNATIONS count as
+  // variants even though the surface forms are not prefix/vowel affine
+  // (Qodo f5cdc461, d14f222c): entries/entry (y→ies plural) and
+  // use/using (e↔ing verb alternation). An unrelated -ss base whose stem
+  // collided — bases/bass — matches neither rule and stays distinct.
+  if (a === b.replace(/y$/, "ies") || b === a.replace(/y$/, "ies")) return true;
+  const s = stem(a);
+  if ((a === `${s}ing` && b === `${s}e`) || (b === `${s}ing` && a === `${s}e`)) return true;
   const [x, y] = a.length <= b.length ? [a, b] : [b, a];
   if (x.length >= 3 && y.startsWith(x)) return true;
   if (a.length === b.length && a.length >= 4) {
@@ -804,11 +844,20 @@ function isVariantWord(a: string, b: string): boolean {
   return false;
 }
 
-/** Universal quantifiers (Qodo 02dfd684): "all builds" INCLUDES
- *  "production builds", so a one-word diff against a universal qualifier
- *  is not a distinct target — the permission covers whatever the
- *  prohibition bans. */
+/** Universal quantifiers (Qodo 02dfd684, be992ad0): "all builds"
+ *  INCLUDES "production builds", so a one-word diff against a universal
+ *  qualifier is not a distinct target — the permission covers whatever
+ *  the prohibition bans. The qualifier only counts when it is the SOLE
+ *  diff on its side: in "all staging builds" the "all" scopes the
+ *  staging target and the pair stays a distinct-target exclusion. */
 const UNIVERSAL_QUANTIFIERS = new Set(["all", "any", "every", "each"]);
+
+/** Contrastive condition markers (Qodo 6949694b): "outside outage" is
+ *  the COMPLEMENT of "when outage" — a permission whose shared condition
+ *  words sit under a contrastive marker describes the opposite
+ *  circumstance and coexists with the condition-scoped prohibition. */
+const CONTRASTIVE_RE =
+  /\b(outside|except|excepting|besides|apart\s+from|other\s+than|regardless\s+of|irrespective\s+of|independently?\s+of|instead\s+of)\b/i;
 
 /** Ordered content-word sequence of a clause (same tokenization and
  *  stemming as contentWords, order preserved) — used for positional

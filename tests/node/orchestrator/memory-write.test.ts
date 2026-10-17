@@ -1810,6 +1810,103 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("contrastive conditions are complements, not matches (Qodo 6949694b)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When outage, never deploy production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production outside outage",
+        category: "lesson",
+      });
+      // The pair coexists — the near-duplicate path may also fold it into
+      // the existing entry as a reinforcement, which is equally correct.
+      assert.notEqual(result.status, "rejected");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a scoped universal qualifier stays a distinct target (Qodo be992ad0)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy all staging builds", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production builds",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("y/i plurals converge with their singular (Qodo f5cdc461)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never delete entries; preserve audit logs", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always delete entry; preserve audit logs",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("short silent-e verbs match their inflected forms (Qodo d14f222c)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never use npm", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Using npm is fine",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+      seedEntry(cwd, "lesson", "Never move fast", { pinned: true });
+      const second = await addMemoryEntry(cwd, {
+        text: "Moving fast is fine",
+        category: "lesson",
+      });
+      assert.equal(second.status, "rejected");
+      assert.match(second.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("subordinators are not condition content (Qodo 6566bcde)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "If on main, never force push", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always force push when on main",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("if-in-doubt bans are general bans (Qodo 04532d72)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "If in doubt, never push to main", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always push to main",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("many unmatched apostrophes do not overflow the mask (Qodo 2a41ba6b)", async () => {
     const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
     const many = "never use npm " + "'".repeat(5000) + " and always run tests";
