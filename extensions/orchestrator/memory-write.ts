@@ -389,7 +389,18 @@ const OPENING_QUOTES = new Set(["'", '"', "`", "\u201c", "\u2018"]);
  *  a non-word boundary and closes only when the next char is not a word
  *  char — apostrophes inside contractions (don't, users') and inside quoted
  *  payloads are content, never delimiters. */
+/** Memoized default-ban calls (Qodo cd842980): polarityClash runs
+ *  quotedMask on the same text through splitClauses, leadingCondition,
+ *  trailingCondition, scheduleSpans, and weekdaySet for every clause pair —
+ *  one unique string cost many full scans. Pure function of the text when
+ *  the banned set starts empty, so the default form caches. */
+const QUOTED_MASK_CACHE = new Map<string, string>();
+
 export function quotedMask(text: string, initialBanned: ReadonlySet<number> = new Set()): string {
+  if (initialBanned.size === 0) {
+    const hit = QUOTED_MASK_CACHE.get(text);
+    if (hit !== undefined) return hit;
+  }
   // Word-char classes are UNICODE (Qodo ad3da7c8): an apostrophe after an
   // accented letter (Beyoncé's) must not open a quote span — ASCII \w
   // would miss é and mask the rest of the text, hiding real prohibitions.
@@ -397,24 +408,34 @@ export function quotedMask(text: string, initialBanned: ReadonlySet<number> = ne
   const BOUNDARY_CHAR = /[\p{L}\p{N}\p{M}_'"\u2018\u2019\u201c\u201d\uD800-\uDFFF]/u;
   const src = text.split("");
   const banned = new Set(initialBanned);
+  const out = src.slice();
   // Iterative retry, not recursion (Qodo 2a41ba6b): each unclosed opener
   // needs a fresh pass, and recursion depth grows with the number of
   // unmatched apostrophes — thousands of them overflowed the stack. The
   // cap bounds the (inherently one-opener-per-pass) retry loop for
   // adversarial inputs; real memory texts never approach it.
   const MAX_RETRY_PASSES = 1024;
+  // Resume, don't restart (Qodo cd842980): banning an opener cannot change
+  // anything BEFORE it — the prefix was already scanned with quote state
+  // null at that point — so each retry continues from the banned index
+  // with its carried backslash parity instead of re-scanning the whole
+  // text. Stray openers early in a long entry no longer cost a full pass
+  // each.
+  let start = 0;
+  let carryBs = 0;
   for (let pass = 0; ; pass++) {
-    const out = src.slice();
     let quote: string | null = null;
     let openIndex = -1;
+    let bsRunAtOpen = 0;
     // Backslash parity is tracked INCREMENTALLY (Qodo 141baef0): walking
     // backward over the preceding backslashes at every character made an
     // uninterrupted run of backslashes quadratic. The run length carries
     // forward — a non-backslash resets it, and the parity in front of a
     // character is the run ending right before it.
-    let bsRun = 0;
-    for (let i = 0; i < src.length; i++) {
+    let bsRun = carryBs;
+    for (let i = start; i < src.length; i++) {
       const ch = src[i]!;
+      const bsBefore = bsRun;
       // Backslash-escaped quote chars are CONTENT (Qodo bfca536f): in
       // `say \"ok; sure\"` the escaped quotes never open or close a span.
       // Parity matters (Qodo 9468b527): a quote after TWO backslashes is
@@ -430,7 +451,14 @@ export function quotedMask(text: string, initialBanned: ReadonlySet<number> = ne
         if (!banned.has(i) && OPENING_QUOTES.has(ch) && !BOUNDARY_CHAR.test(i > 0 ? src[i - 1]! : "")) {
           quote = ch;
           openIndex = i;
+          bsRunAtOpen = bsBefore;
           out[i] = "\x00";
+        } else {
+          // Outside any span (and with resume-scanning, possibly inside a
+          // span a banned opener used to cover) — the character is RAW
+          // content; stale masks from earlier passes must not survive
+          // (Qodo cd842980 resume semantics).
+          out[i] = src[i]!;
         }
       } else if (ch === (QUOTE_PARTNER[quote] ?? quote)) {
         if (!WORD_CHAR.test(src[i + 1] ?? "")) quote = null;
@@ -452,11 +480,22 @@ export function quotedMask(text: string, initialBanned: ReadonlySet<number> = ne
     if (quote !== null && !banned.has(openIndex)) {
       if (pass < MAX_RETRY_PASSES) {
         banned.add(openIndex);
+        out[openIndex] = src[openIndex]!;
+        start = openIndex;
+        carryBs = bsRunAtOpen;
         continue;
       }
       for (let i = openIndex; i < out.length; i++) out[i] = src[i]!;
     }
-    return out.join("");
+    const result = out.join("");
+    if (initialBanned.size === 0) {
+      if (QUOTED_MASK_CACHE.size >= 256) {
+        const oldest = QUOTED_MASK_CACHE.keys().next().value;
+        if (oldest !== undefined) QUOTED_MASK_CACHE.delete(oldest);
+      }
+      QUOTED_MASK_CACHE.set(text, result);
+    }
+    return result;
   }
 }
 

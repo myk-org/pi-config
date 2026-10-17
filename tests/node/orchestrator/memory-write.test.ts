@@ -3062,4 +3062,24 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("many stray quotes mask once, not per-opener (Qodo cd842980)", async () => {
+    const cwd = makeCwd();
+    try {
+      // 30 stray opening quotes ahead of a real prohibition: each one
+      // needs a retry, and the resume must re-expose the later clauses
+      // that earlier spans masked, keep the real quoted tool name intact,
+      // and leave the polarity markers visible.
+      const stray = Array.from({ length: 30 }, (_, i) => `drop'${i}`).join(" ");
+      const text = `${stray}; never use 'npm'`;
+      seedEntry(cwd, "lesson", text, { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always use 'npm'",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
