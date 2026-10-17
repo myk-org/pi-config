@@ -18,6 +18,7 @@ import {
   escapeForDoubleQuote,
   escapeForSingleQuote,
   commandHasTrailerByName,
+  failedFileEditSkipMessage,
   fixUnexpandedCommitTrailer,
   resolveEffectiveCwd,
   checkPythonPipBlock,
@@ -169,6 +170,13 @@ describe("subagent tool_result error propagation into file_modified matching", (
   it("a subagent's successful edit still fires it", async () => {
     const texts = await runToolResult(subagentEvent(false));
     assert.match(texts, /ENFORCEMENT WARNING/i);
+  });
+
+  it("the failed-edit skip diagnostic names the tool and path (Qodo 3a4b6c2d)", () => {
+    const msg = failedFileEditSkipMessage("edit", "docs/foo.md");
+    assert.match(msg, /failed edit/);
+    assert.match(msg, /docs\/foo\.md/);
+    assert.match(msg, /skipping file_modified triggers, nothing was modified/);
   });
 });
 

@@ -1384,6 +1384,36 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("'you cannot' and word-stem collisions are not grants (Qodo 3a4b6c2d)", async () => {
+    const { isGrantText } = await import("../../../extensions/orchestrator/memory-scoring.js");
+    assert.equal(isGrantText("You cannot push to main"), false, "'you cannot' is a prohibition");
+    assert.equal(isGrantText("you can't push"), false);
+    assert.equal(isGrantText("you may not push"), false);
+    assert.equal(isGrantText("you mayor of the city decides"), false, "word-stem collision");
+    assert.equal(isGrantText("you candidly admit it"), false);
+    assert.equal(isGrantText("you can merge this PR"), true, "plain grant still detected");
+    assert.equal(isGrantText("you may push now"), true);
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "You cannot push to main",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("many unmatched apostrophes do not overflow the mask (Qodo 2a41ba6b)", async () => {
+    const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
+    const many = "never use npm " + "'".repeat(5000) + " and always run tests";
+    const masked = quotedMask(many);
+    assert.equal(masked.length, many.length, "same-length mask preserved");
+    assert.match(masked, /never use npm/);
+    assert.match(masked, /always run tests/);
+  });
+
   it("mixed-case pi tool names keep their case (Qodo 17b68cf5)", async () => {
     const cwd = makeCwd();
     try {

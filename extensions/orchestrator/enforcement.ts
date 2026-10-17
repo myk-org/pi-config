@@ -61,6 +61,7 @@ import {
   isTestRunnerCommand,
   isBumpVersionBranch,
   getCachedBranch,
+  failedFileEditSkipMessage,
 } from "./enforcement-helpers.js";
 
 const log = createLogger("enforcement");
@@ -745,7 +746,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // decision so silent trigger skips are diagnosable (Qodo 2addbfc4).
     const isToolCallError = (event as any).isError === true;
     if (isToolCallError && (toolName === "edit" || toolName === "write") && input?.path) {
-      log.debug(`enforcement: failed ${toolName} (path=${input.path}) — skipping file_modified triggers, nothing was modified`);
+      log.debug(failedFileEditSkipMessage(toolName, input.path));
     }
     let matches = matchToolCall(entries, toolName, input, isToolCallError);
 

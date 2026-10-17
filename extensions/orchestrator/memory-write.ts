@@ -296,52 +296,61 @@ const OPENING_QUOTES = new Set(["'", '"', "`", "\u201c", "\u2018"]);
  *  a non-word boundary and closes only when the next char is not a word
  *  char — apostrophes inside contractions (don't, users') and inside quoted
  *  payloads are content, never delimiters. */
-function quotedMask(text: string, banned: ReadonlySet<number> = new Set()): string {
+export function quotedMask(text: string, initialBanned: ReadonlySet<number> = new Set()): string {
   // Word-char classes are UNICODE (Qodo ad3da7c8): an apostrophe after an
   // accented letter (Beyoncé's) must not open a quote span — ASCII \w
   // would miss é and mask the rest of the text, hiding real prohibitions.
   const WORD_CHAR = /[\p{L}\p{N}_]/u;
   const BOUNDARY_CHAR = /[\p{L}\p{N}_'"\u2018\u2019\u201c\u201d]/u;
   const src = text.split("");
-  const out = src.slice();
-  let quote: string | null = null;
-  let openIndex = -1;
-  for (let i = 0; i < src.length; i++) {
-    const ch = src[i]!;
-    // Backslash-escaped quote chars are CONTENT (Qodo bfca536f): in
-    // `say \"ok; sure\"` the escaped quotes never open or close a span —
-    // treating the second \" as a closing delimiter exposed the rest of
-    // the payload to splitting and polarity detection.
-    const escaped = i > 0 && src[i - 1] === "\\";
-    if (escaped && (OPENING_QUOTES.has(ch) || QUOTE_PARTNER[ch] !== undefined)) {
-      out[i] = "\x00";
-      continue;
-    }
-    if (quote === null) {
-      if (!banned.has(i) && OPENING_QUOTES.has(ch) && !BOUNDARY_CHAR.test(i > 0 ? src[i - 1]! : "")) {
-        quote = ch;
-        openIndex = i;
+  const banned = new Set(initialBanned);
+  // Iterative retry, not recursion (Qodo 2a41ba6b): each unclosed opener
+  // needs a fresh pass, and recursion depth grows with the number of
+  // unmatched apostrophes — thousands of them overflowed the stack. The
+  // cap bounds the (inherently one-opener-per-pass) retry loop for
+  // adversarial inputs; real memory texts never approach it.
+  const MAX_RETRY_PASSES = 1024;
+  for (let pass = 0; ; pass++) {
+    const out = src.slice();
+    let quote: string | null = null;
+    let openIndex = -1;
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i]!;
+      // Backslash-escaped quote chars are CONTENT (Qodo bfca536f): in
+      // `say \"ok; sure\"` the escaped quotes never open or close a span —
+      // treating the second \" as a closing delimiter exposed the rest of
+      // the payload to splitting and polarity detection.
+      const escaped = i > 0 && src[i - 1] === "\\";
+      if (escaped && (OPENING_QUOTES.has(ch) || QUOTE_PARTNER[ch] !== undefined)) {
+        out[i] = "\x00";
+        continue;
+      }
+      if (quote === null) {
+        if (!banned.has(i) && OPENING_QUOTES.has(ch) && !BOUNDARY_CHAR.test(i > 0 ? src[i - 1]! : "")) {
+          quote = ch;
+          openIndex = i;
+          out[i] = "\x00";
+        }
+      } else if (ch === (QUOTE_PARTNER[quote] ?? quote)) {
+        if (!WORD_CHAR.test(src[i + 1] ?? "")) quote = null;
+        out[i] = "\x00";
+      } else {
         out[i] = "\x00";
       }
-    } else if (ch === (QUOTE_PARTNER[quote] ?? quote)) {
-      if (!WORD_CHAR.test(src[i + 1] ?? "")) quote = null;
-      out[i] = "\x00";
-    } else {
-      out[i] = "\x00";
     }
-  }
-  if (quote !== null && !banned.has(openIndex)) {
     // Unclosed quote (Qodo c23b9d86): an elision like 'til or a stray
     // apostrophe opened a span that never closed and would mask the rest
-    // of the text — hiding later separators and polarity markers. Redo the
-    // pass treating that opener as plain content. Banned openers ACCUMULATE
-    // across retries (Qodo b0c6383f): banning only the latest one let two
-    // stray apostrophes alternate forever and overflow the stack.
-    const nextBanned = new Set(banned);
-    nextBanned.add(openIndex);
-    return quotedMask(text, nextBanned);
+    // of the text — hiding later separators and polarity markers. Redo
+    // the pass treating that opener as plain content. Banned openers
+    // ACCUMULATE across retries (Qodo b0c6383f): banning only the latest
+    // one let two stray apostrophes alternate forever. The pass cap keeps
+    // adversarial inputs from spinning the loop (Qodo 2a41ba6b).
+    if (quote !== null && !banned.has(openIndex) && pass < MAX_RETRY_PASSES) {
+      banned.add(openIndex);
+      continue;
+    }
+    return out.join("");
   }
-  return out.join("");
 }
 
 /** Split into clauses: polarity markers only govern their own clause.
