@@ -2906,4 +2906,62 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("backtick examples are payload, not targets (Qodo 3769c79a)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never document `npm install` failures", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always document `uv sync` failures",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("unready restates not-ready for coverage (Qodo ab6f841d)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When service is not ready, never deploy", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy when service is unready",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("verb synonyms clash over identical quoted commands (Qodo e8564269)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run 'npm install'", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always execute 'npm install'",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("same weekday in different day parts coexist (Qodo 34d97b78)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests on Monday morning", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests on Monday evening",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

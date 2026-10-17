@@ -883,6 +883,16 @@ function parseTimeToken(tok: string): number | null {
 
 const CLOCK_TIME = "(?:\\d{1,2}(?::\\d{2})?(?:am|pm)?|midnight|noon)";
 
+/** Day-part words as clock spans in minutes past midnight (Qodo
+ *  34d97b78): "Monday morning" and "Monday evening" are the same day
+ *  but disjoint parts of it. Night wraps past midnight. */
+const DAY_PART_SPANS: Record<string, Array<[number, number]>> = {
+  morning: [[5 * 60, 12 * 60]],
+  afternoon: [[12 * 60, 17 * 60]],
+  evening: [[17 * 60, 21 * 60]],
+  night: [[21 * 60, 24 * 60], [0, 5 * 60]],
+};
+
 /** A half-open schedule span in minutes past midnight with inclusive
  *  endpoints where the wording says so (Qodo c5f680b8, 205f7330,
  *  1f6411f9, 1e325d6d, aa028afb): points ("at 2am"), bounds ("before/by/
@@ -938,6 +948,14 @@ function scheduleSpans(clause: string): ScheduleSpan[] {
     } else {
       spans.push({ lo: t1, hi: 24 * 60, loInc: true, hiInc: true });
       spans.push({ lo: 0, hi: t2, loInc: true, hiInc: true });
+    }
+  }
+  // Day parts (Qodo 34d97b78): morning/afternoon/evening/night are
+  // clock spans so same-day different-part schedules intersect the
+  // time axis instead of falling through to a weekday-only overlap.
+  for (const dp of masked.matchAll(/\b(morning|afternoon|evening|night)\b/gi)) {
+    for (const [lo, hi] of DAY_PART_SPANS[dp[1]!.toLowerCase()] ?? []) {
+      spans.push({ lo, hi, loInc: true, hiInc: true });
     }
   }
   return spans;
@@ -1072,7 +1090,25 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       const permMasked = maskedActionWords(stripTimes(perm));
       const shared = sharedCount(negMasked, permMasked);
       const shorter = Math.min(negMasked.size, permMasked.size);
-      if (!(shared >= 2 || (shared >= 1 && shared === shorter))) continue;
+      // Action-verb synonyms count as the shared action (Qodo e8564269):
+      // "Never run 'npm install'" vs "Always execute 'npm install'" —
+      // the quoted command is masked on both sides, so run/execute is
+      // the entire action pair and a strict overlap count of zero
+      // discarded the candidate before the clause gate ever saw it. The
+      // synonym pair must be the ONLY unshared action word on each side
+      // — a mere co-occurrence ("publish" beside "/release" as a command
+      // noun) must not widen the gate for unrelated objects.
+      const negRem = [...negMasked].filter((w) => !permMasked.has(w));
+      const permRem = [...permMasked].filter((w) => !negMasked.has(w));
+      const verbSynShared =
+        negRem.length === 1 &&
+        permRem.length === 1 &&
+        ACTION_VERB_SYNONYMS.some(
+          ([x, y]) =>
+            (negRem[0] === x && permRem[0] === y) ||
+            (negRem[0] === y && permRem[0] === x),
+        );
+      if (!(shared >= 2 || (shared >= 1 && shared === shorter) || verbSynShared)) continue;
       // Distinct-target exclusion on RAW words (Qodo 4fe7b1c3, 6d0214c7):
       // quoted tool names ARE the targets — "never use 'npm'" vs "always
       // use 'uv'" differ by exactly one mid-clause word per side and are
@@ -1162,11 +1198,15 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         // Equivalent condition terms count as coverage (Qodo b192653b):
         // "offline" restates "unavailable" — synonym condition words must
         // not drop the permission below the majority threshold and turn
-        // a same-circumstance clash into a fake exception.
+        // a same-circumstance clash into a fake exception. An un-prefixed
+        // form of a NEGATED condition word restates that word's state
+        // (Qodo ab6f841d): "unready" covers "not ready".
         const coveredWords = [...negCond.words].filter(
           (w) =>
             permWords.has(w) ||
-            [...permWords].some((p) => areConditionSynonyms(w, p)),
+            [...permWords].some((p) => areConditionSynonyms(w, p)) ||
+            (negCond.negatedWords.includes(w) &&
+              [...permWords].some((p) => p === `un${w}`)),
         );
         const covered = coveredWords.length;
         // Different temporal relations to the same event (Qodo 94c761d3):
@@ -1352,9 +1392,7 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         // "Monday at 2am"/"Tuesday at 2am" share the clock token but
         // not the day. Non-time qualifiers ("after review") keep the
         // token check.
-        const bothTimeTokened =
-          TIMEWORD_RE.test([...negTrail.words].join(" ")) &&
-          TIMEWORD_RE.test([...permTrail.words].join(" "));
+        const bothTimeTokened = TIMEWORD_RE.test(neg) && TIMEWORD_RE.test(perm);
         // The model must have PARSED something to override the token
         // check (Qodo 4241248f): "during business hours" is time-like but
         // produces no span — falling back to the shared-token verdict
@@ -1598,9 +1636,20 @@ function permRelationTo(perm: string, coveredWords: string[]): string | null {
  *  span embedded after a non-verb ("inspect logs containing 'use npm'")
  *  is example content of the rule about logs, and differences inside it
  *  are not distinct targets. */
+/** Action-verb synonym pairs, as STEMS (Qodo e8564269): run/execute,
+ *  publish/release, deploy/ship, start/launch name the same action. */
+const ACTION_VERB_SYNONYMS: Array<[string, string]> = [
+  ["run", "execut"],
+  ["publish", "releas"],
+  ["deploy", "ship"],
+  ["start", "launch"],
+];
+
 function quotedPayloadWords(clause: string): Set<string> {
   const set = new Set<string>();
-  for (const m of clause.matchAll(/([a-zA-Z]+)\s+(['\"‘“][^'\"‘“]{1,80}['\"’”])/g)) {
+  // Backticks delimit too (Qodo 3769c79a): `npm install` is the same
+  // kind of embedded example as 'npm install'.
+  for (const m of clause.matchAll(/([a-zA-Z]+)\s+(['"`‘“][^'"`‘“]{1,80}['"`’”])/g)) {
     const prevStem = stem(m[1]!.toLowerCase());
     if (ACTION_VERB_STEMS.has(prevStem)) continue;
     for (const w of m[2]!.toLowerCase().match(/[a-z]+/g) ?? []) set.add(w);
