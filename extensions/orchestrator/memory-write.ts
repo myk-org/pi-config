@@ -226,17 +226,30 @@ function polarityClash(a: string, b: string): boolean {
  *  a non-word boundary and closes only when the next char is not a word
  *  char — apostrophes inside contractions (don't, users') and inside quoted
  *  payloads are content, never delimiters. */
+/** Curly-quote partners (Qodo 9c430f3d): “ ” and ‘ ’ pair with each other;
+ *  straight quotes and backticks pair with themselves. */
+const QUOTE_PARTNER: Record<string, string> = {
+  "\u201c": "\u201d",
+  "\u201d": "\u201c",
+  "\u2018": "\u2019",
+  "\u2019": "\u2018",
+};
+const OPENING_QUOTES = new Set(["'", '"', "`", "\u201c", "\u2018"]);
+
 function quotedMask(text: string): string {
   const chars = text.split("");
   let quote: string | null = null;
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i]!;
     if (quote === null) {
-      if ((ch === "'" || ch === '"' || ch === '`') && !/[\w'"\u2019]/.test(i > 0 ? chars[i - 1]! : "")) {
+      if (
+        OPENING_QUOTES.has(ch) &&
+        !/[\w'"\u2018\u2019\u201c\u201d]/.test(i > 0 ? chars[i - 1]! : "")
+      ) {
         quote = ch;
         chars[i] = "\x00";
       }
-    } else if (ch === quote) {
+    } else if (ch === (QUOTE_PARTNER[quote] ?? quote)) {
       if (!/\w/.test(chars[i + 1] ?? "")) quote = null;
       chars[i] = "\x00";
     } else {

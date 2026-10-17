@@ -968,4 +968,32 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("curly-quoted payloads are masked too (Qodo 9c430f3d)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "pattern", "say “OK” to inspect health checks; never emit prose", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Never log health checks",
+        category: "pattern",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("curly-quoted contractions inside payloads stay content (Qodo 9c430f3d)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "pattern", "Execute ‘don’t use npm’ for fixture setup", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always use npm for installs",
+        category: "pattern",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
