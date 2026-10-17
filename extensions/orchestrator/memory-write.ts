@@ -202,20 +202,30 @@ function contentWords(text: string): Set<string> {
  *  #936 incident: a pinned how-to containing 'say OK' was treated as a
  *  permit and blocked an unrelated scheduling rule containing "never". */
 function polarityClash(a: string, b: string): boolean {
-  const aText = stripQuotedSpans(a);
-  const bText = stripQuotedSpans(b);
-  // Both directions: either text may carry the prohibition.
+  // Clause lists keep the RAW text — a quoted tool name ('uv') IS an action
+  // object for the overlap check (Qodo 0f0ad673) — while polarity MARKERS
+  // are detected per clause on the quote-stripped clause, so literal
+  // payloads ('say OK') never read as markers (#936).
+  const aNeg = negationClauses(a);
+  const aPerm = permissionClauses(a);
+  const bNeg = negationClauses(b);
+  const bPerm = permissionClauses(b);
   return (
-    polarizedClausesClash(negationClauses(aText), permissionClauses(bText)) ||
-    polarizedClausesClash(negationClauses(bText), permissionClauses(aText))
+    polarizedClausesClash(aNeg, aPerm, bNeg, bPerm) ||
+    polarizedClausesClash(bNeg, bPerm, aNeg, aPerm)
   );
 }
 
-/** Remove single-quoted, double-quoted, and backtick spans — literal
- *  payloads ("say OK", 'sk-…') are never polarity markers or content words
- *  for the conflict gate (#936). */
+/** Remove quoted spans for POLARITY-MARKER detection only. Contraction-safe
+ *  (Qodo 67def191): an apostrophe attached to a word character ("don't",
+ *  "users'") is not a quote delimiter — the span must start and end at
+ *  non-word boundaries, or the text between two contractions would be
+ *  swallowed ("Don't run npm; don't run pip" lost both prohibitions). */
 function stripQuotedSpans(text: string): string {
-  return text.replace(/'[^']*'|"[^"]*"|`[^`]*`/g, " ");
+  return text
+    .replace(/(^|[^\w'"\u2019])'[^'\n]*'(?![\w'\u2019])/g, "$1 ")
+    .replace(/(^|[^\w'"\u2019])"[^"\n]*"(?![\w"\u2019])/g, "$1 ")
+    .replace(/(^|[^\w`])`[^`\n]*`(?![\w`])/g, "$1 ");
 }
 
 /** Split into clauses: polarity markers only govern their own clause. */
@@ -227,20 +237,43 @@ function splitClauses(text: string): string[] {
 }
 
 function negationClauses(text: string): string[] {
-  return splitClauses(text).filter((c) => NEGATION_RE.test(c));
+  return splitClauses(text).filter((c) => NEGATION_RE.test(stripQuotedSpans(c)));
 }
 
 function permissionClauses(text: string): string[] {
-  return splitClauses(text).filter((c) => PERMIT_RE.test(c) || ONLY_PERMIT_RE.test(c));
+  return splitClauses(text).filter(
+    (c) => PERMIT_RE.test(stripQuotedSpans(c)) || ONLY_PERMIT_RE.test(stripQuotedSpans(c)),
+  );
 }
 
-/** A prohibition and a permission clash only when their CLAUSES share the
- *  action (≥ 2 content words) — global polarity with different objects is a
- *  complementary rule, not a contradiction (#936). */
-function polarizedClausesClash(negation: string[], permission: string[]): boolean {
-  for (const neg of negation) {
-    for (const perm of permission) {
-      if (sharedContentWords(neg, perm) >= 2) return true;
+/** Restatement-grade clause agreement (Qodo f464da16): the agreeing clause
+ *  must share ≥ 2 content words AND cover ≥ 80% of the shorter clause's
+ *  content words. "never publish PyPI packages" vs "never publish npm
+ *  packages" share only the generic action (publish, package) — 2 of 3 — so
+ *  swapped compound rules still conflict; an exact or lightly reworded
+ *  restatement agrees and dedup reinforces it. */
+function clausesAgree(x: string, y: string): boolean {
+  const shared = sharedContentWords(x, y);
+  if (shared < 2) return false;
+  const shorter = Math.min(contentWords(x).size, contentWords(y).size);
+  return shared >= Math.ceil(shorter * 0.8);
+}
+
+/** A prohibition from A and a permission from B clash only when their
+ *  CLAUSES share the action (≥ 2 content words) — global polarity with
+ *  different objects is a complementary rule, not a contradiction (#936).
+ *  Clause alignment (Qodo f464da16): when B ALSO forbids what A forbids and
+ *  A ALSO permits what B permits (restatement-grade, see clausesAgree), the
+ *  two entries restate the same compound rule — the gate must not reject it;
+ *  dedup reinforces it instead. */
+function polarizedClausesClash(negA: string[], permA: string[], negB: string[], permB: string[]): boolean {
+  for (const neg of negA) {
+    for (const perm of permB) {
+      if (sharedContentWords(neg, perm) < 2) continue;
+      const negAgrees = negB.some((n) => clausesAgree(neg, n));
+      const permAgrees = permA.some((p) => clausesAgree(perm, p));
+      if (negAgrees && permAgrees) continue;
+      return true;
     }
   }
   return false;
@@ -523,6 +556,12 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
     const err = validateAction(input.action);
     if (err) return { status: "rejected", message: err };
   }
+  // Over-broad / ineffective tool_name trigger warning (#936, Qodo
+  // 4a6dd686) — computed ONCE here so EVERY success path (added and both
+  // reinforced returns) surfaces it; a dedup-reinforced write that merges
+  // a dead trigger must warn exactly like a fresh add.
+  const triggerWarning = toolNameTriggerWarning(input.trigger, input.action);
+  if (triggerWarning) log.warn(`memory-write: ${triggerWarning}`);
   if (input.scope && !VALID_SCOPES.includes(input.scope as MemoryScope)) {
     return {
       status: "rejected",
@@ -650,7 +689,7 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
           status: "reinforced",
           message:
             `Near-duplicate found (similarity: ${vm.similarity.toFixed(3)}) — reinforced instead: ` +
-            `[${vm.category}] ${vm.text}${enforcementNote}`,
+            `[${vm.category}] ${vm.text}${enforcementNote}${triggerWarning ? ` — ${triggerWarning}` : ""}`,
         };
       }
       // reinforce() failed (score entry missing) — try next candidate
@@ -668,7 +707,7 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
     const enforcementNote = merged ? " (enforcement fields merged)" : "";
     return {
       status: "reinforced",
-      message: `Already exists — reinforced instead: [${category}] ${text}${enforcementNote}`,
+      message: `Already exists — reinforced instead: [${category}] ${text}${enforcementNote}${triggerWarning ? ` — ${triggerWarning}` : ""}`,
     };
   }
 
@@ -747,10 +786,6 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   log.info("memory_add_entry", category, text.slice(0, 60), input.scope ?? "project");
   const pin = isPinned ? " (pinned)" : "";
   const scope = input.scope && input.scope !== "project" ? ` (scope: ${input.scope})` : "";
-  // Over-broad / ineffective tool_name trigger warning (#936) — advisory,
-  // appended so the writer sees the trigger may not fire as intended.
-  const triggerWarning = toolNameTriggerWarning(input.trigger, input.action);
-  if (triggerWarning) log.warn(`memory-write: ${triggerWarning}`);
   return {
     status: "added",
     message: `Added: [${category}] ${text}${pin}${scope}${triggerWarning ? ` — ${triggerWarning}` : ""}`,

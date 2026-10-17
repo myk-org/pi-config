@@ -765,4 +765,81 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("quoted tool names still count as action objects — 'uv' conflicts detected (Qodo 0f0ad673)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never use 'uv' to install dependencies", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always use 'uv' to install dependencies",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("contractions are not quote delimiters — Don't/don't prohibitions survive (Qodo 67def191)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "Don't run npm; don't run pip", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run npm; always run pip",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("restating a compound rule reinforces instead of rejecting (Qodo f464da16)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "Never publish npm packages; always publish PyPI packages", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Never publish npm packages; always publish PyPI packages",
+        category: "preference",
+      });
+      assert.equal(result.status, "reinforced", `restatement must reinforce: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("swapped compound rules still conflict — alignment guard is not a bypass", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "Never publish npm packages; always publish PyPI packages", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Never publish PyPI packages; always publish npm packages",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reinforced entries surface the trigger warning too (Qodo 4a6dd686)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Live-verify endpoints into the dev container only");
+      const result = await addMemoryEntry(cwd, {
+        text: "Live-verify endpoints into the dev container only",
+        category: "lesson",
+        trigger: "tool_name curl",
+        action: "block",
+      });
+      assert.equal(result.status, "reinforced");
+      assert.match(result.message, /names a shell command/i);
+      assert.match(result.message, /bash_contains/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
