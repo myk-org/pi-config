@@ -1025,8 +1025,11 @@ function schedulesOverlap(aClause: string, bClause: string): boolean {
   // A clock-time schedule with no weekday applies EVERY day, so it
   // intersects a weekday-scoped rule (Qodo 980508da): "Never deploy at
   // 2am" clashes with "Always deploy on Monday" — Monday has a 2am.
-  if (a.length > 0 && db) return true;
-  if (b.length > 0 && da) return true;
+  // But when the weekday-scoped side ALSO names a clock time, the hours
+  // decide (Qodo 9c2983f6): "at 2am" and "at 3am on Monday" never share
+  // a moment.
+  if (a.length > 0 && db && b.length === 0) return true;
+  if (b.length > 0 && da && a.length === 0) return true;
   return false;
 }
 

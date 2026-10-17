@@ -2978,4 +2978,17 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("a weekday-scoped time rule needs intersecting hours (Qodo 9c2983f6)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests at 2am", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests at 3am on Monday",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
