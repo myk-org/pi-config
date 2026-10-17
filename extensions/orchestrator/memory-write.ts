@@ -246,6 +246,12 @@ function stem(word: string): string {
           }
         }
       }
+      // -yses plurals (Qodo 6642e8e5): "analyses" strips -es to "analys"
+      // while singular "analysis" strips its final s to "analysi" — the
+      // Greek -ysis family needs the plural's y restored to yi so both
+      // reach "analysi". Regular -ses plurals (houses, passes) do not
+      // end their base in ys and are untouched.
+      if (suffix === "es" && /ys$/.test(w) && w.length >= 4) w = w + "i";
       break;
     }
   }
@@ -647,8 +653,8 @@ const CONDITION_BOUNDARY_RE =
  *  `escape` marks UNLESS-led clauses (Qodo 7c839ae6): "Unless the user
  *  says otherwise, never push" is a GENERAL ban whose condition is the
  *  escape hatch, not the scope — it inverts which permissions coexist. */
-function leadingCondition(clause: string): { words: Set<string>; escape: boolean } {
-  const empty = { words: new Set<string>(), escape: false, relation: null as string | null };
+function leadingCondition(clause: string): { words: Set<string>; escape: boolean; relation: string | null; quotedValues: string[] } {
+  const empty = { words: new Set<string>(), escape: false, relation: null as string | null, quotedValues: [] as string[] };
   // Scan the MASKED clause (Qodo d87c13dd): a quoted subordinator —
   // 'Publish "when battery" logs, never publish packages' — must not
   // turn an unscoped prohibition into a condition-scoped exception; the
@@ -691,20 +697,31 @@ function leadingCondition(clause: string): { words: Set<string>; escape: boolean
   const words = contentWords(lead);
   for (const tok of m[0]!.toLowerCase().split(/\s+/)) words.delete(stem(tok));
   if (words.size === 0) return empty;
+  // Quoted PREDICATE values (Qodo e3262584): "When status is 'blocked'" —
+  // the lead's masked condition hides the value, but the value is the
+  // discriminator between conditions; extract it from the RAW lead when
+  // it directly follows is/are/= (action-quoted spans like "when battery"
+  // logs are not condition values).
+  const rawLead = clause.slice(0, Math.max(0, Math.min(clause.length, lead.length)));
+  const quotedValues = [...rawLead.matchAll(/(?:\bis\b|\bare\b|=)\s*(['"][^'"]{1,60}['"])/gi)].map(
+    (q) => q[1]!.toLowerCase(),
+  );
   return {
     words,
     escape: m[1]!.toLowerCase() === "unless",
     relation: m[1]!.toLowerCase().replace(/\s+/g, " "),
+    quotedValues,
   };
 }
 
-/** Time-like qualifier words (Qodo 4ff8e53d): a trailing schedule must
- *  reference a TIME — clock times, weekdays, or calendar words — for the
- *  disjoint-schedule coexistence. "on production" is a place and "after
- *  review" an event; only a time-scoped ban may coexist with a permission
- *  scoped elsewhere. */
+/** Time-like qualifier words (Qodo 4ff8e53d, cb0e57e0): a trailing
+ *  schedule must reference a TIME — clock times (colon forms without
+ *  am/pm included, so 24-hour values qualify), weekdays, or calendar
+ *  words — for the disjoint-schedule coexistence. "on production" is a
+ *  place and "after review" an event; only a time-scoped ban may
+ *  coexist with a permission scoped elsewhere. */
 const TIMEWORD_RE =
-  /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekends?|weekdays?|midnight|noon|night|morning|evening|afternoon|hours?|daily|weekly|monthly)\b|\d{1,2}(?::\d{2})?(?:am|pm)\b/i;
+  /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekends?|weekdays?|midnight|noon|night|morning|evening|afternoon|hours?|daily|weekly|monthly)\b|\d{1,2}:\d{2}(?:am|pm)?\b|\d{1,2}(?:am|pm)\b/i;
 
 /** Trailing schedule qualifier (Qodo 16473e6e): content words after the
  *  LAST polarity marker introduced by a temporal preposition — "never run
@@ -743,7 +760,13 @@ function trailingCondition(clause: string): { words: Set<string>; timeLike: bool
 }
 
 /** Parse a clock time ("2am", "3pm", "14:00") to minutes past midnight. */
+/** Parse a clock time to minutes past midnight. Accepts numeric forms
+ *  ("2am", "3pm", "14:00", "2:30pm") and the named times midnight and
+ *  noon (Qodo aa028afb). */
 function parseTimeToken(tok: string): number | null {
+  const lower = tok.toLowerCase();
+  if (lower === "midnight") return 0;
+  if (lower === "noon") return 12 * 60;
   const m = /^(\d{1,2})(?::(\d{2}))?(am|pm)?$/i.exec(tok);
   if (!m) return null;
   let h = parseInt(m[1]!, 10);
@@ -755,34 +778,65 @@ function parseTimeToken(tok: string): number | null {
   return h * 60 + min;
 }
 
-/** True when a POINT schedule ("at 2am") falls inside a BOUND schedule
- *  ("before 3am", "after 1am") of the OTHER clause — the schedules
- *  overlap even though their time tokens differ (Qodo c5f680b8):
- *  "never run tests at 2am" must reject "always run tests before 3am".
- *  EVERY point alternative is checked (Qodo 205f7330): "at 4am or at 2am"
- *  must catch a bound covering the second time. Deadlines are inclusive
- *  where the word says so (Qodo c3f36450): by/until include the moment,
- *  since includes its start; before/after stay strict. */
-function pointWithinBound(pointClause: string, boundClause: string): boolean {
-  const bound =
-    /\b(before|by|until|after|since|past)\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)\b/i.exec(
-      quotedMask(boundClause),
-    );
-  if (!bound) return false;
-  const b = parseTimeToken(bound[2]!);
-  if (b === null) return false;
-  const rel = bound[1]!.toLowerCase();
-  const points = [
-    ...quotedMask(pointClause).matchAll(/\bat\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)\b/gi),
-  ];
-  for (const point of points) {
-    const p = parseTimeToken(point[1]!);
-    if (p === null) continue;
-    const within =
-      rel === "before" ? p < b : rel === "after" || rel === "past" ? p > b : rel === "since" ? p >= b : p <= b;
-    if (within) return true;
+const CLOCK_TIME = "(?:\\d{1,2}(?::\\d{2})?(?:am|pm)?|midnight|noon)";
+
+/** A half-open schedule span in minutes past midnight with inclusive
+ *  endpoints where the wording says so (Qodo c5f680b8, 205f7330,
+ *  1f6411f9, 1e325d6d, aa028afb): points ("at 2am"), bounds ("before/by/
+ *  until/after/since/past T"), and ranges ("between T1 and T2"). */
+interface ScheduleSpan {
+  lo: number;
+  hi: number;
+  loInc: boolean;
+  hiInc: boolean;
+}
+
+function scheduleSpans(clause: string): ScheduleSpan[] {
+  const masked = quotedMask(clause);
+  const spans: ScheduleSpan[] = [];
+  // Points — every alternative ("at 4am or at 2am").
+  for (const m of masked.matchAll(new RegExp(`\\bat\\s+(${CLOCK_TIME})\\b`, "gi"))) {
+    const t = parseTimeToken(m[1]!);
+    if (t !== null) spans.push({ lo: t, hi: t, loInc: true, hiInc: true });
   }
-  return false;
+  // Bounds — before/by/until open the day, after/since/past close it;
+  // by/until and since include their moment, before/after stay strict.
+  const b = new RegExp(`\\b(before|by|until|after|since|past)\\s+(${CLOCK_TIME})\\b`, "i").exec(masked);
+  if (b) {
+    const t = parseTimeToken(b[2]!);
+    if (t !== null) {
+      const rel = b[1]!.toLowerCase();
+      if (/^(?:before|by|until)$/.test(rel)) {
+        spans.push({ lo: 0, hi: t, loInc: true, hiInc: rel !== "before" });
+      } else {
+        spans.push({ lo: t, hi: 24 * 60, loInc: rel === "since", hiInc: true });
+      }
+    }
+  }
+  // Ranges — "between 1am and 3am", both endpoints inclusive.
+  const r = new RegExp(`\\bbetween\\s+(${CLOCK_TIME})\\s+and\\s+(${CLOCK_TIME})\\b`, "i").exec(masked);
+  if (r) {
+    const t1 = parseTimeToken(r[1]!);
+    const t2 = parseTimeToken(r[2]!);
+    if (t1 !== null && t2 !== null && t1 <= t2) spans.push({ lo: t1, hi: t2, loInc: true, hiInc: true });
+  }
+  return spans;
+}
+
+/** True when ANY span of one clause intersects ANY span of the other —
+ *  equivalent points ("2am" vs "2:00am"), points inside bounds or
+ *  ranges, overlapping bounds, and range intersections all count;
+ *  touching strict bounds ("before 3am" vs "after 3am") do not. */
+function schedulesOverlap(aClause: string, bClause: string): boolean {
+  const a = scheduleSpans(aClause);
+  const b = scheduleSpans(bClause);
+  return a.some((x) =>
+    b.some(
+      (y) =>
+        (x.lo < y.hi || (x.lo === y.hi && x.loInc && y.hiInc)) &&
+        (y.lo < x.hi || (y.lo === x.hi && y.loInc && x.hiInc)),
+    ),
+  );
 }
 
 /** Masked action words: quoted payload content does not count (Qodo
@@ -941,6 +995,45 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
             continue;
           }
         }
+        // Different quoted predicate values (Qodo e3262584): "When status
+        // is 'blocked', never deploy" and "always deploy when status is
+        // 'ready'" carry different condition values — the states are the
+        // discriminator, so the scopes differ and the pair coexists.
+        if (negCond.quotedValues.length > 0) {
+          const permQuoted = [...perm.matchAll(/(?:\bis\b|\bare\b|=)\s*(['"][^'"]{1,60}['"])/gi)].map(
+            (q) => q[1]!.toLowerCase(),
+          );
+          const sharedValue = negCond.quotedValues.some((v) => permQuoted.includes(v));
+          if (!sharedValue) {
+            log.debug(
+              "memory-write: different quoted condition values coexist",
+              neg.slice(0, 80),
+              "vs",
+              perm.slice(0, 80),
+              "values",
+              negCond.quotedValues.join("/"),
+              "vs",
+              permQuoted.join("/"),
+            );
+            continue;
+          }
+        }
+        // Opposite predicates in the condition (Qodo efd0c061): "When
+        // failed builds run" vs "when successful builds run" — an
+        // uncovered condition word whose ANTONYM appears in the permission
+        // marks different circumstances, even at majority coverage.
+        const uncovered = [...negCond.words].filter((w) => !permWords.has(w));
+        if (!negCond.escape && uncovered.some((u) => [...permWords].some((p) => areAntonyms(u, p)))) {
+          log.debug(
+            "memory-write: antonym condition predicates coexist",
+            neg.slice(0, 80),
+            "vs",
+            perm.slice(0, 80),
+            "antonyms",
+            uncovered.join("/"),
+          );
+          continue;
+        }
         // Contrastive complement (Qodo 6949694b, ae4d616b): "Always deploy
         // production outside outage" shares the outage condition word but
         // under a contrastive marker — it describes the OPPOSITE
@@ -1005,15 +1098,13 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       if (negTrail.words.size > 0 && negTrail.timeLike) {
         const permTrail = trailingCondition(perm);
         const scheduleOverlap = [...negTrail.words].some((w) => permTrail.words.has(w));
-        // Temporal inclusion (Qodo c5f680b8, 283e8097): different time
-        // tokens do not mean disjoint schedules — a point "at 2am" lies
-        // inside "before 3am", and two bounds overlap when their
-        // intervals intersect ("before 3am" vs "after 1am" share
-        // [1am,3am)), so the schedules overlap and the clash stands.
-        const inclusion =
-          pointWithinBound(neg, perm) ||
-          pointWithinBound(perm, neg) ||
-          boundsOverlap(neg, perm);
+        // Temporal inclusion (Qodo c5f680b8, 283e8097, 1f6411f9,
+        // 1e325d6d, aa028afb): different time tokens do not mean disjoint
+        // schedules — a unified span model (points, bounds, ranges, named
+        // times) intersects every combination, so equivalent points,
+        // points inside bounds or ranges, and overlapping bounds keep the
+        // clash while touching strict bounds stay disjoint.
+        const inclusion = schedulesOverlap(neg, perm);
         if (permTrail.words.size > 0 && !scheduleOverlap && !inclusion) {
           log.debug(
             "memory-write: disjoint trailing schedules coexist",
@@ -1078,6 +1169,11 @@ function isVariantWord(a: string, b: string): boolean {
   // use/using (e↔ing verb alternation). An unrelated -ss base whose stem
   // collided — bases/bass — matches neither rule and stays distinct.
   if (a === b.replace(/y$/, "ies") || b === a.replace(/y$/, "ies")) return true;
+  // Greek -is/-es plurals (Qodo 6642e8e5): analysis/analyses — stem-equal
+  // via the -yses repair, but neither a prefix pair nor a vowel-final
+  // swap, so without this alternation the distinct-target exclusion let
+  // opposing rules for the same target coexist.
+  if (a === b.replace(/is$/, "es") || b === a.replace(/is$/, "es")) return true;
   // y→ied verb inflection (Qodo ba51cf4e): apply/applied, study/studied —
   // stem-equal pairs whose surface forms differ only in the inflection.
   if (a === b.replace(/y$/, "ied") || b === a.replace(/y$/, "ied")) return true;
@@ -1184,28 +1280,29 @@ const TEMPORAL_GROUP: Record<string, string> = {
   before: "pre", until: "pre", by: "pre",
 };
 
-/** A clause's bound schedule ("before 3am", "after 1am") as an interval
- *  [lo, hi] in minutes past midnight, when present. */
-function boundInterval(clause: string): { lo: number; hi: number } | null {
-  const bound =
-    /\b(before|by|until|after|since|past)\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)\b/i.exec(
-      quotedMask(clause),
-    );
-  if (!bound) return null;
-  const t = parseTimeToken(bound[2]!);
-  if (t === null) return null;
-  return /^(?:before|by|until)$/i.test(bound[1]!) ? { lo: 0, hi: t } : { lo: t, hi: 24 * 60 };
-}
+/** Antonym predicate pairs, stemmed (Qodo efd0c061): condition words on
+ *  opposite sides of a pair mark different circumstances. */
+const ANTONYM_PAIRS: Array<[string, string]> = [
+  ["fail", "successful"],
+  ["fail", "success"],
+  ["fail", "pass"],
+  ["fail", "healthy"],
+  ["broken", "working"],
+  ["broken", "healthy"],
+  ["stale", "fresh"],
+  ["dirty", "clean"],
+  ["blocked", "ready"],
+  ["dev", "production"],
+  ["staging", "production"],
+  ["local", "production"],
+  ["old", "new"],
+  ["slow", "fast"],
+];
 
-/** True when two BOUND schedules overlap (Qodo 283e8097): "never before
- *  3am" bans [0,3am) and "always after 1am" permits (1am,24h) — the
- *  interval [1am,3am) is governed by both, so the clash stands. Touching
- *  intervals ("before 3am" vs "after 3am") do not overlap. */
-function boundsOverlap(aClause: string, bClause: string): boolean {
-  const a = boundInterval(aClause);
-  const b = boundInterval(bClause);
-  if (!a || !b) return false;
-  return a.lo < b.hi && b.lo < a.hi;
+function areAntonyms(a: string, b: string): boolean {
+  return ANTONYM_PAIRS.some(
+    ([x, y]) => (a === x && b === y) || (a === y && b === x),
+  );
 }
 
 /** The permission's temporal relation toward a covered condition word —

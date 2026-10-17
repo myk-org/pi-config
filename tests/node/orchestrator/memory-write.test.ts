@@ -1758,7 +1758,22 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("curly-apostrophe contractions are negations (Qodo 375ff320)", async () => {
+  it("'no longer' is a withdrawal, not a grant (Qodo 77fc2333)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "You can no longer force-push to main", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always force-push to main",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("curly-apostrophe ’t contraction is a negation (Qodo 375ff320)", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "You can’t deploy production", { pinned: true });
@@ -1768,13 +1783,21 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       });
       assert.equal(result.status, "rejected");
       assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("curly-apostrophe Don’t is a negation (Qodo 375ff320)", async () => {
+    const cwd = makeCwd();
+    try {
       seedEntry(cwd, "lesson", "Don’t push to main", { pinned: true });
-      const second = await addMemoryEntry(cwd, {
+      const result = await addMemoryEntry(cwd, {
         text: "Always push to main",
         category: "lesson",
       });
-      assert.equal(second.status, "rejected");
-      assert.match(second.message, /contradicts pinned memory/i);
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
@@ -2339,6 +2362,107 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       assert.equal(result.status, "reinforced");
       assert.doesNotMatch(result.message, /has no action — it will never fire/i);
       assert.match(result.message, /EVERY bash call/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+  it("between ranges conflict with points inside them (Qodo 1e325d6d)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests between 1am and 3am", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests at 2am",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("equivalent clock times conflict across notations (Qodo 1f6411f9)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy at 2am", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy at 2:00am",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("named times conflict with bounds covering them (Qodo aa028afb)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests at midnight", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests before noon",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("24-hour clock times are separate schedules (Qodo cb0e57e0)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests at 14:00", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests at 15:00",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("analyses and analysis are the same target (Qodo 6642e8e5)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never delete analyses", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always delete analysis",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("different quoted condition values coexist (Qodo e3262584)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When status is 'blocked', never deploy", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy when status is 'ready'",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("antonym condition predicates coexist (Qodo efd0c061)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When failed builds run in production, never deploy", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy when successful builds run in production",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

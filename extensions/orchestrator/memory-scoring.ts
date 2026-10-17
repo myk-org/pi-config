@@ -660,9 +660,11 @@ const PREFERENCE_PATTERNS: RegExp[] = [
 /** One-off permission grant phrasing — session instruction, not a durable
  *  preference. Negation-blind "you may" would reject prohibitions like
  *  "You may not merge PRs without review" (live battery, #936), so a
- *  grant followed by not/never/'t does not count. */
+ *  grant followed by not/never/'t — or a withdrawal like "no longer" —
+ *  does not count (Qodo 77fc2333: "You can no longer force-push" is a
+ *  standing rule, not a grant). */
 const GRANT_PHRASE_RE: RegExp[] = [
-  /\byou (?:can|may)\b(?!\s+(?:not(?!\s+only\b)|never)\b)(?!['’]t\b)/i,
+  /\byou (?:can|may)\b(?!\s+(?:not(?!\s+only\b)|never|no\s+longer)\b)(?!['’]t\b)/i,
   /\bgo ahead\b/i,
   /\bfeel free\b/i,
   /\bjust this once\b/i,
