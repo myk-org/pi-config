@@ -762,6 +762,17 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       const bashCommands: string[] = [];
       for (const r of results) {
         const msgs = Array.isArray(r?.messages) ? r.messages : [];
+        // Error state per tool call (#940, Qodo 1f528064): a subagent's
+        // FAILED edit/write modified nothing, so its file_modified triggers
+        // must be skipped exactly like a failed top-level call. The result
+        // messages carry role "toolResult" entries with toolCallId/isError.
+        const erroredCalls = new Set<string>();
+        for (const msg of msgs) {
+          if (msg?.role !== "toolResult") continue;
+          if ((msg as any).isError === true && typeof (msg as any).toolCallId === "string") {
+            erroredCalls.add((msg as any).toolCallId);
+          }
+        }
         for (const msg of msgs) {
           if (msg?.role !== "assistant") continue;
           const parts = Array.isArray(msg?.content) ? msg.content : [];
@@ -770,6 +781,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             // Check both field naming conventions (name/arguments and toolName/args)
             const partToolName = part?.name || part?.toolName;
             const partToolArgs = part?.arguments || part?.args;
+            const partCallId = part?.id ?? part?.toolCallId;
+            const partIsError = partCallId !== undefined && erroredCalls.has(partCallId);
             if (partToolName === "bash" && partToolArgs?.command) {
               bashCommands.push(partToolArgs.command);
             }
@@ -779,6 +792,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
                 nonBlockEntries,
                 partToolName,
                 partToolArgs || {},
+                partIsError,
               );
               for (const m of toolMatches) {
                 if (!seen.has(m.rule.hash)) {

@@ -236,29 +236,40 @@ const QUOTE_PARTNER: Record<string, string> = {
 };
 const OPENING_QUOTES = new Set(["'", '"', "`", "\u201c", "\u2018"]);
 
-function quotedMask(text: string): string {
+function quotedMask(text: string, banIndex = -1): string {
   // Word-char classes are UNICODE (Qodo ad3da7c8): an apostrophe after an
   // accented letter (Beyoncé's) must not open a quote span — ASCII \w
   // would miss é and mask the rest of the text, hiding real prohibitions.
   const WORD_CHAR = /[\p{L}\p{N}_]/u;
   const BOUNDARY_CHAR = /[\p{L}\p{N}_'"\u2018\u2019\u201c\u201d]/u;
-  const chars = text.split("");
+  const src = text.split("");
+  const out = src.slice();
   let quote: string | null = null;
-  for (let i = 0; i < chars.length; i++) {
-    const ch = chars[i]!;
+  let openIndex = -1;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i]!;
     if (quote === null) {
-      if (OPENING_QUOTES.has(ch) && !BOUNDARY_CHAR.test(i > 0 ? chars[i - 1]! : "")) {
+      if (i !== banIndex && OPENING_QUOTES.has(ch) && !BOUNDARY_CHAR.test(i > 0 ? src[i - 1]! : "")) {
         quote = ch;
-        chars[i] = "\x00";
+        openIndex = i;
+        out[i] = "\x00";
       }
     } else if (ch === (QUOTE_PARTNER[quote] ?? quote)) {
-      if (!WORD_CHAR.test(chars[i + 1] ?? "")) quote = null;
-      chars[i] = "\x00";
+      if (!WORD_CHAR.test(src[i + 1] ?? "")) quote = null;
+      out[i] = "\x00";
     } else {
-      chars[i] = "\x00";
+      out[i] = "\x00";
     }
   }
-  return chars.join("");
+  if (quote !== null && banIndex !== openIndex) {
+    // Unclosed quote (Qodo c23b9d86): an elision like 'til or a stray
+    // apostrophe opened a span that never closed and would mask the rest
+    // of the text — hiding later separators and polarity markers. Redo the
+    // pass treating that opener as plain content; each pass bans one more
+    // opener, so this terminates.
+    return quotedMask(text, openIndex);
+  }
+  return out.join("");
 }
 
 /** Split into clauses: polarity markers only govern their own clause.
@@ -270,7 +281,30 @@ function quotedMask(text: string): string {
  *  ("Never publish: npm packages"), and label prefixes merging into the
  *  following clause is harmless — labels carry no polarity markers. */
 function splitClauses(text: string): string[] {
-  const mask = quotedMask(text);
+  let mask = quotedMask(text);
+  // Paired dashes are parenthetical (Qodo 9e179121): "NEVER — under any
+  // circumstances — push to main" — a dash-bounded segment WITHOUT a
+  // polarity marker is a modifier of the surrounding action, not its own
+  // clause. Neutralize those dash PAIRS in the mask (same length) so they
+  // stop splitting; a dash pair whose content carries a polarity marker
+  // stays a separator, and so does every unpaired dash.
+  const dashIdx: number[] = [];
+  for (let i = 0; i < mask.length; i++) {
+    if (mask[i] === "\u2014" || mask[i] === "\u2013") dashIdx.push(i);
+  }
+  if (dashIdx.length >= 2) {
+    const chars = mask.split("");
+    for (let p = 0; p + 1 < dashIdx.length; p += 2) {
+      const a = dashIdx[p]!;
+      const b = dashIdx[p + 1]!;
+      const between = mask.slice(a + 1, b);
+      if (!NEGATION_RE.test(between) && !PERMIT_RE.test(between) && !ONLY_PERMIT_RE.test(between)) {
+        chars[a] = "\x00";
+        chars[b] = "\x00";
+      }
+    }
+    mask = chars.join("");
+  }
   const bounds: number[] = [0];
   const re = /[\n;\u2014\u2013]|\bbut\b|\bhowever\b/g;
   let m: RegExpExecArray | null;
@@ -338,21 +372,22 @@ function sharedCount(ax: Set<string>, ay: Set<string>): number {
   return shared;
 }
 
-function sharedActionWords(x: string, y: string): number {
-  return sharedCount(actionWords(x), actionWords(y));
-}
-
 /** Restatement-grade clause alignment. Measured against the LONGER clause
  *  too (Qodo 8ec45667): a broad permission ("always publish") must not
  *  align with a narrower one ("always publish npm packages") — alignment is
  *  reserved for near-identical restatements so genuine conflicts cannot
- *  hide behind a short, generic clause. */
+ *  hide behind a short, generic clause. RAW action words on BOTH sides
+ *  (Qodo 92151894): a quoted tool name is exactly what distinguishes a
+ *  restatement from a swapped compound ("never use 'uv'" vs "never use
+ *  'npm'"), so masking either side of the agreement check lets a tool swap
+ *  pass as a restatement. Masking remains on the negation side of the CLASH
+ *  CANDIDATE only (incidental quoted examples, Qodo c92087ed). */
 function clausesAgree(x: string, y: string): boolean {
-  const mx = maskedActionWords(x);
-  const my = maskedActionWords(y);
-  const shared = sharedCount(mx, my);
+  const ax = actionWords(x);
+  const ay = actionWords(y);
+  const shared = sharedCount(ax, ay);
   if (shared < 2) return false;
-  const longer = Math.max(mx.size, my.size);
+  const longer = Math.max(ax.size, ay.size);
   return shared >= Math.ceil(longer * 0.8);
 }
 
@@ -376,6 +411,23 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       const shared = sharedCount(negWords, permWords);
       const shorter = Math.min(negWords.size, permWords.size);
       if (!(shared >= 2 || (shared >= 1 && shared === shorter))) continue;
+      // Distinct-target exclusion (Qodo 6d0214c7): exactly one unshared
+      // word on EACH side ("deploy production builds" vs "deploy staging
+      // builds") means different specific targets with an otherwise
+      // identical action — complementary, not conflicting. A compound
+      // context proving a swap (one side's diff empty, Qodo 8ec45667)
+      // still clashes, because this exclusion needs BOTH diffs non-empty.
+      const negOnly = [...negWords].filter((w) => !permWords.has(w));
+      const permOnly = [...permWords].filter((w) => !negWords.has(w));
+      if (
+        negOnly.length === 1 &&
+        permOnly.length === 1 &&
+        !isVariantWord(negOnly[0]!, permOnly[0]!) &&
+        diffWordIsMidClause(neg, negOnly[0]!, permWords) &&
+        diffWordIsMidClause(perm, permOnly[0]!, negWords)
+      ) {
+        continue;
+      }
       const negAgrees = negB.some((n) => clausesAgree(neg, n));
       const permAgrees = permA.some((p) => clausesAgree(perm, p));
       if (negAgrees && permAgrees) continue;
@@ -383,6 +435,42 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
     }
   }
   return false;
+}
+
+/** Morphological variant (run/running, publish/publishes): the shorter
+ *  word is a ≥3-char prefix of the longer. The distinct-target exclusion
+ *  must not fire for inflection differences — "running tests" and "run
+ *  tests" are the same action, not different targets. */
+function isVariantWord(a: string, b: string): boolean {
+  const [x, y] = a.length <= b.length ? [a, b] : [b, a];
+  return x.length >= 3 && y.startsWith(x);
+}
+
+/** Ordered content-word sequence of a clause (same tokenization and
+ *  normalization as contentWords, order preserved) — used for positional
+ *  checks in the distinct-target exclusion. */
+function orderedContentWords(clause: string): string[] {
+  const words = clause.toLowerCase().match(/[a-z][a-z0-9#-]*/g) ?? [];
+  const out: string[] = [];
+  for (const w of words) {
+    const norm = w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w;
+    if (norm.length >= 2 && !STOP_WORDS.has(norm) && !out.includes(norm)) out.push(norm);
+  }
+  return out;
+}
+
+/** The diff word sits BETWEEN shared words ("deploy PRODUCTION builds"):
+ *  shared content exists both before and after it in the clause's word
+ *  order. A trailing qualifier ("…, spaces only") or a leading temporal
+ *  ("from now on …") is NOT a target — those are incidental modifiers, so
+ *  the exclusion must not fire for them. */
+function diffWordIsMidClause(clause: string, diff: string, otherWords: Set<string>): boolean {
+  const seq = orderedContentWords(clause);
+  const idx = seq.indexOf(diff);
+  if (idx <= 0 || idx >= seq.length - 1) return false;
+  const before = seq.slice(0, idx).some((w) => otherWords.has(w));
+  const after = seq.slice(idx + 1).some((w) => otherWords.has(w));
+  return before && after;
 }
 
 function sharedContentWords(a: string, b: string): number {

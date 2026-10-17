@@ -1039,4 +1039,63 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("quoted tool names distinguish restatements from swaps (Qodo 92151894)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never use 'uv' to install dependencies; always use 'npm' to install dependencies", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Never use 'npm' to install dependencies; always use 'uv' to install dependencies",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("different deployment targets are complementary (Qodo 6d0214c7)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy production builds", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy staging builds",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("dash parentheticals do not detach the polarity marker (Qodo 9e179121)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "NEVER — under any circumstances — push to main", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always push to main",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("an unclosed quote does not mask the rest of the rule (Qodo c23b9d86)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Wait 'til tests pass; never skip tests", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always skip tests",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
