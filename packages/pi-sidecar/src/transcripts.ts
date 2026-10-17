@@ -158,7 +158,13 @@ function chainWrite<T>(sessionId: string, write: () => Promise<T>): Promise<T | 
   // header, #935) propagates to callers that retry on failure.
   const chained = (transcriptChains.get(sessionId) ?? Promise.resolve())
     .then(write)
-    .then((v) => v, () => undefined);
+    .then((v) => v, (error) => {
+      // Belt and braces: writers log their own failures inside their
+      // try/catch, but a rejection that escapes a writer must not vanish
+      // silently — leave a diagnostic trail (Qodo 7bd85e6d).
+      log.warn(`transcript write rejected (swallowed): session=${sessionId}, error=${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    });
   const settled = chained.then(() => {
     if (transcriptChains.get(sessionId) === settled) transcriptChains.delete(sessionId);
   }, () => {
