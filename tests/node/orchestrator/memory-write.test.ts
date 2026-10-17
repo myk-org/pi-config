@@ -2574,4 +2574,94 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("equivalent named and numeric times clash (Qodo 287f476f)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy at noon", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy at 12pm",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("every between-range alternative is a span (Qodo 79650f41)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests between 2am and 3am or between 4am and 5am", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests at 4:30am",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("un-prefixed restatements of a negated scope clash (Qodo ab913968)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When service is unhealthy and not ready, never deploy production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production when service is unhealthy and unready",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a mid-sentence when does not scope the prohibition (Qodo d07c69fc)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Deploy to production when approved, never deploy to staging", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy to staging",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("may after and opens a permission clause (Qodo 8663ebc8)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never use npm and may use pip", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always use pip",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("except-when exceptions are complements (Qodo 8c274a02)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When outage, never deploy production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production except when outage",
+        category: "lesson",
+      });
+      assert.ok(
+        ["added", "reinforced"].includes(result.status),
+        `expected stored or reinforced, got ${result.status}`,
+      );
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

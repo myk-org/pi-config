@@ -553,7 +553,10 @@ function splitClauses(text: string): string[] {
       // ban into a phantom permission clause. Unambiguous markers
       // ("... and always run tests") still split.
       const firstWord = tail.trim().split(/\s+/)[0]!.toLowerCase();
-      const verbAmbiguous = /^(?:permits?|permitted|allows?|allowed|allowing|may)$/.test(firstWord);
+      // "may" is NOT in the list (Qodo 8663ebc8): a modal cannot be the
+      // coordinated object verb of a negation — "Never use npm and may
+      // use pip" — so "may" after and/or is always a permission marker.
+      const verbAmbiguous = /^(?:permits?|permitted|allows?|allowed|allowing)$/.test(firstWord);
       if (verbAmbiguous && NEGATION_RE.test(mask.slice(0, m.index))) {
         continue;
       }
@@ -680,13 +683,21 @@ const CONDITION_BOUNDARY_RE =
  *  escape hatch, not the scope — it inverts which permissions coexist. */
 function leadingCondition(
   clause: string,
-): { words: Set<string>; escape: boolean; relation: string | null; quotedValues: string[]; negated: boolean } {
+): {
+  words: Set<string>;
+  escape: boolean;
+  relation: string | null;
+  quotedValues: string[];
+  negated: boolean;
+  negatedWords: string[];
+} {
   const empty = {
     words: new Set<string>(),
     escape: false,
     relation: null as string | null,
     quotedValues: [] as string[],
     negated: false,
+    negatedWords: [] as string[],
   };
   // Scan the MASKED clause (Qodo d87c13dd): a quoted subordinator —
   // 'Publish "when battery" logs, never publish packages' — must not
@@ -723,6 +734,18 @@ function leadingCondition(
   // as one let "Always push to main" coexist with the pinned ban.
   const m = lead.match(/\b(when|if|unless|whenever|once|after|before|during|upon|while|in\s+case)\b/i);
   if (!m) return empty;
+  // The subordinator must INTRODUCE the prohibition's own clause (Qodo
+  // d07c69fc): "Deploy to production when approved, never deploy to
+  // staging" — the when scopes the FIRST command's approval, not the
+  // ban; treating it as the ban's condition diluted coverage and let
+  // "Always deploy to staging" pass as an exception. A leading temporal
+  // adverbial ("From now on, when tests fail, …") is still the
+  // prohibition's clause, so it is stripped before the check.
+  const beforeSub = lead
+    .slice(0, m.index!)
+    .replace(/\b(?:from\s+now\s+on|going\s+forward|at\s+all\s+times|today|tomorrow)\b/gi, "")
+    .trim();
+  if (contentWords(beforeSub).size > 0) return empty;
   // The subordinator itself is not condition content (Qodo 6566bcde):
   // "If on main, never force push" has condition {main}, not {if, main} —
   // counting the connective broke the strict-majority coverage test and
@@ -747,9 +770,18 @@ function leadingCondition(
     // Negated antecedent (Qodo 1a5d321e): "When service is not ready" —
     // contentWords drops "not", so the condition reads as its POSITIVE
     // form; the flag keeps the polarity visible to the gate. "not only X
-    // but also Y" is an additive scope, not a negation.
+    // but also Y" is an additive scope, not a negation. negatedWords are
+    // the condition words INSIDE the negation's scope (Qodo ab913968):
+    // "unhealthy and not ready" negates only "ready" — an un-prefixed
+    // form of those words in a permission ("unready") is the SAME state.
     negated:
       /\b(?:not|never|n['’]t)\b/i.test(rawLead) && !/\bnot only\b/i.test(rawLead),
+    negatedWords: (() => {
+      const nm = /\b(?:not|never|n['’]t)\b/i.exec(rawLead);
+      if (!nm || /\bnot only\b/i.test(rawLead)) return [] as string[];
+      const after = contentWords(rawLead.slice(nm.index! + nm[0].length));
+      return [...words].filter((w) => after.has(w));
+    })(),
   };
 }
 
@@ -860,9 +892,13 @@ function scheduleSpans(clause: string): ScheduleSpan[] {
       spans.push({ lo: t, hi: 24 * 60, loInc: rel === "since", hiInc: true });
     }
   }
-  // Ranges — "between 1am and 3am", both endpoints inclusive.
-  const r = new RegExp(`\\bbetween\\s+(${CLOCK_TIME})\\s+and\\s+(${CLOCK_TIME})\\b`, "i").exec(masked);
-  if (r) {
+  // Ranges — "between 1am and 3am", both endpoints inclusive. EVERY
+  // alternative is a span (Qodo 79650f41): "between 2am and 3am or
+  // between 4am and 5am" bans two windows, and a single exec() saw
+  // only the first.
+  for (const r of masked.matchAll(
+    new RegExp(`\\bbetween\\s+(${CLOCK_TIME})\\s+and\\s+(${CLOCK_TIME})\\b`, "gi"),
+  )) {
     const t1 = parseTimeToken(r[1]!);
     const t2 = parseTimeToken(r[2]!);
     if (t1 !== null && t2 !== null && t1 <= t2) spans.push({ lo: t1, hi: t2, loInc: true, hiInc: true });
@@ -940,8 +976,16 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       // permission ("document the phrase \"deploy to production\"") must
       // not supply overlap, and an example inside a prohibition must not
       // either.
-      const negMasked = maskedActionWords(neg);
-      const permMasked = maskedActionWords(perm);
+      // Time tokens are stripped from the MASKED action words (Qodo
+      // 287f476f): "at 12pm" letter-tokenizes to the stop word "pm", so
+      // equivalent-clock-time pairs ("at noon" vs "at 12pm") shared only
+      // the verb and fell below the candidate threshold before the
+      // schedule comparison ever ran. The schedules themselves are
+      // compared by span overlap, not by these sets.
+      const stripTimes = (s: string): string =>
+        s.replace(/\d{1,2}:\d{2}(?:am|pm)?|\d{1,2}(?:am|pm)|\b(?:noon|midnight)\b/gi, " ");
+      const negMasked = maskedActionWords(stripTimes(neg));
+      const permMasked = maskedActionWords(stripTimes(perm));
       const shared = sharedCount(negMasked, permMasked);
       const shorter = Math.min(negMasked.size, permMasked.size);
       if (!(shared >= 2 || (shared >= 1 && shared === shorter))) continue;
@@ -1076,8 +1120,16 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         // only an UNLESS-permission ("always deploy unless ready" ≡
         // deploy when not ready) keeps the same polarity.
         const uncovered = [...negCond.words].filter((w) => !permWords.has(w));
+        // An un-prefixed form of a negated condition word is the SAME
+        // state (Qodo ab913968): "unhealthy and not ready" vs
+        // "unhealthy and unready" — the permission restates the negated
+        // scope, so the pair is a real clash, not opposite states.
+        const unNegated = [...permWords].some((p) =>
+          negCond.negatedWords.some((nw) => p === `un${nw}`),
+        );
         const oppositeStates =
           !negCond.escape &&
+          !unNegated &&
           (negCond.negated !== /\bunless\b/i.test(perm) ||
             uncovered.some((u) => [...permWords].some((p) => areAntonyms(u, p))));
         if (oppositeStates) {
@@ -1110,6 +1162,11 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
           if (cm) {
             const excText = permMaskedText
               .slice(cm.index + cm[0].length)
+              // A subordinator-led exception phrase (Qodo 8c274a02):
+              // "except when outage" — strip the leading when/if so the
+              // exception words are the outage itself, not an empty
+              // remainder after splitting at the subordinator.
+              .replace(/^\s*(?:when|if)\b/i, "")
               .split(/[,;]|\b(?:when|if|but|and|or)\b/)[0]!;
             const excWords = contentWords(excText);
             const condEquals =
