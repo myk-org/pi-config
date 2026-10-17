@@ -715,6 +715,37 @@ function trailingCondition(clause: string): Set<string> {
   return new Set<string>(tokens.map((w) => stem(w)));
 }
 
+/** Parse a clock time ("2am", "3pm", "14:00") to minutes past midnight. */
+function parseTimeToken(tok: string): number | null {
+  const m = /^(\d{1,2})(?::(\d{2}))?(am|pm)?$/i.exec(tok);
+  if (!m) return null;
+  let h = parseInt(m[1]!, 10);
+  const min = m[2] ? parseInt(m[2]!, 10) : 0;
+  const ap = m[3]?.toLowerCase();
+  if (h > 23 || min > 59) return null;
+  if (ap === "am" && h === 12) h = 0;
+  if (ap === "pm" && h !== 12) h += 12;
+  return h * 60 + min;
+}
+
+/** True when a POINT schedule ("at 2am") falls inside a BOUND schedule
+ *  ("before 3am", "after 1am") of the OTHER clause — the schedules
+ *  overlap even though their time tokens differ (Qodo c5f680b8):
+ *  "never run tests at 2am" must reject "always run tests before 3am". */
+function pointWithinBound(pointClause: string, boundClause: string): boolean {
+  const point = /\bat\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)\b/i.exec(quotedMask(pointClause));
+  if (!point) return false;
+  const bound =
+    /\b(before|by|until|after|since|past)\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)\b/i.exec(
+      quotedMask(boundClause),
+    );
+  if (!bound) return false;
+  const p = parseTimeToken(point[1]!);
+  const b = parseTimeToken(bound[2]!);
+  if (p === null || b === null) return false;
+  return /^(?:before|by|until)$/i.test(bound[1]!) ? p < b : p > b;
+}
+
 /** Masked action words: quoted payload content does not count (Qodo
  *  c92087ed). Used for the NEGATION side of a clash candidate and for
  *  agreement — an example quoted inside a prohibition ("Never inspect logs
@@ -911,7 +942,11 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       if (negTrail.size > 0) {
         const permTrail = trailingCondition(perm);
         const scheduleOverlap = [...negTrail].some((w) => permTrail.has(w));
-        if (permTrail.size > 0 && !scheduleOverlap) {
+        // Temporal inclusion (Qodo c5f680b8): different time tokens do not
+        // mean disjoint schedules — a point "at 2am" lies inside "before
+        // 3am", so the schedules overlap and the clash stands.
+        const inclusion = pointWithinBound(neg, perm) || pointWithinBound(perm, neg);
+        if (permTrail.size > 0 && !scheduleOverlap && !inclusion) {
           log.debug(
             "memory-write: disjoint trailing schedules coexist",
             neg.slice(0, 80),
