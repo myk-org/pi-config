@@ -662,7 +662,7 @@ const PREFERENCE_PATTERNS: RegExp[] = [
  *  "You may not merge PRs without review" (live battery, #936), so a
  *  grant followed by not/never/'t does not count. */
 const GRANT_PHRASE_RE: RegExp[] = [
-  /\byou (?:can|may)\b(?!\s+(?:not|never)\b)(?!['’]t\b)/i,
+  /\byou (?:can|may)\b(?!\s+(?:not(?!\s+only\b)|never)\b)(?!['’]t\b)/i,
   /\bgo ahead\b/i,
   /\bfeel free\b/i,
   /\bjust this once\b/i,

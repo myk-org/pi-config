@@ -344,10 +344,16 @@ export function quotedMask(text: string, initialBanned: ReadonlySet<number> = ne
     // the pass treating that opener as plain content. Banned openers
     // ACCUMULATE across retries (Qodo b0c6383f): banning only the latest
     // one let two stray apostrophes alternate forever. The pass cap keeps
-    // adversarial inputs from spinning the loop (Qodo 2a41ba6b).
-    if (quote !== null && !banned.has(openIndex) && pass < MAX_RETRY_PASSES) {
-      banned.add(openIndex);
-      continue;
+    // adversarial inputs from spinning the loop (Qodo 2a41ba6b), and when
+    // it is reached the still-open span is RESTORED, not left masked —
+    // masked-at-cap would hide a prohibition trailing the unmatched
+    // openers from polarity detection (Qodo bc5a3517).
+    if (quote !== null && !banned.has(openIndex)) {
+      if (pass < MAX_RETRY_PASSES) {
+        banned.add(openIndex);
+        continue;
+      }
+      for (let i = openIndex; i < out.length; i++) out[i] = src[i]!;
     }
     return out.join("");
   }
@@ -500,7 +506,11 @@ function leadingCondition(clause: string): Set<string> {
   const idx = clause.search(ACTION_MARKER_WORDS_RE);
   if (idx <= 0) return new Set<string>();
   const lead = clause.slice(0, idx);
-  if (!/\b(?:when|if|unless|whenever|where|once|after|before|during|upon|while|in\s+case|on)\b/i.test(lead)) {
+  // Only true subordinators count (Qodo 4da6e3e5): "on" and "where" are
+  // plain prepositions — "Agents on this repo must never push to main"
+  // has no condition before the marker, and treating the subject phrase
+  // as one let "Always push to main" coexist with the pinned ban.
+  if (!/\b(?:when|if|unless|whenever|once|after|before|during|upon|while|in\s+case)\b/i.test(lead)) {
     return new Set<string>();
   }
   return contentWords(lead);
@@ -596,8 +606,8 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       // conflict ("After /release ALWAYS publish to PyPI" vs "never publish
       // to PyPI" must still reject — the mandate instructs what the ban
       // forbids). The scopes match only when the permission covers ≥ 80% of
-      // the condition, so "On Fridays, never deploy" still clashes with
-      // "Always deploy on Fridays" but not with "Always deploy".
+      // the condition, so "When it is Friday, never deploy" still clashes
+      // with "Always deploy on Fridays" but not with "Always deploy".
       const negCond = leadingCondition(neg);
       if (negCond.size > 0) {
         const permWords = contentWords(perm);

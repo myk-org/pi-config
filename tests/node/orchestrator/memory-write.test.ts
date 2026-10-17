@@ -1344,7 +1344,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
   it("same-condition flips still clash under condition scoping (live battery #936)", async () => {
     const cwd = makeCwd();
     try {
-      seedEntry(cwd, "lesson", "On Fridays, never deploy", { pinned: true });
+      seedEntry(cwd, "lesson", "When it is Friday, never deploy", { pinned: true });
       const result = await addMemoryEntry(cwd, {
         text: "Always deploy on Fridays",
         category: "lesson",
@@ -1354,6 +1354,57 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
+  });
+
+  it("a condition-scoped prohibition coexists with an unconditional mandate (live battery #936)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When it is Friday, never deploy", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("prepositional subjects are not conditions (Qodo 4da6e3e5)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Agents on this repo must never push to main", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always push to main",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("'not only ... but also' is an affirmative grant, not a negation (Qodo 4b669927)", async () => {
+    const { isGrantText } = await import("../../../extensions/orchestrator/memory-scoring.js");
+    assert.equal(
+      isGrantText("You may not only merge today, but also approve it"),
+      true,
+      "correlative 'not only' is affirmative",
+    );
+    assert.equal(isGrantText("you may not merge without review"), false, "plain negation stays a prohibition");
+  });
+
+  it("the retry cap restores, not masks, the trailing text (Qodo bc5a3517)", async () => {
+    const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
+    const flood = "never deploy production " + "' ".repeat(1100);
+    const masked = quotedMask(flood);
+    assert.equal(masked.length, flood.length, "same-length mask preserved");
+    assert.match(masked, /never deploy production/, "prohibition before the flood stays visible");
+    const flood2 = "' ".repeat(1100) + "never deploy production";
+    const masked2 = quotedMask(flood2);
+    assert.equal(masked2.length, flood2.length, "same-length mask preserved");
+    assert.match(masked2, /never deploy production/, "prohibition after the flood stays visible at cap");
   });
 
   it("action-before-copula permissions are not conditions (live battery #936)", async () => {
