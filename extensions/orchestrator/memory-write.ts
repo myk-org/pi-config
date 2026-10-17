@@ -686,6 +686,21 @@ const CONDITION_BOUNDARY_RE =
  *  `escape` marks UNLESS-led clauses (Qodo 7c839ae6): "Unless the user
  *  says otherwise, never push" is a GENERAL ban whose condition is the
  *  escape hatch, not the scope — it inverts which permissions coexist. */
+/** Condition synonym pairs, as STEMS (Qodo b192653b): condition
+ *  coverage compares stemmed words, so offline/unavailable and
+ *  online/available must meet on the stemmed axis. */
+const CONDITION_SYNONYMS: Array<[string, string]> = [
+  ["offlin", "unavailabl"],
+  ["onlin", "availabl"],
+  ["outag", "down"],
+];
+
+function areConditionSynonyms(a: string, b: string): boolean {
+  return CONDITION_SYNONYMS.some(
+    ([x, y]) => (a === x && b === y) || (a === y && b === x),
+  );
+}
+
 function leadingCondition(
   clause: string,
 ): {
@@ -777,17 +792,18 @@ function leadingCondition(
     escape: m[1]!.toLowerCase() === "unless",
     relation: m[1]!.toLowerCase().replace(/\s+/g, " "),
     quotedValues,
-    // Negated antecedent (Qodo 1a5d321e): "When service is not ready" —
-    // contentWords drops "not", so the condition reads as its POSITIVE
-    // form; the flag keeps the polarity visible to the gate. "not only X
-    // but also Y" is an additive scope, not a negation. negatedWords are
-    // the condition words INSIDE the negation's scope (Qodo ab913968):
+    // Negated antecedent (Qodo 1a5d321e, 0cdf4597): "When service is not
+    // ready" or "When service cannot deploy" — contentWords drops the
+    // negator, so the condition reads as its POSITIVE form; the flag
+    // keeps the polarity visible to the gate. "not only X but also Y"
+    // is an additive scope, not a negation. negatedWords are the
+    // condition words INSIDE the negation's scope (Qodo ab913968):
     // "unhealthy and not ready" negates only "ready" — an un-prefixed
     // form of those words in a permission ("unready") is the SAME state.
     negated:
-      /\b(?:not|never|n['’]t)\b/i.test(maskedLead) && !/\bnot only\b/i.test(maskedLead),
+      /\b(?:not|never|cannot|can['’]t|n['’]t)\b/i.test(maskedLead) && !/\bnot only\b/i.test(maskedLead),
     negatedWords: (() => {
-      const nm = /\b(?:not|never|n['’]t)\b/i.exec(maskedLead);
+      const nm = /\b(?:not|never|cannot|can['’]t|n['’]t)\b/i.exec(maskedLead);
       if (!nm || /\bnot only\b/i.test(maskedLead)) return [] as string[];
       const after = contentWords(maskedLead.slice(nm.index! + nm[0].length));
       return [...words].filter((w) => after.has(w));
@@ -1143,7 +1159,15 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       const negCond = leadingCondition(neg);
       if (negCond.words.size > 0) {
         const permWords = contentWords(perm);
-        const coveredWords = [...negCond.words].filter((w) => permWords.has(w));
+        // Equivalent condition terms count as coverage (Qodo b192653b):
+        // "offline" restates "unavailable" — synonym condition words must
+        // not drop the permission below the majority threshold and turn
+        // a same-circumstance clash into a fake exception.
+        const coveredWords = [...negCond.words].filter(
+          (w) =>
+            permWords.has(w) ||
+            [...permWords].some((p) => areConditionSynonyms(w, p)),
+        );
         const covered = coveredWords.length;
         // Different temporal relations to the same event (Qodo 94c761d3):
         // "During maintenance, never run tests" is concurrent with the
@@ -1585,13 +1609,16 @@ function quotedPayloadWords(clause: string): Set<string> {
 }
 
 /** Hypernym coverage (Qodo a849a37a): a category word whose members
- *  include the other diff word. Stems on both sides — tools stems to
- *  "tool", package members like npm stay whole. */
-const TOOL_HYPONYMS = new Set([
-  "npm", "npx", "pip", "pip3", "uv", "yarn", "pnpm", "cargo", "deno",
-  "bun", "tox", "pytest", "docker", "podman", "kubectl", "oc", "curl",
-  "wget", "jq", "gh", "make", "mvn", "gradle", "node", "python", "python3",
-]);
+ *  include the other diff word. Members are stored AS STEMS (Qodo
+ *  2e29817c) — silent-e dropping turns node into "nod" and make into
+ *  "mak", so unstemmed spellings never matched. */
+const TOOL_HYPONYMS = new Set(
+  [
+    "npm", "npx", "pip", "pip3", "uv", "yarn", "pnpm", "cargo", "deno",
+    "bun", "tox", "pytest", "docker", "podman", "kubectl", "oc", "curl",
+    "wget", "jq", "gh", "make", "mvn", "gradle", "node", "python", "python3",
+  ].map((w) => stem(w)),
+);
 
 function hypernymCovers(a: string, b: string): boolean {
   return stem(a) === "tool" && TOOL_HYPONYMS.has(stem(b));

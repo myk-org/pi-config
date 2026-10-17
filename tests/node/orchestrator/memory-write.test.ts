@@ -1533,7 +1533,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("unless-led bans are general and reject unconditioned opposites (Qodo 7c839ae6)", async () => {
+  it("unless-led bans reject unconditioned opposites as general rules (Qodo 7c839ae6)", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "Unless the user says otherwise, never push to main", { pinned: true });
@@ -1683,7 +1683,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("k8s and kubernetes converge after expansion (Qodo 7ed1ea1e)", async () => {
+  it("k8s with kubernetes converge after expansion (Qodo 7ed1ea1e)", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "Never deploy to k8s", { pinned: true });
@@ -2235,7 +2235,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("code and cod are distinct targets (Qodo 48899e67)", async () => {
+  it("code versus cod are distinct targets (Qodo 48899e67)", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "Never store code", { pinned: true });
@@ -2425,7 +2425,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("analyses and analysis are the same target (Qodo 6642e8e5)", async () => {
+  it("analyses with analysis are the same target (Qodo 6642e8e5)", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "Never delete analyses", { pinned: true });
@@ -2482,7 +2482,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("negated antecedent and positive condition coexist (Qodo 1a5d321e)", async () => {
+  it("negated antecedent versus positive condition coexist (Qodo 1a5d321e)", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "When service is not ready, never deploy production", { pinned: true });
@@ -2574,7 +2574,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
-  it("equivalent named and numeric times clash (Qodo 287f476f)", async () => {
+  it("equivalent named versus numeric times clash (Qodo 287f476f)", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "Never deploy at noon", { pinned: true });
@@ -2634,7 +2634,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("may after and opens a permission clause (Qodo 8663ebc8)", async () => {
+  it("may after a conjunction opens a permission clause (Qodo 8663ebc8)", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "Never use npm and may use pip", { pinned: true });
@@ -2679,7 +2679,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("weekday and weekend schedules stay disjoint (Qodo 2704dd42)", async () => {
+  it("weekday versus weekend schedules stay disjoint (Qodo 2704dd42)", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "Never run tests on weekends", { pinned: true });
@@ -2855,6 +2855,49 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       seedEntry(cwd, "lesson", "Never use npm directly", { pinned: true });
       const result = await addMemoryEntry(cwd, {
         text: "Always use tools directly",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+  it("cannot-conditions oppose their positive counterparts (Qodo 0cdf4597)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When service cannot deploy, never alert", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always alert when service deploys",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stemmed tool hyponyms are covered by the category (Qodo 2e29817c)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never use node directly", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always use tools directly",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("offline restates unavailable in conditions (Qodo b192653b)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When the service is unavailable, never deploy to production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy to production when the service is offline",
         category: "lesson",
       });
       assert.equal(result.status, "rejected");
