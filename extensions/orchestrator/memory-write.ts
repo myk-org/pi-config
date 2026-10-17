@@ -473,7 +473,31 @@ function splitClauses(text: string): string[] {
     const raw = text.slice(bounds[i]!, bounds[i + 1] ?? text.length).trim();
     if (raw) clauses.push(raw);
   }
-  return clauses;
+  // A marker stranded at a line end (Qodo 35f32790): "Never\npublish npm
+  // packages" splits into a marker-only clause with no action words and a
+  // marker-free remainder the gate ignores — the polarity was silently
+  // dropped. Merge a clause with no action words into the NEXT clause
+  // (or the previous one when it is last) so the marker keeps its action.
+  const out: string[] = [];
+  let pending = "";
+  for (const clause of clauses) {
+    const markerOnly = clause.trim().length > 0 && actionWords(clause).size === 0;
+    if (markerOnly) {
+      if (out.length > 0) {
+        out[out.length - 1] = `${out[out.length - 1]} ${clause}`.trim();
+      } else {
+        pending = `${pending} ${clause}`.trim();
+      }
+    } else {
+      out.push(`${pending} ${clause}`.trim());
+      pending = "";
+    }
+  }
+  if (pending) {
+    if (out.length > 0) out[out.length - 1] = `${out[out.length - 1]} ${pending}`.trim();
+    else out.push(pending);
+  }
+  return out;
 }
 
 function negationClauses(text: string): string[] {
