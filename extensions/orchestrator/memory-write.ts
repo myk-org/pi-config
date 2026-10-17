@@ -123,7 +123,9 @@ function validateAction(action: string): string | null {
  *  or worse been assumed to gate sanctioned curl usage). */
 const SHELL_COMMAND_TOOL_NAMES = new Set([
   "curl", "wget", "jq", "gh", "docker", "podman", "kubectl", "oc",
-  "ssh", "scp", "rsync", "git", "npm", "npx", "pip", "uv", "tox",
+  "ssh", "scp", "rsync", "git", "npm", "npx", "pip", "pip3", "uv",
+  "tox", "pytest", "python", "python3", "node", "deno", "bun", "make",
+  "cargo", "go", "java", "mvn", "gradle",
 ]);
 
 /** Write-time warning for over-broad or ineffective `tool_name` triggers
@@ -163,7 +165,7 @@ const PERMIT_RE =
  *  sentence-initial `only` never matches (round 8), and `only after/when/
  *  until/...` is a temporal restriction, not a permission (round 10). */
 const ONLY_PERMIT_RE =
-  /\b(?:use|uses|using|install|installs|installing|run|runs|running|execute|executes|executing|deploy|deploys|deploying|commit|commits|push|pushes|merge|merges|write|writes|call|calls|invoke|invokes)\s+only\s+(?!(?:after|before|when|while|until|once|if|unless|during|upon|prior|in\s+case)\b)[a-z0-9"'`_*]/i;
+  /\b(?:use|uses|using|install|installs|installing|run|runs|running|execute|executes|executing|deploy|deploys|deploying|commit|commits|push|pushes|merge|merges|write|writes|call|calls|invoke|invokes)\s+only\s+(?!(?:after|before|when|while|until|once|if|unless|during|upon|prior|in\s+case)\b)[a-z0-9"'`_*\x00]/i;
 
 const STOP_WORDS = new Set([
   "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "for", "with",
@@ -216,33 +218,62 @@ function polarityClash(a: string, b: string): boolean {
   );
 }
 
-/** Remove quoted spans for POLARITY-MARKER detection only. Contraction-safe
- *  (Qodo 67def191): an apostrophe attached to a word character ("don't",
- *  "users'") is not a quote delimiter — the span must start and end at
- *  non-word boundaries, or the text between two contractions would be
- *  swallowed ("Don't run npm; don't run pip" lost both prohibitions). */
-function stripQuotedSpans(text: string): string {
-  return text
-    .replace(/(^|[^\w'"\u2019])'[^'\n]*'(?![\w'\u2019])/g, "$1 ")
-    .replace(/(^|[^\w'"\u2019])"[^"\n]*"(?![\w"\u2019])/g, "$1 ")
-    .replace(/(^|[^\w`])`[^`\n]*`(?![\w`])/g, "$1 ");
+/** Same-length mask: characters inside contraction-safe quoted spans are
+ *  replaced with \x00, so separators, polarity words, and permission markers
+ *  inside a quoted payload are invisible to clause splitting and marker
+ *  regexes (Qodo 652e15cd: 'ok; sure' must not split or permit; Qodo
+ *  874f0adc: 'don't use npm' must not prohibit). Quote state opens only at
+ *  a non-word boundary and closes only when the next char is not a word
+ *  char — apostrophes inside contractions (don't, users') and inside quoted
+ *  payloads are content, never delimiters. */
+function quotedMask(text: string): string {
+  const chars = text.split("");
+  let quote: string | null = null;
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i]!;
+    if (quote === null) {
+      if ((ch === "'" || ch === '"' || ch === '`') && !/[\w'"\u2019]/.test(i > 0 ? chars[i - 1]! : "")) {
+        quote = ch;
+        chars[i] = "\x00";
+      }
+    } else if (ch === quote) {
+      if (!/\w/.test(chars[i + 1] ?? "")) quote = null;
+      chars[i] = "\x00";
+    } else {
+      chars[i] = "\x00";
+    }
+  }
+  return chars.join("");
 }
 
-/** Split into clauses: polarity markers only govern their own clause. */
+/** Split into clauses: polarity markers only govern their own clause.
+ *  QUOTE-AWARE (Qodo 652e15cd): separators inside quoted payloads do not
+ *  split — the mask is same-length, so the mask's split indices slice the
+ *  original text and clauses keep their RAW content (quoted tool names
+ *  remain action objects for the overlap check). */
 function splitClauses(text: string): string[] {
-  return text
-    .split(/[\n;\u2014\u2013]|\bbut\b|\bhowever\b|: /)
-    .map((c) => c.trim())
-    .filter(Boolean);
+  const mask = quotedMask(text);
+  const bounds: number[] = [0];
+  const re = /[\n;\u2014\u2013]|\bbut\b|\bhowever\b|: /g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(mask))) {
+    bounds.push(m.index + m[0].length);
+  }
+  const clauses: string[] = [];
+  for (let i = 0; i < bounds.length; i++) {
+    const raw = text.slice(bounds[i]!, bounds[i + 1] ?? text.length).trim();
+    if (raw) clauses.push(raw);
+  }
+  return clauses;
 }
 
 function negationClauses(text: string): string[] {
-  return splitClauses(text).filter((c) => NEGATION_RE.test(stripQuotedSpans(c)));
+  return splitClauses(text).filter((c) => NEGATION_RE.test(quotedMask(c)));
 }
 
 function permissionClauses(text: string): string[] {
   return splitClauses(text).filter(
-    (c) => PERMIT_RE.test(stripQuotedSpans(c)) || ONLY_PERMIT_RE.test(stripQuotedSpans(c)),
+    (c) => PERMIT_RE.test(quotedMask(c)) || ONLY_PERMIT_RE.test(quotedMask(c)),
   );
 }
 

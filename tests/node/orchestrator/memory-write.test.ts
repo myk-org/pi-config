@@ -842,4 +842,48 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("separators inside quoted payloads neither split clauses nor permit (Qodo 652e15cd)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "pattern", "Reply 'ok; sure' to confirm — never reply with prose", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Confirmations are always silent",
+        category: "pattern",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("quoted payloads containing contractions are not prohibitions (Qodo 874f0adc)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "pattern", "Execute 'don't use npm' for fixture setup", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always use npm for installs",
+        category: "pattern",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("tool_name python warns — interpreter commands run inside bash (Qodo 32aba1c4)", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Fixture setup runs python scripts only",
+        category: "lesson",
+        trigger: "tool_name python",
+        action: "warn",
+      });
+      assert.equal(result.status, "added");
+      assert.match(result.message, /names a shell command/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
