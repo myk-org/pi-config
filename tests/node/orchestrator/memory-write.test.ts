@@ -1677,6 +1677,58 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("universal qualifiers are not distinct targets (Qodo 02dfd684)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy production builds", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy all builds",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("quoted subordinators do not scope a prohibition (Qodo d87c13dd)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", 'Publish "when battery" logs, never publish packages', { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always publish packages",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("plural clippings match their singular expansion (Qodo 9253c632)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never delete repos", { pinned: true });
+      const rejected = await addMemoryEntry(cwd, {
+        text: "Always delete repo",
+        category: "lesson",
+      });
+      assert.equal(rejected.status, "rejected");
+      assert.match(rejected.message, /contradicts pinned memory/i);
+      seedEntry(cwd, "lesson", "Never edit docs", { pinned: true });
+      const rejectedDocs = await addMemoryEntry(cwd, {
+        text: "Always edit documentation",
+        category: "lesson",
+      });
+      assert.equal(rejectedDocs.status, "rejected");
+      assert.match(rejectedDocs.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("many unmatched apostrophes do not overflow the mask (Qodo 2a41ba6b)", async () => {
     const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
     const many = "never use npm " + "'".repeat(5000) + " and always run tests";

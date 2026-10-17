@@ -215,7 +215,10 @@ function stem(word: string): string {
   // singular "package" kept its e — the pair never matched. Drop a final
   // e on long words so singular/plural/inflected forms converge.
   if (w.endsWith("e") && w.length >= 5) w = w.slice(0, -1);
-  return w;
+  // Second expansion pass (Qodo 9253c632): plurals of clippings — repos,
+  // apps, docs, configs — miss the pre-strip table and only lose their s;
+  // expanding the stripped base rejoins them with the singular expansion.
+  return CLIPPING_EXPANSIONS[w] ?? w;
 }
 
 /** Common clippings expanded to their full form during stemming so a
@@ -554,9 +557,15 @@ const CONDITION_BOUNDARY_RE =
  *  escape hatch, not the scope — it inverts which permissions coexist. */
 function leadingCondition(clause: string): { words: Set<string>; escape: boolean } {
   const empty = { words: new Set<string>(), escape: false };
-  const idx = clause.search(CONDITION_BOUNDARY_RE);
+  // Scan the MASKED clause (Qodo d87c13dd): a quoted subordinator —
+  // 'Publish "when battery" logs, never publish packages' — must not
+  // turn an unscoped prohibition into a condition-scoped exception; the
+  // mask hides quoted payload from the boundary search and the
+  // subordinator test alike.
+  const masked = quotedMask(clause);
+  const idx = masked.search(CONDITION_BOUNDARY_RE);
   if (idx <= 0) return empty;
-  const lead = clause.slice(0, idx);
+  const lead = masked.slice(0, idx);
   if (LEADING_CONDITION_IDIOMS.test(lead)) return empty;
   // Only true subordinators count (Qodo 4da6e3e5): "on" and "where" are
   // plain prepositions — "Agents on this repo must never push to main"
@@ -646,7 +655,8 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       if (negOnly.length === 1 && permOnly.length === 1) {
         const diffA = negOnly[0]!;
         const diffB = permOnly[0]!;
-        if (!isVariantWord(diffA, diffB)) {
+        const universal = UNIVERSAL_QUANTIFIERS.has(diffA) || UNIVERSAL_QUANTIFIERS.has(diffB);
+        if (!universal && !isVariantWord(diffA, diffB)) {
           const stemmerOverMerge = stem(diffA) === stem(diffB);
           if (
             stemmerOverMerge ||
@@ -717,14 +727,27 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
  *  so a pinned "Never store bases" wrongly rejected "Always store bass".
  *  Stem equality only counts with RAW affinity: identical, prefix
  *  extension (run/running), or final-vowel mutation (carri/carry). */
+/** Clip-aware canonical form of a surface word (Qodo 9253c632): tries
+ *  the word and its singular forms against the clipping table so plural
+ *  clippings (docs, repos, apps) canonicalize to the same expansion as
+ *  the singular and the full form. */
+function clipCanonical(word: string): string {
+  for (const cand of [word, word.replace(/s$/, ""), word.replace(/es$/, "")]) {
+    const exp = CLIPPING_EXPANSIONS[cand];
+    if (exp) return exp;
+  }
+  return word;
+}
+
 function isVariantWord(a: string, b: string): boolean {
   if (a === b) return true;
-  // Clipping pairs are the SAME target by declaration (Qodo 7ed1ea1e):
-  // k8s→kubernetes stems converge via the table, but the RAW forms are
-  // not prefix- or vowel-affine — without this check the distinct-target
-  // exclusion treated them as different objects and let opposing rules
-  // for the same cluster coexist.
-  if (CLIPPING_EXPANSIONS[a] === b || CLIPPING_EXPANSIONS[b] === a) return true;
+  // Clipping pairs are the SAME target by declaration (Qodo 7ed1ea1e,
+  // 9253c632): k8s→kubernetes and docs→doc→documentation stem-converge
+  // via the table, but the RAW forms are not prefix- or vowel-affine —
+  // without this check the distinct-target exclusion treated them as
+  // different objects and let opposing rules for the same target
+  // coexist.
+  if (clipCanonical(a) === clipCanonical(b)) return true;
   if (stem(a) !== stem(b)) return false;
   const [x, y] = a.length <= b.length ? [a, b] : [b, a];
   if (x.length >= 3 && y.startsWith(x)) return true;
@@ -738,6 +761,12 @@ function isVariantWord(a: string, b: string): boolean {
   }
   return false;
 }
+
+/** Universal quantifiers (Qodo 02dfd684): "all builds" INCLUDES
+ *  "production builds", so a one-word diff against a universal qualifier
+ *  is not a distinct target — the permission covers whatever the
+ *  prohibition bans. */
+const UNIVERSAL_QUANTIFIERS = new Set(["all", "any", "every", "each"]);
 
 /** Ordered content-word sequence of a clause (same tokenization and
  *  stemming as contentWords, order preserved) — used for positional
