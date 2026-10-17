@@ -420,12 +420,16 @@ function splitClauses(text: string): string[] {
   // discarded by negation-dominance and the pinned rule then rejected its
   // own exception. A period must be followed by whitespace, so decimals
   // (3.5), file names (file.ts) and ellipses stay intact.
-  // Sentence-ending periods split clauses, but a period after a SINGLE
-  // letter does not — "e.g.", "i.e.", "etc." are abbreviations, and
-  // splitting on them cuts a prohibition in two (Qodo ab8d2a82: "Never run
-  // destructive commands, e.g. rm -rf /" lost its object list from the
-  // clause). Require at least two letters before the period.
-  const re = /[\n;\u2014\u2013]|(?<=[a-z]{2})\.(?=\s)|\bbut\b|\bhowever\b/gi;
+  // Sentence-ending periods split clauses, but abbreviation periods do
+  // not (Qodo ab8d2a82, d6fa46c0): "e.g." and "i.e." are covered by the
+  // two-letter rule (their first period follows a single letter), while
+  // multi-letter abbreviations — "etc.", "vs.", "approx.", "inc.",
+  // "ltd.", "dept." — are excluded by an explicit lookbehind list, since
+  // two letters precede their period and the length rule alone would
+  // split "Never run rm, mv, etc. on shared hosts" and cut the trailing
+  // scope off the negation clause.
+  const re =
+    /[\n;\u2014\u2013]|(?<=[a-z]{2})(?<!\betc\b)(?<!\bvs\b)(?<!\bapprox\b)(?<!\binc\b)(?<!\bltd\b)(?<!\bdept\b)\.(?=\s)|\bbut\b|\bhowever\b/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(mask))) {
     bounds.push(m.index + m[0].length);
