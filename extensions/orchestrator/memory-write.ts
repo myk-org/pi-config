@@ -494,6 +494,21 @@ function actionWords(clause: string): Set<string> {
   return contentWords(clause.replace(ACTION_MARKER_WORDS_RE, " "));
 }
 
+/** Raw (unstemmed) action words (Qodo 2fb4dd7e): the distinct-target
+ *  exclusion must see the SURFACE forms — stem() over-merges bases/bass
+ *  into "bas", so stemmed diff sets never contained the differing word
+ *  and the exclusion could not fire for complementary rules about them. */
+function rawActionWords(clause: string): Set<string> {
+  const cleaned = clause.replace(ACTION_MARKER_WORDS_RE, " ");
+  const words = cleaned.toLowerCase().match(/[a-z][a-z0-9#-]*/g) ?? [];
+  const out = new Set<string>();
+  for (const w of words) {
+    if (STOP_WORDS.has(w)) continue;
+    if (w.length >= 2) out.add(w);
+  }
+  return out;
+}
+
 /** Leading condition of a clause: the content words BEFORE the first
  *  polarity marker (live battery, #936). "When npm whoami fails with E401
  *  during a release, never continue publishing" — the words ahead of
@@ -580,21 +595,38 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       // use 'uv'" differ by exactly one mid-clause word per side and are
       // complementary; identical raw actions (same quoted tool both sides)
       // have empty diffs and still clash. The exclusion needs BOTH diffs
-      // non-empty, exactly one word each, not morphological variants
-      // (run/running), and each word sitting BETWEEN shared words in its
-      // clause — trailing qualifiers and leading temporals never qualify.
-      const negRaw = actionWords(neg);
-      const permRaw = actionWords(perm);
+      // non-empty, exactly one word each, and not morphological variants
+      // (run/running). Position guard: each diff word sits BETWEEN shared
+      // words in its clause — trailing qualifiers and leading temporals
+      // ("From now on ...") never qualify. Stem over-merge bypass (Qodo
+      // 2fb4dd7e): bases and bass both stem to "bas" yet are not
+      // raw-affine variants — when the diff words have EQUAL STEMS but
+      // different surface forms, the stemmer manufactured the sameness,
+      // and the exclusion fires regardless of position.
+      const negRaw = rawActionWords(neg);
+      const permRaw = rawActionWords(perm);
       const negOnly = [...negRaw].filter((w) => !permRaw.has(w));
       const permOnly = [...permRaw].filter((w) => !negRaw.has(w));
-      if (
-        negOnly.length === 1 &&
-        permOnly.length === 1 &&
-        !isVariantWord(negOnly[0]!, permOnly[0]!) &&
-        diffWordIsMidClause(neg, negOnly[0]!, permRaw) &&
-        diffWordIsMidClause(perm, permOnly[0]!, negRaw)
-      ) {
-        continue;
+      if (negOnly.length === 1 && permOnly.length === 1) {
+        const diffA = negOnly[0]!;
+        const diffB = permOnly[0]!;
+        if (!isVariantWord(diffA, diffB)) {
+          const stemmerOverMerge = stem(diffA) === stem(diffB);
+          if (
+            stemmerOverMerge ||
+            (diffWordIsMidClause(neg, diffA, permRaw) &&
+              diffWordIsMidClause(perm, diffB, negRaw))
+          ) {
+            log.debug(
+              "memory-write: distinct-target exclusion",
+              diffA,
+              "vs",
+              diffB,
+              stemmerOverMerge ? "(stem over-merge)" : "",
+            );
+            continue;
+          }
+        }
       }
       // Condition-scoped exceptions (live battery, #936): a PROHIBITION
       // whose polarity marker is preceded by a conditional subordinator is
@@ -612,27 +644,41 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       if (negCond.size > 0) {
         const permWords = contentWords(perm);
         const covered = [...negCond].filter((w) => permWords.has(w)).length;
-        if (covered / negCond.size < 0.8) continue;
+        if (covered / negCond.size < 0.8) {
+          log.debug(
+            "memory-write: condition-scoped prohibition coexists — permission does not carry the condition",
+            neg.slice(0, 80),
+          );
+          continue;
+        }
       }
       const negAgrees = negB.some((n) => clausesAgree(neg, n));
       const permAgrees = permA.some((p) => clausesAgree(perm, p));
       if (negAgrees && permAgrees) continue;
+      log.debug(
+        "memory-write: clause clash — prohibition vs permission share the action",
+        neg.slice(0, 80),
+        "vs",
+        perm.slice(0, 80),
+      );
       return true;
     }
   }
   return false;
 }
 
-/** Morphological variant check (Qodo 5a346f0f): the action-word sets are
- *  already stemmed, so identical inflections (run/running) never appear as
- *  diffs. What remains: vowel-final mutations the light stemmer misses
- *  (carried→carri vs carry) and identical stems. It must NOT treat any
- *  ≥3-char prefix as a variant — "git"/"github" are different tools, and
- *  the prefix rule made the distinct-target exclusion skip them so a
- *  pinned "Never use git for pushes" wrongly rejected "Always use github
- *  for pushes". */
+/** Morphological variant check (Qodo 5a346f0f, 2fb4dd7e): identical
+ *  inflections must compare equal, but the light stemmer OVER-MERGES some
+ *  pairs — bases and bass both stem to "bas" — and a stem-equality-only
+ *  check made the distinct-target exclusion treat them as the same word,
+ *  so a pinned "Never store bases" wrongly rejected "Always store bass".
+ *  Stem equality only counts with RAW affinity: identical, prefix
+ *  extension (run/running), or final-vowel mutation (carri/carry). */
 function isVariantWord(a: string, b: string): boolean {
-  if (stem(a) === stem(b)) return true;
+  if (a === b) return true;
+  if (stem(a) !== stem(b)) return false;
+  const [x, y] = a.length <= b.length ? [a, b] : [b, a];
+  if (x.length >= 3 && y.startsWith(x)) return true;
   if (a.length === b.length && a.length >= 4) {
     const prefix = a.slice(0, -1);
     return (
@@ -665,10 +711,13 @@ function orderedContentWords(clause: string): string[] {
  *  the exclusion must not fire for them. */
 function diffWordIsMidClause(clause: string, diff: string, otherWords: Set<string>): boolean {
   const seq = orderedContentWords(clause);
-  const idx = seq.indexOf(diff);
+  // The diff word may be a RAW surface form while the ordered sequence is
+  // stemmed (Qodo 2fb4dd7e moved the diff sets to raw words) — locate it
+  // by stem equality, not exact index.
+  const idx = seq.findIndex((w) => w === diff || stem(w) === stem(diff));
   if (idx <= 0 || idx >= seq.length - 1) return false;
-  const before = seq.slice(0, idx).some((w) => otherWords.has(w));
-  const after = seq.slice(idx + 1).some((w) => otherWords.has(w));
+  const before = seq.slice(0, idx).some((w) => otherWords.has(w) || [...otherWords].some((o) => stem(o) === stem(w)));
+  const after = seq.slice(idx + 1).some((w) => otherWords.has(w) || [...otherWords].some((o) => stem(o) === stem(w)));
   return before && after;
 }
 

@@ -1435,19 +1435,45 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("'you cannot' and word-stem collisions are not grants (Qodo 3a4b6c2d)", async () => {
+  it("'you cannot' is a prohibition, not a grant (Qodo 3a4b6c2d)", async () => {
     const { isGrantText } = await import("../../../extensions/orchestrator/memory-scoring.js");
-    assert.equal(isGrantText("You cannot push to main"), false, "'you cannot' is a prohibition");
-    assert.equal(isGrantText("you can't push"), false);
-    assert.equal(isGrantText("you may not push"), false);
-    assert.equal(isGrantText("you mayor of the city decides"), false, "word-stem collision");
-    assert.equal(isGrantText("you candidly admit it"), false);
-    assert.equal(isGrantText("you can merge this PR"), true, "plain grant still detected");
-    assert.equal(isGrantText("you may push now"), true);
+    assert.equal(isGrantText("You cannot push to main"), false);
     const cwd = makeCwd();
     try {
       const result = await addMemoryEntry(cwd, {
         text: "You cannot push to main",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("negated grant forms stay prohibitions (Qodo 3a4b6c2d)", async () => {
+    const { isGrantText } = await import("../../../extensions/orchestrator/memory-scoring.js");
+    assert.equal(isGrantText("you can't push"), false);
+    assert.equal(isGrantText("you may not push"), false);
+  });
+
+  it("word-stem collisions are not grants (Qodo 3a4b6c2d)", async () => {
+    const { isGrantText } = await import("../../../extensions/orchestrator/memory-scoring.js");
+    assert.equal(isGrantText("you mayor of the city decides"), false);
+    assert.equal(isGrantText("you candidly admit it"), false);
+  });
+
+  it("plain grants are still detected (Qodo 3a4b6c2d)", async () => {
+    const { isGrantText } = await import("../../../extensions/orchestrator/memory-scoring.js");
+    assert.equal(isGrantText("you can merge this PR"), true);
+    assert.equal(isGrantText("you may push now"), true);
+  });
+
+  it("stem over-merges do not manufacture conflicts (Qodo 2fb4dd7e)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never store bases", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always store bass",
         category: "lesson",
       });
       assert.equal(result.status, "added", `must be storable: ${result.message}`);

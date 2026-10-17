@@ -746,7 +746,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // decision so silent trigger skips are diagnosable (Qodo 2addbfc4).
     const isToolCallError = (event as any).isError === true;
     if (isToolCallError && (toolName === "edit" || toolName === "write") && input?.path) {
-      log.debug(failedFileEditSkipMessage(toolName, input.path));
+      failedFileEditSkipMessage(toolName, input.path);
     }
     let matches = matchToolCall(entries, toolName, input, isToolCallError);
 
