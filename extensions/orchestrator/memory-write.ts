@@ -137,7 +137,10 @@ function toolNameTriggerWarning(trigger: string | undefined, action: string | un
   const advise = (warning: string): string => {
     // Local diagnostic (Qodo 44a095ab): the advisory is computed here —
     // log it where it is decided, not only in callers that may not log.
-    log.debug("memory-write: tool_name trigger advisory", trigger, warning);
+    // warn, not debug (Qodo 8aaafc7c): a dead or over-broad trigger needs
+    // the writer to correct the enforcement configuration — operators
+    // watching runtime logs must not miss it.
+    log.warn("memory-write: tool_name trigger advisory", trigger, warning);
     return warning;
   };
   // Lookups are case-insensitive (Qodo 53d6b3d0): "Bash" and "Curl" are
@@ -653,8 +656,16 @@ const CONDITION_BOUNDARY_RE =
  *  `escape` marks UNLESS-led clauses (Qodo 7c839ae6): "Unless the user
  *  says otherwise, never push" is a GENERAL ban whose condition is the
  *  escape hatch, not the scope — it inverts which permissions coexist. */
-function leadingCondition(clause: string): { words: Set<string>; escape: boolean; relation: string | null; quotedValues: string[] } {
-  const empty = { words: new Set<string>(), escape: false, relation: null as string | null, quotedValues: [] as string[] };
+function leadingCondition(
+  clause: string,
+): { words: Set<string>; escape: boolean; relation: string | null; quotedValues: string[]; negated: boolean } {
+  const empty = {
+    words: new Set<string>(),
+    escape: false,
+    relation: null as string | null,
+    quotedValues: [] as string[],
+    negated: false,
+  };
   // Scan the MASKED clause (Qodo d87c13dd): a quoted subordinator —
   // 'Publish "when battery" logs, never publish packages' — must not
   // turn an unscoped prohibition into a condition-scoped exception; the
@@ -711,6 +722,12 @@ function leadingCondition(clause: string): { words: Set<string>; escape: boolean
     escape: m[1]!.toLowerCase() === "unless",
     relation: m[1]!.toLowerCase().replace(/\s+/g, " "),
     quotedValues,
+    // Negated antecedent (Qodo 1a5d321e): "When service is not ready" —
+    // contentWords drops "not", so the condition reads as its POSITIVE
+    // form; the flag keeps the polarity visible to the gate. "not only X
+    // but also Y" is an additive scope, not a negation.
+    negated:
+      /\b(?:not|never|n['’]t)\b/i.test(rawLead) && !/\bnot only\b/i.test(rawLead),
   };
 }
 
@@ -735,7 +752,13 @@ function trailingCondition(clause: string): { words: Set<string>; timeLike: bool
   const markers = [...masked.matchAll(ACTION_MARKER_WORDS_RE)];
   if (markers.length === 0) return empty;
   const last = markers[markers.length - 1]!;
-  const tail = masked.slice(last.index! + last[0].length).trim();
+  // Trailing sentence punctuation (Qodo a91fbcf4): "at 2am." — a final
+  // period must not empty the schedule, or the disjoint-schedule check
+  // is bypassed and separate times look like a clash.
+  const tail = masked
+    .slice(last.index! + last[0].length)
+    .trim()
+    .replace(/[.!?,;:]+$/, "");
   const tm =
     /\b(?:at|before|after|during|until|till|by|between|upon|past|since|on)\s+([a-z0-9:\s\x00]*)$/i.exec(
       tail,
@@ -801,16 +824,18 @@ function scheduleSpans(clause: string): ScheduleSpan[] {
   }
   // Bounds — before/by/until open the day, after/since/past close it;
   // by/until and since include their moment, before/after stay strict.
-  const b = new RegExp(`\\b(before|by|until|after|since|past)\\s+(${CLOCK_TIME})\\b`, "i").exec(masked);
-  if (b) {
+  // EVERY alternative is a span (Qodo b826e978): "before 3am or after
+  // 9am" bans two windows, and a single exec() saw only the first.
+  for (const b of masked.matchAll(
+    new RegExp(`\\b(before|by|until|after|since|past)\\s+(${CLOCK_TIME})\\b`, "gi"),
+  )) {
     const t = parseTimeToken(b[2]!);
-    if (t !== null) {
-      const rel = b[1]!.toLowerCase();
-      if (/^(?:before|by|until)$/.test(rel)) {
-        spans.push({ lo: 0, hi: t, loInc: true, hiInc: rel !== "before" });
-      } else {
-        spans.push({ lo: t, hi: 24 * 60, loInc: rel === "since", hiInc: true });
-      }
+    if (t === null) continue;
+    const rel = b[1]!.toLowerCase();
+    if (/^(?:before|by|until)$/.test(rel)) {
+      spans.push({ lo: 0, hi: t, loInc: true, hiInc: rel !== "before" });
+    } else {
+      spans.push({ lo: t, hi: 24 * 60, loInc: rel === "since", hiInc: true });
     }
   }
   // Ranges — "between 1am and 3am", both endpoints inclusive.
@@ -1022,8 +1047,18 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         // failed builds run" vs "when successful builds run" — an
         // uncovered condition word whose ANTONYM appears in the permission
         // marks different circumstances, even at majority coverage.
+        // Negated antecedent (Qodo 1a5d321e): "When service is not ready"
+        // vs "when service is ready" — a NOT in the ban's condition that
+        // the permission's clause cannot carry (a "not" there would
+        // classify it as a negation clause) inverts the shared state;
+        // only an UNLESS-permission ("always deploy unless ready" ≡
+        // deploy when not ready) keeps the same polarity.
         const uncovered = [...negCond.words].filter((w) => !permWords.has(w));
-        if (!negCond.escape && uncovered.some((u) => [...permWords].some((p) => areAntonyms(u, p)))) {
+        const oppositeStates =
+          !negCond.escape &&
+          (negCond.negated !== /\bunless\b/i.test(perm) ||
+            uncovered.some((u) => [...permWords].some((p) => areAntonyms(u, p))));
+        if (oppositeStates) {
           log.debug(
             "memory-write: antonym condition predicates coexist",
             neg.slice(0, 80),
@@ -1280,20 +1315,23 @@ const TEMPORAL_GROUP: Record<string, string> = {
   before: "pre", until: "pre", by: "pre",
 };
 
-/** Antonym predicate pairs, stemmed (Qodo efd0c061): condition words on
- *  opposite sides of a pair mark different circumstances. */
+/** Antonym predicate pairs, as STEMS (Qodo efd0c061, 1eea19de): the
+ *  comparison words come from contentWords/leadingCondition, which stem
+ *  — production stems to "product", healthy to "healthi" — so raw-word
+ *  entries never matched. Condition words on opposite sides of a pair
+ *  mark different circumstances. */
 const ANTONYM_PAIRS: Array<[string, string]> = [
   ["fail", "successful"],
   ["fail", "success"],
   ["fail", "pass"],
-  ["fail", "healthy"],
-  ["broken", "working"],
-  ["broken", "healthy"],
-  ["stale", "fresh"],
-  ["dirty", "clean"],
-  ["blocked", "ready"],
+  ["fail", "healthi"],
+  ["broken", "work"],
+  ["broken", "healthi"],
+  ["stal", "fresh"],
+  ["dirti", "clean"],
+  ["block", "readi"],
   ["dev", "production"],
-  ["staging", "production"],
+  ["stag", "production"],
   ["local", "production"],
   ["old", "new"],
   ["slow", "fast"],

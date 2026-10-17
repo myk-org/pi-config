@@ -2467,4 +2467,60 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("every bound alternative is a span (Qodo b826e978)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy release before 3am or after 9am", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy release at 10am",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("negated antecedent and positive condition coexist (Qodo 1a5d321e)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When service is not ready, never deploy production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production when service is ready",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stemmed antonym pairs mark different circumstances (Qodo 1eea19de)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When staging builds fail, never deploy", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy when production builds fail",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("trailing periods do not empty the schedule (Qodo a91fbcf4)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy production at 2am.", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production at 4am.",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
