@@ -3082,4 +3082,57 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("ship rewording hits a deploy ban (Qodo 7222453c)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy to production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always ship to production",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("differing quoted commands are distinct targets (Qodo dfb3e655)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run 'npm install'", { pinned: true });
+      const ok = await addMemoryEntry(cwd, {
+        text: "Always run 'npm test'",
+        category: "lesson",
+      });
+      assert.ok(ok.status === "added" || ok.status === "reinforced");
+      const clash = await addMemoryEntry(cwd, {
+        text: "Always execute 'npm install'",
+        category: "lesson",
+      });
+      assert.equal(clash.status, "rejected");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a possessive closer still closes its quote span (Qodo ff9cf17c)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Use 'npm's; Never deploy 'git'", { pinned: true });
+      const clash = await addMemoryEntry(cwd, {
+        text: "Always deploy 'git'",
+        category: "lesson",
+      });
+      assert.equal(clash.status, "rejected");
+      assert.match(clash.message, /contradicts pinned memory/i);
+      const ok = await addMemoryEntry(cwd, {
+        text: "Always deploy 'hg'",
+        category: "lesson",
+      });
+      assert.ok(ok.status === "added" || ok.status === "reinforced");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

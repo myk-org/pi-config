@@ -461,7 +461,17 @@ export function quotedMask(text: string, initialBanned: ReadonlySet<number> = ne
           out[i] = src[i]!;
         }
       } else if (ch === (QUOTE_PARTNER[quote] ?? quote)) {
-        if (!WORD_CHAR.test(src[i + 1] ?? "")) quote = null;
+        // Possessive 's after the closer (Qodo ff9cf17c): in Use 'npm's;
+        // the quote closes and the trailing s is the possessive — a
+        // DIRECT word char after the closer is an in-span contraction
+        // (the 't of 'can't be') and holds the span open, but s followed
+        // by a non-word char closes so the rest of the text stays
+        // visible to clause splitting and polarity detection.
+        const next = src[i + 1] ?? "";
+        const next2 = src[i + 2] ?? "";
+        const possessive =
+          (next === "s" || next === "S") && !WORD_CHAR.test(next2);
+        if (!WORD_CHAR.test(next) || possessive) quote = null;
         out[i] = "\x00";
       } else {
         out[i] = "\x00";
@@ -1260,7 +1270,15 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
           const objectDiff =
             negOnly.every((a) => trailingObjectDiff(neg, a, permRaw)) &&
             permOnly.every((b) => trailingObjectDiff(perm, b, negRaw));
-          if (stemmerOverMerge || allMidClause || objectDiff) {
+          // Quoted command targets (Qodo dfb3e655): differing quoted
+          // commands after a shared action verb are distinct targets —
+          // "Never run 'npm install'" coexists with "Always run 'npm
+          // test'"; when a quoted target is shared, the pair clashes.
+          const negQT = quotedTargets(neg);
+          const permQT = quotedTargets(perm);
+          const quotedTargetDiff =
+            negQT.length > 0 && permQT.length > 0 && !negQT.some((q) => permQT.includes(q));
+          if (stemmerOverMerge || allMidClause || objectDiff || quotedTargetDiff) {
             log.debug(
               "memory-write: distinct-target exclusion",
               negOnly.join("/"),
@@ -1749,12 +1767,33 @@ function permRelationTo(perm: string, coveredWords: string[]): string | null {
  *  are not distinct targets. */
 /** Action-verb synonym pairs, as STEMS (Qodo e8564269): run/execute,
  *  publish/release, deploy/ship, start/launch name the same action. */
-const ACTION_VERB_SYNONYMS: Array<[string, string]> = [
-  ["run", "execut"],
-  ["publish", "releas"],
-  ["deploy", "ship"],
-  ["start", "launch"],
-];
+// Entries are STEMS on both sides (Qodo 7222453c): every consumer
+// compares stem()-normalized words, and a raw "deploy" never matched
+// its own stem "deploi" — leaving the deploy/ship pair dead.
+const ACTION_VERB_SYNONYMS: Array<[string, string]> = (
+  [
+    ["run", "execute"],
+    ["publish", "release"],
+    ["deploy", "ship"],
+    ["start", "launch"],
+  ] as Array<[string, string]>
+).map(([a, b]) => [stem(a), stem(b)]);
+
+/** Quoted command targets (Qodo dfb3e655): quoted spans that follow an
+ *  action verb are the clause's command object — 'npm install' after
+ *  "run". Two rules whose command targets share NO quoted span govern
+ *  different commands and are distinct targets. */
+function quotedTargets(clause: string): string[] {
+  const out: string[] = [];
+  for (const m of clause.matchAll(/[‘“'"`]([^‘“'”"`]{1,80})['”"`]/g)) {
+    const before = clause.slice(0, m.index!).toLowerCase().match(/[a-z]+/g);
+    const prev = before?.[before.length - 1] ?? "";
+    if (ACTION_VERB_STEMS.has(stem(prev))) {
+      out.push(m[1]!.toLowerCase().replace(/\s+/g, " ").trim());
+    }
+  }
+  return out;
+}
 
 function quotedPayloadWords(clause: string): Set<string> {
   const set = new Set<string>();

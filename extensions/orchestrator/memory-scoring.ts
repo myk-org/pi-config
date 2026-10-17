@@ -676,7 +676,15 @@ const GRANT_PHRASE_RE: RegExp[] = [
 
 /** Detect one-off grant phrasing (shared by extractor and memory_add guardrail). */
 export function isGrantText(text: string): boolean {
-  return GRANT_PHRASE_RE.some((re) => re.test(text));
+  // Classification is logged (Qodo 64954ee5): the negation-aware grant
+  // patterns decide whether a permission-looking sentence is a durable
+  // rule or a one-off grant, and silent decisions left runtime
+  // diagnostics blind when the classification changed behavior.
+  const matched = GRANT_PHRASE_RE.find((re) => re.test(text));
+  if (matched) {
+    memLog.debug("memory-scoring: grant phrase detected", text.slice(0, 120), matched.source);
+  }
+  return matched !== undefined;
 }
 
 /**
