@@ -1556,6 +1556,56 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("reinforcing with an action warns from the merged trigger (Qodo 0c10e5eb)", async () => {
+    const cwd = makeCwd();
+    try {
+      const first = await addMemoryEntry(cwd, {
+        text: "bash needs enforcement",
+        category: "lesson",
+        trigger: "tool_name bash",
+      });
+      assert.equal(first.status, "added");
+      const second = await addMemoryEntry(cwd, {
+        text: "bash needs enforcement",
+        category: "lesson",
+        action: "block",
+      });
+      assert.match(second.message ?? "", /EVERY bash call/);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("decomposed accented possessives do not open quote spans (Qodo 1ec72614)", async () => {
+    const cwd = makeCwd();
+    try {
+      const nfd = "Cafe\u0301's rule: Never deploy production";
+      seedEntry(cwd, "lesson", nfd, { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("'only' inside a condition does not cut it short (Qodo d689acbf)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When only the release branch is ready, never deploy production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("many unmatched apostrophes do not overflow the mask (Qodo 2a41ba6b)", async () => {
     const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
     const many = "never use npm " + "'".repeat(5000) + " and always run tests";

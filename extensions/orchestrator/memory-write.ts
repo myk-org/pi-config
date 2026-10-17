@@ -300,8 +300,8 @@ export function quotedMask(text: string, initialBanned: ReadonlySet<number> = ne
   // Word-char classes are UNICODE (Qodo ad3da7c8): an apostrophe after an
   // accented letter (Beyoncé's) must not open a quote span — ASCII \w
   // would miss é and mask the rest of the text, hiding real prohibitions.
-  const WORD_CHAR = /[\p{L}\p{N}_\uD800-\uDFFF]/u;
-  const BOUNDARY_CHAR = /[\p{L}\p{N}_'"\u2018\u2019\u201c\u201d\uD800-\uDFFF]/u;
+  const WORD_CHAR = /[\p{L}\p{N}\p{M}_\uD800-\uDFFF]/u;
+  const BOUNDARY_CHAR = /[\p{L}\p{N}\p{M}_'"\u2018\u2019\u201c\u201d\uD800-\uDFFF]/u;
   const src = text.split("");
   const banned = new Set(initialBanned);
   // Iterative retry, not recursion (Qodo 2a41ba6b): each unclosed opener
@@ -523,6 +523,15 @@ function rawActionWords(clause: string): Set<string> {
 const LEADING_CONDITION_IDIOMS =
   /^(?:once\s+again|after\s+all|when\s+in\s+doubt|in\s+any\s+case|if\s+anything|when\s+all\s+is\s+said)\b/i;
 
+/** Polarity markers that END a leading condition (Qodo d689acbf): unlike
+ *  ACTION_MARKER_WORDS_RE this excludes qualifier and discourse words
+ *  (only, but, however, may, can, might, allow, ok, fine) that appear
+ *  INSIDE conditions — "When only the release branch is ready, never
+ *  deploy" must treat the whole span before "never" as the condition, not
+ *  cut it at "only" and lose the scoping. */
+const CONDITION_BOUNDARY_RE =
+  /\b(?:never|always|not|no|don'?t|do\s+not|doesn'?t|didn'?t|cannot|can'?t|won'?t|mustn'?t|must\s+not|forbidden|avoid|stop|allowed|permit(?:ted|s)?|okay|go\s+ahead|feel\s+free|fine\s+to|acceptable|safe\s+to)\b/i;
+
 /** Leading condition of a clause: the content words BEFORE the first
  *  polarity marker (live battery, #936). "When npm whoami fails with E401
  *  during a release, never continue publishing" — the words ahead of
@@ -531,12 +540,10 @@ const LEADING_CONDITION_IDIOMS =
  *  has words before its marker, but they are the action, not a condition.
  *  `escape` marks UNLESS-led clauses (Qodo 7c839ae6): "Unless the user
  *  says otherwise, never push" is a GENERAL ban whose condition is the
- *  escape hatch, not the scope — it inverts which permissions coexist.
- *  Uses String.search so the shared global marker regex's lastIndex is
- *  not consumed. */
+ *  escape hatch, not the scope — it inverts which permissions coexist. */
 function leadingCondition(clause: string): { words: Set<string>; escape: boolean } {
   const empty = { words: new Set<string>(), escape: false };
-  const idx = clause.search(ACTION_MARKER_WORDS_RE);
+  const idx = clause.search(CONDITION_BOUNDARY_RE);
   if (idx <= 0) return empty;
   const lead = clause.slice(0, idx);
   if (LEADING_CONDITION_IDIOMS.test(lead)) return empty;
@@ -988,15 +995,21 @@ function reinforcedTriggerWarning(
   input: AddMemoryInput,
   base: string | null,
 ): string | null {
-  if (!base || input.action) return base;
   try {
     const existing = loadScores(cwd).entries[entryHash(existingLine)];
-    if (!existing?.action) return base;
-    const effective =
+    if (!existing) return base;
+    // Warn from the EFFECTIVE merged entry in BOTH merge directions
+    // (Qodo 453a818e, 0c10e5eb): a duplicate that adds an action to an
+    // existing trigger activates it just as much as one that adds a
+    // trigger to an existing action — the writer must hear that the
+    // newly-live trigger is broad or ineffective either way.
+    const effectiveTrigger = input.trigger ?? existing.trigger;
+    const existingAction =
       existing.action === "run_after" && existing.actionCommand
         ? `run_after ${existing.actionCommand}`
         : existing.action;
-    return toolNameTriggerWarning(input.trigger, effective);
+    const effectiveAction = input.action ?? existingAction;
+    return toolNameTriggerWarning(effectiveTrigger, effectiveAction) ?? base;
   } catch {
     return base;
   }
