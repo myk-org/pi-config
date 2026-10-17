@@ -2664,4 +2664,47 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("weekday schedules intersect with named days (Qodo 2704dd42)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests in production on weekdays", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests in production on Monday",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("weekday and weekend schedules stay disjoint (Qodo 2704dd42)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests on weekends", { pinned: true });
+      const second = await addMemoryEntry(cwd, {
+        text: "Always run tests on weekdays",
+        category: "lesson",
+      });
+      assert.equal(second.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a quoted not-ready status is a value, not a negation (Qodo f81ae206)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When status is 'not-ready', never deploy to production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy to production when status is 'not-ready'",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

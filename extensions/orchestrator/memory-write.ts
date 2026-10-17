@@ -762,6 +762,11 @@ function leadingCondition(
   const quotedValues = [...rawLead.matchAll(/(?:\bis\b|\bare\b|=)\s*(['"][^'"]{1,60}['"])/gi)].map(
     (q) => q[1]!.toLowerCase(),
   );
+  // Negation is tested on the MASKED lead (Qodo f81ae206): a quoted
+  // status value like 'not-ready' names a state, not a negation — the
+  // raw text's "not" must not read as an antecedent negation when both
+  // rules quote the same value.
+  const maskedLead = quotedMask(rawLead);
   return {
     words,
     escape: m[1]!.toLowerCase() === "unless",
@@ -775,11 +780,11 @@ function leadingCondition(
     // "unhealthy and not ready" negates only "ready" — an un-prefixed
     // form of those words in a permission ("unready") is the SAME state.
     negated:
-      /\b(?:not|never|n['’]t)\b/i.test(rawLead) && !/\bnot only\b/i.test(rawLead),
+      /\b(?:not|never|n['’]t)\b/i.test(maskedLead) && !/\bnot only\b/i.test(maskedLead),
     negatedWords: (() => {
-      const nm = /\b(?:not|never|n['’]t)\b/i.exec(rawLead);
-      if (!nm || /\bnot only\b/i.test(rawLead)) return [] as string[];
-      const after = contentWords(rawLead.slice(nm.index! + nm[0].length));
+      const nm = /\b(?:not|never|n['’]t)\b/i.exec(maskedLead);
+      if (!nm || /\bnot only\b/i.test(maskedLead)) return [] as string[];
+      const after = contentWords(maskedLead.slice(nm.index! + nm[0].length));
       return [...words].filter((w) => after.has(w));
     })(),
   };
@@ -906,20 +911,50 @@ function scheduleSpans(clause: string): ScheduleSpan[] {
   return spans;
 }
 
+/** Weekday schedule sets (Qodo 2704dd42): "on weekdays" covers
+ *  Monday–Friday, "on weekends" Saturday–Sunday, and a bare weekday
+ *  covers itself — two rules clash when their weekday coverage
+ *  intersects. Null when the clause names no weekday at all. */
+const WEEKDAY_EXPANSION: Record<string, string[]> = {
+  weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+  weekday: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+  weekends: ["saturday", "sunday"],
+  weekend: ["saturday", "sunday"],
+};
+
+function weekdaySet(clause: string): Set<string> | null {
+  const masked = quotedMask(clause);
+  const days = new Set<string>();
+  for (const m of masked.matchAll(/\b(weekdays?|weekends?|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi)) {
+    const tok = m[1]!.toLowerCase();
+    for (const d of WEEKDAY_EXPANSION[tok] ?? [tok]) days.add(d);
+  }
+  return days.size > 0 ? days : null;
+}
+
 /** True when ANY span of one clause intersects ANY span of the other —
  *  equivalent points ("2am" vs "2:00am"), points inside bounds or
  *  ranges, overlapping bounds, and range intersections all count;
- *  touching strict bounds ("before 3am" vs "after 3am") do not. */
+ *  touching strict bounds ("before 3am" vs "after 3am") do not. Weekday
+ *  coverage intersects on the day-of-week axis (Qodo 2704dd42):
+ *  "on weekdays" and "on Monday" share Monday and clash, while weekdays
+ *  and weekends stay disjoint. */
 function schedulesOverlap(aClause: string, bClause: string): boolean {
   const a = scheduleSpans(aClause);
   const b = scheduleSpans(bClause);
-  return a.some((x) =>
+  const timeOverlap = a.some((x) =>
     b.some(
       (y) =>
         (x.lo < y.hi || (x.lo === y.hi && x.loInc && y.hiInc)) &&
         (y.lo < x.hi || (y.lo === x.hi && y.loInc && x.hiInc)),
     ),
   );
+  if (timeOverlap) return true;
+  const da = weekdaySet(aClause);
+  const db = weekdaySet(bClause);
+  if (!da || !db) return false;
+  for (const d of da) if (db.has(d)) return true;
+  return false;
 }
 
 /** Masked action words: quoted payload content does not count (Qodo
