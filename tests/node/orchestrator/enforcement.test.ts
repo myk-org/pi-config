@@ -172,6 +172,30 @@ describe("subagent tool_result error propagation into file_modified matching", (
     assert.match(texts, /ENFORCEMENT WARNING/i);
   });
 
+  it("a subagent edit with NO result does not fire it (Qodo 2d02b5d5)", async () => {
+    const event = {
+      type: "tool_result",
+      toolName: "subagent",
+      content: [],
+      input: {},
+      details: {
+        results: [
+          {
+            messages: [
+              {
+                role: "assistant",
+                content: [{ type: "toolCall", id: "call-1", name: "edit", arguments: { path: "docs/foo.md" } }],
+              },
+              // No toolResult at all — the child exited before emitting it.
+            ],
+          },
+        ],
+      },
+    };
+    const texts = await runToolResult(event);
+    assert.doesNotMatch(texts, /ENFORCEMENT WARNING/i);
+  });
+
   it("the failed-edit skip diagnostic names the tool and path (Qodo 3a4b6c2d)", () => {
     const msg = failedFileEditSkipMessage("edit", "docs/foo.md");
     assert.match(msg, /failed edit/);

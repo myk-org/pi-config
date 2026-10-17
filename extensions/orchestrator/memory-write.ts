@@ -291,6 +291,28 @@ const CLIPPING_EXPANSIONS: Record<string, string> = {
   k8s: "kubernetes",
 };
 
+/** Irregular noun plurals (Qodo ea62a65f): person/people, man/men —
+ *  stem rules never join them, so opposing rules for the same target
+ *  fell through the distinct-target exclusion. */
+const IRREGULAR_PLURALS: Array<[string, string]> = [
+  ["person", "people"],
+  ["man", "men"],
+  ["woman", "women"],
+  ["child", "children"],
+  ["mouse", "mice"],
+  ["goose", "geese"],
+  ["foot", "feet"],
+  ["tooth", "teeth"],
+  ["criterion", "criteria"],
+  ["phenomenon", "phenomena"],
+];
+
+function isIrregularPlural(a: string, b: string): boolean {
+  return IRREGULAR_PLURALS.some(
+    ([x, y]) => (a === x && b === y) || (a === y && b === x),
+  );
+}
+
 function contentWords(text: string): Set<string> {
   // Lowercase content words with naive plural stripping, for overlap scoring
   // (Qodo 10865d53: this doc was stranded above the stem helper).
@@ -1190,6 +1212,11 @@ function clipCanonical(word: string): string {
 
 function isVariantWord(a: string, b: string): boolean {
   if (a === b) return true;
+  // Irregular plurals are the SAME target (Qodo ea62a65f):
+  // person/people share nothing morphological — without this check the
+  // distinct-target exclusion let opposing rules for the same noun
+  // coexist.
+  if (isIrregularPlural(a, b)) return true;
   // Clipping pairs are the SAME target by declaration (Qodo 7ed1ea1e,
   // 9253c632): k8s→kubernetes and docs→doc→documentation stem-converge
   // via the table, but the RAW forms are not prefix- or vowel-affine —

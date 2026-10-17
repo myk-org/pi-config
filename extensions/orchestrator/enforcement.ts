@@ -767,9 +767,18 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         // FAILED edit/write modified nothing, so its file_modified triggers
         // must be skipped exactly like a failed top-level call. The result
         // messages carry role "toolResult" entries with toolCallId/isError.
+        // A call with NO result at all (Qodo 2d02b5d5) — the child exited
+        // after emitting the call but before its result — has an UNKNOWN
+        // outcome, so it must not count as a successful modification
+        // either: file_modified warnings fire only for calls that
+        // explicitly succeeded.
         const erroredCalls = new Set<string>();
+        const resolvedCalls = new Set<string>();
         for (const msg of msgs) {
           if (msg?.role !== "toolResult") continue;
+          if (typeof (msg as any).toolCallId === "string") {
+            resolvedCalls.add((msg as any).toolCallId);
+          }
           if ((msg as any).isError === true && typeof (msg as any).toolCallId === "string") {
             erroredCalls.add((msg as any).toolCallId);
           }
@@ -784,6 +793,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             const partToolArgs = part?.arguments || part?.args;
             const partCallId = part?.id ?? part?.toolCallId;
             const partIsError = partCallId !== undefined && erroredCalls.has(partCallId);
+            const partUnresolved = partCallId !== undefined && !resolvedCalls.has(partCallId);
             if (partToolName === "bash" && partToolArgs?.command) {
               bashCommands.push(partToolArgs.command);
             }
@@ -803,7 +813,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
                 nonBlockEntries,
                 partToolName,
                 partToolArgs || {},
-                partIsError,
+                partIsError || partUnresolved,
               );
               for (const m of toolMatches) {
                 if (!seen.has(m.rule.hash)) {
