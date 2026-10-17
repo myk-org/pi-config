@@ -134,6 +134,12 @@ const SHELL_COMMAND_TOOL_NAMES = new Set([
 function toolNameTriggerWarning(trigger: string | undefined, action: string | undefined): string | null {
   if (!trigger?.startsWith("tool_name ")) return null;
   const tool = trigger.slice("tool_name ".length).trim();
+  // No action = dead trigger (Qodo 792c27a3): enforcement loading requires
+  // BOTH a trigger and an action, so a bare tool_name trigger never fires —
+  // say that instead of describing enforcement that will not occur.
+  if (!action) {
+    return `warning: trigger "tool_name ${tool}" has no action — it will never fire; add an action (block, warn, or run_after <command>) for enforcement to load it`;
+  }
   if (SHELL_COMMAND_TOOL_NAMES.has(tool)) {
     return `warning: trigger "tool_name ${tool}" names a shell command, not a pi tool — ${tool} runs inside bash, so this trigger never fires; use a bash_contains pattern for the specific command instead`;
   }
@@ -236,7 +242,7 @@ const QUOTE_PARTNER: Record<string, string> = {
 };
 const OPENING_QUOTES = new Set(["'", '"', "`", "\u201c", "\u2018"]);
 
-function quotedMask(text: string, banIndex = -1): string {
+function quotedMask(text: string, banned: ReadonlySet<number> = new Set()): string {
   // Word-char classes are UNICODE (Qodo ad3da7c8): an apostrophe after an
   // accented letter (Beyoncé's) must not open a quote span — ASCII \w
   // would miss é and mask the rest of the text, hiding real prohibitions.
@@ -249,7 +255,7 @@ function quotedMask(text: string, banIndex = -1): string {
   for (let i = 0; i < src.length; i++) {
     const ch = src[i]!;
     if (quote === null) {
-      if (i !== banIndex && OPENING_QUOTES.has(ch) && !BOUNDARY_CHAR.test(i > 0 ? src[i - 1]! : "")) {
+      if (!banned.has(i) && OPENING_QUOTES.has(ch) && !BOUNDARY_CHAR.test(i > 0 ? src[i - 1]! : "")) {
         quote = ch;
         openIndex = i;
         out[i] = "\x00";
@@ -261,13 +267,16 @@ function quotedMask(text: string, banIndex = -1): string {
       out[i] = "\x00";
     }
   }
-  if (quote !== null && banIndex !== openIndex) {
+  if (quote !== null && !banned.has(openIndex)) {
     // Unclosed quote (Qodo c23b9d86): an elision like 'til or a stray
     // apostrophe opened a span that never closed and would mask the rest
     // of the text — hiding later separators and polarity markers. Redo the
-    // pass treating that opener as plain content; each pass bans one more
-    // opener, so this terminates.
-    return quotedMask(text, openIndex);
+    // pass treating that opener as plain content. Banned openers ACCUMULATE
+    // across retries (Qodo b0c6383f): banning only the latest one let two
+    // stray apostrophes alternate forever and overflow the stack.
+    const nextBanned = new Set(banned);
+    nextBanned.add(openIndex);
+    return quotedMask(text, nextBanned);
   }
   return out.join("");
 }
@@ -284,10 +293,14 @@ function splitClauses(text: string): string[] {
   let mask = quotedMask(text);
   // Paired dashes are parenthetical (Qodo 9e179121): "NEVER — under any
   // circumstances — push to main" — a dash-bounded segment WITHOUT a
-  // polarity marker is a modifier of the surrounding action, not its own
-  // clause. Neutralize those dash PAIRS in the mask (same length) so they
-  // stop splitting; a dash pair whose content carries a polarity marker
-  // stays a separator, and so does every unpaired dash.
+  // polarity marker, whose continuation after the pair also carries no
+  // marker, is a modifier of the surrounding action, not its own clause
+  // (Qodo 20adf2da: when the text after the closing dash starts its own
+  // polarized instruction — "… — always deploy production" — the dashes
+  // separate independent instructions and must keep splitting).
+  // Neutralize qualifying dash PAIRS in the mask (same length); a pair
+  // whose content carries a polarity marker stays a separator, and so does
+  // every unpaired dash.
   const dashIdx: number[] = [];
   for (let i = 0; i < mask.length; i++) {
     if (mask[i] === "\u2014" || mask[i] === "\u2013") dashIdx.push(i);
@@ -298,7 +311,23 @@ function splitClauses(text: string): string[] {
       const a = dashIdx[p]!;
       const b = dashIdx[p + 1]!;
       const between = mask.slice(a + 1, b);
-      if (!NEGATION_RE.test(between) && !PERMIT_RE.test(between) && !ONLY_PERMIT_RE.test(between)) {
+      const afterEnd = (() => {
+        let e = mask.length;
+        for (let i = b + 1; i < mask.length; i++) {
+          const c = mask[i]!;
+          if (c === ";" || c === "\n" || c === "\u2014" || c === "\u2013") {
+            e = i;
+            break;
+          }
+        }
+        return e;
+      })();
+      const after = mask.slice(b + 1, afterEnd);
+      const markerFree =
+        !NEGATION_RE.test(between) && !PERMIT_RE.test(between) && !ONLY_PERMIT_RE.test(between);
+      const continuation =
+        !NEGATION_RE.test(after) && !PERMIT_RE.test(after) && !ONLY_PERMIT_RE.test(after);
+      if (markerFree && continuation) {
         chars[a] = "\x00";
         chars[b] = "\x00";
       }
@@ -306,11 +335,30 @@ function splitClauses(text: string): string[] {
     mask = chars.join("");
   }
   const bounds: number[] = [0];
-  const re = /[\n;\u2014\u2013]|\bbut\b|\bhowever\b/g;
+  // Case-insensitive (Qodo eb263200): "However," and "BUT" must split
+  // exactly like their lowercase spellings.
+  const re = /[\n;\u2014\u2013]|\bbut\b|\bhowever\b/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(mask))) {
     bounds.push(m.index + m[0].length);
   }
+  // Coordinated clauses (Qodo 1ad018b0): "Never use npm and always run
+  // tests" — an "and"/"or" whose continuation carries a polarity marker
+  // starts a new clause. "use npm and pip" (marker-free continuation)
+  // stays one clause.
+  const andRe = /\b(?:and|or)\b/gi;
+  while ((m = andRe.exec(mask))) {
+    const start = m.index + m[0].length;
+    let nextBound = mask.length;
+    for (const b of bounds) {
+      if (b > start && b < nextBound) nextBound = b;
+    }
+    const tail = mask.slice(start, nextBound);
+    if (NEGATION_RE.test(tail) || PERMIT_RE.test(tail) || ONLY_PERMIT_RE.test(tail)) {
+      bounds.push(start);
+    }
+  }
+  bounds.sort((x, y) => x - y);
   const clauses: string[] = [];
   for (let i = 0; i < bounds.length; i++) {
     const raw = text.slice(bounds[i]!, bounds[i + 1] ?? text.length).trim();
@@ -403,28 +451,34 @@ function clausesAgree(x: string, y: string): boolean {
 function polarizedClausesClash(negA: string[], permA: string[], negB: string[], permB: string[]): boolean {
   for (const neg of negA) {
     for (const perm of permB) {
-      // Negation side masked (Qodo c92087ed), permission side raw: quoted
-      // content inside a prohibition is incidental, while a quoted tool
-      // name is the permitted object.
-      const negWords = maskedActionWords(neg);
-      const permWords = actionWords(perm);
-      const shared = sharedCount(negWords, permWords);
-      const shorter = Math.min(negWords.size, permWords.size);
+      // Candidate threshold MASKED on both sides (Qodo 29a4da4e, c92087ed):
+      // quoted content is never the action — an example inside a
+      // permission ("document the phrase \"deploy to production\"") must
+      // not supply overlap, and an example inside a prohibition must not
+      // either.
+      const negMasked = maskedActionWords(neg);
+      const permMasked = maskedActionWords(perm);
+      const shared = sharedCount(negMasked, permMasked);
+      const shorter = Math.min(negMasked.size, permMasked.size);
       if (!(shared >= 2 || (shared >= 1 && shared === shorter))) continue;
-      // Distinct-target exclusion (Qodo 6d0214c7): exactly one unshared
-      // word on EACH side ("deploy production builds" vs "deploy staging
-      // builds") means different specific targets with an otherwise
-      // identical action — complementary, not conflicting. A compound
-      // context proving a swap (one side's diff empty, Qodo 8ec45667)
-      // still clashes, because this exclusion needs BOTH diffs non-empty.
-      const negOnly = [...negWords].filter((w) => !permWords.has(w));
-      const permOnly = [...permWords].filter((w) => !negWords.has(w));
+      // Distinct-target exclusion on RAW words (Qodo 4fe7b1c3, 6d0214c7):
+      // quoted tool names ARE the targets — "never use 'npm'" vs "always
+      // use 'uv'" differ by exactly one mid-clause word per side and are
+      // complementary; identical raw actions (same quoted tool both sides)
+      // have empty diffs and still clash. The exclusion needs BOTH diffs
+      // non-empty, exactly one word each, not morphological variants
+      // (run/running), and each word sitting BETWEEN shared words in its
+      // clause — trailing qualifiers and leading temporals never qualify.
+      const negRaw = actionWords(neg);
+      const permRaw = actionWords(perm);
+      const negOnly = [...negRaw].filter((w) => !permRaw.has(w));
+      const permOnly = [...permRaw].filter((w) => !negRaw.has(w));
       if (
         negOnly.length === 1 &&
         permOnly.length === 1 &&
         !isVariantWord(negOnly[0]!, permOnly[0]!) &&
-        diffWordIsMidClause(neg, negOnly[0]!, permWords) &&
-        diffWordIsMidClause(perm, permOnly[0]!, negWords)
+        diffWordIsMidClause(neg, negOnly[0]!, permRaw) &&
+        diffWordIsMidClause(perm, permOnly[0]!, negRaw)
       ) {
         continue;
       }

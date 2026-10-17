@@ -1098,4 +1098,105 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("coordinated rules split on and/or when the tail is polarized (Qodo 1ad018b0)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never use npm and always run tests", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Never run tests",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("different quoted tools are complementary (Qodo 4fe7b1c3)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never use 'npm' to install dependencies", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always use 'uv' to install dependencies",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("two stray apostrophes do not crash the write (Qodo b0c6383f)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Logs 'til 'noon are noisy; never trust them", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always trust them",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("dash-separated instructions stay separate clauses (Qodo 20adf2da)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy staging — document release — always deploy production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("tool_name without an action warns it will never fire (Qodo 792c27a3)", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Bash calls are the only tool allowed here",
+        category: "lesson",
+        trigger: "tool_name bash",
+      });
+      assert.equal(result.status, "added");
+      assert.match(result.message, /has no action — it will never fire/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("capitalized However still splits clauses (Qodo eb263200)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never push to main. However, you can push to feature branches.", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always push to feature branches",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("quoted examples in a permission are not its action (Qodo 29a4da4e)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy to production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: 'Always document the phrase "deploy to production" in the runbook',
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
