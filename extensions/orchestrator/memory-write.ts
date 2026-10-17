@@ -211,7 +211,7 @@ function stem(word: string): string {
   // handling keeps the pair consistent — expanding at the end left k8s →
   // "kubernetes" unstemmed while a literal "kubernetes" stemmed to
   // "kubernet", so the synonym never matched.
-  let w = CLIPPING_EXPANSIONS[word] ?? word;
+  let w = clipExpansion(word) ?? word;
   // Short-suffix threshold (Qodo d14f222c, f5cdc461): inflected forms of
   // SHORT verbs — use/using/used, move/moving — must reach their base.
   // ing/ed/es relax to suffix+1 ("using" strips), while a bare "s" keeps
@@ -266,7 +266,7 @@ function stem(word: string): string {
   // Second expansion pass (Qodo 9253c632): plurals of clippings — repos,
   // apps, docs, configs — miss the pre-strip table and only lose their s;
   // expanding the stripped base rejoins them with the singular expansion.
-  w = CLIPPING_EXPANSIONS[w] ?? w;
+  w = clipExpansion(w) ?? w;
   // y/i convergence (Qodo f5cdc461) runs AFTER expansion so expanded
   // forms normalize too: "entries" strips -es to "entri" while singular
   // "entry" kept its y, and repo/repos both expand to "repository" —
@@ -1145,6 +1145,26 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
           );
           continue;
         }
+        // Condition-carrying permissions must still OPPOSE the ban's
+        // ACTION (Qodo 2bf17dc7): "When deploying service to production,
+        // never use npm" vs "Always deploy service to production" — the
+        // permission carries the whole condition, but its action IS the
+        // condition; the ban restricts HOW to deploy, not WHETHER. Strip
+        // the condition words from both masked action sets — the clash
+        // needs at least one shared word OUTSIDE the condition.
+        const negActionOnly = new Set([...negMasked].filter((w) => !negCond.words.has(w)));
+        const permActionOnly = new Set([...permMasked].filter((w) => !negCond.words.has(w)));
+        if (sharedCount(negActionOnly, permActionOnly) === 0) {
+          log.debug(
+            "memory-write: condition-carrying permission does not oppose the ban's action",
+            neg.slice(0, 80),
+            "vs",
+            perm.slice(0, 80),
+            "condition",
+            [...negCond.words].join("/"),
+          );
+          continue;
+        }
       }
       // Trailing schedule qualifiers (Qodo 16473e6e): a prohibition
       // scoped to one schedule ("never run tests at 2am") and a permission
@@ -1198,13 +1218,19 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
  *  so a pinned "Never store bases" wrongly rejected "Always store bass".
  *  Stem equality only counts with RAW affinity: identical, prefix
  *  extension (run/running), or final-vowel mutation (carri/carry). */
-/** Clip-aware canonical form of a surface word (Qodo 9253c632): tries
- *  the word and its singular forms against the clipping table so plural
- *  clippings (docs, repos, apps) canonicalize to the same expansion as
- *  the singular and the full form. */
+/** Safe clipping lookup (Qodo c53ab300): a plain object literal inherits
+ *  Object.prototype, so CLIPPING_EXPANSIONS["constructor"] resolves to the
+ *  inherited function and the next endsWith throws — every dictionary
+ *  read on an arbitrary word must be own-property guarded. */
+function clipExpansion(word: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(CLIPPING_EXPANSIONS, word)
+    ? CLIPPING_EXPANSIONS[word]
+    : undefined;
+}
+
 function clipCanonical(word: string): string {
   for (const cand of [word, word.replace(/s$/, ""), word.replace(/es$/, "")]) {
-    const exp = CLIPPING_EXPANSIONS[cand];
+    const exp = clipExpansion(cand);
     if (exp) return exp;
   }
   return word;

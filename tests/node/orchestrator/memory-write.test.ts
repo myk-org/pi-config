@@ -2538,4 +2538,40 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("a condition-carrying permission with a different action coexists (Qodo 2bf17dc7)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When deploying service to production, never use npm", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy service to production",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+      // The counter-case still clashes: same condition, opposite action.
+      seedEntry(cwd, "lesson", "Always use npm when deploying service to production", { pinned: true });
+      const second = await addMemoryEntry(cwd, {
+        text: "When deploying service to production, never use npm",
+        category: "lesson",
+      });
+      assert.equal(second.status, "rejected");
+      assert.match(second.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("prototype keys like constructor do not crash the write (Qodo c53ab300)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Always document the constructor option", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Never document the constructor option",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
