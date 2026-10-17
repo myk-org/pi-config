@@ -960,8 +960,11 @@ function schedulesOverlap(aClause: string, bClause: string): boolean {
     return shared;
   }
   if (timeOverlap) return true;
-  if (!da || !db) return false;
-  for (const d of da) if (db.has(d)) return true;
+  // A clock-time schedule with no weekday applies EVERY day, so it
+  // intersects a weekday-scoped rule (Qodo 980508da): "Never deploy at
+  // 2am" clashes with "Always deploy on Monday" — Monday has a 2am.
+  if (a.length > 0 && db) return true;
+  if (b.length > 0 && da) return true;
   return false;
 }
 
@@ -1781,6 +1784,12 @@ function reinforcedTriggerWarning(
   try {
     const existing = loadScores(cwd).entries[entryHash(existingLine)];
     if (!existing) return base;
+    // A plain restatement configures nothing (Qodo e40523f7): when the
+    // input carries no trigger and no action, the effective enforcement
+    // comes entirely from the existing entry — the writer already heard
+    // its advisory when they wrote it, and repeating it on every
+    // reinforcement is noise.
+    if (!input.trigger && !input.action) return base;
     // Warn from the EFFECTIVE merged entry in BOTH merge directions
     // (Qodo 453a818e, 0c10e5eb): a duplicate that adds an action to an
     // existing trigger activates it just as much as one that adds a

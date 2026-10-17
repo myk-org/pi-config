@@ -2720,4 +2720,33 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("a weekday permission intersects a time-only ban (Qodo 980508da)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy at 2am", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy on Monday",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a plain restatement repeats no trigger advisory (Qodo e40523f7)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Always inspect build logs", { pinned: true, trigger: "tool_name bash", action: "block" });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always inspect build logs",
+        category: "lesson",
+      });
+      assert.equal(result.status, "reinforced");
+      assert.doesNotMatch(result.message ?? "", /over-broad|never fire/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
