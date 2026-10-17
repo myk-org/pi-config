@@ -690,29 +690,39 @@ function leadingCondition(clause: string): { words: Set<string>; escape: boolean
   return { words, escape: m[1]!.toLowerCase() === "unless" };
 }
 
+/** Time-like qualifier words (Qodo 4ff8e53d): a trailing schedule must
+ *  reference a TIME — clock times, weekdays, or calendar words — for the
+ *  disjoint-schedule coexistence. "on production" is a place and "after
+ *  review" an event; only a time-scoped ban may coexist with a permission
+ *  scoped elsewhere. */
+const TIMEWORD_RE =
+  /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekends?|weekdays?|midnight|noon|night|morning|evening|afternoon|hours?|daily|weekly|monthly)\b|\d{1,2}(?::\d{2})?(?:am|pm)\b/i;
+
 /** Trailing schedule qualifier (Qodo 16473e6e): content words after the
  *  LAST polarity marker introduced by a temporal preposition — "never run
  *  tests at 2am" carries the schedule {am}. A prohibition and a permission
  *  scoped to DISJOINT trailing schedules describe different circumstances
- *  and coexist. */
-function trailingCondition(clause: string): Set<string> {
+ *  and coexist. `timeLike` marks qualifiers that reference a TIME (Qodo
+ *  4ff8e53d) — only those gate the clash. */
+function trailingCondition(clause: string): { words: Set<string>; timeLike: boolean } {
+  const empty = { words: new Set<string>(), timeLike: false };
   const masked = quotedMask(clause);
   const markers = [...masked.matchAll(ACTION_MARKER_WORDS_RE)];
-  if (markers.length === 0) return new Set<string>();
+  if (markers.length === 0) return empty;
   const last = markers[markers.length - 1]!;
   const tail = masked.slice(last.index! + last[0].length).trim();
   const tm =
     /\b(?:at|before|after|during|until|till|by|between|upon|past|since|on)\s+([a-z0-9\s\x00]*)$/i.exec(
       tail,
     );
-  if (!tm) return new Set<string>();
+  if (!tm) return empty;
   // Digit-aware raw tokens, stemmed but NOT stop-word filtered: "2am"
   // tokenizes to "am" in the letter-led content tokenizer and "am" is a
   // stop word, which emptied the schedule set (Qodo 16473e6e live debug).
   const tokens = (tm[1]!.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
     (w) => w.length >= 2,
   );
-  return new Set<string>(tokens.map((w) => stem(w)));
+  return { words: new Set<string>(tokens.map((w) => stem(w))), timeLike: TIMEWORD_RE.test(tm[1]!) };
 }
 
 /** Parse a clock time ("2am", "3pm", "14:00") to minutes past midnight. */
@@ -731,19 +741,31 @@ function parseTimeToken(tok: string): number | null {
 /** True when a POINT schedule ("at 2am") falls inside a BOUND schedule
  *  ("before 3am", "after 1am") of the OTHER clause — the schedules
  *  overlap even though their time tokens differ (Qodo c5f680b8):
- *  "never run tests at 2am" must reject "always run tests before 3am". */
+ *  "never run tests at 2am" must reject "always run tests before 3am".
+ *  EVERY point alternative is checked (Qodo 205f7330): "at 4am or at 2am"
+ *  must catch a bound covering the second time. Deadlines are inclusive
+ *  where the word says so (Qodo c3f36450): by/until include the moment,
+ *  since includes its start; before/after stay strict. */
 function pointWithinBound(pointClause: string, boundClause: string): boolean {
-  const point = /\bat\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)\b/i.exec(quotedMask(pointClause));
-  if (!point) return false;
   const bound =
     /\b(before|by|until|after|since|past)\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)\b/i.exec(
       quotedMask(boundClause),
     );
   if (!bound) return false;
-  const p = parseTimeToken(point[1]!);
   const b = parseTimeToken(bound[2]!);
-  if (p === null || b === null) return false;
-  return /^(?:before|by|until)$/i.test(bound[1]!) ? p < b : p > b;
+  if (b === null) return false;
+  const rel = bound[1]!.toLowerCase();
+  const points = [
+    ...quotedMask(pointClause).matchAll(/\bat\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)\b/gi),
+  ];
+  for (const point of points) {
+    const p = parseTimeToken(point[1]!);
+    if (p === null) continue;
+    const within =
+      rel === "before" ? p < b : rel === "after" || rel === "past" ? p > b : rel === "since" ? p >= b : p <= b;
+    if (within) return true;
+  }
+  return false;
 }
 
 /** Masked action words: quoted payload content does not count (Qodo
@@ -939,23 +961,23 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       // describe different circumstances and coexist; overlapping or
       // absent schedules keep the clash.
       const negTrail = trailingCondition(neg);
-      if (negTrail.size > 0) {
+      if (negTrail.words.size > 0 && negTrail.timeLike) {
         const permTrail = trailingCondition(perm);
-        const scheduleOverlap = [...negTrail].some((w) => permTrail.has(w));
+        const scheduleOverlap = [...negTrail.words].some((w) => permTrail.words.has(w));
         // Temporal inclusion (Qodo c5f680b8): different time tokens do not
         // mean disjoint schedules — a point "at 2am" lies inside "before
         // 3am", so the schedules overlap and the clash stands.
         const inclusion = pointWithinBound(neg, perm) || pointWithinBound(perm, neg);
-        if (permTrail.size > 0 && !scheduleOverlap && !inclusion) {
+        if (permTrail.words.size > 0 && !scheduleOverlap && !inclusion) {
           log.debug(
             "memory-write: disjoint trailing schedules coexist",
             neg.slice(0, 80),
             "vs",
             perm.slice(0, 80),
             "schedules",
-            [...negTrail].join("/"),
+            [...negTrail.words].join("/"),
             "vs",
-            [...permTrail].join("/"),
+            [...permTrail.words].join("/"),
           );
           continue;
         }
@@ -1010,6 +1032,9 @@ function isVariantWord(a: string, b: string): boolean {
   // use/using (e↔ing verb alternation). An unrelated -ss base whose stem
   // collided — bases/bass — matches neither rule and stays distinct.
   if (a === b.replace(/y$/, "ies") || b === a.replace(/y$/, "ies")) return true;
+  // y→ied verb inflection (Qodo ba51cf4e): apply/applied, study/studied —
+  // stem-equal pairs whose surface forms differ only in the inflection.
+  if (a === b.replace(/y$/, "ied") || b === a.replace(/y$/, "ied")) return true;
   const s = stem(a);
   if ((a === `${s}ing` && b === `${s}e`) || (b === `${s}ing` && a === `${s}e`)) return true;
   const [x, y] = a.length <= b.length ? [a, b] : [b, a];
@@ -1219,7 +1244,13 @@ export async function findContradiction(
     // (≤ 2 content words); the clause-level clash thresholds still apply.
     const shortPair =
       contentWords(text).size <= 2 && contentWords(candidate.text).size <= 2;
-    if (!(shared >= 2 || (vectorConfirmed && shared >= 1) || (shortPair && shared >= 1))) continue;
+    // Time-scoped rules (Qodo 205f7330): clock-time tokens tokenize to the
+    // stop word "am"/"pm", so a time-scoped pair can corroborate on the
+    // action alone — "Never deploy at 4am or at 2am" vs "Always deploy
+    // before 3am" shares only "deploy", yet the clause gate's inclusion
+    // logic must see it.
+    const timeScoped = TIMEWORD_RE.test(text) && TIMEWORD_RE.test(candidate.text);
+    if (!(shared >= 2 || (vectorConfirmed && shared >= 1) || (shortPair && shared >= 1) || (timeScoped && shared >= 1))) continue;
     if (!polarityClash(text, candidate.text)) continue;
     const similarity = similarityByText.get(`${candidate.category}:${candidate.text}`) ?? 0;
     conflicts.push({ candidate, score: similarity * 10 + shared });
