@@ -1729,6 +1729,28 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("curly-apostrophe contractions are negations (Qodo 375ff320)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "You can’t deploy production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+      seedEntry(cwd, "lesson", "Don’t push to main", { pinned: true });
+      const second = await addMemoryEntry(cwd, {
+        text: "Always push to main",
+        category: "lesson",
+      });
+      assert.equal(second.status, "rejected");
+      assert.match(second.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("many unmatched apostrophes do not overflow the mask (Qodo 2a41ba6b)", async () => {
     const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
     const many = "never use npm " + "'".repeat(5000) + " and always run tests";

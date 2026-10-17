@@ -155,9 +155,12 @@ function toolNameTriggerWarning(trigger: string | undefined, action: string | un
 
 // ── Contradiction gate ─────────────────────────────────────────────────────
 
-/** Prohibition markers — text forbids an action. */
+/** Prohibition markers — text forbids an action. Contraction
+ *  apostrophes accept BOTH straight and curly forms (Qodo 375ff320):
+ *  "You can’t deploy" with a typographic apostrophe is a prohibition
+ *  exactly like "can't". */
 const NEGATION_RE =
-  /\b(never|not|no|don'?t|do not|doesn'?t|didn'?t|cannot|can'?t|won'?t|mustn'?t|must not|forbidden|avoid|stop)\b/i;
+  /\b(never|not|no|don['’]?t|do not|doesn['’]?t|didn['’]?t|cannot|can['’]?t|won['’]?t|mustn['’]?t|must not|forbidden|avoid|stop)\b/i;
 /** Permission markers — text allows an action. "always" is a permit by
  *  force: "always use X" vs "never use X" is the canonical flip, and
  *  without it the near-duplicate path silently REINFORCES the opposite
@@ -502,7 +505,7 @@ function permissionClauses(text: string): string[] {
  *  action — polarity words never count toward action overlap, and a clash
  *  is not skipped just because one clause adds objects the other omits. */
 const ACTION_MARKER_WORDS_RE =
-  /\b(?:never|always|not|no|don'?t|do\s+not|doesn'?t|didn'?t|cannot|can'?t|won'?t|mustn'?t|must\s+not|forbidden|avoid|stop|can|may|might|allowed|allow|permits?|permitted|okay|ok|go\s+ahead|feel\s+free|fine|acceptable|safe\s+to|only|but|however)\b/gi;
+  /\b(?:never|always|not|no|don['’]?t|do\s+not|doesn['’]?t|didn['’]?t|cannot|can['’]?t|won['’]?t|mustn['’]?t|must\s+not|forbidden|avoid|stop|can|may|might|allowed|allow|permits?|permitted|okay|ok|go\s+ahead|feel\s+free|fine|acceptable|safe\s+to|only|but|however)\b/gi;
 
 function actionWords(clause: string): Set<string> {
   return contentWords(clause.replace(ACTION_MARKER_WORDS_RE, " "));
@@ -544,7 +547,7 @@ const LEADING_CONDITION_IDIOMS =
  *  deploy" must treat the whole span before "never" as the condition, not
  *  cut it at "only" and lose the scoping. */
 const CONDITION_BOUNDARY_RE =
-  /\b(?:never|always|not|no|don'?t|do\s+not|doesn'?t|didn'?t|cannot|can'?t|won'?t|mustn'?t|must\s+not|forbidden|avoid|stop|allowed|permit(?:ted|s)?|okay|go\s+ahead|feel\s+free|fine\s+to|acceptable|safe\s+to)\b/i;
+  /\b(?:never|always|not|no|don['’]?t|do\s+not|doesn['’]?t|didn['’]?t|cannot|can['’]?t|won['’]?t|mustn['’]?t|must\s+not|forbidden|avoid|stop|allowed|permit(?:ted|s)?|okay|go\s+ahead|feel\s+free|fine\s+to|acceptable|safe\s+to)\b/i;
 
 /** Leading condition of a clause: the content words BEFORE the first
  *  polarity marker (live battery, #936). "When npm whoami fails with E401
