@@ -741,7 +741,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
 
 
-    let matches = matchToolCall(entries, toolName, input);
+    let matches = matchToolCall(entries, toolName, input, (event as any).isError === true);
 
     // For subagent results, extract actual bash commands from the subagent's
     // tool call messages (structured data only — no prose text fallback).
