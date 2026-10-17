@@ -3049,4 +3049,17 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("synonym verbs leave distinct targets comparable (Qodo edf4954b)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run CI build tests", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always execute production build tests",
+        category: "lesson",
+      });
+      assert.ok(result.status === "added" || result.status === "reinforced");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

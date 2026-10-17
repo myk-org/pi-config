@@ -1153,6 +1153,33 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       const permPayload = quotedPayloadWords(perm);
       const negOnly = [...negRaw].filter((w) => !permRaw.has(w) && !negPayload.has(w));
       const permOnly = [...permRaw].filter((w) => !negRaw.has(w) && !permPayload.has(w));
+      // Synonym-paired verbs are the same action (Qodo edf4954b): run and
+      // execute both differ across the sides, so leaving them in the diff
+      // sets broke the distinct-object check and "Never run CI build
+      // tests" rejected "Always execute production build tests". Strip
+      // each paired verb from its side before comparing targets — when
+      // the verbs are the ONLY diff, both sets empty and the clash stands.
+      const strippedNeg: string[] = [];
+      const strippedPerm: string[] = [];
+      for (const [x, y] of ACTION_VERB_SYNONYMS) {
+        const ni = negOnly.findIndex((w) => stem(w) === x);
+        const pi = permOnly.findIndex((w) => stem(w) === y);
+        if (ni >= 0 && pi >= 0) {
+          strippedNeg.push(negOnly[ni]!);
+          strippedPerm.push(permOnly[pi]!);
+          negOnly.splice(ni, 1);
+          permOnly.splice(pi, 1);
+          continue;
+        }
+        const ni2 = negOnly.findIndex((w) => stem(w) === y);
+        const pi2 = permOnly.findIndex((w) => stem(w) === x);
+        if (ni2 >= 0 && pi2 >= 0) {
+          strippedNeg.push(negOnly[ni2]!);
+          strippedPerm.push(permOnly[pi2]!);
+          negOnly.splice(ni2, 1);
+          permOnly.splice(pi2, 1);
+        }
+      }
       // Multi-word targets are distinct too (Qodo 46dd1ccb): "production
       // builds" vs "staging environment builds" differ by MORE than one
       // word per side — the sides are different targets unless some cross
@@ -1186,8 +1213,8 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         if (!universal && !crossVariant && !broadCovers && !mannerSyn) {
           const stemmerOverMerge = negOnly.some((a) => permOnly.some((b) => stem(a) === stem(b)));
           const allMidClause =
-            negOnly.every((a) => diffWordIsMidClause(neg, a, permRaw)) &&
-            permOnly.every((b) => diffWordIsMidClause(perm, b, negRaw));
+            negOnly.every((a) => diffWordIsMidClause(neg, a, permRaw, strippedNeg)) &&
+            permOnly.every((b) => diffWordIsMidClause(perm, b, negRaw, strippedPerm));
           // Trailing objects of a shared action verb (Qodo 45fea51b):
           // "never publish npm" vs "always publish PyPI" differ only in
           // the verb's object — complementary targets, not a flip.
@@ -1727,15 +1754,24 @@ const MANNER_SYNONYMS: Array<[string, string]> = [
   ["carefully", "cautiously"],
 ];
 
-function diffWordIsMidClause(clause: string, diff: string, otherWords: Set<string>): boolean {
+function diffWordIsMidClause(
+  clause: string,
+  diff: string,
+  otherWords: Set<string>,
+  extraShared: string[] = [],
+): boolean {
   const seq = orderedContentWords(clause);
   // The diff word may be a RAW surface form while the ordered sequence is
   // stemmed (Qodo 2fb4dd7e moved the diff sets to raw words) — locate it
   // by stem equality, not exact index.
   const idx = seq.findIndex((w) => w === diff || stem(w) === stem(diff));
   if (idx <= 0 || idx >= seq.length - 1) return false;
-  const before = seq.slice(0, idx).some((w) => otherWords.has(w) || [...otherWords].some((o) => stem(o) === stem(w)));
-  const after = seq.slice(idx + 1).some((w) => otherWords.has(w) || [...otherWords].some((o) => stem(o) === stem(w)));
+  const isShared = (w: string) =>
+    otherWords.has(w) ||
+    [...otherWords].some((o) => stem(o) === stem(w)) ||
+    extraShared.some((e) => stem(e) === stem(w));
+  const before = seq.slice(0, idx).some(isShared);
+  const after = seq.slice(idx + 1).some(isShared);
   return before && after;
 }
 
