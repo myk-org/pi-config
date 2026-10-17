@@ -401,6 +401,12 @@ export function quotedMask(text: string, initialBanned: ReadonlySet<number> = ne
     const out = src.slice();
     let quote: string | null = null;
     let openIndex = -1;
+    // Backslash parity is tracked INCREMENTALLY (Qodo 141baef0): walking
+    // backward over the preceding backslashes at every character made an
+    // uninterrupted run of backslashes quadratic. The run length carries
+    // forward — a non-backslash resets it, and the parity in front of a
+    // character is the run ending right before it.
+    let bsRun = 0;
     for (let i = 0; i < src.length; i++) {
       const ch = src[i]!;
       // Backslash-escaped quote chars are CONTENT (Qodo bfca536f): in
@@ -408,9 +414,8 @@ export function quotedMask(text: string, initialBanned: ReadonlySet<number> = ne
       // Parity matters (Qodo 9468b527): a quote after TWO backslashes is
       // NOT escaped — the first backslash escapes the second — so it is a
       // real delimiter.
-      let bs = 0;
-      for (let j = i - 1; j >= 0 && src[j] === "\\"; j--) bs++;
-      const escaped = bs % 2 === 1;
+      const escaped = bsRun % 2 === 1;
+      bsRun = ch === "\\" ? bsRun + 1 : 0;
       if (escaped && (OPENING_QUOTES.has(ch) || QUOTE_PARTNER[ch] !== undefined)) {
         out[i] = "\x00";
         continue;
@@ -1315,7 +1320,17 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         const bothTimeTokened =
           TIMEWORD_RE.test([...negTrail.words].join(" ")) &&
           TIMEWORD_RE.test([...permTrail.words].join(" "));
-        const modelDisjoint = !inclusion && bothTimeTokened;
+        // The model must have PARSED something to override the token
+        // check (Qodo 4241248f): "during business hours" is time-like but
+        // produces no span — falling back to the shared-token verdict
+        // keeps "Never deploy during business hours" rejecting its
+        // opposite instead of coexisting as a fake disjoint pair.
+        const modelParsed =
+          scheduleSpans(neg).length > 0 ||
+          scheduleSpans(perm).length > 0 ||
+          weekdaySet(neg) !== null ||
+          weekdaySet(perm) !== null;
+        const modelDisjoint = !inclusion && bothTimeTokened && modelParsed;
         if (permTrail.words.size > 0 && (modelDisjoint || (!tokenShared && !inclusion))) {
           log.debug(
             "memory-write: disjoint trailing schedules coexist",

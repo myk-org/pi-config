@@ -2804,4 +2804,34 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("unparsed time-like trails fall back to token overlap (Qodo 4241248f)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy during business hours", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy during business hours",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("long backslash runs do not stall the write (Qodo 141baef0)", async () => {
+    const cwd = makeCwd();
+    try {
+      const slashes = "\\".repeat(5000);
+      seedEntry(cwd, "lesson", `Never say ${slashes}\"ok\" to reviewers`, { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: `Always say ${slashes}\"ok\" to reviewers`,
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
