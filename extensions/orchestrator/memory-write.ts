@@ -258,6 +258,12 @@ function stem(word: string): string {
       break;
     }
   }
+  // -ment nouns of action verbs (Qodo 87d33365): "deployment" is the
+  // noun of "deploy" — the suffix loop leaves both distinct and reworded
+  // rules shared only their object. Stripping -ment joins them (applied
+  // after the loop so plural "deployments" → "deployment" → "deploy"
+  // stays consistent with the singular).
+  if (w.endsWith("ment") && w.length >= 8) w = w.slice(0, -4);
   // Silent-e (Qodo 833b46be): "packages" strips -es to "packag" while
   // singular "package" kept its e — the pair never matched. Drop a final
   // e on words of three letters or more (Qodo d14f222c) so short verbs
