@@ -139,6 +139,7 @@ __all__ = [
     "AIResult",
     "AITokenUsage",
     "ProviderDiscovery",
+    "RecordingState",
     "SIDECAR_URL",
     "SidecarClient",
     "call_ai",
