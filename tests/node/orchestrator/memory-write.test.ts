@@ -2991,4 +2991,62 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("unquoted values match quoted condition values (Qodo d9768984)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When status is 'blocked', never deploy", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy when status is blocked",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a condition time is not the action schedule (Qodo 6d8d594f)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When approved at 2am, never deploy production at 4am", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production when approved at 2am",
+        category: "lesson",
+      });
+      assert.ok(result.status === "added" || result.status === "reinforced");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("synonymous manner adverbs are the same manner (Qodo 8cff7410)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy directly to production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy straight to production",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("verb synonyms corroborate at the outer gate (Qodo a42dc6ce)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always execute tests; document results",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

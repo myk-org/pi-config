@@ -832,6 +832,18 @@ const TIMEWORD_RE =
  *  scoped to DISJOINT trailing schedules describe different circumstances
  *  and coexist. `timeLike` marks qualifiers that reference a TIME (Qodo
  *  4ff8e53d) — only those gate the clash. */
+/** The RAW text after the clause's last polarity marker — schedules are
+ *  compared on the ACTION side only (Qodo 6d8d594f): a time inside a
+ *  leading condition ("When approved at 2am, never deploy at 4am") is
+ *  the condition's time, not the deployment's schedule. */
+function trailingScheduleText(clause: string): string {
+  const masked = quotedMask(clause);
+  const markers = [...masked.matchAll(ACTION_MARKER_WORDS_RE)];
+  if (markers.length === 0) return clause;
+  const last = markers[markers.length - 1]!;
+  return clause.slice(last.index! + last[0].length);
+}
+
 function trailingCondition(clause: string): { words: Set<string>; timeLike: boolean } {
   const empty = { words: new Set<string>(), timeLike: false };
   const masked = quotedMask(clause);
@@ -1160,7 +1172,18 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         const broadCovers = negOnly.some((a) =>
           permOnly.some((b) => hypernymCovers(a, b) || hypernymCovers(b, a)),
         );
-        if (!universal && !crossVariant && !broadCovers) {
+        // Sole manner-adverb differences are the SAME manner (Qodo
+        // 8cff7410): "deploy directly to production" versus "deploy
+        // straight to production" — not distinct targets.
+        const mannerSyn =
+          negOnly.length === 1 &&
+          permOnly.length === 1 &&
+          MANNER_SYNONYMS.some(
+            ([x, y]) =>
+              (negOnly[0] === x && permOnly[0] === y) ||
+              (negOnly[0] === y && permOnly[0] === x),
+          );
+        if (!universal && !crossVariant && !broadCovers && !mannerSyn) {
           const stemmerOverMerge = negOnly.some((a) => permOnly.some((b) => stem(a) === stem(b)));
           const allMidClause =
             negOnly.every((a) => diffWordIsMidClause(neg, a, permRaw)) &&
@@ -1249,7 +1272,18 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
           const permQuoted = [...perm.matchAll(/(?:\bis\b|\bare\b|=)\s*(['"][^'"]{1,60}['"])/gi)].map(
             (q) => q[1]!.toLowerCase(),
           );
-          const sharedValue = negCond.quotedValues.some((v) => permQuoted.includes(v));
+          const sharedValue = negCond.quotedValues.some(
+            (v) =>
+              permQuoted.includes(v) ||
+              // An UNQUOTED restatement is the same value (Qodo d9768984):
+              // "status is 'blocked'" versus "status is blocked" — strip
+              // the delimiters and match the bare value in the permission
+              // text so both forms of the same status keep the clash.
+              new RegExp(
+                `\\b${v.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+                "i",
+              ).test(perm),
+          );
           if (!sharedValue) {
             log.debug(
               "memory-write: different quoted condition values coexist",
@@ -1393,7 +1427,9 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         // times) intersects every combination, so equivalent points,
         // points inside bounds or ranges, and overlapping bounds keep the
         // clash while touching strict bounds stay disjoint.
-        const inclusion = schedulesOverlap(neg, perm);
+        const negTailText = trailingScheduleText(neg);
+        const permTailText = trailingScheduleText(perm);
+        const inclusion = schedulesOverlap(negTailText, permTailText);
         // Model-backed disjointness (Qodo cd6e169a, aace4e0c): when BOTH
         // trails carry time-like tokens, the span model's verdict
         // overrides the shared-token shortcut — "Monday at 2am" and
@@ -1408,10 +1444,10 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         // keeps "Never deploy during business hours" rejecting its
         // opposite instead of coexisting as a fake disjoint pair.
         const modelParsed =
-          scheduleSpans(neg).length > 0 ||
-          scheduleSpans(perm).length > 0 ||
-          weekdaySet(neg) !== null ||
-          weekdaySet(perm) !== null;
+          scheduleSpans(negTailText).length > 0 ||
+          scheduleSpans(permTailText).length > 0 ||
+          weekdaySet(negTailText) !== null ||
+          weekdaySet(permTailText) !== null;
         const modelDisjoint = !inclusion && bothTimeTokened && modelParsed;
         if (permTrail.words.size > 0 && (modelDisjoint || (!tokenShared && !inclusion))) {
           log.debug(
@@ -1682,6 +1718,15 @@ function hypernymCovers(a: string, b: string): boolean {
   return stem(a) === "tool" && TOOL_HYPONYMS.has(stem(b));
 }
 
+/** Manner-adverb synonym pairs, RAW words (Qodo 8cff7410): directly and
+ *  straight name the same manner — differing only in that adverb is not
+ *  a distinct target. */
+const MANNER_SYNONYMS: Array<[string, string]> = [
+  ["directly", "straight"],
+  ["immediately", "instantly"],
+  ["carefully", "cautiously"],
+];
+
 function diffWordIsMidClause(clause: string, diff: string, otherWords: Set<string>): boolean {
   const seq = orderedContentWords(clause);
   // The diff word may be a RAW surface form while the ordered sequence is
@@ -1813,7 +1858,18 @@ export async function findContradiction(
     // before 3am" shares only "deploy", yet the clause gate's inclusion
     // logic must see it.
     const timeScoped = TIMEWORD_RE.test(text) && TIMEWORD_RE.test(candidate.text);
-    if (!(shared >= 2 || (vectorConfirmed && shared >= 1) || (shortPair && shared >= 1) || (timeScoped && shared >= 1))) continue;
+    // Action-verb synonyms corroborate too (Qodo a42dc6ce): "Never run
+    // tests" versus "Always execute tests; document results" — the exact
+    // word gate saw only "tests" and discarded the candidate before the
+    // clause gate's synonym recognition could run.
+    const textWords = contentWords(text);
+    const candWords = contentWords(candidate.text);
+    const verbSynCorroboration = ACTION_VERB_SYNONYMS.some(
+      ([x, y]) =>
+        (textWords.has(x) && candWords.has(y)) ||
+        (textWords.has(y) && candWords.has(x)),
+    );
+    if (!(shared >= 2 || (vectorConfirmed && shared >= 1) || (shortPair && shared >= 1) || (timeScoped && shared >= 1) || (verbSynCorroboration && shared >= 1))) continue;
     if (!polarityClash(text, candidate.text)) continue;
     const similarity = similarityByText.get(`${candidate.category}:${candidate.text}`) ?? 0;
     conflicts.push({ candidate, score: similarity * 10 + shared });
