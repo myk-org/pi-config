@@ -198,9 +198,10 @@ const STOP_WORDS = new Set([
  *  push/pushing, merge/merges/merging, commit/committed must compare
  *  equal — exact tokens with only a trailing-s strip let reworded
  *  opposites ("Never push to main" vs "Pushing to main is okay") slip
- *  past the gate. Strips -ing/-ed/-es/-s with a min-stem-length guard
- *  (sing, thing stay intact) and repairs doubled consonants left by
- *  suffix removal (running→run, committing→commit). */
+ *  past the gate. Strips -ing/-ed/-es/-s with min-stem-length guards;
+ *  plurals of -ing/-ed nouns re-strip so settings/setting agree (Qodo
+ *  038f14f5), and doubled consonants left by suffix removal are repaired
+ *  (running→run, committing→commit). */
 function stem(word: string): string {
   // Clipping expansions run FIRST (Qodo d44e182b, 7ed1ea1e): "app" and
   // "application" are the same target, and expanding before suffix
@@ -227,6 +228,24 @@ function stem(word: string): string {
       // "installing" from "install".
       const dbl = /([a-z])\1$/.exec(base);
       w = dbl && !"lsfz".includes(dbl[1]!) && base.length > 3 ? base.slice(0, -1) : base;
+      // Plurals of -ing/-ed nouns re-strip (Qodo 038f14f5): "settings"
+      // loses only the s while singular "setting" loses the ing — both
+      // must reach the same residue. Base nouns like thing/string lose
+      // the ending too; singular and plural stay CONSISTENT, which is
+      // what the clash comparisons rely on.
+      if (suffix === "s" && /(?:ing|ed)$/.test(w)) {
+        for (const inner of ["ing", "ed"]) {
+          if (w.length > inner.length + 1 && w.endsWith(inner)) {
+            const innerBase = w.slice(0, -inner.length);
+            const innerDbl = /([a-z])\1$/.exec(innerBase);
+            w =
+              innerDbl && !"lsfz".includes(innerDbl[1]!) && innerBase.length > 3
+                ? innerBase.slice(0, -1)
+                : innerBase;
+            break;
+          }
+        }
+      }
       break;
     }
   }
@@ -778,20 +797,33 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       if (negCond.words.size > 0) {
         const permWords = contentWords(perm);
         const covered = [...negCond.words].filter((w) => permWords.has(w)).length;
-        // Contrastive complement (Qodo 6949694b): "Always deploy production
-        // outside outage" shares the outage condition word but under a
-        // contrastive marker — it describes the OPPOSITE circumstance and
-        // coexists with "When outage, never deploy production".
-        if (CONTRASTIVE_RE.test(perm) && covered > 0) {
-          log.debug(
-            "memory-write: contrastive condition complement coexists",
-            neg.slice(0, 80),
-            "vs",
-            perm.slice(0, 80),
-            "covered",
-            [...negCond.words].filter((w) => permWords.has(w)).join("/"),
+        // Contrastive complement (Qodo 6949694b, ae4d616b): "Always deploy
+        // production outside outage" shares the outage condition word but
+        // under a contrastive marker — it describes the OPPOSITE
+        // circumstance and coexists with "When outage, never deploy
+        // production". The contrast must govern the SHARED condition
+        // itself: "... when outage occurs, except staging" excludes
+        // staging, not the outage, so it is no complement and still
+        // clashes.
+        if (covered > 0 && CONTRASTIVE_RE.test(perm)) {
+          const permMaskedText = quotedMask(perm);
+          const contrastTargets = [...negCond.words].filter((w) =>
+            new RegExp(
+              `\\b(?:${CONTRASTIVE_ALTERNATION})\\s+(?:of\\s+|the\\s+|an\\s+)?${w}`,
+              "i",
+            ).test(permMaskedText),
           );
-          continue;
+          if (contrastTargets.length > 0) {
+            log.debug(
+              "memory-write: contrastive condition complement coexists",
+              neg.slice(0, 80),
+              "vs",
+              perm.slice(0, 80),
+              "contrast on",
+              contrastTargets.join("/"),
+            );
+            continue;
+          }
         }
         const majority = covered * 2 > negCond.words.size;
         if (negCond.escape ? majority : !majority) {
@@ -892,8 +924,9 @@ const UNIVERSAL_QUANTIFIERS = new Set(["all", "any", "every", "each"]);
  *  "irrespective of", "independently of", and "instead of" mean "in
  *  every case INCLUDING this one" (or a target substitution), so they
  *  must NOT escape a condition-scoped ban. */
-const CONTRASTIVE_RE =
-  /\b(outside|except|excepting|besides|apart\s+from|other\s+than)\b/i;
+const CONTRASTIVE_ALTERNATION =
+  "outside|except|excepting|besides|apart\\s+from|other\\s+than";
+const CONTRASTIVE_RE = new RegExp(`\\b(${CONTRASTIVE_ALTERNATION})\\b`, "i");
 
 /** Ordered content-word sequence of a clause (same tokenization and
  *  stemming as contentWords, order preserved) — used for positional
