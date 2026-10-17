@@ -657,9 +657,12 @@ const PREFERENCE_PATTERNS: RegExp[] = [
 ];
 
 /** Sentence starts that mark a question, not a statement. */
-/** One-off permission grant phrasing — session instruction, not a durable preference. */
+/** One-off permission grant phrasing — session instruction, not a durable
+ *  preference. Negation-blind "you may" would reject prohibitions like
+ *  "You may not merge PRs without review" (live battery, #936), so a
+ *  grant followed by not/never/'t does not count. */
 const GRANT_PHRASE_RE: RegExp[] = [
-  /\byou (can|may)\b/i,
+  /\byou (?:can|may)(?!\s+(?:not|never)\b)(?!['’]t\b)/i,
   /\bgo ahead\b/i,
   /\bfeel free\b/i,
   /\bjust this once\b/i,

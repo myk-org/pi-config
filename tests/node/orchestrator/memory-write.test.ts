@@ -1322,6 +1322,68 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("leading-condition prohibitions are exceptions, not bans (live battery #936)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(
+        cwd,
+        "preference",
+        "After /release in pi-config: ALWAYS publish to npm @myk-org/pi-sidecar AND @myk-org/pi-vertex-claude, and to PyPI pi-sidecar-client",
+        { pinned: true },
+      );
+      const result = await addMemoryEntry(cwd, {
+        text: "When npm whoami fails with E401 during a release, never continue publishing — stop and ask the user to re-login",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("same-condition flips still clash under condition scoping (live battery #936)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "On Fridays, never deploy", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy on Fridays",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("action-before-copula permissions are not conditions (live battery #936)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never push to main", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Pushing to main is okay",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("negated 'you may not' phrasing is a prohibition, not a grant (live battery #936)", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "You may not merge PRs without review",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("mixed-case pi tool names keep their case (Qodo 17b68cf5)", async () => {
     const cwd = makeCwd();
     try {

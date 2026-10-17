@@ -479,6 +479,24 @@ function actionWords(clause: string): Set<string> {
   return contentWords(clause.replace(ACTION_MARKER_WORDS_RE, " "));
 }
 
+/** Leading condition of a clause: the content words BEFORE the first
+ *  polarity marker (live battery, #936). "When npm whoami fails with E401
+ *  during a release, never continue publishing" — the words ahead of
+ *  "never" are the CONDITION the prohibition is scoped to. Only spans
+ *  containing a conditional subordinator count: "Pushing to main is okay"
+ *  has words before its marker, but they are the action, not a condition.
+ *  Uses String.search so the shared global marker regex's lastIndex is
+ *  not consumed. */
+function leadingCondition(clause: string): Set<string> {
+  const idx = clause.search(ACTION_MARKER_WORDS_RE);
+  if (idx <= 0) return new Set<string>();
+  const lead = clause.slice(0, idx);
+  if (!/\b(?:when|if|unless|whenever|where|once|after|before|during|upon|while|in\s+case|on)\b/i.test(lead)) {
+    return new Set<string>();
+  }
+  return contentWords(lead);
+}
+
 /** Masked action words: quoted payload content does not count (Qodo
  *  c92087ed). Used for the NEGATION side of a clash candidate and for
  *  agreement — an example quoted inside a prohibition ("Never inspect logs
@@ -558,6 +576,24 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         diffWordIsMidClause(perm, permOnly[0]!, negRaw)
       ) {
         continue;
+      }
+      // Condition-scoped exceptions (live battery, #936): a PROHIBITION
+      // whose polarity marker is preceded by a conditional subordinator is
+      // an EXCEPTION, not a general ban — "When whoami fails with E401,
+      // never continue publishing" coexists with the "After /release,
+      // ALWAYS publish" mandate because the mandate does not carry the
+      // failure condition. The exception is asymmetric by design: a
+      // condition-scoped PERMISSION against a general prohibition stays a
+      // conflict ("After /release ALWAYS publish to PyPI" vs "never publish
+      // to PyPI" must still reject — the mandate instructs what the ban
+      // forbids). The scopes match only when the permission covers ≥ 80% of
+      // the condition, so "On Fridays, never deploy" still clashes with
+      // "Always deploy on Fridays" but not with "Always deploy".
+      const negCond = leadingCondition(neg);
+      if (negCond.size > 0) {
+        const permWords = contentWords(perm);
+        const covered = [...negCond].filter((w) => permWords.has(w)).length;
+        if (covered / negCond.size < 0.8) continue;
       }
       const negAgrees = negB.some((n) => clausesAgree(neg, n));
       const permAgrees = permA.some((p) => clausesAgree(perm, p));
