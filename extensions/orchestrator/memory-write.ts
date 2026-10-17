@@ -488,7 +488,7 @@ function splitClauses(text: string): string[] {
   // split "Never run rm, mv, etc. on shared hosts" and cut the trailing
   // scope off the negation clause.
   const re =
-    /[\n;\u2014\u2013]|(?<=[a-z]{2}|\x00)(?<!\betc\b)(?<!\bvs\b)(?<!\bapprox\b)(?<!\binc\b)(?<!\bltd\b)(?<!\bdept\b)\.(?=\s)|\bbut\b|\bhowever\b/gi;
+    /[\n;\u2014\u2013]|(?<=[a-z0-9]{2}|\x00)(?<!\betc\b)(?<!\bvs\b)(?<!\bapprox\b)(?<!\binc\b)(?<!\bltd\b)(?<!\bdept\b)\.(?=\s)|\bbut\b|\bhowever\b/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(mask))) {
     bounds.push(m.index + m[0].length);
@@ -501,12 +501,17 @@ function splitClauses(text: string): string[] {
   // the prohibition (PyPI packages is banned too), only the marker-led
   // and opens a clause.
   const andRe = /\b(?:and|or)\b/gi;
+  // Bounds are sorted BEFORE the conjunction scan and consumed with an
+  // advancing pointer (Qodo b1168488): scanning the whole boundary array
+  // per conjunction made clause splitting quadratic on entries with many
+  // separators. Conjunction matches advance monotonically, so each bound
+  // is visited once; bounds pushed during the scan are re-sorted after.
+  bounds.sort((x, y) => x - y);
+  let bi = 0;
   while ((m = andRe.exec(mask))) {
     const start = m.index + m[0].length;
-    let nextBound = mask.length;
-    for (const b of bounds) {
-      if (b > start && b < nextBound) nextBound = b;
-    }
+    while (bi < bounds.length && bounds[bi]! <= start) bi++;
+    const nextBound = bi < bounds.length ? bounds[bi]! : mask.length;
     const tail = mask.slice(start, nextBound);
     const lead = tail.trim().split(/\s+/).slice(0, 2).join(" ");
     if (NEGATION_RE.test(lead) || PERMIT_RE.test(lead) || ONLY_PERMIT_RE.test(lead)) {
@@ -685,6 +690,31 @@ function leadingCondition(clause: string): { words: Set<string>; escape: boolean
   return { words, escape: m[1]!.toLowerCase() === "unless" };
 }
 
+/** Trailing schedule qualifier (Qodo 16473e6e): content words after the
+ *  LAST polarity marker introduced by a temporal preposition — "never run
+ *  tests at 2am" carries the schedule {am}. A prohibition and a permission
+ *  scoped to DISJOINT trailing schedules describe different circumstances
+ *  and coexist. */
+function trailingCondition(clause: string): Set<string> {
+  const masked = quotedMask(clause);
+  const markers = [...masked.matchAll(ACTION_MARKER_WORDS_RE)];
+  if (markers.length === 0) return new Set<string>();
+  const last = markers[markers.length - 1]!;
+  const tail = masked.slice(last.index! + last[0].length).trim();
+  const tm =
+    /\b(?:at|before|after|during|until|till|by|between|upon|past|since|on)\s+([a-z0-9\s\x00]*)$/i.exec(
+      tail,
+    );
+  if (!tm) return new Set<string>();
+  // Digit-aware raw tokens, stemmed but NOT stop-word filtered: "2am"
+  // tokenizes to "am" in the letter-led content tokenizer and "am" is a
+  // stop word, which emptied the schedule set (Qodo 16473e6e live debug).
+  const tokens = (tm[1]!.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
+    (w) => w.length >= 2,
+  );
+  return new Set<string>(tokens.map((w) => stem(w)));
+}
+
 /** Masked action words: quoted payload content does not count (Qodo
  *  c92087ed). Used for the NEGATION side of a clash candidate and for
  *  agreement — an example quoted inside a prohibition ("Never inspect logs
@@ -826,23 +856,32 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         // staging, not the outage, so it is no complement and still
         // clashes.
         if (covered > 0 && CONTRASTIVE_RE.test(perm)) {
+          // The contrastive exception must match the condition EXACTLY
+          // (Qodo 2696eb08): "except outage recovery" excludes the
+          // SUB-CASE "outage recovery", not every outage, so only an
+          // exception phrase whose content words equal the condition set
+          // is a complement — a longer exception phrase keeps the clash.
           const permMaskedText = quotedMask(perm);
-          const contrastTargets = [...negCond.words].filter((w) =>
-            new RegExp(
-              `\\b(?:${CONTRASTIVE_ALTERNATION})\\s+(?:of\\s+|the\\s+|an\\s+)?${w}`,
-              "i",
-            ).test(permMaskedText),
-          );
-          if (contrastTargets.length > 0) {
-            log.debug(
-              "memory-write: contrastive condition complement coexists",
-              neg.slice(0, 80),
-              "vs",
-              perm.slice(0, 80),
-              "contrast on",
-              contrastTargets.join("/"),
-            );
-            continue;
+          const cm = CONTRASTIVE_RE.exec(permMaskedText);
+          if (cm) {
+            const excText = permMaskedText
+              .slice(cm.index + cm[0].length)
+              .split(/[,;]|\b(?:when|if|but|and|or)\b/)[0]!;
+            const excWords = contentWords(excText);
+            const condEquals =
+              excWords.size === negCond.words.size &&
+              [...negCond.words].every((w) => excWords.has(w));
+            if (condEquals) {
+              log.debug(
+                "memory-write: contrastive condition complement coexists",
+                neg.slice(0, 80),
+                "vs",
+                perm.slice(0, 80),
+                "contrast on",
+                [...negCond.words].join("/"),
+              );
+              continue;
+            }
           }
         }
         const majority = covered * 2 > negCond.words.size;
@@ -859,6 +898,29 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
             `${covered}/${negCond.words.size}`,
             "escape",
             negCond.escape,
+          );
+          continue;
+        }
+      }
+      // Trailing schedule qualifiers (Qodo 16473e6e): a prohibition
+      // scoped to one schedule ("never run tests at 2am") and a permission
+      // scoped to a DIFFERENT one ("always run tests before deploy")
+      // describe different circumstances and coexist; overlapping or
+      // absent schedules keep the clash.
+      const negTrail = trailingCondition(neg);
+      if (negTrail.size > 0) {
+        const permTrail = trailingCondition(perm);
+        const scheduleOverlap = [...negTrail].some((w) => permTrail.has(w));
+        if (permTrail.size > 0 && !scheduleOverlap) {
+          log.debug(
+            "memory-write: disjoint trailing schedules coexist",
+            neg.slice(0, 80),
+            "vs",
+            perm.slice(0, 80),
+            "schedules",
+            [...negTrail].join("/"),
+            "vs",
+            [...permTrail].join("/"),
           );
           continue;
         }
@@ -944,9 +1006,7 @@ const UNIVERSAL_QUANTIFIERS = new Set(["all", "any", "every", "each"]);
  *  "irrespective of", "independently of", and "instead of" mean "in
  *  every case INCLUDING this one" (or a target substitution), so they
  *  must NOT escape a condition-scoped ban. */
-const CONTRASTIVE_ALTERNATION =
-  "outside|except|excepting|besides|apart\\s+from|other\\s+than";
-const CONTRASTIVE_RE = new RegExp(`\\b(${CONTRASTIVE_ALTERNATION})\\b`, "i");
+const CONTRASTIVE_RE = new RegExp(`\\b(outside|except|excepting|besides|apart\\s+from|other\\s+than)\\b`, "i");
 
 /** Ordered content-word sequence of a clause (same tokenization and
  *  stemming as contentWords, order preserved) — used for positional
@@ -972,13 +1032,16 @@ function orderedContentWords(clause: string): string[] {
  *  publish PyPI" are complementary rules about different targets, not a
  *  polarity flip. Trailing ADVERBS ("push directly") never follow a verb
  *  directly, so they stay inside the clash. */
-const ACTION_VERB_STEMS = new Set([
-  "use", "us", "install", "run", "execut", "deploy", "commit", "push", "merg",
-  "writ", "call", "invok", "publish", "delet", "edit", "stor", "build", "test",
-  "releas", "creat", "add", "remov", "mov", "copi", "appli", "start", "stop",
-  "restart", "kill", "clos", "open", "read", "fetch", "clone", "stage", "updat",
-  "check", "verifi", "enabl", "disabl", "merge", "secur", "block", "grant",
-]);
+const ACTION_VERB_STEMS = new Set(
+  [
+    "use", "install", "run", "execute", "deploy", "commit", "push", "merge",
+    "write", "call", "invoke", "publish", "delete", "edit", "store", "build",
+    "test", "release", "create", "add", "remove", "move", "copy", "apply",
+    "start", "stop", "restart", "kill", "close", "open", "read", "fetch",
+    "clone", "stage", "update", "check", "verify", "enable", "disable",
+    "secure", "block", "grant",
+  ].map((v) => stem(v)),
+);
 
 /** True when `diff` is the FINAL word of its clause and directly follows
  *  an action verb that the other clause also carries (Qodo 45fea51b). */

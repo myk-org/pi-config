@@ -789,6 +789,16 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             }
             // Also check non-bash tool calls against tool_name/file_modified triggers
             if (partToolName && partToolName !== "bash") {
+              // Failed child edit/write calls skip file_modified matching
+              // like top-level ones (#940) — leave the same diagnostic
+              // naming the tool and path (Qodo b00dc05f).
+              if (
+                partIsError &&
+                (partToolName === "edit" || partToolName === "write") &&
+                partToolArgs?.path
+              ) {
+                failedFileEditSkipMessage(partToolName, partToolArgs.path);
+              }
               const toolMatches = matchToolCall(
                 nonBlockEntries,
                 partToolName,

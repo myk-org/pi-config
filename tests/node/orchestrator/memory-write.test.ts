@@ -2064,6 +2064,64 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("disjoint trailing schedules coexist (Qodo 16473e6e)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests at 2am", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests before deploy",
+        category: "lesson",
+      });
+      assert.notEqual(result.status, "rejected", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a longer contrastive exception is not the condition (Qodo 2696eb08)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When outage, never deploy production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production except outage recovery",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a period after a version token still splits sentences (Qodo 6a5f0a4c)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy to v2. Always deploy to production.", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Never deploy to production.",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("trailing objects work for deploy-class verbs (Qodo f75f1fe2)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never manually deploy staging", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always manually deploy production",
+        category: "lesson",
+      });
+      assert.notEqual(result.status, "rejected", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("many unmatched apostrophes do not overflow the mask (Qodo 2a41ba6b)", async () => {
     const { quotedMask } = await import("../../../extensions/orchestrator/memory-write.js");
     const many = "never use npm " + "'".repeat(5000) + " and always run tests";
