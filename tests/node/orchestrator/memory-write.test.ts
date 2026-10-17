@@ -1278,6 +1278,21 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("clippings of the same target still clash (Qodo d44e182b)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy app to production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy application to production",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("different services are distinct targets, not variants (Qodo 5a346f0f)", async () => {
     const cwd = makeCwd();
     try {

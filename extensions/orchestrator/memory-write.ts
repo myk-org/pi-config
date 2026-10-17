@@ -205,8 +205,29 @@ function stem(word: string): string {
   // singular "package" kept its e — the pair never matched. Drop a final
   // e on long words so singular/plural/inflected forms converge.
   if (w.endsWith("e") && w.length >= 5) w = w.slice(0, -1);
-  return w;
+  // Clipping expansions (Qodo d44e182b): "app" and "application" are the
+  // same target — without canonicalization the pair appears as a one-word
+  // diff and the distinct-target exclusion skips the clash, letting a
+  // pinned "Never deploy app to production" coexist with "Always deploy
+  // application to production". Unlike inflections these are vocabulary
+  // clippings, so they need an explicit table.
+  return CLIPPING_EXPANSIONS[w] ?? w;
 }
+
+/** Common clippings expanded to their full form during stemming so a
+ *  short and long spelling of the same target compare equal. Keep this a
+ *  small, domain-relevant list — every entry is a pair that genuinely
+ *  names the same thing, never two different products (git/github). */
+const CLIPPING_EXPANSIONS: Record<string, string> = {
+  app: "application",
+  repo: "repository",
+  config: "configuration",
+  auth: "authentication",
+  info: "information",
+  doc: "documentation",
+  prod: "production",
+  k8s: "kubernetes",
+};
 
 function contentWords(text: string): Set<string> {
   // Lowercase content words with naive plural stripping, for overlap scoring
