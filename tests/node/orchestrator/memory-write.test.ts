@@ -667,6 +667,27 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
+  it("complementary entries: enforced scheduling rule stays storable next to a pinned how-to (Qodo c8368767)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(
+        cwd,
+        "lesson",
+        "Sidecar provider test: POST /sessions then POST /sessions/{id}/prompt with 'say OK' — test vertex-claude, acpx-cursor, gemini",
+        { pinned: true },
+      );
+      const result = await addMemoryEntry(cwd, {
+        text: "Live verification of rootcoz features is USER-SCHEDULED — never self-start it; #329 transcripts verify only after pi-config#935 ships",
+        category: "lesson",
+        trigger: "tool_name subagent",
+        action: "warn",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("complementary entries: conditional prohibition vs unconditional mandate on the same verb, different objects", async () => {
     const cwd = makeCwd();
     try {
@@ -1984,6 +2005,60 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       });
       assert.equal(result.status, "rejected");
       assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("hyphenated targets tokenize like their spaced forms (Qodo 5ed24d35)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy npm-package; preserve audit logs", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy npm package; preserve audit logs",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("trailing objects of a shared verb are distinct targets (Qodo 45fea51b)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(
+        cwd,
+        "lesson",
+        "When battery is low, never publish npm; when battery is charged, always publish PyPI",
+        { pinned: true },
+      );
+      const result = await addMemoryEntry(cwd, {
+        text: "When battery is low, always publish PyPI; when battery is charged, never publish npm",
+        category: "lesson",
+      });
+      assert.notEqual(result.status, "rejected", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a negated coordination keeps its second half (Qodo b9c0d215)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never disable branch protection or permit force pushes", { pinned: true });
+      const opposite = await addMemoryEntry(cwd, {
+        text: "Always permit force pushes",
+        category: "lesson",
+      });
+      assert.equal(opposite.status, "rejected");
+      assert.match(opposite.message, /contradicts pinned memory/i);
+      const restatement = await addMemoryEntry(cwd, {
+        text: "Never permit force pushes",
+        category: "lesson",
+      });
+      assert.notEqual(restatement.status, "rejected", `restatement must not conflict: ${restatement.message}`);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

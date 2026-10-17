@@ -285,7 +285,10 @@ const CLIPPING_EXPANSIONS: Record<string, string> = {
 function contentWords(text: string): Set<string> {
   // Lowercase content words with naive plural stripping, for overlap scoring
   // (Qodo 10865d53: this doc was stranded above the stem helper).
-  const words = text.toLowerCase().match(/[a-z][a-z0-9#-]*/g) ?? [];
+  // Hyphens split into separate words (Qodo 5ed24d35): "npm-package" and
+  // "npm package" must tokenize identically or reworded opposites dodge
+  // the gate.
+  const words = text.toLowerCase().replace(/-/g, " ").match(/[a-z][a-z0-9#]*/g) ?? [];
   const out = new Set<string>();
   for (const w of words) {
     // Stop-word check on the RAW form too (Qodo 72013bb5): stem drops the
@@ -507,6 +510,17 @@ function splitClauses(text: string): string[] {
     const tail = mask.slice(start, nextBound);
     const lead = tail.trim().split(/\s+/).slice(0, 2).join(" ");
     if (NEGATION_RE.test(lead) || PERMIT_RE.test(lead) || ONLY_PERMIT_RE.test(lead)) {
+      // Verb-ambiguous permit words after a negation (Qodo b9c0d215):
+      // "Never disable branch protection or permit force pushes" — here
+      // "permit" is the coordinated VERB, the object of the negation, not
+      // a polarity marker; splitting it off turned the second half of the
+      // ban into a phantom permission clause. Unambiguous markers
+      // ("... and always run tests") still split.
+      const firstWord = tail.trim().split(/\s+/)[0]!.toLowerCase();
+      const verbAmbiguous = /^(?:permits?|permitted|allows?|allowed|allowing|may)$/.test(firstWord);
+      if (verbAmbiguous && NEGATION_RE.test(mask.slice(0, m.index))) {
+        continue;
+      }
       bounds.push(start);
     }
   }
@@ -583,7 +597,7 @@ function actionWords(clause: string): Set<string> {
  *  and the exclusion could not fire for complementary rules about them. */
 function rawActionWords(clause: string): Set<string> {
   const cleaned = clause.replace(ACTION_MARKER_WORDS_RE, " ");
-  const words = cleaned.toLowerCase().match(/[a-z][a-z0-9#-]*/g) ?? [];
+  const words = cleaned.toLowerCase().replace(/-/g, " ").match(/[a-z][a-z0-9#]*/g) ?? [];
   const out = new Set<string>();
   for (const w of words) {
     if (STOP_WORDS.has(w)) continue;
@@ -763,13 +777,19 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
           const allMidClause =
             negOnly.every((a) => diffWordIsMidClause(neg, a, permRaw)) &&
             permOnly.every((b) => diffWordIsMidClause(perm, b, negRaw));
-          if (stemmerOverMerge || allMidClause) {
+          // Trailing objects of a shared action verb (Qodo 45fea51b):
+          // "never publish npm" vs "always publish PyPI" differ only in
+          // the verb's object — complementary targets, not a flip.
+          const objectDiff =
+            negOnly.every((a) => trailingObjectDiff(neg, a, permRaw)) &&
+            permOnly.every((b) => trailingObjectDiff(perm, b, negRaw));
+          if (stemmerOverMerge || allMidClause || objectDiff) {
             log.debug(
               "memory-write: distinct-target exclusion",
               negOnly.join("/"),
               "vs",
               permOnly.join("/"),
-              stemmerOverMerge ? "(stem over-merge)" : "",
+              stemmerOverMerge ? "(stem over-merge)" : objectDiff ? "(trailing object)" : "",
             );
             continue;
           }
@@ -932,7 +952,7 @@ const CONTRASTIVE_RE = new RegExp(`\\b(${CONTRASTIVE_ALTERNATION})\\b`, "i");
  *  stemming as contentWords, order preserved) — used for positional
  *  checks in the distinct-target exclusion. */
 function orderedContentWords(clause: string): string[] {
-  const words = clause.toLowerCase().match(/[a-z][a-z0-9#-]*/g) ?? [];
+  const words = clause.toLowerCase().replace(/-/g, " ").match(/[a-z][a-z0-9#]*/g) ?? [];
   const out: string[] = [];
   for (const w of words) {
     if (STOP_WORDS.has(w)) continue;
@@ -947,6 +967,35 @@ function orderedContentWords(clause: string): string[] {
  *  order. A trailing qualifier ("…, spaces only") or a leading temporal
  *  ("from now on …") is NOT a target — those are incidental modifiers, so
  *  the exclusion must not fire for them. */
+/** Action-verb stems (Qodo 45fea51b): a diff word that trails a shared
+ *  action verb is that verb's OBJECT — "never publish npm" vs "always
+ *  publish PyPI" are complementary rules about different targets, not a
+ *  polarity flip. Trailing ADVERBS ("push directly") never follow a verb
+ *  directly, so they stay inside the clash. */
+const ACTION_VERB_STEMS = new Set([
+  "use", "us", "install", "run", "execut", "deploy", "commit", "push", "merg",
+  "writ", "call", "invok", "publish", "delet", "edit", "stor", "build", "test",
+  "releas", "creat", "add", "remov", "mov", "copi", "appli", "start", "stop",
+  "restart", "kill", "clos", "open", "read", "fetch", "clone", "stage", "updat",
+  "check", "verifi", "enabl", "disabl", "merge", "secur", "block", "grant",
+]);
+
+/** True when `diff` is the FINAL word of its clause and directly follows
+ *  an action verb that the other clause also carries (Qodo 45fea51b). */
+function trailingObjectDiff(clause: string, diff: string, otherRawWords: Set<string>): boolean {
+  const cleaned = clause.replace(ACTION_MARKER_WORDS_RE, " ").toLowerCase();
+  const words = cleaned.replace(/-/g, " ").match(/[a-z][a-z0-9#]*/g) ?? [];
+  const filtered = words.filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
+  const idx = filtered.lastIndexOf(diff);
+  if (idx < 1 || idx !== filtered.length - 1) return false;
+  const prev = filtered[idx - 1]!;
+  const prevStem = stem(prev);
+  if (!ACTION_VERB_STEMS.has(prevStem)) return false;
+  // The verb must be shared with the other side — it is the common
+  // action whose object differs.
+  return [...otherRawWords].some((o) => stem(o) === prevStem);
+}
+
 function diffWordIsMidClause(clause: string, diff: string, otherWords: Set<string>): boolean {
   const seq = orderedContentWords(clause);
   // The diff word may be a RAW surface form while the ordered sequence is
