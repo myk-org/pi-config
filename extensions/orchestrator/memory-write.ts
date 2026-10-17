@@ -466,7 +466,7 @@ function splitClauses(text: string): string[] {
   // split "Never run rm, mv, etc. on shared hosts" and cut the trailing
   // scope off the negation clause.
   const re =
-    /[\n;\u2014\u2013]|(?<=[a-z]{2})(?<!\betc\b)(?<!\bvs\b)(?<!\bapprox\b)(?<!\binc\b)(?<!\bltd\b)(?<!\bdept\b)\.(?=\s)|\bbut\b|\bhowever\b/gi;
+    /[\n;\u2014\u2013]|(?<=[a-z]{2}|\x00)(?<!\betc\b)(?<!\bvs\b)(?<!\bapprox\b)(?<!\binc\b)(?<!\bltd\b)(?<!\bdept\b)\.(?=\s)|\bbut\b|\bhowever\b/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(mask))) {
     bounds.push(m.index + m[0].length);
@@ -613,7 +613,26 @@ function leadingCondition(clause: string): { words: Set<string>; escape: boolean
   // mask hides quoted payload from the boundary search and the
   // subordinator test alike.
   const masked = quotedMask(clause);
-  const idx = masked.search(CONDITION_BOUNDARY_RE);
+  // Prefer the boundary marker that FOLLOWS A COMMA (Qodo 5c14da70): a
+  // bare "no" inside a conditional antecedent — "When no builds are
+  // ready, never deploy" — is condition content, not the main-clause
+  // polarity. The main marker sits after the antecedent's comma; without
+  // this, the condition was cut at "no" and the scoped ban behaved as a
+  // general one. Falls back to the first match when no comma-preceded
+  // marker exists (mid-sentence markers like "must never").
+  const boundaryIter = new RegExp(CONDITION_BOUNDARY_RE.source, "gi");
+  let firstIdx = -1;
+  let idx = -1;
+  let bm: RegExpExecArray | null;
+  while ((bm = boundaryIter.exec(masked))) {
+    if (firstIdx < 0) firstIdx = bm.index;
+    const before = masked.slice(0, bm.index).replace(/\s+$/, "");
+    if (before.endsWith(",") || bm.index === 0) {
+      idx = bm.index;
+      break;
+    }
+  }
+  if (idx < 0) idx = firstIdx;
   if (idx <= 0) return empty;
   const lead = masked.slice(0, idx);
   if (LEADING_CONDITION_IDIOMS.test(lead)) return empty;

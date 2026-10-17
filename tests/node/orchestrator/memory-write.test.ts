@@ -1707,23 +1707,31 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("plural clippings match their singular expansion (Qodo 9253c632)", async () => {
+  it("plural clippings match their singular expansion — repos (Qodo 9253c632)", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "Never delete repos", { pinned: true });
-      const rejected = await addMemoryEntry(cwd, {
+      const result = await addMemoryEntry(cwd, {
         text: "Always delete repo",
         category: "lesson",
       });
-      assert.equal(rejected.status, "rejected");
-      assert.match(rejected.message, /contradicts pinned memory/i);
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("plural clippings match their singular expansion — docs (Qodo 9253c632)", async () => {
+    const cwd = makeCwd();
+    try {
       seedEntry(cwd, "lesson", "Never edit docs", { pinned: true });
-      const rejectedDocs = await addMemoryEntry(cwd, {
+      const result = await addMemoryEntry(cwd, {
         text: "Always edit documentation",
         category: "lesson",
       });
-      assert.equal(rejectedDocs.status, "rejected");
-      assert.match(rejectedDocs.message, /contradicts pinned memory/i);
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
@@ -1902,6 +1910,35 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       });
       assert.equal(result.status, "rejected");
       assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a period after a closing quote still splits sentences (Qodo 93525434)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never deploy production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: 'Always deploy "production". Never deploy staging',
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a negated antecedent is condition content, not the marker (Qodo 5c14da70)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "When no builds are ready, never deploy production", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy production",
+        category: "lesson",
+      });
+      assert.notEqual(result.status, "rejected");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
