@@ -643,3 +643,126 @@ describe("conflict gate — formatted tool names in \"use only X\" (Qodo round 1
     }
   });
 });
+
+describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnings (#936)", () => {
+  it("complementary entries: pinned how-to vs scheduling rule are BOTH storable (the #936 incident)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(
+        cwd,
+        "lesson",
+        "Sidecar provider test: POST /sessions then POST /sessions/{id}/prompt with 'say OK' — test vertex-claude, acpx-cursor, gemini",
+        { pinned: true },
+      );
+      const result = await addMemoryEntry(cwd, {
+        text: "Live verification of rootcoz features is USER-SCHEDULED — never self-start it; #329 transcripts verify only after pi-config#935 ships",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("complementary entries: conditional prohibition vs unconditional mandate on the same verb, different objects", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(
+        cwd,
+        "preference",
+        "After /release in pi-config: ALWAYS publish to npm @myk-org/pi-sidecar AND @myk-org/pi-vertex-claude, and to PyPI pi-sidecar-client",
+        { pinned: true },
+      );
+      const result = await addMemoryEntry(cwd, {
+        text: "release-publish: verify npm auth (npm whoami) BEFORE publish; on 401 ask user to re-login — never publish with a dead token",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("quoted payloads are not permission markers — 'say OK' in a pinned procedure never clashes", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "pattern", "Health check: reply 'OK' when asked — never reply with prose", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Health check replies are always logged",
+        category: "pattern",
+      });
+      assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("genuine conflict still detected when the polarized clauses share the action", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(
+        cwd,
+        "preference",
+        "After /release in pi-config: ALWAYS publish to npm AND to PyPI pi-sidecar-client",
+        { pinned: true },
+      );
+      const result = await addMemoryEntry(cwd, {
+        text: "Releases: never publish to PyPI — the pipeline owns PyPI",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("tool_name trigger naming a shell command warns instead of silently never firing", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Live-verify endpoints with curl into the dev container only",
+        category: "lesson",
+        trigger: "tool_name curl",
+        action: "block",
+      });
+      assert.equal(result.status, "added", `stored with advisory warning: ${result.message}`);
+      assert.match(result.message, /tool_name curl"? names a shell command/i);
+      assert.match(result.message, /bash_contains/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("tool_name bash with block warns as over-broad", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Bash usage is restricted on this project",
+        category: "lesson",
+        trigger: "tool_name bash",
+        action: "block",
+      });
+      assert.equal(result.status, "added");
+      assert.match(result.message, /blocks EVERY bash call/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("narrow, valid tool_name triggers add without a warning", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Generate images only on explicit request",
+        category: "preference",
+        trigger: "tool_name generate_image",
+        action: "warn",
+      });
+      assert.equal(result.status, "added");
+      assert.doesNotMatch(result.message, /warning:/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});

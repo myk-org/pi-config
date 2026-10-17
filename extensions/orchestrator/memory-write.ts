@@ -8,7 +8,11 @@
  *   2. grant-phrase guardrail — one-off permissions are session
  *      instructions, not memories
  *   3. contradiction gate — refuses adds that contradict existing
- *      entries (always refuses contradictions of pinned entries)
+ *      entries (always refuses contradictions of pinned entries).
+ *      Clause-scoped + quote-stripped (#936): polarity markers govern
+ *      only their own clause, so complementary rules (procedure vs
+ *      scheduling constraint, conditional vs unconditional) both store;
+ *      quoted payloads are never polarity markers
  *   4. near-duplicate / exact dedup — reinforces instead of adding
  *   5. topic size cap, score entry, embedding upkeep
  *
@@ -113,6 +117,30 @@ function validateAction(action: string): string | null {
   return null;
 }
 
+/** Shell commands that are NOT pi tools — a `tool_name` trigger naming one
+ *  can never fire because these run INSIDE bash (#936 secondary: the
+ *  incident's `tool_name curl` + block would have silently blocked nothing,
+ *  or worse been assumed to gate sanctioned curl usage). */
+const SHELL_COMMAND_TOOL_NAMES = new Set([
+  "curl", "wget", "jq", "gh", "docker", "podman", "kubectl", "oc",
+  "ssh", "scp", "rsync", "git", "npm", "npx", "pip", "uv", "tox",
+]);
+
+/** Write-time warning for over-broad or ineffective `tool_name` triggers
+ *  (#936). Advisory only — the entry is stored; the warning tells the writer
+ *  the trigger may not do what they intend. */
+function toolNameTriggerWarning(trigger: string | undefined, action: string | undefined): string | null {
+  if (!trigger?.startsWith("tool_name ")) return null;
+  const tool = trigger.slice("tool_name ".length).trim();
+  if (SHELL_COMMAND_TOOL_NAMES.has(tool)) {
+    return `warning: trigger "tool_name ${tool}" names a shell command, not a pi tool — ${tool} runs inside bash, so this trigger never fires; use a bash_contains pattern for the specific command instead`;
+  }
+  if (tool === "bash" && action === "block") {
+    return `warning: trigger "tool_name bash" with action block blocks EVERY bash call — usually over-broad; prefer a bash_contains pattern targeting the specific command`;
+  }
+  return null;
+}
+
 // ── Contradiction gate ─────────────────────────────────────────────────────
 
 /** Prohibition markers — text forbids an action. */
@@ -160,16 +188,62 @@ function contentWords(text: string): Set<string> {
  *  The non-negated side must carry the OPPOSING permission: a candidate that
  *  mixes negation and permission in its own text ("Enforce via code, not
  *  rules — code can't be ignored, rules can") must not clash with a neutral
- *  new entry that merely shares a topic word. */
+ *  new entry that merely shares a topic word.
+ *
+ *  CLAUSE-SCOPED (#936): a polarity marker only governs its own clause, not
+ *  the whole sentence. "never publish with a dead token" does not contradict
+ *  "always publish to npm" — the polarized clauses share no action, so the
+ *  rules are complementary. A clash requires a negation clause from one text
+ *  and a permission clause from the other that share the action (≥ 2 content
+ *  words), e.g. "never merge code PRs" vs "can merge code PRs".
+ *
+ *  QUOTED SPANS ARE STRIPPED first: a literal payload inside quotes —
+ *  "with 'say OK'" in a test procedure — is not a permission marker. The
+ *  #936 incident: a pinned how-to containing 'say OK' was treated as a
+ *  permit and blocked an unrelated scheduling rule containing "never". */
 function polarityClash(a: string, b: string): boolean {
-  const aNeg = NEGATION_RE.test(a);
-  const bNeg = NEGATION_RE.test(b);
-  if (aNeg === bNeg) return false;
-  // Permits come from PERMIT_RE or the verb-qualified ONLY_PERMIT_RE
-  // ("use only X" — Qodo round 9, PR #916).
-  const aPerm = PERMIT_RE.test(a) || ONLY_PERMIT_RE.test(a);
-  const bPerm = PERMIT_RE.test(b) || ONLY_PERMIT_RE.test(b);
-  return aNeg ? bPerm : aPerm;
+  const aText = stripQuotedSpans(a);
+  const bText = stripQuotedSpans(b);
+  // Both directions: either text may carry the prohibition.
+  return (
+    polarizedClausesClash(negationClauses(aText), permissionClauses(bText)) ||
+    polarizedClausesClash(negationClauses(bText), permissionClauses(aText))
+  );
+}
+
+/** Remove single-quoted, double-quoted, and backtick spans — literal
+ *  payloads ("say OK", 'sk-…') are never polarity markers or content words
+ *  for the conflict gate (#936). */
+function stripQuotedSpans(text: string): string {
+  return text.replace(/'[^']*'|"[^"]*"|`[^`]*`/g, " ");
+}
+
+/** Split into clauses: polarity markers only govern their own clause. */
+function splitClauses(text: string): string[] {
+  return text
+    .split(/[\n;\u2014\u2013]|\bbut\b|\bhowever\b|: /)
+    .map((c) => c.trim())
+    .filter(Boolean);
+}
+
+function negationClauses(text: string): string[] {
+  return splitClauses(text).filter((c) => NEGATION_RE.test(c));
+}
+
+function permissionClauses(text: string): string[] {
+  return splitClauses(text).filter((c) => PERMIT_RE.test(c) || ONLY_PERMIT_RE.test(c));
+}
+
+/** A prohibition and a permission clash only when their CLAUSES share the
+ *  action (≥ 2 content words) — global polarity with different objects is a
+ *  complementary rule, not a contradiction (#936). */
+function polarizedClausesClash(negation: string[], permission: string[]): boolean {
+  for (const neg of negation) {
+    for (const perm of permission) {
+      if (sharedContentWords(neg, perm) >= 2) return true;
+    }
+  }
+  return false;
 }
 
 function sharedContentWords(a: string, b: string): number {
@@ -673,7 +747,14 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   log.info("memory_add_entry", category, text.slice(0, 60), input.scope ?? "project");
   const pin = isPinned ? " (pinned)" : "";
   const scope = input.scope && input.scope !== "project" ? ` (scope: ${input.scope})` : "";
-  return { status: "added", message: `Added: [${category}] ${text}${pin}${scope}` };
+  // Over-broad / ineffective tool_name trigger warning (#936) — advisory,
+  // appended so the writer sees the trigger may not fire as intended.
+  const triggerWarning = toolNameTriggerWarning(input.trigger, input.action);
+  if (triggerWarning) log.warn(`memory-write: ${triggerWarning}`);
+  return {
+    status: "added",
+    message: `Added: [${category}] ${text}${pin}${scope}${triggerWarning ? ` — ${triggerWarning}` : ""}`,
+  };
 }
 
 // ── Expiry pruning ─────────────────────────────────────────────────────────

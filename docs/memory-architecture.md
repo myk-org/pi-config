@@ -247,11 +247,18 @@ in order:
 1. **Grant-phrase guardrail** — text that reads like a one-off permission ("you can merge this PR",
    "go ahead", "just this once") is rejected: one-off grants are session instructions, not memories.
 2. **Contradiction gate** — an add that flips permission polarity against an existing entry (one text
-   forbids what the other permits, on the same topic) is refused and the model is told to ask the user.
-   A conflict is a decision point, not a dead end: after the user confirms the rule changed, retrying
+   forbids what the other permits, on the same action) is refused and the model is told to ask the user.
+   The check is **clause-scoped** (#936): a polarity marker only governs its own clause, so
+   "never publish with a dead token" does not contradict "always publish to npm" — the polarized
+   clauses share no action and both rules are storable. Quoted payloads (`'say OK'` in a test
+   procedure) are stripped before polarity detection, so literal strings are never read as permission
+   markers. A conflict is a decision point, not a dead end: after the user confirms the rule changed, retrying
    with `overrideConflicts: true` supersedes the old non-pinned entry (invalidated, with provenance) so
    no contradiction remains. Contradicting a **pinned** entry always refuses — pinned entries are
    user-explicit and only the user's own `memory_remove` / `memory_edit` can change them.
+   `tool_name` triggers naming a shell command (`curl`, `git`, …) or blocking all of `bash` produce an
+   advisory warning at write time (#936): such triggers never fire or are over-broad — the entry is
+   still stored, with `bash_contains` suggested instead.
 3. **Dedup** — near-duplicates (vector similarity) and exact matches reinforce the existing entry
    instead of creating a second one.
 
