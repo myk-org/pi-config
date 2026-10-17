@@ -134,6 +134,12 @@ const SHELL_COMMAND_TOOL_NAMES = new Set([
 function toolNameTriggerWarning(trigger: string | undefined, action: string | undefined): string | null {
   if (!trigger?.startsWith("tool_name ")) return null;
   const tool = trigger.slice("tool_name ".length).trim();
+  const advise = (warning: string): string => {
+    // Local diagnostic (Qodo 44a095ab): the advisory is computed here —
+    // log it where it is decided, not only in callers that may not log.
+    log.debug("memory-write: tool_name trigger advisory", trigger, warning);
+    return warning;
+  };
   // Lookups are case-insensitive (Qodo 53d6b3d0): "Bash" and "Curl" are
   // misspellings of the lowercase pi tool / shell commands — they never
   // fire, so they deserve the same advisories as the exact spellings.
@@ -142,13 +148,13 @@ function toolNameTriggerWarning(trigger: string | undefined, action: string | un
   // BOTH a trigger and an action, so a bare tool_name trigger never fires —
   // say that instead of describing enforcement that will not occur.
   if (!action) {
-    return `warning: trigger "tool_name ${tool}" has no action — it will never fire; add an action (block, warn, or run_after <command>) for enforcement to load it`;
+    return advise(`warning: trigger "tool_name ${tool}" has no action — it will never fire; add an action (block, warn, or run_after <command>) for enforcement to load it`);
   }
   if (SHELL_COMMAND_TOOL_NAMES.has(toolLower)) {
-    return `warning: trigger "tool_name ${tool}" names a shell command, not a pi tool — ${toolLower} runs inside bash, so this trigger never fires; use a bash_contains pattern for the specific command instead`;
+    return advise(`warning: trigger "tool_name ${tool}" names a shell command, not a pi tool — ${toolLower} runs inside bash, so this trigger never fires; use a bash_contains pattern for the specific command instead`);
   }
   if (toolLower === "bash") {
-    return `warning: trigger "tool_name ${tool}" with action ${action ?? "(none)"} applies to EVERY bash call — usually over-broad; prefer a bash_contains pattern targeting the specific command`;
+    return advise(`warning: trigger "tool_name ${tool}" with action ${action ?? "(none)"} applies to EVERY bash call — usually over-broad; prefer a bash_contains pattern targeting the specific command`);
   }
   return null;
 }
@@ -203,6 +209,11 @@ function stem(word: string): string {
   // "kubernet", so the synonym never matched.
   let w = CLIPPING_EXPANSIONS[word] ?? word;
   for (const suffix of ["ing", "ed", "es", "s"]) {
+    // -ss bases keep their final s (Qodo f6030e64): pass/process/access
+    // are not plurals — stripping the s split them from their own
+    // inflected forms (passing keeps "ss" because the doubled-consonant
+    // repair skips s, while the base lost one).
+    if (suffix === "s" && w.endsWith("ss")) break;
     if (w.length > suffix.length + 2 && w.endsWith(suffix)) {
       const base = w.slice(0, -suffix.length);
       // Doubled-consonant repair (Qodo 59932c0a): running→runn→run needs
@@ -476,18 +487,17 @@ function splitClauses(text: string): string[] {
   // A marker stranded at a line end (Qodo 35f32790): "Never\npublish npm
   // packages" splits into a marker-only clause with no action words and a
   // marker-free remainder the gate ignores — the polarity was silently
-  // dropped. Merge a clause with no action words into the NEXT clause
-  // (or the previous one when it is last) so the marker keeps its action.
+  // dropped. A stranded marker governs what FOLLOWS it (Qodo 7ab4f675):
+  // "Always check logs; always; deploy PyPI packages" — the second
+  // "always" belongs to the deployment, not to the logs instruction — so
+  // it is carried into the next clause through a pending buffer and only
+  // attaches to the previous clause when nothing follows it.
   const out: string[] = [];
   let pending = "";
   for (const clause of clauses) {
     const markerOnly = clause.trim().length > 0 && actionWords(clause).size === 0;
     if (markerOnly) {
-      if (out.length > 0) {
-        out[out.length - 1] = `${out[out.length - 1]} ${clause}`.trim();
-      } else {
-        pending = `${pending} ${clause}`.trim();
-      }
+      pending = `${pending} ${clause}`.trim();
     } else {
       out.push(`${pending} ${clause}`.trim());
       pending = "";
@@ -679,22 +689,27 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       const permRaw = rawActionWords(perm);
       const negOnly = [...negRaw].filter((w) => !permRaw.has(w));
       const permOnly = [...permRaw].filter((w) => !negRaw.has(w));
-      if (negOnly.length === 1 && permOnly.length === 1) {
-        const diffA = negOnly[0]!;
-        const diffB = permOnly[0]!;
-        const universal = UNIVERSAL_QUANTIFIERS.has(diffA) || UNIVERSAL_QUANTIFIERS.has(diffB);
-        if (!universal && !isVariantWord(diffA, diffB)) {
-          const stemmerOverMerge = stem(diffA) === stem(diffB);
-          if (
-            stemmerOverMerge ||
-            (diffWordIsMidClause(neg, diffA, permRaw) &&
-              diffWordIsMidClause(perm, diffB, negRaw))
-          ) {
+      // Multi-word targets are distinct too (Qodo 46dd1ccb): "production
+      // builds" vs "staging environment builds" differ by MORE than one
+      // word per side — the sides are different targets unless some cross
+      // pair is a variant, a universal qualifier spans them, or a diff is
+      // leading/trailing (temporals and qualifiers stay inside the clash).
+      if (negOnly.length >= 1 && permOnly.length >= 1) {
+        const universal =
+          negOnly.some((w) => UNIVERSAL_QUANTIFIERS.has(w)) ||
+          permOnly.some((w) => UNIVERSAL_QUANTIFIERS.has(w));
+        const crossVariant = negOnly.some((a) => permOnly.some((b) => isVariantWord(a, b)));
+        if (!universal && !crossVariant) {
+          const stemmerOverMerge = negOnly.some((a) => permOnly.some((b) => stem(a) === stem(b)));
+          const allMidClause =
+            negOnly.every((a) => diffWordIsMidClause(neg, a, permRaw)) &&
+            permOnly.every((b) => diffWordIsMidClause(perm, b, negRaw));
+          if (stemmerOverMerge || allMidClause) {
             log.debug(
               "memory-write: distinct-target exclusion",
-              diffA,
+              negOnly.join("/"),
               "vs",
-              diffB,
+              permOnly.join("/"),
               stemmerOverMerge ? "(stem over-merge)" : "",
             );
             continue;
