@@ -134,17 +134,21 @@ const SHELL_COMMAND_TOOL_NAMES = new Set([
 function toolNameTriggerWarning(trigger: string | undefined, action: string | undefined): string | null {
   if (!trigger?.startsWith("tool_name ")) return null;
   const tool = trigger.slice("tool_name ".length).trim();
+  // Lookups are case-insensitive (Qodo 53d6b3d0): "Bash" and "Curl" are
+  // misspellings of the lowercase pi tool / shell commands — they never
+  // fire, so they deserve the same advisories as the exact spellings.
+  const toolLower = tool.toLowerCase();
   // No action = dead trigger (Qodo 792c27a3): enforcement loading requires
   // BOTH a trigger and an action, so a bare tool_name trigger never fires —
   // say that instead of describing enforcement that will not occur.
   if (!action) {
     return `warning: trigger "tool_name ${tool}" has no action — it will never fire; add an action (block, warn, or run_after <command>) for enforcement to load it`;
   }
-  if (SHELL_COMMAND_TOOL_NAMES.has(tool)) {
-    return `warning: trigger "tool_name ${tool}" names a shell command, not a pi tool — ${tool} runs inside bash, so this trigger never fires; use a bash_contains pattern for the specific command instead`;
+  if (SHELL_COMMAND_TOOL_NAMES.has(toolLower)) {
+    return `warning: trigger "tool_name ${tool}" names a shell command, not a pi tool — ${toolLower} runs inside bash, so this trigger never fires; use a bash_contains pattern for the specific command instead`;
   }
-  if (tool === "bash") {
-    return `warning: trigger "tool_name bash" with action ${action ?? "(none)"} applies to EVERY bash call — usually over-broad; prefer a bash_contains pattern targeting the specific command`;
+  if (toolLower === "bash") {
+    return `warning: trigger "tool_name ${tool}" with action ${action ?? "(none)"} applies to EVERY bash call — usually over-broad; prefer a bash_contains pattern targeting the specific command`;
   }
   return null;
 }
@@ -194,12 +198,14 @@ function stem(word: string): string {
   for (const suffix of ["ing", "ed", "es", "s"]) {
     if (w.length > suffix.length + 2 && w.endsWith(suffix)) {
       const stem = w.slice(0, -suffix.length);
-      if (/([a-z])\1$/.test(stem) && stem.length > 3) {
-        return stem.slice(0, -1);
-      }
-      return stem;
+      w = /([a-z])\1$/.test(stem) && stem.length > 3 ? stem.slice(0, -1) : stem;
+      break;
     }
   }
+  // Silent-e (Qodo 833b46be): "packages" strips -es to "packag" while
+  // singular "package" kept its e — the pair never matched. Drop a final
+  // e on long words so singular/plural/inflected forms converge.
+  if (w.endsWith("e") && w.length >= 5) w = w.slice(0, -1);
   return w;
 }
 
@@ -377,10 +383,13 @@ function splitClauses(text: string): string[] {
   while ((m = re.exec(mask))) {
     bounds.push(m.index + m[0].length);
   }
-  // Coordinated clauses (Qodo 1ad018b0): "Never use npm and always run
-  // tests" — an "and"/"or" whose continuation carries a polarity marker
-  // starts a new clause. "use npm and pip" (marker-free continuation)
-  // stays one clause.
+  // Coordinated clauses (Qodo 1ad018b0, 438cc007): "Never use npm and
+  // always run tests" — an "and"/"or" whose continuation LEADS with a
+  // polarity marker (within its first two words) starts a new clause. A
+  // marker deeper in the tail does NOT split: "Never publish npm and PyPI
+  // packages and always update docs" — the first and joins the OBJECTS of
+  // the prohibition (PyPI packages is banned too), only the marker-led
+  // and opens a clause.
   const andRe = /\b(?:and|or)\b/gi;
   while ((m = andRe.exec(mask))) {
     const start = m.index + m[0].length;
@@ -389,7 +398,8 @@ function splitClauses(text: string): string[] {
       if (b > start && b < nextBound) nextBound = b;
     }
     const tail = mask.slice(start, nextBound);
-    if (NEGATION_RE.test(tail) || PERMIT_RE.test(tail) || ONLY_PERMIT_RE.test(tail)) {
+    const lead = tail.trim().split(/\s+/).slice(0, 2).join(" ");
+    if (NEGATION_RE.test(lead) || PERMIT_RE.test(lead) || ONLY_PERMIT_RE.test(lead)) {
       bounds.push(start);
     }
   }
@@ -845,21 +855,21 @@ function mergeEnforcementFields(
  * See module header for the safeguard order.
  */
 export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promise<AddMemoryResult> {
-  // Canonicalize tool_name triggers (Qodo dfbdbf1c, 53d6b3d0): the
-  // enforcement matcher compares the configured name EXACTLY and
-  // case-sensitively against lowercase pi tool names, so trailing or
-  // doubled whitespace ("tool_name bash ") or capitalization ("tool_name
-  // Bash") makes the trigger silently dead while writers believe it
-  // covers every call. Normalize to the lowercase canonical form before
-  // validation, warning, and storage.
+  // Canonicalize tool_name triggers (Qodo dfbdbf1c, 53d6b3d0, 17b68cf5):
+  // the enforcement matcher compares the configured name EXACTLY and
+  // case-sensitively, so trailing or doubled whitespace ("tool_name bash ")
+  // makes the trigger silently dead. pi tool names are MIXED-CASE
+  // (TaskCreate, TaskUpdate) — never lowercase blindly; the only targeted
+  // case repair is bash, whose real pi tool name is lowercase while
+  // "Bash"/"BASH" are common misspellings that would never fire.
   if (input.trigger?.startsWith("tool_name ")) {
+    const tool = input.trigger
+      .slice("tool_name ".length)
+      .replace(/\s+/g, " ")
+      .trim();
     input = {
       ...input,
-      trigger: `tool_name ${input.trigger
-        .slice("tool_name ".length)
-        .replace(/\s+/g, " ")
-        .trim()
-        .toLowerCase()}`,
+      trigger: `tool_name ${tool.toLowerCase() === "bash" ? "bash" : tool}`,
     };
   }
   const category = input.category;

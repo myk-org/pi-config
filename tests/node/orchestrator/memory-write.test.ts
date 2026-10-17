@@ -1103,7 +1103,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("coordinated rules split on and/or when the tail is polarized (Qodo 1ad018b0)", async () => {
+  it("coordinated rules split when the tail leads with a polarity marker (Qodo 1ad018b0)", async () => {
     const cwd = makeCwd();
     try {
       seedEntry(cwd, "lesson", "Never use npm and always run tests", { pinned: true });
@@ -1214,6 +1214,54 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
         category: "lesson",
       });
       assert.equal(result.status, "added", `must be storable: ${result.message}`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("object lists stay inside the prohibiting clause (Qodo 438cc007)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never publish npm and PyPI packages and always update docs", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always publish PyPI packages",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("singular and plural objects converge under stemming (Qodo 833b46be)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never delete packages", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always delete package",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("mixed-case pi tool names keep their case (Qodo 17b68cf5)", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Task creation goes through the task tool",
+        category: "lesson",
+        trigger: "tool_name TaskCreate",
+        action: "warn",
+      });
+      assert.equal(result.status, "added");
+      const enforced = loadEnforcedEntries(cwd);
+      assert.ok(enforced.some((e) => e.trigger === "tool_name TaskCreate"), "must keep the mixed-case form the matcher compares");
+      assert.doesNotMatch(result.message ?? "", /ENFORCEMENT WARNING|warning:/i);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
