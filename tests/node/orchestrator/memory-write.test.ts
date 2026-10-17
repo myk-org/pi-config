@@ -2749,4 +2749,59 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+  it("quoted example payloads are not distinct targets (Qodo 3d973a63)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", 'Never inspect logs containing "use npm"', { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: 'Always inspect logs containing "use uv"',
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+      // A quoted tool after an action verb is still a real target.
+      const cwd2 = makeCwd();
+      try {
+        seedEntry(cwd2, "lesson", "Never use 'npm'", { pinned: true });
+        const second = await addMemoryEntry(cwd2, {
+          text: "Always use 'uv'",
+          category: "lesson",
+        });
+        assert.equal(second.status, "added");
+      } finally {
+        fs.rmSync(cwd2, { recursive: true, force: true });
+      }
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("overnight ranges wrap past midnight (Qodo 9d9018bc)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests between 11pm and 1am", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests at midnight",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts pinned memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("same weekday at different hours coexist (Qodo aace4e0c)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never run tests on Monday at 2am", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "Always run tests on Monday at 3am",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

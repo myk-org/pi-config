@@ -900,13 +900,21 @@ function scheduleSpans(clause: string): ScheduleSpan[] {
   // Ranges — "between 1am and 3am", both endpoints inclusive. EVERY
   // alternative is a span (Qodo 79650f41): "between 2am and 3am or
   // between 4am and 5am" bans two windows, and a single exec() saw
-  // only the first.
+  // only the first. A range whose end precedes its start crosses
+  // MIDNIGHT (Qodo 9d9018bc): "between 11pm and 1am" is [11pm,24h) ∪
+  // [0,1am], not an invalid range to discard.
   for (const r of masked.matchAll(
     new RegExp(`\\bbetween\\s+(${CLOCK_TIME})\\s+and\\s+(${CLOCK_TIME})\\b`, "gi"),
   )) {
     const t1 = parseTimeToken(r[1]!);
     const t2 = parseTimeToken(r[2]!);
-    if (t1 !== null && t2 !== null && t1 <= t2) spans.push({ lo: t1, hi: t2, loInc: true, hiInc: true });
+    if (t1 === null || t2 === null) continue;
+    if (t1 <= t2) {
+      spans.push({ lo: t1, hi: t2, loInc: true, hiInc: true });
+    } else {
+      spans.push({ lo: t1, hi: 24 * 60, loInc: true, hiInc: true });
+      spans.push({ lo: 0, hi: t2, loInc: true, hiInc: true });
+    }
   }
   return spans;
 }
@@ -957,7 +965,13 @@ function schedulesOverlap(aClause: string, bClause: string): boolean {
   if (da && db) {
     let shared = false;
     for (const d of da) if (db.has(d)) shared = true;
-    return shared;
+    if (!shared) return false;
+    // Same days with clock times on BOTH sides (Qodo aace4e0c): the
+    // hours must also intersect — "Monday at 2am" and "Monday at 3am"
+    // share the day but not the hour. A weekday-only rule covers every
+    // hour of its days.
+    if (a.length > 0 && b.length > 0) return timeOverlap;
+    return true;
   }
   if (timeOverlap) return true;
   // A clock-time schedule with no weekday applies EVERY day, so it
@@ -1050,8 +1064,14 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       // and the exclusion fires regardless of position.
       const negRaw = rawActionWords(neg);
       const permRaw = rawActionWords(perm);
-      const negOnly = [...negRaw].filter((w) => !permRaw.has(w));
-      const permOnly = [...permRaw].filter((w) => !negRaw.has(w));
+      // Quoted payload words are not targets (Qodo 3d973a63): differences
+      // that live only inside example spans ("logs containing 'use npm'")
+      // are removed from the diff sets before the exclusion logic — an
+      // empty diff pair means the actions match and the clash stands.
+      const negPayload = quotedPayloadWords(neg);
+      const permPayload = quotedPayloadWords(perm);
+      const negOnly = [...negRaw].filter((w) => !permRaw.has(w) && !negPayload.has(w));
+      const permOnly = [...permRaw].filter((w) => !negRaw.has(w) && !permPayload.has(w));
       // Multi-word targets are distinct too (Qodo 46dd1ccb): "production
       // builds" vs "staging environment builds" differ by MORE than one
       // word per side — the sides are different targets unless some cross
@@ -1277,7 +1297,7 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       const negTrail = trailingCondition(neg);
       if (negTrail.words.size > 0 && negTrail.timeLike) {
         const permTrail = trailingCondition(perm);
-        const scheduleOverlap = [...negTrail.words].some((w) => permTrail.words.has(w));
+        const tokenShared = [...negTrail.words].some((w) => permTrail.words.has(w));
         // Temporal inclusion (Qodo c5f680b8, 283e8097, 1f6411f9,
         // 1e325d6d, aa028afb): different time tokens do not mean disjoint
         // schedules — a unified span model (points, bounds, ranges, named
@@ -1285,18 +1305,18 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         // points inside bounds or ranges, and overlapping bounds keep the
         // clash while touching strict bounds stay disjoint.
         const inclusion = schedulesOverlap(neg, perm);
-        // A shared token under DISJOINT weekdays is still disjoint (Qodo
-        // cd6e169a): "Monday at 2am" and "Tuesday at 2am" share the
-        // clock token but never the same day — the token shortcut must
-        // not keep the clash.
-        const dayDisjoint = (() => {
-          const da = weekdaySet(neg);
-          const db = weekdaySet(perm);
-          if (!da || !db) return false;
-          for (const d of da) if (db.has(d)) return false;
-          return true;
-        })();
-        if (permTrail.words.size > 0 && (dayDisjoint || (!scheduleOverlap && !inclusion))) {
+        // Model-backed disjointness (Qodo cd6e169a, aace4e0c): when BOTH
+        // trails carry time-like tokens, the span model's verdict
+        // overrides the shared-token shortcut — "Monday at 2am" and
+        // "Monday at 3am" share the weekday token but not the hour, and
+        // "Monday at 2am"/"Tuesday at 2am" share the clock token but
+        // not the day. Non-time qualifiers ("after review") keep the
+        // token check.
+        const bothTimeTokened =
+          TIMEWORD_RE.test([...negTrail.words].join(" ")) &&
+          TIMEWORD_RE.test([...permTrail.words].join(" "));
+        const modelDisjoint = !inclusion && bothTimeTokened;
+        if (permTrail.words.size > 0 && (modelDisjoint || (!tokenShared && !inclusion))) {
           log.debug(
             "memory-write: disjoint trailing schedules coexist",
             neg.slice(0, 80),
@@ -1520,6 +1540,22 @@ function permRelationTo(perm: string, coveredWords: string[]): string | null {
     }
   }
   return null;
+}
+
+/** Words inside quoted spans that are PAYLOAD, not targets (Qodo
+ *  3d973a63): a quoted span directly after an action verb is the verb's
+ *  object — "never use 'npm'" — and its words are real diff targets; a
+ *  span embedded after a non-verb ("inspect logs containing 'use npm'")
+ *  is example content of the rule about logs, and differences inside it
+ *  are not distinct targets. */
+function quotedPayloadWords(clause: string): Set<string> {
+  const set = new Set<string>();
+  for (const m of clause.matchAll(/([a-zA-Z]+)\s+(['\"‘“][^'\"‘“]{1,80}['\"’”])/g)) {
+    const prevStem = stem(m[1]!.toLowerCase());
+    if (ACTION_VERB_STEMS.has(prevStem)) continue;
+    for (const w of m[2]!.toLowerCase().match(/[a-z]+/g) ?? []) set.add(w);
+  }
+  return set;
 }
 
 function diffWordIsMidClause(clause: string, diff: string, otherWords: Set<string>): boolean {
