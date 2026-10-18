@@ -1420,3 +1420,46 @@ def test_paired_sticky_span_still_matches_across_the_thread_line() -> None:
         data_run = json.loads(json.dumps(data))
         apply_replies(data_run, [{"path": "src/a.py", "line": rule_line, "reply": "fixed"}], "addressed")
         assert all(e["reply"] == "fixed" for e in data_run["qodo"]), f"rule at {rule_line} must reach the pair"
+
+
+def _replies_file(tmp_path: Path, lines: list[str]) -> Path:
+    f = tmp_path / "replies.txt"
+    f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return f
+
+
+def test_discriminator_outranks_plain_line_rule() -> None:
+    """A disc rule beats a later plain rule for shared-line findings (Qodo 2529b6ce)."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(body="Race: writer finishes before flush", line=10),
+            _entry(body="Missing validation on input", line=10),
+        ],
+        "coderabbit": [],
+    }
+    rules: list[dict[str, Any]] = [
+        {"path": "src/a.py", "line": 10, "disc": "Race", "reply": "targeted reply"},
+        {"path": "src/a.py", "line": 10, "reply": "plain reply"},
+    ]
+    apply_replies(data, rules, "addressed")
+    replied: dict[str, Any] = {e["body"]: e["reply"] for e in data["qodo"]}
+    assert replied["Race: writer finishes before flush"] == "targeted reply"
+    assert replied["Missing validation on input"] == "plain reply"
+
+
+def test_discriminator_with_colon_parses(tmp_path: Path) -> None:
+    """`~Bug: race` parses — disc stripped before the path:line split (Qodo 7e63c710)."""
+    rules = parse_replies_file(_replies_file(tmp_path, ["src/a.py:10~Bug: race in parser|colons fine"]))
+    assert rules[0]["path"] == "src/a.py"
+    assert rules[0]["line"] == 10
+    assert rules[0]["disc"] == "Bug: race in parser"
+
+
+def test_empty_discriminator_error_names_the_line(tmp_path: Path) -> None:
+    """The empty-discriminator error interpolates the mapping line (Qodo bab2aeb1)."""
+    with pytest.raises(RepliesFileError) as exc:
+        parse_replies_file(_replies_file(tmp_path, ["src/a.py:10~|reply"]))
+    assert "src/a.py:10~|reply" in str(exc.value)
+    assert "{line!r}" not in str(exc.value)

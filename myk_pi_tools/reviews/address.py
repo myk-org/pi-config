@@ -104,26 +104,30 @@ def parse_replies_file(path: Path) -> list[dict[str, Any]]:
         if target == "*":
             rules.append({"path": None, "line": None, "reply": reply})
             continue
-        file_part, colon, line_part = target.rpartition(":")
-        if not colon or not file_part:
-            raise RepliesFileError(f"{path}:{lineno}: expected '<path>:<line>|<reply>', got: {line!r}")
-        if line_part == "*":
-            rules.append({"path": file_part, "line": None, "file_wildcard": True, "reply": reply})
-            continue
+        # Strip the discriminator BEFORE splitting path/line (Qodo 7e63c710):
+        # fragments copied from titles often contain colons ("Prefix: detail"),
+        # so an rpartition(":") over the whole target would mis-split them.
         disc: str | None = None
-        if "~" in line_part:
-            line_part, _, disc = line_part.partition("~")
+        base_target = target
+        if "~" in base_target:
+            base_target, _, disc = base_target.partition("~")
             disc = disc.strip()
             if not disc:
                 raise RepliesFileError(
                     f"{path}:{lineno}: empty discriminator after '~' — expected "
-                    "'<path>:<line>~<title-fragment>|<reply>', got: {line!r}"
+                    f"'<path>:<line>~<title-fragment>|<reply>', got: {line!r}"
                 )
-            if line_part.strip() == "*":
+        file_part, colon, line_part = base_target.rpartition(":")
+        if not colon or not file_part:
+            raise RepliesFileError(f"{path}:{lineno}: expected '<path>:<line>|<reply>', got: {line!r}")
+        if line_part == "*":
+            if disc is not None:
                 raise RepliesFileError(
                     f"{path}:{lineno}: a file wildcard cannot carry a discriminator — "
                     "use '<path>:<line>~<fragment>' to target one finding"
                 )
+            rules.append({"path": file_part, "line": None, "file_wildcard": True, "reply": reply})
+            continue
         try:
             rule_line = int(line_part)
         except ValueError:
@@ -544,13 +548,21 @@ def apply_replies(
         ]
         if not matched:
             continue
-        # Most specific rule wins (exact line > per-file wildcard > global
-        # wildcard); among equals, the last matching rule in file order wins.
+        # Most specific rule wins (line+discriminator > exact line >
+        # per-file wildcard > global wildcard); among equals, the last
+        # matching rule in file order wins. A discriminator rule outranks
+        # a plain line rule (Qodo 2529b6ce): two findings sharing a line
+        # with one discriminator rule and one plain rule are both resolved
+        # — the disc rule takes its finding, the plain rule the rest —
+        # instead of the later plain rule overriding both and tripping
+        # the ambiguity check.
 
         def _rank(r: dict[str, Any]) -> int:
             if r["path"] is None:
                 return 0
-            return 2 if r.get("line") is not None else 1
+            if r.get("line") is None:
+                return 1
+            return 3 if r.get("disc") else 2
 
         rule_idx, rule = max(matched, key=lambda m: (_rank(m[1]), m[0]))
         if rule.get("line") is not None:

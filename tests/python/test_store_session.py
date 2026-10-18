@@ -676,3 +676,32 @@ def test_inline_lookups_finish_before_the_database_opens(project_root: Path, mon
     assert all(i < write_db for i, e in enumerate(events) if e == "gh"), (
         "every gh lookup precedes the write transaction's connection"
     )
+
+
+def test_non_object_session_json_fails_cleanly(project_root: Path) -> None:
+    """A JSON array (valid JSON, wrong shape) exits with a clear error (Qodo d41e21ed)."""
+    json_path = project_root / "session.json"
+    json_path.write_text("[]", encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        store_session.store_session(json_path)
+    assert exc.value.code == 1
+
+
+def test_null_findings_fails_cleanly(project_root: Path) -> None:
+    """`"findings": null` exits with a clear error instead of TypeError (Qodo d41e21ed)."""
+    json_path = project_root / "session.json"
+    json_path.write_text(json.dumps({"pr_url": "https://github.com/o/r/pull/9", "findings": None}), encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        store_session.store_session(json_path)
+    assert exc.value.code == 1
+
+
+def test_non_object_finding_fails_cleanly(project_root: Path) -> None:
+    """A scalar finding element exits with a clear error (Qodo d41e21ed)."""
+    json_path = project_root / "session.json"
+    json_path.write_text(
+        json.dumps({"pr_url": "https://github.com/o/r/pull/9", "findings": ["scalar"]}), encoding="utf-8"
+    )
+    with pytest.raises(SystemExit) as exc:
+        store_session.store_session(json_path)
+    assert exc.value.code == 1

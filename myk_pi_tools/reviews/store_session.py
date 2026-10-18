@@ -197,6 +197,22 @@ def store_session(json_path: Path) -> None:
         log.error(f"Error: Invalid JSON in file: {e}")
         sys.exit(1)
 
+    # Controlled shape validation (Qodo d41e21ed): a valid JSON file that
+    # is not the expected object graph (e.g. `[]`, `\"findings\": null`)
+    # must produce a clear input error, not an uncaught TypeError deep in
+    # the grouping loop.
+    if not isinstance(data, dict):
+        log.error(f"Error: session JSON must be a JSON object, got {type(data).__name__}")
+        sys.exit(1)
+    findings_raw = data.get("findings", [])
+    if not isinstance(findings_raw, list):
+        log.error(f"Error: 'findings' must be a JSON array, got {type(findings_raw).__name__}")
+        sys.exit(1)
+    for idx, finding in enumerate(findings_raw):
+        if not isinstance(finding, dict):
+            log.error(f"Error: findings[{idx}] must be a JSON object, got {type(finding).__name__}")
+            sys.exit(1)
+
     pr_url = data.get("pr_url", "")
     if not pr_url:
         log.error("Error: session JSON missing required field (pr_url)")
@@ -209,7 +225,7 @@ def store_session(json_path: Path) -> None:
     # commit preserves the per-round structure of the session loop.
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     seen_ids: set[Any] = set()  # within-run dedupe (Qodo d285f08c)
-    for finding in data.get("findings", []):
+    for finding in findings_raw:
         git_sha = finding.get("git_sha")
         if not git_sha:
             # Dropped input data is data loss — error, not warning (Qodo 74714f98).
@@ -263,9 +279,11 @@ def store_session(json_path: Path) -> None:
             }
         finally:
             read_conn.close()
-    except sqlite3.Error:
-        # Fresh database (no tables yet) — every finding is new.
-        log.debug("existing-session read pass skipped (fresh database)")
+    except sqlite3.Error as e:
+        # Fresh database (no tables yet) — every finding is new. Anything
+        # else is surfaced with its database and error so operators can
+        # tell an uninitialized DB from a real failure (Qodo dc95d243).
+        log.warning(f"existing-session read pass failed for {db_path}: {e} — proceeding without idempotency check")
 
     # Pre-warm the inline-location cache BEFORE the write transaction opens
     # (Qodo c47d2f7c): the gh api lookups (30 s timeout each) must not run
