@@ -318,6 +318,11 @@ progress. It does not commit, push, create a PR, or post results.
 - Reviews store-session CLI: `uv run myk-pi-tools reviews store-session <json>` — store a Qodo pr-review-session findings JSON (the
   `qodo-<pr>-<sha>.json` a session-loop poll saves) into the reviews DB after every completed round; idempotent per finding UUID, and the
   input JSON is kept. See README `myk-pi-tools` subcommands.
+- **Reviews DB ↔ review-learning coupling (MANDATORY)**: `.pi/data/reviews.db` is the single source for review-learning
+  (`extensions/orchestrator/review-learning.ts` reads addressed findings via `getAddressedComments`/`getLatestReview` and distills them into
+  memory lessons; write-time injection queries it per path). Any change to the store path — schema, status vocabulary, a new store entry point —
+  MUST keep those queries working, and any NEW way of putting rows in the DB MUST trigger or feed distillation. Breaking this silently stops
+  all review learning (it happened: session-loop PRs stored nothing and taught nothing — issue #942).
 - Settings TUI: `/pi-config-settings [project|global]` — interactive settings editor in the pi session.
 - Agent settings injection: use `{{SETTINGS:key1,key2}}` in agent `.md` files — `substituteSettingsPlaceholders` only (not rules `assembleRuleText`). See `docs/project-settings.md`.
   Never instruct agents to read `pi-config-settings.jsonc`/`.json` manually.

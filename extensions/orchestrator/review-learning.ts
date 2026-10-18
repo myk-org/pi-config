@@ -3,7 +3,7 @@
  * recall them at write time (issue #918 Parts A and B).
  *
  * Part A — a `tool_result` watcher recognizes `myk-pi-tools reviews address`
- * completions in main-session bash, then (fire-and-forget — scheduled via
+ * AND `myk-pi-tools reviews store-session` completions in main-session bash, then (fire-and-forget — scheduled via
  * setImmediate so the handler returns before any synchronous I/O starts)
  * distills the ADDRESSED findings of the review that command stored from
  * `.pi/data/reviews.db` into one-line `lesson` memory entries via the internal
@@ -91,6 +91,12 @@ const MAX_TRACKED_REVIEWS = 200;
 /** `reviews address` as a subcommand invocation (not `reviews address-foo`). */
 const REVIEWS_ADDRESS_RE = /(?:^|[\s;&|])reviews\s+address(?=[\s;&|]|$)/i;
 
+/** `reviews store-session` as a subcommand invocation (not `store-session-foo`). */
+const REVIEWS_STORE_SESSION_RE = /(?:^|[\s;&|])reviews\s+store-session(?=[\s;&|]|$)/i;
+
+/** Positional JSON path of a `reviews store-session <path>` invocation. */
+const REVIEWS_STORE_SESSION_PATH_RE = /(?:^|[\s;&|])reviews\s+store-session\s+(\S+)/i;
+
 /**
  * True when a bash command invokes `myk-pi-tools reviews address`.
  * Tolerates `uv run ... myk-pi-tools ... reviews address` and `uv run --group X ...`
@@ -101,6 +107,19 @@ export function isReviewsAddressCommand(command: unknown): boolean {
   const normalized = command.trim();
   if (!/\bmyk-pi-tools\b/i.test(normalized)) return false;
   return REVIEWS_ADDRESS_RE.test(normalized);
+}
+
+/**
+ * True when a bash command invokes `myk-pi-tools reviews store-session` —
+ * the command a Qodo pr-review-session loop runs after every completed
+ * round (issue #942/#944 coupling: session-stored reviews must distill the
+ * same way address-stored ones do). `reviews store` alone never matches.
+ */
+export function isReviewsStoreSessionCommand(command: unknown): boolean {
+  if (typeof command !== "string") return false;
+  const normalized = command.trim();
+  if (!/\bmyk-pi-tools\b/i.test(normalized)) return false;
+  return REVIEWS_STORE_SESSION_RE.test(normalized);
 }
 
 // ── Repo resolution ────────────────────────────────────────────────────────
@@ -341,9 +360,21 @@ export function recordReviewLessons(dataDir: string, reviewId: number, texts: st
 export function prNumberFromCommand(command: string | undefined, cwd: string): number | null {
   try {
     const m = /(?:^|\s)--json(?:\s+|=)(\S+)/.exec(command ?? "");
-    if (!m) return null;
-    const pr = Number(JSON.parse(readFileSync(resolve(cwd, m[1]!), "utf-8"))?.metadata?.pr_number);
-    return Number.isInteger(pr) && pr > 0 ? pr : null;
+    if (m) {
+      const pr = Number(JSON.parse(readFileSync(resolve(cwd, m[1]!), "utf-8"))?.metadata?.pr_number);
+      return Number.isInteger(pr) && pr > 0 ? pr : null;
+    }
+    // `reviews store-session <path>`: the session JSON identifies its PR via
+    // pr_url (issue #944) — the positional path replaces address's --json.
+    const s = REVIEWS_STORE_SESSION_PATH_RE.exec(command ?? "");
+    if (s) {
+      const prUrl: unknown = JSON.parse(readFileSync(resolve(cwd, s[1]!), "utf-8"))?.pr_url;
+      if (typeof prUrl === "string") {
+        const pr = Number(/\/pull\/(\d+)/.exec(prUrl)?.[1]);
+        return Number.isInteger(pr) && pr > 0 ? pr : null;
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -1089,8 +1120,8 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
         const tool = String(event?.toolName ?? "").toLowerCase();
         if (tool !== "bash") return;
         const command = event?.input?.command;
-        if (!isReviewsAddressCommand(command)) return;
-        log.debug("address_detected", { cwd: ctx?.cwd });
+        if (!isReviewsAddressCommand(command) && !isReviewsStoreSessionCommand(command)) return;
+        log.debug("address_detected", { cwd: ctx?.cwd, command: String(command).slice(0, 120) });
         // Fire-and-forget, deferred past the handler's synchronous frame —
         // the tool result must not wait for git exec, SQLite queries, or the
         // provenance lookup (all sync I/O inside `distill` before its first

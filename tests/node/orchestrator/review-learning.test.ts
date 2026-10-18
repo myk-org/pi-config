@@ -14,6 +14,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   isReviewsAddressCommand,
+  isReviewsStoreSessionCommand,
   parseGitHubRepo,
   resolveRepoInfo,
   getLatestReview,
@@ -146,6 +147,22 @@ describe("isReviewsAddressCommand", () => {
   });
 });
 
+describe("isReviewsStoreSessionCommand", () => {
+  it("matches direct and uv-wrapped invocations", () => {
+    assert.equal(isReviewsStoreSessionCommand("myk-pi-tools reviews store-session .pi/tmp/qodo-943-abc.json"), true);
+    assert.equal(isReviewsStoreSessionCommand("uv run myk-pi-tools reviews store-session x.json"), true);
+    assert.equal(isReviewsStoreSessionCommand("cd /repo && uv run myk-pi-tools reviews store-session x.json"), true);
+  });
+  it("rejects plain store, other subcommands, and non-strings", () => {
+    assert.equal(isReviewsStoreSessionCommand("myk-pi-tools reviews store pr-1-reviews.json"), false);
+    assert.equal(isReviewsStoreSessionCommand("myk-pi-tools reviews fetch"), false);
+    assert.equal(isReviewsStoreSessionCommand("myk-pi-tools reviews store-session-logs x.json"), false);
+    assert.equal(isReviewsStoreSessionCommand("reviews store-session x.json"), false);
+    assert.equal(isReviewsStoreSessionCommand(undefined), false);
+    assert.equal(isReviewsStoreSessionCommand(42), false);
+  });
+});
+
 // ── Repo parsing ───────────────────────────────────────────────────────────
 
 describe("parseGitHubRepo", () => {
@@ -266,6 +283,23 @@ describe("prNumberFromCommand", () => {
     );
     const pr = prNumberFromCommand("myk-pi-tools reviews address --json .pi/tmp/pr-42-reviews.json --set addressed", cwd);
     assert.equal(pr, 42);
+  });
+  it("reads the PR number from a store-session positional JSON via pr_url", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "qodo-943-abc1234.json"),
+      JSON.stringify({ pr_url: "https://github.com/myk-org/pi-config/pull/943", findings: [] }),
+    );
+    const pr = prNumberFromCommand("uv run myk-pi-tools reviews store-session .pi/tmp/qodo-943-abc1234.json", cwd);
+    assert.equal(pr, 943);
+  });
+  it("store-session with an unreadable or pr_url-less JSON yields null", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, ".pi", "tmp", "qodo-bad.json"), JSON.stringify({ findings: [] }));
+    assert.equal(prNumberFromCommand("myk-pi-tools reviews store-session .pi/tmp/qodo-bad.json", cwd), null);
+    assert.equal(prNumberFromCommand("myk-pi-tools reviews store-session .pi/tmp/gone.json", cwd), null);
   });
   it("no --json → null even when leftover pr-*-reviews.json files linger (final runs delete their own)", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
@@ -610,6 +644,24 @@ describe("review-learning hook", () => {
     assert.ok(results.every((r) => r === undefined), "bash watcher returns no content");
     assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "lesson written");
     assert.deepEqual(lessonsIn(cwd).map((e) => e.text), ["src/api.py: Older PR-10 review finding"]);
+  });
+  it("distills on a reviews store-session tool_result naming the PR via pr_url", async () => {
+    const cwd = cwdWithDb();
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "qodo-12-abc1234.json"),
+      JSON.stringify({ pr_url: "https://github.com/myk-org/demo/pull/12", findings: [] }),
+    );
+    const { pi, handlers } = mockPi();
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
+    const results = fireToolResult(handlers, {
+      toolName: "bash",
+      input: { command: "uv run myk-pi-tools reviews store-session .pi/tmp/qodo-12-abc1234.json" },
+      isError: false,
+    }, { cwd });
+    assert.ok(results.every((r) => r === undefined), "bash watcher returns no content");
+    assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "lesson written from the session-stored review");
+    assert.deepEqual(lessonsIn(cwd).map((e) => e.text), ["src/api.py: Unhandled None on the endpoint response"]);
   });
   it("distills the PR named by the command's --json file, not the newest-for-repo", async () => {
     const cwd = cwdWithDb();

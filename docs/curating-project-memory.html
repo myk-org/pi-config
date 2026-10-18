@@ -503,7 +503,19 @@ myk-pi-tools<span class="w"> </span>memory<span class="w"> </span>add<span class
 <p>Use this together with your PR workflow, then review the results in later cycles. See <a href="automating-code-reviews.html">Automating Code Reviews</a> for details.</p>
 <h3 id="distill-addressed-review-findings-into-lessons">Distill addressed review findings into lessons</h3>
 <p>When <code>myk-pi-tools reviews address</code> finishes applying replies, the orchestrator distills the findings that were <strong>addressed</strong> (not skipped) from the review database into one-line <code>lesson</code> memories — repo-scoped, concrete, capped at five per run. Each lesson carries finding-id provenance (<code>reviews.db:&lt;finding-id&gt;;&lt;owner&gt;/&lt;repo&gt;</code>), so when the same finding is addressed again the existing lesson is reinforced instead of duplicated: the evidence count becomes the recurrence signal.</p>
-<p>Distillation runs in the background right after the address command completes and never blocks the review flow. Disable it with <code>review_learning: false</code> in your project settings.</p>
+<p>Distillation runs in the background right after the address command completes and never blocks the review flow. It also fires when <code>myk-pi-tools reviews store-session</code> completes — the command a Qodo <code>pr-review-session</code> loop runs after every review round — so session-reviewed PRs distill the same way. Disable it with <code>review_learning: false</code> in your project settings.</p>
+<blockquote>
+<p><strong>MANDATORY COUPLING — reviews DB ↔ review-learning.</strong> The reviews database
+(<code>.pi/data/reviews.db</code>, owned by <code>myk-pi-tools reviews store</code> / <code>store-session</code>)
+is the SINGLE SOURCE for review-learning: distillation reads addressed
+findings from it, and write-time injection queries it per path. Any change to
+the store path — schema, status vocabulary, a new store entry point — MUST
+keep <code>getAddressedComments</code> / <code>getLatestReview</code> (extensions/orchestrator/review-learning.ts)
+working, and any NEW way of putting rows in the DB MUST trigger or feed
+distillation. Breaking this coupling silently stops all review learning
+(it happened once: session-loop PRs #931/#937/#939 stored nothing and taught
+nothing — issues #942 and this one).</p>
+</blockquote>
 <p>The same lessons come back at <strong>write time</strong>. Three injection surfaces query the review database and the lesson store for the files you are about to touch, ranked by how often each path's findings recurred, and append a bounded <code>&lt;review-lessons&gt;</code> block: before a turn starts (paths named in your prompt plus the issue-branch diff go into the system prompt as a section), on the first write or edit to a path discovered mid-run (appended to the tool result, once per path per session), and when a task is dispatched to a specialist subagent (appended to the task text). Every surface is mechanical — no model calls — and omits the block entirely when nothing is relevant, so unaffected runs pay zero tokens. The same <code>review_learning</code> setting gates all three.</p>
 <p>Both review-handler modes are covered by the address hook: interactive mode runs <code>myk-pi-tools reviews address</code> in Phase 8 directly, and the auto polling loop (<code>--autorabbit</code> / <code>--autoqodo</code>) replays Phases 2–8 — including address — in the same main session after each poll result returns new comments. The poll worker process itself never calls address (<code>reviews poll</code> only fetches and posts status comments via the GitHub API), so the hook sees every address completion in both modes without any special handling.</p>
 <h3 id="know-when-to-use-memory-versus-hard-guards">Know when to use memory versus hard guards</h3>
