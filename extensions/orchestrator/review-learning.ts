@@ -99,6 +99,9 @@ const REVIEWS_STORE_SESSION_RE = /(?:^|[\s;&|])reviews\s+store-session(?=[\s;&|]
 /** Positional JSON path of a `reviews store-session <path>` invocation. */
 const REVIEWS_STORE_SESSION_PATH_RE = /(?:^|[\s;&|])reviews\s+store-session\s+(\S+)/i;
 
+/** owner/repo/pr from a GitHub PR URL (`https://github.com/o/r/pull/N`). */
+const PR_URL_PARTS_RE = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/i;
+
 /**
  * True when a bash command invokes `myk-pi-tools reviews address`.
  * Tolerates `uv run ... myk-pi-tools ... reviews address` and `uv run --group X ...`
@@ -451,7 +454,7 @@ export function prNumberFromCommand(command: string | undefined, cwd: string): n
         if (Number.isInteger(pr) && pr > 0) return pr;
         log.debug("pr_from_session_json_invalid", { prUrl: prUrl.slice(0, 120) });
       } else {
-        log.debug("pr_from_session_json_no_pr_url", {});
+        log.debug("pr_from_session_json_no_pr_url", { path: s[1]!.slice(0, 200) });
       }
     } catch (error: any) {
       // The session JSON is never deleted by the loop — unreadable means a
@@ -462,6 +465,49 @@ export function prNumberFromCommand(command: string | undefined, cwd: string): n
         path: s[1]!.slice(0, 200),
         reason: String(error?.message ?? error).slice(0, 200),
       });
+    }
+  }
+  return null;
+}
+
+/**
+ * The FULL review target a command names — owner/repo/prNumber from the
+ * address `--json` metadata or the store-session pr_url — or null when the
+ * command carries no readable target. Used by distill() to query the repo
+ * the rows were actually STORED under: a fork-hosted session stores rows
+ * under the pr_url's upstream repo while origin names the fork, and a
+ * PR-number-only lookup against origin would find nothing (Qodo befc495a).
+ */
+export function prTargetFromCommand(
+  command: string | undefined,
+  cwd: string,
+): { owner: string; repo: string; prNumber: number } | null {
+  const cmd = command ?? "";
+  const m = /(?:^|\s)--json(?:\s+|=)(\S+)/.exec(cmd);
+  if (m && !isRedirectionToken(m[1]!)) {
+    try {
+      const meta = JSON.parse(readFileSync(resolve(cwd, expandEnvVars(m[1]!)), "utf-8"))?.metadata;
+      const owner = typeof meta?.owner === "string" ? meta.owner : null;
+      const repo = typeof meta?.repo === "string" ? meta.repo : null;
+      const pr = Number(meta?.pr_number);
+      if (owner && repo && Number.isInteger(pr) && pr > 0) return { owner, repo, prNumber: pr };
+    } catch {
+      // unreadable --json — try the store-session path
+    }
+  }
+  const s = REVIEWS_STORE_SESSION_PATH_RE.exec(cmd);
+  if (s) {
+    try {
+      const prUrl: unknown = JSON.parse(readFileSync(resolve(cwd, expandEnvVars(s[1]!)), "utf-8"))?.pr_url;
+      if (typeof prUrl === "string") {
+        const parts = PR_URL_PARTS_RE.exec(prUrl.trim());
+        if (parts) {
+          const pr = Number(parts[3]);
+          if (Number.isInteger(pr) && pr > 0) return { owner: parts[1]!, repo: parts[2]!, prNumber: pr };
+        }
+      }
+    } catch {
+      // unreadable session JSON — prNumberFromCommand already warned
     }
   }
   return null;
@@ -600,6 +646,7 @@ function findingIdentity(f: AddressedFinding): string | null {
 export function distillLessons(
   findings: AddressedFinding[],
   completedTexts: Set<string> = new Set(),
+  cap: number = MAX_FINDINGS_PER_FIRE,
 ): DistilledLesson[] {
   const byIdentity = new Map<string, DistilledLesson>();
   for (const finding of rankFindings(findings)) {
@@ -613,7 +660,7 @@ export function distillLessons(
   const pool = completedTexts.size > 0
     ? [...byIdentity.values()].filter((lesson) => !completedTexts.has(lesson.text))
     : [...byIdentity.values()];
-  return pool.slice(0, MAX_FINDINGS_PER_FIRE);
+  return pool.slice(0, Math.max(0, cap));
 }
 
 // ── Memory write with provenance dedupe ────────────────────────────────────
@@ -1107,13 +1154,28 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
     }
     let reviews: ReviewRow[];
     if (prNumber !== null) {
-      // Explicit target: every review row of the PR, oldest first. No
-      // distilled pre-filter — findings appended to an already-distilled
-      // row (a later round re-importing the same commit) surface as pending
-      // lessons; fully-processed rows exit cheaply inside the pipeline.
-      reviews = getReviewsForPr(dbPath, repo.owner, repo.repo, prNumber);
+      // Explicit target: every review row of the PR, oldest first. Query the
+      // repo the command NAMED first — a fork-hosted session stores rows
+      // under the pr_url's upstream repo while origin names the fork, so an
+      // origin-only lookup would find nothing (Qodo befc495a) — then fall
+      // back to the checkout's origin. No distilled pre-filter: findings
+      // appended to an already-distilled row surface as pending lessons;
+      // fully-processed rows exit cheaply inside the pipeline.
+      const target = prTargetFromCommand(command, cwd);
+      const candidates =
+        target && (target.owner !== repo.owner || target.repo !== repo.repo)
+          ? [target, { owner: repo.owner, repo: repo.repo }]
+          : [{ owner: repo.owner, repo: repo.repo }];
+      reviews = [];
+      for (const candidate of candidates) {
+        reviews = getReviewsForPr(dbPath, candidate.owner, candidate.repo, prNumber);
+        if (reviews.length > 0) break;
+      }
       if (reviews.length === 0) {
-        log.debug("skipped_no_review_row", { owner: repo.owner, repo: repo.repo, prNumber });
+        log.debug("skipped_no_review_row", {
+          owner: repo.owner, repo: repo.repo, prNumber,
+          target: target ? `${target.owner}/${target.repo}` : null,
+        });
         return;
       }
     } else {
@@ -1131,8 +1193,18 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
       }
       reviews = [latest];
     }
+    // Per-FIRE write budget across ALL reviews of the PR (Qodo 062e8e28):
+    // the docs' "~5 lessons per fire" cap is per distill() call, not per
+    // review row — a multi-round PR must not dump 5×N lessons into memory
+    // at once. Remaining lessons distill on the next fire (completed-aware
+    // lesson selection walks forward).
+    let budget = MAX_MEMORY_WRITES_PER_FIRE;
     for (const review of reviews) {
-      await distillWithLock(cwd, review, dataDir, dbPath, repo);
+      if (budget <= 0) {
+        log.debug("distill_budget_exhausted", { reviewId: review.id, prNumber: review.prNumber });
+        break;
+      }
+      budget -= await distillWithLock(cwd, review, dataDir, dbPath, repo, budget);
     }
   };
 
@@ -1142,7 +1214,9 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
    * lesson state before either async write finishes and double-write the
    * same lessons — inflating counts and evidence. The second fire waits for
    * the first, then re-reads state (the first may have just completed the
-   * review) before doing any work.
+   * review) before doing any work. Returns the number of memory writes
+   * consumed (bounded by `budget` — the per-fire cap is shared across all
+   * reviews of the PR, Qodo 062e8e28).
    */
   const distillWithLock = async (
     cwd: string,
@@ -1150,32 +1224,42 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
     dataDir: string,
     dbPath: string,
     repo: RepoInfo,
-  ): Promise<void> => {
+    budget: number,
+  ): Promise<number> => {
     const previous = distillLocks.get(review.id) ?? Promise.resolve();
     let release!: () => void;
     const current = new Promise<void>((resolve) => (release = resolve));
     distillLocks.set(review.id, current);
+    let writes = 0;
     try {
       await previous;
-      await distillLockedReview(cwd, review, dataDir, dbPath, repo);
+      writes = await distillLockedReview(cwd, review, dataDir, dbPath, repo, budget);
     } finally {
       release();
       if (distillLocks.get(review.id) === current) distillLocks.delete(review.id);
     }
+    return writes;
   };
 
-  /** The distill pipeline body — runs holding the per-review lock. */
+  /**
+   * The distill pipeline body — runs holding the per-review lock. Returns
+   * the number of memory writes consumed (bounded by `budget`, the per-fire
+   * cap shared across the PR's reviews — Qodo 062e8e28). A review whose
+   * lessons were cut short by the budget is NOT marked distilled-error: the
+   * completed-aware lesson walk picks up its remainder on the next fire.
+   */
   const distillLockedReview = async (
     cwd: string,
     review: ReviewRow,
     dataDir: string,
     dbPath: string,
     repo: RepoInfo,
-  ): Promise<void> => {
+    budget: number,
+  ): Promise<number> => {
     const findings = getAddressedComments(dbPath, review.id);
     if (findings.length === 0) {
       log.debug("skipped_no_addressed_findings", { reviewId: review.id });
-      return;
+      return 0;
     }
     log.info("distill_start", {
       owner: repo.owner, repo: repo.repo, prNumber: review.prNumber, reviewId: review.id, findings: findings.length,
@@ -1189,11 +1273,16 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
     if (lessons.length === 0) {
       log.info("distill_finish", { findings: findings.length, lessons: 0, reason: "no lessons distilled" });
       markReviewDistilled(dataDir, review.id);
-      return;
+      return 0;
     }
-    const pending = lessons;
+    const pending = lessons.slice(0, Math.max(0, budget));
+    if (pending.length === 0) {
+      log.debug("distill_budget_exhausted_before_review", { reviewId: review.id });
+      return 0;
+    }
     const written = await writeLessons(cwd, pending, repo);
     if (written.completed.length > 0) recordReviewLessons(dataDir, review.id, written.completed);
+    const consumed = written.added + written.reinforced + written.skipped + written.rejected;
     if (written.rejected > 0) {
       // Rejected writes are retryable, not complete — the review stays
       // unmarked; the next fire re-attempts ONLY the still-unwritten lessons.
@@ -1203,9 +1292,15 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
         completed: written.completed.length,
         pending: pending.length,
       });
-      return;
+      return consumed;
     }
-    markReviewDistilled(dataDir, review.id);
+    // Lessons cut short by the budget stay unwritten — the review is marked
+    // distilled only when every distinct lesson was completed; the next
+    // fire re-runs it (completed-aware) and writes the remainder.
+    const totalLessons = distillLessons(findings, new Set(), Number.MAX_SAFE_INTEGER).length;
+    if (completed.size + written.completed.length >= totalLessons) {
+      markReviewDistilled(dataDir, review.id);
+    }
     log.info("distill_finish", {
       reviewId: review.id,
       findings: findings.length,
@@ -1214,7 +1309,9 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
       reinforced: written.reinforced,
       rejected: written.rejected,
       skipped: written.skipped,
+      budgetRemaining: budget - consumed,
     });
+    return consumed;
   };
 
   const register = (pi: ExtensionAPI): void => {

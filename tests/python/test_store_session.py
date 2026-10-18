@@ -476,3 +476,139 @@ def test_inline_location_skips_non_string_ids() -> None:
     """A non-string inline_comment_id (old JSON shapes) never shells out."""
     assert store_session._inline_location("myk-org", "pi-config", 4282020651) == (None, None)
     assert store_session._inline_location("myk-org", "pi-config", None) == (None, None)
+
+
+def test_inline_location_survives_missing_gh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing gh binary degrades to (None, None) — never aborts storage (Qodo 8f3f78c2)."""
+    import subprocess as sp
+
+    def raise_file_not_found(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError("gh: command not found")
+
+    monkeypatch.setattr(sp, "run", raise_file_not_found)
+    result = store_session._inline_location("myk-org", "pi-config", "gh1:PRRT_x:12345")
+    assert result == (None, None)
+
+
+def test_refresh_scopes_update_to_the_session_pr(project_root: Path) -> None:
+    """The refresh UPDATE only touches this PR's rows (Qodo 9edaa0f3).
+
+    Another PR's stored session finding sharing the node_id must not be
+    altered by this session's re-import.
+    """
+    shared_id = "uuid-shared"
+    this_pr = _session_json(
+        [
+            _finding(
+                shared_id,
+                "Shared id finding",
+                "Desc",
+                "sha-one",
+                "2026-02-01T10:00:00+00:00",
+                attribution_status="pending",
+            )
+        ],
+        pr_url="https://github.com/myk-org/pi-config/pull/943",
+    )
+    json_path = _write_session(project_root, this_pr)
+    store_session.run(str(json_path))
+
+    other_pr = _session_json(
+        [
+            _finding(
+                shared_id,
+                "Shared id finding",
+                "Desc",
+                "sha-one",
+                "2026-02-01T10:00:00+00:00",
+                attribution_status="pending",
+            )
+        ],
+        pr_url="https://github.com/myk-org/pi-config/pull/870",
+    )
+    other_path = _write_session(project_root, other_pr)
+    store_session.run(str(other_path))
+
+    # This session's re-import marks the finding implemented — only PR 943's row moves.
+    resolved = _session_json(
+        [
+            _finding(
+                shared_id,
+                "Shared id finding",
+                "Desc",
+                "sha-one",
+                "2026-02-01T10:00:00+00:00",
+                attribution_status="implemented",
+            )
+        ],
+        pr_url="https://github.com/myk-org/pi-config/pull/943",
+    )
+    json_path = _write_session(project_root, resolved)
+    store_session.run(str(json_path))
+
+    conn = sqlite3.connect(str(_db_path(project_root)))
+    try:
+        rows = dict(
+            conn.execute(
+                """
+                SELECT r.pr_number, c.status FROM comments c
+                JOIN reviews r ON c.review_id = r.id
+                WHERE c.node_id = ?
+                """,
+                (shared_id,),
+            ).fetchall()
+        )
+        assert rows == {943: "addressed", 870: "pending"}, "only this PR's row refreshed"
+    finally:
+        conn.close()
+
+
+def test_refresh_loop_never_queries_inline_locations(project_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refreshing stored findings makes no gh api call (Qodo db081d9b).
+
+    The refresh needs only status/priority — going through the full row
+    mapper fired a blocking inline-location lookup per stored finding on
+    every round.
+    """
+
+    calls = {"count": 0}
+
+    def recorder(_owner: str, _repo: str, _iid: object) -> tuple[None, None]:
+        calls["count"] += 1
+        return (None, None)
+
+    monkeypatch.setattr(store_session, "_inline_location", recorder)
+    pending = _session_json([
+        _finding(
+            "uuid-refresh",
+            "Refresh probe",
+            "Desc",
+            "sha-ref",
+            "2026-02-01T10:00:00+00:00",
+            attribution_status="pending",
+        )
+    ])
+    json_path = _write_session(project_root, pending)
+    store_session.run(str(json_path))
+
+    resolved = _session_json([
+        _finding(
+            "uuid-refresh",
+            "Refresh probe",
+            "Desc",
+            "sha-ref",
+            "2026-02-01T10:00:00+00:00",
+            attribution_status="implemented",
+        )
+    ])
+    json_path = _write_session(project_root, resolved)
+    before_refresh = calls["count"]
+    store_session.run(str(json_path))  # must make zero additional inline lookups
+    assert calls["count"] == before_refresh, "refresh loop queried inline locations"
+
+    conn = sqlite3.connect(str(_db_path(project_root)))
+    try:
+        status = conn.execute("SELECT status FROM comments WHERE node_id = 'uuid-refresh'").fetchone()
+        assert status == ("addressed",)
+    finally:
+        conn.close()

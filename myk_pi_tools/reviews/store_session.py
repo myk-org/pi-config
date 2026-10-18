@@ -112,10 +112,36 @@ def _inline_location(owner: str, repo: str, inline_comment_id: Any) -> tuple[str
         if isinstance(parsed, list) and len(parsed) >= 2:
             path = parsed[0] if isinstance(parsed[0], str) else None
             line = parsed[1] if isinstance(parsed[1], int) else None
-    except (subprocess.SubprocessError, json.JSONDecodeError) as e:
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError) as e:
+        # OSError covers FileNotFoundError — a missing gh binary must degrade
+        # to path=None, never abort storage before the transaction commits
+        # (Qodo 8f3f78c2).
         log.debug(f"Inline location lookup failed for comment {rest_id}: {e}")
     _INLINE_LOCATION_CACHE[rest_id] = (path, line)
     return (path, line)
+
+
+def _attribution(finding: dict[str, Any]) -> tuple[str, str]:
+    """(status, priority) mapped from a session finding — no side effects.
+
+    The refresh loop needs ONLY these two values; going through
+    `_to_comment_row` would fire a blocking gh api inline-location lookup per
+    stored finding on every round, for data the UPDATE never uses (Qodo
+    db081d9b).
+    """
+    attribution = finding.get("attribution_status")
+    status = {
+        "implemented": "addressed",
+        "resolved": "addressed",
+        "dismissed": "skipped",
+    }.get(attribution if isinstance(attribution, str) else "", "pending")
+    level = finding.get("action_level")
+    priority = {
+        "action_required": "HIGH",
+        "remediation_recommended": "MEDIUM",
+        "informational": "LOW",
+    }.get(level if isinstance(level, str) else "", "MEDIUM")
+    return status, priority
 
 
 def _to_comment_row(finding: dict[str, Any], owner: str, repo: str) -> dict[str, Any]:
@@ -126,21 +152,7 @@ def _to_comment_row(finding: dict[str, Any], owner: str, repo: str) -> dict[str,
     # (Qodo 21abfb4f) — raw attribution_status values would appear in the
     # totals but never in the resolution counts. `resolved` is Qodo's
     # resolved-attribution spelling (Qodo 5bcf0ad3).
-    attribution = finding.get("attribution_status")
-    status = {
-        "implemented": "addressed",
-        "resolved": "addressed",
-        "dismissed": "skipped",
-    }.get(attribution if isinstance(attribution, str) else "", "pending")
-    # Priority shares the column with the fetch path's HIGH/MEDIUM/LOW
-    # classification (Qodo 50984056) — raw action_level strings would make
-    # priority-based queries inconsistent across store paths.
-    level = finding.get("action_level")
-    priority = {
-        "action_required": "HIGH",
-        "remediation_recommended": "MEDIUM",
-        "informational": "LOW",
-    }.get(level if isinstance(level, str) else "", "MEDIUM")
+    status, priority = _attribution(finding)
     # GitHub comment id when the finding has one (Qodo fb3f939c): the
     # integer comments.comment_id column must carry the GitHub id the rest
     # of the pipeline expects; the session UUID goes to node_id.
@@ -199,14 +211,15 @@ def store_session(json_path: Path) -> None:
     for finding in data.get("findings", []):
         git_sha = finding.get("git_sha")
         if not git_sha:
-            log.warning(f"Skipping finding without git_sha: {finding.get('id', '<no id>')}")
+            # Dropped input data is data loss — error, not warning (Qodo 74714f98).
+            log.error(f"Skipping finding without git_sha: {finding.get('id', '<no id>')}")
             continue
         # A finding without an id cannot be tracked idempotently (Qodo
         # a16004a7): re-imports would treat it as missing forever and append
         # duplicate comment rows — skip it rather than store an untrackable
         # row.
         if not finding.get("id"):
-            log.warning(f"Skipping finding without id on commit {git_sha[:7]}: {finding.get('title', '<no title>')}")
+            log.error(f"Skipping finding without id on commit {git_sha[:7]}: {finding.get('title', '<no title>')}")
             continue
         groups[git_sha].append(finding)
 
@@ -257,14 +270,29 @@ def store_session(json_path: Path) -> None:
             for finding in findings:
                 if finding in missing:
                     continue
-                row = _to_comment_row(finding, owner, repo)
+                # Attribution only — the refresh never uses path/line, and
+                # _to_comment_row would fire a gh api lookup per stored
+                # finding on every round (Qodo db081d9b).
+                status, priority = _attribution(finding)
                 updated = conn.execute(
                     """
                     UPDATE comments SET status = ?, priority = ?
                     WHERE node_id = ? AND type = 'session_finding'
+                      AND review_id IN (
+                          SELECT id FROM reviews WHERE owner = ? AND repo = ? AND pr_number = ?
+                      )
                       AND (status != ? OR priority != ?)
                     """,
-                    (row["status"], row["priority"], finding.get("id"), row["status"], row["priority"]),
+                    (
+                        status,
+                        priority,
+                        finding.get("id"),
+                        owner,
+                        repo,
+                        pr_number,
+                        status,
+                        priority,
+                    ),
                 )
                 if updated.rowcount > 0:
                     refreshed_findings += 1

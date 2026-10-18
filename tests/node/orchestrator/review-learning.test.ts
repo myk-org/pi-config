@@ -748,6 +748,74 @@ describe("review-learning hook", () => {
       "src/api.py: Same redaction gap on the list endpoint",
     ]);
   });
+  it("one fire writes at most 5 lessons TOTAL across a multi-review PR — the remainder walks on later fires (Qodo 062e8e28)", async () => {
+    const cwd = makeCwd();
+    const dataDir = path.join(cwd, ".pi", "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const dbPath = path.join(dataDir, "reviews.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec(SCHEMA);
+    const insertReview = db.prepare(
+      "INSERT INTO reviews (pr_number, owner, repo, commit_sha, created_at) VALUES (55, 'myk-org', 'demo', ?, ?)",
+    );
+    const insertComment = db.prepare(
+      "INSERT INTO comments (review_id, source, path, line, body, priority, status) VALUES (?, 'qodo', ?, ?, ?, 'high', 'addressed')",
+    );
+    // review 1: 4 findings, review 2: 3 findings → 7 DISTINCT lessons
+    // (titles differ enough that the memory write path never merges them).
+    const roundOne = [
+      "Missing validation on the submit handler",
+      "Parser drops trailing fields on records",
+      "Retries lack backoff on the worker loop",
+      "Cache never invalidates on rotation",
+    ];
+    const roundTwo = [
+      "Exporter buffers rows without a flush",
+      "Health check ignores the readiness port",
+      "Shutdown skips draining in-flight work",
+    ];
+    insertReview.run("sha-r1", "2026-01-01T00:00:00Z");
+    roundOne.forEach((body, i) => insertComment.run(1, `src/a${i}.py`, i, body));
+    insertReview.run("sha-r2", "2026-01-02T00:00:00Z");
+    roundTwo.forEach((body, i) => insertComment.run(2, `src/b${i}.py`, i, body));
+    db.close();
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    const sessionJson = path.join(cwd, ".pi", "tmp", "qodo-55.json");
+    fs.writeFileSync(sessionJson, JSON.stringify({ pr_url: "https://github.com/myk-org/demo/pull/55", findings: [] }));
+    const { pi, handlers } = mockPi();
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
+    const fire = () =>
+      fireToolResult(handlers, {
+        toolName: "bash",
+        input: { command: `uv run myk-pi-tools reviews store-session ${sessionJson}` },
+        isError: false,
+      }, { cwd });
+    fire();
+    assert.ok(await waitFor(() => lessonsIn(cwd).length >= 5), "first fire writes lessons");
+    assert.equal(lessonsIn(cwd).length, 5, "per-FIRE budget across all review rows, not per row");
+    fire();
+    assert.ok(await waitFor(() => lessonsIn(cwd).length >= 7), "second fire completes the walk");
+    assert.equal(lessonsIn(cwd).length, 7);
+  });
+  it("a fork-hosted session still distills — rows are queried under the pr_url repo when origin names a fork (Qodo befc495a)", async () => {
+    const cwd = cwdWithDb(); // rows under myk-org/demo
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "qodo-12.json"),
+      JSON.stringify({ pr_url: "https://github.com/myk-org/demo/pull/12", findings: [] }),
+    );
+    const { pi, handlers } = mockPi();
+    // origin is a FORK — the checkout's repo does not match the stored rows' repo.
+    createReviewLearning({ repoInfo: () => ({ owner: "somefork", repo: "demo" }) }).register(pi as any);
+    fireToolResult(handlers, {
+      toolName: "bash",
+      input: { command: "uv run myk-pi-tools reviews store-session .pi/tmp/qodo-12.json" },
+      isError: false,
+    }, { cwd });
+    assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "pr_url repo fallback found the stored rows");
+    assert.deepEqual(lessonsIn(cwd).map((e) => e.text), ["src/api.py: Unhandled None on the endpoint response"]);
+  });
+
   it("a finding APPENDED to an already-distilled review row distills on the next store-session fire (Qodo 16d84431)", async () => {
     const cwd = cwdWithDb();
     fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });

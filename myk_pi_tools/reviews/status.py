@@ -18,6 +18,10 @@ from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 
+from myk_pi_tools.logger import create_logger
+
+logger = create_logger(__name__)
+
 
 def log(message: str) -> None:
     print(message, file=sys.stderr)
@@ -166,7 +170,15 @@ def deduplicate_comments(comments: list[dict]) -> list[dict]:
         # title, different finding.
         path_key = c.get("path") or c.get("node_id") or ""
         key = f"{c['source']}:{path_key}:{normalized}"
+        if key in seen:
+            logger.debug(
+                "dedup collapsed finding key=%s pathless=%s status=%s",
+                key[:120],
+                not c.get("path"),
+                c.get("status"),
+            )
         seen[key] = c  # Last one wins (latest cycle)
+    logger.debug("dedup finished input=%d kept=%d", len(comments), len(seen))
     return list(seen.values())
 
 
