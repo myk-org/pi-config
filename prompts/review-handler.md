@@ -716,14 +716,32 @@ resolved by the time the loop converges, and the fetch default excludes
 resolved threads. The reviews database therefore never hears about these
 reviews unless you store them explicitly.
 
-**When a pr-review-session loop runs, every poll that returns a completed
-session MUST save the findings JSON first — store-session reads that file:**
+**When a pr-review-session loop runs, every completed round follows this
+EXACT order — the store step runs AFTER the round's findings are resolved
+(mark-implemented / dismissed), on a FRESH fetch, so stored statuses are
+final, not poll-time snapshots:**
 
 ```bash
+# 1. Poll — the loop's record (kept on disk, never deleted)
+qodo read pr-review-session findings --pr-url <pr-url> --json 2>/dev/null | head -1 \
+  > ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
+
+# 2. Fix the round's findings, then resolve them:
+qodo pr-review-session mark-implemented --finding-ids <ids> --explanation "..." --json
+
+# 3. Store on a FRESH fetch — statuses now reflect the resolution. The
+#    store is idempotent (per finding UUID) and REFRESHES the attribution
+#    on already-stored rows, so re-storing earlier rounds self-heals them.
 qodo read pr-review-session findings --pr-url <pr-url> --json 2>/dev/null | head -1 \
   > ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
 myk-pi-tools reviews store-session ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
 ```
+
+NEVER store the poll-time snapshot as the round's final state — findings
+saved before mark-implemented carry pending attribution, and the status
+report shows stale pendings. If a round was stored pre-resolution (e.g. a
+crash between steps 2 and 3), the NEXT round's step-3 store refreshes it;
+at convergence, run step 3 once more after the final mark-implemented.
 
 The command converts the session findings JSON into reviews DB rows
 (source `qodo`, status from each finding's `attribution_status`, grouped
