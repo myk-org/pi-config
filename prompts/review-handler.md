@@ -373,9 +373,12 @@ If any approved tasks weren't implemented, review with user.
 
 ### Phase 5: Prepare Reply Mappings
 
-🚨 **NEVER hand-edit the reviews JSON.** No python heredocs, no `jq`, no manual
-`status`/`reply` field mutation. The `myk-pi-tools reviews address` command applies
+🚨 **NEVER hand-edit a reviews JSON's `status`/`reply` fields.** No python heredocs, no `jq`, no manual
+`status`/`reply` mutation — those bypass posting and the database store. The
+`myk-pi-tools reviews address` command applies
 replies, flips statuses, posts, and stores in one step — you only prepare mapping files.
+(The single exception: narrowing `line`/`end_line` for span disambiguation — see
+span semantics below; that affects matching only, never posting.)
 
 Write one mapping file per target status. Each line targets one finding:
 
@@ -386,10 +389,47 @@ Write one mapping file per target status. Each line targets one finding:
 - `<path>:<line>` — the finding's fetched `path` and `line`. A thread finding and its
   paired sticky finding are addressed together automatically (the command handles
   dedupe and pairing — you never target stickies separately).
+- `<path>:<line>~<fragment>` — **discriminator**: additionally requires `<fragment>`
+  (case-insensitive) in the finding's body — the way to target one of two findings
+  whose spans overlap at the same line.
+- `<path>:*` — per-file wildcard: same reply for EVERY finding in that file.
 - `*` — matches ALL pending findings (single-line mapping file).
 - Group findings by their target status — Phase 8 runs one `reviews address` call per
   status group.
 - Posting happens in Phase 8, AFTER commit/push — do not post before the fixes are pushed.
+
+**How a rule matches a finding (span semantics — issue #945):**
+
+- A specific rule matches the finding's FULL `[line, end_line]` span — any line in
+  the span reaches the finding.
+- When one finding's span CONTAINS another finding's span (nested findings, same
+  file), the containing finding matches only its own reported `line` — so a rule at
+  any inner line reaches the inner finding alone, and a rule at the outer finding's
+  reported line reaches the outer one alone. Equal spans: both findings match only
+  their own reported lines.
+- A rule matching 2+ distinct findings is rejected ATOMICALLY — nothing is posted.
+  Two-pass addressing (reply to one, then the other) cannot work: ALL rules are
+  validated before anything posts. Disambiguate with `~<fragment>`, use
+  `<path>:*` / `*` when the same reply fits all, or narrow `line`/`end_line` in the
+  reviews JSON (the ONE sanctioned JSON edit — it affects matching only, never
+  posting).
+- Sticky records (untitled duplicates of findings) participate in matching through
+  their cluster — you never target them separately, and a rule reaching the thread
+  reaches its sticky.
+
+**Mapping cheat sheet (use this — never read the address source code):**
+
+```text
+src/a.py:10|Fixed in abc1234                      # one finding (any line in its span)
+src/a.py:10~backoff|Fixed the backoff in abc1234  # ONE of two findings overlapping at 10
+src/a.py:*|Same reply for every finding in this file
+*|All findings fixed in def5678                   # every pending finding
+```
+
+When `reviews address` rejects a rule as ambiguous, re-read the finding bodies in
+the reviews JSON, pick a unique word from the target finding's title, and re-run
+with `<path>:<line>~<word>|<reply>`. Do NOT run the command twice to reach two
+findings at one location — the second run would fail validation the same way.
 
 **Valid status values (the `--set` flag for each mapping group):**
 
@@ -705,3 +745,52 @@ Each cycle displays a status update so the user knows the loop is active:
 [auto] CodeRabbit rate-limited. Handling automatically via reviews poll --source coderabbit...
 [auto] 🎉 {source} approved PR #{pr_number}. Displaying remaining findings summary.
 ```
+
+## Qodo Review-Session Loops (Storage — MANDATORY)
+
+PRs reviewed through the Qodo `pr-review-session` CLI (poll
+`qodo read pr-review-session findings --pr-url <url> --json`, fix,
+`qodo pr-review-session mark-implemented`) bypass GitHub review comments
+until convergence, so `reviews fetch` sees nothing — every thread is
+resolved by the time the loop converges, and the fetch default excludes
+resolved threads. The reviews database therefore never hears about these
+reviews unless you store them explicitly.
+
+**When a pr-review-session loop runs, every completed round follows this
+EXACT order — the store step runs AFTER the round's findings are resolved
+(mark-implemented / dismissed), on a FRESH fetch, so stored statuses are
+final, not poll-time snapshots:**
+
+```bash
+# 1. Poll — the loop's record (kept on disk, never deleted)
+qodo read pr-review-session findings --pr-url <pr-url> --json 2>/dev/null | head -1 \
+  > ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
+
+# 2. Fix the round's findings, then resolve them:
+qodo pr-review-session mark-implemented --finding-ids <ids> --explanation "..." --json
+
+# 3. Store on a FRESH fetch — statuses now reflect the resolution. The
+#    store is idempotent (per finding UUID) and REFRESHES the attribution
+#    on already-stored rows, so re-storing earlier rounds self-heals them.
+qodo read pr-review-session findings --pr-url <pr-url> --json 2>/dev/null | head -1 \
+  > ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
+myk-pi-tools reviews store-session ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
+```
+
+NEVER store the poll-time snapshot as the round's final state — findings
+saved before mark-implemented carry pending attribution, and the status
+report shows stale pendings. If a round was stored pre-resolution (e.g. a
+crash between steps 2 and 3), the NEXT round's step-3 store refreshes it;
+at convergence, run step 3 once more after the final mark-implemented.
+
+The command converts the session findings JSON into reviews DB rows
+(source `qodo`, status from each finding's `attribution_status`, grouped
+by the commit the finding was raised on). It is idempotent — re-running
+skips findings already stored (per session UUID) — and it does NOT delete
+the JSON, so storing every round is safe and `reviews status --pr <n>`
+stays current while the loop runs.
+
+A clean convergence round is stored the same way — it is just the last
+round. Without this step, `reviews status --pr <n>` renders an empty HTML
+report for the PR mid-loop and after convergence, and the review analytics
+lose the whole loop (issue #942).

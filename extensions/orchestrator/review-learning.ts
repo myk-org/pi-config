@@ -3,7 +3,7 @@
  * recall them at write time (issue #918 Parts A and B).
  *
  * Part A — a `tool_result` watcher recognizes `myk-pi-tools reviews address`
- * completions in main-session bash, then (fire-and-forget — scheduled via
+ * AND `myk-pi-tools reviews store-session` completions in main-session bash, then (fire-and-forget — scheduled via
  * setImmediate so the handler returns before any synchronous I/O starts)
  * distills the ADDRESSED findings of the review that command stored from
  * `.pi/data/reviews.db` into one-line `lesson` memory entries via the internal
@@ -11,11 +11,13 @@
  * (`derivedFrom="reviews.db:<comment-id>;<owner>/<repo>"`).
  *
  * Review selection: the addressed PR is identified from the command's
- * `--json` file (or the newest `pr-*-reviews.json` in the project tmp dir —
- * mirroring address.py's default), and the newest stored review row for that
- * PR is distilled. Already-distilled review ids are tracked in
- * `.pi/data/review-learning-state.json`, so re-fires (multi-group address
- * runs, partial runs that did not store) are no-ops — evidence only grows
+ * address `--json` file or the store-session JSON's `pr_url`. For a known
+ * PR, ALL stored review rows of that PR distill — session loops store one
+ * row per commit (Qodo 16d84431). Lessons already successfully written are
+ * tracked per review in `.pi/data/review-learning-state.json`, so re-fires
+ * (multi-group address runs, partial runs, every store-session round) never
+ * re-write them, and the per-fire lesson cap walks forward to the remaining
+ * findings — evidence only grows
  * when a NEW review stores a NEW comment row for the same issue (a real
  * recurrence, via addMemoryEntry's duplicate detection).
  *
@@ -91,6 +93,17 @@ const MAX_TRACKED_REVIEWS = 200;
 /** `reviews address` as a subcommand invocation (not `reviews address-foo`). */
 const REVIEWS_ADDRESS_RE = /(?:^|[\s;&|])reviews\s+address(?=[\s;&|]|$)/i;
 
+/** `reviews store-session` as a subcommand invocation (not `store-session-foo`). */
+const REVIEWS_STORE_SESSION_RE = /(?:^|[\s;&|])reviews\s+store-session(?=[\s;&|]|$)/i;
+
+/** Positional JSON path of a `reviews store-session <path>` invocation —
+ *  stops at shell separators so a chained command
+ *  (`store-session /tmp/x.json; echo done`) does not capture the `;`. */
+const REVIEWS_STORE_SESSION_PATH_RE = /(?:^|[\s;&|])reviews\s+store-session\s+([^;\s&|]+)/i;
+
+/** owner/repo/pr from a GitHub PR URL (`https://github.com/o/r/pull/N`). */
+const PR_URL_PARTS_RE = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/i;
+
 /**
  * True when a bash command invokes `myk-pi-tools reviews address`.
  * Tolerates `uv run ... myk-pi-tools ... reviews address` and `uv run --group X ...`
@@ -101,6 +114,19 @@ export function isReviewsAddressCommand(command: unknown): boolean {
   const normalized = command.trim();
   if (!/\bmyk-pi-tools\b/i.test(normalized)) return false;
   return REVIEWS_ADDRESS_RE.test(normalized);
+}
+
+/**
+ * True when a bash command invokes `myk-pi-tools reviews store-session` —
+ * the command a Qodo pr-review-session loop runs after every completed
+ * round (issue #942/#944 coupling: session-stored reviews must distill the
+ * same way address-stored ones do). `reviews store` alone never matches.
+ */
+export function isReviewsStoreSessionCommand(command: unknown): boolean {
+  if (typeof command !== "string") return false;
+  const normalized = command.trim();
+  if (!/\bmyk-pi-tools\b/i.test(normalized)) return false;
+  return REVIEWS_STORE_SESSION_RE.test(normalized);
 }
 
 // ── Repo resolution ────────────────────────────────────────────────────────
@@ -198,6 +224,36 @@ export function getLatestReview(dbPath: string, owner: string, repo: string, prN
   } catch (error: any) {
     log.debug("reviews_db_query_failed", { dbPath, reason: String(error?.message ?? error).slice(0, 200) });
     return null;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * All review rows for owner/repo/PR, oldest first — a session loop stores
+ * ONE review row per commit (issue #942), so a PR's findings live in MANY
+ * rows; distillation must process every group, not just the highest id
+ * (Qodo 16d84431).
+ */
+export function getReviewsForPr(dbPath: string, owner: string, repo: string, prNumber: number): ReviewRow[] {
+  const db = openReviewsDb(dbPath);
+  if (!db) return [];
+  try {
+    const rows = db
+      .prepare(
+        "SELECT id, pr_number, commit_sha, owner, repo FROM reviews WHERE owner=? AND repo=? AND pr_number=? ORDER BY id ASC",
+      )
+      .all(owner, repo, prNumber) as any[];
+    return rows.map((row) => ({
+      id: Number(row.id),
+      prNumber: Number(row.pr_number),
+      commitSha: String(row.commit_sha),
+      owner: String(row.owner),
+      repo: String(row.repo),
+    }));
+  } catch (error: any) {
+    log.debug("reviews_db_query_failed", { dbPath, reason: String(error?.message ?? error).slice(0, 200) });
+    return [];
   } finally {
     db.close();
   }
@@ -308,7 +364,12 @@ function writeStateFile(dataDir: string, distilledReviews: number[], reviewLesso
 /** Record a review id as distilled (bounded — oldest entries drop off). Fail-soft. */
 export function markReviewDistilled(dataDir: string, reviewId: number): void {
   try {
-    writeStateFile(dataDir, [...loadDistilledReviews(dataDir), reviewId], loadReviewLessons(dataDir));
+    // Dedupe: the PR walk re-marks already-distilled reviews on every fire
+    // (their completed lessons make it a no-op walk), which would append the
+    // same id once per fire and grow the state file without bound.
+    const distilled = [...new Set(loadDistilledReviews(dataDir))];
+    if (!distilled.includes(reviewId)) distilled.push(reviewId);
+    writeStateFile(dataDir, distilled, loadReviewLessons(dataDir));
   } catch (error: any) {
     log.debug("distilled_state_write_failed", { reason: String(error?.message ?? error).slice(0, 200) });
   }
@@ -330,23 +391,136 @@ export function recordReviewLessons(dataDir: string, reviewId: number, texts: st
 // ── Addressed-PR identification ────────────────────────────────────────────
 
 /**
- * PR number of the review an address command targeted — ONLY from the
- * command's explicit `--json` file (still on disk for partial runs).
- * Deliberately no newest-JSON fallback: the final, storing run deletes its
- * own pr-<N>-reviews.json before the tool result fires, so a fallback would
- * pick up a leftover JSON from ANOTHER PR and target the wrong review.
- * Returns null when absent/unreadable — callers then select the newest
- * review for the repo (final storing runs), never a different explicit PR.
+ * Expand `$VAR` / `${VAR}` shell expressions in a captured command path and
+ * strip surrounding shell quotes. Bash expands these before the tool runs,
+ * so the hook normally sees the literal path — but a command recorded with
+ * the variable expression or quoted path (a combined poll+store line
+ * submitted verbatim, `store-session "${PROJECT_TMP_DIR}/x.json"`) must
+ * not read a nonexistent literal `"${...}"` path (Qodo 657c5633,
+ * bda69aff). Unset variables expand to the empty string, matching shell
+ * semantics.
+ */
+function expandEnvVars(value: string): string {
+  const expanded = value.replace(
+    /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+    (_match, braced: string | undefined, plain: string | undefined) => process.env[braced ?? plain ?? ""] ?? "",
+  );
+  return expanded.replace(/^["']+|["']+$/g, "");
+}
+
+/**
+ * True when a captured `--json` token is a shell redirection (e.g.
+ * `2>/dev/null`), not a file path — the documented Qodo poll pipes
+ * `--json 2>/dev/null`, and treating the redirect as a path makes the read
+ * fail and lose the PR identity (Qodo beb11c94).
+ */
+function isRedirectionToken(token: string): boolean {
+  return /^\d*>>?\S/.test(token) || token.startsWith(">") || token.includes("/dev/null");
+}
+
+/**
+ * PR number of the review an address or store-session command targeted —
+ * ONLY from the command's explicit inputs (the address `--json` file or the
+ * store-session session JSON's `pr_url`).
+ *
+ * Order and failure semantics (Qodo beb11c94/86f1855b):
+ * - A readable address `--json` file wins (partial runs keep it on disk).
+ * - An unreadable/invalid `--json` token (redirection capture, deleted file
+ *   on the final storing run) FALLS THROUGH to the store-session path
+ *   instead of failing the whole lookup — a combined poll+store command
+ *   still resolves its PR from the session JSON.
+ * - An unreadable store-session JSON is logged (warn) — the caller decides
+ *   not to fall back to the repository's newest review, which would distill
+ *   a DIFFERENT PR's findings.
+ * - No explicit input at all → null — callers then select the newest review
+ *   for the repo (final storing runs), never a different explicit PR.
  */
 export function prNumberFromCommand(command: string | undefined, cwd: string): number | null {
-  try {
-    const m = /(?:^|\s)--json(?:\s+|=)(\S+)/.exec(command ?? "");
-    if (!m) return null;
-    const pr = Number(JSON.parse(readFileSync(resolve(cwd, m[1]!), "utf-8"))?.metadata?.pr_number);
-    return Number.isInteger(pr) && pr > 0 ? pr : null;
-  } catch {
-    return null;
+  const cmd = command ?? "";
+  const m = /(?:^|\s)--json(?:\s+|=)(\S+)/.exec(cmd);
+  if (m && !isRedirectionToken(m[1]!)) {
+    try {
+      const pr = Number(JSON.parse(readFileSync(resolve(cwd, expandEnvVars(m[1]!)), "utf-8"))?.metadata?.pr_number);
+      if (Number.isInteger(pr) && pr > 0) return pr;
+      log.debug("pr_from_address_json_invalid", { token: m[1]!.slice(0, 120) });
+    } catch (error: any) {
+      // Deleted file (final storing run) or bad token — fall through to the
+      // store-session path; a null here would trigger the repo-newest
+      // fallback and could distill another PR.
+      log.debug("pr_from_address_json_unreadable", {
+        token: m[1]!.slice(0, 120),
+        reason: String(error?.message ?? error).slice(0, 120),
+      });
+    }
   }
+  // `reviews store-session <path>`: the session JSON identifies its PR via
+  // pr_url (issue #944) — the positional path replaces address's --json.
+  const s = REVIEWS_STORE_SESSION_PATH_RE.exec(cmd);
+  if (s) {
+    try {
+      const prUrl: unknown = JSON.parse(readFileSync(resolve(cwd, expandEnvVars(s[1]!)), "utf-8"))?.pr_url;
+      if (typeof prUrl === "string") {
+        const pr = Number(/\/pull\/(\d+)/.exec(prUrl)?.[1]);
+        if (Number.isInteger(pr) && pr > 0) return pr;
+        log.debug("pr_from_session_json_invalid", { prUrl: prUrl.slice(0, 120) });
+      } else {
+        log.debug("pr_from_session_json_no_pr_url", { path: s[1]!.slice(0, 200) });
+      }
+    } catch (error: any) {
+      // The session JSON is never deleted by the loop — unreadable means a
+      // real error (bad path, race). Loud, because the caller must NOT fall
+      // back to the newest review: that would distill another PR's findings
+      // (Qodo 86f1855b).
+      log.warn("pr_from_session_json_unreadable", {
+        path: s[1]!.slice(0, 200),
+        reason: String(error?.message ?? error).slice(0, 200),
+      });
+    }
+  }
+  return null;
+}
+
+/**
+ * The FULL review target a command names — owner/repo/prNumber from the
+ * address `--json` metadata or the store-session pr_url — or null when the
+ * command carries no readable target. Used by distill() to query the repo
+ * the rows were actually STORED under: a fork-hosted session stores rows
+ * under the pr_url's upstream repo while origin names the fork, and a
+ * PR-number-only lookup against origin would find nothing (Qodo befc495a).
+ */
+export function prTargetFromCommand(
+  command: string | undefined,
+  cwd: string,
+): { owner: string; repo: string; prNumber: number } | null {
+  const cmd = command ?? "";
+  const m = /(?:^|\s)--json(?:\s+|=)(\S+)/.exec(cmd);
+  if (m && !isRedirectionToken(m[1]!)) {
+    try {
+      const meta = JSON.parse(readFileSync(resolve(cwd, expandEnvVars(m[1]!)), "utf-8"))?.metadata;
+      const owner = typeof meta?.owner === "string" ? meta.owner : null;
+      const repo = typeof meta?.repo === "string" ? meta.repo : null;
+      const pr = Number(meta?.pr_number);
+      if (owner && repo && Number.isInteger(pr) && pr > 0) return { owner, repo, prNumber: pr };
+    } catch {
+      // unreadable --json — try the store-session path
+    }
+  }
+  const s = REVIEWS_STORE_SESSION_PATH_RE.exec(cmd);
+  if (s) {
+    try {
+      const prUrl: unknown = JSON.parse(readFileSync(resolve(cwd, expandEnvVars(s[1]!)), "utf-8"))?.pr_url;
+      if (typeof prUrl === "string") {
+        const parts = PR_URL_PARTS_RE.exec(prUrl.trim());
+        if (parts) {
+          const pr = Number(parts[3]);
+          if (Number.isInteger(pr) && pr > 0) return { owner: parts[1]!, repo: parts[2]!, prNumber: pr };
+        }
+      }
+    } catch {
+      // unreadable session JSON — prNumberFromCommand already warned
+    }
+  }
+  return null;
 }
 
 // ── Distillation (script-only engine) ──────────────────────────────────────
@@ -469,8 +643,21 @@ function findingIdentity(f: AddressedFinding): string | null {
  * provenance lookups can distinguish new occurrences from re-fires. The
  * dedupe key is the UNTRUNCATED identity (two findings whose titles first
  * differ past the 100-char display cap stay distinct lessons).
+ *
+ * `completedTexts` (lesson texts already written for this review, from the
+ * persisted reviewLessons state) are excluded BEFORE the cap — a review with
+ * more findings than the per-fire cap distills its remaining lessons on the
+ * NEXT fire instead of re-picking the same top slice forever (Qodo
+ * 16d84431): session loops re-fire store-session every round, so the walk
+ * completes across rounds. It also makes findings APPENDED to an
+ * already-processed review row distill: their lessons are not in the
+ * completed set, so they surface as pending work.
  */
-export function distillLessons(findings: AddressedFinding[]): DistilledLesson[] {
+export function distillLessons(
+  findings: AddressedFinding[],
+  completedTexts: Set<string> = new Set(),
+  cap: number = MAX_FINDINGS_PER_FIRE,
+): DistilledLesson[] {
   const byIdentity = new Map<string, DistilledLesson>();
   for (const finding of rankFindings(findings)) {
     const text = lessonFromFinding(finding);
@@ -480,7 +667,10 @@ export function distillLessons(findings: AddressedFinding[]): DistilledLesson[] 
     if (existing) existing.findingIds.push(finding.id); // merged duplicate keeps its identity
     else byIdentity.set(key, { findingIds: [finding.id], text });
   }
-  return [...byIdentity.values()].slice(0, MAX_FINDINGS_PER_FIRE);
+  const pool = completedTexts.size > 0
+    ? [...byIdentity.values()].filter((lesson) => !completedTexts.has(lesson.text))
+    : [...byIdentity.values()];
+  return pool.slice(0, Math.max(0, cap));
 }
 
 // ── Memory write with provenance dedupe ────────────────────────────────────
@@ -931,19 +1121,22 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
   };
 
   /**
-   * Full distillation pipeline for one address fire. `command` identifies the
-   * addressed PR (explicit `--json` file → metadata.pr_number — no newest-JSON
-   * fallback, which could target a leftover file from another PR after the
-   * final run deletes its own). Selection is PR-SCOPED when the PR is known:
-   * an explicit PR with no stored review, or one already distilled, is a
-   * no-op — a partial re-run must never distill a review belonging to a
-   * DIFFERENT PR. Repo-wide newest selection happens ONLY when no explicit
-   * target exists (prNumber null), which is exactly the final, storing run
-   * whose JSON was just deleted — the just-stored row. A review whose lesson
-   * writes were REJECTED stays retryable, but only its UNWRITTEN lessons are
-   * re-attempted (completed lessons are persisted per review — re-processing
-   * them would inflate evidence without a new occurrence). Settings-gated,
-   * fail-soft.
+   * Full distillation pipeline for one address or store-session fire.
+   * `command` identifies the addressed PR (address `--json` file →
+   * metadata.pr_number, or the store-session JSON's pr_url — no
+   * newest-JSON fallback, which could target a leftover file from another
+   * PR after the final run deletes its own). Selection is PR-SCOPED when
+   * the PR is known: ALL review rows of that PR are processed — session
+   * loops store one row per commit, so earlier groups and findings appended
+   * to already-processed rows must distill too (Qodo 16d84431). A store-
+   * session command whose PR cannot be resolved is a NO-OP (never the
+   * repo-newest fallback — that would distill another PR, Qodo 86f1855b).
+   * Repo-wide newest selection happens ONLY when no explicit target exists
+   * (prNumber null — the final storing run whose JSON was just deleted).
+   * A review whose lesson writes were REJECTED stays retryable, but only its
+   * UNWRITTEN lessons are re-attempted (completed lessons are persisted per
+   * review — re-processing them would inflate evidence without a new
+   * occurrence). Settings-gated, fail-soft.
    */
   const distill = async (cwd: string, command?: string): Promise<void> => {
     if (!getSetting(cwd, "review_learning")) {
@@ -959,88 +1152,171 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
     const dbPath = join(dataDir, "reviews.db");
     const distilled = loadDistilledReviews(dataDir);
     const prNumber = prNumberFromCommand(command, cwd);
-    let review: ReviewRow | null = null;
+    if (prNumber === null && command !== undefined && isReviewsStoreSessionCommand(command)) {
+      // The session JSON is the loop's own record and is never deleted — an
+      // unresolved PR means the read failed; falling back to the newest
+      // review would distill a DIFFERENT PR's findings.
+      log.warn("skipped_store_session_pr_unresolved", {
+        cwd,
+        command: String(command).slice(0, 120),
+      });
+      return;
+    }
+    let reviews: ReviewRow[];
+    /** The repo the matched rows are stored under — lesson provenance must
+     *  name it, not the checkout origin: a fork session stores rows (and
+     *  recalls them) under the pr_url repo, and provenance keyed to the
+     *  fork would never match at write time (Qodo 66cc6bfe). */
+    let rowsRepo: RepoInfo = repo;
     if (prNumber !== null) {
-      // Explicit target: PR-scoped only — never fall back to another PR.
-      review = getLatestReview(dbPath, repo.owner, repo.repo, prNumber);
-      if (!review) {
-        log.debug("skipped_no_review_row", { owner: repo.owner, repo: repo.repo, prNumber });
-        return;
+      // Explicit target: every review row of the PR, oldest first. The
+      // command-named repo (address --json metadata or session pr_url) is
+      // AUTHORITATIVE — rows are always stored under the repo the fetch/
+      // store ran as, so a target with no rows is a no-op, NEVER a fall
+      // back to origin: an unrelated same-numbered PR there would distill
+      // the wrong repository's findings (Qodo 1c8fc091). A fork checkout
+      // (origin = fork, rows under the upstream pr_url repo) still finds
+      // its rows through the target.
+      const target = prTargetFromCommand(command, cwd);
+      if (target) {
+        rowsRepo = { owner: target.owner, repo: target.repo };
+        reviews = getReviewsForPr(dbPath, target.owner, target.repo, prNumber);
+      } else {
+        reviews = getReviewsForPr(dbPath, repo.owner, repo.repo, prNumber);
       }
-      if (distilled.has(review.id)) {
-        log.debug("skipped_review_already_distilled", { reviewId: review.id, prNumber: review.prNumber });
+      if (reviews.length === 0) {
+        log.debug("skipped_no_review_row", {
+          owner: rowsRepo.owner, repo: rowsRepo.repo, prNumber,
+          origin: `${repo.owner}/${repo.repo}`,
+        });
         return;
       }
     } else {
       // No explicit target (final storing run deleted its JSON): the newest
-      // not-yet-distilled review for the repo is exactly the just-stored row.
-      review = getLatestReview(dbPath, repo.owner, repo.repo);
-      if (!review) {
+      // review for the repo is exactly the just-stored row. Already
+      // distilled → no-op (nothing can have been appended without a PR).
+      const latest = getLatestReview(dbPath, repo.owner, repo.repo);
+      if (!latest) {
         log.debug("skipped_no_review_row", { owner: repo.owner, repo: repo.repo, prNumber: null });
         return;
       }
-      if (distilled.has(review.id)) {
-        log.debug("skipped_review_already_distilled", { reviewId: review.id, prNumber: review.prNumber });
+      if (distilled.has(latest.id)) {
+        log.debug("skipped_review_already_distilled", { reviewId: latest.id, prNumber: latest.prNumber });
         return;
       }
+      reviews = [latest];
     }
-    // Per-review serialization: overlapping address fires (two bash results
-    // in one turn, a retried command) would otherwise both read the
-    // completed-lesson state before either async write finishes and
-    // double-write the same lessons — inflating counts and evidence. The
-    // second fire waits for the first, then re-reads state (the first may
-    // have just completed the review) before doing any work.
+    // Per-FIRE write budget across ALL reviews of the PR (Qodo 062e8e28):
+    // the docs' "~5 lessons per fire" cap is per distill() call, not per
+    // review row — a multi-round PR must not dump 5×N lessons into memory
+    // at once. Remaining lessons distill on the next fire (completed-aware
+    // lesson selection walks forward).
+    let budget = MAX_MEMORY_WRITES_PER_FIRE;
+    let writes = 0;
+    let remainingLessons = 0;
+    for (const review of reviews) {
+      if (budget <= 0) {
+        log.debug("distill_budget_exhausted", { reviewId: review.id, prNumber: review.prNumber });
+        remainingLessons += 1; // at least this review still has pending work
+        continue;
+      }
+      const result = await distillWithLock(cwd, review, dataDir, dbPath, rowsRepo, budget);
+      budget -= result.consumed;
+      writes += result.writes;
+      remainingLessons += result.remaining;
+    }
+    if (remainingLessons > 0 && writes > 0) {
+      // Lessons remain and this fire made progress — schedule the next
+      // burst so a session's FINAL store still drains every lesson (no
+      // later trigger exists after convergence, Qodo eceb273e). Progress
+      // gating (writes > 0) prevents an infinite loop when every remaining
+      // lesson is persistently rejected.
+      log.debug("distill_continuation_scheduled", { remainingLessons, writes });
+      setImmediate(() => {
+        void distill(cwd, command).catch((error) =>
+          log.warn("distill_unexpected_failure", { reason: String((error as any)?.message ?? error).slice(0, 300) }),
+        );
+      });
+    }
+  };
+
+  /**
+   * Per-review serialization: overlapping address fires (two bash results in
+   * one turn, a retried command) would otherwise both read the completed-
+   * lesson state before either async write finishes and double-write the
+   * same lessons — inflating counts and evidence. The second fire waits for
+   * the first, then re-reads state (the first may have just completed the
+   * review) before doing any work. Returns the number of memory writes
+   * consumed (bounded by `budget` — the per-fire cap is shared across all
+   * reviews of the PR, Qodo 062e8e28).
+   */
+  const distillWithLock = async (
+    cwd: string,
+    review: ReviewRow,
+    dataDir: string,
+    dbPath: string,
+    repo: RepoInfo,
+    budget: number,
+  ): Promise<{ consumed: number; writes: number; remaining: number }> => {
     const previous = distillLocks.get(review.id) ?? Promise.resolve();
     let release!: () => void;
     const current = new Promise<void>((resolve) => (release = resolve));
     distillLocks.set(review.id, current);
     try {
       await previous;
-      if (loadDistilledReviews(dataDir).has(review.id)) {
-        log.debug("skipped_review_already_distilled", { reviewId: review.id, prNumber: review.prNumber, reason: "completed by a concurrent fire" });
-        return;
-      }
-      await distillLockedReview(cwd, review, dataDir, dbPath, repo);
+      return await distillLockedReview(cwd, review, dataDir, dbPath, repo, budget);
     } finally {
       release();
       if (distillLocks.get(review.id) === current) distillLocks.delete(review.id);
     }
   };
 
-  /** The distill pipeline body — runs holding the per-review lock. */
+  /**
+   * The distill pipeline body — runs holding the per-review lock. Budget is
+   * the fire's remaining write allowance; REJECTED lessons do not consume
+   * it (a persistently rejected lesson must not starve the PR's later
+   * reviews, Qodo 850bb32d — it is re-attempted on later fires for free).
+   * A review whose lessons were cut short by the budget is not marked
+   * distilled-error: the completed-aware lesson walk picks up its remainder
+   * on the next fire.
+   */
   const distillLockedReview = async (
     cwd: string,
     review: ReviewRow,
     dataDir: string,
     dbPath: string,
     repo: RepoInfo,
-  ): Promise<void> => {
+    budget: number,
+  ): Promise<{ consumed: number; writes: number; remaining: number }> => {
     const findings = getAddressedComments(dbPath, review.id);
     if (findings.length === 0) {
       log.debug("skipped_no_addressed_findings", { reviewId: review.id });
-      return;
+      return { consumed: 0, writes: 0, remaining: 0 };
     }
     log.info("distill_start", {
       owner: repo.owner, repo: repo.repo, prNumber: review.prNumber, reviewId: review.id, findings: findings.length,
     });
-    const lessons = distillLessons(findings);
+    // Per-lesson retry bookkeeping BEFORE the cap: lessons already written
+    // for this review are excluded upstream of MAX_FINDINGS_PER_FIRE, so a
+    // review with more findings than one fire's cap distills its remaining
+    // lessons on the next fire (Qodo 16d84431).
+    const completed = loadReviewLessons(dataDir).get(review.id) ?? new Set<string>();
+    const lessons = distillLessons(findings, completed);
     if (lessons.length === 0) {
       log.info("distill_finish", { findings: findings.length, lessons: 0, reason: "no lessons distilled" });
       markReviewDistilled(dataDir, review.id);
-      return;
+      return { consumed: 0, writes: 0, remaining: 0 };
     }
-    // Per-lesson retry bookkeeping: only lessons not yet successfully written.
-    const completed = loadReviewLessons(dataDir).get(review.id) ?? new Set<string>();
-    const pending = lessons.filter((l) => !completed.has(l.text));
+    const pending = lessons.slice(0, Math.max(0, budget));
     if (pending.length === 0) {
-      // Everything already written on an earlier fire (rejected then resolved
-      // elsewhere) — the review is complete.
-      markReviewDistilled(dataDir, review.id);
-      log.info("distill_finish", { reviewId: review.id, findings: findings.length, lessons: lessons.length, reason: "all lessons already written" });
-      return;
+      log.debug("distill_budget_exhausted_before_review", { reviewId: review.id });
+      return { consumed: 0, writes: 0, remaining: 1 };
     }
     const written = await writeLessons(cwd, pending, repo);
     if (written.completed.length > 0) recordReviewLessons(dataDir, review.id, written.completed);
+    // Only actual memory writes consume the budget — rejected lessons are
+    // re-attempted on later fires without starving anyone (Qodo 850bb32d).
+    const consumed = written.added + written.reinforced + written.skipped;
     if (written.rejected > 0) {
       // Rejected writes are retryable, not complete — the review stays
       // unmarked; the next fire re-attempts ONLY the still-unwritten lessons.
@@ -1050,9 +1326,16 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
         completed: written.completed.length,
         pending: pending.length,
       });
-      return;
     }
-    markReviewDistilled(dataDir, review.id);
+    // The review is marked distilled only when every distinct lesson was
+    // completed; a review cut short by the budget (or with rejected
+    // lessons) stays unmarked — the next fire re-runs it (completed-aware)
+    // and writes the remainder.
+    const totalLessons = distillLessons(findings, new Set(), Number.MAX_SAFE_INTEGER).length;
+    const doneAfter = completed.size + written.completed.length;
+    if (doneAfter >= totalLessons) {
+      markReviewDistilled(dataDir, review.id);
+    }
     log.info("distill_finish", {
       reviewId: review.id,
       findings: findings.length,
@@ -1061,7 +1344,9 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
       reinforced: written.reinforced,
       rejected: written.rejected,
       skipped: written.skipped,
+      budgetRemaining: budget - consumed,
     });
+    return { consumed, writes: consumed, remaining: doneAfter >= totalLessons ? 0 : 1 };
   };
 
   const register = (pi: ExtensionAPI): void => {
@@ -1089,8 +1374,8 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
         const tool = String(event?.toolName ?? "").toLowerCase();
         if (tool !== "bash") return;
         const command = event?.input?.command;
-        if (!isReviewsAddressCommand(command)) return;
-        log.debug("address_detected", { cwd: ctx?.cwd });
+        if (!isReviewsAddressCommand(command) && !isReviewsStoreSessionCommand(command)) return;
+        log.debug("address_detected", { cwd: ctx?.cwd, command: String(command).slice(0, 120) });
         // Fire-and-forget, deferred past the handler's synchronous frame —
         // the tool result must not wait for git exec, SQLite queries, or the
         // provenance lookup (all sync I/O inside `distill` before its first

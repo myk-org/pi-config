@@ -175,10 +175,45 @@ def get_current_commit_sha(cwd: Path | None = None) -> str:
         return "unknown"
 
 
-def insert_review(conn: sqlite3.Connection, owner: str, repo: str, pr_number: int, commit_sha: str) -> int:
-    """Insert a new review record. Always appends, never updates."""
+def run_title_backfill_once(conn: sqlite3.Connection) -> None:
+    """One-shot title backfill, tracked by a PERSISTED marker.
+
+    The marker is gated by persistence (not by "did the column just appear"):
+    sqlite3's ALTER TABLE autocommits, so a store that fails after migrating
+    would otherwise leave the column present while the backfill UPDATEs roll
+    back with the store's transaction — every later store would see no
+    migration and the historical rows would stay NULL forever. The marker is
+    committed in its own transaction together with the backfill, so a later
+    store failure cannot lose it, and a failed backfill leaves no marker and
+    is retried on the next store. Rows that yield no title keep NULL; readers
+    fall back to body extraction for those. New rows get titles at insert
+    time.
+    """
+    marker = conn.execute("SELECT value FROM schema_meta WHERE key = 'title_backfill_rows'").fetchone()
+    if marker is None:
+        backfilled = backfill_titles(conn)
+        conn.execute(
+            "INSERT INTO schema_meta (key, value) VALUES ('title_backfill_rows', ?)",
+            (str(backfilled),),
+        )
+        conn.commit()  # own transaction — survives later store failures
+        log.info(f"Backfilled comments.title for {backfilled} row(s)")
+
+
+def insert_review(
+    conn: sqlite3.Connection, owner: str, repo: str, pr_number: int, commit_sha: str, created_at: str | None = None
+) -> int:
+    """Insert a new review record. Always appends, never updates.
+
+    Args:
+        created_at: ISO timestamp for the review row. Defaults to now (UTC) —
+            callers with an authoritative timestamp (e.g. session findings
+            grouped by commit) pass the group's earliest finding time.
+    """
     cursor = conn.cursor()
-    created_at = datetime.now(UTC).isoformat()
+    if created_at is None:
+        created_at = datetime.now(UTC).isoformat()
+    log.debug("insert_review: %s/%s#%s commit=%s created_at=%s", owner, repo, pr_number, commit_sha[:7], created_at)
 
     cursor.execute(
         "INSERT INTO reviews (owner, repo, pr_number, commit_sha, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -278,26 +313,8 @@ def store_reviews(json_path: Path) -> None:
         conn.execute("PRAGMA foreign_keys=ON")
         create_tables(conn)
 
-        # One-shot title backfill, tracked by a PERSISTED marker (not by "did
-        # the column just appear"): sqlite3's ALTER TABLE autocommits, so a
-        # store that fails after migrating would otherwise leave the column
-        # present while the backfill UPDATEs roll back with the store's
-        # transaction — every later store would see no migration and the
-        # historical rows would stay NULL forever. The marker is committed in
-        # its own transaction together with the backfill, so a later store
-        # failure cannot lose it, and a failed backfill leaves no marker and
-        # is retried on the next store. Rows that yield no title keep NULL;
-        # readers fall back to body extraction for those. New rows get titles
-        # at insert time.
-        marker = conn.execute("SELECT value FROM schema_meta WHERE key = 'title_backfill_rows'").fetchone()
-        if marker is None:
-            backfilled = backfill_titles(conn)
-            conn.execute(
-                "INSERT INTO schema_meta (key, value) VALUES ('title_backfill_rows', ?)",
-                (str(backfilled),),
-            )
-            conn.commit()  # own transaction — survives later store failures
-            log.info(f"Backfilled comments.title for {backfilled} row(s)")
+        # One-shot title backfill for legacy rows (see run_title_backfill_once).
+        run_title_backfill_once(conn)
 
         # Insert new review record (append-only, never update)
         # RuntimeError in insert_review handles invalid lastrowid

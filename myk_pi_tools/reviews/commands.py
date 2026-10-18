@@ -73,7 +73,19 @@ def reviews_poll(review_url: str, source: str, output_dir: str) -> None:
 
 @reviews.command("address")
 @click.option("--json", "json_path", default=None, help="Reviews JSON (default: newest pr-*-reviews.json in .pi/tmp)")
-@click.option("--replies", default=None, help="Mapping file: '<path>:<line>|<reply>' lines; '*' matches all pending")
+@click.option(
+    "--replies",
+    default=None,
+    help=(
+        "Mapping file, one rule per line. Syntax: '<path>:<line>|<reply>' (matches the "
+        "finding's full [line, end_line] span); '<path>:<line>~<fragment>|<reply>' "
+        "(discriminator — additionally requires the fragment in the finding's body; "
+        "use when two findings' spans overlap at the same line); '<path>:*|<reply>' "
+        "(every finding in that file gets the reply); '*|<reply>' (all pending findings). "
+        "A finding whose span CONTAINS another finding's span matches only its own "
+        "reported line. '#' comments and blank lines ignored."
+    ),
+)
 @click.option(
     "--set",
     "set_status",
@@ -88,6 +100,13 @@ def reviews_address(json_path: str | None, replies: str | None, set_status: str)
     deduplicates thread + sticky findings by (path, finding title),
     applies replies from the mapping file, flips matching statuses, then
     runs 'reviews post' + 'reviews store' and prints a compact digest.
+
+    Mapping rules match a finding's full [line, end_line] span. Nested
+    findings (one span containing another) each match at their own reported
+    line; co-located findings with overlapping spans are disambiguated with
+    the '~<fragment>' discriminator. A rule matching 2+ distinct findings is
+    rejected atomically — nothing posts; use '<path>:*' or '*' when the same
+    reply fits all matched findings.
     """
     from myk_pi_tools.reviews.address import run
 
@@ -191,4 +210,29 @@ def reviews_store(json_path: str) -> None:
     """
     from myk_pi_tools.reviews.store import run
 
+    run(json_path)
+
+
+@reviews.command("store-session")
+@click.argument("json_path")
+def reviews_store_session(json_path: str) -> None:
+    """Store Qodo review-session findings to database.
+
+    Converts a `qodo read pr-review-session findings --json` output file into
+    reviews DB rows (source=qodo, status from attribution_status, path/line
+    from the inline GitHub comment when one exists), grouped by the commit
+    each finding was raised on. Idempotent per finding UUID (node_id) —
+    re-running skips findings already stored and REFRESHES the
+    status/priority of stored ones whose attribution changed, so it is safe
+    to run after every completed loop round (post mark-implemented, on a
+    fresh fetch). Findings without an id are skipped (untrackable). The JSON
+    file is NOT deleted.
+
+    Run this when a pr-review-session loop converges (clean round).
+
+    JSON_PATH: Path to the Qodo pr-review-session findings JSON file
+    """
+    from myk_pi_tools.reviews.store_session import run
+
+    log.info("reviews store-session: json=%s", json_path)
     run(json_path)

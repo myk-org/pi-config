@@ -14,9 +14,11 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   isReviewsAddressCommand,
+  isReviewsStoreSessionCommand,
   parseGitHubRepo,
   resolveRepoInfo,
   getLatestReview,
+  getReviewsForPr,
   getAddressedComments,
   rankFindings,
   extractFindingTitle,
@@ -146,6 +148,22 @@ describe("isReviewsAddressCommand", () => {
   });
 });
 
+describe("isReviewsStoreSessionCommand", () => {
+  it("matches direct and uv-wrapped invocations", () => {
+    assert.equal(isReviewsStoreSessionCommand("myk-pi-tools reviews store-session .pi/tmp/qodo-943-abc.json"), true);
+    assert.equal(isReviewsStoreSessionCommand("uv run myk-pi-tools reviews store-session x.json"), true);
+    assert.equal(isReviewsStoreSessionCommand("cd /repo && uv run myk-pi-tools reviews store-session x.json"), true);
+  });
+  it("rejects plain store, other subcommands, and non-strings", () => {
+    assert.equal(isReviewsStoreSessionCommand("myk-pi-tools reviews store pr-1-reviews.json"), false);
+    assert.equal(isReviewsStoreSessionCommand("myk-pi-tools reviews fetch"), false);
+    assert.equal(isReviewsStoreSessionCommand("myk-pi-tools reviews store-session-logs x.json"), false);
+    assert.equal(isReviewsStoreSessionCommand("reviews store-session x.json"), false);
+    assert.equal(isReviewsStoreSessionCommand(undefined), false);
+    assert.equal(isReviewsStoreSessionCommand(42), false);
+  });
+});
+
 // ── Repo parsing ───────────────────────────────────────────────────────────
 
 describe("parseGitHubRepo", () => {
@@ -189,6 +207,18 @@ describe("resolveRepoInfo (git remote origin)", () => {
 // ── DB queries ─────────────────────────────────────────────────────────────
 
 describe("reviews DB queries", () => {
+  it("getReviewsForPr returns every row of the PR, oldest first (Qodo 16d84431)", () => {
+    const { dbPath } = seedDb();
+    // PR 10 has two rows (reviews 1 and 4) — a session loop stores one row
+    // per commit, and every group must distill, not just the highest id.
+    const rows = getReviewsForPr(dbPath, "myk-org", "demo", 10);
+    assert.deepEqual(rows.map((r) => r.id), [1, 4]);
+    assert.deepEqual(rows.map((r) => r.commitSha), ["sha-aaa", "sha-aaa2"]);
+    assert.deepEqual(getReviewsForPr(dbPath, "myk-org", "demo", 999), []);
+    assert.deepEqual(getReviewsForPr(path.join(dbPath, "missing.db"), "myk-org", "demo", 10), []);
+    // Another repo's rows for the same PR number never leak in.
+    assert.deepEqual(getReviewsForPr(dbPath, "other", "repo", 11).map((r) => r.id), [2]);
+  });
   it("getLatestReview picks the newest row for owner/repo", () => {
     const { dbPath } = seedDb();
     const latest = getLatestReview(dbPath, "myk-org", "demo");
@@ -267,6 +297,23 @@ describe("prNumberFromCommand", () => {
     const pr = prNumberFromCommand("myk-pi-tools reviews address --json .pi/tmp/pr-42-reviews.json --set addressed", cwd);
     assert.equal(pr, 42);
   });
+  it("reads the PR number from a store-session positional JSON via pr_url", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "qodo-943-abc1234.json"),
+      JSON.stringify({ pr_url: "https://github.com/myk-org/pi-config/pull/943", findings: [] }),
+    );
+    const pr = prNumberFromCommand("uv run myk-pi-tools reviews store-session .pi/tmp/qodo-943-abc1234.json", cwd);
+    assert.equal(pr, 943);
+  });
+  it("store-session with an unreadable or pr_url-less JSON yields null", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, ".pi", "tmp", "qodo-bad.json"), JSON.stringify({ findings: [] }));
+    assert.equal(prNumberFromCommand("myk-pi-tools reviews store-session .pi/tmp/qodo-bad.json", cwd), null);
+    assert.equal(prNumberFromCommand("myk-pi-tools reviews store-session .pi/tmp/gone.json", cwd), null);
+  });
   it("no --json → null even when leftover pr-*-reviews.json files linger (final runs delete their own)", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
     fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
@@ -282,6 +329,35 @@ describe("prNumberFromCommand", () => {
     assert.equal(prNumberFromCommand("myk-pi-tools reviews address --json .pi/tmp/gone.json --set addressed", cwd), null);
     assert.equal(prNumberFromCommand("myk-pi-tools reviews address --set addressed", cwd), null);
     assert.equal(prNumberFromCommand(undefined, cwd), null);
+  });
+  it("a combined poll+store command resolves the PR from the session JSON — the --json 2>/dev/null redirect never wins (Qodo beb11c94)", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "qodo-943-0d6ad31.json"),
+      JSON.stringify({ pr_url: "https://github.com/myk-org/pi-config/pull/943", findings: [] }),
+    );
+    const command =
+      "qodo read pr-review-session findings --pr-url https://github.com/myk-org/pi-config/pull/943 --json 2>/dev/null | head -1 > .pi/tmp/qodo-943-0d6ad31.json && " +
+      "uv run myk-pi-tools reviews store-session .pi/tmp/qodo-943-0d6ad31.json";
+    assert.equal(prNumberFromCommand(command, cwd), 943);
+  });
+  it("expands ${PROJECT_TMP_DIR} in a store-session path (Qodo 657c5633)", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "qodo-77-abc.json"),
+      JSON.stringify({ pr_url: "https://github.com/myk-org/demo/pull/77", findings: [] }),
+    );
+    const previous = process.env.PROJECT_TMP_DIR;
+    process.env.PROJECT_TMP_DIR = path.join(cwd, ".pi", "tmp");
+    try {
+      const command = "uv run myk-pi-tools reviews store-session ${PROJECT_TMP_DIR}/qodo-77-abc.json";
+      assert.equal(prNumberFromCommand(command, cwd), 77);
+    } finally {
+      if (previous === undefined) delete process.env.PROJECT_TMP_DIR;
+      else process.env.PROJECT_TMP_DIR = previous;
+    }
   });
 });
 
@@ -373,6 +449,22 @@ describe("distillLessons", () => {
     const a = finding(1, "high", "Same title on the endpoint");
     const b = { ...finding(2, "high", "Same title on the endpoint"), path: "src/other.py" };
     assert.equal(distillLessons([a, b]).length, 2);
+  });
+  it("excludes completed lessons upstream of the cap — the next fire walks forward (Qodo 16d84431)", () => {
+    const findings = [1, 2, 3, 4, 5, 6, 7].map((id) => finding(id, "high", `Distinct issue number ${id} on the endpoint`));
+    const first = distillLessons(findings);
+    assert.equal(first.length, 5, "per-fire cap");
+    const completed = new Set(first.map((l) => l.text));
+    const second = distillLessons(findings, completed);
+    assert.equal(second.length, 2, "remaining findings distill on the next fire");
+    assert.deepEqual(
+      second.map((l) => l.findingIds),
+      [[6], [7]],
+      "the same top slice is never re-picked",
+    );
+    for (const lesson of second) assert.ok(!completed.has(lesson.text), "no overlap with written lessons");
+    const third = distillLessons(findings, new Set([...completed, ...second.map((l) => l.text)]));
+    assert.equal(third.length, 0, "fully distilled review yields no pending lessons");
   });
   it("keeps distinct findings whose titles first differ past the 100-char display cap", () => {
     // Same path; titles identical for the first 100+ chars, differing only at
@@ -611,6 +703,168 @@ describe("review-learning hook", () => {
     assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "lesson written");
     assert.deepEqual(lessonsIn(cwd).map((e) => e.text), ["src/api.py: Older PR-10 review finding"]);
   });
+  it("distills on a reviews store-session tool_result naming the PR via pr_url", async () => {
+    const cwd = cwdWithDb();
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "qodo-12-abc1234.json"),
+      JSON.stringify({ pr_url: "https://github.com/myk-org/demo/pull/12", findings: [] }),
+    );
+    const { pi, handlers } = mockPi();
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
+    const results = fireToolResult(handlers, {
+      toolName: "bash",
+      input: { command: "uv run myk-pi-tools reviews store-session .pi/tmp/qodo-12-abc1234.json" },
+      isError: false,
+    }, { cwd });
+    assert.ok(results.every((r) => r === undefined), "bash watcher returns no content");
+    assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "lesson written from the session-stored review");
+    assert.deepEqual(lessonsIn(cwd).map((e) => e.text), ["src/api.py: Unhandled None on the endpoint response"]);
+  });
+  it("a store-session fire for a multi-round PR distills EVERY review row — earlier commit groups are not skipped (Qodo 16d84431)", async () => {
+    const cwd = cwdWithDb();
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "qodo-10-abc1234.json"),
+      JSON.stringify({ pr_url: "https://github.com/myk-org/demo/pull/10", findings: [] }),
+    );
+    const { pi, handlers } = mockPi();
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
+    fireToolResult(handlers, {
+      toolName: "bash",
+      input: { command: "uv run myk-pi-tools reviews store-session .pi/tmp/qodo-10-abc1234.json" },
+      isError: false,
+    }, { cwd });
+    // PR 10 has two review rows (ids 1 and 4, 3 addressed findings total):
+    // both groups must distill — the highest-ID row alone is not enough.
+    assert.ok(
+      await waitFor(() => lessonsIn(cwd).length >= 3),
+      "lessons from every review row of the PR",
+    );
+    const texts = lessonsIn(cwd).map((e) => e.text).sort();
+    assert.deepEqual(texts, [
+      "src/api.py: Missing strip_sensitive_from_response on the endpoint",
+      "src/api.py: Older PR-10 review finding",
+      "src/api.py: Same redaction gap on the list endpoint",
+    ]);
+  });
+  it("one fire drains a multi-review PR in budgeted bursts — auto-continuation completes the walk (Qodo 062e8e28, eceb273e)", async () => {
+    const cwd = makeCwd();
+    const dataDir = path.join(cwd, ".pi", "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const dbPath = path.join(dataDir, "reviews.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec(SCHEMA);
+    const insertReview = db.prepare(
+      "INSERT INTO reviews (pr_number, owner, repo, commit_sha, created_at) VALUES (55, 'myk-org', 'demo', ?, ?)",
+    );
+    const insertComment = db.prepare(
+      "INSERT INTO comments (review_id, source, path, line, body, priority, status) VALUES (?, 'qodo', ?, ?, ?, 'high', 'addressed')",
+    );
+    // review 1: 4 findings, review 2: 3 findings → 7 DISTINCT lessons
+    // (titles differ enough that the memory write path never merges them).
+    const roundOne = [
+      "Missing validation on the submit handler",
+      "Parser drops trailing fields on records",
+      "Retries lack backoff on the worker loop",
+      "Cache never invalidates on rotation",
+    ];
+    const roundTwo = [
+      "Exporter buffers rows without a flush",
+      "Health check ignores the readiness port",
+      "Shutdown skips draining in-flight work",
+    ];
+    insertReview.run("sha-r1", "2026-01-01T00:00:00Z");
+    roundOne.forEach((body, i) => insertComment.run(1, `src/a${i}.py`, i, body));
+    insertReview.run("sha-r2", "2026-01-02T00:00:00Z");
+    roundTwo.forEach((body, i) => insertComment.run(2, `src/b${i}.py`, i, body));
+    db.close();
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    const sessionJson = path.join(cwd, ".pi", "tmp", "qodo-55.json");
+    fs.writeFileSync(sessionJson, JSON.stringify({ pr_url: "https://github.com/myk-org/demo/pull/55", findings: [] }));
+    const { pi, handlers } = mockPi();
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
+    const fire = () =>
+      fireToolResult(handlers, {
+        toolName: "bash",
+        input: { command: `uv run myk-pi-tools reviews store-session ${sessionJson}` },
+        isError: false,
+      }, { cwd });
+    fire();
+    // One trigger drains the PR: bursts are capped at 5 writes, and a burst
+    // with remaining lessons schedules its own continuation (Qodo eceb273e)
+    // — a session's FINAL store must not leave lessons unwritten.
+    assert.ok(await waitFor(() => lessonsIn(cwd).length >= 7, 6000), "auto-continuation drains all lessons");
+    assert.equal(lessonsIn(cwd).length, 7, "all lessons written, no duplicates");
+    const texts = lessonsIn(cwd).map((e) => e.text);
+    assert.equal(new Set(texts).size, texts.length, "no duplicate lesson lines");
+    // A re-fire is a stable no-op.
+    fire();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(lessonsIn(cwd).length, 7);
+  });
+  it("a fork-hosted session still distills — rows are queried under the pr_url repo when origin names a fork (Qodo befc495a)", async () => {
+    const cwd = cwdWithDb(); // rows under myk-org/demo
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "tmp", "qodo-12.json"),
+      JSON.stringify({ pr_url: "https://github.com/myk-org/demo/pull/12", findings: [] }),
+    );
+    const { pi, handlers } = mockPi();
+    // origin is a FORK — the checkout's repo does not match the stored rows' repo.
+    createReviewLearning({ repoInfo: () => ({ owner: "somefork", repo: "demo" }) }).register(pi as any);
+    fireToolResult(handlers, {
+      toolName: "bash",
+      input: { command: "uv run myk-pi-tools reviews store-session .pi/tmp/qodo-12.json" },
+      isError: false,
+    }, { cwd });
+    assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "pr_url repo fallback found the stored rows");
+    assert.deepEqual(lessonsIn(cwd).map((e) => e.text), ["src/api.py: Unhandled None on the endpoint response"]);
+  });
+
+  it("a finding APPENDED to an already-distilled review row distills on the next store-session fire (Qodo 16d84431)", async () => {
+    const cwd = cwdWithDb();
+    fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
+    const sessionJson = path.join(cwd, ".pi", "tmp", "qodo-12-abc1234.json");
+    fs.writeFileSync(sessionJson, JSON.stringify({ pr_url: "https://github.com/myk-org/demo/pull/12", findings: [] }));
+    const { pi, handlers } = mockPi();
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
+    const fire = () =>
+      fireToolResult(handlers, {
+        toolName: "bash",
+        input: { command: `uv run myk-pi-tools reviews store-session ${sessionJson}` },
+        isError: false,
+      }, { cwd });
+    fire();
+    assert.ok(await waitFor(() => lessonsIn(cwd).length > 0), "first fire distills the stored review");
+    // A later round appends a finding to the SAME review row (store-session's
+    // same-commit append path).
+    const db = new DatabaseSync(path.join(cwd, ".pi", "data", "reviews.db"));
+    db.prepare(
+      "INSERT INTO comments (review_id, source, path, line, body, priority, status) VALUES (3, 'qodo', 'src/new.py', 1, 'Late finding appended on the endpoint', 'high', 'addressed')",
+    ).run();
+    db.close();
+    fire();
+    assert.ok(
+      await waitFor(() => lessonsIn(cwd).some((e) => e.text === "src/new.py: Late finding appended on the endpoint")),
+      "appended finding distills on the re-fire",
+    );
+  });
+  it("a store-session fire whose session JSON is unreadable never falls back to the repo-newest review (Qodo 86f1855b)", async () => {
+    const cwd = cwdWithDb();
+    const { pi, handlers } = mockPi();
+    createReviewLearning({ repoInfo: () => REPO }).register(pi as any);
+    fireToolResult(handlers, {
+      toolName: "bash",
+      input: { command: "uv run myk-pi-tools reviews store-session .pi/tmp/gone-qodo.json" },
+      isError: false,
+    }, { cwd });
+    // The newest review for the repo exists (id 4) and would distill under a
+    // repo-wide fallback — it must NOT: an unreadable session JSON is an
+    // error, not license to teach another PR's findings.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(lessonsIn(cwd).length, 0, "no fallback distillation");
+  });
   it("distills the PR named by the command's --json file, not the newest-for-repo", async () => {
     const cwd = cwdWithDb();
     // command addresses PR 12 — its newest review (id 3) must win over review 4
@@ -807,4 +1061,22 @@ describe("review-learning hook", () => {
       else process.env.PI_SUBAGENT_CHILD = original;
     }
   });
+});
+
+it("markReviewDistilled is idempotent — repeated fires never duplicate ids", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "rl-mark-"));
+  const dataDir = path.join(cwd, ".pi", "data");
+  fs.mkdirSync(dataDir, { recursive: true });
+
+  const { markReviewDistilled, loadDistilledReviews } = await import(
+    "../../../extensions/orchestrator/review-learning.js"
+  );
+
+  markReviewDistilled(dataDir, 42);
+  markReviewDistilled(dataDir, 42);
+  markReviewDistilled(dataDir, 42);
+
+  const distilled = loadDistilledReviews(dataDir);
+  assert.equal(distilled.size, 1, "no duplicate ids accumulate across fires");
+  assert.ok(distilled.has(42));
 });
