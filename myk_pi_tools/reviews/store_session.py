@@ -5,6 +5,12 @@ converges (clean round). It converts the session JSON into reviews DB rows:
 one `reviews` row per distinct commit the findings were raised on, and one
 `comments` row per finding (source=qodo, status from attribution_status).
 
+COUPLING (see AGENTS.md "Reviews DB ↔ review-learning"): the rows written
+here are the input of extensions/orchestrator/review-learning.ts — addressed
+findings (status='addressed') are distilled into memory lessons. Schema or
+status-vocabulary changes must keep getAddressedComments working, and any
+new store entry point must trigger or feed distillation.
+
 Unlike `store`, the input JSON is NOT deleted — the session file is the
 loop's own record.
 
@@ -131,6 +137,13 @@ def store_session(json_path: Path) -> None:
         if not git_sha:
             log.warning(f"Skipping finding without git_sha: {finding.get('id', '<no id>')}")
             continue
+        # A finding without an id cannot be tracked idempotently (Qodo
+        # a16004a7): re-imports would treat it as missing forever and append
+        # duplicate comment rows — skip it rather than store an untrackable
+        # row.
+        if not finding.get("id"):
+            log.warning(f"Skipping finding without id on commit {git_sha[:7]}: {finding.get('title', '<no title>')}")
+            continue
         groups[git_sha].append(finding)
 
     if not groups:
@@ -167,11 +180,30 @@ def store_session(json_path: Path) -> None:
         }
 
         stored_findings = 0
+        refreshed_findings = 0
         skipped_groups = 0
         # Deterministic order: earliest round first.
         for git_sha in sorted(groups, key=lambda sha: _earliest_created_at(groups[sha]) or ""):
             findings = groups[git_sha]
             missing = [f for f in findings if f.get("id") not in existing_session_ids]
+            # Refresh already-stored findings (Qodo 7be4f7fc): a finding
+            # stored mid-loop (pending) must reflect its LATER attribution
+            # (implemented/dismissed) once mark-implemented runs — a later
+            # poll re-reads the same JSON with updated statuses.
+            for finding in findings:
+                if finding in missing:
+                    continue
+                row = _to_comment_row(finding)
+                updated = conn.execute(
+                    """
+                    UPDATE comments SET status = ?, priority = ?
+                    WHERE node_id = ? AND type = 'session_finding' AND status != ?
+                    """,
+                    (row["status"], row["priority"], finding.get("id"), row["status"]),
+                )
+                if updated.rowcount > 0:
+                    refreshed_findings += 1
+
             if not missing:
                 skipped_groups += 1
                 continue
@@ -202,6 +234,8 @@ def store_session(json_path: Path) -> None:
 
         if skipped_groups:
             log.info(f"Skipped {skipped_groups} commit group(s) already stored")
+        if refreshed_findings:
+            log.info(f"Refreshed attribution on {refreshed_findings} already-stored finding(s)")
         log.info(
             f"Stored {stored_findings} session finding(s) across "
             f"{len(groups) - skipped_groups} commit(s) for {owner}/{repo}#{pr_number}"

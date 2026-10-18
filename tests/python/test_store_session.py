@@ -95,6 +95,33 @@ def test_stores_findings_grouped_by_commit_sha(project_root: Path) -> None:
         # created_at = earliest finding created_at within the group
         assert reviews[0][1] == "2026-02-01T09:00:00+00:00"
 
+        comment_count = conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+        assert comment_count == 3, "one comment row per finding"
+    finally:
+        conn.close()
+
+    assert json_path.exists(), "the session JSON is the loop's record — never deleted"
+
+
+def test_comment_row_mapping_from_finding(project_root: Path) -> None:
+    """A finding maps onto the comment columns with translated vocabulary."""
+    findings = [
+        _finding("uuid-1", "Finding one", "Desc one", "sha-aaa", "2026-02-01T10:00:00+00:00"),
+        _finding(
+            "uuid-2",
+            "Finding two",
+            "Desc two",
+            "sha-aaa",
+            "2026-02-01T09:00:00+00:00",
+            action_level="informational",
+            attribution_status="dismissed",
+        ),
+    ]
+    json_path = _write_session(project_root, _session_json(findings))
+    store_session.run(str(json_path))
+
+    conn = sqlite3.connect(str(_db_path(project_root)))
+    try:
         comments = conn.execute(
             """
             SELECT c.comment_id, c.node_id, c.author, c.body, c.title, c.status, c.priority,
@@ -103,7 +130,6 @@ def test_stores_findings_grouped_by_commit_sha(project_root: Path) -> None:
             ORDER BY c.id
             """
         ).fetchall()
-        assert len(comments) == 3
         first = comments[0]
         assert first[0] == 4282020651, "comment_id is the GitHub comment id"
         assert first[1] == "uuid-1", "node_id is the session finding UUID"
@@ -121,8 +147,6 @@ def test_stores_findings_grouped_by_commit_sha(project_root: Path) -> None:
         assert dismissed[6] == "LOW", "informational maps to LOW priority"
     finally:
         conn.close()
-
-    assert json_path.exists(), "the session JSON is the loop's record — never deleted"
 
 
 def test_rerun_is_idempotent_no_duplicate_rows(project_root: Path) -> None:
@@ -306,3 +330,71 @@ def test_status_report_renders_session_findings(project_root: Path, tmp_path: Pa
     assert html_path.exists(), "HTML report generated for a session-reviewed PR"
     html = html_path.read_text(encoding="utf-8")
     assert "Rendered finding title" in html, "session finding appears in the report"
+
+
+def test_later_poll_refreshes_stored_finding_status(project_root: Path) -> None:
+    """A finding stored as pending reflects its later attribution (Qodo 7be4f7fc)."""
+    finding = _finding(
+        "uuid-1",
+        "Finding one",
+        "Desc one",
+        "sha-aaa",
+        "2026-02-01T10:00:00+00:00",
+        attribution_status="pending",
+    )
+    json_path = _write_session(project_root, _session_json([finding]))
+    store_session.run(str(json_path))
+
+    conn = sqlite3.connect(str(_db_path(project_root)))
+    try:
+        assert conn.execute("SELECT status FROM comments").fetchone()[0] == "pending"
+    finally:
+        conn.close()
+
+    finding["attribution_status"] = "implemented"
+    json_path.write_text(json.dumps(_session_json([finding])), encoding="utf-8")
+    store_session.run(str(json_path))
+
+    conn = sqlite3.connect(str(_db_path(project_root)))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0] == 1, "no duplicate row"
+        assert conn.execute("SELECT status FROM comments").fetchone()[0] == "addressed"
+    finally:
+        conn.close()
+
+
+def test_finding_without_id_is_skipped_not_duplicated(project_root: Path) -> None:
+    """A finding without an id is untrackable — skipped, never duplicated (Qodo a16004a7)."""
+    finding = _finding("uuid-1", "Finding one", "Desc one", "sha-aaa", "2026-02-01T10:00:00+00:00")
+    no_id = dict(finding)
+    no_id.pop("id")
+    json_path = _write_session(project_root, _session_json([no_id]))
+    store_session.run(str(json_path))
+    store_session.run(str(json_path))
+
+    conn = sqlite3.connect(str(_db_path(project_root)))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0] == 0, "untrackable finding never stored"
+        assert conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_insert_review_logs_at_debug_level(project_root: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """insert_review leaves an execution record in the logs (Qodo 2f94f554)."""
+    import logging
+
+    from myk_pi_tools.reviews.store import insert_review
+
+    db = _db_path(project_root)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db))
+    try:
+        from myk_pi_tools.reviews.store import create_tables
+
+        create_tables(conn)
+        with caplog.at_level(logging.DEBUG, logger="myk_pi_tools.reviews.store"):
+            insert_review(conn, "myk-org", "pi-config", 943, "sha-xyz", created_at="2026-02-01T10:00:00+00:00")
+        assert any("insert_review" in record.message for record in caplog.records)
+    finally:
+        conn.close()
