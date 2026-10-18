@@ -1062,3 +1062,21 @@ describe("review-learning hook", () => {
     }
   });
 });
+
+it("markReviewDistilled is idempotent — repeated fires never duplicate ids", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "rl-mark-"));
+  const dataDir = path.join(cwd, ".pi", "data");
+  fs.mkdirSync(dataDir, { recursive: true });
+
+  const { markReviewDistilled, loadDistilledReviews } = await import(
+    "../../../extensions/orchestrator/review-learning.js"
+  );
+
+  markReviewDistilled(dataDir, 42);
+  markReviewDistilled(dataDir, 42);
+  markReviewDistilled(dataDir, 42);
+
+  const distilled = loadDistilledReviews(dataDir);
+  assert.equal(distilled.size, 1, "no duplicate ids accumulate across fires");
+  assert.ok(distilled.has(42));
+});

@@ -364,7 +364,12 @@ function writeStateFile(dataDir: string, distilledReviews: number[], reviewLesso
 /** Record a review id as distilled (bounded — oldest entries drop off). Fail-soft. */
 export function markReviewDistilled(dataDir: string, reviewId: number): void {
   try {
-    writeStateFile(dataDir, [...loadDistilledReviews(dataDir), reviewId], loadReviewLessons(dataDir));
+    // Dedupe: the PR walk re-marks already-distilled reviews on every fire
+    // (their completed lessons make it a no-op walk), which would append the
+    // same id once per fire and grow the state file without bound.
+    const distilled = [...new Set(loadDistilledReviews(dataDir))];
+    if (!distilled.includes(reviewId)) distilled.push(reviewId);
+    writeStateFile(dataDir, distilled, loadReviewLessons(dataDir));
   } catch (error: any) {
     log.debug("distilled_state_write_failed", { reason: String(error?.message ?? error).slice(0, 200) });
   }
