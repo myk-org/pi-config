@@ -807,8 +807,9 @@ PI_PIDIFF_ENABLE=false pi
 | `myk-pi-tools pr claude-md`            | Fetch `CLAUDE.md` and `AGENTS.md` content for a PR's repository                                                                                |
 | `myk-pi-tools release create`          | Create a GitHub release with changelog                                                                                                         |
 | `myk-pi-tools db`                      | Review database query commands                                                                                                                 |
-| `myk-pi-tools reviews`                 | Review handling commands (fetch, poll, address, post, store)                                                                                   |
+| `myk-pi-tools reviews`                 | Review handling commands (fetch, poll, address, post, store, store-session)                                                                   |
 | `myk-pi-tools reviews address`         | Apply replies/statuses to a fetched reviews JSON, then post and store it (see below)                                                           |
+| `myk-pi-tools reviews store-session`   | Store Qodo pr-review-session findings JSON into the reviews DB (idempotent; run at loop convergence)                                           |
 | `myk-pi-tools memory`                  | Project memory commands — persistent per-repo learning                                                                                         |
 | `myk-pi-tools ai-cli`                  | AI CLI commands (cursor, claude, gemini)                                                                                                       |
 | `myk-pi-tools coderabbit`              | CodeRabbit commands (check, trigger, retry)                                                                                                    |

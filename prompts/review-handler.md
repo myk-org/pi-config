@@ -705,3 +705,28 @@ Each cycle displays a status update so the user knows the loop is active:
 [auto] CodeRabbit rate-limited. Handling automatically via reviews poll --source coderabbit...
 [auto] 🎉 {source} approved PR #{pr_number}. Displaying remaining findings summary.
 ```
+
+## Qodo Review-Session Loops (Storage — MANDATORY)
+
+PRs reviewed through the Qodo `pr-review-session` CLI (poll
+`qodo read pr-review-session findings --pr-url <url> --json`, fix,
+`qodo pr-review-session mark-implemented`) bypass GitHub review comments
+until convergence, so `reviews fetch` sees nothing — every thread is
+resolved by the time the loop converges, and the fetch default excludes
+resolved threads. The reviews database therefore never hears about these
+reviews unless you store them explicitly.
+
+**When a pr-review-session loop converges (a clean round — zero pending
+findings on the reviewed head commit), you MUST store the session data:**
+
+```bash
+myk-pi-tools reviews store-session ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
+```
+
+The command converts the session findings JSON into reviews DB rows
+(source `qodo`, status from each finding's `attribution_status`, grouped
+by the commit the finding was raised on). It is idempotent — re-running
+skips commits already stored — and it does NOT delete the JSON.
+
+Without this step, `reviews status --pr <n>` renders an empty HTML report
+for the PR and the review analytics lose the whole loop (issue #942).

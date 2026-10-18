@@ -192,3 +192,23 @@ def reviews_store(json_path: str) -> None:
     from myk_pi_tools.reviews.store import run
 
     run(json_path)
+
+
+@reviews.command("store-session")
+@click.argument("json_path")
+def reviews_store_session(json_path: str) -> None:
+    """Store Qodo review-session findings to database.
+
+    Converts a `qodo read pr-review-session findings --json` output file into
+    reviews DB rows (source=qodo, status from attribution_status), grouped by
+    the commit each finding was raised on. Idempotent — re-running skips
+    commits already stored. The JSON file is NOT deleted.
+
+    Run this when a pr-review-session loop converges (clean round).
+
+    JSON_PATH: Path to the Qodo pr-review-session findings JSON file
+    """
+    from myk_pi_tools.reviews.store_session import run
+
+    log.info("reviews store-session: json=%s", json_path)
+    run(json_path)
