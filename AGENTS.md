@@ -315,6 +315,9 @@ progress. It does not commit, push, create a PR, or post results.
 - Reviews address CLI: `uv run myk-pi-tools reviews address` — apply `<path>:<line>|<reply>` mapping rules (or `*|<reply>`) to the newest
   `pr-*-reviews.json` in `.pi/tmp`, flip statuses (`--set`), then run post + store; validation errors (ambiguous rule, invalid status for
   Qodo sticky findings) leave the JSON unchanged. Options and exit codes: see README `myk-pi-tools` subcommands.
+- Reviews store-session CLI: `uv run myk-pi-tools reviews store-session <json>` — store a Qodo pr-review-session findings JSON (the
+  `qodo-<pr>-<sha>.json` a session-loop poll saves) into the reviews DB after every completed round; idempotent per finding UUID, and the
+  input JSON is kept. See README `myk-pi-tools` subcommands.
 - Settings TUI: `/pi-config-settings [project|global]` — interactive settings editor in the pi session.
 - Agent settings injection: use `{{SETTINGS:key1,key2}}` in agent `.md` files — `substituteSettingsPlaceholders` only (not rules `assembleRuleText`). See `docs/project-settings.md`.
   Never instruct agents to read `pi-config-settings.jsonc`/`.json` manually.

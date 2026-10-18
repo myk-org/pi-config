@@ -111,14 +111,14 @@ def test_stores_findings_grouped_by_commit_sha(project_root: Path) -> None:
         assert first[3] == "Finding one\n\nDesc one", "body is title + description"
         assert first[4] == "Finding one"
         assert first[5] == "addressed", "implemented maps to the resolved vocabulary"
-        assert first[6] == "action_required", "priority from action_level"
+        assert first[6] == "HIGH", "action_required maps to HIGH priority"
         assert first[7] == "2026-02-01T10:00:00+00:00"
         assert first[8] == "session_finding"
         assert first[9] == "Correctness", "quality_label from category"
         assert first[10] is None and first[11] is None
         dismissed = comments[1]
         assert dismissed[5] == "skipped", "dismissed maps to the resolved vocabulary"
-        assert dismissed[6] == "informational"
+        assert dismissed[6] == "LOW", "informational maps to LOW priority"
     finally:
         conn.close()
 
@@ -145,7 +145,15 @@ def test_rerun_is_idempotent_no_duplicate_rows(project_root: Path) -> None:
     finally:
         conn.close()
 
-    # A later round on the same PR (new commit) stores only the new group.
+
+def test_later_round_on_new_commit_stores_only_the_new_group(project_root: Path) -> None:
+    """A later round on the same PR (new commit) stores only the new group."""
+    findings = [
+        _finding("uuid-1", "Finding one", "Desc one", "sha-aaa", "2026-02-01T10:00:00+00:00"),
+    ]
+    json_path = _write_session(project_root, _session_json(findings))
+    store_session.run(str(json_path))
+
     round2 = _session_json([_finding("uuid-4", "Finding four", "Desc four", "sha-ccc", "2026-02-03T10:00:00+00:00")])
     json_path.write_text(json.dumps(round2), encoding="utf-8")
     store_session.run(str(json_path))
@@ -153,8 +161,51 @@ def test_rerun_is_idempotent_no_duplicate_rows(project_root: Path) -> None:
     conn = sqlite3.connect(str(_db_path(project_root)))
     try:
         shas = {row[0] for row in conn.execute("SELECT commit_sha FROM reviews").fetchall()}
-        assert shas == {"sha-aaa", "sha-bbb", "sha-ccc"}
-        assert conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0] == 3
+        assert shas == {"sha-aaa", "sha-ccc"}
+        assert conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_later_import_appends_to_the_same_review_row(project_root: Path) -> None:
+    """A later import adding a finding for an imported commit reuses its session review row."""
+    json_path = _write_session(
+        project_root,
+        _session_json([_finding("uuid-1", "Finding one", "Desc one", "sha-aaa", "2026-02-01T10:00:00+00:00")]),
+    )
+    store_session.run(str(json_path))
+
+    later = _session_json([
+        _finding("uuid-1", "Finding one", "Desc one", "sha-aaa", "2026-02-01T10:00:00+00:00"),
+        _finding("uuid-2", "Finding two", "Desc two", "sha-aaa", "2026-02-01T11:00:00+00:00"),
+    ])
+    json_path.write_text(json.dumps(later), encoding="utf-8")
+    store_session.run(str(json_path))
+
+    conn = sqlite3.connect(str(_db_path(project_root)))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0] == 1, "one row per round, not per import"
+        assert conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_cli_store_session_command_dispatches(project_root: Path) -> None:
+    """The reviews store-session CLI wrapper dispatches to the store (Qodo 9e0b43e9)."""
+    from click.testing import CliRunner
+
+    from myk_pi_tools.reviews.commands import reviews
+
+    json_path = _write_session(
+        project_root,
+        _session_json([_finding("uuid-1", "CLI finding", "Desc", "sha-aaa", "2026-02-01T10:00:00+00:00")]),
+    )
+    result = CliRunner().invoke(reviews, ["store-session", str(json_path)])
+    assert result.exit_code == 0, result.output
+
+    conn = sqlite3.connect(str(_db_path(project_root)))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0] == 1
     finally:
         conn.close()
 

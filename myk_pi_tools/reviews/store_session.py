@@ -59,11 +59,23 @@ def _to_comment_row(finding: dict[str, Any]) -> dict[str, Any]:
     description = finding.get("description", "")
     # Status vocabulary of the status listing is addressed/skipped/pending
     # (Qodo 21abfb4f) — raw attribution_status values would appear in the
-    # totals but never in the resolution counts.
+    # totals but never in the resolution counts. `resolved` is Qodo's
+    # resolved-attribution spelling (Qodo 5bcf0ad3).
     attribution = finding.get("attribution_status")
-    status = {"implemented": "addressed", "dismissed": "skipped"}.get(
-        attribution if isinstance(attribution, str) else "", "pending"
-    )
+    status = {
+        "implemented": "addressed",
+        "resolved": "addressed",
+        "dismissed": "skipped",
+    }.get(attribution if isinstance(attribution, str) else "", "pending")
+    # Priority shares the column with the fetch path's HIGH/MEDIUM/LOW
+    # classification (Qodo 50984056) — raw action_level strings would make
+    # priority-based queries inconsistent across store paths.
+    level = finding.get("action_level")
+    priority = {
+        "action_required": "HIGH",
+        "remediation_recommended": "MEDIUM",
+        "informational": "LOW",
+    }.get(level if isinstance(level, str) else "", "MEDIUM")
     # GitHub comment id when the finding has one (Qodo fb3f939c): the
     # integer comments.comment_id column must carry the GitHub id the rest
     # of the pipeline expects; the session UUID goes to node_id.
@@ -81,7 +93,7 @@ def _to_comment_row(finding: dict[str, Any]) -> dict[str, Any]:
         "path": None,
         "line": None,
         "body": f"{title}\n\n{description}",
-        "priority": finding.get("action_level"),
+        "priority": priority,
         "status": status,
         "posted_at": finding.get("created_at"),
         "type": "session_finding",
@@ -163,7 +175,25 @@ def store_session(json_path: Path) -> None:
             if not missing:
                 skipped_groups += 1
                 continue
-            review_id = insert_review(conn, owner, repo, pr_number, git_sha, created_at=_earliest_created_at(missing))
+            # A later import for an already-imported commit appends to that
+            # commit's existing SESSION review row (Qodo 5355150b) — one
+            # review row per round, not one per import.
+            existing_row = conn.execute(
+                """
+                SELECT r.id FROM reviews r
+                JOIN comments c ON c.review_id = r.id
+                WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ? AND r.commit_sha = ?
+                  AND c.type = 'session_finding'
+                LIMIT 1
+                """,
+                (owner, repo, pr_number, git_sha),
+            ).fetchone()
+            if existing_row is not None:
+                review_id = existing_row[0]
+            else:
+                review_id = insert_review(
+                    conn, owner, repo, pr_number, git_sha, created_at=_earliest_created_at(missing)
+                )
             for finding in missing:
                 insert_comment(conn, review_id, "qodo", _to_comment_row(finding))
                 stored_findings += 1

@@ -716,17 +716,23 @@ resolved by the time the loop converges, and the fetch default excludes
 resolved threads. The reviews database therefore never hears about these
 reviews unless you store them explicitly.
 
-**When a pr-review-session loop converges (a clean round — zero pending
-findings on the reviewed head commit), you MUST store the session data:**
+**When a pr-review-session loop runs, every poll that returns a completed
+session MUST save the findings JSON first — store-session reads that file:**
 
 ```bash
+qodo read pr-review-session findings --pr-url <pr-url> --json 2>/dev/null | head -1 \
+  > ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
 myk-pi-tools reviews store-session ${PROJECT_TMP_DIR}/qodo-<pr>-<sha>.json
 ```
 
 The command converts the session findings JSON into reviews DB rows
 (source `qodo`, status from each finding's `attribution_status`, grouped
 by the commit the finding was raised on). It is idempotent — re-running
-skips commits already stored — and it does NOT delete the JSON.
+skips findings already stored (per session UUID) — and it does NOT delete
+the JSON, so storing every round is safe and `reviews status --pr <n>`
+stays current while the loop runs.
 
-Without this step, `reviews status --pr <n>` renders an empty HTML report
-for the PR and the review analytics lose the whole loop (issue #942).
+A clean convergence round is stored the same way — it is just the last
+round. Without this step, `reviews status --pr <n>` renders an empty HTML
+report for the PR mid-loop and after convergence, and the review analytics
+lose the whole loop (issue #942).
