@@ -822,13 +822,21 @@ myk-pi-tools reviews address [--json <reviews.json>] [--replies <mapping.txt>] [
 ```
 
 - `--json`: reviews JSON to process (default: newest `pr-*-reviews.json` in `.pi/tmp`)
-- `--replies`: mapping file, one rule per line — `<path>:<line>|<reply>` or `*|<reply>` (matches all pending findings);
-  `#` comments and blank lines ignored
+- `--replies`: mapping file, one rule per line — full syntax:
+  - `<path>:<line>|<reply>` — matches the finding's full `[line, end_line]` span
+  - `<path>:<line>~<fragment>|<reply>` — discriminator: additionally requires the
+    case-insensitive `fragment` in the finding's body (targets one of two findings
+    whose spans overlap at the same line)
+  - `<path>:*|<reply>` — every finding in that file gets the reply (per-file wildcard)
+  - `*|<reply>` — matches all pending findings
+  - A finding whose span contains another finding's span (nested findings) matches
+    only its own reported line; `#` comments and blank lines ignored
 - `--set`: target status for matched findings — `addressed` (default), `skipped`, `not_addressed`, or `failed`
 - Without `--replies`, pending findings that already carry a reply only get their status flipped (status-only mode)
 - Exit code `0` = replies posted and stored; non-zero = nothing matched, validation failed, or posting failed
   (the JSON is kept for retry — re-running with the same or a corrected mapping resumes unposted entries)
-- Validation failures change nothing: a rule matching several distinct findings at one location, or a status `post`
+- Validation failures change nothing: a rule matching several distinct findings (overlapping
+  spans — disambiguate with `<path>:<line>~<fragment>`), or a status `post`
   rejects for Qodo sticky findings (`not_addressed`/`failed`; `skipped` only with an issue-spec-update reply),
   exits non-zero before the JSON is saved
 

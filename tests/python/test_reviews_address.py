@@ -96,12 +96,18 @@ def test_parse_replies_file(tmp_path: Path) -> None:
     """Valid lines, comments and blank lines parse into rules."""
     f = tmp_path / "replies.txt"
     f.write_text(
-        "# comment\n\nsrc/a.py:10|Fixed the boundary in abc1234\n*|All findings fixed in def5678\n",
+        "# comment\n\n"
+        "src/a.py:10|Fixed the boundary in abc1234\n"
+        "src/a.py:12~loop boundary|Fixed only the loop finding\n"
+        "src/b.py:*|Same reply for every finding in this file\n"
+        "*|All findings fixed in def5678\n",
         encoding="utf-8",
     )
     rules = parse_replies_file(f)
     assert rules == [
-        {"path": "src/a.py", "line": 10, "reply": "Fixed the boundary in abc1234"},
+        {"path": "src/a.py", "line": 10, "disc": None, "reply": "Fixed the boundary in abc1234"},
+        {"path": "src/a.py", "line": 12, "disc": "loop boundary", "reply": "Fixed only the loop finding"},
+        {"path": "src/b.py", "line": None, "file_wildcard": True, "reply": "Same reply for every finding in this file"},
         {"path": None, "line": None, "reply": "All findings fixed in def5678"},
     ]
 
@@ -878,11 +884,10 @@ def test_apply_replies_ambiguity_error_states_real_remedies() -> None:
         apply_replies(data, rules, "addressed")
 
     message = str(exc_info.value)
-    assert "wildcard rule (*)" in message, "the wildcard remedy must be stated"
-    assert "unique to one finding" in message, "the unique path:line remedy must be stated"
-    assert "there is no body-discriminator syntax yet" in message, (
-        "the message must be honest about the nonexistent discriminator syntax"
-    )
+    assert "spans overlap" in message, "the message must explain span matching"
+    assert "~<title-fragment>" in message, "the discriminator remedy must be stated"
+    assert "<path>:*" in message, "the per-file wildcard remedy must be stated"
+    assert "editing line/end_line" in message, "the JSON-edit workaround must be stated"
 
 
 def test_apply_replies_wildcard_still_matches_multiple_findings() -> None:
@@ -1263,3 +1268,155 @@ def test_apply_replies_unmatched_contested_sticky_matchable_at_own_line() -> Non
     assert len(groups[0]) == 1  # the unmatched wide sticky alone
     assert data["qodo"][2]["status"] == "addressed"
     assert all(e["status"] == "pending" for e in data["qodo"] if e is not data["qodo"][2])
+
+
+def test_nested_span_findings_are_addressable_individually() -> None:
+    """Nested spans (A ⊇ B, different titles) each match at their own line (issue #945).
+
+    The containing finding matches only its reported line; the inner finding
+    stays reachable across its whole span. No path:line existed that could
+    target the inner finding alone before this.
+    """
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(body="Upgrades can omit earlier release notes", line=136, end_line=142),
+            _entry(body="Reopened What's New loses earlier releases", line=139, end_line=142),
+        ],
+        "coderabbit": [],
+    }
+    # A rule inside B's span (139) addresses B alone — A is restricted to its
+    # reported line 136.
+    rules = [{"path": "src/a.py", "line": 139, "reply": "inner finding fixed"}]
+    apply_replies(data, rules, "addressed")
+    replied = {e["body"]: e["reply"] for source in ("qodo",) for e in data[source]}
+    assert replied["Reopened What's New loses earlier releases"] == "inner finding fixed"
+    assert replied["Upgrades can omit earlier release notes"] == ""
+
+    # A rule at A's reported line addresses A alone.
+    data2: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(body="Upgrades can omit earlier release notes", line=136, end_line=142),
+            _entry(body="Reopened What's New loses earlier releases", line=139, end_line=142),
+        ],
+        "coderabbit": [],
+    }
+    apply_replies(data2, [{"path": "src/a.py", "line": 136, "reply": "outer finding fixed"}], "addressed")
+    replied = {e["body"]: e["reply"] for e in data2["qodo"]}
+    assert replied["Upgrades can omit earlier release notes"] == "outer finding fixed"
+    assert replied["Reopened What's New loses earlier releases"] == ""
+
+
+def test_equal_span_findings_match_at_their_own_reported_lines() -> None:
+    """Equal spans mark both findings own-line — differing reported lines disambiguate."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(body="Alpha issue with the handler", line=10, end_line=20),
+            _entry(body="Beta issue with the handler", line=12, end_line=20),
+        ],
+        "coderabbit": [],
+    }
+    apply_replies(data, [{"path": "src/a.py", "line": 12, "reply": "beta fixed"}], "addressed")
+    replied = {e["body"]: e["reply"] for e in data["qodo"]}
+    assert replied["Beta issue with the handler"] == "beta fixed"
+    assert replied["Alpha issue with the handler"] == ""
+
+
+def test_discriminator_targets_one_of_two_equal_span_findings() -> None:
+    """path:line~fragment picks the finding whose body contains the fragment (issue #945)."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(body="Cache never invalidates on rotation", line=10, end_line=10),
+            _entry(body="Retries lack backoff on the worker", line=10, end_line=10),
+        ],
+        "coderabbit": [],
+    }
+    rules = [{"path": "src/a.py", "line": 10, "disc": "backoff", "reply": "backoff added"}]
+    apply_replies(data, rules, "addressed")
+    replied = {e["body"]: e["reply"] for e in data["qodo"]}
+    assert replied["Retries lack backoff on the worker"] == "backoff added"
+    assert replied["Cache never invalidates on rotation"] == ""
+
+
+def test_file_wildcard_replies_to_every_finding_in_the_file() -> None:
+    """path:* is a per-file wildcard: same reply for all findings in the file,
+    never flagged ambiguous, and an exact rule outranks it."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(body="First issue with the parser", line=10),
+            _entry(body="Second issue with the parser", line=40),
+            _entry(path="src/b.py", body="Other file entirely", line=5),
+        ],
+        "coderabbit": [],
+    }
+    rules: list[dict[str, Any]] = [
+        {"path": "src/a.py", "line": None, "file_wildcard": True, "reply": "file-wide reply"},
+        {"path": None, "line": None, "reply": "global fallback"},
+    ]
+    apply_replies(data, rules, "addressed")
+    replied = {(e["path"], e["body"]): e["reply"] for e in data["qodo"]}
+    assert replied[("src/a.py", "First issue with the parser")] == "file-wide reply"
+    assert replied[("src/a.py", "Second issue with the parser")] == "file-wide reply"
+    assert replied[("src/b.py", "Other file entirely")] == "global fallback"
+
+    # An exact rule outranks the per-file wildcard for its finding.
+    data2: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(body="First issue with the parser", line=10),
+            _entry(body="Second issue with the parser", line=40),
+        ],
+        "coderabbit": [],
+    }
+    rules2: list[dict[str, Any]] = [
+        {"path": "src/a.py", "line": None, "file_wildcard": True, "reply": "file-wide reply"},
+        {"path": "src/a.py", "line": 10, "disc": None, "reply": "exact reply"},
+    ]
+    apply_replies(data2, rules2, "addressed")
+    replies2 = {e["body"]: e["reply"] for e in data2["qodo"]}
+    assert replies2["First issue with the parser"] == "exact reply"
+    assert replies2["Second issue with the parser"] == "file-wide reply"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "src/a.py:10~|empty discriminator",  # empty fragment after ~
+        "src/a.py:*~frag|wildcard with discriminator",  # disc on file wildcard
+    ],
+)
+def test_parse_replies_file_rejects_bad_discriminators(tmp_path: Path, line: str) -> None:
+    f = tmp_path / "replies.txt"
+    f.write_text(line + "\n", encoding="utf-8")
+    with pytest.raises(RepliesFileError):
+        parse_replies_file(f)
+
+
+def test_paired_sticky_span_still_matches_across_the_thread_line() -> None:
+    """A sticky whose span covers its OWN paired thread still matches at any line
+    in the pair's span — the containment pass compares different clusters only."""
+    data: dict[str, Any] = {
+        "metadata": {"owner": "org", "repo": "repo", "pr_number": 42},
+        "human": [],
+        "qodo": [
+            _entry(body="Fix the loop boundary in parser", thread_id="T1", line=10, end_line=10),
+            _entry(body="Fix the loop boundary in parser", thread_id=None, type="qodo_bug", line=10, end_line=20),
+        ],
+        "coderabbit": [],
+    }
+    # A rule at the thread's line (10) and one at a covered line (15) both
+    # reach the pair — neither is nested containment (same cluster).
+    for rule_line in (10, 15):
+        data_run = json.loads(json.dumps(data))
+        apply_replies(data_run, [{"path": "src/a.py", "line": rule_line, "reply": "fixed"}], "addressed")
+        assert all(e["reply"] == "fixed" for e in data_run["qodo"]), f"rule at {rule_line} must reach the pair"

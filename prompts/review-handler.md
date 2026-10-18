@@ -373,9 +373,12 @@ If any approved tasks weren't implemented, review with user.
 
 ### Phase 5: Prepare Reply Mappings
 
-🚨 **NEVER hand-edit the reviews JSON.** No python heredocs, no `jq`, no manual
-`status`/`reply` field mutation. The `myk-pi-tools reviews address` command applies
+🚨 **NEVER hand-edit a reviews JSON's `status`/`reply` fields.** No python heredocs, no `jq`, no manual
+`status`/`reply` mutation — those bypass posting and the database store. The
+`myk-pi-tools reviews address` command applies
 replies, flips statuses, posts, and stores in one step — you only prepare mapping files.
+(The single exception: narrowing `line`/`end_line` for span disambiguation — see
+span semantics below; that affects matching only, never posting.)
 
 Write one mapping file per target status. Each line targets one finding:
 
@@ -386,10 +389,47 @@ Write one mapping file per target status. Each line targets one finding:
 - `<path>:<line>` — the finding's fetched `path` and `line`. A thread finding and its
   paired sticky finding are addressed together automatically (the command handles
   dedupe and pairing — you never target stickies separately).
+- `<path>:<line>~<fragment>` — **discriminator**: additionally requires `<fragment>`
+  (case-insensitive) in the finding's body — the way to target one of two findings
+  whose spans overlap at the same line.
+- `<path>:*` — per-file wildcard: same reply for EVERY finding in that file.
 - `*` — matches ALL pending findings (single-line mapping file).
 - Group findings by their target status — Phase 8 runs one `reviews address` call per
   status group.
 - Posting happens in Phase 8, AFTER commit/push — do not post before the fixes are pushed.
+
+**How a rule matches a finding (span semantics — issue #945):**
+
+- A specific rule matches the finding's FULL `[line, end_line]` span — any line in
+  the span reaches the finding.
+- When one finding's span CONTAINS another finding's span (nested findings, same
+  file), the containing finding matches only its own reported `line` — so a rule at
+  any inner line reaches the inner finding alone, and a rule at the outer finding's
+  reported line reaches the outer one alone. Equal spans: both findings match only
+  their own reported lines.
+- A rule matching 2+ distinct findings is rejected ATOMICALLY — nothing is posted.
+  Two-pass addressing (reply to one, then the other) cannot work: ALL rules are
+  validated before anything posts. Disambiguate with `~<fragment>`, use
+  `<path>:*` / `*` when the same reply fits all, or narrow `line`/`end_line` in the
+  reviews JSON (the ONE sanctioned JSON edit — it affects matching only, never
+  posting).
+- Sticky records (untitled duplicates of findings) participate in matching through
+  their cluster — you never target them separately, and a rule reaching the thread
+  reaches its sticky.
+
+**Mapping cheat sheet (use this — never read the address source code):**
+
+```text
+src/a.py:10|Fixed in abc1234                      # one finding (any line in its span)
+src/a.py:10~backoff|Fixed the backoff in abc1234  # ONE of two findings overlapping at 10
+src/a.py:*|Same reply for every finding in this file
+*|All findings fixed in def5678                   # every pending finding
+```
+
+When `reviews address` rejects a rule as ambiguous, re-read the finding bodies in
+the reviews JSON, pick a unique word from the target finding's title, and re-run
+with `<path>:<line>~<word>|<reply>`. Do NOT run the command twice to reach two
+findings at one location — the second run would fail validation the same way.
 
 **Valid status values (the `--set` flag for each mapping group):**
 

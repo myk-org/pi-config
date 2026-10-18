@@ -75,8 +75,19 @@ def find_default_json(base_dir: Path | None = None) -> Path | None:
 def parse_replies_file(path: Path) -> list[dict[str, Any]]:
     """Parse a replies mapping file into rules.
 
-    Each rule is ``{"path": str | None, "line": int | None, "reply": str}``;
-    a wildcard rule (``path`` is None) matches every pending finding.
+    Each rule is ``{"path": str | None, "line": int | None, "reply": str,
+    "disc": str | None, "file_wildcard": bool}``:
+
+    - ``*|<reply>`` — global wildcard, matches every pending finding.
+    - ``<path>:*|<reply>`` — per-file wildcard, same reply for every
+      finding in that file (never flagged ambiguous — it is intentionally
+      many-to-one).
+    - ``<path>:<line>|<reply>`` — matches findings whose ``[line, end_line]``
+      span contains ``<line>``.
+    - ``<path>:<line>~<fragment>|<reply>`` — discriminator: additionally
+      requires ``<fragment>`` (case-insensitive) in the finding's body, so
+      co-located findings (nested or equal spans) can be targeted singly
+      (issue #945).
 
     Raises:
         RepliesFileError: on a malformed line or an empty file.
@@ -96,11 +107,28 @@ def parse_replies_file(path: Path) -> list[dict[str, Any]]:
         file_part, colon, line_part = target.rpartition(":")
         if not colon or not file_part:
             raise RepliesFileError(f"{path}:{lineno}: expected '<path>:<line>|<reply>', got: {line!r}")
+        if line_part == "*":
+            rules.append({"path": file_part, "line": None, "file_wildcard": True, "reply": reply})
+            continue
+        disc: str | None = None
+        if "~" in line_part:
+            line_part, _, disc = line_part.partition("~")
+            disc = disc.strip()
+            if not disc:
+                raise RepliesFileError(
+                    f"{path}:{lineno}: empty discriminator after '~' — expected "
+                    "'<path>:<line>~<title-fragment>|<reply>', got: {line!r}"
+                )
+            if line_part.strip() == "*":
+                raise RepliesFileError(
+                    f"{path}:{lineno}: a file wildcard cannot carry a discriminator — "
+                    "use '<path>:<line>~<fragment>' to target one finding"
+                )
         try:
             rule_line = int(line_part)
         except ValueError:
             raise RepliesFileError(f"{path}:{lineno}: line number must be an integer, got: {line_part!r}") from None
-        rules.append({"path": file_part, "line": rule_line, "reply": reply})
+        rules.append({"path": file_part, "line": rule_line, "disc": disc, "reply": reply})
     if not rules:
         raise RepliesFileError(f"{path}: no reply rules found")
     log.info("Parsed %d reply rule(s) from %s", len(rules), path)
@@ -353,21 +381,68 @@ def _needs_resolve_retry(source: str, entry: dict[str, Any]) -> bool:
 
 
 def _rule_matches(rule: dict[str, Any], entry: dict[str, Any], own_line_only: bool = False) -> bool:
-    """A wildcard rule matches everything; a specific rule matches the
-    entry's line span — or only the entry's reported line for a contested
-    sticky whose wide span overlaps another thread's cluster.
+    """A global wildcard matches everything; a per-file wildcard matches
+    every finding in its file; a specific rule matches the entry's line
+    span — or only the entry's reported line for a contested sticky or a
+    finding whose span contains another finding's span. A discriminator
+    (``~fragment``) additionally requires the fragment in the entry's body,
+    so co-located findings can be targeted singly (issue #945).
     """
     if rule["path"] is None:
         matches = True
     elif entry.get("path") != rule["path"]:
         matches = False
+    elif rule.get("file_wildcard"):
+        matches = True
     elif own_line_only:
         matches = entry.get("line") == rule["line"]
     else:
         span = _line_interval(entry)
         matches = span is not None and span[0] <= rule["line"] <= span[1]
+    if matches and rule.get("disc") is not None:
+        matches = rule["disc"].lower() in str(entry.get("body") or "").lower()
     log.debug("rule match=%s for %s:%s", matches, entry.get("path"), entry.get("line"))
     return matches
+
+
+def _contained_cluster_entry_ids(clusters: list[list[dict[str, Any]]]) -> set[int]:
+    """Ids of entries in clusters whose span contains another cluster's span.
+
+    Nested findings (A's ``[line, end_line]`` ⊇ B's — different titles, so
+    different dedupe groups) make every rule line in B's span also fall in
+    A's span: no ``path:line`` can target B alone (issue #945). The
+    containing finding matches rules only at its own reported line, so the
+    inner finding stays reachable across its whole span. Equal spans mark
+    BOTH findings (each reports its own line; a rule at one finding's
+    reported line no longer swallows the other). Containment compares
+    DIFFERENT clusters only — a sticky's span covers its own paired thread
+    by design, and that pair is one finding reached through either member.
+    """
+    spans: list[tuple[int, int] | None] = []
+    for cluster in clusters:
+        lo: int | None = None
+        hi: int | None = None
+        for entry in cluster:
+            span = _line_interval(entry)
+            if span is None:
+                continue
+            lo = span[0] if lo is None else min(lo, span[0])
+            hi = span[1] if hi is None else max(hi, span[1])
+        spans.append((lo, hi) if lo is not None and hi is not None else None)
+    marked: set[int] = set()
+    for i, span_a in enumerate(spans):
+        if span_a is None:
+            continue
+        path_a = clusters[i][0].get("path")
+        for j, span_b in enumerate(spans):
+            if i == j or span_b is None:
+                continue
+            if clusters[j][0].get("path") != path_a:
+                continue  # containment is per file
+            if span_a[0] <= span_b[0] and span_a[1] >= span_b[1]:
+                marked.update(id(entry) for entry in clusters[i])
+                break
+    return marked
 
 
 def _sticky_status_error(entry: dict[str, Any], status: str, reply: str) -> str | None:
@@ -423,59 +498,76 @@ def apply_replies(
         for entry in data.get(source, []):
             groups.setdefault(_dedupe_key(source, entry), []).append(entry)
 
+    # Build every cluster up front: the nested-span pass needs all findings
+    # of a file ACROSS identity groups (different titles), not just one
+    # group (issue #945) — and stickies contested within their group are
+    # collected alongside.
+    all_clusters: list[list[dict[str, Any]]] = []
+    own_line_ids: set[int] = set()
+    for entries in groups.values():
+        own_line_ids |= _contested_sticky_ids(entries)
+        all_clusters.extend(_line_clusters(entries))
+    own_line_ids |= _contained_cluster_entry_ids(all_clusters)
+
     # Plan every update first; mutate only after all checks pass so a
     # validation failure leaves the JSON completely unchanged.
     plan: list[tuple[list[dict[str, Any]], str]] = []  # (entries, effective reply)
     errors: list[str] = []
     rule_cluster_count: dict[int, tuple[dict[str, Any], int]] = {}  # rule index -> (rule, matched clusters)
 
-    for entries in groups.values():
-        contested = _contested_sticky_ids(entries)
-        for cluster in _line_clusters(entries):
-            if rules is None:
-                applicable = [e for e in cluster if e.get("status", "pending") == "pending" and _is_addressable(e)]
-                if not applicable:
-                    continue
-                # The reply may live on a non-pending unposted sibling (a
-                # previous run saved it but failed to post): source it from
-                # every addressable member, not just the pending ones.
-                group_reply = next((str(e["reply"]) for e in cluster if _is_addressable(e) and e.get("reply")), "")
-                if not group_reply:
-                    continue
-                plan.append((applicable, group_reply))
-                continue
-
-            applicable = [e for e in cluster if _is_addressable(e)]
+    for cluster in all_clusters:
+        if rules is None:
+            applicable = [e for e in cluster if e.get("status", "pending") == "pending" and _is_addressable(e)]
             if not applicable:
                 continue
-            # Match against the cluster's members (the pair is one finding)
-            # even when some are already posted. A contested sticky matches
-            # only at its own reported line, so its wide span cannot swallow
-            # rules aimed at the other thread it overlaps — while a rule at
-            # the sticky's reported location still reaches it.
-            matched = [
-                (i, r)
-                for i, r in enumerate(rules)
-                if any(_rule_matches(r, e, own_line_only=id(e) in contested) for e in cluster)
-            ]
-            if not matched:
+            # The reply may live on a non-pending unposted sibling (a
+            # previous run saved it but failed to post): source it from
+            # every addressable member, not just the pending ones.
+            group_reply = next((str(e["reply"]) for e in cluster if _is_addressable(e) and e.get("reply")), "")
+            if not group_reply:
                 continue
-            # Most specific rule wins; wildcard is the fallback
-            specific = [(i, r) for i, r in matched if r["path"] is not None]
-            rule_idx, rule = (specific or matched)[-1]
-            if rule["path"] is not None:
-                count = rule_cluster_count.get(rule_idx, (rule, 0))[1]
-                rule_cluster_count[rule_idx] = (rule, count + 1)
-            plan.append((applicable, rule["reply"]))
+            plan.append((applicable, group_reply))
+            continue
+
+        applicable = [e for e in cluster if _is_addressable(e)]
+        if not applicable:
+            continue
+        # Match against the cluster's members (the pair is one finding)
+        # even when some are already posted. A contested sticky or a
+        # span-containing finding matches only at its own reported line, so
+        # its wide span cannot swallow rules aimed at the other findings it
+        # overlaps — while a rule at its reported location still reaches it.
+        matched = [
+            (i, r)
+            for i, r in enumerate(rules)
+            if any(_rule_matches(r, e, own_line_only=id(e) in own_line_ids) for e in cluster)
+        ]
+        if not matched:
+            continue
+        # Most specific rule wins (exact line > per-file wildcard > global
+        # wildcard); among equals, the last matching rule in file order wins.
+
+        def _rank(r: dict[str, Any]) -> int:
+            if r["path"] is None:
+                return 0
+            return 2 if r.get("line") is not None else 1
+
+        rule_idx, rule = max(matched, key=lambda m: (_rank(m[1]), m[0]))
+        if rule.get("line") is not None:
+            count = rule_cluster_count.get(rule_idx, (rule, 0))[1]
+            rule_cluster_count[rule_idx] = (rule, count + 1)
+        plan.append((applicable, rule["reply"]))
 
     for rule, count in rule_cluster_count.values():
         if count > 1:
             log.debug("ambiguous rule %s:%s matches %d findings", rule["path"], rule["line"], count)
             errors.append(
-                f"{rule['path']}:{rule['line']}: rule matches {count} distinct findings at this location — "
-                "it must target exactly one. If they need the same reply, use the wildcard rule (*) "
-                "or a mapping line whose path:line is unique to one finding; there is no "
-                "body-discriminator syntax yet"
+                f"{rule['path']}:{rule['line']}: rule matches {count} distinct findings — their "
+                "[line, end_line] spans overlap at this line (a rule matches a finding's full span). "
+                "Target exactly one with a discriminator: '<path>:<line>~<title-fragment>|<reply>'; "
+                "give every matched finding the same reply with '<path>:*|<reply>' (this file) or "
+                "'*|<reply>' (everything); or narrow the span by editing line/end_line in the "
+                "reviews JSON (matching only — posting is unaffected)"
             )
     for applicable, reply in plan:
         for entry in applicable:
