@@ -657,9 +657,14 @@ const PREFERENCE_PATTERNS: RegExp[] = [
 ];
 
 /** Sentence starts that mark a question, not a statement. */
-/** One-off permission grant phrasing — session instruction, not a durable preference. */
+/** One-off permission grant phrasing — session instruction, not a durable
+ *  preference. Negation-blind "you may" would reject prohibitions like
+ *  "You may not merge PRs without review" (live battery, #936), so a
+ *  grant followed by not/never/'t — or a withdrawal like "no longer" —
+ *  does not count (Qodo 77fc2333: "You can no longer force-push" is a
+ *  standing rule, not a grant). */
 const GRANT_PHRASE_RE: RegExp[] = [
-  /\byou (can|may)\b/i,
+  /\byou (?:can|may)\b(?!\s+(?:not(?!\s+only\b)|never|no\s+longer)\b)(?!['’]t\b)/i,
   /\bgo ahead\b/i,
   /\bfeel free\b/i,
   /\bjust this once\b/i,
@@ -671,7 +676,15 @@ const GRANT_PHRASE_RE: RegExp[] = [
 
 /** Detect one-off grant phrasing (shared by extractor and memory_add guardrail). */
 export function isGrantText(text: string): boolean {
-  return GRANT_PHRASE_RE.some((re) => re.test(text));
+  // Classification is logged (Qodo 64954ee5): the negation-aware grant
+  // patterns decide whether a permission-looking sentence is a durable
+  // rule or a one-off grant, and silent decisions left runtime
+  // diagnostics blind when the classification changed behavior.
+  const matched = GRANT_PHRASE_RE.find((re) => re.test(text));
+  if (matched) {
+    memLog.debug("memory-scoring: grant phrase detected", text.slice(0, 120), matched.source);
+  }
+  return matched !== undefined;
 }
 
 /**

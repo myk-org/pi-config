@@ -18,6 +18,7 @@ import {
   escapeForDoubleQuote,
   escapeForSingleQuote,
   commandHasTrailerByName,
+  failedFileEditSkipMessage,
   fixUnexpandedCommitTrailer,
   resolveEffectiveCwd,
   checkPythonPipBlock,
@@ -93,6 +94,113 @@ describe("comment signature hook model switches", () => {
     await hooks.get("tool_call")!(event, { cwd, model: undefined });
     assert.match(event.input.command, /\*Assisted-by: PI \(child-env-model\)\*/);
     assert.equal((event.input.command.match(/\*Assisted-by: PI \(/g) ?? []).length, 1);
+  });
+});
+
+// ── Subagent failed-edit error propagation (#940, Qodo e4dda69c) ──
+
+describe("subagent tool_result error propagation into file_modified matching", () => {
+  let cwd: string;
+  let hooks: Map<string, Function[]>;
+  let priorChild: string | undefined;
+
+  before(async () => {
+    cwd = mkdtempSync(join(tmpdir(), "pi-enforcement-subagent-"));
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    priorChild = process.env.PI_SUBAGENT_CHILD;
+    delete process.env.PI_SUBAGENT_CHILD;
+    const { addMemoryEntry } = await import("../../../extensions/orchestrator/memory-write.js");
+    await addMemoryEntry(cwd, {
+      text: "Markdown edits are tracked",
+      category: "lesson",
+      trigger: "file_modified *.md",
+      action: "warn",
+    });
+    // registerEnforcement registers SEVERAL tool_result hooks (memory
+    // enforcement, review state, tests state) — collect them all and run
+    // them in order; a name-keyed map would keep only the last one.
+    hooks = new Map();
+    registerEnforcement({
+      on: (name: string, handler: Function) => {
+        const arr = hooks.get(name) ?? [];
+        arr.push(handler);
+        hooks.set(name, arr);
+      },
+      registerTool: () => {},
+      registerCommand: () => {},
+    } as any);
+  });
+
+  after(() => {
+    if (priorChild === undefined) delete process.env.PI_SUBAGENT_CHILD; else process.env.PI_SUBAGENT_CHILD = priorChild;
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  const runToolResult = async (event: any) => {
+    const texts: string[] = [];
+    for (const handler of hooks.get("tool_result") ?? []) {
+      const result = await handler(event, { cwd });
+      for (const c of result?.content ?? []) texts.push(c?.text ?? "");
+    }
+    return texts.join("");
+  };
+
+  const subagentEvent = (isError: boolean) => ({
+    type: "tool_result",
+    toolName: "subagent",
+    content: [],
+    input: {},
+    details: {
+      results: [
+        {
+          messages: [
+            { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "edit", arguments: { path: "docs/foo.md" } }] },
+            { role: "toolResult", toolCallId: "call-1", isError },
+          ],
+        },
+      ],
+    },
+  });
+
+  it("a subagent's FAILED edit does not fire the file_modified warning", async () => {
+    const texts = await runToolResult(subagentEvent(true));
+    assert.doesNotMatch(texts, /ENFORCEMENT WARNING/i);
+  });
+
+  it("a subagent's successful edit still fires it", async () => {
+    const texts = await runToolResult(subagentEvent(false));
+    assert.match(texts, /ENFORCEMENT WARNING/i);
+  });
+
+  it("a subagent edit with NO result does not fire it (Qodo 2d02b5d5)", async () => {
+    const event = {
+      type: "tool_result",
+      toolName: "subagent",
+      content: [],
+      input: {},
+      details: {
+        results: [
+          {
+            messages: [
+              {
+                role: "assistant",
+                content: [{ type: "toolCall", id: "call-1", name: "edit", arguments: { path: "docs/foo.md" } }],
+              },
+              // No toolResult at all — the child exited before emitting it.
+            ],
+          },
+        ],
+      },
+    };
+    const texts = await runToolResult(event);
+    assert.doesNotMatch(texts, /ENFORCEMENT WARNING/i);
+  });
+
+  it("the failed-edit skip diagnostic names the tool and path (Qodo 3a4b6c2d)", () => {
+    const msg = failedFileEditSkipMessage("edit", "docs/foo.md");
+    assert.match(msg, /failed edit/);
+    assert.match(msg, /docs\/foo\.md/);
+    assert.match(msg, /skipping file_modified triggers, nothing was modified/);
   });
 });
 

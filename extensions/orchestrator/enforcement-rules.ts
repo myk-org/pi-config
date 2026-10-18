@@ -220,11 +220,17 @@ export function matchBashCommand(
 
 /**
  * Find all enforced entries whose triggers match a tool call.
+ *
+ * `isError` marks a FAILED tool call: `file_modified` triggers must not
+ * match then (nothing was modified — e.g. an edit whose oldText was not
+ * found), while `tool_name` and bash matching stay live (a failed bash
+ * command still executed; tool_name matches the invocation itself).
  */
 export function matchToolCall(
   entries: EnforcedEntry[],
   toolName: string,
   input: Record<string, any>,
+  isError = false,
 ): TriggerMatch[] {
   const matches: TriggerMatch[] = [];
   for (const rule of entries) {
@@ -244,8 +250,9 @@ export function matchToolCall(
       }
     }
 
-    // Check file_modified for write/edit tools
-    if ((toolName === "write" || toolName === "edit") && input?.path) {
+    // Check file_modified for write/edit tools — only when the call
+    // actually (modified) the file, not when it failed before writing.
+    if (!isError && (toolName === "write" || toolName === "edit") && input?.path) {
       const fileHit = matchFileTrigger(rule.trigger, input.path);
       if (fileHit) {
         matches.push({ rule, matched: fileHit });

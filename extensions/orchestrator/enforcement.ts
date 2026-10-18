@@ -61,6 +61,7 @@ import {
   isTestRunnerCommand,
   isBumpVersionBranch,
   getCachedBranch,
+  failedFileEditSkipMessage,
 } from "./enforcement-helpers.js";
 
 const log = createLogger("enforcement");
@@ -741,7 +742,13 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
 
 
-    let matches = matchToolCall(entries, toolName, input);
+    // Failed edit/write calls skip file_modified matching (#940) — log the
+    // decision so silent trigger skips are diagnosable (Qodo 2addbfc4).
+    const isToolCallError = (event as any).isError === true;
+    if (isToolCallError && (toolName === "edit" || toolName === "write") && input?.path) {
+      failedFileEditSkipMessage(toolName, input.path);
+    }
+    let matches = matchToolCall(entries, toolName, input, isToolCallError);
 
     // For subagent results, extract actual bash commands from the subagent's
     // tool call messages (structured data only — no prose text fallback).
@@ -756,6 +763,26 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       const bashCommands: string[] = [];
       for (const r of results) {
         const msgs = Array.isArray(r?.messages) ? r.messages : [];
+        // Error state per tool call (#940, Qodo 1f528064): a subagent's
+        // FAILED edit/write modified nothing, so its file_modified triggers
+        // must be skipped exactly like a failed top-level call. The result
+        // messages carry role "toolResult" entries with toolCallId/isError.
+        // A call with NO result at all (Qodo 2d02b5d5) — the child exited
+        // after emitting the call but before its result — has an UNKNOWN
+        // outcome, so it must not count as a successful modification
+        // either: file_modified warnings fire only for calls that
+        // explicitly succeeded.
+        const erroredCalls = new Set<string>();
+        const resolvedCalls = new Set<string>();
+        for (const msg of msgs) {
+          if (msg?.role !== "toolResult") continue;
+          if (typeof (msg as any).toolCallId === "string") {
+            resolvedCalls.add((msg as any).toolCallId);
+          }
+          if ((msg as any).isError === true && typeof (msg as any).toolCallId === "string") {
+            erroredCalls.add((msg as any).toolCallId);
+          }
+        }
         for (const msg of msgs) {
           if (msg?.role !== "assistant") continue;
           const parts = Array.isArray(msg?.content) ? msg.content : [];
@@ -764,15 +791,29 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             // Check both field naming conventions (name/arguments and toolName/args)
             const partToolName = part?.name || part?.toolName;
             const partToolArgs = part?.arguments || part?.args;
+            const partCallId = part?.id ?? part?.toolCallId;
+            const partIsError = partCallId !== undefined && erroredCalls.has(partCallId);
+            const partUnresolved = partCallId !== undefined && !resolvedCalls.has(partCallId);
             if (partToolName === "bash" && partToolArgs?.command) {
               bashCommands.push(partToolArgs.command);
             }
             // Also check non-bash tool calls against tool_name/file_modified triggers
             if (partToolName && partToolName !== "bash") {
+              // Failed child edit/write calls skip file_modified matching
+              // like top-level ones (#940) — leave the same diagnostic
+              // naming the tool and path (Qodo b00dc05f).
+              if (
+                partIsError &&
+                (partToolName === "edit" || partToolName === "write") &&
+                partToolArgs?.path
+              ) {
+                failedFileEditSkipMessage(partToolName, partToolArgs.path);
+              }
               const toolMatches = matchToolCall(
                 nonBlockEntries,
                 partToolName,
                 partToolArgs || {},
+                partIsError || partUnresolved,
               );
               for (const m of toolMatches) {
                 if (!seen.has(m.rule.hash)) {
