@@ -213,6 +213,7 @@ def insert_review(
     cursor = conn.cursor()
     if created_at is None:
         created_at = datetime.now(UTC).isoformat()
+    log.debug("insert_review: %s/%s#%s commit=%s created_at=%s", owner, repo, pr_number, commit_sha[:7], created_at)
 
     cursor.execute(
         "INSERT INTO reviews (owner, repo, pr_number, commit_sha, created_at) VALUES (?, ?, ?, ?, ?)",

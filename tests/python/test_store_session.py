@@ -97,26 +97,28 @@ def test_stores_findings_grouped_by_commit_sha(project_root: Path) -> None:
 
         comments = conn.execute(
             """
-            SELECT c.comment_id, c.author, c.body, c.title, c.status, c.priority,
-                   c.posted_at, c.type, c.path, c.line
+            SELECT c.comment_id, c.node_id, c.author, c.body, c.title, c.status, c.priority,
+                   c.posted_at, c.type, c.quality_label, c.path, c.line
             FROM comments c JOIN reviews r ON c.review_id = r.id
             ORDER BY c.id
             """
         ).fetchall()
         assert len(comments) == 3
         first = comments[0]
-        assert first[0] == "uuid-1", "comment_id is the finding id"
-        assert first[1] == "qodo"
-        assert first[2] == "Finding one\n\nDesc one", "body is title + description"
-        assert first[3] == "Finding one"
-        assert first[4] == "implemented", "status from attribution_status"
-        assert first[5] == "action_required", "priority from action_level"
-        assert first[6] == "2026-02-01T10:00:00+00:00"
-        assert first[7] == "session_finding"
-        assert first[8] is None and first[9] is None
+        assert first[0] == 4282020651, "comment_id is the GitHub comment id"
+        assert first[1] == "uuid-1", "node_id is the session finding UUID"
+        assert first[2] == "qodo"
+        assert first[3] == "Finding one\n\nDesc one", "body is title + description"
+        assert first[4] == "Finding one"
+        assert first[5] == "addressed", "implemented maps to the resolved vocabulary"
+        assert first[6] == "action_required", "priority from action_level"
+        assert first[7] == "2026-02-01T10:00:00+00:00"
+        assert first[8] == "session_finding"
+        assert first[9] == "Correctness", "quality_label from category"
+        assert first[10] is None and first[11] is None
         dismissed = comments[1]
-        assert dismissed[4] == "dismissed"
-        assert dismissed[5] == "informational"
+        assert dismissed[5] == "skipped", "dismissed maps to the resolved vocabulary"
+        assert dismissed[6] == "informational"
     finally:
         conn.close()
 
@@ -189,3 +191,67 @@ def test_missing_pr_url_field_exits_with_code_1(project_root: Path) -> None:
     with pytest.raises(SystemExit) as exc_info:
         store_session.run(str(json_path))
     assert exc_info.value.code == 1
+
+
+def test_session_findings_stored_alongside_ordinary_rows(project_root: Path) -> None:
+    """A review row from the ordinary store path must not hide session findings."""
+    db = _db_path(project_root)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db))
+    try:
+        from myk_pi_tools.reviews.store import create_tables
+
+        create_tables(conn)
+        conn.execute(
+            "INSERT INTO reviews (owner, repo, pr_number, commit_sha, created_at) VALUES (?, ?, ?, ?, ?)",
+            ("myk-org", "pi-config", 939, "sha-aaa", "2026-02-01T08:00:00+00:00"),
+        )
+        ordinary_review_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            """INSERT INTO comments
+               (review_id, source, comment_id, author, body, status, type)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (ordinary_review_id, "qodo", 111, "qodo", "ordinary comment", "pending", "issue_comment"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    findings = [_finding("uuid-1", "Finding one", "Desc one", "sha-aaa", "2026-02-01T10:00:00+00:00")]
+    json_path = _write_session(project_root, _session_json(findings))
+    store_session.run(str(json_path))
+
+    conn = sqlite3.connect(str(db))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0] == 2, "session row appended, not skipped"
+        rows = conn.execute("SELECT type, node_id FROM comments ORDER BY id").fetchall()
+        assert [r[0] for r in rows] == ["issue_comment", "session_finding"]
+        assert rows[1][1] == "uuid-1"
+    finally:
+        conn.close()
+
+
+def test_status_report_renders_session_findings(project_root: Path, tmp_path: Path) -> None:
+    """reviews status must render stored session findings into the HTML report."""
+    findings = [
+        _finding("uuid-1", "Rendered finding title", "Desc one", "sha-aaa", "2026-02-01T10:00:00+00:00"),
+    ]
+    json_path = _write_session(project_root, _session_json(findings))
+    store_session.run(str(json_path))
+
+    output_dir = tmp_path / "report"
+    output_dir.mkdir()
+    import myk_pi_tools.reviews.status as status_mod
+    from myk_pi_tools.reviews.status import run as status_run
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(status_mod, "get_project_root", lambda: project_root)
+    try:
+        status_run(pr_number=939, output_dir=str(output_dir))
+    finally:
+        monkeypatch.undo()
+
+    html_path = output_dir / "review-status-939.html"
+    assert html_path.exists(), "HTML report generated for a session-reviewed PR"
+    html = html_path.read_text(encoding="utf-8")
+    assert "Rendered finding title" in html, "session finding appears in the report"

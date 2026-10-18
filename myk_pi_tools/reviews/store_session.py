@@ -57,16 +57,35 @@ def _to_comment_row(finding: dict[str, Any]) -> dict[str, Any]:
     """Map a session finding onto the insert_comment row shape."""
     title = finding.get("title", "")
     description = finding.get("description", "")
+    # Status vocabulary of the status listing is addressed/skipped/pending
+    # (Qodo 21abfb4f) — raw attribution_status values would appear in the
+    # totals but never in the resolution counts.
+    attribution = finding.get("attribution_status")
+    status = {"implemented": "addressed", "dismissed": "skipped"}.get(
+        attribution if isinstance(attribution, str) else "", "pending"
+    )
+    # GitHub comment id when the finding has one (Qodo fb3f939c): the
+    # integer comments.comment_id column must carry the GitHub id the rest
+    # of the pipeline expects; the session UUID goes to node_id.
+    raw_comment_id = finding.get("comment_id")
+    if isinstance(raw_comment_id, int):
+        gh_comment_id: int | None = raw_comment_id
+    elif isinstance(raw_comment_id, str) and raw_comment_id.isdigit():
+        gh_comment_id = int(raw_comment_id)
+    else:
+        gh_comment_id = None
     return {
-        "comment_id": finding.get("id"),
+        "comment_id": gh_comment_id,
+        "node_id": finding.get("id"),
         "author": "qodo",
         "path": None,
         "line": None,
         "body": f"{title}\n\n{description}",
         "priority": finding.get("action_level"),
-        "status": finding.get("attribution_status"),
+        "status": status,
         "posted_at": finding.get("created_at"),
         "type": "session_finding",
+        "quality_label": finding.get("category"),
         "title": title,
     }
 
@@ -117,11 +136,20 @@ def store_session(json_path: Path) -> None:
         create_tables(conn)
         run_title_backfill_once(conn)
 
-        # Idempotency: skip commit groups already stored for this PR.
-        existing_shas = {
+        # Idempotency (Qodo 78903709): a review row for this PR+commit is
+        # NOT proof the session was stored — the ordinary store path can
+        # record GitHub comments for the same commit first. Skip a finding
+        # only when its own session UUID is already in the DB; skip the
+        # whole group only when every finding of the group is present.
+        existing_session_ids = {
             row[0]
             for row in conn.execute(
-                "SELECT commit_sha FROM reviews WHERE owner = ? AND repo = ? AND pr_number = ?",
+                """
+                SELECT c.node_id FROM comments c
+                JOIN reviews r ON c.review_id = r.id
+                WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ?
+                  AND c.type = 'session_finding' AND c.node_id IS NOT NULL
+                """,
                 (owner, repo, pr_number),
             )
         }
@@ -130,12 +158,13 @@ def store_session(json_path: Path) -> None:
         skipped_groups = 0
         # Deterministic order: earliest round first.
         for git_sha in sorted(groups, key=lambda sha: _earliest_created_at(groups[sha]) or ""):
-            if git_sha in existing_shas:
+            findings = groups[git_sha]
+            missing = [f for f in findings if f.get("id") not in existing_session_ids]
+            if not missing:
                 skipped_groups += 1
                 continue
-            findings = groups[git_sha]
-            review_id = insert_review(conn, owner, repo, pr_number, git_sha, created_at=_earliest_created_at(findings))
-            for finding in findings:
+            review_id = insert_review(conn, owner, repo, pr_number, git_sha, created_at=_earliest_created_at(missing))
+            for finding in missing:
                 insert_comment(conn, review_id, "qodo", _to_comment_row(finding))
                 stored_findings += 1
 
