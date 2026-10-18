@@ -748,7 +748,7 @@ describe("review-learning hook", () => {
       "src/api.py: Same redaction gap on the list endpoint",
     ]);
   });
-  it("one fire writes at most 5 lessons TOTAL across a multi-review PR — the remainder walks on later fires (Qodo 062e8e28)", async () => {
+  it("one fire drains a multi-review PR in budgeted bursts — auto-continuation completes the walk (Qodo 062e8e28, eceb273e)", async () => {
     const cwd = makeCwd();
     const dataDir = path.join(cwd, ".pi", "data");
     fs.mkdirSync(dataDir, { recursive: true });
@@ -791,10 +791,16 @@ describe("review-learning hook", () => {
         isError: false,
       }, { cwd });
     fire();
-    assert.ok(await waitFor(() => lessonsIn(cwd).length >= 5), "first fire writes lessons");
-    assert.equal(lessonsIn(cwd).length, 5, "per-FIRE budget across all review rows, not per row");
+    // One trigger drains the PR: bursts are capped at 5 writes, and a burst
+    // with remaining lessons schedules its own continuation (Qodo eceb273e)
+    // — a session's FINAL store must not leave lessons unwritten.
+    assert.ok(await waitFor(() => lessonsIn(cwd).length >= 7, 6000), "auto-continuation drains all lessons");
+    assert.equal(lessonsIn(cwd).length, 7, "all lessons written, no duplicates");
+    const texts = lessonsIn(cwd).map((e) => e.text);
+    assert.equal(new Set(texts).size, texts.length, "no duplicate lesson lines");
+    // A re-fire is a stable no-op.
     fire();
-    assert.ok(await waitFor(() => lessonsIn(cwd).length >= 7), "second fire completes the walk");
+    await new Promise((resolve) => setTimeout(resolve, 300));
     assert.equal(lessonsIn(cwd).length, 7);
   });
   it("a fork-hosted session still distills — rows are queried under the pr_url repo when origin names a fork (Qodo befc495a)", async () => {

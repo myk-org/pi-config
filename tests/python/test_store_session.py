@@ -612,3 +612,67 @@ def test_refresh_loop_never_queries_inline_locations(project_root: Path, monkeyp
         assert status == ("addressed",)
     finally:
         conn.close()
+
+
+def test_repeated_finding_id_in_one_json_stores_once(project_root: Path) -> None:
+    """A session JSON repeating an id inserts the finding once (Qodo d285f08c)."""
+    duplicate = _finding("uuid-dup", "Duplicate id", "Desc", "sha-dup", "2026-02-01T10:00:00+00:00")
+    findings = [duplicate, dict(duplicate)]
+    json_path = _write_session(project_root, _session_json(findings))
+    store_session.run(str(json_path))
+
+    conn = sqlite3.connect(str(_db_path(project_root)))
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM comments WHERE node_id = 'uuid-dup'").fetchone()[0]
+        assert count == 1, "repeated id stored exactly once"
+    finally:
+        conn.close()
+
+
+def test_inline_lookups_finish_before_the_database_opens(project_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """gh api lookups run BEFORE the SQLite connection opens (Qodo c47d2f7c).
+
+    The write transaction must never hold the DB lock across network calls —
+    a concurrent reviews store/address could hit "database is locked".
+    """
+    import subprocess as sp
+
+    events: list[str] = []
+
+    def fake_run(*_args: object, **_kwargs: object) -> object:
+        events.append("gh")
+        import types
+
+        return types.SimpleNamespace(stdout='["src/x.py", 7]', returncode=0)
+
+    real_connect = sqlite3.connect
+
+    def tracked_connect(database: object, *args: object, **kwargs: object) -> object:
+        events.append("db")
+        import typing
+
+        return real_connect(
+            str(database),
+            *typing.cast("tuple[Any, ...]", args),
+            **typing.cast("dict[str, Any]", kwargs),
+        )
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr(store_session.sqlite3, "connect", tracked_connect)
+    base = _finding("uuid-lock-1", "Lock probe one", "Desc", "sha-lk", "2026-02-01T10:00:00+00:00")
+    second = _finding("uuid-lock-2", "Lock probe two", "Desc", "sha-lk", "2026-02-01T11:00:00+00:00")
+    # Real Qodo inline ids are strings (gh1:PRRT_...:<rest-id>) — the lookup
+    # only shells out for string ids.
+    base["inline_comment_id"] = "gh1:PRRT_kw:1111111"
+    second["inline_comment_id"] = "gh1:PRRT_kw:2222222"
+    findings = [base, second]
+    json_path = _write_session(project_root, _session_json(findings))
+    store_session.run(str(json_path))
+
+    assert events.count("gh") == 2, "one gh lookup per distinct inline comment"
+    # events: ["db" (lock-free read pass), "gh", "gh", "db" (write txn), ...]
+    assert events[0] == "db", "the read pass opens first (no write lock)"
+    write_db = events.index("db", 1)
+    assert all(i < write_db for i, e in enumerate(events) if e == "gh"), (
+        "every gh lookup precedes the write transaction's connection"
+    )

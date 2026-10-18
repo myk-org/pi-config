@@ -99,8 +99,11 @@ def query_comments(db_path: Path, pr_number: int) -> list[dict]:
             """,
             (pr_number,),
         )
-        return [dict(row) for row in cursor.fetchall()]
+        rows = [dict(row) for row in cursor.fetchall()]
+        logger.debug("query_comments pr=%d rows=%d", pr_number, len(rows))
+        return rows
     except sqlite3.Error as e:
+        logger.error("query_comments failed pr=%d: %s", pr_number, e)
         log(f"Database error: {e}")
         return []
     finally:

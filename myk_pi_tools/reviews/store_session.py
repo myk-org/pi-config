@@ -208,6 +208,7 @@ def store_session(json_path: Path) -> None:
     # Group findings by the commit they were raised on — one reviews row per
     # commit preserves the per-round structure of the session loop.
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    seen_ids: set[Any] = set()  # within-run dedupe (Qodo d285f08c)
     for finding in data.get("findings", []):
         git_sha = finding.get("git_sha")
         if not git_sha:
@@ -221,6 +222,13 @@ def store_session(json_path: Path) -> None:
         if not finding.get("id"):
             log.error(f"Skipping finding without id on commit {git_sha[:7]}: {finding.get('title', '<no title>')}")
             continue
+        # A JSON repeating an id would insert the finding twice (the DB-side
+        # idempotency set is computed once, before any insert) — the first
+        # occurrence wins, the repeat is dropped with an error record.
+        if finding.get("id") in seen_ids:
+            log.error(f"Skipping repeated finding id in session JSON: {finding.get('id')}")
+            continue
+        seen_ids.add(finding.get("id"))
         groups[git_sha].append(finding)
 
     if not groups:
@@ -231,6 +239,44 @@ def store_session(json_path: Path) -> None:
     log.info(f"Database: {db_path}")
 
     ensure_database_directory(db_path)
+
+    # Read pass WITHOUT the write lock (Qodo c47d2f7c + db081d9b): which
+    # session findings are already stored? Computed on a short-lived read
+    # connection so the gh api pre-warm below only touches findings that
+    # will actually be INSERTED — already-stored findings never re-query
+    # GitHub on re-import.
+    existing_session_ids: set[Any] = set()
+    try:
+        read_conn = sqlite3.connect(str(db_path))
+        try:
+            existing_session_ids = {
+                row[0]
+                for row in read_conn.execute(
+                    """
+                    SELECT c.node_id FROM comments c
+                    JOIN reviews r ON c.review_id = r.id
+                    WHERE r.owner = ? AND r.repo = ? AND r.pr_number = ?
+                      AND c.type = 'session_finding' AND c.node_id IS NOT NULL
+                    """,
+                    (owner, repo, pr_number),
+                )
+            }
+        finally:
+            read_conn.close()
+    except sqlite3.Error:
+        # Fresh database (no tables yet) — every finding is new.
+        log.debug("existing-session read pass skipped (fresh database)")
+
+    # Pre-warm the inline-location cache BEFORE the write transaction opens
+    # (Qodo c47d2f7c): the gh api lookups (30 s timeout each) must not run
+    # while the SQLite write lock is held — a concurrent reviews
+    # store/address could hit "database is locked" on a large first import.
+    # Only not-yet-stored findings are looked up; the in-transaction
+    # _to_comment_row calls then hit the cache.
+    for group_findings in groups.values():
+        for finding in group_findings:
+            if finding.get("id") not in existing_session_ids:
+                _inline_location(owner, repo, finding.get("inline_comment_id"))
 
     conn = sqlite3.connect(str(db_path))
     try:
@@ -243,7 +289,9 @@ def store_session(json_path: Path) -> None:
         # record GitHub comments for the same commit first. Skip a finding
         # only when its own session UUID is already in the DB; skip the
         # whole group only when every finding of the group is present.
-        existing_session_ids = {
+        # (Read on the write connection too — a concurrent import may have
+        # stored rows between the read pass and this transaction.)
+        existing_session_ids |= {
             row[0]
             for row in conn.execute(
                 """
