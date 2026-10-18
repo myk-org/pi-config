@@ -200,9 +200,14 @@ def reviews_store_session(json_path: str) -> None:
     """Store Qodo review-session findings to database.
 
     Converts a `qodo read pr-review-session findings --json` output file into
-    reviews DB rows (source=qodo, status from attribution_status), grouped by
-    the commit each finding was raised on. Idempotent — re-running skips
-    commits already stored. The JSON file is NOT deleted.
+    reviews DB rows (source=qodo, status from attribution_status, path/line
+    from the inline GitHub comment when one exists), grouped by the commit
+    each finding was raised on. Idempotent per finding UUID (node_id) —
+    re-running skips findings already stored and REFRESHES the
+    status/priority of stored ones whose attribution changed, so it is safe
+    to run after every completed loop round (post mark-implemented, on a
+    fresh fetch). Findings without an id are skipped (untrackable). The JSON
+    file is NOT deleted.
 
     Run this when a pr-review-session loop converges (clean round).
 

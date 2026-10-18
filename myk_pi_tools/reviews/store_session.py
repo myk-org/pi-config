@@ -1,9 +1,12 @@
 """Store Qodo pr-review-session findings to the reviews database.
 
-This module runs when a `qodo read pr-review-session findings --json` loop
-converges (clean round). It converts the session JSON into reviews DB rows:
-one `reviews` row per distinct commit the findings were raised on, and one
-`comments` row per finding (source=qodo, status from attribution_status).
+This module runs after EVERY completed round of a `qodo read
+pr-review-session findings --json` loop (not just convergence) — the loop
+prompt stores post-resolution on a fresh fetch. It converts the session
+JSON into reviews DB rows: one `reviews` row per distinct commit the
+findings were raised on, and one `comments` row per finding (source=qodo,
+status from attribution_status, path/line recovered from the inline GitHub
+comment when one exists).
 
 COUPLING (see AGENTS.md "Reviews DB ↔ review-learning"): the rows written
 here are the input of extensions/orchestrator/review-learning.ts — addressed
@@ -20,6 +23,7 @@ The database is stored at: <project-root>/.pi/data/reviews.db
 import json
 import re
 import sqlite3
+import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -59,7 +63,62 @@ def _earliest_created_at(findings: list[dict[str, Any]]) -> str | None:
     return min(timestamps) if timestamps else None
 
 
-def _to_comment_row(finding: dict[str, Any]) -> dict[str, Any]:
+def _inline_rest_id(inline_comment_id: Any) -> str | None:
+    """GitHub REST review-comment id from a Qodo inline_comment_id.
+
+    Qodo's `inline_comment_id` is `gh1:PRRT_...:<rest-id>` — the trailing
+    numeric segment is the REST pulls-comment id the public API accepts.
+    """
+    if not isinstance(inline_comment_id, str):
+        return None
+    rest_id = inline_comment_id.rsplit(":", 1)[-1]
+    return rest_id if rest_id.isdigit() else None
+
+
+_INLINE_LOCATION_CACHE: dict[str, tuple[str | None, int | None]] = {}
+
+
+def _inline_location(owner: str, repo: str, inline_comment_id: Any) -> tuple[str | None, int | None]:
+    """(path, line) of a finding's inline GitHub comment, via gh.
+
+    Session findings carry no file location, but review-learning's
+    write-time injection filters on `comments.path IS NOT NULL` — without
+    the lookup, no session-stored finding ever resurfaces at write time
+    (Qodo aab6f6a7). Cached per REST id; fail-soft (path stays None when gh
+    is unavailable or the comment is gone).
+    """
+    rest_id = _inline_rest_id(inline_comment_id)
+    if rest_id is None:
+        return (None, None)
+    if rest_id in _INLINE_LOCATION_CACHE:
+        return _INLINE_LOCATION_CACHE[rest_id]
+    path: str | None = None
+    line: int | None = None
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{owner}/{repo}/pulls/comments/{rest_id}",
+                "--jq",
+                "[.path, (.line // .original_line)]",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        parsed = json.loads(result.stdout)
+        if isinstance(parsed, list) and len(parsed) >= 2:
+            path = parsed[0] if isinstance(parsed[0], str) else None
+            line = parsed[1] if isinstance(parsed[1], int) else None
+    except (subprocess.SubprocessError, json.JSONDecodeError) as e:
+        log.debug(f"Inline location lookup failed for comment {rest_id}: {e}")
+    _INLINE_LOCATION_CACHE[rest_id] = (path, line)
+    return (path, line)
+
+
+def _to_comment_row(finding: dict[str, Any], owner: str, repo: str) -> dict[str, Any]:
     """Map a session finding onto the insert_comment row shape."""
     title = finding.get("title", "")
     description = finding.get("description", "")
@@ -92,12 +151,17 @@ def _to_comment_row(finding: dict[str, Any]) -> dict[str, Any]:
         gh_comment_id = int(raw_comment_id)
     else:
         gh_comment_id = None
+    # File location from the inline GitHub comment (Qodo aab6f6a7): session
+    # JSON findings carry no path, but the inline comment does — populated
+    # rows keep write-time review-learning injection and path-keyed
+    # recurrence working. Fail-soft: unresolvable comments store path=None.
+    path, line = _inline_location(owner, repo, finding.get("inline_comment_id"))
     return {
         "comment_id": gh_comment_id,
         "node_id": finding.get("id"),
         "author": "qodo",
-        "path": None,
-        "line": None,
+        "path": path,
+        "line": line,
         "body": f"{title}\n\n{description}",
         "priority": priority,
         "status": status,
@@ -193,13 +257,14 @@ def store_session(json_path: Path) -> None:
             for finding in findings:
                 if finding in missing:
                     continue
-                row = _to_comment_row(finding)
+                row = _to_comment_row(finding, owner, repo)
                 updated = conn.execute(
                     """
                     UPDATE comments SET status = ?, priority = ?
-                    WHERE node_id = ? AND type = 'session_finding' AND status != ?
+                    WHERE node_id = ? AND type = 'session_finding'
+                      AND (status != ? OR priority != ?)
                     """,
-                    (row["status"], row["priority"], finding.get("id"), row["status"]),
+                    (row["status"], row["priority"], finding.get("id"), row["status"], row["priority"]),
                 )
                 if updated.rowcount > 0:
                     refreshed_findings += 1
@@ -227,7 +292,7 @@ def store_session(json_path: Path) -> None:
                     conn, owner, repo, pr_number, git_sha, created_at=_earliest_created_at(missing)
                 )
             for finding in missing:
-                insert_comment(conn, review_id, "qodo", _to_comment_row(finding))
+                insert_comment(conn, review_id, "qodo", _to_comment_row(finding, owner, repo))
                 stored_findings += 1
 
         conn.commit()

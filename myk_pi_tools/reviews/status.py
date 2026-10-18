@@ -87,7 +87,7 @@ def query_comments(db_path: Path, pr_number: int) -> list[dict]:
             """
             SELECT c.source, c.path, c.line, c.body, c.status, c.reply,
                    c.priority, c.skip_reason, c.type, c.quality_label,
-                   r.commit_sha, r.created_at
+                   c.node_id, r.commit_sha, r.created_at
             FROM comments c
             JOIN reviews r ON c.review_id = r.id
             WHERE r.pr_number = ?
@@ -148,6 +148,9 @@ def deduplicate_comments(comments: list[dict]) -> list[dict]:
 
     Line numbers are excluded from the key because they shift between commits.
     Summary is normalized: stripped, lowercased, whitespace collapsed, first 40 chars.
+    Session findings (pathless) key on their node_id instead — two distinct
+    findings can share a title, and a pathless+same-title key would make the
+    later row replace the earlier one in the report (Qodo 06f18ba6).
     """
     seen: dict[str, dict] = {}
     for c in comments:
@@ -159,7 +162,10 @@ def deduplicate_comments(comments: list[dict]) -> list[dict]:
         )
         # Collapse whitespace and take first 40 chars for stable matching
         normalized = re.sub(r"\s+", " ", raw).strip()[:80]
-        key = f"{c['source']}:{c.get('path', '')}:{normalized}"
+        # Pathless rows (session findings) discriminate on node_id — same
+        # title, different finding.
+        path_key = c.get("path") or c.get("node_id") or ""
+        key = f"{c['source']}:{path_key}:{normalized}"
         seen[key] = c  # Last one wins (latest cycle)
     return list(seen.values())
 

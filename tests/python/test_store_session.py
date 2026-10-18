@@ -398,3 +398,81 @@ def test_insert_review_logs_at_debug_level(project_root: Path, caplog: pytest.Lo
         assert any("insert_review" in record.message for record in caplog.records)
     finally:
         conn.close()
+
+
+def test_refresh_updates_priority_when_status_unchanged(project_root: Path) -> None:
+    """A later poll that changes only action_level refreshes priority (Qodo 42c7b5c1).
+
+    The refresh guard is (status != ? OR priority != ?) — a status-only guard
+    left action_level-only changes stale in the DB.
+    """
+    first = _session_json([
+        _finding(
+            "uuid-prio",
+            "Priority drift",
+            "Desc",
+            "sha-prio",
+            "2026-02-01T10:00:00+00:00",
+            action_level="informational",
+            attribution_status="pending",
+        )
+    ])
+    json_path = _write_session(project_root, first)
+    store_session.run(str(json_path))
+
+    conn = sqlite3.connect(str(_db_path(project_root)))
+    try:
+        row = conn.execute("SELECT status, priority FROM comments WHERE node_id = 'uuid-prio'").fetchone()
+        assert row == ("pending", "LOW")
+    finally:
+        conn.close()
+
+    # Same status, escalated action_level — priority must follow.
+    second = _session_json([
+        _finding(
+            "uuid-prio",
+            "Priority drift",
+            "Desc",
+            "sha-prio",
+            "2026-02-01T10:00:00+00:00",
+            action_level="action_required",
+            attribution_status="pending",
+        )
+    ])
+    json_path = _write_session(project_root, second)
+    store_session.run(str(json_path))
+
+    conn = sqlite3.connect(str(_db_path(project_root)))
+    try:
+        rows = conn.execute("SELECT status, priority FROM comments WHERE node_id = 'uuid-prio'").fetchall()
+        assert rows == [("pending", "HIGH")], "priority refreshed even when status is unchanged"
+    finally:
+        conn.close()
+
+
+def test_stores_path_and_line_from_inline_comment(project_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Path/line are recovered from the inline GitHub comment (Qodo aab6f6a7).
+
+    Session findings carry no file location; the inline comment does. Without
+    the lookup every session row stores path=None and never resurfaces in
+    write-time review-learning injection (which filters on path IS NOT NULL).
+    """
+    monkeypatch.setattr(store_session, "_inline_location", lambda _owner, _repo, _iid: ("src/api.py", 42))
+    findings = [
+        _finding("uuid-inline", "Inline finding", "Desc", "sha-inl", "2026-02-01T10:00:00+00:00"),
+    ]
+    json_path = _write_session(project_root, _session_json(findings))
+    store_session.run(str(json_path))
+
+    conn = sqlite3.connect(str(_db_path(project_root)))
+    try:
+        row = conn.execute("SELECT path, line FROM comments WHERE node_id = 'uuid-inline'").fetchone()
+        assert row == ("src/api.py", 42), "inline comment location stored on the row"
+    finally:
+        conn.close()
+
+
+def test_inline_location_skips_non_string_ids() -> None:
+    """A non-string inline_comment_id (old JSON shapes) never shells out."""
+    assert store_session._inline_location("myk-org", "pi-config", 4282020651) == (None, None)
+    assert store_session._inline_location("myk-org", "pi-config", None) == (None, None)
