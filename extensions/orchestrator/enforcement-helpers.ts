@@ -1013,7 +1013,11 @@ const READ_ONLY_WRAPPER_PREFIX_RE =
   // `env -u grep rm -rf x` pass `grep` off as the command. env's value-taking
   // options are -u/-C/-S/-P (and long forms); -i is boolean. nice's only
   // value option is -n/--adjustment.
-  /^\s*(?:\S+=\S*\s+|rtk(?:\s+-\S+)*\s+|(?:command|builtin|exec)\s+|env(?:\s+(?:-(?:u|C|S|P)(?:\s+\S+)?|-i|--ignore-environment|--unset(?:\s+\S+)?|--split-string[= ]\S*|--chdir[= ]\S*|\S+=\S*))*\s+|timeout\s+(?:-\S+\s+)*\S+\s+|nice(?:\s+(?:-n\s+\S+|--adjustment[= ]\S*))*\s+|nohup\s+)+/;
+  // `-S`/`--split-string` is deliberately NOT consumable (PR #948 R3): its
+  // "value" is a split command line (`env -S find ls -delete` runs find), so
+  // an env -S statement never gets a read-only pass — it falls through to
+  // the DANGEROUS pattern check instead.
+  /^\s*(?:\S+=\S*\s+|rtk(?:\s+-\S+)*\s+|(?:command|builtin|exec)\s+|env(?:\s+(?:-(?:u|C|P)(?:\s+\S+)?|-i|--ignore-environment|--unset(?:\s+\S+)?|--chdir[= ]\S*|\S+=\S*))*\s+|timeout\s+(?:-\S+\s+)*\S+\s+|nice(?:\s+(?:-n\s+\S+|--adjustment[= ]\S*))*\s+|nohup\s+)+/;
 
 /**
  * Split a command into individual statements for the dangerous-command
@@ -1026,9 +1030,16 @@ const READ_ONLY_WRAPPER_PREFIX_RE =
  * positives (extra prompts), which is acceptable for security.
  */
 export function splitBashStatements(command: string): string[] {
+  // Split on statement separators AND pipes. Single `&` (background operator)
+  // is a separator too (Qodo PR #948), EXCEPT inside a descriptor-duplication
+  // redirect (`2>&1`, `>&2` — PR #948 R3): splitting those at `&` shatters the
+  // redirect and hides a piped shell behind harmless fragments. `&&` and `||`
+  // are matched before `&`/`|` by alternation order.
+  // NOTE: Pipe split does not respect shell quoting — biases toward false
+  // positives (extra prompts), which is acceptable for security.
   const normalized = stripHeredocBodies(command).replace(/\\\r?\n/g, " ");
   return normalized
-    .split(/\n|;|&&|&|\|\||\|/)
+    .split(/\n|;|&&|(?<!>)&|\|\||\|/)
     .map((s: string) => s.trim())
     .filter(Boolean);
 }

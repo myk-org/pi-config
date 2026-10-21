@@ -2788,3 +2788,45 @@ describe("leading redirections before a piped shell (PR #948 R2)", () => {
     assert.ok(!shellPattern("grep -i dash"));
   });
 });
+
+// ── PR #948 R3: env -S split strings and descriptor-duplication redirects ──
+
+describe("env -S split strings are never read-only (PR #948 R3)", () => {
+  it("env -S find ls -delete is not read-only", () => {
+    assert.ok(!isReadOnlyStatement("env -S find ls -delete"));
+  });
+
+  it("the env -S deletion still matches the DANGEROUS find -delete pattern", () => {
+    assert.ok(DANGEROUS.some((p) => p.test("env -S find ls -delete")));
+  });
+
+  it("env --split-string with a payload is not read-only either", () => {
+    assert.ok(!isReadOnlyStatement('env --split-string "rm -rf ~/work"'));
+  });
+
+  it("env -u grep rm stays not read-only (regression)", () => {
+    assert.ok(!isReadOnlyStatement("env -u grep rm -rf ~/work"));
+  });
+});
+
+describe("descriptor-duplication redirects survive the split (PR #948 R3)", () => {
+  it("does not split 2>&1 sh at the redirect's &", () => {
+    const stmts = splitBashStatements("cat script | 2>&1 sh");
+    assert.deepStrictEqual(stmts, ["cat script", "2>&1 sh"]);
+  });
+
+  it("a piped shell behind 2>&1 is flagged through the enforcement path", () => {
+    const stmts = splitBashStatements("cat script | 2>&1 sh");
+    assert.ok(stmts.some((s) => DANGEROUS.some((p) => p.test(s))));
+  });
+
+  it("keeps >&2 attached to its statement", () => {
+    const stmts = splitBashStatements("grep foo file >&2");
+    assert.deepStrictEqual(stmts, ["grep foo file >&2"]);
+  });
+
+  it("still splits a background & (regression)", () => {
+    const stmts = splitBashStatements('command echo ok & rm -rf "$HOME/project"');
+    assert.deepStrictEqual(stmts, ["command echo ok", 'rm -rf "$HOME/project"']);
+  });
+});
