@@ -2,12 +2,13 @@
  * Tests for enforcement dangerous-command helpers.
  * Run with: npx tsx --test tests/node/orchestrator/enforcement.test.ts
  */
-import { describe, it, before, after, afterEach } from "node:test";
+import { describe, it, before, after, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
+import { createHash } from "node:crypto";
 import { DANGEROUS } from "../../../extensions/orchestrator/git-helpers.js";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import {
@@ -2838,6 +2839,7 @@ describe("descriptor-duplication redirects survive the split (PR #948 R3)", () =
 
 describe("dangerous command allowlist (issue #949)", () => {
   const mkCwd = (): string => mkdtempSync(join(tmpdir(), "rl-allow-"));
+  const BARE_SHELL_RE = DANGEROUS[DANGEROUS.length - 1] as RegExp;
 
   it("round-trips an approval for the exact command text", () => {
     const cwd = mkCwd();
@@ -2885,5 +2887,155 @@ describe("dangerous command allowlist (issue #949)", () => {
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify({ entries: [{ nohash: true }, null, 42] }), "utf-8");
     assert.ok(!findDangerousAllowlistEntry(cwd, "sudo zsh"));
+  });
+
+  // Qodo PR #950 R1 finding 4: a hash-only entry must not authorize, and a
+  // missing preview must not throw when the allowlisted branch runs.
+  it("entries missing pattern/preview/approved_at never authorize a command", () => {
+    const cwd = mkCwd();
+    const file = join(cwd, ".pi", "data", "dangerous-allowlist.json");
+    mkdirSync(path.dirname(file), { recursive: true });
+    const hash = createHash("sha256").update("sudo zsh").digest("hex");
+    const partial = [
+      { hash }, // hash only
+      { hash, pattern: "/sudo/" }, // no preview/approved_at
+      { hash, pattern: "/sudo/", preview: "sudo zsh" }, // no approved_at
+      { hash, pattern: "/sudo/", preview: 42, approved_at: "2026-01-01T00:00:00Z" }, // non-string preview
+      { hash: "not-hex", pattern: "/sudo/", preview: "x", approved_at: "2026-01-01T00:00:00Z" }, // bad hash format
+    ];
+    for (const entries of partial) {
+      writeFileSync(file, JSON.stringify({ entries: [entries] }), "utf-8");
+      assert.ok(!findDangerousAllowlistEntry(cwd, "sudo zsh"), JSON.stringify(entries));
+    }
+  });
+
+  // Qodo PR #950 R1 finding 7: concurrent approvals must both survive, and
+  // the atomic replace must leave no temp files behind.
+  it("concurrent approvals both survive, no temp files left", async () => {
+    const cwd = mkCwd();
+    await Promise.all([
+      Promise.resolve().then(() => addDangerousAllowlistEntry(cwd, "sudo zsh", "/sudo/")),
+      Promise.resolve().then(() => addDangerousAllowlistEntry(cwd, "sudo bash", "/sudo/")),
+    ]);
+    assert.ok(findDangerousAllowlistEntry(cwd, "sudo zsh"), "first approval survived");
+    assert.ok(findDangerousAllowlistEntry(cwd, "sudo bash"), "second approval survived");
+    const dir = join(cwd, ".pi", "data");
+    const names = readdirSync(dir).filter((n) => n !== "dangerous-allowlist.json");
+    assert.deepEqual(names, [], "no lock or temp artifacts remain");
+  });
+
+  // Qodo PR #950 R1 finding 6 regression: an inert search term inside single
+  // quotes within a double-quoted command substitution must not trip DANGEROUS.
+  it("quoted search inside a command substitution does not look dangerous", () => {
+    assert.ok(isReadOnlyStatement(`echo "Result: $(grep -c 'sudo' file)"`));
+  });
+
+  // Qodo PR #950 R1 finding 3 regressions: shells behind option-value-carrying
+  // timeout and control keywords left at a split-statement head.
+  it("timeout -s KILL 5 sh still prompts (option value before duration)", () => {
+    assert.ok(!isReadOnlyStatement("timeout -s KILL 5 sh"));
+    assert.ok(BARE_SHELL_RE.test("timeout -s KILL 5 sh"));
+  });
+
+  it("shells behind then/do/else still prompt", () => {
+    assert.ok(BARE_SHELL_RE.test("then sh"));
+    assert.ok(BARE_SHELL_RE.test("do zsh"));
+    assert.ok(BARE_SHELL_RE.test("else ksh"));
+  });
+});
+
+// Qodo PR #950 R1 finding 9: exercise the gate itself (checkDangerousCommands
+// through the tool_call hook) — lookup, prompt options, interactive approval
+// choice, headless bypass/block, and the self-approval write blocks.
+describe("dangerous command allowlist — gate level (issue #949 / PR #950)", () => {
+  let hooks: Map<string, Function>;
+  let cwd: string;
+  let promptCalls: { msg: string; opts: string[] }[];
+  let choice: string | undefined;
+
+  const mkCtx = (hasUI: boolean) => ({
+    cwd,
+    model: { id: "test-model", provider: "openai" },
+    hasUI,
+    ui: {
+      select: async (msg: string, opts: string[]) => {
+        promptCalls.push({ msg, opts });
+        return choice;
+      },
+    },
+  });
+
+  const runBash = async (command: string, hasUI = true) =>
+    hooks.get("tool_call")!({ type: "tool_call", toolName: "bash", input: { command } }, mkCtx(hasUI));
+
+  before(() => {
+    hooks = new Map();
+    registerEnforcement({
+      on: (name: string, handler: Function) => hooks.set(name, handler),
+      registerTool: () => {},
+      registerCommand: () => {},
+    } as any);
+  });
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), "rl-gate-"));
+    promptCalls = [];
+    choice = undefined;
+  });
+
+  it("an allowlisted command runs with NO prompt", async () => {
+    addDangerousAllowlistEntry(cwd, "sudo zsh", "/sudo/");
+    const res = await runBash("sudo zsh");
+    assert.equal(res?.block, undefined);
+    assert.equal(promptCalls.length, 0, "allowlisted hit must not prompt");
+  });
+
+  it("a mutated command re-prompts and 'No' blocks", async () => {
+    addDangerousAllowlistEntry(cwd, "sudo zsh", "/sudo/");
+    choice = "No";
+    const res = await runBash("sudo zsh ");
+    assert.equal(res?.block, true);
+    assert.equal(promptCalls.length, 1, "mutation must re-prompt");
+  });
+
+  it("the prompt offers Yes / always-allow / No", async () => {
+    choice = "No";
+    await runBash("sudo ksh");
+    assert.deepEqual(promptCalls[0].opts, ["Yes", "Yes — always allow this exact command", "No"]);
+  });
+
+  it("'always allow' writes the entry and silences future headless runs", async () => {
+    choice = "Yes — always allow this exact command";
+    const res = await runBash("sudo bash");
+    assert.equal(res?.block, undefined, "approved command runs");
+    assert.ok(findDangerousAllowlistEntry(cwd, "sudo bash"), "entry persisted");
+    // Headless run of the now-approved command passes without a UI
+    const res2 = await runBash("sudo bash", false);
+    assert.equal(res2?.block, undefined);
+  });
+
+  it("headless + not allowlisted still hard-blocks", async () => {
+    const res = await runBash("sudo dash", false);
+    assert.equal(res?.block, true);
+    assert.match(res?.reason ?? "", /no UI/i);
+  });
+
+  // Qodo PR #950 R1 finding 1: the agent must not be able to approve its own
+  // commands by writing the allowlist file directly.
+  it("bash touching dangerous-allowlist.json is blocked", async () => {
+    const res = await runBash("echo '{}' > .pi/data/dangerous-allowlist.json");
+    assert.equal(res?.block, true);
+    assert.match(res?.reason ?? "", /dangerous-allowlist/);
+  });
+
+  it("write/edit tool calls targeting the allowlist file are blocked", async () => {
+    for (const toolName of ["write", "edit"]) {
+      const res = await hooks.get("tool_call")!(
+        { type: "tool_call", toolName, input: { path: ".pi/data/dangerous-allowlist.json", content: "{}" } },
+        mkCtx(true),
+      );
+      assert.equal(res?.block, true, toolName);
+      assert.match(res?.reason ?? "", /dangerous-allowlist/);
+    }
   });
 });

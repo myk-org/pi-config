@@ -54,6 +54,8 @@ import {
   realGitSub,
   resolveEffectiveCwd,
   addDangerousAllowlistEntry,
+  dangerousAllowlistPath,
+  dangerousCommandHash,
   findDangerousAllowlistEntry,
   splitBashStatements,
   stripHeredocBodies,
@@ -411,9 +413,12 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
         .find(Boolean) ?? "unknown";
     const allowEntry = findDangerousAllowlistEntry(cwd, command);
     if (allowEntry) {
+      // No command text in logs (Qodo PR #950): an approved command may
+      // contain inline credentials — global log files must not copy it out
+      // of the project. The hash prefix + pattern identify the entry.
       log.warn("dangerous_command_allowlisted", {
         pattern: allowEntry.pattern,
-        preview: allowEntry.preview.slice(0, 120),
+        hashPrefix: allowEntry.hash.slice(0, 12),
         approvedAt: allowEntry.approved_at,
       });
       return undefined;
@@ -431,7 +436,10 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     );
     if (ok === "Yes — always allow this exact command") {
       addDangerousAllowlistEntry(cwd, command, matchedPattern);
-      log.info("dangerous_command_allowlist_entry_added", { pattern: matchedPattern, preview: command.slice(0, 120) });
+      log.info("dangerous_command_allowlist_entry_added", {
+        pattern: matchedPattern,
+        hashPrefix: dangerousCommandHash(command).slice(0, 12),
+      });
       return undefined;
     }
     if (ok !== "Yes") return { block: true, reason: "Blocked by user. Do NOT retry with an equivalent command (e.g., find -delete, perl, python os.remove). Stop and report this block to the user." };
@@ -497,6 +505,23 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       }
     }
 
+    // Block direct manipulation of the dangerous-command allowlist (issue
+    // #949 / Qodo PR #950): approvals are recorded ONLY through the
+    // interactive dangerous-command prompt. Without this, an agent could
+    // write a self-computed hash for a dangerous command and then run it
+    // unprompted — including in headless sessions. Applies to every agent,
+    // subagents included.
+    if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
+      const filePath: string | undefined = (event as any).input?.path;
+      if (filePath && resolve(ctx.cwd, filePath) === dangerousAllowlistPath(ctx.cwd)) {
+        return {
+          block: true,
+          reason:
+            "\u26d4 Direct modification of dangerous-allowlist.json blocked. Approvals are recorded only through the interactive dangerous-command prompt — never by editing the file.",
+        };
+      }
+    }
+
     if (!isToolCallEventType("bash", event)) return undefined;
     const command = event.input.command;
     const cmdLower = command.trim().toLowerCase();
@@ -508,6 +533,17 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       return {
         block: true,
         reason: "\u26d4 Bash command targeting pi-config-review-state blocked. The review state is managed exclusively by the enforcement system.",
+      };
+    }
+
+    // Block bash writes/reads-by-path targeting the dangerous-command
+    // allowlist (issue #949 / Qodo PR #950) — same rationale as the
+    // edit/write block above: the file is prompt-managed only.
+    if (cmdLower.includes("dangerous-allowlist")) {
+      return {
+        block: true,
+        reason:
+          "\u26d4 Bash command targeting dangerous-allowlist.json blocked. Approvals are recorded only through the interactive dangerous-command prompt.",
       };
     }
 

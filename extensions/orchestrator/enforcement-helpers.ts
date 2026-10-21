@@ -5,7 +5,7 @@
 
 import { createLogger } from "../shared/logger.js";
 import { createHash } from "node:crypto";
-import { realpathSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { realpathSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmdirSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
 import { getProjectDataDir } from "./utils.js";
@@ -971,7 +971,7 @@ export function extractSubshells(stmt: string): string[] {
         j++;
       }
       if (depth === 0) {
-        results.push(withoutSingleQuoted.slice(start, j - 1));
+        results.push(stripSingleQuotedRegions(withoutSingleQuoted.slice(start, j - 1)));
       }
       i = j;
       continue;
@@ -988,7 +988,7 @@ export function extractSubshells(stmt: string): string[] {
         j++;
       }
       if (j < withoutSingleQuoted.length) {
-        results.push(withoutSingleQuoted.slice(i + 1, j));
+        results.push(stripSingleQuotedRegions(withoutSingleQuoted.slice(i + 1, j)));
         i = j + 1;
         continue;
       }
@@ -1064,42 +1064,91 @@ export interface DangerousAllowlistEntry {
   approved_at: string;
 }
 
-function dangerousAllowlistPath(cwd: string): string {
+/** Resolved path of the project's dangerous-command allowlist. */
+export function dangerousAllowlistPath(cwd: string): string {
   return join(getProjectDataDir(cwd), "dangerous-allowlist.json");
+}
+
+/** Qodo PR #950: an entry is valid only with ALL fields well-formed — a
+ * hash-only entry must never authorize a command, and a missing preview
+ * must never throw during logging. Invalid entries are discarded. */
+function isValidAllowlistEntry(e: any): e is DangerousAllowlistEntry {
+  return (
+    !!e &&
+    typeof e.hash === "string" &&
+    /^[0-9a-f]{64}$/.test(e.hash) &&
+    typeof e.pattern === "string" &&
+    e.pattern.length > 0 &&
+    typeof e.preview === "string" &&
+    typeof e.approved_at === "string" &&
+    e.approved_at.length > 0
+  );
 }
 
 function loadDangerousAllowlist(cwd: string): DangerousAllowlistEntry[] {
   try {
     const raw = JSON.parse(readFileSync(dangerousAllowlistPath(cwd), "utf-8"));
-    return Array.isArray(raw?.entries) && raw.entries.every((e: any) => e && typeof e.hash === "string")
-      ? raw.entries
-      : [];
+    return Array.isArray(raw?.entries) ? raw.entries.filter(isValidAllowlistEntry) : [];
   } catch {
     return []; // absent or corrupt — treat as empty, never block on it
   }
 }
 
+/** SHA-256 of the full command text — the allowlist key. */
+export function dangerousCommandHash(command: string): string {
+  return createHash("sha256").update(command).digest("hex");
+}
+
 /** True (with the entry) when the FULL command text was previously approved. */
 export function findDangerousAllowlistEntry(cwd: string, command: string): DangerousAllowlistEntry | null {
-  const hash = createHash("sha256").update(command).digest("hex");
+  const hash = dangerousCommandHash(command);
   return loadDangerousAllowlist(cwd).find((e) => e.hash === hash) ?? null;
 }
 
-/** Record an approval for the exact command text. Fail-soft. */
+/** Record an approval for the exact command text. Fail-soft.
+ *
+ * Concurrency (Qodo PR #950): a mkdir-based lock serializes writers, the
+ * entry list is re-read under the lock (last-writer-wins would drop a
+ * concurrent approval), and the file is replaced atomically (temp +
+ * rename) so a reader never sees a partial write. */
 export function addDangerousAllowlistEntry(cwd: string, command: string, pattern: string): void {
+  const file = dangerousAllowlistPath(cwd);
+  const lockDir = `${file}.lock`;
+  let locked = false;
   try {
-    const file = dangerousAllowlistPath(cwd);
+    for (let attempt = 0; attempt < 10 && !locked; attempt++) {
+      try {
+        mkdirSync(lockDir);
+        locked = true;
+      } catch {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); // 50ms backoff
+      }
+    }
     const entries = loadDangerousAllowlist(cwd);
-    entries.push({
-      hash: createHash("sha256").update(command).digest("hex"),
-      pattern,
-      preview: command.slice(0, 200),
-      approved_at: new Date().toISOString(),
-    });
+    const hash = dangerousCommandHash(command);
+    if (!entries.some((e) => e.hash === hash)) {
+      entries.push({ hash, pattern, preview: command.slice(0, 200), approved_at: new Date().toISOString() });
+    }
     mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, `${JSON.stringify({ entries }, null, 2)}\n`);
+    const tmp = `${file}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify({ entries }, null, 2)}\n`);
+    renameSync(tmp, file);
   } catch (error: any) {
-    log.debug("dangerous_allowlist_write_failed", { reason: String(error?.message ?? error).slice(0, 200) });
+    // Hash prefix + path identify the affected approval without copying
+    // command text into global logs (Qodo PR #950).
+    enfLog.warn("dangerous_allowlist_write_failed", {
+      reason: String(error?.message ?? error).slice(0, 200),
+      hashPrefix: dangerousCommandHash(command).slice(0, 12),
+      file,
+    });
+  } finally {
+    if (locked) {
+      try {
+        rmdirSync(lockDir);
+      } catch {
+        // stale lock — the next writer's retry loop handles it
+      }
+    }
   }
 }
 
