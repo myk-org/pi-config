@@ -2953,6 +2953,29 @@ describe("dangerous command allowlist (issue #949)", () => {
     assert.ok(isReadOnlyStatement(`echo "Result: $(grep -c 'sudo' file)"`));
   });
 
+  // Qodo PR #950 R2 finding 1: backslash-escaped apostrophes must not open a
+  // single-quoted region during the nested strip of extracted contents —
+  // the live deletion stays visible.
+  it("escaped apostrophes cannot hide a nested deletion", () => {
+    const nested = String.raw`echo "$(echo \' $(rm -rf /) \')"`;
+    assert.ok(!isReadOnlyStatement(nested), "deletion must stay visible");
+    const subs = extractSubshells(nested);
+    assert.ok(subs.some((s) => /rm\s+-rf/.test(s)), `extracted: ${JSON.stringify(subs)}`);
+    // Unquoted \' is a literal apostrophe outside double quotes too
+    assert.ok(!isReadOnlyStatement(String.raw`echo it\'s fine $(rm -rf /)`));
+  });
+
+  // Qodo PR #950 R2 finding 3: a corrupt settings file must not be clobbered
+  // by the next approval write — earlier entries stay on disk for repair.
+  it("'always allow' never overwrites a corrupt settings file", () => {
+    const cwd = mkCwd();
+    const file = getSettingsPath(cwd);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "not json {");
+    addDangerousAllowlistEntry(cwd, "sudo zsh");
+    assert.equal(readFileSync(file, "utf-8"), "not json {", "corrupt file preserved");
+  });
+
   // Qodo PR #950 R1 finding 3 regressions: shells behind option-value-carrying
   // timeout and control keywords left at a split-statement head.
   it("timeout -s KILL 5 sh still prompts (option value before duration)", () => {

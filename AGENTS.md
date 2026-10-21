@@ -353,6 +353,11 @@ agents/`httpd.py` from the npm unpack.
 - 🚫 Never: `git add .`, `--no-verify`, commit to main/protected branches, hand-edit the
   generated `docs/*.html`, add `pi install git:github.com/myk-org/pi-config`
   (or git+https install of `myk-pi-tools` from this repo) for users
+- 🚫 Never: edit the settings files (`.pi/pi-config-settings.json(c)`,
+  `~/.pi/...`) via agent tools — they carry the `dangerous_command_allowlist`;
+  approvals flow only through the interactive dangerous-command prompt, and
+  settings changes go through `/pi-config-settings` or the user's own editor
+  (code-enforced: write/edit and write-shaped bash targeting them are blocked)
 
 ## Documentation
 

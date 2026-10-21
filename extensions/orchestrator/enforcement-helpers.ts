@@ -924,6 +924,15 @@ function stripSingleQuotedRegions(stmt: string): string {
       i++;
       continue;
     }
+    if (ch === "\\" && i + 1 < stmt.length) {
+      // Unquoted \x is a literal pair (bash escapes) — a backslash must never
+      // turn the NEXT character into a quote delimiter. Without this, a
+      // nested strip of `echo \' $(rm -rf /) \'` would treat \' as opening a
+      // single-quoted region and hide the live deletion (Qodo PR #950 R2).
+      out += stmt.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
     if (ch === "'") {
       inSingle = true;
       singleOpenIndex = i;
@@ -1127,7 +1136,17 @@ export function addDangerousAllowlistEntry(cwd: string, command: string): void {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); // 50ms backoff
       }
     }
-    const data = readSettingsFile(file) ?? {};
+    const data = readSettingsFile(file);
+    if (data === null) {
+      // Corrupt/unparseable settings file — NEVER overwrite it with just the
+      // new entry: earlier approvals and every other setting would be lost
+      // (Qodo PR #950 R2). Bail fail-soft and let the user repair the file.
+      enfLog.warn("dangerous_allowlist_settings_unreadable", {
+        file,
+        hashPrefix: dangerousCommandHash(command).slice(0, 12),
+      });
+      return;
+    }
     const list = Array.isArray(data.dangerous_command_allowlist)
       ? data.dangerous_command_allowlist.filter((e: unknown): e is string => typeof e === "string" && e.length > 0)
       : [];
