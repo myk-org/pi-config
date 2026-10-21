@@ -132,20 +132,7 @@ Or set `enforcement_allowed_commands` in `pi-config-settings.json`. Once the set
 The dangerous-command gate (background shells, `sudo`, recursive `rm`, …) asks
 for confirmation every time it sees a matching command. For commands you run
 over and over — a debug skill that starts `nohup bash -c … | nc 127.0.0.1 4444`,
-for example — the prompt gains a third option:
-
-```text
-⚠️ Dangerous command: …
-
-  Allow?
-
-  → Yes
-    Yes — always allow this exact command
-    No
-```
-
-The prompt identifies the **dangerous statements** inside your command — each
-with the rule that matched it — and offers, per statement:
+for example — the prompt offers persistent approvals per statement:
 
 ```text
 ⚠️ Dangerous statements (of the full command):

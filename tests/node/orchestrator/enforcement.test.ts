@@ -3172,6 +3172,36 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     assert.equal(res2?.block, undefined);
   });
 
+  // Qodo PR #950 R7: an approval written to a TRACKED project file can never
+  // match (lookup rejects tracked files) — it must fall back to GLOBAL scope.
+  it("'always allow' in a repo with a TRACKED settings file stores globally, where lookup honors it", async () => {
+    const tdir = mkdtempSync(join(tmpdir(), "rl-tracked-approve-"));
+    execFileSync("git", ["init", "-q"], { cwd: tdir });
+    mkdirSync(join(tdir, ".pi"), { recursive: true });
+    writeFileSync(getSettingsPath(tdir), "{}");
+    execFileSync("git", ["add", "-f", getSettingsPath(tdir)], { cwd: tdir });
+    const savedGlobal: string | null = null;
+    const globalFile = join(tdir, "global-settings.json");
+    writeFileSync(globalFile, "{}");
+    setGlobalSettingsPath(globalFile);
+    try {
+      const result = addDangerousAllowlistEntry(tdir, "sudo reboot");
+      assert.ok(result.ok, "write succeeded");
+      assert.equal(result.scope, "global", "tracked project file forces global fallback");
+      const g = JSON.parse(readFileSync(globalFile, "utf-8"));
+      assert.deepEqual(g.dangerous_command_allowlist, ["sudo reboot"], "entry landed in global file");
+      const p = JSON.parse(readFileSync(getSettingsPath(tdir), "utf-8"));
+      assert.deepEqual(p.dangerous_command_allowlist, undefined, "project file untouched");
+      // And lookup honors it via the global file
+      const m = findDangerousAllowlistEntry(tdir, "sudo reboot");
+      assert.ok(m, "global fallback approval matches");
+      assert.equal(m!.source, "global");
+    } finally {
+      setGlobalSettingsPath(null);
+      rmSync(tdir, { recursive: true, force: true });
+    }
+  });
+
   // User request (PR #950): the allowlist matches the DANGEROUS STATEMENT,
   // not the whole chain — `bash .dev/deploy-all.sh` approved once covers any
   // chain containing exactly that statement.

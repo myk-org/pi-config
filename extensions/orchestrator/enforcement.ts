@@ -499,23 +499,58 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
         if (ok === "Always allow all of the above") {
           // Persist only the persistable statements — stdin-fed shells are
           // run-once by design and must never land in the settings file.
-          for (const stmt of persistable) addDangerousAllowlistEntry(cwd, stmt);
+          // Report the REAL outcome: a failed write is a one-time approval,
+          // not a stored one (Qodo PR #950 R7 — the audit trail must not
+          // claim a save that did not happen).
+          const results = persistable.map((stmt) => addDangerousAllowlistEntry(cwd, stmt));
+          const saved = results.filter((r) => r.ok);
+          const failed = results.length - saved.length;
+          const scopes = [...new Set(saved.map((r) => (r.ok ? r.scope : "")))];
           log.info("dangerous_command_allowlist_entry_added", {
-            count: persistable.length,
-            storedIn: "project settings (dangerous_command_allowlist)",
+            count: saved.length,
+            failed,
+            storedIn: scopes.length === 1 ? `${scopes[0]} settings (dangerous_command_allowlist)` : scopes.join("+"),
           });
+          if (failed > 0) {
+            await ctx.ui.notify(
+              `⚠️ ${failed} approval${failed > 1 ? "s" : ""} could not be saved (settings unreadable) — treated as run-once. Repair the settings file to persist approvals.`,
+              "warning",
+            );
+          } else if (saved.length > 0 && scopes.includes("global")) {
+            await ctx.ui.notify(
+              "ℹ️ Project settings file is git-tracked (untrusted for approvals) — approval stored in your GLOBAL settings instead.",
+              "info",
+            );
+          }
         }
         return undefined;
       }
       if (ok.startsWith("Always allow: ")) {
         const chosen = labeled.find(({ label }) => ok === `Always allow: ${label}`)?.stmt;
         if (chosen !== undefined) {
-          addDangerousAllowlistEntry(cwd, chosen);
-          log.info("dangerous_command_allowlist_entry_added", {
-            dangerousPattern: dangerousPatternLabel(DANGEROUS.find((p) => p.test(chosen)) ?? /./),
-            hashPrefix: dangerousCommandHash(chosen).slice(0, 12),
-            storedIn: "project settings (dangerous_command_allowlist)",
-          });
+          const result = addDangerousAllowlistEntry(cwd, chosen);
+          if (result.ok) {
+            log.info("dangerous_command_allowlist_entry_added", {
+              dangerousPattern: dangerousPatternLabel(DANGEROUS.find((p) => p.test(chosen)) ?? /./),
+              hashPrefix: dangerousCommandHash(chosen).slice(0, 12),
+              storedIn: `${result.scope} settings (dangerous_command_allowlist)`,
+            });
+            if (result.scope === "global") {
+              await ctx.ui.notify(
+                "ℹ️ Project settings file is git-tracked (untrusted for approvals) — approval stored in your GLOBAL settings instead.",
+                "info",
+              );
+            }
+          } else {
+            log.warn("dangerous_allowlist_entry_add_failed", {
+              reason: result.reason,
+              hashPrefix: dangerousCommandHash(chosen).slice(0, 12),
+            });
+            await ctx.ui.notify(
+              "⚠️ Approval could not be saved (settings unreadable) — treated as run-once. Repair the settings file to persist approvals.",
+              "warning",
+            );
+          }
           const still = remaining.filter((s) => s !== chosen);
           if (still.length === 0) return undefined;
           return decide(still);

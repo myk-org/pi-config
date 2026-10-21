@@ -1,9 +1,11 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import { StringListSubmenu } from "../../../extensions/orchestrator/settings-tui-submenus.js";
+import { SettingsList } from "@earendil-works/pi-tui";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { getSettingsListState } from "../../../extensions/orchestrator/settings-tui.js";
 import {
   detectSource,
   formatValue,
@@ -1010,6 +1012,31 @@ describe("isImageGenModelId / isImageCapablePickerItem", () => {
       }),
       false,
     );
+  });
+});
+
+// ── Tab-switch guard inputs (Qodo PR #950 R7) ──────────────────────
+
+describe("getSettingsListState (overlay Tab-guard inputs)", () => {
+  const ENTER = "\r";
+
+  it("reports hasActiveSubmenu=true while a submenu is open, false after it closes", () => {
+    // A string_list item whose submenu factory creates a real StringListSubmenu
+    const items: any[] = [
+      {
+        id: "dangerous_command_allowlist",
+        label: "dangerous_command_allowlist",
+        type: "string_list",
+        submenu: (_current: string, done: (val?: string) => void) =>
+          new StringListSubmenu("t", ["a"], {} as any, done),
+      },
+    ];
+    const list = new SettingsList(items as any, {} as any);
+    assert.equal(getSettingsListState(list).hasActiveSubmenu, false, "no submenu initially");
+    list.handleInput(ENTER); // open the item's submenu
+    assert.equal(getSettingsListState(list).hasActiveSubmenu, true, "submenu open — Tab/category switching must be suppressed");
+    list.handleInput("\x1b"); // Esc closes the submenu
+    assert.equal(getSettingsListState(list).hasActiveSubmenu, false, "submenu closed — switching is safe again");
   });
 });
 

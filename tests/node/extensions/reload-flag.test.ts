@@ -93,6 +93,27 @@ describe("reload-flag", () => {
     }
   });
 
+  test("mid-write race: an EMPTY flag does not dispatch — wait for the nonce (Qodo PR #950 R7)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      const ctx = makeCtx(cwd, reloads);
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      // Requester created the flag but has not written the nonce yet
+      writeFileSync(reloadFlagPath(cwd), "");
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.equal(reg.sent.length, 0, "no dispatch on an empty flag (no nonce to verify)");
+      // Nonce lands — the next tick dispatches
+      writeFileSync(reloadFlagPath(cwd), "nonce-race");
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.equal(reg.sent.length, 1, "dispatches once the nonce is readable");
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("the command handler parks the nonce, waits for idle, and reloads (command ctx has reload)", async () => {
     const cwd = makeCwd();
     try {

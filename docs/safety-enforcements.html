@@ -462,18 +462,7 @@ memory_add(
 <p>The dangerous-command gate (background shells, <code>sudo</code>, recursive <code>rm</code>, …) asks
 for confirmation every time it sees a matching command. For commands you run
 over and over — a debug skill that starts <code>nohup bash -c … | nc 127.0.0.1 4444</code>,
-for example — the prompt gains a third option:</p>
-<div class="highlight"><pre><span></span><code>⚠️ Dangerous command: …
-
-  Allow?
-
-  → Yes
-    Yes — always allow this exact command
-    No
-</code></pre></div>
-
-<p>The prompt identifies the <strong>dangerous statements</strong> inside your command — each
-with the rule that matched it — and offers, per statement:</p>
+for example — the prompt offers persistent approvals per statement:</p>
 <div class="highlight"><pre><span></span><code>⚠️ Dangerous statements (of the full command):
 
   sudo zsh

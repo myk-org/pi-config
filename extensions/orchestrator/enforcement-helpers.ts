@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { join } from "node:path";
 import { getProjectDataDir } from "./utils.js";
-import { getSettingsPath, loadGlobalSettings, loadProjectSettings } from "./project-settings.js";
+import { getGlobalSettingsPath, getSettingsPath, loadGlobalSettings, loadProjectSettings } from "./project-settings.js";
 import { readSettingsFile, writeSettingsFile } from "./settings-tui-helpers.js";
 import { DANGEROUS, executableText, getCurrentBranch, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
 
@@ -1211,20 +1211,44 @@ export function clearTrackedSettingsCache(): void {
   trackedSettingsWarned.clear();
 }
 const trackedSettingsWarned = new Set<string>();
-function projectSettingsUntracked(cwd: string): boolean {
+/** Current trust verdict for the project settings file (public for the
+ * approval writer: it must know WHERE a new entry can be stored — a
+ * tracked/untrusted project file would swallow approvals that lookup
+ * can never match, Qodo PR #950 R7). */
+export function projectSettingsTrust(cwd: string): ProjectSettingsTrust {
   const file = getSettingsPath(cwd);
   const cached = trackedSettingsCache.get(file);
   if (cached !== undefined) return cached;
-  const result = projectSettingsUntrackedUncached(cwd, file);
-  // Cache ONLY the untrusted (tracked) verdict — it can only become MORE
-  // true. A trusted (untracked) verdict is re-checked on every use so a
-  // later `git pull` / checkout that starts tracking the file is caught
-  // immediately instead of trusting a cloned repo's shipped settings for
-  // the life of the process (Qodo PR #950 R5).
-  if (!result) trackedSettingsCache.set(file, result);
-  return result;
+  const verdict = projectSettingsTrustUncached(cwd, file);
+  // Cache ONLY the confirmed-untrusted (tracked) verdict — it can only
+  // become MORE true. A trusted (untracked) verdict is re-checked on every
+  // use so a later `git pull` / checkout that starts tracking the file is
+  // caught immediately instead of trusting a cloned repo's shipped settings
+  // for the life of the process (Qodo PR #950 R5). An "unknown" verdict
+  // (git failed transiently) is never cached — the next check retries
+  // (Qodo PR #950 R7).
+  if (verdict === "tracked") trackedSettingsCache.set(file, verdict);
+  return verdict;
 }
-function projectSettingsUntrackedUncached(_cwd: string, file: string): boolean {
+function projectSettingsUntracked(cwd: string): boolean {
+  // Fail closed on "unknown": an unverifiable file is treated as untrusted
+  // for THIS check (global entries still work); the verdict is not cached,
+  // so the next check retries git.
+  return projectSettingsTrust(cwd) === "untracked";
+}
+/** Trust verdict for a project settings file:
+ * - "untracked" — CONFIRMED trustable (git exit 1, or no repo here): the
+ *   file is not tracked, so it cannot have shipped with a clone.
+ * - "tracked" — CONFIRMED untrusted (git listed it, or the path traverses
+ *   a symlink): a cloned repo may have shipped it.
+ * - "unknown" — git failed for an unrelated reason (missing binary,
+ *   timeout, dubious ownership, locked index, cwd gone). Treated as
+ *   untrusted for the CURRENT check but NEVER cached — the next check
+ *   retries (Qodo PR #950 R7: a transient failure must not freeze the
+ *   verdict for the life of the process). */
+type ProjectSettingsTrust = "untracked" | "tracked" | "unknown";
+
+function projectSettingsTrustUncached(cwd: string, file: string): ProjectSettingsTrust {
   // A settings path reached through a SYMLINK is not trustable (Qodo PR
   // #950 R6): a repo can track `.pi` as a symlink to its root and ship a
   // `*`-allowlist at the target — `git ls-files` misses the lexical path
@@ -1239,16 +1263,26 @@ function projectSettingsUntrackedUncached(_cwd: string, file: string): boolean {
         file,
         reason: "settings path traverses a symlink — not trusted for dangerous-command approvals",
       });
-      return false;
+      return "tracked"; // structural, not transient — cacheable untrusted
     }
   } catch {
-    // Absent file/dir — nothing to approve yet; the git check below decides.
+    // Absent file/dir — nothing shipped yet; the git check below decides.
+  }
+  // Run git from a directory that exists: `path.dirname(file)` may not
+  // exist yet on a first-ever approval (Qodo PR #950 R7 — running from a
+  // missing cwd threw ENOENT, which fail-closed AND cached, freezing the
+  // verdict even after the approval created the file).
+  let gitCwd = path.dirname(file);
+  try {
+    lstatSync(gitCwd);
+  } catch {
+    gitCwd = cwd;
   }
   try {
     const out = execFileSync(
       "git",
       ["ls-files", "--error-unmatch", file],
-      { cwd: path.dirname(file), encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "pipe"] },
+      { cwd: gitCwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "pipe"] },
     ).trim();
     if (out) {
       if (!trackedSettingsWarned.has(file)) {
@@ -1258,26 +1292,25 @@ function projectSettingsUntrackedUncached(_cwd: string, file: string): boolean {
           reason: "tracked settings files are not trusted for dangerous-command approvals",
         });
       }
-      return false;
+      return "tracked";
     }
-    return true;
+    return "untracked";
   } catch (e: unknown) {
     const err = e as { status?: number; stderr?: string };
     // Exit 1 = the file is genuinely not tracked — the normal, trustable case.
-    if (err.status === 1) return true;
+    if (err.status === 1) return "untracked";
     // Exit 128 + "not a git repository" = no repo here, so nothing could have
     // been cloned in — trustable. Other 128s (e.g. dubious-ownership refusal)
     // are NOT trustable: an attacker-owned checkout fails exactly like that.
-    if (err.status === 128 && /not a git repository/i.test(String(err.stderr ?? ""))) return true;
-    // git binary missing, timeout, dubious ownership, locked index... —
-    // FAIL CLOSED: treat the project file as tracked (untrusted) until the
-    // check can actually succeed (Qodo PR #950 R5). Global entries still work.
+    if (err.status === 128 && /not a git repository/i.test(String(err.stderr ?? ""))) return "untracked";
+    // git binary missing, timeout, dubious ownership, locked index, cwd
+    // gone — UNKNOWN: untrusted for this check, retried on the next one.
     enfLog.warn("dangerous_allowlist_git_check_failed", {
       file,
       status: err.status,
-      fallback: "untrusted",
+      fallback: "untrusted (not cached — next check retries)",
     });
-    return false;
+    return "unknown";
   }
 }
 
@@ -1297,12 +1330,32 @@ export function findDangerousAllowlistEntry(cwd: string, command: string): Dange
   return g ? { entry: g, source: "global" } : null;
 }
 
+/** Result of persisting a dangerous-command approval. `scope` is where the
+ * entry ACTUALLY landed — the caller logs/notifies it, and "global" means
+ * the project file was untrusted (tracked/symlinked/unverifiable) so the
+ * approval was stored in the user's global settings instead, where lookup
+ * will honor it (Qodo PR #950 R7). */
+export type DangerousAllowlistWriteResult =
+  | { ok: true; scope: "project" | "global"; file: string }
+  | { ok: false; reason: string; file: string };
+
 /** Append the exact command text (glob metachars escaped, so the entry stays
- * literal) to the PROJECT settings file. Fail-soft. A mkdir-based lock
- * serializes writers so concurrent approvals cannot drop each other
- * (read-merge-write race). */
-export function addDangerousAllowlistEntry(cwd: string, command: string): void {
-  const file = getSettingsPath(cwd);
+ * literal) to the settings file. Fail-soft (returns a result, never throws).
+ * A mkdir-based lock serializes writers so concurrent approvals cannot drop
+ * each other (read-merge-write race). When the PROJECT file is not trustable
+ * (git-tracked, symlinked, or unverifiable), the entry goes to the GLOBAL
+ * file — writing it to the project file would produce an approval that
+ * lookup can never match (Qodo PR #950 R7). */
+export function addDangerousAllowlistEntry(cwd: string, command: string): DangerousAllowlistWriteResult {
+  const trust = projectSettingsTrust(cwd);
+  const file = trust === "untracked" ? getSettingsPath(cwd) : getGlobalSettingsPath();
+  const scope = trust === "untracked" ? "project" : "global";
+  if (trust !== "untracked") {
+    enfLog.warn("dangerous_allowlist_project_untrusted_fallback", {
+      trust,
+      reason: "project settings file cannot be trusted for approvals — storing globally",
+    });
+  }
   const lockDir = `${file}.lock`;
   const entry = command.replace(/[\\*?]/g, (c) => `\\${c}`);
   let locked = false;
@@ -1326,7 +1379,7 @@ export function addDangerousAllowlistEntry(cwd: string, command: string): void {
         file,
         hashPrefix: dangerousCommandHash(command).slice(0, 12),
       });
-      return;
+      return { ok: false, reason: "corrupt", file };
     }
     const list = Array.isArray(data.dangerous_command_allowlist)
       ? data.dangerous_command_allowlist.filter((e: unknown): e is string => typeof e === "string" && e.length > 0)
@@ -1334,6 +1387,7 @@ export function addDangerousAllowlistEntry(cwd: string, command: string): void {
     if (!list.includes(entry)) list.push(entry);
     data.dangerous_command_allowlist = list;
     writeSettingsFile(file, data);
+    return { ok: true, scope, file };
   } catch (error: any) {
     // Hash prefix + path identify the affected approval without copying
     // command text into global logs (Qodo PR #950).
@@ -1342,6 +1396,7 @@ export function addDangerousAllowlistEntry(cwd: string, command: string): void {
       hashPrefix: dangerousCommandHash(command).slice(0, 12),
       file,
     });
+    return { ok: false, reason: "write_failed", file };
   } finally {
     if (locked) {
       try {

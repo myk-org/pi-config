@@ -150,9 +150,18 @@ export default function (pi: ExtensionAPI) {
     // A stranded handshake (pending exists but no new runtime published
     // done — e.g. a reload refused mid-turn in an older runtime) also
     // re-dispatches: the command is idempotent.
-    const hasFlag = existsSync(reloadFlagPath(liveCwd));
+    const flagPath = reloadFlagPath(liveCwd);
+    const hasFlag = existsSync(flagPath);
     const hasPending = existsSync(reloadPendingPath(liveCwd));
     if (!hasFlag && !hasPending) return;
+    // Mid-write race (Qodo PR #950 R7): the requester may not have written
+    // the nonce yet when the flag file first appears. Dispatching now would
+    // reload with NO nonce — the requester could never verify completion.
+    // Skip this tick WITHOUT latching; the next tick sees the finished write.
+    if (hasFlag && readNonce(flagPath) === null) {
+      log.debug("reload_flag_mid_write_race", { flag: flagPath });
+      return;
+    }
     triggered = true;
     stopWatcher();
     try {

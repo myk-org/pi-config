@@ -278,7 +278,6 @@ progress. It does not commit, push, create a PR, or post results.
   To confirm a reload landed: read `reload.done` and compare with the flag nonce.
   Fresh session starts clear stale flag/pending/done state (latest code is already loaded).
   Worktree sessions do NOT auto-reload (deploy writes the flag to the main checkout).
-  Fresh session starts clear stale flag/pending/done state (latest code is already loaded). Worktree sessions do NOT auto-reload (deploy writes the flag to the main checkout).
 - **MCP:** built into pi as `builtin:mcp` (#848). Servers in `mcp.json` —
   user `~/.pi/agent/mcp.json`, project `mcp.json` once trusted. Managed with
   `/mcp` and `pi mcp add|remove|list|login|logout`; no external binary, no

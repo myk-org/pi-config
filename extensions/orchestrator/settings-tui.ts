@@ -339,7 +339,10 @@ export function buildSettingItems(
 // ── Safe SettingsList state access ──────────────────────────────────
 // SettingsList fields are TypeScript-private (compile-time only) — accessible at runtime.
 
-function getSettingsListState(list: SettingsList): {
+// Exported for tests: the overlay's Tab/category-switch guard keys off
+// hasActiveSubmenu (Qodo PR #950 R7 — switching tabs while a StringListSubmenu
+// holds dirty edits would drop them).
+export function getSettingsListState(list: SettingsList): {
   hasActiveSearch: boolean;
   hasActiveSubmenu: boolean;
   selectedIndex: number;
@@ -509,8 +512,15 @@ class SettingsOverlay implements Component {
   }
 
   handleInput(data: string): void {
+    // While a submenu (e.g. StringListSubmenu) is open, its local edits exist
+    // ONLY in the submenu component — rebuilding the settings list would
+    // silently drop them (Qodo PR #950 R7). Tab / category arrows must not
+    // switch anything until the submenu closes (Esc submits or cancels).
+    const state = getSettingsListState(this.settingsList);
+    const submenuOpen = state.hasActiveSubmenu;
+
     // Tab to switch scope
-    if (matchesKey(data, Key.tab)) {
+    if (!submenuOpen && matchesKey(data, Key.tab)) {
       this.editScope = this.editScope === "project" ? "global" : "project";
       this.rebuild();
       this.tui.requestRender();
@@ -518,13 +528,13 @@ class SettingsOverlay implements Component {
     }
 
     // Left/Right to switch category tabs
-    if (matchesKey(data, Key.left)) {
+    if (!submenuOpen && matchesKey(data, Key.left)) {
       this.categoryIndex = (this.categoryIndex - 1 + CATEGORIES.length) % CATEGORIES.length;
       this.rebuild();
       this.tui.requestRender();
       return;
     }
-    if (matchesKey(data, Key.right)) {
+    if (!submenuOpen && matchesKey(data, Key.right)) {
       this.categoryIndex = (this.categoryIndex + 1) % CATEGORIES.length;
       this.rebuild();
       this.tui.requestRender();
@@ -533,7 +543,6 @@ class SettingsOverlay implements Component {
 
     // Delete key: remove setting from current scope (skip when search active or submenu open)
     if (matchesKey(data, Key.delete)) {
-      const state = getSettingsListState(this.settingsList);
       if (!state.hasActiveSubmenu && !state.hasActiveSearch) {
         const selectedItem = state.displayItems[state.selectedIndex];
         if (selectedItem) {
