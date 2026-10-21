@@ -275,6 +275,8 @@ export function parseSettingsFile(filePath: string): ProjectSettings {
         case "string_list":
           if (Array.isArray(val)) {
             const list = val.filter((e: unknown): e is string => typeof e === "string" && e.length > 0);
+            const rejected = val.length - list.length;
+            if (rejected > 0) console.debug(`[project-settings] ${filePath}: dropped ${rejected} invalid string_list entrie(s) for ${k}`);
             if (list.length > 0) (result as any)[k] = list;
           }
           break;

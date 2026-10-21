@@ -6,6 +6,7 @@
 import { createLogger } from "../shared/logger.js";
 import { createHash } from "node:crypto";
 import { realpathSync, mkdirSync, rmdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { join } from "node:path";
 import { getProjectDataDir } from "./utils.js";
@@ -1106,11 +1107,57 @@ export interface DangerousAllowlistMatch {
 
 /** Matched allowlist entry for the full command text, or null.
  * Project settings take precedence over global; no env layer (deliberate:
- * ambient env must not silently approve dangerous commands). */
+ * ambient env must not silently approve dangerous commands).
+ *
+ * Security (Qodo PR #950 R3): a project settings file that is TRACKED by git
+ * is not trusted for the allowlist — a cloned repo must not be able to ship
+ * `{"dangerous_command_allowlist": ["*"]}` and disable the gate for everyone
+ * who opens it. Only the user's own untracked project file (or the global
+ * file on their machine) can approve commands. */
+const trackedSettingsCache = new Map<string, boolean>();
+/** Test hook: clear the tracked-settings cache (git state changed under us). */
+export function clearTrackedSettingsCache(): void {
+  trackedSettingsCache.clear();
+  trackedSettingsWarned.clear();
+}
+const trackedSettingsWarned = new Set<string>();
+function projectSettingsUntracked(cwd: string): boolean {
+  const file = getSettingsPath(cwd);
+  const cached = trackedSettingsCache.get(file);
+  if (cached !== undefined) return cached;
+  const result = projectSettingsUntrackedUncached(cwd, file);
+  trackedSettingsCache.set(file, result);
+  return result;
+}
+function projectSettingsUntrackedUncached(_cwd: string, file: string): boolean {
+  try {
+    const out = execFileSync(
+      "git",
+      ["ls-files", "--error-unmatch", file],
+      { cwd: path.dirname(file), encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+    if (out) {
+      if (!trackedSettingsWarned.has(file)) {
+        trackedSettingsWarned.add(file);
+        enfLog.warn("dangerous_allowlist_project_file_tracked", {
+          file,
+          reason: "tracked settings files are not trusted for dangerous-command approvals",
+        });
+      }
+      return false;
+    }
+  } catch {
+    // not a repo, or untracked — trustable
+  }
+  return true;
+}
+
 export function findDangerousAllowlistEntry(cwd: string, command: string): DangerousAllowlistMatch | null {
-  const project = loadProjectSettings(cwd).dangerous_command_allowlist ?? [];
-  const p = project.find((e) => allowlistGlobToRegExp(e).test(command));
-  if (p) return { entry: p, source: "project" };
+  if (projectSettingsUntracked(cwd)) {
+    const project = loadProjectSettings(cwd).dangerous_command_allowlist ?? [];
+    const p = project.find((e) => allowlistGlobToRegExp(e).test(command));
+    if (p) return { entry: p, source: "project" };
+  }
   const global = loadGlobalSettings().dangerous_command_allowlist ?? [];
   const g = global.find((e) => allowlistGlobToRegExp(e).test(command));
   return g ? { entry: g, source: "global" } : null;

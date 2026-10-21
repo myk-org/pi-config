@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { DANGEROUS } from "../../../extensions/orchestrator/git-helpers.js";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
@@ -18,6 +19,7 @@ import {
   addDangerousAllowlistEntry,
   findDangerousAllowlistEntry,
   allowlistGlobToRegExp,
+  clearTrackedSettingsCache,
   isReadOnlyStatement,
   splitBashStatements,
   isRmInProjectTmp,
@@ -2988,6 +2990,25 @@ describe("dangerous command allowlist (issue #949)", () => {
     assert.ok(BARE_SHELL_RE.test("do zsh"));
     assert.ok(BARE_SHELL_RE.test("else ksh"));
   });
+
+  // Qodo PR #950 R3 finding 15: a cloned repo that SHIPS a settings file with
+  // a wildcard must not pre-approve commands — tracked project settings are
+  // not trusted for the allowlist.
+  it("a git-TRACKED project settings file is not trusted for the allowlist", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "rl-tracked-"));
+    execFileSync("git", ["init", "-q"], { cwd });
+    writeSettings(cwd, { dangerous_command_allowlist: ["*"] });
+    execFileSync("git", ["add", "-f", getSettingsPath(cwd)], { cwd });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"], { cwd });
+    const m = findDangerousAllowlistEntry(cwd, "sudo zsh");
+    assert.equal(m, null, "tracked settings file must not approve");
+    // The user's own untracked file still works: remove it from the index
+    execFileSync("git", ["rm", "-q", "--cached", getSettingsPath(cwd)], { cwd });
+    clearTrackedSettingsCache();
+    const m2 = findDangerousAllowlistEntry(cwd, "sudo zsh");
+    assert.ok(m2, "untracked settings file approves again");
+    assert.equal(m2!.source, "project");
+  });
 });
 
 // Qodo PR #950 R1 finding 9: exercise the gate itself (checkDangerousCommands
@@ -3086,13 +3107,43 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     const settingsFile = getSettingsPath(cwd);
     for (const cmd of [
       `echo '{}' > ${settingsFile}`,
-      `cp other.json ${settingsFile}`,
-      `python3 -c "open('${settingsFile}','w')"`,
+      `echo '{}' >> ${settingsFile}`,
+      `echo '{}' >| ${settingsFile}`,
+      `tee ${settingsFile} < other`,
+      `sponge ${settingsFile} < other`,
     ]) {
       const res = await runBash(cmd);
       assert.equal(res?.block, true, cmd);
       assert.match(res?.reason ?? "", /pi-config-settings/);
     }
+  });
+
+  it("mentioning the filename in an interpreter/heredoc does NOT block (deliberate, user decision)", async () => {
+    // Narrow guard: interpreter co-occurrence was rejected — it taxed
+    // legitimate development (editing source/docs that mention the file)
+    // while determined agents bypass text guards anyway.
+    for (const cmd of [
+      `python3 -c "open('${getSettingsPath(cwd)}','w')"`,
+      `cp other.json ${getSettingsPath(cwd)}`,
+    ]) {
+      const res = await runBash(cmd);
+      assert.notEqual(res?.block, true, cmd);
+    }
+  });
+
+  // Qodo PR #950 R3 finding 26: a symlinked directory alias of .pi must not
+  // slip past the write/edit guard.
+  it("a symlinked alias of the settings dir cannot bypass the write guard", async () => {
+    const settingsFile = getSettingsPath(cwd);
+    mkdirSync(dirname(settingsFile), { recursive: true });
+    writeFileSync(settingsFile, "{}"); // so realpath resolves
+    symlinkSync(dirname(settingsFile), join(cwd, "alias"));
+    const aliased = join(cwd, "alias", "pi-config-settings.json");
+    const res = await hooks.get("tool_call")!(
+      { type: "tool_call", toolName: "write", input: { path: aliased, content: "{}" } },
+      mkCtx(true),
+    );
+    assert.equal(res?.block, true, "symlinked alias must be blocked");
   });
 
   it("merely mentioning the settings file does not block (reads, commit text)", async () => {

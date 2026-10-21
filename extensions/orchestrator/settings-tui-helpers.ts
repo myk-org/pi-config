@@ -34,6 +34,19 @@ function logWarn(msg: string): void {
   } catch {}
 }
 
+const loggedDebug = new Set<string>();
+function logDebug(msg: string): void {
+  // Deduplicate per message — these sit on parse paths that run often
+  if (loggedDebug.has(msg)) return;
+  loggedDebug.add(msg);
+  try {
+    const logDir = joinPath(homedir(), ".pi", "logs");
+    if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true, mode: 0o700 });
+    const logPath = joinPath(logDir, "settings-tui.log");
+    appendFileSync(logPath, `${new Date().toISOString()} ${LOG_PREFIX} DEBUG ${msg}\n`);
+  } catch {}
+}
+
 // ── Category grouping ───────────────────────────────────────────────
 
 export interface CategoryDef {
@@ -162,8 +175,14 @@ export function parseRawValue(key: string, rawValue: string, def: SettingsKeyDef
       // StringListSubmenu commits JSON; accept a hand-typed single pattern too
       try {
         const parsed = JSON.parse(rawValue);
-        if (Array.isArray(parsed)) return parsed.filter((e): e is string => typeof e === "string" && e.length > 0);
-      } catch {}
+        if (Array.isArray(parsed)) {
+          const list = parsed.filter((e): e is string => typeof e === "string" && e.length > 0);
+          logDebug(`string_list parsed ${list.length} entrie(s) for ${key}`);
+          return list;
+        }
+      } catch {
+        logDebug(`string_list raw value for ${key} is not JSON — treating as a single pattern`);
+      }
       return rawValue.trim() !== "" ? [rawValue.trim()] : [];
     }
 

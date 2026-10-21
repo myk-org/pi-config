@@ -15,6 +15,9 @@ import {
 } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import type { SettingsKeyDef } from "./project-settings.js";
+import { createLogger } from "../shared/logger.js";
+
+const stringListLog = createLogger("settings_tui");
 
 // ── Input submenu component ─────────────────────────────────────────
 
@@ -655,6 +658,8 @@ export class AgentOverridesSubmenu implements Component {
  */
 export class StringListSubmenu implements Component {
   private entries: string[];
+  private dirty: boolean;
+  private key: string;
   private selectedIndex: number;
   private done: (value?: string) => void;
   private label: string;
@@ -663,9 +668,11 @@ export class StringListSubmenu implements Component {
   private editIndex: number; // -1 = adding a new entry
   private editInput: Input;
 
-  constructor(label: string, currentEntries: string[], theme: Theme, done: (value?: string) => void) {
+  constructor(label: string, currentEntries: string[], theme: Theme, done: (value?: string) => void, key = "unknown") {
     this.label = label;
+    this.key = key;
     this.entries = [...currentEntries];
+    this.dirty = false;
     this.selectedIndex = 0;
     this.done = done;
     this.theme = theme;
@@ -722,7 +729,14 @@ export class StringListSubmenu implements Component {
     }
 
     if (matchesKey(data, Key.escape)) {
-      this.done(JSON.stringify(this.entries));
+      // No edits → no write (Qodo PR #950 R3: Esc must not resubmit a stale
+      // or untouched list). Only a dirty editor commits.
+      if (this.dirty) {
+        stringListLog.debug("string_list_edited", this.key, this.entries.length);
+        this.done(JSON.stringify(this.entries));
+      } else {
+        this.done(undefined);
+      }
       return;
     }
     if (matchesKey(data, Key.up)) {
@@ -742,6 +756,7 @@ export class StringListSubmenu implements Component {
         if (trimmed !== "") {
           if (this.editIndex === -1) this.entries.push(trimmed);
           else this.entries[this.editIndex] = trimmed;
+          this.dirty = true;
         }
         this.mode = "list";
       };
@@ -750,6 +765,7 @@ export class StringListSubmenu implements Component {
     }
     if (data === "d" && this.selectedIndex < this.entries.length) {
       this.entries.splice(this.selectedIndex, 1);
+      this.dirty = true;
       if (this.selectedIndex >= this.rowCount) this.selectedIndex = Math.max(0, this.rowCount - 1);
     }
   }

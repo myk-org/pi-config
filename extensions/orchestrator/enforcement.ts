@@ -10,8 +10,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } from "./enforcement-rules.js";
-import { readFileSync, writeFileSync } from "node:fs";
-import path, { join, resolve, dirname } from "node:path";
+import { readFileSync, writeFileSync, realpathSync } from "node:fs";
+import path, { basename, join, resolve, dirname } from "node:path";
 import { supportsAsyncLlm } from "./async-capability.js";
 import { getGlobalSettingsPath, getSetting, getSettingsPath } from "./project-settings.js";
 import { SETTINGS_FILENAMES } from "./settings-source.js";
@@ -517,13 +517,37 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
       const filePath: string | undefined = (event as any).input?.path;
       if (filePath) {
+        // resolve() does not follow symlinks — a symlinked alias of .pi (or
+        // of the file itself) must not slip past the comparison (Qodo PR
+        // #950 R3). Compare BOTH the lexical resolve and the realpath (of the
+        // target and of each protected path, best-effort — the file may not
+        // exist yet).
+        const toReal = (p: string): string => {
+          try {
+            return realpathSync(p);
+          } catch {
+            // The file may not exist yet — resolve the nearest existing
+            // ancestor (a symlinked DIRECTORY alias still resolves) and
+            // rejoin the remainder.
+            const parent = dirname(p);
+            if (parent === p) return p;
+            try {
+              return join(realpathSync(parent), basename(p));
+            } catch {
+              return p;
+            }
+          }
+        };
         const resolved = resolve(ctx.cwd, filePath);
         // Both filename variants (.jsonc first, .json) in both scopes
         const settingsTargets = new Set<string>();
         for (const base of [dirname(getSettingsPath(ctx.cwd)), dirname(getGlobalSettingsPath())]) {
-          for (const name of SETTINGS_FILENAMES) settingsTargets.add(join(base, name));
+          for (const name of SETTINGS_FILENAMES) {
+            settingsTargets.add(join(base, name));
+            settingsTargets.add(toReal(join(base, name)));
+          }
         }
-        if (settingsTargets.has(resolved)) {
+        if (settingsTargets.has(resolved) || settingsTargets.has(toReal(resolved))) {
           return {
             block: true,
             reason:
@@ -549,14 +573,18 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
     // Block bash WRITES targeting the settings files (issue #949 / Qodo
     // PR #950) — same rationale as the edit/write block above: the
-    // dangerous-command allowlist lives there. Write-shaped, not
-    // mention-shaped: a redirect into the file, or a write verb /
-    // interpreter / shell co-occurring with the filename, blocks; a plain
-    // mention (commit-message text, cat/grep reads) passes.
+    // dangerous-command allowlist lives there. Deliberately NARROW (user
+    // decision, R3): only a redirect INTO the file (>, >>, >|) or tee/sponge
+    // taking the path as an argument blocks. Broad write-verb/interpreter
+    // co-occurrence was tried and rejected — it taxed legitimate work on
+    // this repo (heredocs editing source/docs that mention the filename)
+    // while a determined agent bypasses any text guard anyway (variables,
+    // concatenation). The tripwire catches the lazy one-liner; the tool
+    // guard and the tracked-file guard carry the real protection.
     if (
       cmdLower.includes("pi-config-settings") &&
-      (/>+\s*\S*pi-config-settings/i.test(command) ||
-        /(?:^|[\s;&|(])(?:tee|cp|mv|rm|sed|truncate|ln|install|dd|shred|unlink|chmod|chown|python3?|node|perl|ruby|bash|sh|zsh)\b/i.test(command))
+      (/>+\|?\s*\S*pi-config-settings/i.test(command) ||
+        /(?:^|[\s;&|(])(?:tee|sponge)\s+\S*pi-config-settings/i.test(command))
     ) {
       return {
         block: true,

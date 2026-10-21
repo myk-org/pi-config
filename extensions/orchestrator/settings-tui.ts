@@ -278,12 +278,20 @@ export function buildCategoryItems(
 
         case "string_list": {
           item.submenu = (_current: string, done: (val?: string) => void): Component => {
-            const currentList = Array.isArray(effectiveValue) ? (effectiveValue as string[]) : [];
+            // Read the SCOPE'S OWN list fresh at every open — never the merged
+            // effective value (a project override must not leak into the global
+            // editor) and never a stale closure captured before a save
+            // (Qodo PR #950 R3).
+            const scopeFile = getFilePathForScope(editScope, cwd);
+            const raw = readSettingsFile(scopeFile);
+            const scopeList = raw && Array.isArray(raw[key]) ? (raw[key] as string[]).filter((e): e is string => typeof e === "string") : [];
+            log.debug("settings_string_list_open", key, editScope, scopeList.length);
             return new StringListSubmenu(
               `${key} — patterns`,
-              currentList,
+              scopeList,
               theme,
               done,
+              key,
             );
           };
           break;

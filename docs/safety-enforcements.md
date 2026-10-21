@@ -168,12 +168,19 @@ or by editing the file directly:
 Entries are glob patterns matched against the **full command text**
 (anchored, case-sensitive):
 
-- `*` — any run of characters (spans newlines)
+- `*` — any run of characters (spans newlines — **and statement separators**)
 - `?` — exactly one character
 - `\` — escapes a literal `*`, `?`, or `\`
 
-So `nohup bash -c *nc 127.0.0.1 44??*` covers the whole family of that debug
-skill regardless of what surrounds the port number.
+For example, `nohup bash -c "exec tail -f * | exec nc 127.0.0.1 44??" &` covers
+the debug skill for any FIFO name and port digit pair.
+
+⚠️ **Scope wildcards tightly.** `*` matches everything between its anchors —
+including `;`, `&&`, and `|`. A pattern like `nohup bash -c *nc 127.0.0.1
+44??*` also approves `nohup bash -c true; rm -rf ~; echo nc 127.0.0.1 4444`,
+because everything between the prefix and the port is one `*`. Keep wildcards
+inside a quoted, fixed-shape region (`"… * …"`) and never bridge across a
+spot where another statement could be injected.
 
 Entries added via the prompt option are stored with metachars **escaped** — an
 approval covers exactly the text you approved, and any change (one character,
@@ -186,10 +193,17 @@ wildcard family is a deliberate human edit.
   `~/.pi/pi-config-settings.json` is consulted when the project has no
   matching entry. Entries never cross projects unless you put them in the
   global file yourself.
-- **Prompt-only writes.** Agents cannot add entries: edit/write tool calls
-  and write-shaped bash commands targeting the settings files are blocked —
-  the allowlist flows only through the interactive prompt (or your own
-  editor). A rogue agent can't self-approve `rm -rf`.
+- **Cloned repos cannot pre-approve.** A project settings file that is
+  *tracked by git* is not trusted for the allowlist — a repository shipping
+  `"*"` cannot disable your dangerous-command gate. Only your own untracked
+  project file (or the global file on your machine) approves commands.
+- **Prompt-only writes.** Agents cannot add entries through the normal
+  paths: edit/write tool calls targeting the settings files are blocked, as
+  are bash redirects into them (`>`, `>>`, `>|`, `tee`, `sponge`) — the
+  allowlist flows only through the interactive prompt (or your own editor).
+  A rogue agent can't self-approve `rm -rf` with the obvious one-liners;
+  note that no text-based guard can stop a *determined* same-user agent, so
+  the warn logging and tracked-file checks below are the audit trail.
 - **Works headless.** The check needs no UI, so a pre-approved command stops
   hard-blocking `-p`/RPC sessions; unapproved ones still block.
 - **Auditable.** Allowlisted hits log the matched pattern and an entry hash

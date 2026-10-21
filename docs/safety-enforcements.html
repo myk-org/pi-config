@@ -492,12 +492,18 @@ or by editing the file directly:</p>
 <p>Entries are glob patterns matched against the <strong>full command text</strong>
 (anchored, case-sensitive):</p>
 <ul>
-<li><code>*</code> — any run of characters (spans newlines)</li>
+<li><code>*</code> — any run of characters (spans newlines — <strong>and statement separators</strong>)</li>
 <li><code>?</code> — exactly one character</li>
 <li><code>\</code> — escapes a literal <code>*</code>, <code>?</code>, or <code>\</code></li>
 </ul>
-<p>So <code>nohup bash -c *nc 127.0.0.1 44??*</code> covers the whole family of that debug
-skill regardless of what surrounds the port number.</p>
+<p>For example, <code>nohup bash -c "exec tail -f * | exec nc 127.0.0.1 44??" &amp;</code> covers
+the debug skill for any FIFO name and port digit pair.</p>
+<p>⚠️ <strong>Scope wildcards tightly.</strong> <code>*</code> matches everything between its anchors —
+including <code>;</code>, <code>&amp;&amp;</code>, and <code>|</code>. A pattern like <code>nohup bash -c *nc 127.0.0.1
+44??*</code> also approves <code>nohup bash -c true; rm -rf ~; echo nc 127.0.0.1 4444</code>,
+because everything between the prefix and the port is one <code>*</code>. Keep wildcards
+inside a quoted, fixed-shape region (<code>"… * …"</code>) and never bridge across a
+spot where another statement could be injected.</p>
 <p>Entries added via the prompt option are stored with metachars <strong>escaped</strong> — an
 approval covers exactly the text you approved, and any change (one character,
 a different port, an extra statement) re-prompts. Widening an entry to a
@@ -511,10 +517,19 @@ wildcard family is a deliberate human edit.</p>
   global file yourself.</p>
 </li>
 <li>
-<p><strong>Prompt-only writes.</strong> Agents cannot add entries: edit/write tool calls
-  and write-shaped bash commands targeting the settings files are blocked —
-  the allowlist flows only through the interactive prompt (or your own
-  editor). A rogue agent can't self-approve <code>rm -rf</code>.</p>
+<p><strong>Cloned repos cannot pre-approve.</strong> A project settings file that is
+  <em>tracked by git</em> is not trusted for the allowlist — a repository shipping
+  <code>"*"</code> cannot disable your dangerous-command gate. Only your own untracked
+  project file (or the global file on your machine) approves commands.</p>
+</li>
+<li>
+<p><strong>Prompt-only writes.</strong> Agents cannot add entries through the normal
+  paths: edit/write tool calls targeting the settings files are blocked, as
+  are bash redirects into them (<code>&gt;</code>, <code>&gt;&gt;</code>, <code>&gt;|</code>, <code>tee</code>, <code>sponge</code>) — the
+  allowlist flows only through the interactive prompt (or your own editor).
+  A rogue agent can't self-approve <code>rm -rf</code> with the obvious one-liners;
+  note that no text-based guard can stop a <em>determined</em> same-user agent, so
+  the warn logging and tracked-file checks below are the audit trail.</p>
 </li>
 <li>
 <p><strong>Works headless.</strong> The check needs no UI, so a pre-approved command stops
