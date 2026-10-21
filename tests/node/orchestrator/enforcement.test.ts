@@ -4,14 +4,17 @@
  */
 import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { DANGEROUS } from "../../../extensions/orchestrator/git-helpers.js";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import {
   READ_ONLY_COMMANDS,
   extractSubshells,
+  addDangerousAllowlistEntry,
+  findDangerousAllowlistEntry,
   isReadOnlyStatement,
   splitBashStatements,
   isRmInProjectTmp,
@@ -2828,5 +2831,59 @@ describe("descriptor-duplication redirects survive the split (PR #948 R3)", () =
   it("still splits a background & (regression)", () => {
     const stmts = splitBashStatements('command echo ok & rm -rf "$HOME/project"');
     assert.deepStrictEqual(stmts, ["command echo ok", 'rm -rf "$HOME/project"']);
+  });
+});
+
+// ── issue #949: exact-command dangerous allowlist ──
+
+describe("dangerous command allowlist (issue #949)", () => {
+  const mkCwd = (): string => mkdtempSync(join(tmpdir(), "rl-allow-"));
+
+  it("round-trips an approval for the exact command text", () => {
+    const cwd = mkCwd();
+    const cmd = 'nohup bash -c "exec tail -f $FIFO | exec nc 127.0.0.1 4444" &';
+    assert.ok(!findDangerousAllowlistEntry(cwd, cmd));
+    addDangerousAllowlistEntry(cwd, cmd, "/bare-shell/");
+    const entry = findDangerousAllowlistEntry(cwd, cmd);
+    assert.ok(entry, "approved command is found");
+    assert.equal(entry!.pattern, "/bare-shell/");
+    assert.ok(entry!.preview.includes("nc 127.0.0.1 4444"));
+    assert.ok(entry!.approved_at);
+  });
+
+  it("any mutation re-prompts — hash mismatch", () => {
+    const cwd = mkCwd();
+    const cmd = "sudo zsh";
+    addDangerousAllowlistEntry(cwd, cmd, "/sudo/");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo zsh "), "trailing space differs");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo bash"), "different command");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "echo x; sudo zsh"), "bigger chain differs");
+  });
+
+  it("persists to .pi/data/dangerous-allowlist.json and survives a reload", () => {
+    const cwd = mkCwd();
+    addDangerousAllowlistEntry(cwd, "sudo zsh", "/sudo/");
+    const file = join(cwd, ".pi", "data", "dangerous-allowlist.json");
+    const raw = JSON.parse(readFileSync(file, "utf-8"));
+    assert.equal(raw.entries.length, 1);
+    assert.equal(typeof raw.entries[0].hash, "string");
+    // A fresh process reading the same file finds the entry
+    assert.ok(findDangerousAllowlistEntry(cwd, "sudo zsh"));
+  });
+
+  it("a corrupt allowlist file is treated as empty, never throws", () => {
+    const cwd = mkCwd();
+    const file = join(cwd, ".pi", "data", "dangerous-allowlist.json");
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "not json {", "utf-8");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo zsh"));
+  });
+
+  it("non-array or malformed entries are ignored", () => {
+    const cwd = mkCwd();
+    const file = join(cwd, ".pi", "data", "dangerous-allowlist.json");
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ entries: [{ nohash: true }, null, 42] }), "utf-8");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo zsh"));
   });
 });

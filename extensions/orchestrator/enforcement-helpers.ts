@@ -4,9 +4,11 @@
  */
 
 import { createLogger } from "../shared/logger.js";
-import { realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { realpathSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
+import { getProjectDataDir } from "./utils.js";
 import { DANGEROUS, executableText, getCurrentBranch, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
@@ -1042,6 +1044,63 @@ export function splitBashStatements(command: string): string[] {
     .split(/\n|;|&&|(?<!>)&|\|\||\|/)
     .map((s: string) => s.trim())
     .filter(Boolean);
+}
+
+/**
+ * User-approved allowlist for recurring legitimate dangerous-looking commands
+ * (issue #949). EXACT-command hash — deliberately not regex/normalization:
+ * one approved byte-identical command, any mutation re-prompts. Stored in
+ * `.pi/data/dangerous-allowlist.json` (project-local, gitignored, main-
+ * checkout-rooted so worktrees share it like reviews.db).
+ */
+export interface DangerousAllowlistEntry {
+  /** sha256 of the full command text */
+  hash: string;
+  /** source of the DANGEROUS pattern that matched at approval time */
+  pattern: string;
+  /** first 200 chars of the approved command, for human review/revocation */
+  preview: string;
+  /** ISO timestamp of the interactive approval */
+  approved_at: string;
+}
+
+function dangerousAllowlistPath(cwd: string): string {
+  return join(getProjectDataDir(cwd), "dangerous-allowlist.json");
+}
+
+function loadDangerousAllowlist(cwd: string): DangerousAllowlistEntry[] {
+  try {
+    const raw = JSON.parse(readFileSync(dangerousAllowlistPath(cwd), "utf-8"));
+    return Array.isArray(raw?.entries) && raw.entries.every((e: any) => e && typeof e.hash === "string")
+      ? raw.entries
+      : [];
+  } catch {
+    return []; // absent or corrupt — treat as empty, never block on it
+  }
+}
+
+/** True (with the entry) when the FULL command text was previously approved. */
+export function findDangerousAllowlistEntry(cwd: string, command: string): DangerousAllowlistEntry | null {
+  const hash = createHash("sha256").update(command).digest("hex");
+  return loadDangerousAllowlist(cwd).find((e) => e.hash === hash) ?? null;
+}
+
+/** Record an approval for the exact command text. Fail-soft. */
+export function addDangerousAllowlistEntry(cwd: string, command: string, pattern: string): void {
+  try {
+    const file = dangerousAllowlistPath(cwd);
+    const entries = loadDangerousAllowlist(cwd);
+    entries.push({
+      hash: createHash("sha256").update(command).digest("hex"),
+      pattern,
+      preview: command.slice(0, 200),
+      approved_at: new Date().toISOString(),
+    });
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ entries }, null, 2)}\n`);
+  } catch (error: any) {
+    log.debug("dangerous_allowlist_write_failed", { reason: String(error?.message ?? error).slice(0, 200) });
+  }
 }
 
 /**

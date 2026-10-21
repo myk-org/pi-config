@@ -53,6 +53,8 @@ import {
   normalizeForRepeatCheck,
   realGitSub,
   resolveEffectiveCwd,
+  addDangerousAllowlistEntry,
+  findDangerousAllowlistEntry,
   splitBashStatements,
   stripHeredocBodies,
   stripQuotedSpans,
@@ -399,6 +401,24 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
       .every((stmt) => isRmInProjectTmp(stmt, cwd));
     if (allRmInTmp) return undefined;
 
+    // User-approved exact-command allowlist (issue #949): a previously
+    // approved byte-identical command runs silently, but never invisibly —
+    // every allowlisted hit is logged with the pattern that matched.
+    const matchedPattern =
+      statements
+        .filter((stmt) => !isReadOnlyStatement(stmt))
+        .flatMap((stmt) => DANGEROUS.filter((p) => p.test(stmt)).map((p) => String(p)))
+        .find(Boolean) ?? "unknown";
+    const allowEntry = findDangerousAllowlistEntry(cwd, command);
+    if (allowEntry) {
+      log.warn("dangerous_command_allowlisted", {
+        pattern: allowEntry.pattern,
+        preview: allowEntry.preview.slice(0, 120),
+        approvedAt: allowEntry.approved_at,
+      });
+      return undefined;
+    }
+
     if (!ctx.hasUI)
       return {
         block: true,
@@ -407,8 +427,13 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
 
     const ok = await ctx.ui.select(
       `⚠️ Dangerous command:\n\n  ${command}\n\nAllow?`,
-      ["Yes", "No"],
+      ["Yes", "Yes — always allow this exact command", "No"],
     );
+    if (ok === "Yes — always allow this exact command") {
+      addDangerousAllowlistEntry(cwd, command, matchedPattern);
+      log.info("dangerous_command_allowlist_entry_added", { pattern: matchedPattern, preview: command.slice(0, 120) });
+      return undefined;
+    }
     if (ok !== "Yes") return { block: true, reason: "Blocked by user. Do NOT retry with an equivalent command (e.g., find -delete, perl, python os.remove). Stop and report this block to the user." };
   }
 
