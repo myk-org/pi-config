@@ -2527,3 +2527,82 @@ git commit -F /tmp/msg`;
     assert.ok(!fixed.includes("$PI_MODEL"));
   });
 });
+
+// ── issue #947: rtk-wrapped read-only commands + trailing-sh false positive ──
+
+describe("isReadOnlyStatement wrapper prefixes (issue #947)", () => {
+  it("returns true for rtk grep (rtk rewrite wraps every command)", () => {
+    assert.ok(isReadOnlyStatement('rtk grep -rn "api/user" src/main.py'));
+  });
+
+  it("returns true for rtk grep with a pattern ending in a shell name", () => {
+    assert.ok(isReadOnlyStatement("rtk grep -i dash frontend/src/pages/"));
+  });
+
+  it("returns true for rtk ls and rtk cat", () => {
+    assert.ok(isReadOnlyStatement("rtk ls frontend/src/components/"));
+    assert.ok(isReadOnlyStatement("rtk cat package.json"));
+  });
+
+  it("returns true for rtk with flags", () => {
+    assert.ok(isReadOnlyStatement("rtk --no-banner grep foo src/"));
+  });
+
+  it("returns true for command/builtin/exec wrappers", () => {
+    assert.ok(isReadOnlyStatement("command cat somefile.txt"));
+    assert.ok(isReadOnlyStatement("builtin echo hi"));
+    assert.ok(isReadOnlyStatement("exec head -3 file"));
+  });
+
+  it("returns true for env with flags and assignments", () => {
+    assert.ok(isReadOnlyStatement("env LANG=C grep sudo file"));
+    assert.ok(isReadOnlyStatement("env -i grep foo file"));
+  });
+
+  it("returns true for timeout/nice/nohup wrappers", () => {
+    assert.ok(isReadOnlyStatement("timeout 5 head -3 file"));
+    assert.ok(isReadOnlyStatement("nice grep foo file"));
+    assert.ok(isReadOnlyStatement("nohup cat file"));
+  });
+
+  it("returns false for sudo wrapper — sudo never gets a read-only pass", () => {
+    assert.ok(!isReadOnlyStatement("sudo grep foo file"));
+  });
+
+  it("returns false for rtk grep with a dangerous subshell", () => {
+    assert.ok(!isReadOnlyStatement("rtk grep $(rm -rf /) file"));
+  });
+
+  it("returns false for rtk with a non-read-only payload", () => {
+    assert.ok(!isReadOnlyStatement("rtk rm -rf /tmp/foo"));
+  });
+});
+
+describe("bare-shell DANGEROUS pattern command-position anchor (issue #947)", () => {
+  const shellPattern = (stmt: string): boolean => DANGEROUS.some((p) => p.test(stmt));
+
+  it("no longer matches a trailing search word ending in sh", () => {
+    assert.ok(!shellPattern("rtk grep -i dash"));
+    assert.ok(!shellPattern("grep -i dash"));
+    assert.ok(!shellPattern("echo fish"));
+    assert.ok(!shellPattern("cat ksh"));
+    assert.ok(!shellPattern("echo bash"));
+  });
+
+  it("still matches a shell in command position", () => {
+    assert.ok(shellPattern("bash"));
+    assert.ok(shellPattern("sh"));
+    assert.ok(shellPattern("zsh -c 'echo hi'"));
+    assert.ok(shellPattern("/bin/bash"));
+    assert.ok(shellPattern("sudo zsh"));
+    assert.ok(shellPattern("env bash"));
+    assert.ok(shellPattern("timeout 10 sh"));
+    assert.ok(shellPattern("rtk bash"));
+    assert.ok(shellPattern("xargs sh"));
+  });
+
+  it("does not match ssh or push-like words", () => {
+    assert.ok(!shellPattern("ssh user@host"));
+    assert.ok(!shellPattern("git push origin main"));
+  });
+});

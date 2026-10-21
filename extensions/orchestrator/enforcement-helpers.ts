@@ -881,7 +881,7 @@ export function checkTempFileEnforcement(command: string, cwd: string): Enforcem
 export const READ_ONLY_COMMANDS = new Set([
   "grep", "egrep", "fgrep", "rg", "ag", "ack",
   "cat", "head", "tail", "less", "more", "wc",
-  "echo", "printf",
+  "echo", "printf", "ls",
 ]);
 
 /**
@@ -940,12 +940,27 @@ export function extractSubshells(stmt: string): string[] {
 }
 
 /**
+ * Transparent wrapper prefixes that may precede the real command without
+ * changing its read-only nature (issue #947). Mirrors the git-code wrapper
+ * set (GIT_RTK_SRC et al., PR #916) — the user-level rtk extension rewrites
+ * every bash command through `rtk rewrite` before enforcement evaluates it,
+ * so `grep` arrives as `rtk grep`.
+ *
+ * Deliberately NOT sudo: a sudo-prefixed command must never receive a
+ * silent read-only pass (the DANGEROUS sudo pattern still prompts).
+ */
+const READ_ONLY_WRAPPER_PREFIX_RE =
+  /^\s*(?:\S+=\S*\s+|rtk(?:\s+-\S+)*\s+|(?:command|builtin|exec)\s+|env(?:\s+(?:-\S+|\S+=\S*))*\s+|timeout\s+(?:-\S+\s+)*\S+\s+|nice\s+(?:-\S+\s+)*|nohup\s+)+/;
+
+/**
  * Check if a statement is a read-only command with no dangerous subshells.
  * Returns true if the DANGEROUS check should be skipped for this statement.
  */
 export function isReadOnlyStatement(stmt: string): boolean {
-  // Extract the base command (first word, strip any leading env vars like VAR=val)
-  const stripped = stmt.replace(/^\s*(?:\S+=\S*\s+)*/, "");
+  // Strip transparent wrapper prefixes (rtk/env/timeout/nice/nohup/command/
+  // builtin/exec) and VAR=value assignments so `rtk grep` gets the same
+  // read-only pass as `grep` (issue #947).
+  const stripped = stmt.replace(READ_ONLY_WRAPPER_PREFIX_RE, "");
   const baseCmd = stripped.split(/\s/)[0]?.replace(/^.*\//, ""); // strip path prefix
   if (!baseCmd || !READ_ONLY_COMMANDS.has(baseCmd)) return false;
 

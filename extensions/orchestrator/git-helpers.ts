@@ -1152,5 +1152,12 @@ export const DANGEROUS = [
   /\bfind\b[\s\S]*\s-delete\b/i,
   /\bfind\b[\s\S]*-exec(?:dir)?\s+(?:\/\S+\/)?rm\b/i,
   /\bxargs\s+(?:-\S+\s+)*(?:\/\S+\/)?rm\b/i,
-  /(?:^|[\s|])(ba|da|z|k|c|tc|fi)?sh\s*$/i,
+  // Bare shell invocation (issue #947): the shell name must be in COMMAND
+  // POSITION — the first word of the statement (statements are already split
+  // on `;`/`&&`/`||`/`|`, so a pipe target is its own statement), optionally
+  // behind transparent wrapper prefixes (sudo/env/timeout/nice/nohup/xargs/
+  // command/builtin/exec/rtk, VAR=value assignments). The old form
+  // `/(?:^|[\s|])(ba|da|z|k|c|tc|fi)?sh\s*$/i` matched ANY trailing word
+  // ending in "sh", false-positiving on search patterns like `grep -i dash`.
+  /^(?:\s*(?:sudo\b|env(?:\s+(?:-\S+|\S+=\S*))*|timeout\s+(?:-\S+\s+)*\S+|nice\b(?:\s+-\S+)*|nohup\b|xargs\b(?:\s+-\S+)*|(?:command|builtin|exec)\b|rtk\b(?:\s+-\S+)*)\s+)*(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh(?:\s|$)/i,
 ];
