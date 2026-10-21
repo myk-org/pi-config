@@ -491,7 +491,8 @@ Allow?
 </code></pre></div>
 
 <p><strong>"Always allow: \&lt;statement&gt;"</strong> appends that statement (trailing I/O
-redirections like <code>2&gt;&amp;1</code> stripped — they are plumbing, not danger) to the
+redirections like <code>2&gt;&amp;1</code> and <code>&gt; /dev/null</code> stripped — they are plumbing,
+not danger; redirects to any other target stay part of the statement) to the
 <code>dangerous_command_allowlist</code> setting in the project's settings file, then
 re-prompts for any remaining dangerous statements. Later commands whose
 dangerous statements are all allowlisted pass silently — but never invisibly:
@@ -509,25 +510,39 @@ or by editing the file directly:</p>
 </code></pre></div>
 
 <h3 id="wildcards">Wildcards</h3>
-<p>Entries are glob patterns matched against the <strong>full command text</strong>
-(anchored, case-sensitive):</p>
+<p>Entries are glob patterns matched against a <strong>single dangerous statement</strong>
+(anchored, case-sensitive) — the statement the gate split out of your command,
+with benign plumbing tails (<code>2&gt;&amp;1</code>, <code>&gt; /dev/null</code>) stripped:</p>
 <ul>
-<li><code>*</code> — any run of characters (spans newlines — <strong>and statement separators</strong>)</li>
+<li><code>*</code> — any run of characters within that statement</li>
 <li><code>?</code> — exactly one character</li>
 <li><code>\</code> — escapes a literal <code>*</code>, <code>?</code>, or <code>\</code></li>
 </ul>
-<p>For example, <code>nohup bash -c "exec tail -f * | exec nc 127.0.0.1 44??" &amp;</code> covers
-the debug skill for any FIFO name and port digit pair.</p>
+<p>Because matching is per statement, an entry containing <code>|</code>, <code>;</code>, <code>&amp;</code>, or a
+newline can never match anything — those are the separators the gate splits
+on. Keep entries to one statement.</p>
+<p>For example, the gate splits <code>nohup bash -c "tail -f /fifo | nc 127.0.0.1
+4444" &amp;</code> at the pipe (inside quotes — splitting is deliberately
+quote-unaware), so the dangerous statement is the leading fragment
+<code>nohup bash -c "tail -f /fifo</code>, and the entry <code>nohup bash -c "tail -f *</code>
+covers it for any FIFO name.</p>
 <p>⚠️ <strong>Scope wildcards tightly.</strong> <code>*</code> matches everything between its anchors —
-including <code>;</code>, <code>&amp;&amp;</code>, and <code>|</code>. A pattern like <code>nohup bash -c *nc 127.0.0.1
-44??*</code> also approves <code>nohup bash -c true; rm -rf ~; echo nc 127.0.0.1 4444</code>,
-because everything between the prefix and the port is one <code>*</code>. Keep wildcards
+including quotes and redirections <em>inside the statement</em>. Keep wildcards
 inside a quoted, fixed-shape region (<code>"… * …"</code>) and never bridge across a
-spot where another statement could be injected.</p>
+spot where another redirect or argument could be injected.</p>
+<p>⚠️ <strong>Stdin-fed shells are never persistently approvable.</strong> A bare <code>bash</code>,
+<code>sh</code>, <code>zsh</code> (optionally with flags or <code>sudo</code>/<code>nohup</code>/<code>env</code>/<code>timeout</code>
+wrappers) carries none of the script it will run — <code>gen.sh | bash</code>,
+<code>bash &lt;&lt;EOF</code>, and <code>base64 -d | bash</code> all reduce to the same statement. The
+prompt offers <strong>run-once only</strong> for those, every time, and a hand-added
+entry can never approve them.</p>
+<p>⚠️ <strong>Redirects (other than <code>2&gt;&amp;1</code> / <code>/dev/null</code>) are part of the statement.</strong>
+Approving <code>sudo cat image</code> does not cover <code>sudo cat image &gt; /dev/sda</code> —
+benign plumbing is stripped, destructive redirects are not.</p>
 <p>Entries added via the prompt option are stored with metachars <strong>escaped</strong> — an
-approval covers exactly the text you approved, and any change (one character,
-a different port, an extra statement) re-prompts. Widening an entry to a
-wildcard family is a deliberate human edit.</p>
+approval covers exactly the statement you approved, and any change (one
+character, a different port, an extra redirect) re-prompts. Widening an entry
+to a wildcard family is a deliberate human edit.</p>
 <h3 id="properties-by-design">Properties, by design</h3>
 <ul>
 <li>

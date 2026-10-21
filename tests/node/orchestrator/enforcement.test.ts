@@ -21,6 +21,8 @@ import {
   allowlistGlobToRegExp,
   clearTrackedSettingsCache,
   maskQuotedRegions,
+  isStdinFedShellStatement,
+  normalizeDangerousStatement,
   isReadOnlyStatement,
   splitBashStatements,
   isRmInProjectTmp,
@@ -2854,7 +2856,7 @@ describe("dangerous command allowlist (issue #949)", () => {
 
   it("glob compile: * any run, ? one char, escaped metachars literal, anchored", () => {
     assert.ok(allowlistGlobToRegExp("sudo zsh").test("sudo zsh"));
-    assert.ok(!allowlistGlobToRegExp("sudo zsh").test("sudo zsh "));
+    assert.ok(!allowlistGlobToRegExp("sudo zsh").test("sudo reboot "));
     assert.ok(!allowlistGlobToRegExp("sudo zsh").test("echo sudo zsh"), "anchored — no substring match");
     assert.ok(allowlistGlobToRegExp("nc 127.0.0.1 44??").test("nc 127.0.0.1 4444"));
     assert.ok(!allowlistGlobToRegExp("nc 127.0.0.1 44??").test("nc 127.0.0.1 444"));
@@ -2868,12 +2870,12 @@ describe("dangerous command allowlist (issue #949)", () => {
 
   it("matches from project settings, reports the source", () => {
     const cwd = mkCwd();
-    writeSettings(cwd, { dangerous_command_allowlist: ["sudo zsh"] });
-    const m = findDangerousAllowlistEntry(cwd, "sudo zsh");
+    writeSettings(cwd, { dangerous_command_allowlist: ["sudo reboot"] });
+    const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
     assert.ok(m);
     assert.equal(m!.source, "project");
-    assert.equal(m!.entry, "sudo zsh");
-    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo bash"));
+    assert.equal(m!.entry, "sudo reboot");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo poweroff"));
   });
 
   it("wildcard entries from settings match command families", () => {
@@ -2887,10 +2889,10 @@ describe("dangerous command allowlist (issue #949)", () => {
   it("global settings are consulted when the project has no entry", () => {
     const cwd = mkCwd();
     const globalFile = join(cwd, "global-settings.json");
-    writeFileSync(globalFile, JSON.stringify({ dangerous_command_allowlist: ["sudo ksh"] }));
+    writeFileSync(globalFile, JSON.stringify({ dangerous_command_allowlist: ["sudo reboot"] }));
     setGlobalSettingsPath(globalFile);
     try {
-      const m = findDangerousAllowlistEntry(cwd, "sudo ksh");
+      const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
       assert.ok(m);
       assert.equal(m!.source, "global");
     } finally {
@@ -2900,8 +2902,8 @@ describe("dangerous command allowlist (issue #949)", () => {
 
   it("non-string or empty entries in settings are ignored", () => {
     const cwd = mkCwd();
-    writeSettings(cwd, { dangerous_command_allowlist: [42, null, "", "sudo zsh"] });
-    const m = findDangerousAllowlistEntry(cwd, "sudo zsh");
+    writeSettings(cwd, { dangerous_command_allowlist: [42, null, "", "sudo reboot"] });
+    const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
     assert.ok(m, "valid string entry still matches");
     assert.ok(!findDangerousAllowlistEntry(cwd, "42"));
   });
@@ -2926,7 +2928,7 @@ describe("dangerous command allowlist (issue #949)", () => {
   it("'always allow' preserves other settings keys", () => {
     const cwd = mkCwd();
     writeSettings(cwd, { dco: true, review_loop_enforcement: true });
-    addDangerousAllowlistEntry(cwd, "sudo zsh");
+    addDangerousAllowlistEntry(cwd, "sudo reboot");
     const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
     assert.equal(raw.dco, true);
     assert.equal(raw.review_loop_enforcement, true);
@@ -2935,11 +2937,11 @@ describe("dangerous command allowlist (issue #949)", () => {
 
   it("any mutation re-prompts — exact auto entries do not cover variants", () => {
     const cwd = mkCwd();
-    addDangerousAllowlistEntry(cwd, "sudo zsh");
-    assert.ok(findDangerousAllowlistEntry(cwd, "sudo zsh"));
-    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo zsh -c ls"), "extra argument differs");
-    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo bash"), "different command");
-    assert.ok(!findDangerousAllowlistEntry(cwd, "echo x; sudo zsh"), "bigger chain differs");
+    addDangerousAllowlistEntry(cwd, "sudo reboot");
+    assert.ok(findDangerousAllowlistEntry(cwd, "sudo reboot"));
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo reboot now"), "extra argument differs");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo poweroff"), "different command");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "echo x; sudo reboot"), "bigger chain differs");
   });
 
   it("a corrupt settings file is treated as empty, never throws", () => {
@@ -2947,7 +2949,7 @@ describe("dangerous command allowlist (issue #949)", () => {
     const file = getSettingsPath(cwd);
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, "not json {");
-    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo zsh"));
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo reboot"));
   });
 
   // Qodo PR #950 R1 finding 6 regression: an inert search term inside single
@@ -3006,18 +3008,37 @@ describe("dangerous command allowlist (issue #949)", () => {
     assert.equal(maskQuotedRegions(`echo "payload" > out.json`), `echo " " > out.json`);
   });
 
+  it("isStdinFedShellStatement flags bare shells, not script-bearing ones (Qodo PR #950 R6)", () => {
+    for (const yes of ["bash", "sh", "zsh", "ksh", "bash -s", "sudo bash", "nohup sh", "env zsh", "timeout 5 bash", "nice bash"]) {
+      assert.ok(isStdinFedShellStatement(yes), `expected stdin-fed: ${yes}`);
+    }
+    for (const no of ["bash script.sh", 'bash -c "rm -rf /"', "flush", "bash < script.sh", "timeout 5 bash script.sh"]) {
+      assert.ok(!isStdinFedShellStatement(no), `expected NOT stdin-fed: ${no}`);
+    }
+  });
+
+  it("normalizeDangerousStatement strips only benign plumbing (Qodo PR #950 R6)", () => {
+    assert.equal(normalizeDangerousStatement("sudo cat image > /dev/sda"), "sudo cat image > /dev/sda");
+    assert.equal(normalizeDangerousStatement("bash build.sh >> log.txt"), "bash build.sh >> log.txt");
+    assert.equal(normalizeDangerousStatement("rm -rf build 2> err.log"), "rm -rf build 2> err.log");
+    assert.equal(normalizeDangerousStatement("cmd $(rm -rf /)"), "cmd $(rm -rf /)");
+    assert.equal(normalizeDangerousStatement("cmd 2>&1"), "cmd");
+    assert.equal(normalizeDangerousStatement("cmd > /dev/null 2>&1"), "cmd");
+    assert.equal(normalizeDangerousStatement("cmd 2>/dev/null"), "cmd");
+  });
+
   it("a git-TRACKED project settings file is not trusted for the allowlist", () => {
     const cwd = mkdtempSync(join(tmpdir(), "rl-tracked-"));
     execFileSync("git", ["init", "-q"], { cwd });
     writeSettings(cwd, { dangerous_command_allowlist: ["*"] });
     execFileSync("git", ["add", "-f", getSettingsPath(cwd)], { cwd });
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"], { cwd });
-    const m = findDangerousAllowlistEntry(cwd, "sudo zsh");
+    const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
     assert.equal(m, null, "tracked settings file must not approve");
     // The user's own untracked file still works: remove it from the index
     execFileSync("git", ["rm", "-q", "--cached", getSettingsPath(cwd)], { cwd });
     clearTrackedSettingsCache();
-    const m2 = findDangerousAllowlistEntry(cwd, "sudo zsh");
+    const m2 = findDangerousAllowlistEntry(cwd, "sudo reboot");
     assert.ok(m2, "untracked settings file approves again");
     assert.equal(m2!.source, "project");
   });
@@ -3029,13 +3050,26 @@ describe("dangerous command allowlist (issue #949)", () => {
     const cwd = mkdtempSync(join(tmpdir(), "rl-later-tracked-"));
     execFileSync("git", ["init", "-q"], { cwd });
     writeSettings(cwd, { dangerous_command_allowlist: ["*"] });
-    const m = findDangerousAllowlistEntry(cwd, "sudo zsh");
+    const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
     assert.ok(m, "untracked file approves (first check)");
     // Upstream (or an attacker) starts tracking the file — next pull/checkout
     execFileSync("git", ["add", "-f", getSettingsPath(cwd)], { cwd });
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"], { cwd });
-    const m2 = findDangerousAllowlistEntry(cwd, "sudo zsh");
+    const m2 = findDangerousAllowlistEntry(cwd, "sudo reboot");
     assert.equal(m2, null, "newly tracked file must not approve without cache clearing");
+  });
+
+  // Qodo PR #950 R6: a symlinked `.pi` dir (or settings file) hides the real
+  // file from `git ls-files` while the loader follows the link — not trusted.
+  it("a symlinked settings path is not trusted for the allowlist", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "rl-symlinked-"));
+    execFileSync("git", ["init", "-q"], { cwd });
+    // Root file with a wildcard approval, and `.pi` symlinked to the root
+    writeFileSync(join(cwd, "pi-config-settings.jsonc"), JSON.stringify({ dangerous_command_allowlist: ["*"] }));
+    symlinkSync(cwd, join(cwd, ".pi"));
+    const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
+    assert.equal(m, null, "settings reached through a symlinked .pi must not approve");
+    rmSync(join(cwd, ".pi"));
   });
 });
 
@@ -3085,8 +3119,8 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   it("an allowlisted command runs with NO prompt", async () => {
-    seedSettings(["sudo zsh"]);
-    const res = await runBash("sudo zsh");
+    seedSettings(["sudo reboot"]);
+    const res = await runBash("sudo reboot");
     assert.equal(res?.block, undefined);
     assert.equal(promptCalls.length, 0, "allowlisted hit must not prompt");
   });
@@ -3101,40 +3135,40 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   it("a mutated command re-prompts and 'No' blocks", async () => {
-    seedSettings(["sudo zsh"]);
+    seedSettings(["sudo reboot"]);
     choice = "No";
-    const res = await runBash("sudo zsh -c ls");
+    const res = await runBash("sudo reboot now");
     assert.equal(res?.block, true);
     assert.equal(promptCalls.length, 1, "mutation must re-prompt");
   });
 
   it("the prompt offers run-once, per-statement always-allow, allow-all, and No", async () => {
     choice = "No";
-    await runBash("sudo ksh");
-    assert.deepEqual(promptCalls[0].opts, ["Yes — run once", "Always allow: sudo ksh", "No"]);
+    await runBash("sudo reboot");
+    assert.deepEqual(promptCalls[0].opts, ["Yes — run once", "Always allow: sudo reboot", "No"]);
     // Multi-statement command: one option per dangerous statement + allow-all
     choice = "No";
-    await runBash("cat x; sudo zsh; bash run.sh");
+    await runBash("cat x; sudo reboot; bash run.sh");
     assert.deepEqual(promptCalls[1].opts, [
       "Yes — run once",
-      "Always allow: sudo zsh",
+      "Always allow: sudo reboot",
       "Always allow: bash run.sh",
       "Always allow all of the above",
       "No",
     ]);
     // The prompt names the matched rule per statement
-    assert.match(promptCalls[1].msg, /sudo zsh\n\s+↳ sudo/);
+    assert.match(promptCalls[1].msg, /sudo reboot\n\s+↳ sudo/);
     assert.match(promptCalls[1].msg, /bash run.sh\n\s+↳ bare shell invocation/);
   });
 
   it("'always allow' writes the settings entry and silences future headless runs", async () => {
-    choice = "Always allow: sudo bash";
-    const res = await runBash("sudo bash");
+    choice = "Always allow: sudo reboot";
+    const res = await runBash("sudo reboot");
     assert.equal(res?.block, undefined, "approved command runs");
     const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
-    assert.equal(raw.dangerous_command_allowlist[0], "sudo bash");
+    assert.equal(raw.dangerous_command_allowlist[0], "sudo reboot");
     // Headless run of the now-approved command passes without a UI
-    const res2 = await runBash("sudo bash", false);
+    const res2 = await runBash("sudo reboot", false);
     assert.equal(res2?.block, undefined);
   });
 
@@ -3154,11 +3188,11 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   it("a chain with an UNapproved dangerous statement still prompts for just that statement", async () => {
     seedSettings(["bash .dev/deploy-all.sh"]);
     choice = "No";
-    const res = await runBash("cat README.md; sudo zsh; bash .dev/deploy-all.sh");
+    const res = await runBash("cat README.md; sudo reboot; bash .dev/deploy-all.sh");
     assert.equal(res?.block, true);
     assert.equal(promptCalls.length, 1);
     // The prompt names the unapproved statement, not the whole chain
-    assert.match(promptCalls[0].msg, /sudo zsh/);
+    assert.match(promptCalls[0].msg, /sudo reboot/);
     assert.doesNotMatch(promptCalls[0].msg, /README/);
   });
 
@@ -3171,7 +3205,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   it("picking one statement's always-allow persists it and re-prompts the remainder", async () => {
-    const choices = ["Always allow: sudo zsh", "No"];
+    const choices = ["Always allow: sudo reboot", "No"];
     let call = 0;
     promptCalls.length = 0;
     choice = undefined;
@@ -3187,24 +3221,66 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
       },
     };
     const res = await hooks.get("tool_call")!(
-      { type: "tool_call", toolName: "bash", input: { command: "cat x; sudo zsh; bash run.sh" } },
+      { type: "tool_call", toolName: "bash", input: { command: "cat x; sudo reboot; bash run.sh" } },
       ctx as any,
     );
     assert.equal(res?.block, true, "second round answered No");
     assert.equal(promptCalls.length, 2, "re-prompted for the remainder");
-    assert.match(promptCalls[0].msg, /sudo zsh/);
+    assert.match(promptCalls[0].msg, /sudo reboot/);
     assert.match(promptCalls[0].msg, /bash run.sh/);
     assert.doesNotMatch(promptCalls[1].msg, /sudo zsh/, "approved statement no longer listed");
     assert.match(promptCalls[1].msg, /bash run.sh/);
     // The first statement was persisted
     const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
-    assert.deepEqual(raw.dangerous_command_allowlist, ["sudo zsh"]);
+    assert.deepEqual(raw.dangerous_command_allowlist, ["sudo reboot"]);
   });
 
   it("a trailing redirect does not defeat an exact entry", async () => {
-    seedSettings(["sudo zsh"]);
-    const res = await runBash("sudo zsh 2>&1");
+    seedSettings(["sudo reboot"]);
+    const res = await runBash("sudo reboot 2>&1");
     assert.equal(res?.block, undefined, "2>&1 is plumbing, not danger");
+  });
+
+  // Qodo PR #950 R6: a stdin-fed shell (bare bash/sh with wrappers or flags)
+  // is never persistently approvable and never allowlist-matchable —
+  // `gen.sh | bash`, `bash <<EOF`, and `base64 -d | bash` all reduce to it.
+  it("a stdin-fed shell never matches an allowlist entry, even hand-added", async () => {
+    seedSettings(["bash", "sudo sh"]);
+    const res = await runBash("echo hi | bash");
+    assert.equal(res?.block, true, "must prompt despite a hand-added bare-shell entry");
+  });
+
+  it("the prompt offers NO persistent option for a stdin-fed shell", async () => {
+    choice = "No";
+    const res = await runBash("cat gen.sh | bash");
+    assert.equal(res?.block, true);
+    assert.deepEqual(promptCalls[0].opts, ["Yes — run once", "No"]);
+    assert.match(promptCalls[0].msg, /reads its script from stdin — run-once only/);
+  });
+
+  it("'allow all' persists only the persistable statements", async () => {
+    choice = "Always allow all of the above";
+    const res = await runBash("cat gen.sh | bash; bash run.sh");
+    assert.equal(res?.block, undefined);
+    const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
+    assert.deepEqual(raw.dangerous_command_allowlist, ["bash run.sh"], "stdin-fed shell not persisted");
+  });
+
+  it("a heredoc-fed shell reduces to a stdin-fed shell and re-prompts every time", async () => {
+    choice = "No";
+    await runBash("bash <<'EOF'\nrm -rf /tmp/x\nEOF");
+    assert.equal(promptCalls[0].opts.includes("Yes — run once"), true);
+    assert.equal(promptCalls[0].opts.some((o: string) => o.startsWith("Always allow")), false);
+  });
+
+  // Qodo PR #950 R6: destructive redirects stay part of the statement —
+  // an approval of the un-redirected form must not cover them.
+  it("a destructive redirect target is NOT stripped from the statement", async () => {
+    seedSettings(["sudo cat image"]);
+    const res = await runBash("sudo cat image > /dev/sda");
+    assert.equal(res?.block, true, "redirect to a device must not inherit the approval");
+    const res2 = await runBash("sudo cat image > /dev/null");
+    assert.equal(res2?.block, undefined, "/dev/null is plumbing");
   });
 
   it("headless + not allowlisted still hard-blocks", async () => {

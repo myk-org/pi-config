@@ -21,6 +21,7 @@ import {
   pushTargetsProtectedBranch,
   fixUnexpandedCommitTrailer,
   maskQuotedRegions,
+  isStdinFedShellStatement,
 } from "./enforcement-helpers.js";
 import {
   DANGEROUS,
@@ -407,13 +408,18 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     if (allRmInTmp) return undefined;
 
     // User-approved allowlist (issue #949): the gate identifies the DANGEROUS
-    // STATEMENTS (split out of the chain, trailing I/O redirections stripped
-    // — they are plumbing, not danger) and each must be approved. A chain
-    // where every dangerous statement matches an allowlist entry runs
-    // silently, but never invisibly: every hit is logged. "always allow"
-    // stores the dangerous STATEMENTS — the minimal reusable approval — so
-    // `bash .dev/deploy-all.sh` approved once covers any chain that contains
-    // exactly that statement (user request, PR #950).
+    // STATEMENTS (split out of the chain, benign plumbing tails — descriptor
+    // duplication and /dev/null redirects — stripped) and each must be
+    // approved. A chain where every dangerous statement matches an allowlist
+    // entry runs silently, but never invisibly: every hit is logged.
+    // "always allow" stores the dangerous STATEMENTS — the minimal reusable
+    // approval — so `bash .dev/deploy-all.sh` approved once covers any chain
+    // that contains exactly that statement (user request, PR #950).
+    //
+    // EXCEPT stdin-fed shells (Qodo PR #950 R6): a bare `bash`/`sh` carries
+    // none of the script it will run (`x | bash`, `bash <<EOF`, `base64 -d |
+    // bash` all reduce to it), so it is NEVER allowlist-matchable and never
+    // offered a persistent approval — run-once only, every time.
     const dangerousStmts = [
       ...new Set(
         statements
@@ -423,6 +429,10 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     ];
     const unapproved: string[] = [];
     for (const stmt of dangerousStmts) {
+      if (isStdinFedShellStatement(stmt)) {
+        unapproved.push(stmt);
+        continue;
+      }
       const allowMatch = findDangerousAllowlistEntry(cwd, stmt);
       if (!allowMatch) {
         unapproved.push(stmt);
@@ -452,8 +462,17 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     // and re-prompts for the remainder until nothing dangerous is left.
     const decide = async (remaining: string[]): Promise<EnforcementResult | undefined> => {
       const list = remaining
-        .map((stmt) => `  ${stmt}\n    ↳ ${dangerousPatternLabel(DANGEROUS.find((p) => p.test(stmt)) ?? /./)}`)
+        .map((stmt) => {
+          const label = dangerousPatternLabel(DANGEROUS.find((p) => p.test(stmt)) ?? /./);
+          const stdinFed = isStdinFedShellStatement(stmt)
+            ? "\n    ↳ reads its script from stdin — run-once only, never persistently approvable"
+            : "";
+          return `  ${stmt}\n    ↳ ${label}${stdinFed}`;
+        })
         .join("\n");
+      // Only statements that carry their own script are persistently
+      // approvable (Qodo PR #950 R6) — stdin-fed shells are run-once only.
+      const persistable = remaining.filter((stmt) => !isStdinFedShellStatement(stmt));
       // Option labels are truncated for the menu; keep them unique.
       // Computed ONCE — the choice handler looks up by the same objects.
       const seen = new Map<string, number>();
@@ -463,11 +482,11 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
         seen.set(base, n);
         return n === 1 ? base : `${base} (#${n})`;
       };
-      const labeled = remaining.map((stmt) => ({ stmt, label: labelFor(stmt) }));
+      const labeled = persistable.map((stmt) => ({ stmt, label: labelFor(stmt) }));
       const options = [
         "Yes — run once",
         ...labeled.map(({ label }) => `Always allow: ${label}`),
-        ...(remaining.length > 1 ? ["Always allow all of the above"] : []),
+        ...(persistable.length > 1 ? ["Always allow all of the above"] : []),
         "No",
       ];
       const ok = await ctx.ui.select(
@@ -478,9 +497,11 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
         return { block: true, reason: "Blocked by user. Do NOT retry with an equivalent command (e.g., find -delete, perl, python os.remove). Stop and report this block to the user." };
       if (ok === "Yes — run once" || ok === "Always allow all of the above") {
         if (ok === "Always allow all of the above") {
-          for (const stmt of remaining) addDangerousAllowlistEntry(cwd, stmt);
+          // Persist only the persistable statements — stdin-fed shells are
+          // run-once by design and must never land in the settings file.
+          for (const stmt of persistable) addDangerousAllowlistEntry(cwd, stmt);
           log.info("dangerous_command_allowlist_entry_added", {
-            count: remaining.length,
+            count: persistable.length,
             storedIn: "project settings (dangerous_command_allowlist)",
           });
         }

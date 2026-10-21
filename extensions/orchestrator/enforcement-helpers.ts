@@ -5,7 +5,7 @@
 
 import { createLogger } from "../shared/logger.js";
 import { createHash } from "node:crypto";
-import { realpathSync, mkdirSync, rmdirSync } from "node:fs";
+import { lstatSync, realpathSync, mkdirSync, rmdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { join } from "node:path";
@@ -1154,11 +1154,33 @@ export function normalizeDangerousStatement(stmt: string): string {
   let prev = "";
   while (prev !== s) {
     prev = s;
+    // Strip only BENIGN plumbing tails (Qodo PR #950 R6): descriptor
+    // duplication (`2>&1`) and /dev/null targets. A redirect to any other
+    // target (file, device, $(...)) STAYS part of the statement — it is
+    // side effect, not plumbing, and must not silently inherit an approval
+    // granted to the un-redirected statement.
     s = s
-      .replace(/\s*(?:\d+>&\d+|\d*(?:>{1,2}|&>)\s*\S+)\s*$/, "")
+      .replace(/\s*\d+>&\d+\s*$/, "")
+      .replace(/\s*\d*(?:>{1,2}|&>)\s*\/dev\/null\s*$/, "")
       .trim();
   }
   return s;
+}
+
+/**
+ * True for shell statements that read their SCRIPT from stdin — a bare
+ * `bash`/`sh`/`zsh` (optionally with flags, wrappers like sudo/nohup/env,
+ * and variable assignments) and no script path or -c payload. Such a
+ * statement carries none of the script it will execute: `x | bash`,
+ * `bash <<EOF`, `base64 -d | bash` all reduce to it. Approving it
+ * persistently would approve EVERY future script fed to that shell
+ * (Qodo PR #950 R6), so these statements are never allowlist-matchable
+ * and never offered a persistent approval — only run-once.
+ */
+export function isStdinFedShellStatement(stmt: string): boolean {
+  return /^(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:sudo|nohup|env|command|builtin|exec)\s+)*(?:(?:timeout|nice)\s+(?:-\S+\s+)?(?:\S+\s+)?)*(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh(?:\s+-\w+)*\s*$/.test(
+    stmt.trim(),
+  );
 }
 
 /** SHA-256 of a command (or entry) — hash prefixes for logs, never the text itself. */
@@ -1203,6 +1225,25 @@ function projectSettingsUntracked(cwd: string): boolean {
   return result;
 }
 function projectSettingsUntrackedUncached(_cwd: string, file: string): boolean {
+  // A settings path reached through a SYMLINK is not trustable (Qodo PR
+  // #950 R6): a repo can track `.pi` as a symlink to its root and ship a
+  // `*`-allowlist at the target — `git ls-files` misses the lexical path
+  // while the settings loader follows the link. lstat (no follow) catches
+  // both a symlinked settings file and a symlinked `.pi` dir without
+  // false-positiving on symlinked session cwds (/tmp vs /private/tmp).
+  try {
+    const dirLstat = lstatSync(path.dirname(file));
+    const fileLstat = lstatSync(file);
+    if (dirLstat.isSymbolicLink() || fileLstat.isSymbolicLink()) {
+      enfLog.warn("dangerous_allowlist_settings_symlink", {
+        file,
+        reason: "settings path traverses a symlink — not trusted for dangerous-command approvals",
+      });
+      return false;
+    }
+  } catch {
+    // Absent file/dir — nothing to approve yet; the git check below decides.
+  }
   try {
     const out = execFileSync(
       "git",
@@ -1241,6 +1282,11 @@ function projectSettingsUntrackedUncached(_cwd: string, file: string): boolean {
 }
 
 export function findDangerousAllowlistEntry(cwd: string, command: string): DangerousAllowlistMatch | null {
+  // Defense in depth (Qodo PR #950 R6): a stdin-fed shell statement (`bash`,
+  // `sh -s`, ...) executes whatever script is fed to it — even a hand-added
+  // settings entry can never approve it. The gate already refuses to offer
+  // persistent approval for such statements.
+  if (isStdinFedShellStatement(command)) return null;
   if (projectSettingsUntracked(cwd)) {
     const project = loadProjectSettings(cwd).dangerous_command_allowlist ?? [];
     const p = project.find((e) => allowlistGlobToRegExp(e).test(command));

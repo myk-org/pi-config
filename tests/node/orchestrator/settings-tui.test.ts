@@ -101,6 +101,15 @@ describe("detectSource", () => {
 // ── formatValue ─────────────────────────────────────────────────────
 
 describe("formatValue", () => {
+  it("formats string_list arrays as a count, empty as sentinel (Qodo PR #950 R6)", () => {
+    const def = SETTINGS_KEYS.dangerous_command_allowlist;
+    assert.equal(formatValue("dangerous_command_allowlist", ["a", "b", "c"], def), "3 pattern(s)");
+    assert.equal(formatValue("dangerous_command_allowlist", ["a"], def), "1 pattern(s)");
+    assert.equal(formatValue("dangerous_command_allowlist", [], def), "(empty)");
+    // Non-array garbage degrades to String(), never throws
+    assert.equal(formatValue("dangerous_command_allowlist", "oops", def), "oops");
+  });
+
   it("formats bool true", () => {
     assert.equal(formatValue("dco", true, SETTINGS_KEYS.dco), "true");
   });
@@ -267,6 +276,23 @@ describe("parseRawValue", () => {
 
   it("parses string", () => {
     assert.equal(parseRawValue("image_model", "gemini-2.0-flash", SETTINGS_KEYS.image_model), "gemini-2.0-flash");
+  });
+
+  // Qodo PR #950 R6: string_list parse/format coverage — JSON arrays,
+  // hand-typed patterns, invalid entries, empty input, and the display path.
+  it("parses string_list from a JSON array, dropping invalid entries", () => {
+    const def = SETTINGS_KEYS.dangerous_command_allowlist;
+    assert.deepEqual(parseRawValue("dangerous_command_allowlist", '["a","b"]', def), ["a", "b"]);
+    // Non-string and empty entries are dropped, order preserved
+    assert.deepEqual(parseRawValue("dangerous_command_allowlist", '["a", 42, null, "", "b"]', def), ["a", "b"]);
+    // A JSON non-array falls through to the single-pattern path
+    assert.deepEqual(parseRawValue("dangerous_command_allowlist", '42', def), ["42"]);
+  });
+
+  it("parses string_list hand-typed single pattern and empty input", () => {
+    const def = SETTINGS_KEYS.dangerous_command_allowlist;
+    assert.deepEqual(parseRawValue("dangerous_command_allowlist", 'sudo rm -rf build', def), ["sudo rm -rf build"]);
+    assert.deepEqual(parseRawValue("dangerous_command_allowlist", '  ', def), []);
   });
 
   it("parses empty string to empty", () => {
