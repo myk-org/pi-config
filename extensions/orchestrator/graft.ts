@@ -8,6 +8,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
+import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { getSetting } from "./project-settings.js";
 import { clearSlot, setSlot } from "./status-bar.js";
 import { getProjectTmpDir, resolveWorktreeRoot, tryResolveWorktreeRoot } from "./utils.js";
@@ -163,7 +164,18 @@ export function createGraftIntegration(options: Options) {
     state.events.emit("pidash:graft-savings", { tokenSavings: state.tokenSavings });
     log.debug("savings_published", { tokenSavings: state.tokenSavings });
   };
-  const setState = (value: GraftState) => { state.value = value; setSlot("graft", formatGraftFooter({ state: value, nodeCount: state.nodeCount, tokenSavings: state.tokenSavings }, state.ctx?.ui?.theme), state.ctx); publishSavings(); };
+  const setState = (value: GraftState) => {
+    state.value = value;
+    // Stale-ctx safety (reload crash postmortem, PR #950): the theme read
+    // and slot write must never crash on a ctx invalidated by a mid-flight
+    // reload — setSlot guards internally; the theme read needs its own guard.
+    let theme: any;
+    if (isLiveExtensionCtx(state.ctx)) {
+      try { theme = state.ctx.ui.theme; } catch { theme = undefined; }
+    }
+    setSlot("graft", formatGraftFooter({ state: value, nodeCount: state.nodeCount, tokenSavings: state.tokenSavings }, theme), state.ctx);
+    publishSavings();
+  };
   const addSavings = (amount: number) => { if (!amount) return; state.tokenSavings = state.store ? writeSavings(state.store, amount) : state.tokenSavings + amount; };
   const rawRun: GraftRun = options.run ?? (async (args, { cwd, timeoutMs }) => { try { const result = await exec("graft", args as string[], { cwd, timeout: timeoutMs ?? TIMEOUT_MS, maxBuffer: MAX_BUFFER, env: { ...process.env, DO_NOT_TRACK: "1", npm_config_offline: "true" } }); return { stdout: String(result.stdout).slice(0, MAX_BUFFER), stderr: String(result.stderr).slice(0, MAX_BUFFER), code: 0 }; } catch (error: any) { return { stdout: String(error?.stdout ?? "").slice(0, MAX_BUFFER), stderr: String(error?.stderr || error?.message || "").slice(0, MAX_BUFFER), code: Number(error?.code) || 1 }; } });
   const run: GraftRun = async (args, options) => {
@@ -314,7 +326,14 @@ export function createGraftIntegration(options: Options) {
       return { systemPrompt: `${event.systemPrompt}\n\n${guidance}\n\n[graft] starting points for this task:\n${pointerText(hits)}` };
     });
     pi.on("agent_end", (_event: any, ctx: any) => { state.ctx = ctx; consumeDirtySignals(); const shouldRefresh = !child && trusted(ctx) && state.enabled && state.dirty && !state.refresh; log.info("agent_end", { dirty: state.dirty, refreshing: Boolean(state.refresh), shouldRefresh }); if (shouldRefresh) void refresh(); });
-    pi.on("session_shutdown", () => { log.info("session_shutdown", { state: state.value, dirty: state.dirty, graftReads: state.graftReads, sourceReads: state.sourceReads, tokenSavings: state.tokenSavings }); clearSlot("graft", state.ctx); });
+    pi.on("session_shutdown", () => {
+      log.info("session_shutdown", { state: state.value, dirty: state.dirty, graftReads: state.graftReads, sourceReads: state.sourceReads, tokenSavings: state.tokenSavings });
+      // Bump the generation so an in-flight refresh continuation (a graft
+      // build resolving across a reload/quit) aborts instead of mutating
+      // state and touching the now-stale ctx (reload crash postmortem, PR #950).
+      state.generation++;
+      clearSlot("graft", state.ctx);
+    });
   };
   return { register };
 }
