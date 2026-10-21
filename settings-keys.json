@@ -7,14 +7,14 @@
     "group": "Git"
   },
   "commit_trailer": {
-    "description": "Commit trailer type (e.g. Assisted-by, Co-authored-by) \u2014 comma-separated for random selection",
+    "description": "Commit trailer type (e.g. Assisted-by, Co-authored-by) — comma-separated for random selection",
     "type": "bool_or_string",
     "env": "PI_COMMIT_TRAILER",
     "default": false,
     "group": "Git"
   },
   "use_worktrees": {
-    "description": "Block git checkout/switch \u2014 force git worktree for branch operations",
+    "description": "Block git checkout/switch — force git worktree for branch operations",
     "type": "bool",
     "env": "PI_USE_WORKTREES",
     "default": false,
@@ -101,7 +101,7 @@
     "group": "Memory"
   },
   "orchestrator_edit_write_block": {
-    "description": "Block orchestrator edit/write \u2014 force delegation to specialist subagents",
+    "description": "Block orchestrator edit/write — force delegation to specialist subagents",
     "type": "bool",
     "default": false,
     "group": "Enforcement"
@@ -623,5 +623,11 @@
     "min": 5,
     "max": 1440,
     "group": "Tasks"
+  },
+  "dangerous_command_allowlist": {
+    "description": "Glob patterns of pre-approved dangerous commands (* = any run, ? = one char, matched against the full command text; entries added via the 'always allow' prompt option are stored exact/escaped)",
+    "type": "string_list",
+    "default": [],
+    "group": "Enforcement"
   }
 }

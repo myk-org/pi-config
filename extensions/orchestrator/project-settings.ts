@@ -98,6 +98,8 @@ interface ProjectSettings {
   coms_probe_timeout_ms?: number;
   /** Pidiff: stale lock timeout in ms. */
   pidiff_stale_lock_timeout_ms?: number;
+  /** Glob patterns of pre-approved dangerous commands (* any run, ? one char, matched against the full command text). */
+  dangerous_command_allowlist?: string[];
   /** Pidiff: daemon startup timeout in seconds. */
   pidiff_daemon_startup_timeout_s?: number;
   /** Distill addressed review findings into memory lessons after `reviews address`. Default: true. */
@@ -269,6 +271,12 @@ export function parseSettingsFile(filePath: string): ProjectSettings {
         }
         case "number":
           if (typeof val === "number" && Number.isFinite(val)) (result as any)[k] = val;
+          break;
+        case "string_list":
+          if (Array.isArray(val)) {
+            const list = val.filter((e: unknown): e is string => typeof e === "string" && e.length > 0);
+            if (list.length > 0) (result as any)[k] = list;
+          }
           break;
       }
     }
@@ -485,6 +493,7 @@ export function getSetting(cwd: string, key: "coms_entry_grace_period_ms"): numb
 export function getSetting(cwd: string, key: "coms_probe_timeout_ms"): number;
 export function getSetting(cwd: string, key: "pidiff_stale_lock_timeout_ms"): number;
 export function getSetting(cwd: string, key: "pidiff_daemon_startup_timeout_s"): number;
+export function getSetting(cwd: string, key: "dangerous_command_allowlist"): string[];
 export function getSetting(cwd: string, key: "review_learning"): boolean;
 export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
   const settings = getSettings(cwd);
@@ -624,6 +633,10 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
         if (env !== undefined && env !== "") return env.trim();
       }
       return def.default as string;
+    }
+    case "string_list": {
+      if (merged !== undefined) return merged as string[];
+      return Array.isArray(def.default) ? (def.default as string[]) : [];
     }
     default:
       return false;

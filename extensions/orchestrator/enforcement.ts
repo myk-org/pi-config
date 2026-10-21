@@ -13,7 +13,8 @@ import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } f
 import { readFileSync, writeFileSync } from "node:fs";
 import path, { join, resolve, dirname } from "node:path";
 import { supportsAsyncLlm } from "./async-capability.js";
-import { getSetting } from "./project-settings.js";
+import { getGlobalSettingsPath, getSetting, getSettingsPath } from "./project-settings.js";
+import { SETTINGS_FILENAMES } from "./settings-source.js";
 import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 import {
   conflictCandidateDirs,
@@ -54,7 +55,6 @@ import {
   realGitSub,
   resolveEffectiveCwd,
   addDangerousAllowlistEntry,
-  dangerousAllowlistPath,
   dangerousCommandHash,
   findDangerousAllowlistEntry,
   splitBashStatements,
@@ -411,15 +411,16 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
         .filter((stmt) => !isReadOnlyStatement(stmt))
         .flatMap((stmt) => DANGEROUS.filter((p) => p.test(stmt)).map((p) => String(p)))
         .find(Boolean) ?? "unknown";
-    const allowEntry = findDangerousAllowlistEntry(cwd, command);
-    if (allowEntry) {
-      // No command text in logs (Qodo PR #950): an approved command may
-      // contain inline credentials — global log files must not copy it out
-      // of the project. The hash prefix + pattern identify the entry.
+    const allowMatch = findDangerousAllowlistEntry(cwd, command);
+    if (allowMatch) {
+      // No command/entry text in logs (Qodo PR #950): an approved command
+      // may contain inline credentials — global log files must not copy it
+      // out of the project. The matched pattern + entry hash prefix
+      // identify the hit; the entry itself lives in the settings file.
       log.warn("dangerous_command_allowlisted", {
-        pattern: allowEntry.pattern,
-        hashPrefix: allowEntry.hash.slice(0, 12),
-        approvedAt: allowEntry.approved_at,
+        dangerousPattern: matchedPattern,
+        entryHashPrefix: dangerousCommandHash(allowMatch.entry).slice(0, 12),
+        source: allowMatch.source,
       });
       return undefined;
     }
@@ -435,10 +436,11 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
       ["Yes", "Yes — always allow this exact command", "No"],
     );
     if (ok === "Yes — always allow this exact command") {
-      addDangerousAllowlistEntry(cwd, command, matchedPattern);
+      addDangerousAllowlistEntry(cwd, command);
       log.info("dangerous_command_allowlist_entry_added", {
-        pattern: matchedPattern,
+        dangerousPattern: matchedPattern,
         hashPrefix: dangerousCommandHash(command).slice(0, 12),
+        storedIn: "project settings (dangerous_command_allowlist)",
       });
       return undefined;
     }
@@ -505,20 +507,29 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       }
     }
 
-    // Block direct manipulation of the dangerous-command allowlist (issue
-    // #949 / Qodo PR #950): approvals are recorded ONLY through the
-    // interactive dangerous-command prompt. Without this, an agent could
-    // write a self-computed hash for a dangerous command and then run it
-    // unprompted — including in headless sessions. Applies to every agent,
-    // subagents included.
+    // Block direct manipulation of the settings files (issue #949 / Qodo
+    // PR #950): the dangerous-command allowlist now lives in
+    // dangerous_command_allowlist in the settings files, so an agent
+    // editing them could self-approve dangerous commands (a `*` entry
+    // would allow everything, headless included). Settings changes flow
+    // through the /pi-config-settings command or the user's own editor —
+    // never agent tools. Applies to every agent, subagents included.
     if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
       const filePath: string | undefined = (event as any).input?.path;
-      if (filePath && resolve(ctx.cwd, filePath) === dangerousAllowlistPath(ctx.cwd)) {
-        return {
-          block: true,
-          reason:
-            "\u26d4 Direct modification of dangerous-allowlist.json blocked. Approvals are recorded only through the interactive dangerous-command prompt — never by editing the file.",
-        };
+      if (filePath) {
+        const resolved = resolve(ctx.cwd, filePath);
+        // Both filename variants (.jsonc first, .json) in both scopes
+        const settingsTargets = new Set<string>();
+        for (const base of [dirname(getSettingsPath(ctx.cwd)), dirname(getGlobalSettingsPath())]) {
+          for (const name of SETTINGS_FILENAMES) settingsTargets.add(join(base, name));
+        }
+        if (settingsTargets.has(resolved)) {
+          return {
+            block: true,
+            reason:
+              "\u26d4 Direct modification of pi-config-settings blocked — it carries the dangerous-command allowlist. Change settings via the /pi-config-settings command or your own editor, never agent tools.",
+          };
+        }
       }
     }
 
@@ -536,22 +547,21 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       };
     }
 
-    // Block bash WRITES targeting the dangerous-command allowlist (issue
-    // #949 / Qodo PR #950) — same rationale as the edit/write block above:
-    // the file is prompt-managed only. Write-shaped, not mention-shaped:
-    // a redirect into the file, or a write verb / interpreter / shell
-    // co-occurring with the filename, blocks; a plain mention (branch
-    // name `feat/issue-949-dangerous-allowlist`, commit-message text,
-    // cat/grep reads) must not block development on the feature itself.
+    // Block bash WRITES targeting the settings files (issue #949 / Qodo
+    // PR #950) — same rationale as the edit/write block above: the
+    // dangerous-command allowlist lives there. Write-shaped, not
+    // mention-shaped: a redirect into the file, or a write verb /
+    // interpreter / shell co-occurring with the filename, blocks; a plain
+    // mention (commit-message text, cat/grep reads) passes.
     if (
-      cmdLower.includes("dangerous-allowlist") &&
-      (/>+\s*\S*dangerous-allowlist/i.test(command) ||
+      cmdLower.includes("pi-config-settings") &&
+      (/>+\s*\S*pi-config-settings/i.test(command) ||
         /(?:^|[\s;&|(])(?:tee|cp|mv|rm|sed|truncate|ln|install|dd|shred|unlink|chmod|chown|python3?|node|perl|ruby|bash|sh|zsh)\b/i.test(command))
     ) {
       return {
         block: true,
         reason:
-          "\u26d4 Bash command writing dangerous-allowlist.json blocked. Approvals are recorded only through the interactive dangerous-command prompt.",
+          "\u26d4 Bash command writing pi-config-settings blocked — it carries the dangerous-command allowlist. Change settings via the /pi-config-settings command or your own editor.",
       };
     }
 

@@ -472,41 +472,62 @@ for example — the prompt gains a third option:</p>
     No
 </code></pre></div>
 
-<p>Choosing <strong>"Yes — always allow this exact command"</strong> records a SHA-256 of the
-full command text in <code>.pi/data/dangerous-allowlist.json</code> (project-local,
-gitignored). Later runs of the <em>byte-identical</em> command pass silently — but
-never invisibly: every allowlisted hit logs a <code>dangerous_command_allowlisted</code>
-warning naming the pattern that matched.</p>
-<p>Properties, by design:</p>
+<p>Choosing <strong>"Yes — always allow this exact command"</strong> appends the command text
+to the <code>dangerous_command_allowlist</code> setting in the project's
+<code>pi-config-settings.json</code>. Later runs of the <em>byte-identical</em> command pass
+silently — but never invisibly: every allowlisted hit logs a
+<code>dangerous_command_allowlisted</code> warning naming the pattern that matched.</p>
+<p>Because the entries are a regular setting, you can review, edit, and extend
+them — via <code>/pi-config-settings</code> (Enforcement category, with a list editor)
+or by editing the file directly:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"dangerous_command_allowlist"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="s2">"nohup bash -c \"exec tail -f $FIFO | exec nc 127.0.0.1 4444\" &amp;"</span><span class="p">,</span>
+<span class="w">    </span><span class="s2">"sudo systemctl restart myservice"</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="wildcards">Wildcards</h3>
+<p>Entries are glob patterns matched against the <strong>full command text</strong>
+(anchored, case-sensitive):</p>
+<ul>
+<li><code>*</code> — any run of characters (spans newlines)</li>
+<li><code>?</code> — exactly one character</li>
+<li><code>\</code> — escapes a literal <code>*</code>, <code>?</code>, or <code>\</code></li>
+</ul>
+<p>So <code>nohup bash -c *nc 127.0.0.1 44??*</code> covers the whole family of that debug
+skill regardless of what surrounds the port number.</p>
+<p>Entries added via the prompt option are stored with metachars <strong>escaped</strong> — an
+approval covers exactly the text you approved, and any change (one character,
+a different port, an extra statement) re-prompts. Widening an entry to a
+wildcard family is a deliberate human edit.</p>
+<h3 id="properties-by-design">Properties, by design</h3>
 <ul>
 <li>
-<p><strong>Exact match only.</strong> Any change — one character, a different port, an extra
-  statement in the chain — produces a different hash and re-prompts. There is
-  no regex or normalization layer, so an allowlist entry can never match
-  something you did not literally approve.</p>
+<p><strong>Project or global.</strong> The project file wins; global
+  <code>~/.pi/pi-config-settings.json</code> is consulted when the project has no
+  matching entry. Entries never cross projects unless you put them in the
+  global file yourself.</p>
 </li>
 <li>
-<p><strong>Stable for skills.</strong> Variables reach the gate unexpanded (<code>$$</code>, <code>$FIFO</code>
-  are literal text), so a skill's generated command is the same string every
-  run — one approval covers it.</p>
+<p><strong>Prompt-only writes.</strong> Agents cannot add entries: edit/write tool calls
+  and write-shaped bash commands targeting the settings files are blocked —
+  the allowlist flows only through the interactive prompt (or your own
+  editor). A rogue agent can't self-approve <code>rm -rf</code>.</p>
 </li>
 <li>
-<p><strong>Project-scoped.</strong> The file lives under the project's <code>.pi/data/</code>, resolved
-  through the main checkout like the reviews DB — another project never
-  inherits your approvals.</p>
+<p><strong>Works headless.</strong> The check needs no UI, so a pre-approved command stops
+  hard-blocking <code>-p</code>/RPC sessions; unapproved ones still block.</p>
 </li>
 <li>
-<p><strong>Works headless.</strong> The hash check needs no UI, so a pre-approved command
-  stops hard-blocking <code>-p</code>/RPC sessions; unapproved ones still block.</p>
-</li>
-<li>
-<p><strong>Auditable.</strong> Entries carry the matched pattern, a 200-character command
-  preview, and the approval timestamp.</p>
+<p><strong>Auditable.</strong> Allowlisted hits log the matched pattern and an entry hash
+  prefix — command text (which may contain credentials) stays out of global
+  log files.</p>
 </li>
 </ul>
-<p>To revoke an approval, edit <code>.pi/data/dangerous-allowlist.json</code> and delete the
-entry (or the whole file — a missing or corrupt file is treated as empty). The
-next run of that command prompts again.</p>
+<p>To revoke an approval, delete the entry (or the whole setting). The next run
+of that command prompts again.</p>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
 <li><a href="curating-project-memory.html">Curating Project Memory</a></li>
@@ -543,7 +564,11 @@ next run of that command prompts again.</p>
 <li><a href="#require-approval-before-merging-a-pr">Require approval before merging a PR</a></li>
 <li><a href="#make-the-repo-read-only-for-direct-edits">Make the repo read-only for direct edits</a></li>
 <li><a href="#run-one-safe-follow-up-command-after-a-file-edit">Run one safe follow-up command after a file edit</a></li>
-<li><a href="#pre-approve-a-recurring-dangerous-command">Pre-approve a recurring dangerous command</a></li>
+<li><a href="#pre-approve-a-recurring-dangerous-command">Pre-approve a recurring dangerous command</a><ul>
+<li><a href="#wildcards">Wildcards</a></li>
+<li><a href="#properties-by-design">Properties, by design</a></li>
+</ul>
+</li>
 <li><a href="#related-pages">Related Pages</a></li>
 </ul>
 </div>

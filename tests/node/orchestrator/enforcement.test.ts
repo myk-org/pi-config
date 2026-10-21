@@ -5,17 +5,19 @@
 import { describe, it, before, after, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { DANGEROUS } from "../../../extensions/orchestrator/git-helpers.js";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
+import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import {
   READ_ONLY_COMMANDS,
   extractSubshells,
   addDangerousAllowlistEntry,
   findDangerousAllowlistEntry,
+  allowlistGlobToRegExp,
   isReadOnlyStatement,
   splitBashStatements,
   isRmInProjectTmp,
@@ -2841,87 +2843,108 @@ describe("dangerous command allowlist (issue #949)", () => {
   const mkCwd = (): string => mkdtempSync(join(tmpdir(), "rl-allow-"));
   const BARE_SHELL_RE = DANGEROUS[DANGEROUS.length - 1] as RegExp;
 
-  it("round-trips an approval for the exact command text", () => {
-    const cwd = mkCwd();
-    const cmd = 'nohup bash -c "exec tail -f $FIFO | exec nc 127.0.0.1 4444" &';
-    assert.ok(!findDangerousAllowlistEntry(cwd, cmd));
-    addDangerousAllowlistEntry(cwd, cmd, "/bare-shell/");
-    const entry = findDangerousAllowlistEntry(cwd, cmd);
-    assert.ok(entry, "approved command is found");
-    assert.equal(entry!.pattern, "/bare-shell/");
-    assert.ok(entry!.preview.includes("nc 127.0.0.1 4444"));
-    assert.ok(entry!.approved_at);
+  const writeSettings = (cwd: string, data: Record<string, unknown>) => {
+    const file = getSettingsPath(cwd);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(data, null, 2));
+  };
+
+  it("glob compile: * any run, ? one char, escaped metachars literal, anchored", () => {
+    assert.ok(allowlistGlobToRegExp("sudo zsh").test("sudo zsh"));
+    assert.ok(!allowlistGlobToRegExp("sudo zsh").test("sudo zsh "));
+    assert.ok(!allowlistGlobToRegExp("sudo zsh").test("echo sudo zsh"), "anchored — no substring match");
+    assert.ok(allowlistGlobToRegExp("nc 127.0.0.1 44??").test("nc 127.0.0.1 4444"));
+    assert.ok(!allowlistGlobToRegExp("nc 127.0.0.1 44??").test("nc 127.0.0.1 444"));
+    assert.ok(allowlistGlobToRegExp("nohup *nc 127.0.0.1 4444*").test("nohup bash -c stuff nc 127.0.0.1 4444 tail"));
+    // Escaped metachars are literal
+    assert.ok(allowlistGlobToRegExp(String.raw`rm -rf \*`).test("rm -rf *"));
+    assert.ok(!allowlistGlobToRegExp(String.raw`rm -rf \*`).test("rm -rf anything"));
+    // Multi-line commands: * spans newlines (s flag)
+    assert.ok(allowlistGlobToRegExp("cat << *").test("cat << EOF\nrm -rf /\nEOF"));
   });
 
-  it("any mutation re-prompts — hash mismatch", () => {
+  it("matches from project settings, reports the source", () => {
     const cwd = mkCwd();
-    const cmd = "sudo zsh";
-    addDangerousAllowlistEntry(cwd, cmd, "/sudo/");
+    writeSettings(cwd, { dangerous_command_allowlist: ["sudo zsh"] });
+    const m = findDangerousAllowlistEntry(cwd, "sudo zsh");
+    assert.ok(m);
+    assert.equal(m!.source, "project");
+    assert.equal(m!.entry, "sudo zsh");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo bash"));
+  });
+
+  it("wildcard entries from settings match command families", () => {
+    const cwd = mkCwd();
+    writeSettings(cwd, { dangerous_command_allowlist: ["nohup bash -c *nc 127.0.0.1 4444*"] });
+    const cmd = 'nohup bash -c "exec tail -f $FIFO | exec nc 127.0.0.1 4444 > $OUT" &';
+    assert.ok(findDangerousAllowlistEntry(cwd, cmd));
+    assert.ok(!findDangerousAllowlistEntry(cwd, "nohup bash -c evil"), "outside the family");
+  });
+
+  it("global settings are consulted when the project has no entry", () => {
+    const cwd = mkCwd();
+    const globalFile = join(cwd, "global-settings.json");
+    writeFileSync(globalFile, JSON.stringify({ dangerous_command_allowlist: ["sudo ksh"] }));
+    setGlobalSettingsPath(globalFile);
+    try {
+      const m = findDangerousAllowlistEntry(cwd, "sudo ksh");
+      assert.ok(m);
+      assert.equal(m!.source, "global");
+    } finally {
+      setGlobalSettingsPath(null);
+    }
+  });
+
+  it("non-string or empty entries in settings are ignored", () => {
+    const cwd = mkCwd();
+    writeSettings(cwd, { dangerous_command_allowlist: [42, null, "", "sudo zsh"] });
+    const m = findDangerousAllowlistEntry(cwd, "sudo zsh");
+    assert.ok(m, "valid string entry still matches");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "42"));
+  });
+
+  it("'always allow' appends the exact command, metachar-escaped, to project settings", () => {
+    const cwd = mkCwd();
+    const cmd = 'nohup bash -c "exec tail -f $FIFO" * &';
+    addDangerousAllowlistEntry(cwd, cmd);
+    const file = getSettingsPath(cwd);
+    const raw = JSON.parse(readFileSync(file, "utf-8"));
+    assert.equal(raw.dangerous_command_allowlist.length, 1);
+    // The literal * in the command is escaped so the auto entry stays exact
+    assert.equal(raw.dangerous_command_allowlist[0], 'nohup bash -c "exec tail -f $FIFO" \\* &');
+    // The exact command now matches; a variant does not
+    assert.ok(findDangerousAllowlistEntry(cwd, cmd));
+    assert.ok(!findDangerousAllowlistEntry(cwd, 'nohup bash -c "exec tail -f $OTHER" anything &'));
+    // Adding again dedupes
+    addDangerousAllowlistEntry(cwd, cmd);
+    assert.equal(JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8")).dangerous_command_allowlist.length, 1);
+  });
+
+  it("'always allow' preserves other settings keys", () => {
+    const cwd = mkCwd();
+    writeSettings(cwd, { dco: true, review_loop_enforcement: true });
+    addDangerousAllowlistEntry(cwd, "sudo zsh");
+    const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
+    assert.equal(raw.dco, true);
+    assert.equal(raw.review_loop_enforcement, true);
+    assert.equal(raw.dangerous_command_allowlist.length, 1);
+  });
+
+  it("any mutation re-prompts — exact auto entries do not cover variants", () => {
+    const cwd = mkCwd();
+    addDangerousAllowlistEntry(cwd, "sudo zsh");
+    assert.ok(findDangerousAllowlistEntry(cwd, "sudo zsh"));
     assert.ok(!findDangerousAllowlistEntry(cwd, "sudo zsh "), "trailing space differs");
     assert.ok(!findDangerousAllowlistEntry(cwd, "sudo bash"), "different command");
     assert.ok(!findDangerousAllowlistEntry(cwd, "echo x; sudo zsh"), "bigger chain differs");
   });
 
-  it("persists to .pi/data/dangerous-allowlist.json and survives a reload", () => {
+  it("a corrupt settings file is treated as empty, never throws", () => {
     const cwd = mkCwd();
-    addDangerousAllowlistEntry(cwd, "sudo zsh", "/sudo/");
-    const file = join(cwd, ".pi", "data", "dangerous-allowlist.json");
-    const raw = JSON.parse(readFileSync(file, "utf-8"));
-    assert.equal(raw.entries.length, 1);
-    assert.equal(typeof raw.entries[0].hash, "string");
-    // A fresh process reading the same file finds the entry
-    assert.ok(findDangerousAllowlistEntry(cwd, "sudo zsh"));
-  });
-
-  it("a corrupt allowlist file is treated as empty, never throws", () => {
-    const cwd = mkCwd();
-    const file = join(cwd, ".pi", "data", "dangerous-allowlist.json");
+    const file = getSettingsPath(cwd);
     mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, "not json {", "utf-8");
+    writeFileSync(file, "not json {");
     assert.ok(!findDangerousAllowlistEntry(cwd, "sudo zsh"));
-  });
-
-  it("non-array or malformed entries are ignored", () => {
-    const cwd = mkCwd();
-    const file = join(cwd, ".pi", "data", "dangerous-allowlist.json");
-    mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify({ entries: [{ nohash: true }, null, 42] }), "utf-8");
-    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo zsh"));
-  });
-
-  // Qodo PR #950 R1 finding 4: a hash-only entry must not authorize, and a
-  // missing preview must not throw when the allowlisted branch runs.
-  it("entries missing pattern/preview/approved_at never authorize a command", () => {
-    const cwd = mkCwd();
-    const file = join(cwd, ".pi", "data", "dangerous-allowlist.json");
-    mkdirSync(path.dirname(file), { recursive: true });
-    const hash = createHash("sha256").update("sudo zsh").digest("hex");
-    const partial = [
-      { hash }, // hash only
-      { hash, pattern: "/sudo/" }, // no preview/approved_at
-      { hash, pattern: "/sudo/", preview: "sudo zsh" }, // no approved_at
-      { hash, pattern: "/sudo/", preview: 42, approved_at: "2026-01-01T00:00:00Z" }, // non-string preview
-      { hash: "not-hex", pattern: "/sudo/", preview: "x", approved_at: "2026-01-01T00:00:00Z" }, // bad hash format
-    ];
-    for (const entries of partial) {
-      writeFileSync(file, JSON.stringify({ entries: [entries] }), "utf-8");
-      assert.ok(!findDangerousAllowlistEntry(cwd, "sudo zsh"), JSON.stringify(entries));
-    }
-  });
-
-  // Qodo PR #950 R1 finding 7: concurrent approvals must both survive, and
-  // the atomic replace must leave no temp files behind.
-  it("concurrent approvals both survive, no temp files left", async () => {
-    const cwd = mkCwd();
-    await Promise.all([
-      Promise.resolve().then(() => addDangerousAllowlistEntry(cwd, "sudo zsh", "/sudo/")),
-      Promise.resolve().then(() => addDangerousAllowlistEntry(cwd, "sudo bash", "/sudo/")),
-    ]);
-    assert.ok(findDangerousAllowlistEntry(cwd, "sudo zsh"), "first approval survived");
-    assert.ok(findDangerousAllowlistEntry(cwd, "sudo bash"), "second approval survived");
-    const dir = join(cwd, ".pi", "data");
-    const names = readdirSync(dir).filter((n) => n !== "dangerous-allowlist.json");
-    assert.deepEqual(names, [], "no lock or temp artifacts remain");
   });
 
   // Qodo PR #950 R1 finding 6 regression: an inert search term inside single
@@ -2968,6 +2991,12 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   const runBash = async (command: string, hasUI = true) =>
     hooks.get("tool_call")!({ type: "tool_call", toolName: "bash", input: { command } }, mkCtx(hasUI));
 
+  const seedSettings = (allowlist: string[]) => {
+    const file = getSettingsPath(cwd);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ dangerous_command_allowlist: allowlist }, null, 2));
+  };
+
   before(() => {
     hooks = new Map();
     registerEnforcement({
@@ -2984,14 +3013,21 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   it("an allowlisted command runs with NO prompt", async () => {
-    addDangerousAllowlistEntry(cwd, "sudo zsh", "/sudo/");
+    seedSettings(["sudo zsh"]);
     const res = await runBash("sudo zsh");
     assert.equal(res?.block, undefined);
     assert.equal(promptCalls.length, 0, "allowlisted hit must not prompt");
   });
 
+  it("a wildcard settings entry covers the command family", async () => {
+    seedSettings(["nohup bash -c *nc 127.0.0.1 4444*"]);
+    const res = await runBash('nohup bash -c "tail -f x | nc 127.0.0.1 4444" &');
+    assert.equal(res?.block, undefined);
+    assert.equal(promptCalls.length, 0);
+  });
+
   it("a mutated command re-prompts and 'No' blocks", async () => {
-    addDangerousAllowlistEntry(cwd, "sudo zsh", "/sudo/");
+    seedSettings(["sudo zsh"]);
     choice = "No";
     const res = await runBash("sudo zsh ");
     assert.equal(res?.block, true);
@@ -3004,11 +3040,12 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     assert.deepEqual(promptCalls[0].opts, ["Yes", "Yes — always allow this exact command", "No"]);
   });
 
-  it("'always allow' writes the entry and silences future headless runs", async () => {
+  it("'always allow' writes the settings entry and silences future headless runs", async () => {
     choice = "Yes — always allow this exact command";
     const res = await runBash("sudo bash");
     assert.equal(res?.block, undefined, "approved command runs");
-    assert.ok(findDangerousAllowlistEntry(cwd, "sudo bash"), "entry persisted");
+    const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
+    assert.equal(raw.dangerous_command_allowlist[0], "sudo bash");
     // Headless run of the now-approved command passes without a UI
     const res2 = await runBash("sudo bash", false);
     assert.equal(res2?.block, undefined);
@@ -3021,39 +3058,48 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   // Qodo PR #950 R1 finding 1: the agent must not be able to approve its own
-  // commands by writing the allowlist file directly.
-  it("bash writing dangerous-allowlist.json is blocked", async () => {
+  // commands by writing the settings files directly.
+  it("bash writing the project settings file is blocked", async () => {
+    const settingsFile = getSettingsPath(cwd);
     for (const cmd of [
-      "echo '{}' > .pi/data/dangerous-allowlist.json",
-      "cp other.json .pi/data/dangerous-allowlist.json",
-      String.raw`python3 -c "open('.pi/data/dangerous-allowlist.json','w')"`,
+      `echo '{}' > ${settingsFile}`,
+      `cp other.json ${settingsFile}`,
+      `python3 -c "open('${settingsFile}','w')"`,
     ]) {
       const res = await runBash(cmd);
       assert.equal(res?.block, true, cmd);
-      assert.match(res?.reason ?? "", /dangerous-allowlist/);
+      assert.match(res?.reason ?? "", /pi-config-settings/);
     }
   });
 
-  it("merely mentioning dangerous-allowlist does not block (branch names, commit text, reads)", async () => {
+  it("merely mentioning the settings file does not block (reads, commit text)", async () => {
     for (const cmd of [
-      "echo on branch feat/issue-949-dangerous-allowlist",
-      'gh pr view 950 --json headRefName # feat/issue-949-dangerous-allowlist',
-      "cat .pi/data/dangerous-allowlist.json",
-      "rg dangerous-allowlist docs/",
+      `cat ${getSettingsPath(cwd)}`,
+      "echo docs mention pi-config-settings.json layout",
+      "rg pi-config-settings docs/",
     ]) {
       const res = await runBash(cmd);
       assert.notEqual(res?.block, true, cmd);
     }
   });
 
-  it("write/edit tool calls targeting the allowlist file are blocked", async () => {
+  it("write/edit tool calls targeting the settings files are blocked", async () => {
+    const globalFile = getGlobalSettingsPath();
     for (const toolName of ["write", "edit"]) {
-      const res = await hooks.get("tool_call")!(
-        { type: "tool_call", toolName, input: { path: ".pi/data/dangerous-allowlist.json", content: "{}" } },
-        mkCtx(true),
-      );
-      assert.equal(res?.block, true, toolName);
-      assert.match(res?.reason ?? "", /dangerous-allowlist/);
+      // Both filename variants in the project dir, plus the global file
+      const targets = [
+        getSettingsPath(cwd),
+        join(dirname(getSettingsPath(cwd)), "pi-config-settings.json"),
+        globalFile,
+      ];
+      for (const target of targets) {
+        const res = await hooks.get("tool_call")!(
+          { type: "tool_call", toolName, input: { path: target, content: "{}" } },
+          mkCtx(true),
+        );
+        assert.equal(res?.block, true, `${toolName} ${target}`);
+        assert.match(res?.reason ?? "", /pi-config-settings/);
+      }
     }
   });
 });

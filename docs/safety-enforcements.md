@@ -144,32 +144,60 @@ for example — the prompt gains a third option:
     No
 ```
 
-Choosing **"Yes — always allow this exact command"** records a SHA-256 of the
-full command text in `.pi/data/dangerous-allowlist.json` (project-local,
-gitignored). Later runs of the *byte-identical* command pass silently — but
-never invisibly: every allowlisted hit logs a `dangerous_command_allowlisted`
-warning naming the pattern that matched.
+Choosing **"Yes — always allow this exact command"** appends the command text
+to the `dangerous_command_allowlist` setting in the project's
+`pi-config-settings.json`. Later runs of the *byte-identical* command pass
+silently — but never invisibly: every allowlisted hit logs a
+`dangerous_command_allowlisted` warning naming the pattern that matched.
 
-Properties, by design:
+Because the entries are a regular setting, you can review, edit, and extend
+them — via `/pi-config-settings` (Enforcement category, with a list editor)
+or by editing the file directly:
 
-- **Exact match only.** Any change — one character, a different port, an extra
-  statement in the chain — produces a different hash and re-prompts. There is
-  no regex or normalization layer, so an allowlist entry can never match
-  something you did not literally approve.
-- **Stable for skills.** Variables reach the gate unexpanded (`$$`, `$FIFO`
-  are literal text), so a skill's generated command is the same string every
-  run — one approval covers it.
-- **Project-scoped.** The file lives under the project's `.pi/data/`, resolved
-  through the main checkout like the reviews DB — another project never
-  inherits your approvals.
-- **Works headless.** The hash check needs no UI, so a pre-approved command
-  stops hard-blocking `-p`/RPC sessions; unapproved ones still block.
-- **Auditable.** Entries carry the matched pattern, a 200-character command
-  preview, and the approval timestamp.
+```json
+{
+  "dangerous_command_allowlist": [
+    "nohup bash -c \"exec tail -f $FIFO | exec nc 127.0.0.1 4444\" &",
+    "sudo systemctl restart myservice"
+  ]
+}
+```
 
-To revoke an approval, edit `.pi/data/dangerous-allowlist.json` and delete the
-entry (or the whole file — a missing or corrupt file is treated as empty). The
-next run of that command prompts again.
+### Wildcards
+
+Entries are glob patterns matched against the **full command text**
+(anchored, case-sensitive):
+
+- `*` — any run of characters (spans newlines)
+- `?` — exactly one character
+- `\` — escapes a literal `*`, `?`, or `\`
+
+So `nohup bash -c *nc 127.0.0.1 44??*` covers the whole family of that debug
+skill regardless of what surrounds the port number.
+
+Entries added via the prompt option are stored with metachars **escaped** — an
+approval covers exactly the text you approved, and any change (one character,
+a different port, an extra statement) re-prompts. Widening an entry to a
+wildcard family is a deliberate human edit.
+
+### Properties, by design
+
+- **Project or global.** The project file wins; global
+  `~/.pi/pi-config-settings.json` is consulted when the project has no
+  matching entry. Entries never cross projects unless you put them in the
+  global file yourself.
+- **Prompt-only writes.** Agents cannot add entries: edit/write tool calls
+  and write-shaped bash commands targeting the settings files are blocked —
+  the allowlist flows only through the interactive prompt (or your own
+  editor). A rogue agent can't self-approve `rm -rf`.
+- **Works headless.** The check needs no UI, so a pre-approved command stops
+  hard-blocking `-p`/RPC sessions; unapproved ones still block.
+- **Auditable.** Allowlisted hits log the matched pattern and an entry hash
+  prefix — command text (which may contain credentials) stays out of global
+  log files.
+
+To revoke an approval, delete the entry (or the whole setting). The next run
+of that command prompts again.
 
 ## Related Pages
 

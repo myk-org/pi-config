@@ -53,6 +53,7 @@ import {
   PickerSubmenu,
   MultiSelectSubmenu,
   AgentOverridesSubmenu,
+  StringListSubmenu,
   SelectSubmenu,
 } from "./settings-tui-submenus.js";
 
@@ -274,6 +275,19 @@ export function buildCategoryItems(
             );
           };
           break;
+
+        case "string_list": {
+          item.submenu = (_current: string, done: (val?: string) => void): Component => {
+            const currentList = Array.isArray(effectiveValue) ? (effectiveValue as string[]) : [];
+            return new StringListSubmenu(
+              `${key} — patterns`,
+              currentList,
+              theme,
+              done,
+            );
+          };
+          break;
+        }
 
         case "agent_overrides":
           item.submenu = (_current: string, done: (val?: string) => void): Component => {

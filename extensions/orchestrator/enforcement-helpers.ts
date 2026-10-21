@@ -5,10 +5,12 @@
 
 import { createLogger } from "../shared/logger.js";
 import { createHash } from "node:crypto";
-import { realpathSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmdirSync } from "node:fs";
+import { realpathSync, mkdirSync, rmdirSync } from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
 import { getProjectDataDir } from "./utils.js";
+import { getSettingsPath, loadGlobalSettings, loadProjectSettings } from "./project-settings.js";
+import { readSettingsFile, writeSettingsFile } from "./settings-tui-helpers.js";
 import { DANGEROUS, executableText, getCurrentBranch, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
@@ -1048,74 +1050,75 @@ export function splitBashStatements(command: string): string[] {
 
 /**
  * User-approved allowlist for recurring legitimate dangerous-looking commands
- * (issue #949). EXACT-command hash — deliberately not regex/normalization:
- * one approved byte-identical command, any mutation re-prompts. Stored in
- * `.pi/data/dangerous-allowlist.json` (project-local, gitignored, main-
- * checkout-rooted so worktrees share it like reviews.db).
+ * (issue #949, PR #950). Entries live in the `dangerous_command_allowlist`
+ * setting (project `.pi/pi-config-settings.json(c)`, global `~/.pi/...`) so
+ * the user can inspect, edit, and extend them — including wildcards:
+ * `*` matches any run of characters, `?` exactly one, `\` escapes a literal
+ * metachar. Patterns match the FULL command text (anchored, case-sensitive).
+ *
+ * Entries added via the interactive "always allow" prompt option are the
+ * command text with glob metachars ESCAPED — an approval covers exactly the
+ * text that was approved; widening to a wildcard family is a deliberate
+ * human edit of the settings file. Agents cannot write the entries
+ * themselves: the settings files are enforcement-protected (see
+ * enforcement.ts) — approvals flow only through the prompt.
  */
-export interface DangerousAllowlistEntry {
-  /** sha256 of the full command text */
-  hash: string;
-  /** source of the DANGEROUS pattern that matched at approval time */
-  pattern: string;
-  /** first 200 chars of the approved command, for human review/revocation */
-  preview: string;
-  /** ISO timestamp of the interactive approval */
-  approved_at: string;
-}
 
-/** Resolved path of the project's dangerous-command allowlist. */
-export function dangerousAllowlistPath(cwd: string): string {
-  return join(getProjectDataDir(cwd), "dangerous-allowlist.json");
-}
-
-/** Qodo PR #950: an entry is valid only with ALL fields well-formed — a
- * hash-only entry must never authorize a command, and a missing preview
- * must never throw during logging. Invalid entries are discarded. */
-function isValidAllowlistEntry(e: any): e is DangerousAllowlistEntry {
-  return (
-    !!e &&
-    typeof e.hash === "string" &&
-    /^[0-9a-f]{64}$/.test(e.hash) &&
-    typeof e.pattern === "string" &&
-    e.pattern.length > 0 &&
-    typeof e.preview === "string" &&
-    typeof e.approved_at === "string" &&
-    e.approved_at.length > 0
-  );
-}
-
-function loadDangerousAllowlist(cwd: string): DangerousAllowlistEntry[] {
-  try {
-    const raw = JSON.parse(readFileSync(dangerousAllowlistPath(cwd), "utf-8"));
-    return Array.isArray(raw?.entries) ? raw.entries.filter(isValidAllowlistEntry) : [];
-  } catch {
-    return []; // absent or corrupt — treat as empty, never block on it
+/** Glob → anchored RegExp. `*` any run, `?` one char, `\` escapes a literal, rest literal. */
+export function allowlistGlobToRegExp(pattern: string): RegExp {
+  let re = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === "\\" && i + 1 < pattern.length) {
+      re += (pattern[++i] as string).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    } else if (c === "*") {
+      re += ".*";
+    } else if (c === "?") {
+      re += ".";
+    } else {
+      re += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
   }
+  // `s` flag: multi-line commands — `*` must span newlines
+  return new RegExp(`^${re}$`, "s");
 }
 
-/** SHA-256 of the full command text — the allowlist key. */
+/** SHA-256 of a command (or entry) — hash prefixes for logs, never the text itself. */
 export function dangerousCommandHash(command: string): string {
   return createHash("sha256").update(command).digest("hex");
 }
 
-/** True (with the entry) when the FULL command text was previously approved. */
-export function findDangerousAllowlistEntry(cwd: string, command: string): DangerousAllowlistEntry | null {
-  const hash = dangerousCommandHash(command);
-  return loadDangerousAllowlist(cwd).find((e) => e.hash === hash) ?? null;
+export interface DangerousAllowlistMatch {
+  /** The matched settings entry (may contain wildcards). */
+  entry: string;
+  /** Which settings file provided it. */
+  source: "project" | "global";
 }
 
-/** Record an approval for the exact command text. Fail-soft.
- *
- * Concurrency (Qodo PR #950): a mkdir-based lock serializes writers, the
- * entry list is re-read under the lock (last-writer-wins would drop a
- * concurrent approval), and the file is replaced atomically (temp +
- * rename) so a reader never sees a partial write. */
-export function addDangerousAllowlistEntry(cwd: string, command: string, pattern: string): void {
-  const file = dangerousAllowlistPath(cwd);
+/** Matched allowlist entry for the full command text, or null.
+ * Project settings take precedence over global; no env layer (deliberate:
+ * ambient env must not silently approve dangerous commands). */
+export function findDangerousAllowlistEntry(cwd: string, command: string): DangerousAllowlistMatch | null {
+  const project = loadProjectSettings(cwd).dangerous_command_allowlist ?? [];
+  const p = project.find((e) => allowlistGlobToRegExp(e).test(command));
+  if (p) return { entry: p, source: "project" };
+  const global = loadGlobalSettings().dangerous_command_allowlist ?? [];
+  const g = global.find((e) => allowlistGlobToRegExp(e).test(command));
+  return g ? { entry: g, source: "global" } : null;
+}
+
+/** Append the exact command text (glob metachars escaped, so the entry stays
+ * literal) to the PROJECT settings file. Fail-soft. A mkdir-based lock
+ * serializes writers so concurrent approvals cannot drop each other
+ * (read-merge-write race). */
+export function addDangerousAllowlistEntry(cwd: string, command: string): void {
+  const file = getSettingsPath(cwd);
   const lockDir = `${file}.lock`;
+  const entry = command.replace(/[\\*?]/g, (c) => `\\${c}`);
   let locked = false;
   try {
+    // The lock dir's parent may not exist yet on a first-ever write
+    mkdirSync(path.dirname(file), { recursive: true });
     for (let attempt = 0; attempt < 10 && !locked; attempt++) {
       try {
         mkdirSync(lockDir);
@@ -1124,15 +1127,13 @@ export function addDangerousAllowlistEntry(cwd: string, command: string, pattern
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); // 50ms backoff
       }
     }
-    const entries = loadDangerousAllowlist(cwd);
-    const hash = dangerousCommandHash(command);
-    if (!entries.some((e) => e.hash === hash)) {
-      entries.push({ hash, pattern, preview: command.slice(0, 200), approved_at: new Date().toISOString() });
-    }
-    mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.tmp-${process.pid}`;
-    writeFileSync(tmp, `${JSON.stringify({ entries }, null, 2)}\n`);
-    renameSync(tmp, file);
+    const data = readSettingsFile(file) ?? {};
+    const list = Array.isArray(data.dangerous_command_allowlist)
+      ? data.dangerous_command_allowlist.filter((e: unknown): e is string => typeof e === "string" && e.length > 0)
+      : [];
+    if (!list.includes(entry)) list.push(entry);
+    data.dangerous_command_allowlist = list;
+    writeSettingsFile(file, data);
   } catch (error: any) {
     // Hash prefix + path identify the affected approval without copying
     // command text into global logs (Qodo PR #950).
