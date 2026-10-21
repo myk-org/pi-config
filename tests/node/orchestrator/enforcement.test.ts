@@ -2744,3 +2744,47 @@ describe("extractSubshells double-quote awareness (PR #948)", () => {
     assert.ok(stmts.some((s) => !isReadOnlyStatement(s) && /rm\s+-rf/.test(s)));
   });
 });
+
+// ── PR #948 R2: env -u value consumption and leading redirections ──
+
+describe("wrapper option values do not mask the executable (PR #948 R2)", () => {
+  it("env -u <name> rm is not read-only — the name is env's argument, not the command", () => {
+    assert.ok(!isReadOnlyStatement("env -u grep rm -rf ~/work"));
+  });
+
+  it("env -u HOME grep is read-only — value consumed, grep is the command", () => {
+    assert.ok(isReadOnlyStatement("env -u HOME grep foo file"));
+  });
+
+  it("nice -n 10 grep is read-only — the niceness value is consumed", () => {
+    assert.ok(isReadOnlyStatement("nice -n 10 grep foo file"));
+  });
+
+  it("env -u cat rm is not read-only either", () => {
+    assert.ok(!isReadOnlyStatement("env -u cat rm -rf ~/work"));
+  });
+});
+
+describe("leading redirections before a piped shell (PR #948 R2)", () => {
+  const shellPattern = (stmt: string): boolean => DANGEROUS.some((p) => p.test(stmt));
+
+  it("still matches 2>/dev/null sh", () => {
+    assert.ok(shellPattern("2>/dev/null sh"));
+  });
+
+  it("still matches >/dev/null bash", () => {
+    assert.ok(shellPattern(">/dev/null bash"));
+  });
+
+  it("still matches 2>&1 sh", () => {
+    assert.ok(shellPattern("2>&1 sh"));
+  });
+
+  it("does not match a redirection before grep dash", () => {
+    assert.ok(!shellPattern("2>/dev/null grep dash"));
+  });
+
+  it("still does not match bare grep dash (regression)", () => {
+    assert.ok(!shellPattern("grep -i dash"));
+  });
+});

@@ -1007,7 +1007,13 @@ export function extractSubshells(stmt: string): string[] {
  * silent read-only pass (the DANGEROUS sudo pattern still prompts).
  */
 const READ_ONLY_WRAPPER_PREFIX_RE =
-  /^\s*(?:\S+=\S*\s+|rtk(?:\s+-\S+)*\s+|(?:command|builtin|exec)\s+|env(?:\s+(?:-\S+|\S+=\S*))*\s+|timeout\s+(?:-\S+\s+)*\S+\s+|nice\s+(?:-\S+\s+)*|nohup\s+)+/;
+  // env/nice option handling is PRECISE about which flags take values
+  // (PR #948 R2): generic value consumption would let `env -i grep foo`
+  // eat `grep` as -i's "value", while no value consumption lets
+  // `env -u grep rm -rf x` pass `grep` off as the command. env's value-taking
+  // options are -u/-C/-S/-P (and long forms); -i is boolean. nice's only
+  // value option is -n/--adjustment.
+  /^\s*(?:\S+=\S*\s+|rtk(?:\s+-\S+)*\s+|(?:command|builtin|exec)\s+|env(?:\s+(?:-(?:u|C|S|P)(?:\s+\S+)?|-i|--ignore-environment|--unset(?:\s+\S+)?|--split-string[= ]\S*|--chdir[= ]\S*|\S+=\S*))*\s+|timeout\s+(?:-\S+\s+)*\S+\s+|nice(?:\s+(?:-n\s+\S+|--adjustment[= ]\S*))*\s+|nohup\s+)+/;
 
 /**
  * Split a command into individual statements for the dangerous-command

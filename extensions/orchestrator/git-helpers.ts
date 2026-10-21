@@ -1152,14 +1152,15 @@ export const DANGEROUS = [
   /\bfind\b[\s\S]*\s-delete\b/i,
   /\bfind\b[\s\S]*-exec(?:dir)?\s+(?:\/\S+\/)?rm\b/i,
   /\bxargs\s+(?:-\S+\s+)*(?:\/\S+\/)?rm\b/i,
-  // Bare shell invocation (issue #947, hardened PR #948): the shell name must
-  // be in COMMAND POSITION — the first word of the statement (statements are
-  // split on `;`/`&&`/`||`/`|`/`&`, so a pipe target is its own statement),
-  // optionally behind wrapper prefixes (sudo/env/timeout/nice/nohup/xargs/
-  // command/builtin/exec/rtk, VAR=value assignments). Wrappers consume their
-  // option VALUES (`sudo -u root`, `env -u HOME`, `nice -n 10`) — a flag with
-  // a separate value argument must not shield the shell that follows it.
+  // Bare shell invocation (issue #947, hardened PR #948 R1+R2): the shell
+  // name must be in COMMAND POSITION — the first word of the statement
+  // (statements are split on `;`/`&&`/`||`/`|`/`&`, so a pipe target is its
+  // own statement), optionally behind LEADING REDIRECTIONS (`2>/dev/null sh`)
+  // and wrapper prefixes (sudo/env/timeout/nice/nohup/xargs/command/builtin/
+  // exec/rtk, VAR=value assignments). Wrappers consume their option VALUES
+  // (`sudo -u root`, `env -u HOME`, `nice -n 10`) — a flag with a separate
+  // value argument must not shield the shell that follows it.
   // The old form `/(?:^|[\s|])(ba|da|z|k|c|tc|fi)?sh\s*$/i` matched ANY
   // trailing word ending in "sh", false-positiving on `grep -i dash`.
-  /^(?:\s*(?:[A-Za-z_]\w*=\S*|sudo(?:\s+-\S+(?:\s+\S+)?)*|rtk(?:\s+-\S+)*|(?:command|builtin|exec)\b|env(?:\s+(?:-\S+(?:\s+\S+)?|\S+=\S*))*|timeout\s+(?:-\S+\s+)*\S+|nice(?:\s+(?:-\S+(?:\s+\S+)?))*|nohup\b|xargs(?:\s+-\S+)*)\s+)*(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh(?:\s|$)/i,
+  /^(?:(?:[0-9]*>{1,2}|&>)\S*\s+)*(?:\s*(?:[A-Za-z_]\w*=\S*|sudo(?:\s+-\S+(?:\s+\S+)?)*|rtk(?:\s+-\S+)*|(?:command|builtin|exec)\b|env(?:\s+(?:-\S+(?:\s+\S+)?|\S+=\S*))*|timeout\s+(?:-\S+\s+)*\S+|nice(?:\s+(?:-\S+(?:\s+\S+)?))*|nohup\b|xargs(?:\s+-\S+)*)\s+)*(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh(?:\s|$)/i,
 ];
