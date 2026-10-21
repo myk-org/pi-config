@@ -881,8 +881,63 @@ export function checkTempFileEnforcement(command: string, cwd: string): Enforcem
 export const READ_ONLY_COMMANDS = new Set([
   "grep", "egrep", "fgrep", "rg", "ag", "ack",
   "cat", "head", "tail", "less", "more", "wc",
-  "echo", "printf",
+  "echo", "printf", "ls",
 ]);
+
+/**
+ * Replace single-quoted regions with '' so substitutions inside them are
+ * invisible to the scanner, while a ' inside double quotes stays literal
+ * (Qodo PR #948: the old /'[^']*'/g regex treated an apostrophe inside "..."
+ * as an opening quote and swallowed everything up to the next apostrophe,
+ * hiding executable substitutions like $(rm -rf ...) from extraction).
+ * An UNTERMINATED single-quote region is re-emitted raw: a stray apostrophe
+ * ("it's fine $(rm -rf /)") must not hide the substitution that follows.
+ */
+function stripSingleQuotedRegions(stmt: string): string {
+  let out = "";
+  let i = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let singleOpenIndex = -1;
+  while (i < stmt.length) {
+    const ch = stmt[i];
+    if (inSingle) {
+      if (ch === "'") {
+        inSingle = false;
+        out += "''";
+      }
+      i++;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === "\\" && i + 1 < stmt.length) {
+        out += stmt.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (ch === '"') inDouble = false;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "'") {
+      inSingle = true;
+      singleOpenIndex = i;
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      out += ch;
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  if (inSingle && singleOpenIndex >= 0) out += stmt.slice(singleOpenIndex);
+  return out;
+}
 
 /**
  * Extract command substitutions ($(...), `...`) and process substitutions
@@ -892,8 +947,10 @@ export const READ_ONLY_COMMANDS = new Set([
 export function extractSubshells(stmt: string): string[] {
   const results: string[] = [];
 
-  // Strip single-quoted regions — POSIX sh has no escape inside single quotes, so [^']* is correct
-  const withoutSingleQuoted = stmt.replace(/'[^']*'/g, "''");
+  // Strip single-quoted regions — POSIX sh has no escape inside single quotes.
+  // Double-quote-aware so a literal apostrophe inside "..." cannot open a
+  // quoted region (Qodo PR #948).
+  const withoutSingleQuoted = stripSingleQuotedRegions(stmt);
 
   // Extract $(...) — handle nested parens by counting depth
   let i = 0;
@@ -940,12 +997,62 @@ export function extractSubshells(stmt: string): string[] {
 }
 
 /**
+ * Transparent wrapper prefixes that may precede the real command without
+ * changing its read-only nature (issue #947). Mirrors the git-code wrapper
+ * set (GIT_RTK_SRC et al., PR #916) — the user-level rtk extension rewrites
+ * every bash command through `rtk rewrite` before enforcement evaluates it,
+ * so `grep` arrives as `rtk grep`.
+ *
+ * Deliberately NOT sudo: a sudo-prefixed command must never receive a
+ * silent read-only pass (the DANGEROUS sudo pattern still prompts).
+ */
+const READ_ONLY_WRAPPER_PREFIX_RE =
+  // env/nice option handling is PRECISE about which flags take values
+  // (PR #948 R2): generic value consumption would let `env -i grep foo`
+  // eat `grep` as -i's "value", while no value consumption lets
+  // `env -u grep rm -rf x` pass `grep` off as the command. env's value-taking
+  // options are -u/-C/-S/-P (and long forms); -i is boolean. nice's only
+  // value option is -n/--adjustment.
+  // `-S`/`--split-string` is deliberately NOT consumable (PR #948 R3): its
+  // "value" is a split command line (`env -S find ls -delete` runs find), so
+  // an env -S statement never gets a read-only pass — it falls through to
+  // the DANGEROUS pattern check instead.
+  /^\s*(?:\S+=\S*\s+|rtk(?:\s+-\S+)*\s+|(?:command|builtin|exec)\s+|env(?:\s+(?:-(?:u|C|P)(?:\s+\S+)?|-i|--ignore-environment|--unset(?:\s+\S+)?|--chdir[= ]\S*|\S+=\S*))*\s+|timeout\s+(?:-\S+\s+)*\S+\s+|nice(?:\s+(?:-n\s+\S+|--adjustment[= ]\S*))*\s+|nohup\s+)+/;
+
+/**
+ * Split a command into individual statements for the dangerous-command
+ * check: strip heredoc bodies, collapse line continuations, then split on
+ * statement separators AND pipes. Single `&` (background operator) is a
+ * separator too (Qodo PR #948): `echo ok & rm -rf x` must not let a
+ * read-only verdict for `echo` skip the deletion that follows it.
+ * `&&` and `||` are matched before `&`/`|` by alternation order.
+ * NOTE: Pipe split does not respect shell quoting — biases toward false
+ * positives (extra prompts), which is acceptable for security.
+ */
+export function splitBashStatements(command: string): string[] {
+  // Split on statement separators AND pipes. Single `&` (background operator)
+  // is a separator too (Qodo PR #948), EXCEPT inside a descriptor-duplication
+  // redirect (`2>&1`, `>&2` — PR #948 R3): splitting those at `&` shatters the
+  // redirect and hides a piped shell behind harmless fragments. `&&` and `||`
+  // are matched before `&`/`|` by alternation order.
+  // NOTE: Pipe split does not respect shell quoting — biases toward false
+  // positives (extra prompts), which is acceptable for security.
+  const normalized = stripHeredocBodies(command).replace(/\\\r?\n/g, " ");
+  return normalized
+    .split(/\n|;|&&|(?<!>)&|\|\||\|/)
+    .map((s: string) => s.trim())
+    .filter(Boolean);
+}
+
+/**
  * Check if a statement is a read-only command with no dangerous subshells.
  * Returns true if the DANGEROUS check should be skipped for this statement.
  */
 export function isReadOnlyStatement(stmt: string): boolean {
-  // Extract the base command (first word, strip any leading env vars like VAR=val)
-  const stripped = stmt.replace(/^\s*(?:\S+=\S*\s+)*/, "");
+  // Strip transparent wrapper prefixes (rtk/env/timeout/nice/nohup/command/
+  // builtin/exec) and VAR=value assignments so `rtk grep` gets the same
+  // read-only pass as `grep` (issue #947).
+  const stripped = stmt.replace(READ_ONLY_WRAPPER_PREFIX_RE, "");
   const baseCmd = stripped.split(/\s/)[0]?.replace(/^.*\//, ""); // strip path prefix
   if (!baseCmd || !READ_ONLY_COMMANDS.has(baseCmd)) return false;
 

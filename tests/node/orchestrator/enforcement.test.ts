@@ -13,6 +13,7 @@ import {
   READ_ONLY_COMMANDS,
   extractSubshells,
   isReadOnlyStatement,
+  splitBashStatements,
   isRmInProjectTmp,
   normalizeForRepeatCheck,
   escapeForDoubleQuote,
@@ -2525,5 +2526,307 @@ git commit -F /tmp/msg`;
     assert.ok(fixed !== null);
     assert.ok(fixed.includes("PI (model-x)"));
     assert.ok(!fixed.includes("$PI_MODEL"));
+  });
+});
+
+// ── issue #947: rtk-wrapped read-only commands + trailing-sh false positive ──
+
+describe("isReadOnlyStatement wrapper prefixes (issue #947)", () => {
+  it("returns true for rtk grep (rtk rewrite wraps every command)", () => {
+    assert.ok(isReadOnlyStatement('rtk grep -rn "api/user" src/main.py'));
+  });
+
+  it("returns true for rtk grep with a pattern ending in a shell name", () => {
+    assert.ok(isReadOnlyStatement("rtk grep -i dash frontend/src/pages/"));
+  });
+
+  it("returns true for rtk ls", () => {
+    assert.ok(isReadOnlyStatement("rtk ls frontend/src/components/"));
+  });
+
+  it("returns true for rtk cat", () => {
+    assert.ok(isReadOnlyStatement("rtk cat package.json"));
+  });
+
+  it("returns true for rtk with flags", () => {
+    assert.ok(isReadOnlyStatement("rtk --no-banner grep foo src/"));
+  });
+
+  it("returns true for the command wrapper", () => {
+    assert.ok(isReadOnlyStatement("command cat somefile.txt"));
+  });
+
+  it("returns true for the builtin wrapper", () => {
+    assert.ok(isReadOnlyStatement("builtin echo hi"));
+  });
+
+  it("returns true for the exec wrapper", () => {
+    assert.ok(isReadOnlyStatement("exec head -3 file"));
+  });
+
+  it("returns true for env with an assignment", () => {
+    assert.ok(isReadOnlyStatement("env LANG=C grep sudo file"));
+  });
+
+  it("returns true for env with a flag", () => {
+    assert.ok(isReadOnlyStatement("env -i grep foo file"));
+  });
+
+  it("returns true for the timeout wrapper", () => {
+    assert.ok(isReadOnlyStatement("timeout 5 head -3 file"));
+  });
+
+  it("returns true for the nice wrapper", () => {
+    assert.ok(isReadOnlyStatement("nice grep foo file"));
+  });
+
+  it("returns true for the nohup wrapper", () => {
+    assert.ok(isReadOnlyStatement("nohup cat file"));
+  });
+
+  it("returns false for sudo wrapper — sudo never gets a read-only pass", () => {
+    assert.ok(!isReadOnlyStatement("sudo grep foo file"));
+  });
+
+  it("returns false for rtk grep with a dangerous subshell", () => {
+    assert.ok(!isReadOnlyStatement("rtk grep $(rm -rf /) file"));
+  });
+
+  it("returns false for rtk with a non-read-only payload", () => {
+    assert.ok(!isReadOnlyStatement("rtk rm -rf /tmp/foo"));
+  });
+});
+
+describe("bare-shell DANGEROUS pattern command-position anchor (issue #947)", () => {
+  const shellPattern = (stmt: string): boolean => DANGEROUS.some((p) => p.test(stmt));
+
+  it("no longer matches rtk grep for dash", () => {
+    assert.ok(!shellPattern("rtk grep -i dash"));
+  });
+
+  it("no longer matches a bare grep for dash", () => {
+    assert.ok(!shellPattern("grep -i dash"));
+  });
+
+  it("no longer matches echo fish", () => {
+    assert.ok(!shellPattern("echo fish"));
+  });
+
+  it("no longer matches cat ksh", () => {
+    assert.ok(!shellPattern("cat ksh"));
+  });
+
+  it("no longer matches echo bash", () => {
+    assert.ok(!shellPattern("echo bash"));
+  });
+
+  it("still matches a bare bash statement", () => {
+    assert.ok(shellPattern("bash"));
+  });
+
+  it("still matches a bare sh statement", () => {
+    assert.ok(shellPattern("sh"));
+  });
+
+  it("still matches zsh with args", () => {
+    assert.ok(shellPattern("zsh -c 'echo hi'"));
+  });
+
+  it("still matches a full-path shell", () => {
+    assert.ok(shellPattern("/bin/bash"));
+  });
+
+  it("still matches sudo zsh", () => {
+    assert.ok(shellPattern("sudo zsh"));
+  });
+
+  it("still matches env bash", () => {
+    assert.ok(shellPattern("env bash"));
+  });
+
+  it("still matches timeout sh", () => {
+    assert.ok(shellPattern("timeout 10 sh"));
+  });
+
+  it("still matches rtk bash", () => {
+    assert.ok(shellPattern("rtk bash"));
+  });
+
+  it("still matches xargs sh", () => {
+    assert.ok(shellPattern("xargs sh"));
+  });
+
+  // ── PR #948 hardening: assignments and option values before the shell ──
+
+  it("still matches an assignment-prefixed shell (LC_ALL=C sh)", () => {
+    assert.ok(shellPattern("LC_ALL=C sh"));
+  });
+
+  it("still matches nice -n 10 sh", () => {
+    assert.ok(shellPattern("nice -n 10 sh"));
+  });
+
+  it("still matches env -u HOME bash", () => {
+    assert.ok(shellPattern("env -u HOME bash"));
+  });
+
+  it("still matches sudo -u root zsh", () => {
+    assert.ok(shellPattern("sudo -u root zsh"));
+  });
+
+  it("does not match an assignment-prefixed grep", () => {
+    assert.ok(!shellPattern("LC_ALL=C grep dash"));
+  });
+
+  it("does not match env with an option value before grep", () => {
+    assert.ok(!shellPattern("env -u HOME grep dash"));
+  });
+
+  it("does not match ssh", () => {
+    assert.ok(!shellPattern("ssh user@host"));
+  });
+
+  it("does not match git push", () => {
+    assert.ok(!shellPattern("git push origin main"));
+  });
+});
+
+// ── PR #948: background-& split and double-quote-aware subshell extraction ──
+
+describe("splitBashStatements (PR #948)", () => {
+  it("splits on a single & so a background deletion is its own statement", () => {
+    const stmts = splitBashStatements('command echo ok & rm -rf "$HOME/project"');
+    assert.deepStrictEqual(stmts, ["command echo ok", 'rm -rf "$HOME/project"']);
+  });
+
+  it("does not split && twice", () => {
+    const stmts = splitBashStatements("echo a && echo b");
+    assert.deepStrictEqual(stmts, ["echo a", "echo b"]);
+  });
+
+  it("still splits on ; and |", () => {
+    assert.deepStrictEqual(splitBashStatements("echo a; echo b"), ["echo a", "echo b"]);
+    assert.deepStrictEqual(splitBashStatements("cat f | head -3"), ["cat f", "head -3"]);
+  });
+
+  it("strips heredoc bodies before splitting", () => {
+    const stmts = splitBashStatements("cat << 'EOF'\nrm -rf /\nEOF\necho done");
+    assert.deepStrictEqual(stmts, ["cat", "echo done"]);
+  });
+});
+
+describe("extractSubshells double-quote awareness (PR #948)", () => {
+  it("extracts a substitution hidden behind an apostrophe inside double quotes", () => {
+    const stmt = 'command echo "\'" $(rm -rf "$HOME/project") "\'"';
+    const subshells = extractSubshells(stmt);
+    assert.ok(subshells.some((s) => s.includes("rm -rf")), `extracted: ${JSON.stringify(subshells)}`);
+  });
+
+  it("keeps a stray apostrophe from hiding the substitution that follows", () => {
+    const subshells = extractSubshells("echo it's fine $(rm -rf /)");
+    assert.ok(subshells.some((s) => s.includes("rm -rf")));
+  });
+
+  it("still suppresses substitutions inside real single quotes", () => {
+    const subshells = extractSubshells("echo '$(rm -rf /)'");
+    assert.ok(!subshells.some((s) => s.includes("rm -rf")));
+  });
+
+  it("the apostrophe-hidden deletion is not read-only", () => {
+    const stmt = 'command echo "\'" $(rm -rf "$HOME/project") "\'"';
+    assert.ok(!isReadOnlyStatement(stmt));
+  });
+
+  it("a background deletion after a read-only command is not read-only overall", () => {
+    // The statement split in checkDangerousCommands isolates `rm -rf`, but the
+    // read-only verdict must never cover the whole chain either.
+    const stmts = splitBashStatements('command echo ok & rm -rf "$HOME/project"');
+    assert.ok(stmts.some((s) => !isReadOnlyStatement(s) && /rm\s+-rf/.test(s)));
+  });
+});
+
+// ── PR #948 R2: env -u value consumption and leading redirections ──
+
+describe("wrapper option values do not mask the executable (PR #948 R2)", () => {
+  it("env -u <name> rm is not read-only — the name is env's argument, not the command", () => {
+    assert.ok(!isReadOnlyStatement("env -u grep rm -rf ~/work"));
+  });
+
+  it("env -u HOME grep is read-only — value consumed, grep is the command", () => {
+    assert.ok(isReadOnlyStatement("env -u HOME grep foo file"));
+  });
+
+  it("nice -n 10 grep is read-only — the niceness value is consumed", () => {
+    assert.ok(isReadOnlyStatement("nice -n 10 grep foo file"));
+  });
+
+  it("env -u cat rm is not read-only either", () => {
+    assert.ok(!isReadOnlyStatement("env -u cat rm -rf ~/work"));
+  });
+});
+
+describe("leading redirections before a piped shell (PR #948 R2)", () => {
+  const shellPattern = (stmt: string): boolean => DANGEROUS.some((p) => p.test(stmt));
+
+  it("still matches 2>/dev/null sh", () => {
+    assert.ok(shellPattern("2>/dev/null sh"));
+  });
+
+  it("still matches >/dev/null bash", () => {
+    assert.ok(shellPattern(">/dev/null bash"));
+  });
+
+  it("still matches 2>&1 sh", () => {
+    assert.ok(shellPattern("2>&1 sh"));
+  });
+
+  it("does not match a redirection before grep dash", () => {
+    assert.ok(!shellPattern("2>/dev/null grep dash"));
+  });
+
+  it("still does not match bare grep dash (regression)", () => {
+    assert.ok(!shellPattern("grep -i dash"));
+  });
+});
+
+// ── PR #948 R3: env -S split strings and descriptor-duplication redirects ──
+
+describe("env -S split strings are never read-only (PR #948 R3)", () => {
+  it("env -S find ls -delete is not read-only", () => {
+    assert.ok(!isReadOnlyStatement("env -S find ls -delete"));
+  });
+
+  it("the env -S deletion still matches the DANGEROUS find -delete pattern", () => {
+    assert.ok(DANGEROUS.some((p) => p.test("env -S find ls -delete")));
+  });
+
+  it("env --split-string with a payload is not read-only either", () => {
+    assert.ok(!isReadOnlyStatement('env --split-string "rm -rf ~/work"'));
+  });
+
+  it("env -u grep rm stays not read-only (regression)", () => {
+    assert.ok(!isReadOnlyStatement("env -u grep rm -rf ~/work"));
+  });
+});
+
+describe("descriptor-duplication redirects survive the split (PR #948 R3)", () => {
+  it("does not split 2>&1 sh at the redirect's &", () => {
+    const stmts = splitBashStatements("cat script | 2>&1 sh");
+    assert.deepStrictEqual(stmts, ["cat script", "2>&1 sh"]);
+  });
+
+  it("a piped shell behind 2>&1 is flagged through the enforcement path", () => {
+    const stmts = splitBashStatements("cat script | 2>&1 sh");
+    assert.ok(stmts.some((s) => DANGEROUS.some((p) => p.test(s))));
+  });
+
+  it("keeps >&2 attached to its statement", () => {
+    const stmts = splitBashStatements("grep foo file >&2");
+    assert.deepStrictEqual(stmts, ["grep foo file >&2"]);
+  });
+
+  it("still splits a background & (regression)", () => {
+    const stmts = splitBashStatements('command echo ok & rm -rf "$HOME/project"');
+    assert.deepStrictEqual(stmts, ["command echo ok", 'rm -rf "$HOME/project"']);
   });
 });
