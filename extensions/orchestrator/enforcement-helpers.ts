@@ -885,6 +885,61 @@ export const READ_ONLY_COMMANDS = new Set([
 ]);
 
 /**
+ * Replace single-quoted regions with '' so substitutions inside them are
+ * invisible to the scanner, while a ' inside double quotes stays literal
+ * (Qodo PR #948: the old /'[^']*'/g regex treated an apostrophe inside "..."
+ * as an opening quote and swallowed everything up to the next apostrophe,
+ * hiding executable substitutions like $(rm -rf ...) from extraction).
+ * An UNTERMINATED single-quote region is re-emitted raw: a stray apostrophe
+ * ("it's fine $(rm -rf /)") must not hide the substitution that follows.
+ */
+function stripSingleQuotedRegions(stmt: string): string {
+  let out = "";
+  let i = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let singleOpenIndex = -1;
+  while (i < stmt.length) {
+    const ch = stmt[i];
+    if (inSingle) {
+      if (ch === "'") {
+        inSingle = false;
+        out += "''";
+      }
+      i++;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === "\\" && i + 1 < stmt.length) {
+        out += stmt.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (ch === '"') inDouble = false;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "'") {
+      inSingle = true;
+      singleOpenIndex = i;
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      out += ch;
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  if (inSingle && singleOpenIndex >= 0) out += stmt.slice(singleOpenIndex);
+  return out;
+}
+
+/**
  * Extract command substitutions ($(...), `...`) and process substitutions
  * (<(...), >(...)) from a statement, respecting single quotes (which
  * suppress expansion in bash). Returns the extracted command strings.
@@ -892,8 +947,10 @@ export const READ_ONLY_COMMANDS = new Set([
 export function extractSubshells(stmt: string): string[] {
   const results: string[] = [];
 
-  // Strip single-quoted regions — POSIX sh has no escape inside single quotes, so [^']* is correct
-  const withoutSingleQuoted = stmt.replace(/'[^']*'/g, "''");
+  // Strip single-quoted regions — POSIX sh has no escape inside single quotes.
+  // Double-quote-aware so a literal apostrophe inside "..." cannot open a
+  // quoted region (Qodo PR #948).
+  const withoutSingleQuoted = stripSingleQuotedRegions(stmt);
 
   // Extract $(...) — handle nested parens by counting depth
   let i = 0;
@@ -951,6 +1008,24 @@ export function extractSubshells(stmt: string): string[] {
  */
 const READ_ONLY_WRAPPER_PREFIX_RE =
   /^\s*(?:\S+=\S*\s+|rtk(?:\s+-\S+)*\s+|(?:command|builtin|exec)\s+|env(?:\s+(?:-\S+|\S+=\S*))*\s+|timeout\s+(?:-\S+\s+)*\S+\s+|nice\s+(?:-\S+\s+)*|nohup\s+)+/;
+
+/**
+ * Split a command into individual statements for the dangerous-command
+ * check: strip heredoc bodies, collapse line continuations, then split on
+ * statement separators AND pipes. Single `&` (background operator) is a
+ * separator too (Qodo PR #948): `echo ok & rm -rf x` must not let a
+ * read-only verdict for `echo` skip the deletion that follows it.
+ * `&&` and `||` are matched before `&`/`|` by alternation order.
+ * NOTE: Pipe split does not respect shell quoting — biases toward false
+ * positives (extra prompts), which is acceptable for security.
+ */
+export function splitBashStatements(command: string): string[] {
+  const normalized = stripHeredocBodies(command).replace(/\\\r?\n/g, " ");
+  return normalized
+    .split(/\n|;|&&|&|\|\||\|/)
+    .map((s: string) => s.trim())
+    .filter(Boolean);
+}
 
 /**
  * Check if a statement is a read-only command with no dangerous subshells.

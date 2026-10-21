@@ -53,6 +53,7 @@ import {
   normalizeForRepeatCheck,
   realGitSub,
   resolveEffectiveCwd,
+  splitBashStatements,
   stripHeredocBodies,
   stripQuotedSpans,
   escapeForDoubleQuote,
@@ -383,16 +384,9 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
 
 /** Dangerous command confirmation with UI prompt */
 async function checkDangerousCommands(command: string, cwd: string, ctx: any): Promise<EnforcementResult> {
-  // Strip heredoc content — heredoc text is not executable
-  const cmdForDangerCheck = stripHeredocBodies(command);
-  // Collapse bash line continuations (backslash-newline) before splitting
-  const normalized = cmdForDangerCheck.replace(/\\\r?\n/g, " ");
-  // Split on statement separators AND pipes to isolate individual commands.
-  // NOTE: || must appear before | in the regex so the engine matches || greedily first.
-  // NOTE: Pipe split does not respect shell quoting (e.g., echo "a|b" splits incorrectly).
-  // This biases toward false positives (extra prompts), which is acceptable for security.
-  // Do NOT add quoting awareness here — it would flip the bias toward false negatives.
-  const statements = normalized.split(/\n|;|&&|\|\||\|/).map(s => s.trim()).filter(Boolean);
+  // Split on statement separators AND pipes (incl. single `&` — background
+  // operator) via the shared, tested splitter (Qodo PR #948).
+  const statements = splitBashStatements(command);
   const hasDangerous = statements.some((stmt) => {
     // Skip read-only commands with no dangerous subshells
     if (isReadOnlyStatement(stmt)) return false;
