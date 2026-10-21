@@ -3022,10 +3022,28 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
 
   // Qodo PR #950 R1 finding 1: the agent must not be able to approve its own
   // commands by writing the allowlist file directly.
-  it("bash touching dangerous-allowlist.json is blocked", async () => {
-    const res = await runBash("echo '{}' > .pi/data/dangerous-allowlist.json");
-    assert.equal(res?.block, true);
-    assert.match(res?.reason ?? "", /dangerous-allowlist/);
+  it("bash writing dangerous-allowlist.json is blocked", async () => {
+    for (const cmd of [
+      "echo '{}' > .pi/data/dangerous-allowlist.json",
+      "cp other.json .pi/data/dangerous-allowlist.json",
+      String.raw`python3 -c "open('.pi/data/dangerous-allowlist.json','w')"`,
+    ]) {
+      const res = await runBash(cmd);
+      assert.equal(res?.block, true, cmd);
+      assert.match(res?.reason ?? "", /dangerous-allowlist/);
+    }
+  });
+
+  it("merely mentioning dangerous-allowlist does not block (branch names, commit text, reads)", async () => {
+    for (const cmd of [
+      "echo on branch feat/issue-949-dangerous-allowlist",
+      'gh pr view 950 --json headRefName # feat/issue-949-dangerous-allowlist',
+      "cat .pi/data/dangerous-allowlist.json",
+      "rg dangerous-allowlist docs/",
+    ]) {
+      const res = await runBash(cmd);
+      assert.notEqual(res?.block, true, cmd);
+    }
   });
 
   it("write/edit tool calls targeting the allowlist file are blocked", async () => {

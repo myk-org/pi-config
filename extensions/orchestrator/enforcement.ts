@@ -536,14 +536,22 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       };
     }
 
-    // Block bash writes/reads-by-path targeting the dangerous-command
-    // allowlist (issue #949 / Qodo PR #950) — same rationale as the
-    // edit/write block above: the file is prompt-managed only.
-    if (cmdLower.includes("dangerous-allowlist")) {
+    // Block bash WRITES targeting the dangerous-command allowlist (issue
+    // #949 / Qodo PR #950) — same rationale as the edit/write block above:
+    // the file is prompt-managed only. Write-shaped, not mention-shaped:
+    // a redirect into the file, or a write verb / interpreter / shell
+    // co-occurring with the filename, blocks; a plain mention (branch
+    // name `feat/issue-949-dangerous-allowlist`, commit-message text,
+    // cat/grep reads) must not block development on the feature itself.
+    if (
+      cmdLower.includes("dangerous-allowlist") &&
+      (/>+\s*\S*dangerous-allowlist/i.test(command) ||
+        /(?:^|[\s;&|(])(?:tee|cp|mv|rm|sed|truncate|ln|install|dd|shred|unlink|chmod|chown|python3?|node|perl|ruby|bash|sh|zsh)\b/i.test(command))
+    ) {
       return {
         block: true,
         reason:
-          "\u26d4 Bash command targeting dangerous-allowlist.json blocked. Approvals are recorded only through the interactive dangerous-command prompt.",
+          "\u26d4 Bash command writing dangerous-allowlist.json blocked. Approvals are recorded only through the interactive dangerous-command prompt.",
       };
     }
 
