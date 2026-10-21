@@ -1,4 +1,5 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
+import { StringListSubmenu } from "../../../extensions/orchestrator/settings-tui-submenus.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -983,5 +984,93 @@ describe("isImageGenModelId / isImageCapablePickerItem", () => {
       }),
       false,
     );
+  });
+});
+
+// ── StringListSubmenu behavior (Qodo PR #950 R3) ───────────────────
+
+describe("StringListSubmenu behavior", () => {
+  const ENTER = "\r";
+  const ESC = "\x1b";
+  const UP = "\x1b[A";
+  const DOWN = "\x1b[B";
+  // Identity theme — the component only styles text through it
+  const theme: any = { fg: (_c: string, s: string) => s, bold: (s: string) => s, dim: (s: string) => s };
+
+  const render = (c: { render(w: number): string[] }): string => c.render(80).join("\n");
+
+  it("renders entries, the add row, and navigation help", () => {
+    const c = new StringListSubmenu("test — patterns", ["sudo zsh", "nohup *"], theme, () => {});
+    const out = render(c);
+    assert.match(out, /sudo zsh/);
+    assert.match(out, /nohup \*/);
+    assert.match(out, /＋ add pattern/);
+    assert.match(out, /Enter edit\/add/);
+  });
+
+  it("Esc with no edits submits nothing (done gets undefined)", () => {
+    let submitted: string | undefined = "SENTINEL";
+    const c = new StringListSubmenu("t", ["a"], theme, (v) => { submitted = v; });
+    c.handleInput(ESC);
+    assert.equal(submitted, undefined);
+  });
+
+  it("add → type → Enter adds the entry; Esc then submits the dirty list as JSON", () => {
+    let submitted: string | undefined;
+    const c = new StringListSubmenu("t", ["a"], theme, (v) => { submitted = v; });
+    // move to the add row and open it
+    c.handleInput(DOWN);
+    c.handleInput(ENTER);
+    for (const ch of "sudo ksh") c.handleInput(ch);
+    c.handleInput(ENTER); // save entry, back to list
+    c.handleInput(ESC); // commit
+    assert.deepEqual(JSON.parse(submitted!), ["a", "sudo ksh"]);
+  });
+
+  it("an empty add is ignored — Esc stays clean", () => {
+    let submitted: string | undefined = "SENTINEL";
+    const c = new StringListSubmenu("t", ["a"], theme, (v) => { submitted = v; });
+    c.handleInput(DOWN);
+    c.handleInput(ENTER);
+    c.handleInput(ENTER); // empty value → no add
+    c.handleInput(ESC);
+    assert.equal(submitted, undefined, "no edits → no commit");
+  });
+
+  it("'d' deletes the selected entry and only a dirty list commits", () => {
+    let submitted: string | undefined;
+    const c = new StringListSubmenu("t", ["a", "b"], theme, (v) => { submitted = v; });
+    c.handleInput("d");
+    c.handleInput(ESC);
+    assert.deepEqual(JSON.parse(submitted!), ["b"]);
+  });
+
+  it("editing an existing entry replaces it in place", () => {
+    let submitted: string | undefined;
+    const c = new StringListSubmenu("t", ["a", "b"], theme, (v) => { submitted = v; });
+    c.handleInput(DOWN); // select "b"
+    c.handleInput(ENTER); // edit — Input prefills "b" with the cursor at position 0
+    for (const ch of "b2") c.handleInput(ch); // typed text inserts BEFORE the prefill
+    c.handleInput(ENTER);
+    c.handleInput(ESC);
+    assert.deepEqual(JSON.parse(submitted!), ["a", "b2b"]);
+  });
+
+  it("Esc inside the editor cancels back to the list without marking dirty", () => {
+    let submitted: string | undefined = "SENTINEL";
+    const c = new StringListSubmenu("t", ["a"], theme, (v) => { submitted = v; });
+    c.handleInput(DOWN);
+    c.handleInput(ENTER);
+    for (const ch of "x") c.handleInput(ch);
+    c.handleInput(ESC); // cancel edit
+    c.handleInput(ESC); // close — still clean
+    assert.equal(submitted, undefined);
+  });
+
+  it("UP wraps around from the first row to the add row", () => {
+    const c = new StringListSubmenu("t", ["a"], theme, () => {});
+    c.handleInput(UP); // wraps to add row
+    const out = render(c);
+    assert.match(out, /❯ ＋ add pattern/);
   });
 });
