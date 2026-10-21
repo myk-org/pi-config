@@ -472,11 +472,31 @@ for example — the prompt gains a third option:</p>
     No
 </code></pre></div>
 
-<p>Choosing <strong>"Yes — always allow this exact command"</strong> appends the command text
-to the <code>dangerous_command_allowlist</code> setting in the project's
-<code>pi-config-settings.json</code>. Later runs of the <em>byte-identical</em> command pass
-silently — but never invisibly: every allowlisted hit logs a
-<code>dangerous_command_allowlisted</code> warning naming the pattern that matched.</p>
+<p>The prompt identifies the <strong>dangerous statements</strong> inside your command — each
+with the rule that matched it — and offers, per statement:</p>
+<div class="highlight"><pre><span></span><code>⚠️ Dangerous statements (of the full command):
+
+  sudo zsh
+    ↳ sudo
+  bash .dev/deploy-all.sh
+    ↳ bare shell invocation
+
+Allow?
+
+  → Yes — run once
+    Always allow: sudo zsh
+    Always allow: bash .dev/deploy-all.sh
+    Always allow all of the above
+    No
+</code></pre></div>
+
+<p><strong>"Always allow: \&lt;statement&gt;"</strong> appends that statement (trailing I/O
+redirections like <code>2&gt;&amp;1</code> stripped — they are plumbing, not danger) to the
+<code>dangerous_command_allowlist</code> setting in the project's settings file, then
+re-prompts for any remaining dangerous statements. Later commands whose
+dangerous statements are all allowlisted pass silently — but never invisibly:
+every allowlisted hit logs a <code>dangerous_command_allowlisted</code> warning naming
+the rule that matched.</p>
 <p>Because the entries are a regular setting, you can review, edit, and extend
 them — via <code>/pi-config-settings</code> (Enforcement category, with a list editor)
 or by editing the file directly:</p>

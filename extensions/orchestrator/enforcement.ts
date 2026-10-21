@@ -23,6 +23,7 @@ import {
 } from "./enforcement-helpers.js";
 import {
   DANGEROUS,
+  dangerousPatternLabel,
   getCurrentBranch,
   isInsideGitWorkTree,
   getMainBranch,
@@ -57,6 +58,7 @@ import {
   addDangerousAllowlistEntry,
   dangerousCommandHash,
   findDangerousAllowlistEntry,
+  normalizeDangerousStatement,
   splitBashStatements,
   stripHeredocBodies,
   stripQuotedSpans,
@@ -403,27 +405,39 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
       .every((stmt) => isRmInProjectTmp(stmt, cwd));
     if (allRmInTmp) return undefined;
 
-    // User-approved exact-command allowlist (issue #949): a previously
-    // approved byte-identical command runs silently, but never invisibly —
-    // every allowlisted hit is logged with the pattern that matched.
-    const matchedPattern =
-      statements
-        .filter((stmt) => !isReadOnlyStatement(stmt))
-        .flatMap((stmt) => DANGEROUS.filter((p) => p.test(stmt)).map((p) => String(p)))
-        .find(Boolean) ?? "unknown";
-    const allowMatch = findDangerousAllowlistEntry(cwd, command);
-    if (allowMatch) {
-      // No command/entry text in logs (Qodo PR #950): an approved command
+    // User-approved allowlist (issue #949): the gate identifies the DANGEROUS
+    // STATEMENTS (split out of the chain, trailing I/O redirections stripped
+    // — they are plumbing, not danger) and each must be approved. A chain
+    // where every dangerous statement matches an allowlist entry runs
+    // silently, but never invisibly: every hit is logged. "always allow"
+    // stores the dangerous STATEMENTS — the minimal reusable approval — so
+    // `bash .dev/deploy-all.sh` approved once covers any chain that contains
+    // exactly that statement (user request, PR #950).
+    const dangerousStmts = [
+      ...new Set(
+        statements
+          .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt))
+          .map((stmt) => normalizeDangerousStatement(stmt)),
+      ),
+    ];
+    const unapproved: string[] = [];
+    for (const stmt of dangerousStmts) {
+      const allowMatch = findDangerousAllowlistEntry(cwd, stmt);
+      if (!allowMatch) {
+        unapproved.push(stmt);
+        continue;
+      }
+      // No command/entry text in logs (Qodo PR #950): an approved statement
       // may contain inline credentials — global log files must not copy it
       // out of the project. The matched pattern + entry hash prefix
       // identify the hit; the entry itself lives in the settings file.
       log.warn("dangerous_command_allowlisted", {
-        dangerousPattern: matchedPattern,
+        dangerousPattern: String(DANGEROUS.find((p) => p.test(stmt)) ?? "unknown"),
         entryHashPrefix: dangerousCommandHash(allowMatch.entry).slice(0, 12),
         source: allowMatch.source,
       });
-      return undefined;
     }
+    if (unapproved.length === 0) return undefined;
 
     if (!ctx.hasUI)
       return {
@@ -431,20 +445,63 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
         reason: "Dangerous command blocked (no UI for confirmation). Do NOT retry with an equivalent command (e.g., find -delete, perl, python os.remove). Stop and report this block to the user.",
       };
 
-    const ok = await ctx.ui.select(
-      `⚠️ Dangerous command:\n\n  ${command}\n\nAllow?`,
-      ["Yes", "Yes — always allow this exact command", "No"],
-    );
-    if (ok === "Yes — always allow this exact command") {
-      addDangerousAllowlistEntry(cwd, command);
-      log.info("dangerous_command_allowlist_entry_added", {
-        dangerousPattern: matchedPattern,
-        hashPrefix: dangerousCommandHash(command).slice(0, 12),
-        storedIn: "project settings (dangerous_command_allowlist)",
-      });
+    // Interactive decision loop (user request, PR #950): every dangerous
+    // statement gets its own "Always allow: <stmt>" option (plus run-once,
+    // allow-all, and No). Choosing one statement persists just that entry
+    // and re-prompts for the remainder until nothing dangerous is left.
+    const decide = async (remaining: string[]): Promise<EnforcementResult | undefined> => {
+      const list = remaining
+        .map((stmt) => `  ${stmt}\n    ↳ ${dangerousPatternLabel(DANGEROUS.find((p) => p.test(stmt)) ?? /./)}`)
+        .join("\n");
+      // Option labels are truncated for the menu; keep them unique.
+      // Computed ONCE — the choice handler looks up by the same objects.
+      const seen = new Map<string, number>();
+      const labelFor = (stmt: string): string => {
+        const base = stmt.length > 60 ? `${stmt.slice(0, 57)}…` : stmt;
+        const n = (seen.get(base) ?? 0) + 1;
+        seen.set(base, n);
+        return n === 1 ? base : `${base} (#${n})`;
+      };
+      const labeled = remaining.map((stmt) => ({ stmt, label: labelFor(stmt) }));
+      const options = [
+        "Yes — run once",
+        ...labeled.map(({ label }) => `Always allow: ${label}`),
+        ...(remaining.length > 1 ? ["Always allow all of the above"] : []),
+        "No",
+      ];
+      const ok = await ctx.ui.select(
+        `⚠️ Dangerous statement${remaining.length > 1 ? "s" : ""} (of the full command):\n\n${list}\n\nAllow?`,
+        options,
+      );
+      if (ok === "No" || ok === undefined)
+        return { block: true, reason: "Blocked by user. Do NOT retry with an equivalent command (e.g., find -delete, perl, python os.remove). Stop and report this block to the user." };
+      if (ok === "Yes — run once" || ok === "Always allow all of the above") {
+        if (ok === "Always allow all of the above") {
+          for (const stmt of remaining) addDangerousAllowlistEntry(cwd, stmt);
+          log.info("dangerous_command_allowlist_entry_added", {
+            count: remaining.length,
+            storedIn: "project settings (dangerous_command_allowlist)",
+          });
+        }
+        return undefined;
+      }
+      if (ok.startsWith("Always allow: ")) {
+        const chosen = labeled.find(({ label }) => ok === `Always allow: ${label}`)?.stmt;
+        if (chosen !== undefined) {
+          addDangerousAllowlistEntry(cwd, chosen);
+          log.info("dangerous_command_allowlist_entry_added", {
+            dangerousPattern: dangerousPatternLabel(DANGEROUS.find((p) => p.test(chosen)) ?? /./),
+            hashPrefix: dangerousCommandHash(chosen).slice(0, 12),
+            storedIn: "project settings (dangerous_command_allowlist)",
+          });
+          const still = remaining.filter((s) => s !== chosen);
+          if (still.length === 0) return undefined;
+          return decide(still);
+        }
+      }
       return undefined;
-    }
-    if (ok !== "Yes") return { block: true, reason: "Blocked by user. Do NOT retry with an equivalent command (e.g., find -delete, perl, python os.remove). Stop and report this block to the user." };
+    };
+    return decide(unapproved);
   }
 
   return undefined;

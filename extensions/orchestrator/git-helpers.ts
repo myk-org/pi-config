@@ -1166,3 +1166,28 @@ export const DANGEROUS = [
   // trailing word ending in "sh", false-positiving on `grep -i dash`.
   /^(?:(?:[0-9]*>{1,2}|&>)\S*\s+)*(?:\s*(?:[A-Za-z_]\w*=\S*|(?:then|do|else|elif)\b|sudo(?:\s+-\S+(?:\s+\S+)?)*|rtk(?:\s+-\S+)*|(?:command|builtin|exec)\b|env(?:\s+(?:-\S+(?:\s+\S+)?|\S+=\S*))*|timeout\s+(?:-\S+(?:\s+\S+)?\s+)*\S+|nice(?:\s+(?:-\S+(?:\s+\S+)?))*|nohup\b|xargs(?:\s+-\S+)*)\s+)*(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh(?:\s|$)/i,
 ];
+
+/**
+ * Human labels for the DANGEROUS patterns, parallel by index (PR #950:
+ * the dangerous-command prompt names the rule that matched each statement).
+ * MUST stay index-aligned with DANGEROUS above.
+ */
+export const DANGEROUS_LABELS = [
+  "recursive delete (rm -r)",
+  "sudo",
+  "chmod/chown 777",
+  "mkfs",
+  "dd to a device",
+  "git reset --hard",
+  "git clean --force",
+  "find -delete",
+  "find -exec rm",
+  "xargs rm",
+  "bare shell invocation",
+];
+
+/** Label for a DANGEROUS pattern object (index lookup). */
+export function dangerousPatternLabel(pattern: RegExp): string {
+  const idx = DANGEROUS.indexOf(pattern);
+  return idx >= 0 && DANGEROUS_LABELS[idx] ? DANGEROUS_LABELS[idx] : String(pattern);
+}

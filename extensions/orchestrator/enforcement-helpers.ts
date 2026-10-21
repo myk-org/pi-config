@@ -1093,6 +1093,23 @@ export function allowlistGlobToRegExp(pattern: string): RegExp {
   return new RegExp(`^${re}$`, "s");
 }
 
+/** Normalize a dangerous statement for allowlist matching and storage:
+ * trailing I/O redirections (`> /dev/null`, `2>&1`, `2>/dev/null`, `&>f`)
+ * are plumbing, not danger — strip them so `bash x 2>&1` matches an entry
+ * (or an approval) of `bash x`. Iterated because tails stack
+ * (`... > /dev/null 2>&1`). User request, PR #950. */
+export function normalizeDangerousStatement(stmt: string): string {
+  let s = stmt.trim();
+  let prev = "";
+  while (prev !== s) {
+    prev = s;
+    s = s
+      .replace(/\s*(?:\d+>&\d+|\d*(?:>{1,2}|&>)\s*\S+)\s*$/, "")
+      .trim();
+  }
+  return s;
+}
+
 /** SHA-256 of a command (or entry) — hash prefixes for logs, never the text itself. */
 export function dangerousCommandHash(command: string): string {
   return createHash("sha256").update(command).digest("hex");

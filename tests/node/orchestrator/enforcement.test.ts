@@ -2936,7 +2936,7 @@ describe("dangerous command allowlist (issue #949)", () => {
     const cwd = mkCwd();
     addDangerousAllowlistEntry(cwd, "sudo zsh");
     assert.ok(findDangerousAllowlistEntry(cwd, "sudo zsh"));
-    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo zsh "), "trailing space differs");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo zsh -c ls"), "extra argument differs");
     assert.ok(!findDangerousAllowlistEntry(cwd, "sudo bash"), "different command");
     assert.ok(!findDangerousAllowlistEntry(cwd, "echo x; sudo zsh"), "bigger chain differs");
   });
@@ -3064,7 +3064,9 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   it("a wildcard settings entry covers the command family", async () => {
-    seedSettings(["nohup bash -c *nc 127.0.0.1 4444*"]);
+    // Statements split on pipes even inside quotes (deliberate — biases
+    // toward prompts), so the dangerous statement is the leading fragment.
+    seedSettings(['nohup bash -c "tail*']);
     const res = await runBash('nohup bash -c "tail -f x | nc 127.0.0.1 4444" &');
     assert.equal(res?.block, undefined);
     assert.equal(promptCalls.length, 0);
@@ -3073,19 +3075,32 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   it("a mutated command re-prompts and 'No' blocks", async () => {
     seedSettings(["sudo zsh"]);
     choice = "No";
-    const res = await runBash("sudo zsh ");
+    const res = await runBash("sudo zsh -c ls");
     assert.equal(res?.block, true);
     assert.equal(promptCalls.length, 1, "mutation must re-prompt");
   });
 
-  it("the prompt offers Yes / always-allow / No", async () => {
+  it("the prompt offers run-once, per-statement always-allow, allow-all, and No", async () => {
     choice = "No";
     await runBash("sudo ksh");
-    assert.deepEqual(promptCalls[0].opts, ["Yes", "Yes — always allow this exact command", "No"]);
+    assert.deepEqual(promptCalls[0].opts, ["Yes — run once", "Always allow: sudo ksh", "No"]);
+    // Multi-statement command: one option per dangerous statement + allow-all
+    choice = "No";
+    await runBash("cat x; sudo zsh; bash run.sh");
+    assert.deepEqual(promptCalls[1].opts, [
+      "Yes — run once",
+      "Always allow: sudo zsh",
+      "Always allow: bash run.sh",
+      "Always allow all of the above",
+      "No",
+    ]);
+    // The prompt names the matched rule per statement
+    assert.match(promptCalls[1].msg, /sudo zsh\n\s+↳ sudo/);
+    assert.match(promptCalls[1].msg, /bash run.sh\n\s+↳ bare shell invocation/);
   });
 
   it("'always allow' writes the settings entry and silences future headless runs", async () => {
-    choice = "Yes — always allow this exact command";
+    choice = "Always allow: sudo bash";
     const res = await runBash("sudo bash");
     assert.equal(res?.block, undefined, "approved command runs");
     const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
@@ -3093,6 +3108,75 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     // Headless run of the now-approved command passes without a UI
     const res2 = await runBash("sudo bash", false);
     assert.equal(res2?.block, undefined);
+  });
+
+  // User request (PR #950): the allowlist matches the DANGEROUS STATEMENT,
+  // not the whole chain — `bash .dev/deploy-all.sh` approved once covers any
+  // chain containing exactly that statement.
+  it("a statement-level entry covers the dangerous part of a bigger chain", async () => {
+    seedSettings(["bash .dev/deploy-all.sh"]);
+    const chain =
+      "cd ~/git/pi-config && npx tsx --test tests/node/**/*.test.ts 2>&1 | rtk rg \"^. pass|^. fail\"; " +
+      "uv run --group tests pytest -q 2>&1 | tail -1; echo ALL-OK; bash .dev/deploy-all.sh 2>&1 | tail -1";
+    const res = await runBash(chain);
+    assert.equal(res?.block, undefined, "the only dangerous statement is allowlisted");
+    assert.equal(promptCalls.length, 0);
+  });
+
+  it("a chain with an UNapproved dangerous statement still prompts for just that statement", async () => {
+    seedSettings(["bash .dev/deploy-all.sh"]);
+    choice = "No";
+    const res = await runBash("cat README.md; sudo zsh; bash .dev/deploy-all.sh");
+    assert.equal(res?.block, true);
+    assert.equal(promptCalls.length, 1);
+    // The prompt names the unapproved statement, not the whole chain
+    assert.match(promptCalls[0].msg, /sudo zsh/);
+    assert.doesNotMatch(promptCalls[0].msg, /README/);
+  });
+
+  it("'always allow' on a chain stores the normalized dangerous statements only", async () => {
+    choice = "Always allow all of the above";
+    const res = await runBash("echo start; bash .dev/deploy-all.sh 2>&1; echo done");
+    assert.equal(res?.block, undefined);
+    const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
+    assert.deepEqual(raw.dangerous_command_allowlist, ["bash .dev/deploy-all.sh"]);
+  });
+
+  it("picking one statement's always-allow persists it and re-prompts the remainder", async () => {
+    const choices = ["Always allow: sudo zsh", "No"];
+    let call = 0;
+    promptCalls.length = 0;
+    choice = undefined;
+    const ctx = {
+      cwd,
+      model: { id: "m", provider: "openai" },
+      hasUI: true,
+      ui: {
+        select: async (_msg: string, _opts: string[]) => {
+          promptCalls.push({ msg: _msg, opts: _opts });
+          return choices[call++];
+        },
+      },
+    };
+    const res = await hooks.get("tool_call")!(
+      { type: "tool_call", toolName: "bash", input: { command: "cat x; sudo zsh; bash run.sh" } },
+      ctx as any,
+    );
+    assert.equal(res?.block, true, "second round answered No");
+    assert.equal(promptCalls.length, 2, "re-prompted for the remainder");
+    assert.match(promptCalls[0].msg, /sudo zsh/);
+    assert.match(promptCalls[0].msg, /bash run.sh/);
+    assert.doesNotMatch(promptCalls[1].msg, /sudo zsh/, "approved statement no longer listed");
+    assert.match(promptCalls[1].msg, /bash run.sh/);
+    // The first statement was persisted
+    const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
+    assert.deepEqual(raw.dangerous_command_allowlist, ["sudo zsh"]);
+  });
+
+  it("a trailing redirect does not defeat an exact entry", async () => {
+    seedSettings(["sudo zsh"]);
+    const res = await runBash("sudo zsh 2>&1");
+    assert.equal(res?.block, undefined, "2>&1 is plumbing, not danger");
   });
 
   it("headless + not allowlisted still hard-blocks", async () => {
