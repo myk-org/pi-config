@@ -471,7 +471,14 @@ class SettingsOverlay implements Component {
           this.notify(msg, "error");
           return;
         }
-        log.info("settings_changed", id, String(parsed).slice(0, 60));
+        // Array-valued settings (e.g. dangerous_command_allowlist) log only
+        // their entry COUNT — entries may contain inline credentials, and the
+        // settings log must not copy them out of the settings file
+        // (Qodo PR #950 R5).
+        const logValue = Array.isArray(parsed)
+          ? `${parsed.length} entr${parsed.length === 1 ? "y" : "ies"} (values not logged)`
+          : String(parsed).slice(0, 60);
+        log.info("settings_changed", id, logValue);
         if (filePath.endsWith(".jsonc")) {
           this.notify("Note: comments were stripped from .jsonc file", "info");
         }

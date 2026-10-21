@@ -954,6 +954,57 @@ function stripSingleQuotedRegions(stmt: string): string {
 }
 
 /**
+ * Replace the CONTENT of quoted regions ('...', "...") with a single space,
+ * keeping the delimiters, so filename/redirect guards see shell STRUCTURE
+ * without prose (Qodo PR #950 R5: `--body "settings => pi-config-settings.json"`
+ * must not trip the redirect tripwire). Backslash-escape aware (\" never toggles
+ * a quote); an UNTERMINATED quoted region is re-emitted raw — a stray quote
+ * must not hide the rest of the command from the guards.
+ */
+export function maskQuotedRegions(cmd: string): string {
+  let out = "";
+  let i = 0;
+  let quote: "'" | '"' | null = null;
+  let openIndex = -1;
+  while (i < cmd.length) {
+    const ch = cmd[i];
+    if (quote !== null) {
+      if (quote === '"' && ch === "\\" && i + 1 < cmd.length) {
+        i += 2;
+        continue;
+      }
+      if (ch === quote) {
+        // Keep the delimiters, replace only the content — structure survives.
+        out += " ";
+        out += quote;
+        quote = null;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < cmd.length) {
+      // Unquoted \x is a literal pair — a backslash must never turn the next
+      // character into a quote delimiter (same rule as
+      // stripSingleQuotedRegions, Qodo PR #950 R2).
+      out += cmd.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      openIndex = i;
+      out += ch;
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  if (quote !== null && openIndex >= 0) out += cmd.slice(openIndex + 1);
+  return out;
+}
+
+/**
  * Extract command substitutions ($(...), `...`) and process substitutions
  * (<(...), >(...)) from a statement, respecting single quotes (which
  * suppress expansion in bash). Returns the extracted command strings.
@@ -1143,7 +1194,12 @@ function projectSettingsUntracked(cwd: string): boolean {
   const cached = trackedSettingsCache.get(file);
   if (cached !== undefined) return cached;
   const result = projectSettingsUntrackedUncached(cwd, file);
-  trackedSettingsCache.set(file, result);
+  // Cache ONLY the untrusted (tracked) verdict — it can only become MORE
+  // true. A trusted (untracked) verdict is re-checked on every use so a
+  // later `git pull` / checkout that starts tracking the file is caught
+  // immediately instead of trusting a cloned repo's shipped settings for
+  // the life of the process (Qodo PR #950 R5).
+  if (!result) trackedSettingsCache.set(file, result);
   return result;
 }
 function projectSettingsUntrackedUncached(_cwd: string, file: string): boolean {
@@ -1151,7 +1207,7 @@ function projectSettingsUntrackedUncached(_cwd: string, file: string): boolean {
     const out = execFileSync(
       "git",
       ["ls-files", "--error-unmatch", file],
-      { cwd: path.dirname(file), encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] },
+      { cwd: path.dirname(file), encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "pipe"] },
     ).trim();
     if (out) {
       if (!trackedSettingsWarned.has(file)) {
@@ -1163,10 +1219,25 @@ function projectSettingsUntrackedUncached(_cwd: string, file: string): boolean {
       }
       return false;
     }
-  } catch {
-    // not a repo, or untracked — trustable
+    return true;
+  } catch (e: unknown) {
+    const err = e as { status?: number; stderr?: string };
+    // Exit 1 = the file is genuinely not tracked — the normal, trustable case.
+    if (err.status === 1) return true;
+    // Exit 128 + "not a git repository" = no repo here, so nothing could have
+    // been cloned in — trustable. Other 128s (e.g. dubious-ownership refusal)
+    // are NOT trustable: an attacker-owned checkout fails exactly like that.
+    if (err.status === 128 && /not a git repository/i.test(String(err.stderr ?? ""))) return true;
+    // git binary missing, timeout, dubious ownership, locked index... —
+    // FAIL CLOSED: treat the project file as tracked (untrusted) until the
+    // check can actually succeed (Qodo PR #950 R5). Global entries still work.
+    enfLog.warn("dangerous_allowlist_git_check_failed", {
+      file,
+      status: err.status,
+      fallback: "untrusted",
+    });
+    return false;
   }
-  return true;
 }
 
 export function findDangerousAllowlistEntry(cwd: string, command: string): DangerousAllowlistMatch | null {

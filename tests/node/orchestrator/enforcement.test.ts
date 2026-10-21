@@ -20,6 +20,7 @@ import {
   findDangerousAllowlistEntry,
   allowlistGlobToRegExp,
   clearTrackedSettingsCache,
+  maskQuotedRegions,
   isReadOnlyStatement,
   splitBashStatements,
   isRmInProjectTmp,
@@ -2994,6 +2995,17 @@ describe("dangerous command allowlist (issue #949)", () => {
   // Qodo PR #950 R3 finding 15: a cloned repo that SHIPS a settings file with
   // a wildcard must not pre-approve commands — tracked project settings are
   // not trusted for the allowlist.
+  it("maskQuotedRegions masks quote content but preserves structure (Qodo PR #950 R5)", () => {
+    assert.equal(maskQuotedRegions(`gh pr create --body "settings => file.json"`), `gh pr create --body " "`);
+    assert.equal(maskQuotedRegions("echo 'a > b' cmd"), "echo ' ' cmd");
+    // Backslash-escaped quote inside double quotes never toggles
+    assert.equal(maskQuotedRegions(`echo "a \\" b" tail`), `echo " " tail`);
+    // Unterminated region: re-emitted raw
+    assert.equal(maskQuotedRegions("it's fine $(rm -rf /)"), "it's fine $(rm -rf /)");
+    // Unquoted redirect with quoted argument survives
+    assert.equal(maskQuotedRegions(`echo "payload" > out.json`), `echo " " > out.json`);
+  });
+
   it("a git-TRACKED project settings file is not trusted for the allowlist", () => {
     const cwd = mkdtempSync(join(tmpdir(), "rl-tracked-"));
     execFileSync("git", ["init", "-q"], { cwd });
@@ -3008,6 +3020,22 @@ describe("dangerous command allowlist (issue #949)", () => {
     const m2 = findDangerousAllowlistEntry(cwd, "sudo zsh");
     assert.ok(m2, "untracked settings file approves again");
     assert.equal(m2!.source, "project");
+  });
+
+  // Qodo PR #950 R5: the TRUSTED (untracked) verdict must not be cached —
+  // a later `git add` + commit that starts tracking the file must be caught
+  // on the very next check, without anyone clearing the cache.
+  it("a settings file that becomes tracked later is untrusted on the next check (no trusted-cache)", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "rl-later-tracked-"));
+    execFileSync("git", ["init", "-q"], { cwd });
+    writeSettings(cwd, { dangerous_command_allowlist: ["*"] });
+    const m = findDangerousAllowlistEntry(cwd, "sudo zsh");
+    assert.ok(m, "untracked file approves (first check)");
+    // Upstream (or an attacker) starts tracking the file — next pull/checkout
+    execFileSync("git", ["add", "-f", getSettingsPath(cwd)], { cwd });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"], { cwd });
+    const m2 = findDangerousAllowlistEntry(cwd, "sudo zsh");
+    assert.equal(m2, null, "newly tracked file must not approve without cache clearing");
   });
 });
 
@@ -3239,6 +3267,32 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
       const res = await runBash(cmd);
       assert.notEqual(res?.block, true, cmd);
     }
+  });
+
+  // Qodo PR #950 R5: prose containing ">" and the filename inside quotes
+  // (PR bodies, docs heredocs) must not trip the redirect tripwire.
+  it("quoted prose with '>' and the settings filename does NOT block", async () => {
+    for (const cmd of [
+      `gh pr create --body "settings => pi-config-settings.json migration"`,
+      `echo 'run: ./x > pi-config-settings.json (never do this)'`,
+      `gh pr comment 1 --body "the flow: apply > write pi-config-settings.json done"`,
+    ]) {
+      const res = await runBash(cmd);
+      assert.notEqual(res?.block, true, cmd);
+    }
+  });
+
+  it("a QUOTED redirect target still blocks", async () => {
+    const res = await runBash(`echo '{}' > "pi-config-settings.json"`);
+    assert.equal(res?.block, true, "quoted target is still a write");
+    const res2 = await runBash(`tee '.pi/pi-config-settings.json' < other`);
+    assert.equal(res2?.block, true, "quoted tee target is still a write");
+  });
+
+  it("unquoted redirect and tee targets still block after masking", async () => {
+    const settingsFile = getSettingsPath(cwd);
+    const res = await runBash(`echo "payload" > ${settingsFile}`);
+    assert.equal(res?.block, true, "unquoted redirect survives masking");
   });
 
   it("write/edit tool calls targeting the settings files are blocked", async () => {

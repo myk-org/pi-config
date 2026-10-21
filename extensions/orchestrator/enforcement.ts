@@ -20,6 +20,7 @@ import {
   conflictCandidateDirs,
   pushTargetsProtectedBranch,
   fixUnexpandedCommitTrailer,
+  maskQuotedRegions,
 } from "./enforcement-helpers.js";
 import {
   DANGEROUS,
@@ -638,10 +639,18 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // while a determined agent bypasses any text guard anyway (variables,
     // concatenation). The tripwire catches the lazy one-liner; the tool
     // guard and the tracked-file guard carry the real protection.
+    // Quoted regions carry PROSE, not structure — mask their content before
+    // the redirect/tee tripwire (Qodo PR #950 R5: a PR body mentioning
+    // "settings => pi-config-settings.json" must not be blocked).
+    const maskedCmd = maskQuotedRegions(command);
     if (
       cmdLower.includes("pi-config-settings") &&
-      (/>+\|?\s*\S*pi-config-settings/i.test(command) ||
-        /(?:^|[\s;&|(])(?:tee|sponge)\s+\S*pi-config-settings/i.test(command))
+      (/>+\|?\s*\S*pi-config-settings/i.test(maskedCmd) ||
+        /(?:^|[\s;&|(])(?:tee|sponge)\s+\S*pi-config-settings/i.test(maskedCmd) ||
+        // Quoted redirect/tee TARGETS are invisible in the masked text —
+        // catch them on the raw command (Qodo PR #950 R5).
+        />+\s*["'][^"']*pi-config-settings/i.test(command) ||
+        /(?:^|[\s;&|(])(?:tee|sponge)\s+["'][^"']*pi-config-settings/i.test(command))
     ) {
       return {
         block: true,
