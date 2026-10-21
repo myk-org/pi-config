@@ -100,6 +100,8 @@ pi-config/
 │   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
 │   ├── openai-compatible-discovery/ # Config-gated /v1/models discovery on configured providers
 │   │   └── index.ts                 # Augments the source provider in Pi's ordinary model picker
+│   ├── reload-flag/                 # Agent-triggered extension reload (deploy → flag → ctx.reload → done marker)
+│   │   └── index.ts                 # Watches .pi/tmp/reload.flag; nonce handshake via reload.pending/reload.done
 │   ├── shared/                      # Shared extension utilities
 │   │   ├── oneshot.ts               # Argv oneshot helpers (`pi -p` / `--mode json` skip register)
 │   │   ├── provider-stream-log.ts   # Shared provider_stream_event hook (#848; gated on log_providers=debug)

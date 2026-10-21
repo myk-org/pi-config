@@ -272,6 +272,13 @@ progress. It does not commit, push, create a PR, or post results.
   `clearQueueIfSnapshot(snapshot)` operation; clients never call an unconditional clear after validating a preview.
 - Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `docs/async-internals.md`
 - CLI providers (`cli-*`): see `docs/cli-provider.md`
+- **Self-reload after deploy**: `.dev/deploy-all.sh` (and standalone `deploy-extensions.sh`) writes a nonce to `.pi/tmp/reload.flag`.
+  The `extensions/reload-flag/` extension consumes it and calls `ctx.reload()` — the same public API `/reload` uses,
+  nothing in pi is patched — within ~0.5s, then the new runtime publishes the nonce to `.pi/tmp/reload.done`.
+  To confirm a reload landed: read `reload.done` and compare with the flag nonce.
+  Fresh session starts clear stale flag/pending/done state (latest code is already loaded).
+  Worktree sessions do NOT auto-reload (deploy writes the flag to the main checkout).
+  Fresh session starts clear stale flag/pending/done state (latest code is already loaded). Worktree sessions do NOT auto-reload (deploy writes the flag to the main checkout).
 - **MCP:** built into pi as `builtin:mcp` (#848). Servers in `mcp.json` —
   user `~/.pi/agent/mcp.json`, project `mcp.json` once trusted. Managed with
   `/mcp` and `pi mcp add|remove|list|login|logout`; no external binary, no

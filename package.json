@@ -41,6 +41,7 @@
     "extensions/pidiff/pidiff-ui/vite.config.ts",
     "extensions/pidiff/pidiff-ui/dist/",
     "extensions/pitasks/",
+    "extensions/reload-flag/",
     "scripts/pidash-server.ts",
     "scripts/pidash-session-state.ts",
     "scripts/pidiff-server.ts",
