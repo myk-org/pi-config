@@ -20,6 +20,7 @@ import {
   findDangerousAllowlistEntry,
   allowlistGlobToRegExp,
   clearTrackedSettingsCache,
+  setTrackedVerdictTtlForTests,
   maskQuotedRegions,
   isStdinFedShellStatement,
   normalizeDangerousStatement,
@@ -3215,6 +3216,59 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   // Qodo PR #950 R8 (perf): the untracked verdict is memoized briefly so a
   // multi-statement chain costs one git call — but a LATER check still sees
   // the file become tracked (cache cleared / TTL expired).
+  // Qodo PR #950 R9: a symlinked `.pi` must be untrusted EVEN WHEN the
+  // settings file does not exist yet — the old single-try lstat discarded
+  // the dir verdict when the file was missing, so the first approval wrote
+  // an entry the next lookup would reject.
+  it("a symlinked .pi dir is untrusted even before the settings file exists (first approval refused)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "rl-symlink-missing-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd });
+      // `.pi` symlinked to the repo root; NO settings file at the target
+      symlinkSync(cwd, join(cwd, ".pi"));
+      clearTrackedSettingsCache();
+      const refused = addDangerousAllowlistEntry(cwd, "sudo reboot", "project");
+      assert.ok(!refused.ok, "project-scope approval through a symlinked .pi must be refused");
+      assert.equal((refused as { reason?: string }).reason, "project_untrusted");
+      // And lookup never honors project entries reached through the link
+      assert.equal(findDangerousAllowlistEntry(cwd, "sudo reboot"), null);
+    } finally {
+      clearTrackedSettingsCache();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // Qodo PR #950 R9: untracking the settings file must restore project
+  // approvals WITHOUT a process restart — the tracked verdict is TTL-cached,
+  // not cached forever.
+  it("untracking the settings file recovers project trust after the TTL (no restart)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "rl-untrack-ttl-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd });
+      mkdirSync(join(cwd, ".pi"), { recursive: true });
+      writeFileSync(getSettingsPath(cwd), JSON.stringify({ dangerous_command_allowlist: ["sudo reboot"] }));
+      execFileSync("git", ["add", "-f", getSettingsPath(cwd)], { cwd });
+      setTrackedVerdictTtlForTests(250);
+      clearTrackedSettingsCache();
+      // Tracked → untrusted (cached with the tiny TTL)
+      assert.equal(findDangerousAllowlistEntry(cwd, "sudo reboot"), null, "tracked file must not approve");
+      // User untracks the file but keeps it locally
+      execFileSync("git", ["rm", "-q", "--cached", getSettingsPath(cwd)], { cwd });
+      // Within the TTL the fail-closed verdict still applies
+      assert.equal(findDangerousAllowlistEntry(cwd, "sudo reboot"), null, "still untrusted inside the TTL window");
+      await new Promise((r) => setTimeout(r, 350));
+      // After expiry the check re-runs git and trust is restored — no
+      // clearTrackedSettingsCache(), no process restart.
+      const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
+      assert.ok(m, "untracked file approves again after TTL expiry");
+      assert.equal(m!.source, "project");
+    } finally {
+      setTrackedVerdictTtlForTests(30_000);
+      clearTrackedSettingsCache();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("a global-scope write without a test override NEVER touches the real user settings (sandbox)", async () => {
     const tdir = mkdtempSync(join(tmpdir(), "rl-sandbox-"));
     try {

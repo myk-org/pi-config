@@ -1205,10 +1205,24 @@ export interface DangerousAllowlistMatch {
  * who opens it. Only the user's own untracked project file (or the global
  * file on their machine) can approve commands. */
 const trackedSettingsCache = new Map<string, ProjectSettingsTrust>();
+/** Expiry for cached "tracked" verdicts (Qodo PR #950 R9): the tracked
+ * verdict used to be cached forever, so a user who untracks the file
+ * (`git rm --cached`) kept losing project approvals until process restart.
+ * A TTL keeps the anti-clone property (a fresh process always runs the git
+ * check; a clone's shipped tracked settings are rejected on first sight)
+ * while honoring untracking within seconds. The unsafe direction —
+ * untracked — is still NEVER cached. */
+const trackedVerdictExpires = new Map<string, number>();
+let trackedVerdictTtlMs = 30_000;
+/** Test hook: shrink the tracked-verdict TTL so expiry is testable. */
+export function setTrackedVerdictTtlForTests(ms: number): void {
+  trackedVerdictTtlMs = ms;
+}
 /** Test hook: clear the tracked-settings cache (git state changed under us). */
 export function clearTrackedSettingsCache(): void {
   trackedSettingsCache.clear();
   trackedSettingsWarned.clear();
+  trackedVerdictExpires.clear();
 }
 const trackedSettingsWarned = new Set<string>();
 /** Current trust verdict for the project settings file (public for the
@@ -1218,17 +1232,29 @@ const trackedSettingsWarned = new Set<string>();
 export function projectSettingsTrust(cwd: string): ProjectSettingsTrust {
   const file = getSettingsPath(cwd);
   const cached = trackedSettingsCache.get(file);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    const expires = trackedVerdictExpires.get(file);
+    if (expires === undefined || expires > Date.now()) return cached;
+    // Cached tracked verdict expired — re-check (the user may have
+    // untracked the file; Qodo PR #950 R9).
+    trackedSettingsCache.delete(file);
+    trackedVerdictExpires.delete(file);
+  }
   const verdict = projectSettingsTrustUncached(cwd, file);
-  // Cache ONLY the confirmed-untrusted (tracked) verdict — it can only
-  // become MORE true. A trusted (untracked) verdict is re-checked on every
-  // use so a later `git pull` / checkout that starts tracking the file is
-  // caught on the very next check, not for the life of the process (Qodo
-  // PR #950 R5). An "unknown" verdict (git failed transiently) is never
-  // cached — the next check retries git (R7). Per-command batching (one
-  // git exec per gate evaluation, not per statement) lives in
-  // loadDangerousAllowlists — the per-CALL re-check semantics stay intact.
-  if (verdict === "tracked") trackedSettingsCache.set(file, verdict);
+  // Cache the confirmed-untrusted (tracked) verdict WITH a TTL — it can
+  // only become more true, but the user may legitimately untrack the file,
+  // and that must recover without a process restart (R9). A trusted
+  // (untracked) verdict is re-checked on EVERY use so a later `git pull` /
+  // checkout that starts tracking the file is caught on the very next
+  // check, not for the life of the process (Qodo PR #950 R5). An "unknown"
+  // verdict (git failed transiently) is never cached — the next check
+  // retries git (R7). Per-command batching (one git exec per gate
+  // evaluation, not per statement) lives in loadDangerousAllowlists — the
+  // per-CALL re-check semantics stay intact.
+  if (verdict === "tracked") {
+    trackedSettingsCache.set(file, verdict);
+    trackedVerdictExpires.set(file, Date.now() + trackedVerdictTtlMs);
+  }
   return verdict;
 }
 function projectSettingsUntracked(cwd: string): boolean {
@@ -1256,18 +1282,18 @@ function projectSettingsTrustUncached(cwd: string, file: string): ProjectSetting
   // while the settings loader follows the link. lstat (no follow) catches
   // both a symlinked settings file and a symlinked `.pi` dir without
   // false-positiving on symlinked session cwds (/tmp vs /private/tmp).
-  try {
-    const dirLstat = lstatSync(path.dirname(file));
-    const fileLstat = lstatSync(file);
-    if (dirLstat.isSymbolicLink() || fileLstat.isSymbolicLink()) {
-      enfLog.warn("dangerous_allowlist_settings_symlink", {
-        file,
-        reason: "settings path traverses a symlink — not trusted for dangerous-command approvals",
-      });
-      return "tracked"; // structural, not transient — cacheable untrusted
-    }
-  } catch {
-    // Absent file/dir — nothing shipped yet; the git check below decides.
+  // Each lstat is guarded SEPARATELY (Qodo PR #950 R9): a single try around
+  // both made a MISSING settings file discard the already-read `.pi` dir
+  // verdict — the first approval through a symlinked `.pi` then wrote an
+  // entry the next lookup (file now existing) would reject as untrusted.
+  const dirLstat = (() => { try { return lstatSync(path.dirname(file)); } catch { return null; } })();
+  const fileLstat = (() => { try { return lstatSync(file); } catch { return null; } })();
+  if ((dirLstat && dirLstat.isSymbolicLink()) || (fileLstat && fileLstat.isSymbolicLink())) {
+    enfLog.warn("dangerous_allowlist_settings_symlink", {
+      file,
+      reason: "settings path traverses a symlink — not trusted for dangerous-command approvals",
+    });
+    return "tracked"; // structural, not transient — cacheable untrusted
   }
   // Run git from a directory that exists: `path.dirname(file)` may not
   // exist yet on a first-ever approval (Qodo PR #950 R7 — running from a

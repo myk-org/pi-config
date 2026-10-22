@@ -196,7 +196,19 @@ export function createGraftIntegration(options: Options) {
     const generation = state.generation;
     const root = state.root;
     const release = acquireBuildLock(root);
-    if (!release) { log.info("refresh_locked", { root }); return false; }
+    if (!release) {
+      // Another process (or a pre-reload runtime of THIS session) is mid-build
+      // and holds the lock. Mark the graph dirty so agent_end retries the
+      // refresh once the lock frees (Qodo PR #950 R9): without this, a reload
+      // during a build left the new runtime with a stale graph, dirty=false,
+      // and a discarded old build — nothing ever scheduled another build.
+      log.info("refresh_locked", { root });
+      if (!state.dirty) {
+        state.dirty = true;
+        log.info("graph_dirty", { source: "refresh_locked" });
+      }
+      return false;
+    }
     const started = Date.now();
     log.info("refresh_start", { root, dirty: state.dirty });
     setState(state.value === "stale" || state.nodeCount ? "stale" : "syncing");

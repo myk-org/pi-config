@@ -380,6 +380,41 @@ describe("Graft retrieval and accounting", () => {
       assert.deepEqual(r.calls.find(call => call.args[0] === "build")?.cwd, firstRoot);
     } finally { releaseBuild?.(); rmSync(firstRoot, { recursive: true, force: true }); rmSync(nextRoot, { recursive: true, force: true }); }
   });
+  it("retries the refresh after a reload could not acquire the in-flight build's lock (Qodo PR #950 R9)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "graft-reload-lock-"));
+    let releaseFirst!: () => void;
+    const firstBuildPending = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let buildCalls = 0;
+    try {
+      const r = register({ graph: async () => "stale", run: async (args: readonly string[], { cwd }: { cwd: string }) => {
+        r.calls.push({ args, cwd });
+        if (args[0] === "build") {
+          buildCalls++;
+          if (buildCalls === 1) await firstBuildPending; // pre-reload build hangs
+        }
+        return { stdout: "", stderr: "", code: 0 };
+      } });
+      const c1 = await start(r, ctx(root, true, "old-session"));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(buildCalls, 1, "first build in flight, lock held");
+      // Reload while the build runs: the old runtime dies, the build keeps
+      // the cross-process lock.
+      await r.handlers.get("session_shutdown")![0]({}, undefined);
+      const c2 = ctx(root, true, "new-session");
+      await r.handlers.get("session_start")![0]({ reason: "reload" }, c2);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(buildCalls, 1, "new runtime could not acquire the lock — no second build yet");
+      // Old build finishes; its completion is discarded (generation bump).
+      releaseFirst();
+      await new Promise(resolve => setImmediate(resolve));
+      // agent_end must retry the refresh now that the lock is free —
+      // without the refresh_locked dirty flag this never rebuilt.
+      await r.handlers.get("agent_end")![0]({}, c2);
+      await new Promise(resolve => setImmediate(resolve));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.ok(buildCalls >= 2, `refresh retried after the lock freed (builds: ${buildCalls})`);
+    } finally { releaseFirst?.(); rmSync(root, { recursive: true, force: true }); }
+  });
   it("discards a pending refresh completion after session_shutdown and never touches the stale ctx (reload postmortem, PR #950)", async () => {
     const root = mkdtempSync(join(tmpdir(), "graft-refresh-shutdown-"));
     let releaseBuild!: () => void;

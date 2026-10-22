@@ -74,26 +74,84 @@ function readNonce(file: string): string | null {
   }
 }
 
+/** Who owns a reload handshake: the process AND the session that parked it.
+ * pid alone is not enough — `switchSession` keeps the pid but changes the
+ * session, and two sessions sharing one process (and one project cwd)
+ * must not steal each other's reload continuation (Qodo PR #950 R9). */
+export function reloadOwnerId(ctx?: { sessionManager?: { getSessionId?: () => string } }): string {
+  const sessionId = ctx?.sessionManager?.getSessionId?.() ?? process.env.__PI_CONFIG_SESSION_ID ?? "nosession";
+  return `${process.pid}:${sessionId}`;
+}
+
+/** Is a pid still running? `process.kill(pid, 0)` throws ESRCH for a dead
+ * process and EPERM for a live process we may not signal — either way,
+ * "throws" means alive-or-unknown, which we treat as alive (fail safe:
+ * never steal from a possibly-live owner). */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: unknown) {
+    return (e as { code?: string }).code === "EPERM";
+  }
+}
+
+/** A parked handshake: the nonce plus the owner that parked it. */
+export interface ReloadPending {
+  nonce: string;
+  owner: string;
+}
+
+/** Read and parse `reload.pending`. Returns null when absent, empty, or
+ * unparseable (garbage pending is handled by the callers' removal paths). */
+export function readReloadPending(cwd: string): ReloadPending | null {
+  const raw = readNonce(reloadPendingPath(cwd));
+  if (raw === null) return null;
+  try {
+    const parsed = JSON.parse(raw) as { nonce?: unknown; owner?: unknown };
+    if (typeof parsed.nonce === "string" && parsed.nonce && typeof parsed.owner === "string" && parsed.owner) {
+      return { nonce: parsed.nonce, owner: parsed.owner };
+    }
+  } catch {
+    // fall through — plain-nonce or garbage content
+  }
+  // Plain nonce without owner info (legacy/hand-written): the nonce is
+  // real, but ownership is unknown — represent it with an empty owner so
+  // callers can decide policy explicitly.
+  return { nonce: raw, owner: "" };
+}
+
+/** Does a pending handshake belong to US (same process + session), or is
+ * its owner gone (crashed pi)? A live OTHER owner means: hands off. */
+export function pendingOwnerIsClaimable(pending: ReloadPending, self: string): boolean {
+  if (pending.owner === "" || pending.owner === self) return true;
+  const pidStr = pending.owner.split(":")[0];
+  const pid = Number(pidStr);
+  if (!Number.isInteger(pid) || pid <= 0) return true; // unparseable owner — treat as ours
+  return !isPidAlive(pid);
+}
+
 /**
  * Move the flag's nonce to `reload.pending` (handshake state for the new
- * runtime). Public for tests. Returns the nonce or null when no flag exists.
+ * runtime), stamped with OUR owner id. Public for tests. Returns the nonce
+ * or null when no flag exists.
  */
-export function parkReloadNonce(cwd: string): string | null {
+export function parkReloadNonce(cwd: string, owner: string): string | null {
   const flag = reloadFlagPath(cwd);
   const nonce = readNonce(flag);
   if (nonce === null) return null;
   rmSync(flag, { force: true });
-  writeFileSync(reloadPendingPath(cwd), nonce, "utf-8");
+  writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce, owner }), "utf-8");
   log.info("reload_flag_consumed", { hasNonce: true });
   return nonce;
 }
 
 /** The `/reload-flag` command body — runs with the COMMAND ctx (has reload()). */
 export async function runReloadFlagCommand(
-  ctx: { cwd: string; reload?: () => Promise<void>; waitForIdle?: () => Promise<void> },
+  ctx: { cwd: string; reload?: () => Promise<void>; waitForIdle?: () => Promise<void>; sessionManager?: { getSessionId?: () => string } },
 ): Promise<void> {
   try {
-    parkReloadNonce(ctx.cwd);
+    parkReloadNonce(ctx.cwd, reloadOwnerId(ctx));
     if (typeof ctx.reload !== "function") {
       // Should be impossible (command ctx always carries actions) — but a
       // missing action must degrade to a log line, never a crash.
@@ -133,6 +191,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   let liveCwd: string | null = null;
+  // Owner identity of THIS session (pid + session id), refreshed whenever a
+  // ctx is at hand — maybeTrigger runs from a timer with no ctx (Qodo PR
+  // #950 R9).
+  let liveOwner: string | null = null;
   let watcher: ReturnType<typeof setInterval> | null = null;
   let triggered = false;
   // The deferred reload-continuation timer (Qodo PR #950 R8): retained so
@@ -184,6 +246,19 @@ export default function (pi: ExtensionAPI) {
       }
       return;
     }
+    // A pending handshake belonging to ANOTHER LIVE session must be left
+    // alone (Qodo PR #950 R9): session A parked it and is waiting for idle;
+    // if we (session B, same cwd) dispatched now, OUR reload would consume
+    // A's nonce, publish done, and steal A's continuation turn. Only a
+    // pending whose owner is us — or whose owner process is gone — is a
+    // stranded handshake we may recover.
+    if (!hasFlag && hasPending) {
+      const pending = readReloadPending(liveCwd);
+      if (pending && !pendingOwnerIsClaimable(pending, liveOwner ?? reloadOwnerId())) {
+        log.debug("reload_flag_pending_foreign_owner", { owner: pending.owner });
+        return;
+      }
+    }
     triggered = true;
     stopWatcher();
     try {
@@ -209,6 +284,7 @@ export default function (pi: ExtensionAPI) {
     if (!isLiveExtensionCtx(ctx)) return;
     const cwd: string = ctx.cwd;
     liveCwd = cwd;
+    liveOwner = reloadOwnerId(ctx);
     triggered = false;
 
     if (reason === "reload") {
@@ -216,10 +292,18 @@ export default function (pi: ExtensionAPI) {
       // A manual /reload also satisfies a sitting flag — remove it so the
       // next turn does not trigger a second reload.
       if (existsSync(reloadFlagPath(cwd))) rmSync(reloadFlagPath(cwd), { force: true });
-      const pending = reloadPendingPath(cwd);
-      const nonce = readNonce(pending);
-      if (nonce !== null) {
-        rmSync(pending, { force: true });
+      const pendingPath = reloadPendingPath(cwd);
+      const pendingRecord = readReloadPending(cwd);
+      // Owner check (Qodo PR #950 R9): a pending handshake parked by ANOTHER
+      // LIVE session must survive our manual /reload untouched — consuming
+      // it here would steal their nonce, publish their done marker, and send
+      // THEIR continuation turn to us. Only claim it when it is ours or its
+      // owner process is gone.
+      if (pendingRecord && !pendingOwnerIsClaimable(pendingRecord, reloadOwnerId(ctx))) {
+        log.info("reload_flag_pending_left_for_owner", { owner: pendingRecord.owner });
+      } else if (pendingRecord) {
+        const nonce = pendingRecord.nonce;
+        rmSync(pendingPath, { force: true });
         writeFileSync(reloadDonePath(cwd), nonce, "utf-8");
         log.info("reload_done", { nonce });
         // Seamless continuation (user request): the deploy that requested
@@ -255,11 +339,11 @@ export default function (pi: ExtensionAPI) {
         // A pending file with no readable nonce is garbage (Qodo PR #950
         // R8): if it survived, remove it — otherwise every future runtime
         // sees "stranded pending" and re-dispatches a reload, forever.
-        if (existsSync(pending)) {
+        if (existsSync(pendingPath)) {
           try {
-            rmSync(pending, { force: true });
+            rmSync(pendingPath, { force: true });
             log.warn("reload_flag_stale_pending_removed", {
-              file: pending,
+              file: pendingPath,
               reason: "pending file existed with no readable nonce at reload session_start",
             });
           } catch (e: unknown) {
@@ -297,6 +381,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("turn_end", async (_event: any, ctx: any) => {
     if (!isLiveExtensionCtx(ctx)) return;
     liveCwd = ctx.cwd;
+    liveOwner = reloadOwnerId(ctx);
     try {
       maybeTrigger();
     } catch (e: unknown) {
@@ -306,6 +391,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", () => {
     stopWatcher();
+    liveOwner = null;
     // Cancel a pending reload continuation (Qodo PR #950 R8): firing into a
     // closed/replaced session would inject a turn nobody asked for.
     if (continuationTimer !== null) {

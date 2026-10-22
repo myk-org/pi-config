@@ -55,10 +55,11 @@ function makeCwd(): string {
 }
 
 /** Mock ctx whose `mode` getter stays live (isLiveExtensionCtx compatible). */
-function makeCtx(cwd: string, reloads: { count: number }) {
+function makeCtx(cwd: string, reloads: { count: number }, sessionId = "test-session") {
   return {
     cwd,
     mode: "agent",
+    sessionManager: { getSessionId: () => sessionId },
     reload: async () => {
       reloads.count++;
     },
@@ -120,7 +121,9 @@ describe("reload-flag", () => {
       writeFileSync(reloadFlagPath(cwd), "nonce-2");
       await runReloadFlagCommand(makeCtx(cwd, { count: 0 }));
       assert.ok(!existsSync(reloadFlagPath(cwd)), "flag consumed");
-      assert.equal(readFileSync(reloadPendingPath(cwd), "utf-8"), "nonce-2", "nonce parked in pending");
+      const parked = JSON.parse(readFileSync(reloadPendingPath(cwd), "utf-8"));
+      assert.equal(parked.nonce, "nonce-2", "nonce parked in pending");
+      assert.equal(typeof parked.owner, "string", "pending carries the owner identity");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -170,7 +173,7 @@ describe("reload-flag", () => {
       // ctx lacking reload() entirely — the pi-1.3 crash scenario
       await runReloadFlagCommand({ cwd });
       assert.ok(!existsSync(reloadFlagPath(cwd)), "flag still consumed");
-      assert.equal(readFileSync(reloadPendingPath(cwd), "utf-8"), "nonce-3");
+      assert.equal(JSON.parse(readFileSync(reloadPendingPath(cwd), "utf-8")).nonce, "nonce-3");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -245,6 +248,71 @@ describe("reload-flag", () => {
       await reg.handlers.get("session_shutdown")!({}, undefined);
       await new Promise((r) => setTimeout(r, 400));
       assert.equal(reg.messages.length, 0, "continuation cancelled — never fired into the closed session");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("a pending handshake owned by ANOTHER LIVE session is never stolen (Qodo PR #950 R9)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      const ctxB = makeCtx(cwd, reloads, "session-B");
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctxB);
+      // Session A (pid 1 = always alive, different session) parked a handshake
+      writeFileSync(
+        reloadPendingPath(cwd),
+        JSON.stringify({ nonce: "nonce-A", owner: "1:session-A" }),
+      );
+      // B's watcher must NOT dispatch a reload for A's handshake
+      await reg.handlers.get("turn_end")!({}, ctxB);
+      assert.equal(reg.sent.length, 0, "foreign live pending never dispatches");
+      // B's manual reload must NOT consume it or send the continuation
+      await reg.handlers.get("session_start")!({ reason: "reload" }, ctxB);
+      await new Promise((r) => setTimeout(r, 350));
+      assert.equal(reg.messages.length, 0, "no continuation stolen");
+      assert.equal(JSON.parse(readFileSync(reloadPendingPath(cwd), "utf-8")).nonce, "nonce-A", "pending left for its owner");
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("a pending handshake whose owner process is DEAD is recoverable (stranded)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      const ctx = makeCtx(cwd, reloads, "session-B");
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      // Owner pid 999999 does not exist — the handshake is stranded
+      writeFileSync(
+        reloadPendingPath(cwd),
+        JSON.stringify({ nonce: "nonce-dead", owner: "999999:session-A" }),
+      );
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.equal(reg.sent.length, 1, "dead-owner pending re-dispatches (stranded handshake recovery)");
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("our OWN pending handshake still re-dispatches (same pid + session)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      const ctx = makeCtx(cwd, reloads, "session-A");
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      writeFileSync(
+        reloadPendingPath(cwd),
+        JSON.stringify({ nonce: "nonce-self", owner: `${process.pid}:session-A` }),
+      );
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.equal(reg.sent.length, 1, "own pending re-dispatches (idempotent command)");
+      await reg.handlers.get("session_shutdown")!({}, undefined);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
