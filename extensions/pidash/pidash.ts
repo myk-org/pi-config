@@ -171,7 +171,7 @@ export function registerPidash(
 
   // Request existing commands (handles load order — orchestrator loaded first)
   // TODO: Remove once pidash uses PiClient/RemoteSession (#732)
-  pi.events.emit("pidash:request-commands");
+  pi.events.emit("pidash:request-commands", undefined);
 
   // Capture command context from orchestrator
   // TODO: Remove once pidash uses PiClient/RemoteSession (#732)

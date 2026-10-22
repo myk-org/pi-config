@@ -17,7 +17,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatDuration } from "./async-agents.js";
 import { buildSituationReport, estimateMemoryBudget, rebuildAndOrganize } from "./situation-report.js";
 import { classifyQueryClass, getQueryClassBias } from "./memory-query-class.js";
-import { getSetting, SETTINGS_KEYS } from "./project-settings.js";
+import { getSetting, getSettingDynamic, SETTINGS_KEYS } from "./project-settings.js";
 import { assembleRuleText, isSettingTruthy } from "./rule-placeholders.js";
 import { isComsActive } from "../shared/coms-active.js";
 import { JsonlAppendLog } from "./state-jsonl.js";
@@ -185,7 +185,7 @@ export function registerRules(
           let includedCount = 0;
           let skippedCount = 0;
           const joined = assembleRuleText(ruleContents, {
-            resolve: (key) => getSetting(ctx.cwd, key),
+            resolve: (key) => getSettingDynamic(ctx.cwd, key),
             knownKeys: Object.keys(SETTINGS_KEYS),
             featurePredicates: {
               coms_active: () => isComsActive(),

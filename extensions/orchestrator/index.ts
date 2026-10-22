@@ -5,7 +5,7 @@
  * - Subagent tool (based on pi's subagent example, with package agent discovery)
  * - Enforcement handlers (python/pip, git protection, dangerous commands)
  * - Rule injection & memory loading (before_agent_start)
- * - Slash commands (/btw, /async-status, /dream-auto)
+ * - Slash commands (/async-status, /dream-auto)
  * - Notifications and status line
  * - Session validation (required tools check)
  * - Async agent infrastructure
@@ -17,7 +17,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { registerAskUser } from "./ask-user.js";
 import { registerAsyncAgents } from "./async-agents.js";
-import { registerBtw } from "./btw.js";
 import { registerDreaming } from "./dreaming.js";
 import { registerEnforcement } from "./enforcement.js";
 import { registerProjectSettings } from "./project-settings.js";
@@ -104,7 +103,6 @@ export default function (pi: ExtensionAPI) {
   registerRules(pi, getAsyncJobs);
 
   registerStatusLine(pi, IN_CONTAINER, terminalNotify);
-  registerBtw(pi);
   registerDreaming(pi, spawnAsyncAgent);
   const { getCronTasks } = registerCron(pi, spawnAsyncAgent);
   registerSessionValidation(pi);
@@ -137,12 +135,14 @@ export default function (pi: ExtensionAPI) {
         if (!registry) {
           return {
             content: [{ type: "text" as const, text: "Model registry not available." }],
+            details: undefined,
           };
         }
         models = registry.getAvailable?.() || registry.getAll?.() || [];
       } catch (e: any) {
         return {
           content: [{ type: "text" as const, text: `Failed to list models: ${e?.message || e}` }],
+          details: undefined,
         };
       }
       // Filter out acpx-* providers — they cannot work in subagent children
@@ -154,6 +154,7 @@ export default function (pi: ExtensionAPI) {
       if (filtered.length === 0) {
         return {
           content: [{ type: "text" as const, text: params.provider ? `No models found for provider "${params.provider}".` : "No models available." }],
+          details: undefined,
         };
       }
       // Group by provider for readability
@@ -172,6 +173,7 @@ export default function (pi: ExtensionAPI) {
       }
       return {
         content: [{ type: "text" as const, text: lines.join("\n") }],
+        details: undefined,
       };
     },
   });

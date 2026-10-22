@@ -49,7 +49,6 @@ pi-config/
 │   │   ├── async-capability.ts      # supportsAsyncLlm / acpx coerce + internal ops provider settings
 │   │   ├── async-runner.ts          # Standalone async runner (spawned detached)
 │   │   ├── async-wait.ts            # Shared helper for waiting on async result files
-│   │   ├── btw.ts                   # /btw command
 │   │   ├── cron.ts                   # /cron scheduled tasks and session/project scope handling
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
 │   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous) + memory-based enforcement rules

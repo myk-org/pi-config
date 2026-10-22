@@ -1,6 +1,6 @@
 # Extension Commands
 
-Extension commands (like `/pidash`, `/pidiff`, `/btw`, `/status`) are registered in the extension source files
+Extension commands (like `/pidash`, `/pidiff`, `/status`) are registered in the extension source files
 under `extensions/`. Each command uses `context.registerCommand()` with a name, description, and handler.
 
 For what each command does from the user side — arguments, flags, and examples — see
@@ -11,7 +11,6 @@ the internals that are not visible from usage alone.
 
 | Command | Source | Summary |
 | --- | --- | --- |
-| `/btw` | `btw.ts` | Quick side questions |
 | `/pidash` | `pidash/pidash.ts` | Manage pidash daemon (start/stop/restart/status) |
 | `/pidiff` | `pidiff/pidiff.ts` | Manage pidiff per-project server (start/stop/restart/status) |
 | `/status` | `status.ts` | Unified session status snapshot |

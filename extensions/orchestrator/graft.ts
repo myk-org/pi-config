@@ -147,11 +147,15 @@ export function acquireBuildLock(root: string, afterClaim?: () => void): (() => 
 function trusted(ctx: any): boolean { return typeof ctx?.isProjectTrusted !== "function" || ctx.isProjectTrusted() === true; }
 function relevant(ask: Ask): Hit[] { const hits = ask.hits?.filter(hit => text(hit.pointer) && text(hit.title)) ?? []; if (!hits.length) return []; if ((typeof ask.coverage === "number" || typeof ask.coverageStrong === "number") && (ask.coverageStrong ?? 0) < .1 && (ask.coverage ?? 0) < .5) return []; return hits.slice(0, 3); }
 function pointerText(hits: Hit[]): string { return hits.map((hit, i) => { const snippet = text(hit.snippet, 140); return ` ${i + 1}. ${text(hit.title)!}: ${text(hit.pointer)!}${snippet ? `\n    ${snippet.replace(/\s+/g, " ")}` : ""}`; }).join("\n"); }
+type GraftNode = { id: string; name: string; path: string };
+type GraftEdge = { source: string; target: string; relation: string };
+type GraftWiring = { nodes?: GraftNode[]; edges?: GraftEdge[] };
 function blastHint(root: string, path: unknown): string | null {
-  const file = typeof path === "string" ? path : null; const graph = file && wiring(root); if (!file || !graph) return null;
-  const names = new Map((graph.nodes ?? []).map((node: any) => [node.id, node]));
-  const ids = new Set((graph.nodes ?? []).filter((node: any) => node.path === file || file.endsWith(`/${node.path}`)).map((node: any) => node.id));
-  const dependents = (graph.edges ?? []).filter((edge: any) => ids.has(edge.target) && !ids.has(edge.source)).slice(0, 8).map((edge: any) => { const node = names.get(edge.source); return ` • ${edge.relation} ← ${node ? `${node.name} (${basename(node.path)})` : edge.source}`; });
+  const file = typeof path === "string" ? path : null; const graph = file && (wiring(root) as GraftWiring | null); if (!file || !graph) return null;
+  const graphNodes = graph.nodes ?? [];
+  const names = new Map<string, GraftNode>(graphNodes.map((node) => [node.id, node] as [string, GraftNode]));
+  const ids = new Set(graphNodes.filter((node) => node.path === file || file.endsWith(`/${node.path}`)).map((node) => node.id));
+  const dependents = (graph.edges ?? []).filter((edge) => ids.has(edge.target) && !ids.has(edge.source)).slice(0, 8).map((edge) => { const node = names.get(edge.source); return ` • ${edge.relation} ← ${node ? `${node.name} (${basename(node.path)})` : edge.source}`; });
   return dependents.length ? `[graft] blast radius for ${basename(file)}, who depends on it:\n${dependents.join("\n")}` : null;
 }
 export function isEligibleGraftStartup(event: any, ctx: any): boolean { return event?.reason === "startup" && ctx?.mode !== "print" && ctx?.mode !== "json" && process.env.PI_SUBAGENT_CHILD !== "1" && !isPiOneshotInvocation(); }

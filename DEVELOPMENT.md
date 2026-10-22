@@ -25,6 +25,9 @@ prek run --all-files
 
 # Python tests
 uv run pytest
+
+# TypeScript type-check gate (strict tsc --noEmit, all five projects)
+npm run typecheck
 ```
 
 ## Debugging a Running Container

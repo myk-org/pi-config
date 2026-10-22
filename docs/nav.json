@@ -3,7 +3,10 @@
   "groups": [
     {
       "name": "Getting Started",
-      "pages": ["quickstart", "configuration"]
+      "pages": [
+        "quickstart",
+        "configuration"
+      ]
     },
     {
       "name": "Core Workflows",
@@ -39,7 +42,10 @@
     },
     {
       "name": "Providers",
-      "pages": ["acpx-provider", "vertex-claude-provider"]
+      "pages": [
+        "acpx-provider",
+        "vertex-claude-provider"
+      ]
     },
     {
       "name": "Reference",
@@ -49,8 +55,7 @@
         "mcp-servers",
         "cli-reference",
         "safety-enforcements",
-        "daemon-and-websockets",
-        "btw-command"
+        "daemon-and-websockets"
       ]
     },
     {

@@ -94,9 +94,10 @@ async function getPipeline(): Promise<any> {
   pipelineLoading = (async () => {
     try {
       const { pipeline } = await import("@huggingface/transformers");
-      const extractor = await pipeline("feature-extraction", "Xenova/bge-small-en-v1.5", {
-        quantized: true,
-      });
+      // q8 quantized weights: ~4x smaller and faster than fp32, negligible
+      // accuracy loss for embedding similarity (dtype replaced `quantized` in
+      // @huggingface/transformers v4 — issue #951 follow-up).
+      const extractor = await pipeline("feature-extraction", "Xenova/bge-small-en-v1.5", { dtype: "q8" });
       pipelineInstance = extractor;
       return extractor;
     } catch {

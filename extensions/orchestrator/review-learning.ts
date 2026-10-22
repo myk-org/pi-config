@@ -323,7 +323,7 @@ export function loadDistilledReviews(dataDir: string): Set<number> {
   try {
     const raw = JSON.parse(readFileSync(stateFilePath(dataDir), "utf-8"));
     const ids = Array.isArray(raw?.distilledReviews) ? raw.distilledReviews : [];
-    return new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0));
+    return new Set(ids.map(Number).filter((n: number) => Number.isInteger(n) && n > 0));
   } catch {
     return new Set();
   }

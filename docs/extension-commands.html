@@ -252,13 +252,6 @@
                         </a>
                     </li>
 
-                    <li>
-                        <a href="btw-command.html"
-                           class="nav-link">
-                            Asking Side Questions with /btw
-                        </a>
-                    </li>
-
                 </ul>
             </div>
 
@@ -351,7 +344,7 @@
                          user-supplied input. XSS risk is minimal and accepted since
                          the AI generates the content, not end users. -->
                     <h1 id="extension-commands">Extension Commands</h1>
-<p>Extension commands (like <code>/pidash</code>, <code>/pidiff</code>, <code>/btw</code>, <code>/status</code>) are registered in the extension source files
+<p>Extension commands (like <code>/pidash</code>, <code>/pidiff</code>, <code>/status</code>) are registered in the extension source files
 under <code>extensions/</code>. Each command uses <code>context.registerCommand()</code> with a name, description, and handler.</p>
 <p>For what each command does from the user side — arguments, flags, and examples — see
 <a href="commands-and-tools.html">Commands and Tools Reference</a>. This page maps each command to its source and documents
@@ -366,11 +359,6 @@ the internals that are not visible from usage alone.</p>
 </tr>
 </thead>
 <tbody>
-<tr>
-<td><code>/btw</code></td>
-<td><code>btw.ts</code></td>
-<td>Quick side questions</td>
-</tr>
 <tr>
 <td><code>/pidash</code></td>
 <td><code>pidash/pidash.ts</code></td>

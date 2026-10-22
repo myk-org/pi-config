@@ -381,7 +381,7 @@ export function resolveModelKeySubmenu(
 
 // ── Source glyph (colored) ──────────────────────────────────────
 
-export function sourceGlyph(source: string, theme: { fg: (color: string, text: string) => string }): string {
+export function sourceGlyph(source: string, theme: { fg: (color: "success" | "accent" | "warning" | "dim", text: string) => string }): string {
   switch (source) {
     case "P": return theme.fg("success", "P");
     case "G": return theme.fg("accent", "G");

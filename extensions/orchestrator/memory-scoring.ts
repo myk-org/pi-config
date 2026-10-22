@@ -302,7 +302,7 @@ export function loadScores(cwd: string): ScoresFile {
   // the cross-process lock — migrating the snapshot loaded above could
   // append a stale state and erase a concurrent writer's update.
   if (data.hashAlgo !== HASH_ALGO) {
-    getScoresStore(cwd).mutate<ScoresFile>(
+    getScoresStore(cwd).mutate(
       (latest) => {
         if (latest.hashAlgo === HASH_ALGO) return; // a concurrent process already migrated
         migrateScoreKeysInPlace(cwd, latest);
@@ -408,7 +408,7 @@ export function mutateScores(
 ): ScoresFile | null {
   // Ensure key migration has run before mutating (idempotent, cached read)
   loadScores(cwd);
-  return getScoresStore(cwd).mutate<ScoresFile>(fn, {
+  return getScoresStore(cwd).mutate(fn, {
     entries: {},
     lastRebuild: new Date().toISOString(),
     hashAlgo: HASH_ALGO,

@@ -120,8 +120,8 @@ export function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const commitsRequested = useRef(false);
   const activeSessionRef = useRef<PiSession | null>(null);
-  const loadingTimeout = useRef<ReturnType<typeof setTimeout>>();
-  const refreshTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const loadingTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const refreshTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const modeRef = useRef(mode);
   const scrollLock = useRef(0); // timestamp until which scroll-sync is paused
   const selectedFileRef = useRef<string | null>(null);
@@ -174,7 +174,7 @@ export function App() {
         if (!activeSessionRef.current && ev.sessions.length > 0) {
           let saved: PiSession | null = null;
           try { const s = localStorage.getItem("pidiff-session"); if (s) saved = JSON.parse(s); } catch {}
-          const target = saved ? ev.sessions.find(s => s.sessionId === saved!.sessionId) || ev.sessions[0] : ev.sessions[0];
+          const target = saved ? ev.sessions.find((s: PiSession) => s.sessionId === saved!.sessionId) || ev.sessions[0] : ev.sessions[0];
           setActiveSession(target);
           activeSessionRef.current = target;
           send({ type: "watch", sessionId: target.sessionId });
@@ -866,7 +866,7 @@ function FileBlock({ oldFile, newFile, path, diffStyle, diffIndicators, lineDiff
   onResolveComment: (index: number) => void;
   onReplyComment: (index: number, body: string) => void;
 }) {
-  const [selectedRange, setSelectedRange] = useState<{ start: number; end: number; side?: string; endSide?: string } | null>(null);
+  const [selectedRange, setSelectedRange] = useState<{ start: number; end: number; side?: "deletions" | "additions"; endSide?: "deletions" | "additions" } | null>(null);
   const [collapsed, setCollapsed] = useState(false);
 
   // Build lineAnnotations: combine open forms + submitted comments
@@ -898,7 +898,7 @@ function FileBlock({ oldFile, newFile, path, diffStyle, diffIndicators, lineDiff
     return annotations;
   }, [openForms, comments, path]);
 
-  const handleLineSelectionEnd = useCallback((range: { start: number; end: number; side?: string; endSide?: string } | null) => {
+  const handleLineSelectionEnd = useCallback((range: { start: number; end: number; side?: "deletions" | "additions"; endSide?: "deletions" | "additions" } | null) => {
     setSelectedRange(range);
     if (!range) return;
     const derivedSide = range.endSide ?? range.side;

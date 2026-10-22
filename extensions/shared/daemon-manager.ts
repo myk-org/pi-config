@@ -161,11 +161,17 @@ export function killDaemonByPid(pidFile: string, log: (msg: string) => void): bo
 // ── Find free port ──────────────────────────────────────────────────
 
 /** Find a free TCP port by binding to port 0. */
-export function findFreePort(): Promise<number> {
+export function findFreePort(op = "listen"): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
     srv.listen(0, "127.0.0.1", () => {
-      const port = srv.address().port;
+      const addr = srv.address();
+      if (typeof addr !== "object" || addr === null) {
+        // Unexpected address shape — the port-0 fallback below silently picks
+        // an arbitrary port, so leave a diagnostic for operators (Qodo PR #954).
+        log.warn("find_free_port_unexpected_address", { op, address: String(addr) });
+      }
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
       srv.close(() => resolve(port));
     });
     srv.on("error", reject);

@@ -185,6 +185,5 @@ Prompt templates are registered by Pi itself, so they do not go through the `reg
 
 - [Built-in Workflow Commands](built-in-workflows.html)
 - [Managing Custom Agents](managing-custom-agents.html)
-- [Asking Side Questions with /btw](btw-command.html)
 - [Implementing Command Guards](safety-enforcements.html)
 - [Installation & Quickstart](quickstart.html)

@@ -846,7 +846,7 @@ export function registerSubagentTool(
     // chain runs sequentially — sum all steps
     const totalChainSeconds = params.chain.reduce((sum: number, s: any) => sum + s.estimatedSeconds, 0);
     if (!params.chain || params.chain.length === 0) {
-      return { content: [{ type: "text" as const, text: "Error: chain array is empty — at least one step is required." }] };
+      return { content: [{ type: "text" as const, text: "Error: chain array is empty — at least one step is required." }], details: undefined };
     }
     const chainCwd = params.chain[0].cwd;
     const { limit: chainLimit } = checkSyncLimit(0, chainCwd);
@@ -1734,7 +1734,7 @@ export function registerSubagentTool(
       if (!context.state.startedAt) context.state.startedAt = clockHHMM();
       const ts = theme.fg("dim", `[${context.state.startedAt}] `);
       const scope: AgentScope = args.agentScope ?? "both";
-      if (args.chain?.length > 0) {
+      if (args.chain && args.chain.length > 0) {
         const chainEst = args.chain.every((s: any) => s.estimatedSeconds != null)
           ? theme.fg("dim", ` ~${args.chain.reduce((sum: number, s: any) => sum + s.estimatedSeconds, 0)}s (sum)`)
           : "";
@@ -1752,7 +1752,7 @@ export function registerSubagentTool(
           t += `\n  ${theme.fg("muted", `... +${args.chain.length - 3} more`)}`;
         return new Text(t, 0, 0);
       }
-      if (args.tasks?.length > 0) {
+      if (args.tasks && args.tasks.length > 0) {
         const parallelEst = args.tasks.every((tk: any) => tk.estimatedSeconds != null)
           ? theme.fg("dim", ` ~${Math.max(...args.tasks.map((tk: any) => tk.estimatedSeconds))}s (max)`)
           : "";

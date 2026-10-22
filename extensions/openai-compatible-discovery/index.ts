@@ -1,4 +1,4 @@
-import type { AuthResult, Model, Provider, RefreshModelsContext } from "@earendil-works/pi-ai";
+import type { Api, AuthResult, Model, Provider, RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import {
@@ -47,7 +47,7 @@ function resolvedConnection(source: Provider, auth?: AuthResult, staticHeaders?:
   };
 }
 
-function combineModels(sourceProviderId: string, staticModels: readonly Model[], records: readonly OpenAiCompatibleModelRecord[], baseUrl: string): Model[] {
+function combineModels(sourceProviderId: string, staticModels: readonly Model<Api>[], records: readonly OpenAiCompatibleModelRecord[], baseUrl: string): Model<Api>[] {
   const existingIds = new Set(staticModels.map((model) => model.id));
   const discovered = materializeOpenAiCompatibleModels(records, baseUrl, sourceProviderId)
     .filter((model) => !existingIds.has(model.id));
@@ -59,14 +59,14 @@ async function refreshProviderModels(
   ctx: any,
   sourceProviderId: string,
   source: Provider,
-  staticModels: readonly Model[],
+  staticModels: readonly Model<Api>[],
   refresh: RefreshModelsContext,
   appendSummary: () => boolean,
   discoverModelCapabilities: boolean,
-  rawStaticHeaders?: Record<string, string>,
-  snapshot: { discovered: Model[]; fingerprint?: string; generation: number },
+  rawStaticHeaders: Record<string, string> | undefined,
+  snapshot: { discovered: Model<Api>[]; fingerprint?: string; generation: number },
   lifecycle: { signal: AbortSignal; isCurrent: () => boolean },
-): Promise<Model[]> {
+): Promise<Model<Api>[]> {
   const generation = ++snapshot.generation;
   const active = () => {
     const current = lifecycle.isCurrent();
@@ -206,9 +206,9 @@ export default function (pi: ExtensionAPI) {
         log.warn(`${id}: configured provider was not resolved`);
         continue;
       }
-      const staticModels = (ctx.modelRegistry.getAll() as Model[])
+      const staticModels = (ctx.modelRegistry.getAll() as Model<Api>[])
         .filter((model) => model.provider === id);
-      const snapshot = { discovered: [] as Model[], fingerprint: undefined as string | undefined, generation: 0 };
+      const snapshot = { discovered: [] as Model<Api>[], fingerprint: undefined as string | undefined, generation: 0 };
       // Registration starts an unawaited offline refresh. Its first callback signals
       // that it has acquired its generation, so the network pass can safely supersede it.
       let registrationStarted!: () => void;

@@ -152,7 +152,7 @@ function serveImage(imagePath: string): { url: string; port: string; dir: string
     }
 }
 
-export function createImageGenTool(): ToolDefinition {
+export function createImageGenTool(): ToolDefinition<typeof imageGenSchema> {
     return {
         name: "generate_image",
         label: "GenerateImage",
@@ -173,6 +173,7 @@ export function createImageGenTool(): ToolDefinition {
                         type: "text" as const,
                         text: "Error: image model is not set. Add image_model to pi-config-settings.json (or PI_IMAGE_MODEL env) and reload pi.",
                     }],
+                    details: undefined,
                 };
             }
             if (!isImageGenModelId(model)) {
@@ -182,6 +183,7 @@ export function createImageGenTool(): ToolDefinition {
                         type: "text" as const,
                         text: `Error: image_model '${model}' is not an image-generation model. Choose a Gemini image model (id contains image or imagen).`,
                     }],
+                    details: undefined,
                 };
             }
 
@@ -192,6 +194,7 @@ export function createImageGenTool(): ToolDefinition {
                         type: "text" as const,
                         text: "Error: No API key found. Set GEMINI_API_KEY or GOOGLE_API_KEY environment variable and restart pi.",
                     }],
+                    details: undefined,
                 };
             }
 
@@ -231,6 +234,7 @@ export function createImageGenTool(): ToolDefinition {
                         type: "text" as const,
                         text: `Error: Gemini API request failed: ${err?.message ?? String(err)}`,
                     }],
+                    details: undefined,
                 };
             }
 
@@ -248,6 +252,7 @@ export function createImageGenTool(): ToolDefinition {
                         type: "text" as const,
                         text: `Error: Gemini image request failed (${response.status}): ${message}`,
                     }],
+                    details: undefined,
                 };
             }
 
@@ -260,6 +265,7 @@ export function createImageGenTool(): ToolDefinition {
                         type: "text" as const,
                         text: `Error: Failed to parse Gemini response: ${rawText.slice(0, 200)}`,
                     }],
+                    details: undefined,
                 };
             }
 
@@ -269,6 +275,7 @@ export function createImageGenTool(): ToolDefinition {
                         type: "text" as const,
                         text: `Error: Image generation blocked by safety filter: ${data.promptFeedback.blockReason}`,
                     }],
+                    details: undefined,
                 };
             }
 
@@ -296,6 +303,7 @@ export function createImageGenTool(): ToolDefinition {
                         type: "text" as const,
                         text: `No image data returned from Gemini.${extra}`,
                     }],
+                    details: undefined,
                 };
             }
 
@@ -344,6 +352,7 @@ export function createImageGenTool(): ToolDefinition {
                     type: "text" as const,
                     text: lines.join("\n"),
                 }],
+                details: undefined,
             };
         },
     };

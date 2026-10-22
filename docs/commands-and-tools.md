@@ -27,18 +27,6 @@ Full-screen overlay listing running and queued async agents, with live output pe
 /async-status
 ```
 
-### /btw
-
-Ask a quick side question that is answered from the current conversation without adding the answer to the main chat history. Requires a selected model (`/model`) and a TUI session.
-
-- **Arguments:** `<question>` — required; missing argument prints `Usage: /btw <question>`
-
-```
-/btw what name did we give that retry helper?
-```
-
-More detail: [Asking Side Questions with /btw](btw-command.html).
-
 ### /coms
 
 Start, stop, or inspect P2P inter-agent communication. Coms is off by default and is activated explicitly with `/coms start`; all `coms_*` tools return "coms not active" until then.

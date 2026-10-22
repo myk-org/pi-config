@@ -1,0 +1,7 @@
+{
+  "extends": "../../tsconfig.typecheck.json",
+  "compilerOptions": {
+    "rootDir": "."
+  },
+  "include": ["index.ts", "logger.ts"]
+}

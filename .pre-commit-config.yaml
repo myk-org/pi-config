@@ -65,6 +65,23 @@ repos:
           - pytest
           - types-Markdown
 
+  - repo: local
+    hooks:
+      - id: tsc-typecheck
+        name: npm run typecheck (repo TypeScript gate, issue #951)
+        language: system
+        # Fresh checkouts: npm install is a prerequisite (typescript + project
+        # deps live in node_modules). Fail with an actionable message instead
+        # of a cryptic tsc-not-found (Qodo PR #954).
+        entry: >-
+          bash -c 'test -x node_modules/.bin/tsc || { echo "tsc-typecheck: node_modules/.bin/tsc missing - run npm install first"; exit 1; }; npm run typecheck'
+        pass_filenames: false
+        # Full-project check: tsc -p cannot be scoped to staged files, so the
+        # files filter only decides WHEN it runs, not WHAT it checks. Covers
+        # .ts/.tsx/.mts (incl. .d.mts declarations), tsconfigs, and package.json
+        # (dependency changes can break compilation) — Qodo PR #954.
+        files: \.(ts|tsx|mts)$|^(tsconfig\.typecheck\.json|package\.json)$|/tsconfig\.json$
+
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.44.0
     hooks:
