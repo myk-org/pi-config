@@ -25,7 +25,7 @@ restart loses it silently.
 - ❌ BAD: "after Qodo approves, deploy and test" → acknowledged, no task
 - ✅ GOOD: `TaskCreate("Deploy X locally — trigger: Qodo R6 clean")` + blocked follow-ups
 
-**Skip tasks for:** single-step actions, questions/explanations, `/btw` side questions, or trivial fixes.
+**Skip tasks for:** single-step actions, questions/explanations, or trivial fixes.
 
 ---
 

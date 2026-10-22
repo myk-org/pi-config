@@ -46,7 +46,6 @@
 - [myk_pi_tools CLI Reference](cli-reference.md)
 - [Implementing Command Guards](safety-enforcements.md)
 - [Daemon & Websocket Networking](daemon-and-websockets.md)
-- [Asking Side Questions with /btw](btw-command.md)
 
 ## Architecture
 
