@@ -15,7 +15,7 @@
  * Usage: loaded via extensions/coms/index.ts
  */
 
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
@@ -186,6 +186,22 @@ interface PendingReply {
 	/** #924 §6: last progress note received from the peer (never resolves the reply). */
 	progress?: { note: string; at: string };
 }
+
+/** #951: coms_send tool result details — blocked send or delivered message. */
+type ComsSendDetails =
+	| { blocked: boolean; reason: string; target: string }
+	| { msg_id: string; target: string; target_session: string; hops: number; peer_queue_depth: number; peer_status: string };
+
+/** #951: coms_get tool result details — error, completed reply, or pending progress. */
+type ComsGetDetails =
+	| { status: "error"; error: string }
+	| { status: "complete"; response: unknown; error: string | null; queued_msg_ids: string[] }
+	| { status: "pending"; progress: { note: string; at: string } | null };
+
+/** #951: coms_task_delete tool result details — blocked or deleted. */
+type ComsTaskDeleteDetails =
+	| { blocked: boolean; reason: string }
+	| { target: string; task_id: string };
 
 interface InboundContext {
 	msg_id: string;
@@ -2235,7 +2251,7 @@ Do not respond to this message.`;
 		entry.timer = setTimeout(() => {
 			if (entry.result) return;
 			entry.result = { error: "timeout" };
-			try { entry.resolve(entry.result); } catch { /* ignore */ }
+			try { entry.resolve?.(entry.result); } catch { /* ignore */ }
 			// Clean up timed-out entry from both maps
 			const pSet = pendingOutbound.get(target.name);
 			if (pSet) { pSet.delete(msg_id); if (pSet.size === 0) pendingOutbound.delete(target.name); }
@@ -2389,7 +2405,9 @@ Do not respond to this message.`;
 			priority: Type.Optional(Type.Boolean({ description: "Jump the peer's queued message backlog (urgent messages). Default false." })),
 			clearPrevious: Type.Optional(Type.Boolean({ description: "Deprecated and rejected: inspect with coms_queue_inspect, then explicitly clear using preview_id." })),
 		}),
-		async execute(_callId, params) {
+		// #951: explicit result type so the blocked and delivered details shapes form
+		// one union instead of racing TDetails inference.
+		async execute(_callId, params): Promise<AgentToolResult<ComsSendDetails>> {
 			if (!identity) {
 				throw new Error("coms not initialised");
 			}
@@ -2618,7 +2636,7 @@ Do not respond to this message.`;
 		parameters: Type.Object({
 			msg_id: Type.String({ description: "msg_id returned by coms_send." }),
 		}),
-		async execute(_callId, params) {
+		async execute(_callId, params): Promise<AgentToolResult<ComsGetDetails>> {
 			const entry = pendingReplies.get(params.msg_id);
 			if (!entry) {
 				return {
@@ -2731,7 +2749,7 @@ Do not respond to this message.`;
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
 			const result = await sendQueueManage(target, "delete", params.msg_id, undefined, params.preview_id);
 			if (result.error) throw new Error(`coms_queue_delete failed: ${result.error}`);
-			return { content: [{ type: "text" as const, text: `coms_queue_delete → ${target.name}\nmsg_id: ${params.msg_id}` }] };
+			return { content: [{ type: "text" as const, text: `coms_queue_delete → ${target.name}\nmsg_id: ${params.msg_id}` }], details: undefined };
 		},
 	});
 
@@ -2749,7 +2767,7 @@ Do not respond to this message.`;
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
 			const result = await sendQueueManage(target, "edit", params.msg_id, params.new_content);
 			if (result.error) throw new Error(`coms_queue_edit failed: ${result.error}`);
-			return { content: [{ type: "text" as const, text: `coms_queue_edit → ${target.name}\nmsg_id: ${params.msg_id}` }] };
+			return { content: [{ type: "text" as const, text: `coms_queue_edit → ${target.name}\nmsg_id: ${params.msg_id}` }], details: undefined };
 		},
 	});
 
@@ -2784,7 +2802,7 @@ Do not respond to this message.`;
 			if (!target) throw new Error(`coms: no live agent matching "${params.target}"`);
 			const result = await sendQueueManage(target, "prioritize", params.msg_id);
 			if (result.error) throw new Error(`coms_queue_prioritize failed: ${result.error}`);
-			return { content: [{ type: "text" as const, text: `coms_queue_prioritize → ${target.name}\nmsg_id: ${params.msg_id}` }] };
+			return { content: [{ type: "text" as const, text: `coms_queue_prioritize → ${target.name}\nmsg_id: ${params.msg_id}` }], details: undefined };
 		},
 	});
 
@@ -2896,7 +2914,7 @@ Do not respond to this message.`;
 			target: Type.String({ description: "Peer name or session_id." }),
 			task_id: Type.String({ description: "Task ID to delete." }),
 		}),
-		async execute(_callId, params) {
+		async execute(_callId, params): Promise<AgentToolResult<ComsTaskDeleteDetails>> {
 			log.debug("coms_task_delete_start", { target: params.target, taskId: params.task_id });
 			if (!identity) throw new Error("coms not initialised");
 			const target = await resolveTarget(params.target);
@@ -3721,7 +3739,10 @@ Do not respond to this message.`;
 	// Expose command handlers to pidash for browser command dispatch
 	try {
 		if ((globalThis as any).__coms_p2p_pidash_listener) {
-			try { pi.events.removeListener("pidash:request-commands", (globalThis as any).__coms_p2p_pidash_listener); } catch {}
+			// #951: pi's EventBus exposes only emit/on — no removeListener. This cleanup has
+			// always thrown (swallowed by the catch), so the stale listener is never removed;
+			// latent bug left as-is, typed to match reality.
+			try { (pi.events as { removeListener?: (channel: string, handler: (data: unknown) => void) => void }).removeListener?.("pidash:request-commands", (globalThis as any).__coms_p2p_pidash_listener); } catch {}
 		}
 		const registerWithPidash = () => {
 			pi.events.emit("pidash:register-command", { name: "coms-queue", handler: comsQueueCmdHandler });
@@ -3790,7 +3811,9 @@ Do not respond to this message.`;
 			try {
 				for (const connection of connections) connection.destroy();
 				connections.clear();
-				activeServer.closeAllConnections?.(); activeServer.close(); activeServer.unref();
+				// #951: net.Server has no closeAllConnections at runtime or in @types/node —
+				// the optional call is a graceful no-op; typed accordingly.
+				(activeServer as net.Server & { closeAllConnections?: () => void }).closeAllConnections?.(); activeServer.close(); activeServer.unref();
 			} catch { /* ignore */ }
 		}
 		if (pingWorker) {

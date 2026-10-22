@@ -57,7 +57,7 @@ function jobTitle(job: AsyncStatusJobView): string {
  */
 export function formatKillOriginSuffix(
   killOrigin: string | undefined,
-  theme: { fg: (color: string, value: string) => string },
+  theme: Pick<Theme, "fg">,
 ): string {
   if (!killOrigin) {
     log.debug("kill_origin_header: no origin recorded");

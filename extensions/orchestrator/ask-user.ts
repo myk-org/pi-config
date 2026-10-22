@@ -48,6 +48,7 @@ export function registerAskUser(
           content: [
             { type: "text", text: "No UI available for user interaction" },
           ],
+          details: undefined,
           isError: true,
         };
       }
@@ -265,17 +266,17 @@ export function registerAskUser(
       unsubscribe();
 
       if (result === null) {
-        return { content: [{ type: "text", text: "User cancelled" }], terminate: true };
+        return { content: [{ type: "text", text: "User cancelled" }], details: undefined, terminate: true };
       }
-      return { content: [{ type: "text", text: result }] };
+      return { content: [{ type: "text", text: result }], details: undefined };
     },
 
     renderCall(args, theme) {
       let t =
         theme.fg("toolTitle", theme.bold("ask_user ")) +
         theme.fg("accent", args.question || "...");
-      if (args.options?.length > 0) {
-        t += `\n  ${theme.fg("dim", args.options.join(" • "))}`;
+      if ((args.options?.length ?? 0) > 0) {
+        t += `\n  ${theme.fg("dim", args.options!.join(" • "))}`;
       }
       return new Text(t, 0, 0);
     },

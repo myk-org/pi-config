@@ -5,7 +5,6 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { tryGetSystemPromptOptions } from "./utils.js";
-import type { AsyncJob } from "./async-agents.js";
 import type { CronTask } from "./cron.js";
 import { getCurrentBranch, runGit } from "./git-helpers.js";
 import { createLogger } from "../shared/logger.js";
@@ -41,7 +40,7 @@ function formatSchedule(t: CronTask): string {
 export function registerStatus(
   pi: ExtensionAPI,
   inContainer: boolean,
-  getAsyncJobs: () => AsyncJob[],
+  getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>,
   getCronTasks: () => CronTask[],
 ): void {
   pi.registerCommand("status", {

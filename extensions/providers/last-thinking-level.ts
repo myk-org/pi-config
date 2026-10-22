@@ -275,7 +275,10 @@ function clampSavedThinkingLevel(model: RuntimeModel, level: SavedThinkingLevel)
   const requested = THINKING_LEVELS.indexOf(level);
   const effective = available.includes(level) ? level
     : available.find(candidate => THINKING_LEVELS.indexOf(candidate) > requested)
-      ?? available.findLast(candidate => THINKING_LEVELS.indexOf(candidate) < requested)
+      // #951: findLast exists at runtime (Array.prototype.findLast, Node 18+) but is
+      // outside the es2022 lib used by the type-check gate; narrowest cast that keeps
+      // the call identical.
+      ?? (available as readonly SavedThinkingLevel[] & { findLast?: (cb: (candidate: SavedThinkingLevel) => boolean) => SavedThinkingLevel | undefined }).findLast?.(candidate => THINKING_LEVELS.indexOf(candidate) < requested)
       ?? "off";
   log.debug("thinking preference level clamped", { model: modelThinkingKey(model), requested: level, effective });
   return effective;

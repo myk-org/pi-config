@@ -225,6 +225,7 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
             type: "text",
             text: `No past sessions found matching "${params.query}".`,
           }],
+          details: undefined,
         };
       }
 
@@ -237,6 +238,7 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
           type: "text",
           text: `Found ${results.length} past session(s) matching "${params.query}":\n\n${lines.join("\n\n---\n\n")}`,
         }],
+        details: undefined,
       };
     },
   });

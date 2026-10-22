@@ -8,6 +8,7 @@ Modifying agents, rules, extensions, or prompt templates here changes behavior f
 - Pre-commit: `prek run --all-files`
 - Python tests: `uv run --group tests pytest`
 - Node tests: `npx tsx --test tests/node/**/*.test.ts`
+- TypeScript type-check gate: `npm run typecheck` (tsc --noEmit, strict, all five projects — issue #951)
 - Full verify: `prek run --all-files && tox`
 
 ## pi-sidecar (Monorepo Workspace)
@@ -89,8 +90,9 @@ A change is complete when ALL pass:
 1. `prek run --all-files` exits 0
 2. `uv run --group tests pytest` exits 0
 3. `npx tsx --test tests/node/**/*.test.ts` exits 0
-4. AGENTS.md / README.md updated if structure/commands/features changed
-5. Files committed with message: `type(scope): description`
+4. `npm run typecheck` exits 0
+5. AGENTS.md / README.md updated if structure/commands/features changed
+6. Files committed with message: `type(scope): description`
 
 ## Logging Requirements
 

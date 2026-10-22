@@ -87,7 +87,7 @@ function registerMemorySearch(pi: ExtensionAPI, state: { embeddingsMigrated: boo
       }));
 
       if (searchEntries.length === 0) {
-        return { content: [{ type: "text", text: "No memories found." }] };
+        return { content: [{ type: "text", text: "No memories found." }], details: undefined };
       }
 
       // Keyword substring search (existing behavior)
@@ -155,6 +155,7 @@ function registerMemorySearch(pi: ExtensionAPI, state: { embeddingsMigrated: boo
       if (results.length === 0) {
         return {
           content: [{ type: "text", text: `No memories found matching "${params.query}".` }],
+          details: undefined,
         };
       }
 
@@ -172,7 +173,7 @@ function registerMemorySearch(pi: ExtensionAPI, state: { embeddingsMigrated: boo
 
       log.info("memory_search", params.query, results.length);
       const text = `Found ${results.length} memories matching "${params.query}":\n\n${lines.join("\n")}`;
-      return { content: [{ type: "text", text }] };
+      return { content: [{ type: "text", text }], details: undefined };
     },
   });
 }
@@ -219,6 +220,7 @@ function registerMemoryReinforce(pi: ExtensionAPI): void {
             type: "text",
             text: `Reinforced: [${params.category}] ${params.entryText}\nNew evidence count: ${entry?.evidenceCount ?? "?"}, score: ${entry?.score?.toFixed(2) ?? "?"}${promoNote}`,
           }],
+          details: undefined,
         };
       }
 
@@ -227,6 +229,7 @@ function registerMemoryReinforce(pi: ExtensionAPI): void {
           type: "text",
           text: `Memory not found: [${params.category}] ${params.entryText}\nUse memory_search to find the exact text.`,
         }],
+        details: undefined,
       };
     },
   });
@@ -246,7 +249,7 @@ function registerMemoryTopics(pi: ExtensionAPI): void {
       const topics = listTopics(ctx.cwd);
 
       if (topics.length === 0) {
-        return { content: [{ type: "text", text: "No memory topics found." }] };
+        return { content: [{ type: "text", text: "No memory topics found." }], details: undefined };
       }
 
       const lines = topics.map((t: TopicInfo) =>
@@ -254,7 +257,7 @@ function registerMemoryTopics(pi: ExtensionAPI): void {
       );
 
       const text = `Memory topics (${topics.length}):\n\n${lines.join("\n")}`;
-      return { content: [{ type: "text", text }] };
+      return { content: [{ type: "text", text }], details: undefined };
     },
   });
 }
@@ -332,7 +335,7 @@ function registerMemoryAdd(pi: ExtensionAPI): void {
       }
       const result = await addMemoryEntry(ctx.cwd, params);
       log.info("memory_add", params.category, params.text.slice(0, 60), result.status);
-      return { content: [{ type: "text", text: result.message }] };
+      return { content: [{ type: "text", text: result.message }], details: undefined };
     },
   });
 }
@@ -362,14 +365,14 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
       // Validate category
       const validCategories = VALID_CATEGORIES;
       if (!validCategories.includes(category as MemoryCategory)) {
-        return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }] };
+        return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }], details: undefined };
       }
 
       const topicName = CATEGORY_TO_TOPIC[category as keyof typeof CATEGORY_TO_TOPIC];
       const topicPath = join(getProjectMemoryDir(cwd), "topics", `${topicName}.md`);
 
       if (!existsSync(topicPath)) {
-        return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }] };
+        return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }], details: undefined };
       }
 
       const content = readFileSync(topicPath, "utf-8");
@@ -377,7 +380,7 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
       // Marker-agnostic match (pinned/enforced/id combinations, issue #915)
       const match = findTopicLine(content, category, text);
       if (!match) {
-        return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }] };
+        return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }], details: undefined };
       }
 
       // Remove the line and collapse consecutive blank lines
@@ -406,6 +409,7 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
       log.info("memory_remove", category, text.slice(0, 60));
       return {
         content: [{ type: "text", text: `Removed: [${category}] ${text}` }],
+        details: undefined,
       };
     },
   });
@@ -436,7 +440,7 @@ function registerMemoryReflect(pi: ExtensionAPI): void {
         (te) => isEntryActiveForSession(scores0.entries[entryHash(`- [${te.category}] ${te.text}`)], sessionId),
       );
       if (topicEntries.length === 0) {
-        return { content: [{ type: "text", text: "No memories to reflect on." }] };
+        return { content: [{ type: "text", text: "No memories to reflect on." }], details: undefined };
       }
 
       // Get relevant memories via vector + keyword search
@@ -459,7 +463,7 @@ function registerMemoryReflect(pi: ExtensionAPI): void {
       }
 
       if (relevant.length === 0) {
-        return { content: [{ type: "text", text: `No relevant memories found for: "${params.query}"` }] };
+        return { content: [{ type: "text", text: `No relevant memories found for: "${params.query}"` }], details: undefined };
       }
 
       // Format as structured context for the AI to synthesize (include provenance when present)
@@ -480,7 +484,7 @@ function registerMemoryReflect(pi: ExtensionAPI): void {
 
       const text = `## Recalled memories for: "${params.query}"\n\n${memoryContext}\n\n` +
         `*${relevant.length} memories found. Synthesize these into a coherent answer.*`;
-      return { content: [{ type: "text", text }] };
+      return { content: [{ type: "text", text }], details: undefined };
     },
   });
 }
@@ -514,14 +518,14 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
 
       const validCategories = VALID_CATEGORIES;
       if (!validCategories.includes(category as MemoryCategory)) {
-        return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }] };
+        return { content: [{ type: "text", text: `Invalid category "${category}". Valid: ${validCategories.join(", ")}` }], details: undefined };
       }
 
       const topicName = CATEGORY_TO_TOPIC[category as keyof typeof CATEGORY_TO_TOPIC];
       const topicPath = join(getProjectMemoryDir(cwd), "topics", `${topicName}.md`);
 
       if (!existsSync(topicPath)) {
-        return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }] };
+        return { content: [{ type: "text", text: `Topic file not found for category "${category}".` }], details: undefined };
       }
 
       const content = readFileSync(topicPath, "utf-8");
@@ -529,18 +533,18 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
       // Marker-agnostic match (pinned/enforced/id combinations, issue #915)
       const match = findTopicLine(content, category, text);
       if (!match) {
-        return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }] };
+        return { content: [{ type: "text", text: `Memory not found: [${category}] ${text}\nUse memory_search to find the exact text.` }], details: undefined };
       }
       const { index: matchIndex, pinned: wasPinned, enforced: wasEnforced, id: wasId } = match;
       const lines = content.split("\n");
 
       if (op === "update") {
         if (!newText) {
-          return { content: [{ type: "text", text: "newText is required for update operation." }] };
+          return { content: [{ type: "text", text: "newText is required for update operation." }], details: undefined };
         }
         // Enforce single-line content
         if (newText.includes("\n")) {
-          return { content: [{ type: "text", text: "newText must be a single line (no newlines)." }] };
+          return { content: [{ type: "text", text: "newText must be a single line (no newlines)." }], details: undefined };
         }
         // Check topic size cap. The rewritten line keeps its markers and id
         // so the enforcement binding survives the text change (issue #915).
@@ -548,7 +552,7 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         const replacement = `- [${category}] ${newText}${markers}`;
         const newContent = content.replace(lines[matchIndex]!, replacement);
         if (newContent.length > MAX_TOPIC_CHARS) {
-          return { content: [{ type: "text", text: `Update would exceed topic size limit (${newContent.length}/${MAX_TOPIC_CHARS} chars).` }] };
+          return { content: [{ type: "text", text: `Update would exceed topic size limit (${newContent.length}/${MAX_TOPIC_CHARS} chars).` }], details: undefined };
         }
         // Replace the line
         lines[matchIndex] = replacement;
@@ -577,7 +581,7 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         removeEmbedding(cwd, text, category);
         await embedEntry(cwd, newText, category);
 
-        return { content: [{ type: "text", text: `Updated: [${category}] ${text}\n     → [${category}] ${newText}` }] };
+        return { content: [{ type: "text", text: `Updated: [${category}] ${text}\n     → [${category}] ${newText}` }], details: undefined };
       }
 
       if (op === "invalidate") {
@@ -604,10 +608,10 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         if (supersededBy) {
           result += `\nSuperseded by: ${supersededBy}`;
         }
-        return { content: [{ type: "text", text: result }] };
+        return { content: [{ type: "text", text: result }], details: undefined };
       }
 
-      return { content: [{ type: "text", text: `Unknown operation: ${op}` }] };
+      return { content: [{ type: "text", text: `Unknown operation: ${op}` }], details: undefined };
     },
   });
 }
@@ -628,7 +632,7 @@ function registerMemoryConsolidate(pi: ExtensionAPI): void {
       const cwd = ctx.cwd;
       const topicEntries = readAllTopicEntries(cwd);
       if (topicEntries.length === 0) {
-        return { content: [{ type: "text", text: "No memories to consolidate." }] };
+        return { content: [{ type: "text", text: "No memories to consolidate." }], details: undefined };
       }
 
       // Group entries by category
@@ -665,7 +669,7 @@ function registerMemoryConsolidate(pi: ExtensionAPI): void {
       report += `5. **NEVER touch pinned entries** — they are user-explicit and permanent.\n\n`;
       report += `*Take actions using memory_edit and memory_remove. Write promotions.md for graduation candidates.*`;
 
-      return { content: [{ type: "text", text: report }] };
+      return { content: [{ type: "text", text: report }], details: undefined };
     },
   });
 }

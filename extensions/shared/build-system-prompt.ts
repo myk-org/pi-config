@@ -3,7 +3,7 @@
  * Injects enforced memory entries so external agents follow the same rules.
  */
 
-import { getCurrentSystemPrompt, type TranscriptContext } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt, normalizeContext, type TranscriptContext } from "@earendil-works/pi-ai";
 import { loadEnforcedEntries } from "../orchestrator/enforcement-rules.js";
 import { createLogger } from "./logger.js";
 
@@ -11,7 +11,8 @@ const log = createLogger("build-system-prompt");
 
 export function createEmptyTranscriptContext(): TranscriptContext {
   log.debug("creating empty transcript context");
-  return { messages: [] } as TranscriptContext;
+  // TranscriptContext is branded — normalizeContext() is the only sanctioned constructor.
+  return normalizeContext({ messages: [] });
 }
 
 /**

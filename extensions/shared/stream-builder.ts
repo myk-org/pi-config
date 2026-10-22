@@ -161,9 +161,15 @@ export class StreamAssembler {
     }
 
     // AssistantMessage.stopReason keeps the full driver value (length, toolUse, …).
-    // pi's done-event reason is only "stop" | "aborted" — map everything else to "stop".
-    const stopReason = this.output.stopReason = opts?.stopReason || "stop";
-    const reason = (stopReason === "aborted" ? "aborted" : "stop") as "stop" | "aborted";
+    // pi's done-event reason is only "stop" | "length" | "toolUse" | "deferred" — map
+    // everything else to "stop".
+    // #951: driver stop reasons are free-form strings; the assignment below deliberately
+    // keeps the raw driver value, so it is cast to pi's StopReason rather than filtered.
+    const stopReason = this.output.stopReason = (opts?.stopReason || "stop") as AssistantMessage["stopReason"];
+    // #951: pi-ai's done-event reason type excludes "aborted" (aborted turns are meant to
+    // emit an `error` event), but this builder has always pushed reason:"aborted" on done —
+    // the cast preserves that established behavior.
+    const reason = (stopReason === "aborted" ? "aborted" : "stop") as "stop";
     this.stream.push({ type: "done", reason, message: this.output });
     this.stream.end();
   }

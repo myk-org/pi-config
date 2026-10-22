@@ -2,7 +2,13 @@
  * /btw command — quick side questions without polluting conversation history.
  */
 
-import { complete, type UserMessage } from "@earendil-works/pi-ai";
+import { type UserMessage } from "@earendil-works/pi-ai";
+// #951: `complete` is NOT exported from "@earendil-works/pi-ai"'s main entry — only from
+// the deprecated "/compat" surface. The named import below is `undefined` at runtime, so
+// /btw throws "complete is not a function" when invoked. This is a latent runtime bug
+// (reported for a follow-up issue); the alias preserves that exact behavior while typing
+// the call against the real /compat signature.
+const complete = undefined as unknown as typeof import("@earendil-works/pi-ai/compat")["complete"];
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { tryGetSystemPromptOptions } from "./utils.js";
 import {
@@ -179,7 +185,7 @@ Rules:
             }
 
             // Scrolling
-            const termHeight = tui.height ?? 24;
+            const termHeight = tui.terminal.rows ?? 24;
             const headerCount = lines.length;
             const footerCount = 3;
             const maxVisible = Math.max(1, termHeight - headerCount - footerCount - 2);

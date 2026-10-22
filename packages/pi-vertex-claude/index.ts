@@ -23,7 +23,7 @@
  */
 
 import { AnthropicVertex } from "@anthropic-ai/vertex-sdk";
-import type { ContentBlockParam, MessageCreateParamsStreaming } from "@anthropic-ai/sdk/resources/messages.js";
+import type { Base64ImageSource, ContentBlockParam, MessageCreateParamsStreaming } from "@anthropic-ai/sdk/resources/messages.js";
 import {
 	type Api,
 	type AssistantMessage,
@@ -271,7 +271,7 @@ export function convertMessages(messages: Message[], model: Model<Api>): any[] {
 						? { type: "text" as const, text: sanitizeSurrogates(item.text) }
 						: {
 								type: "image" as const,
-								source: { type: "base64" as const, media_type: item.mimeType, data: item.data },
+								source: { type: "base64" as const, media_type: item.mimeType as Base64ImageSource["media_type"], data: item.data },
 							},
 				);
 				// Filter out images if model doesn't support them

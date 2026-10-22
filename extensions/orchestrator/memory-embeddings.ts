@@ -94,9 +94,10 @@ async function getPipeline(): Promise<any> {
   pipelineLoading = (async () => {
     try {
       const { pipeline } = await import("@huggingface/transformers");
-      const extractor = await pipeline("feature-extraction", "Xenova/bge-small-en-v1.5", {
-        quantized: true,
-      });
+      // #951: `quantized: true` was removed in @huggingface/transformers v4 (replaced by
+      // `dtype`); passing it was a silent no-op, so the model loads with the default dtype.
+      // Latent bug — the intended q8/quantized load is not restored here; see follow-up issue.
+      const extractor = await pipeline("feature-extraction", "Xenova/bge-small-en-v1.5");
       pipelineInstance = extractor;
       return extractor;
     } catch {

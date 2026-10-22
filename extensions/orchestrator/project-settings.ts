@@ -508,6 +508,12 @@ export function getSetting(cwd: string, key: "pidiff_stale_lock_timeout_ms"): nu
 export function getSetting(cwd: string, key: "pidiff_daemon_startup_timeout_s"): number;
 export function getSetting(cwd: string, key: "dangerous_command_allowlist"): string[];
 export function getSetting(cwd: string, key: "review_learning"): boolean;
+export function getSetting(cwd: string, key: "memory_max_active_entries"): number;
+export function getSetting(cwd: string, key: "memory_near_duplicate_threshold"): number;
+export function getSetting(cwd: string, key: "memory_conflict_similarity"): number;
+export function getSetting(cwd: string, key: "memory_inject_similarity"): number;
+export function getSetting(cwd: string, key: "memory_token_budget"): number;
+export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }>;
 export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
   const settings = getSettings(cwd);
   const def = SETTINGS_KEYS[key];

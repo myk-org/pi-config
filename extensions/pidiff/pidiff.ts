@@ -388,7 +388,10 @@ export function registerPidiff(pi: ExtensionAPI): void {
   // Expose handler to pidash for browser command dispatch
   try {
     if ((globalThis as any).__pidiff_pidash_listener) {
-      try { pi.events.removeListener("pidash:request-commands", (globalThis as any).__pidiff_pidash_listener); } catch {}
+      // #951: pi's EventBus exposes only emit/on — no removeListener. This cleanup has
+      // always thrown (swallowed by the catch), so the stale listener is never removed;
+      // latent bug left as-is, typed to match reality.
+      try { (pi.events as { removeListener?: (channel: string, handler: (data: unknown) => void) => void }).removeListener?.("pidash:request-commands", (globalThis as any).__pidiff_pidash_listener); } catch {}
     }
     const registerWithPidash = () => pi.events.emit("pidash:register-command", { name: "pidiff", handler: pidiffCmdHandler });
     (globalThis as any).__pidiff_pidash_listener = registerWithPidash;

@@ -165,7 +165,8 @@ export function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
     srv.listen(0, "127.0.0.1", () => {
-      const port = srv.address().port;
+      const addr = srv.address();
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
       srv.close(() => resolve(port));
     });
     srv.on("error", reject);

@@ -6,7 +6,7 @@
  * no LLM context cost).
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { onStateTransition, readReviewState, markNeedsReview, resetReviewState, type ReviewState } from "./pi-config-review-state.js";
 import { ICON_REVIEW_CLEAN, ICON_REVIEW_NEEDED, ICON_REVIEW_PROGRESS, ICON_REVIEW_FINDINGS } from "./icons.js";
@@ -82,7 +82,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
         line = `📋 Review: ${data.status}`;
     }
 
-    const colorMap: Record<string, string> = {
+    const colorMap: Record<string, ThemeColor> = {
       in_progress: "accent",
       clean: "success",
       needs_review: "warning",
@@ -110,7 +110,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
       const ctx = lastCtx;
 
       let label: string;
-      let color: string;
+      let color: ThemeColor;
       switch (state.status) {
         case "none":
           clearSlot("review", ctx);

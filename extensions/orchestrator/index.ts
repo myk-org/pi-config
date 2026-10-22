@@ -137,12 +137,14 @@ export default function (pi: ExtensionAPI) {
         if (!registry) {
           return {
             content: [{ type: "text" as const, text: "Model registry not available." }],
+            details: undefined,
           };
         }
         models = registry.getAvailable?.() || registry.getAll?.() || [];
       } catch (e: any) {
         return {
           content: [{ type: "text" as const, text: `Failed to list models: ${e?.message || e}` }],
+          details: undefined,
         };
       }
       // Filter out acpx-* providers — they cannot work in subagent children
@@ -154,6 +156,7 @@ export default function (pi: ExtensionAPI) {
       if (filtered.length === 0) {
         return {
           content: [{ type: "text" as const, text: params.provider ? `No models found for provider "${params.provider}".` : "No models available." }],
+          details: undefined,
         };
       }
       // Group by provider for readability
@@ -172,6 +175,7 @@ export default function (pi: ExtensionAPI) {
       }
       return {
         content: [{ type: "text" as const, text: lines.join("\n") }],
+        details: undefined,
       };
     },
   });

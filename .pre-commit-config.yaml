@@ -65,6 +65,17 @@ repos:
           - pytest
           - types-Markdown
 
+  - repo: local
+    hooks:
+      - id: tsc-typecheck
+        name: npm run typecheck (repo TypeScript gate, issue #951)
+        language: system
+        entry: npm run typecheck
+        pass_filenames: false
+        files: \.(ts|tsx)$|^tsconfig\.typecheck\.json$|/tsconfig\.json$
+        # Full-project check: tsc -p cannot be scoped to staged files, so the
+        # files filter only decides WHEN it runs, not WHAT it checks.
+
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.44.0
     hooks:
