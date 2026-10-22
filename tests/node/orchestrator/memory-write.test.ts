@@ -3230,6 +3230,21 @@ describe("conflict gate — hyphenated compound discount (issue #955)", () => {
     }
   });
 
+  it("a quoted compound example does not discount the real action overlap (Qodo PR #956 R2)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never force push (the command 'force-push')");
+      const result = await addMemoryEntry(cwd, {
+        text: "Always force-push",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("an identical hyphenated ACTION flip still conflicts — compound as the whole action (Qodo PR #956 R2)", async () => {
     const cwd = makeCwd();
     try {

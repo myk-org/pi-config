@@ -1893,9 +1893,15 @@ function compoundSharedDiscount(
 ): number {
   const compoundsIn = (text: string): Set<string> =>
     new Set(text.toLowerCase().match(/[a-z][a-z0-9#]*(?:-[a-z][a-z0-9#]*)+/g) ?? []);
-  const aCompounds = compoundsIn(aRaw);
+  // Quoted spans are never the action (Qodo 29a4da4e) — a compound that
+  // appears only inside a quoted example ('force-push') must not discount
+  // the genuine unquoted shared action words (Qodo PR #956: "Never force
+  // push (the command 'force-push')" vs "Always force-push" coexisted).
+  // Masking here covers both call sites: the clause gate and the
+  // corroboration gate.
+  const aCompounds = compoundsIn(quotedMask(aRaw));
   if (aCompounds.size === 0) return 0;
-  const bCompounds = compoundsIn(bRaw);
+  const bCompounds = compoundsIn(quotedMask(bRaw));
   // Qualifying compounds: hyphenated in BOTH texts, with every part shared
   // on both sides. Part filtering mirrors contentWords exactly (Qodo PR
   // #956): RAW stop words are dropped BEFORE stemming — a stemmed stop word
