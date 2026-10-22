@@ -1189,18 +1189,22 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
             (negRem[0] === y && permRem[0] === x),
         );
       // Whole-action exception needs an actual shared action CONCEPT
-      // (Qodo PR #956 R3): a part shared between two DIFFERENT compounds
-      // ("auto" in auto-merge vs auto-deploy) is a fragment, not an action —
-      // the exception fires only when a qualifying compound was discounted
-      // (the shared concept IS the compound) or a shared word stands alone
-      // outside every compound on both sides.
+      // (Qodo PR #956 R3/R4): a part shared between two DIFFERENT compounds
+      // ("auto" in auto-merge vs auto-deploy) is a fragment, not an action.
+      // But a word embedded in a compound on ONE side may still be the ENTIRE
+      // action of the other side ("Never deploy" vs "Always deploy-staging")
+      // — it only fails as an action concept when it is a compound fragment
+      // on BOTH sides. The exception fires when a qualifying compound was
+      // discounted (the shared concept IS the compound) or a shared word
+      // stands alone in at least one clause.
       const sharedWords = [...negMasked].filter((w) => permMasked.has(w));
-      const compoundParts = new Set<string>();
-      for (const parts of [...maskedCompoundParts(neg), ...maskedCompoundParts(perm)]) {
-        for (const part of parts) compoundParts.add(part);
-      }
+      const negCompoundParts = new Set(maskedCompoundParts(neg).flat());
+      const permCompoundParts = new Set(maskedCompoundParts(perm).flat());
       const wholeActionShared =
-        discount > 0 || sharedWords.some((w) => !compoundParts.has(w));
+        discount > 0 ||
+        sharedWords.some(
+          (w) => !negCompoundParts.has(w) || !permCompoundParts.has(w),
+        );
       if (
         !(
           shared >= 2 ||

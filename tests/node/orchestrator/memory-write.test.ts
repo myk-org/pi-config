@@ -3230,6 +3230,21 @@ describe("conflict gate — hyphenated compound discount (issue #955)", () => {
     }
   });
 
+  it("a compound permission does not bypass a standalone ban (Qodo PR #956 R4)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "Never deploy");
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy-staging",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("different compounds sharing a fragment do not clash (Qodo PR #956 R3)", async () => {
     const cwd = makeCwd();
     try {
