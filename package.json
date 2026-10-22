@@ -86,7 +86,7 @@
   },
   "scripts": {
     "build:extension-uis": "bash scripts/build-extension-uis.sh",
-    "typecheck": "tsc -p tsconfig.typecheck.json && tsc -p packages/pi-vertex-claude/tsconfig.json && tsc -p packages/pi-sidecar/tsconfig.json && tsc -p extensions/pidiff/pidiff-ui/tsconfig.json && tsc -p extensions/pidash/pidash-ui/tsconfig.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json && tsc -p packages/pi-vertex-claude/tsconfig.json && tsc -p packages/pi-sidecar/tsconfig.json && tsc -p extensions/shared/ui/tsconfig.json && tsc -p extensions/pidiff/pidiff-ui/tsconfig.json && tsc -p extensions/pidash/pidash-ui/tsconfig.json",
     "prepack": "npm run build:extension-uis"
   },
   "allowScripts": {

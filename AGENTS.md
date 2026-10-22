@@ -9,7 +9,7 @@ Modifying agents, rules, extensions, or prompt templates here changes behavior f
 - Python tests: `uv run --group tests pytest`
 - Node tests: `npx tsx --test tests/node/**/*.test.ts`
 - TypeScript type-check gate: `npm run typecheck` (tsc --noEmit, strict, all five projects — issue #951)
-- Full verify: `prek run --all-files && tox`
+- Full verify: `prek run --all-files && tox && npm run typecheck`
 
 ## pi-sidecar (Monorepo Workspace)
 

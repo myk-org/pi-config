@@ -9,9 +9,13 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["extensions/**/*.ts"],
+  "include": [
+    "extensions/**/*.ts"
+  ],
   "exclude": [
     "node_modules",
     "**/node_modules",

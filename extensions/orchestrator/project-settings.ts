@@ -297,6 +297,16 @@ export function loadProjectSettings(cwd: string): ProjectSettings {
 let globalSettingsPathOverride: string | null = null;
 
 /** Set a custom global settings path (for tests). Pass null to restore default. Clears cache immediately. */
+/**
+ * Dynamic-key variant for callers that build setting keys at runtime (e.g.
+ * rules.ts `{{SETTINGS:...}}` substitution). Prefer the typed `getSetting` —
+ * this exists so dynamic keys do not force a `key: string` overload onto
+ * every caller (Qodo PR #954: mistyped keys must stay compile errors).
+ */
+export function getSettingDynamic(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
+  return getSetting(cwd, key as keyof typeof SETTINGS_KEYS);
+}
+
 export function setGlobalSettingsPath(path: string | null): void {
   globalSettingsPathOverride = path;
   clearSettingsCache();
@@ -513,10 +523,12 @@ export function getSetting(cwd: string, key: "memory_near_duplicate_threshold"):
 export function getSetting(cwd: string, key: "memory_conflict_similarity"): number;
 export function getSetting(cwd: string, key: "memory_inject_similarity"): number;
 export function getSetting(cwd: string, key: "memory_token_budget"): number;
-export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }>;
+// Fallback overload: any known settings key (SETTINGS_KEYS union) — a mistyped
+// key is a compile error instead of silently returning false (Qodo PR #954).
+export function getSetting(cwd: string, key: keyof typeof SETTINGS_KEYS): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }>;
 export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
   const settings = getSettings(cwd);
-  const def = SETTINGS_KEYS[key];
+  const def = SETTINGS_KEYS[key as keyof typeof SETTINGS_KEYS];
   if (!def) return false;
 
   // Special cases — unique parsing beyond simple settings → env → default
