@@ -3136,3 +3136,201 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 });
+
+describe("conflict gate — hyphenated compound discount (issue #955)", () => {
+  it("the live incident: an unrelated preference is not rejected against the pinned release-publish entry", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(
+        cwd,
+        "preference",
+        "After /release in pi-config: ALWAYS publish to npm @myk-org/pi-sidecar AND @myk-org/pi-vertex-claude, and to PyPI pi-sidecar-client",
+        { pinned: true },
+      );
+      const result = await addMemoryEntry(cwd, {
+        text: "Upstream changelog review means: extract adoptable features + user-value improvements for pi-config, never an upgrade-safety verdict",
+        category: "preference",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a shared brand compound alone is not action overlap (minimal repro)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "ALWAYS publish pi-config quietly", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "never mention pi-config loudly",
+        category: "preference",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("same-action conflicts through a compound are still rejected (discount is not over-broad)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "never push pi-config releases to npm");
+      const result = await addMemoryEntry(cwd, {
+        text: "ALWAYS push pi-config releases to npm",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("compound vs spaced form still conflicts (5ed24d35 equivalence preserved)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never install npm-package globally");
+      const result = await addMemoryEntry(cwd, {
+        text: "It is fine to install npm package globally",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("overlapping compounds do not erase a real conflict (Qodo PR #956)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "never touch pi-config pi-config-sidecar");
+      const result = await addMemoryEntry(cwd, {
+        text: "always touch pi-config pi-config-sidecar",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a compound with a stop-word part is still discounted (raw stop-word filter, Qodo PR #956)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "ALWAYS mention out-of-band quietly", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "never deploy out-of-band loudly",
+        category: "preference",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a quoted example does not lengthen a short rule past shortPair (Qodo PR #956 R4)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "Never merge 'auto-merge'");
+      const result = await addMemoryEntry(cwd, {
+        text: "Always merge",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a compound permission does not bypass a standalone ban (Qodo PR #956 R4)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "Never deploy");
+      const result = await addMemoryEntry(cwd, {
+        text: "Always deploy-staging",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("different compounds sharing a fragment do not clash (Qodo PR #956 R3)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "Never auto-merge");
+      const result = await addMemoryEntry(cwd, {
+        text: "Always auto-deploy",
+        category: "preference",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a quoted compound example does not discount the real action overlap (Qodo PR #956 R2)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "Never force push (the command 'force-push')");
+      const result = await addMemoryEntry(cwd, {
+        text: "Always force-push",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("an identical hyphenated ACTION flip still conflicts — compound as the whole action (Qodo PR #956 R2)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "Never auto-deploy");
+      const result = await addMemoryEntry(cwd, {
+        text: "Always auto-deploy",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a stop-word-part compound does not over-discount a real flip (Qodo PR #956)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "never deploy out-of-band");
+      const result = await addMemoryEntry(cwd, {
+        text: "always deploy out-of-band",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("identical compounds on both sides of a real flip still conflict", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "never install npm-package globally");
+      const result = await addMemoryEntry(cwd, {
+        text: "always install npm-package globally",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});

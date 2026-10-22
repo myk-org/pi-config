@@ -1158,8 +1158,18 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         s.replace(/\d{1,2}:\d{2}(?:am|pm)?|\d{1,2}(?:am|pm)|\b(?:noon|midnight)\b/gi, " ");
       const negMasked = maskedActionWords(stripTimes(neg));
       const permMasked = maskedActionWords(stripTimes(perm));
-      const shared = sharedCount(negMasked, permMasked);
-      const shorter = Math.min(negMasked.size, permMasked.size);
+      // Compound discount (issue #955): a hyphenated brand name present in
+      // both clauses is one concept, not two shared action words.
+      const rawShared = sharedCount(negMasked, permMasked);
+      const discount = compoundSharedDiscount(neg, perm, negMasked, permMasked);
+      const shared = Math.max(0, rawShared - discount);
+      if (discount > 0) {
+        log.debug("memory-write: clause compound discount applied", { rawShared, discount, shared });
+      }
+      // Collapsed sizes (Qodo PR #956): the "shared === shorter" whole-action
+      // test must compare against compound-collapsed clause sizes, or a
+      // discounted compound action never counts as the whole action.
+      const shorter = Math.min(collapsedActionSize(negMasked, neg), collapsedActionSize(permMasked, perm));
       // Action-verb synonyms count as the shared action (Qodo e8564269):
       // "Never run 'npm install'" vs "Always execute 'npm install'" —
       // the quoted command is masked on both sides, so run/execute is
@@ -1178,7 +1188,31 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
             (negRem[0] === x && permRem[0] === y) ||
             (negRem[0] === y && permRem[0] === x),
         );
-      if (!(shared >= 2 || (shared >= 1 && shared === shorter) || verbSynShared)) continue;
+      // Whole-action exception needs an actual shared action CONCEPT
+      // (Qodo PR #956 R3/R4): a part shared between two DIFFERENT compounds
+      // ("auto" in auto-merge vs auto-deploy) is a fragment, not an action.
+      // But a word embedded in a compound on ONE side may still be the ENTIRE
+      // action of the other side ("Never deploy" vs "Always deploy-staging")
+      // — it only fails as an action concept when it is a compound fragment
+      // on BOTH sides. The exception fires when a qualifying compound was
+      // discounted (the shared concept IS the compound) or a shared word
+      // stands alone in at least one clause.
+      const sharedWords = [...negMasked].filter((w) => permMasked.has(w));
+      const negCompoundParts = new Set(maskedCompoundParts(neg).flat());
+      const permCompoundParts = new Set(maskedCompoundParts(perm).flat());
+      const wholeActionShared =
+        discount > 0 ||
+        sharedWords.some(
+          (w) => !negCompoundParts.has(w) || !permCompoundParts.has(w),
+        );
+      if (
+        !(
+          shared >= 2 ||
+          (shared >= 1 && shared === shorter && wholeActionShared) ||
+          verbSynShared
+        )
+      )
+        continue;
       // Distinct-target exclusion on RAW words (Qodo 4fe7b1c3, 6d0214c7):
       // quoted tool names ARE the targets — "never use 'npm'" vs "always
       // use 'uv'" differ by exactly one mid-clause word per side and are
@@ -1855,11 +1889,116 @@ function diffWordIsMidClause(
 
 function sharedContentWords(a: string, b: string): number {
   const wa = contentWords(a);
-  let shared = 0;
-  for (const w of contentWords(b)) {
-    if (wa.has(w)) shared++;
+  const wb = contentWords(b);
+  const raw = sharedCount(wa, wb);
+  const discount = compoundSharedDiscount(a, b, wa, wb);
+  const shared = Math.max(0, raw - discount);
+  if (discount > 0) {
+    log.debug("memory-write: compound discount applied", { rawShared: raw, discount, shared });
   }
   return shared;
+}
+
+/** Hyphenated compounds present VERBATIM in both texts contribute their
+ *  parts as ONE shared word (issue #955): "pi-config" tokenizes to the two
+ *  generic words "pi" + "configuration", and those two alone satisfied the
+ *  ≥ 2 shared-word requirement in both conflict gates — any two rules that
+ *  mention the project name were declared contradictions. The discount only
+ *  applies when the compound appears hyphenated in BOTH texts, so the
+ *  5ed24d35 equivalence is preserved ("npm-package" in one text vs "npm
+ *  package" in the other keeps full part overlap), and only when EVERY
+ *  non-stop part is actually shared on both sides — a partially-shared
+ *  compound leaves the genuine shared word counted. */
+function compoundSharedDiscount(
+  aRaw: string,
+  bRaw: string,
+  aWords: Set<string>,
+  bWords: Set<string>,
+): number {
+  const compoundsIn = (text: string): Set<string> =>
+    new Set(text.toLowerCase().match(/[a-z][a-z0-9#]*(?:-[a-z][a-z0-9#]*)+/g) ?? []);
+  // Quoted spans are never the action (Qodo 29a4da4e) — a compound that
+  // appears only inside a quoted example ('force-push') must not discount
+  // the genuine unquoted shared action words (Qodo PR #956: "Never force
+  // push (the command 'force-push')" vs "Always force-push" coexisted).
+  // Masking here covers both call sites: the clause gate and the
+  // corroboration gate.
+  const aCompounds = compoundsIn(quotedMask(aRaw));
+  if (aCompounds.size === 0) return 0;
+  const bCompounds = compoundsIn(quotedMask(bRaw));
+  // Qualifying compounds: hyphenated in BOTH texts, with every part shared
+  // on both sides. Part filtering mirrors contentWords exactly (Qodo PR
+  // #956): RAW stop words are dropped BEFORE stemming — a stemmed stop word
+  // ("thes") is not in STOP_WORDS (72013bb5), so checking only the stemmed
+  // form kept a stop-word part ("of") in the list, failed the every-part
+  // test, and silently retained the brand-pair false positive.
+  const qualifying: string[][] = [];
+  const seenSignatures = new Set<string>();
+  for (const compound of aCompounds) {
+    if (!bCompounds.has(compound)) continue;
+    const parts = compound
+      .split("-")
+      .filter((w) => !STOP_WORDS.has(w))
+      .map(stem)
+      .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
+    if (parts.length < 2 || !parts.every((p) => aWords.has(p) && bWords.has(p))) continue;
+    // Pluralized variants ("npm-package" vs "npm-packages") stem to the
+    // same part set — one signature, one discount slot (Qodo PR #956).
+    const signature = parts.join("+");
+    if (seenSignatures.has(signature)) continue;
+    seenSignatures.add(signature);
+    qualifying.push(parts);
+  }
+  if (qualifying.length === 0) return 0;
+  // Overlapping compounds ("pi-config" + "pi-config-sidecar") share parts,
+  // but sharedCount counts each stem ONCE — a per-compound summation
+  // deducted the shared stems twice and erased real conflicts (Qodo PR
+  // #956). Deduct each DISTINCT shared part once; every qualifying
+  // compound still counts as exactly one shared word.
+  const distinctParts = new Set(qualifying.flat());
+  const discount = Math.max(0, distinctParts.size - qualifying.length);
+  log.debug("memory-write: compound discount", {
+    compounds: qualifying.length,
+    distinctSharedParts: distinctParts.size,
+    discount,
+  });
+  return discount;
+}
+
+/** Effective action-word count of one clause with its OWN hyphenated
+ *  compounds collapsed (Qodo PR #956): "auto-deploy" is one action concept,
+ *  not two words. Used for the clause gate's "the shared word IS the whole
+ *  action" test — comparing a DISCOUNTED shared count against the
+ *  undiscounted set size let "Never auto-deploy" vs "Always auto-deploy"
+ *  coexist (shared 1, size 2, 1 !== 2). Collapsing is per-side and
+ *  signature-deduplicated, mirroring the pairwise discount. */
+/** Quote-masked compound part-lists of a text — quoted examples are never
+ *  the action (Qodo 29a4da4e), so compounds inside quotes are invisible to
+ *  every compound-aware check. Shared by the collapse and whole-action
+ *  logic (Qodo PR #956). */
+function maskedCompoundParts(text: string): string[][] {
+  const compounds =
+    quotedMask(text).toLowerCase().match(/[a-z][a-z0-9#]*(?:-[a-z][a-z0-9#]*)+/g) ?? [];
+  return compounds.map((c) =>
+    c
+      .split("-")
+      .filter((w) => !STOP_WORDS.has(w))
+      .map(stem)
+      .filter((w) => w.length >= 2 && !STOP_WORDS.has(w)),
+  );
+}
+
+function collapsedActionSize(words: Set<string>, rawClause: string): number {
+  let collapse = 0;
+  const seenSignatures = new Set<string>();
+  for (const parts of maskedCompoundParts(rawClause)) {
+    if (parts.length < 2 || !parts.every((p) => words.has(p))) continue;
+    const signature = parts.join("+");
+    if (seenSignatures.has(signature)) continue;
+    seenSignatures.add(signature);
+    collapse += parts.length - 1;
+  }
+  return Math.max(1, words.size - collapse);
 }
 
 function isEnforcedEntry(entry: ScoredEntry | undefined): boolean {
@@ -1964,8 +2103,16 @@ export async function findContradiction(
     // would discard the candidate before the clause gate ever sees the
     // polarity flip. Admit one shared word when BOTH texts are that short
     // (≤ 2 content words); the clause-level clash thresholds still apply.
+    // Collapsed sizes (Qodo PR #956 R2): "Never auto-deploy" is a two-word
+    // rule (marker + one compound action) — the shortPair admission must
+    // see the compound as one concept or the discounted shared count (1)
+    // can never corroborate an identical-compound flip. Quote-masked
+    // (Qodo PR #956 R4): quoted examples are never the action, so their
+    // words must not lengthen the rule either — "Never merge 'auto-merge'"
+    // is a two-word rule whose flip on "merge" must reach the clause gate.
     const shortPair =
-      contentWords(text).size <= 2 && contentWords(candidate.text).size <= 2;
+      collapsedActionSize(contentWords(quotedMask(text)), text) <= 2 &&
+      collapsedActionSize(contentWords(quotedMask(candidate.text)), candidate.text) <= 2;
     // Time-scoped rules (Qodo 205f7330): clock-time tokens tokenize to the
     // stop word "am"/"pm", so a time-scoped pair can corroborate on the
     // action alone — "Never deploy at 4am or at 2am" vs "Always deploy
