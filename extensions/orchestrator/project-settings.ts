@@ -20,7 +20,7 @@
 
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import stripJsonComments from "strip-json-comments";
 import { resolveRepoRoot } from "./utils.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -302,9 +302,20 @@ export function setGlobalSettingsPath(path: string | null): void {
   clearSettingsCache();
 }
 
-/** Resolved global settings file path (honors test override). */
+/** Resolved global settings file path (honors test override).
+ *
+ * TEST-RUNNER SAFETY NET (PR #950 R8, learned the hard way): a unit test
+ * that forgets `setGlobalSettingsPath` must never read — let alone WRITE —
+ * the user's real machine-wide settings. Under node:test
+ * (`NODE_TEST_CONTEXT` is set by the runner) an unset override resolves to
+ * a throwaway per-process temp file instead of `~/.pi/...`, so a stray
+ * global-scope write lands in /tmp, never in the user's allowlist. */
 export function getGlobalSettingsPath(): string {
-  return globalSettingsPathOverride ?? findSettingsFile(join(homedir(), ".pi")) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
+  if (globalSettingsPathOverride) return globalSettingsPathOverride;
+  if (process.env.NODE_TEST_CONTEXT !== undefined) {
+    return join(tmpdir(), `pi-config-test-global-settings-${process.pid}.json`);
+  }
+  return findSettingsFile(join(homedir(), ".pi")) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
 }
 
 export function loadGlobalSettings(): ProjectSettings {

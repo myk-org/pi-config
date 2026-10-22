@@ -145,17 +145,28 @@ for example — the prompt offers persistent approvals per statement:
 Allow?
 
   → Yes — run once
-    Always allow: sudo zsh
-    Always allow: bash .dev/deploy-all.sh
-    Always allow all of the above
+    Always allow (this project): sudo zsh
+    Always allow (everywhere): sudo zsh
+    Always allow (this project): bash .dev/deploy-all.sh
+    Always allow (everywhere): bash .dev/deploy-all.sh
+    Always allow all of the above (this project)
+    Always allow all of the above (everywhere)
     No
 ```
+
+You choose the SCOPE of a persistent approval explicitly: **this project**
+stores it in the project's settings file, **everywhere** stores it in your
+global settings (`~/.pi/pi-config-settings.json`) — machine-wide. When the
+project settings file is not trustable (git-tracked or reached through a
+symlink — a cloned repo must not be able to ship approvals), the "this
+project" options are omitted and the prompt says so: global is then the only
+persistent choice, never a silent fallback.
 
 **"Always allow: \<statement\>"** appends that statement (trailing I/O
 redirections like `2>&1` and `> /dev/null` stripped — they are plumbing,
 not danger; redirects to any other target stay part of the statement) to the
-`dangerous_command_allowlist` setting in the project's settings file, then
-re-prompts for any remaining dangerous statements. Later commands whose
+`dangerous_command_allowlist` setting in the chosen scope's settings file,
+then re-prompts for any remaining dangerous statements. Later commands whose
 dangerous statements are all allowlisted pass silently — but never invisibly:
 every allowlisted hit logs a `dangerous_command_allowlisted` warning naming
 the rule that matched.

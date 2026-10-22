@@ -135,6 +135,10 @@ export default function (pi: ExtensionAPI) {
   let liveCwd: string | null = null;
   let watcher: ReturnType<typeof setInterval> | null = null;
   let triggered = false;
+  // The deferred reload-continuation timer (Qodo PR #950 R8): retained so
+  // session_shutdown can cancel it — if the session closes inside the 250ms
+  // delay, the callback must never fire into a dead/replaced session.
+  let continuationTimer: ReturnType<typeof setTimeout> | null = null;
 
   const stopWatcher = () => {
     if (watcher) {
@@ -152,7 +156,8 @@ export default function (pi: ExtensionAPI) {
     // re-dispatches: the command is idempotent.
     const flagPath = reloadFlagPath(liveCwd);
     const hasFlag = existsSync(flagPath);
-    const hasPending = existsSync(reloadPendingPath(liveCwd));
+    const pendingPath = reloadPendingPath(liveCwd);
+    const hasPending = existsSync(pendingPath);
     if (!hasFlag && !hasPending) return;
     // Mid-write race (Qodo PR #950 R7): the requester may not have written
     // the nonce yet when the flag file first appears. Dispatching now would
@@ -160,6 +165,23 @@ export default function (pi: ExtensionAPI) {
     // Skip this tick WITHOUT latching; the next tick sees the finished write.
     if (hasFlag && readNonce(flagPath) === null) {
       log.debug("reload_flag_mid_write_race", { flag: flagPath });
+      return;
+    }
+    // Empty/garbage pending (Qodo PR #950 R8): a pending file with no nonce
+    // is NOT a stranded handshake — it is leftover garbage (truncated write,
+    // disk issue). Treating it as one would dispatch a reload whose new
+    // runtime ALSO cannot consume it — an infinite reload loop. Remove it
+    // and wait for a real request.
+    if (hasPending && readNonce(pendingPath) === null) {
+      try {
+        rmSync(pendingPath, { force: true });
+        log.warn("reload_flag_stale_pending_removed", {
+          file: pendingPath,
+          reason: "pending file had no readable nonce — removed to avoid a reload loop",
+        });
+      } catch (e: unknown) {
+        log.warn("reload_flag_stale_pending_remove_failed", { error: String(e) });
+      }
       return;
     }
     triggered = true;
@@ -176,7 +198,9 @@ export default function (pi: ExtensionAPI) {
       log.info("reload_flag_dispatched", { command: RELOAD_COMMAND });
     } catch (e: unknown) {
       triggered = false; // allow a later turn_end to retry the dispatch
-      log.error("reload_flag_dispatch_failed", { error: String(e) });
+      // warn, not error: this failure is recoverable by design — the latch
+      // was reset and turn_end retries (Qodo PR #950 R8).
+      log.warn("reload_flag_dispatch_failed", { error: String(e) });
     }
   };
 
@@ -204,6 +228,7 @@ export default function (pi: ExtensionAPI) {
         // pending nonce) never sends this. Deferred briefly so the rebuilt
         // session is fully idle before the turn is triggered.
         const fire = () => {
+          continuationTimer = null;
           try {
             pi.sendMessage(
               {
@@ -211,19 +236,36 @@ export default function (pi: ExtensionAPI) {
                 content:
                   `Extension runtime reloaded (deploy nonce ${nonce}). The deploy that requested this reload is complete — ` +
                   `continue your pending work with the new code. (Verify via .pi/tmp/reload.done if needed.)`,
-                display: `[reload-flag] extensions reloaded — agent continuing`,
+                display: true,
                 details: { nonce },
               },
-              { triggerTurn: true },
+              // followUp: never interrupt an in-flight turn (Qodo PR #950
+              // R8) — the continuation queues behind active work instead of
+              // barging into it.
+              { triggerTurn: true, deliverAs: "followUp" },
             );
             log.info("reload_continuation_sent", { nonce });
           } catch (e: unknown) {
             log.error("reload_continuation_failed", { error: String(e) });
           }
         };
-        const t = setTimeout(fire, 250);
-        (t as unknown as { unref: () => void }).unref();
+        continuationTimer = setTimeout(fire, 250);
+        (continuationTimer as unknown as { unref: () => void }).unref();
       } else {
+        // A pending file with no readable nonce is garbage (Qodo PR #950
+        // R8): if it survived, remove it — otherwise every future runtime
+        // sees "stranded pending" and re-dispatches a reload, forever.
+        if (existsSync(pending)) {
+          try {
+            rmSync(pending, { force: true });
+            log.warn("reload_flag_stale_pending_removed", {
+              file: pending,
+              reason: "pending file existed with no readable nonce at reload session_start",
+            });
+          } catch (e: unknown) {
+            log.warn("reload_flag_stale_pending_remove_failed", { error: String(e) });
+          }
+        }
         log.debug("reload session_start without pending nonce (manual /reload)");
       }
     } else {
@@ -264,6 +306,13 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", () => {
     stopWatcher();
+    // Cancel a pending reload continuation (Qodo PR #950 R8): firing into a
+    // closed/replaced session would inject a turn nobody asked for.
+    if (continuationTimer !== null) {
+      clearTimeout(continuationTimer);
+      continuationTimer = null;
+      log.debug("reload continuation cancelled at session shutdown");
+    }
     liveCwd = null;
   });
 }

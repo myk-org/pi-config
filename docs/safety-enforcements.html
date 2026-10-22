@@ -473,17 +473,27 @@ for example — the prompt offers persistent approvals per statement:</p>
 Allow?
 
   → Yes — run once
-    Always allow: sudo zsh
-    Always allow: bash .dev/deploy-all.sh
-    Always allow all of the above
+    Always allow (this project): sudo zsh
+    Always allow (everywhere): sudo zsh
+    Always allow (this project): bash .dev/deploy-all.sh
+    Always allow (everywhere): bash .dev/deploy-all.sh
+    Always allow all of the above (this project)
+    Always allow all of the above (everywhere)
     No
 </code></pre></div>
 
+<p>You choose the SCOPE of a persistent approval explicitly: <strong>this project</strong>
+stores it in the project's settings file, <strong>everywhere</strong> stores it in your
+global settings (<code>~/.pi/pi-config-settings.json</code>) — machine-wide. When the
+project settings file is not trustable (git-tracked or reached through a
+symlink — a cloned repo must not be able to ship approvals), the "this
+project" options are omitted and the prompt says so: global is then the only
+persistent choice, never a silent fallback.</p>
 <p><strong>"Always allow: \&lt;statement&gt;"</strong> appends that statement (trailing I/O
 redirections like <code>2&gt;&amp;1</code> and <code>&gt; /dev/null</code> stripped — they are plumbing,
 not danger; redirects to any other target stay part of the statement) to the
-<code>dangerous_command_allowlist</code> setting in the project's settings file, then
-re-prompts for any remaining dangerous statements. Later commands whose
+<code>dangerous_command_allowlist</code> setting in the chosen scope's settings file,
+then re-prompts for any remaining dangerous statements. Later commands whose
 dangerous statements are all allowlisted pass silently — but never invisibly:
 every allowlisted hit logs a <code>dangerous_command_allowlisted</code> warning naming
 the rule that matched.</p>

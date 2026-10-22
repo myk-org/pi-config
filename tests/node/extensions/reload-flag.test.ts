@@ -114,23 +114,50 @@ describe("reload-flag", () => {
     }
   });
 
-  test("the command handler parks the nonce, waits for idle, and reloads (command ctx has reload)", async () => {
+  test("the command handler parks the nonce and consumes the flag", async () => {
     const cwd = makeCwd();
     try {
-      const reloads = { count: 0 };
-      const idleWaits: string[] = [];
       writeFileSync(reloadFlagPath(cwd), "nonce-2");
+      await runReloadFlagCommand(makeCtx(cwd, { count: 0 }));
+      assert.ok(!existsSync(reloadFlagPath(cwd)), "flag consumed");
+      assert.equal(readFileSync(reloadPendingPath(cwd), "utf-8"), "nonce-2", "nonce parked in pending");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("the command handler waits for idle BEFORE reloading (pi refuses mid-stream)", async () => {
+    const cwd = makeCwd();
+    try {
+      const order: string[] = [];
+      writeFileSync(reloadFlagPath(cwd), "nonce-idle");
       const ctx = {
-        ...makeCtx(cwd, reloads),
+        ...makeCtx(cwd, { count: 0 }),
         waitForIdle: async () => {
-          idleWaits.push("waited");
+          order.push("waited");
+        },
+        reload: async () => {
+          order.push("reloaded");
         },
       };
       await runReloadFlagCommand(ctx);
-      assert.deepEqual(idleWaits, ["waited"], "waits for idle BEFORE reloading (pi refuses mid-stream)");
+      assert.deepEqual(order, ["waited", "reloaded"], "idle wait strictly precedes the reload call");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("the command handler reloads exactly once", async () => {
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      writeFileSync(reloadFlagPath(cwd), "nonce-2");
+      const ctx = {
+        ...makeCtx(cwd, reloads),
+        waitForIdle: async () => {},
+      };
+      await runReloadFlagCommand(ctx);
       assert.equal(reloads.count, 1, "ctx.reload called exactly once");
-      assert.ok(!existsSync(reloadFlagPath(cwd)), "flag consumed");
-      assert.equal(readFileSync(reloadPendingPath(cwd), "utf-8"), "nonce-2", "nonce parked in pending");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -165,6 +192,59 @@ describe("reload-flag", () => {
       assert.equal(reg.messages[0].options?.triggerTurn, true, "continuation triggers a turn");
       assert.match(reg.messages[0].content, /nonce-4/);
       await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("an EMPTY pending file is garbage: session_start removes it and sends no continuation (R8 reload-loop fix)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      writeFileSync(reloadPendingPath(cwd), ""); // truncated/empty pending
+      await reg.handlers.get("session_start")!({ reason: "reload" }, makeCtx(cwd, reloads));
+      assert.ok(!existsSync(reloadPendingPath(cwd)), "garbage pending removed");
+      await new Promise((r) => setTimeout(r, 400));
+      assert.equal(reg.messages.length, 0, "no continuation for a nonce-less pending");
+      // And the watcher must not re-dispatch on the removed garbage either
+      await reg.handlers.get("turn_end")!({}, makeCtx(cwd, reloads));
+      assert.equal(reg.sent.length, 0, "no reload dispatch — loop closed");
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("an EMPTY pending file does not dispatch from turn_end either (R8 reload-loop fix)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      const ctx = makeCtx(cwd, reloads);
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      writeFileSync(reloadPendingPath(cwd), "   "); // whitespace-only nonce
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.equal(reg.sent.length, 0, "garbage pending never dispatches");
+      assert.ok(!existsSync(reloadPendingPath(cwd)), "garbage pending removed by the watcher");
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("session_shutdown cancels a pending continuation message (R8: no turn injected into a closed session)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      writeFileSync(reloadPendingPath(cwd), "nonce-cancel");
+      await reg.handlers.get("session_start")!({ reason: "reload" }, makeCtx(cwd, reloads));
+      assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "nonce-cancel", "done already published");
+      // Session closes INSIDE the 250ms deferral window
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+      await new Promise((r) => setTimeout(r, 400));
+      assert.equal(reg.messages.length, 0, "continuation cancelled — never fired into the closed session");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

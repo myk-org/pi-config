@@ -59,7 +59,9 @@ import {
   resolveEffectiveCwd,
   addDangerousAllowlistEntry,
   dangerousCommandHash,
-  findDangerousAllowlistEntry,
+  loadDangerousAllowlists,
+  matchDangerousAllowlist,
+  projectSettingsTrust,
   normalizeDangerousStatement,
   splitBashStatements,
   stripHeredocBodies,
@@ -390,6 +392,40 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
 
 
 
+/** Honest failure notice for a failed approval write — names the ACTUAL
+ * reason instead of a generic "settings unreadable" (Qodo PR #950 R8). */
+function approvalFailureMessage(reason: "corrupt" | "write_failed" | "trust_unknown" | "project_untrusted"): string {
+  switch (reason) {
+    case "corrupt":
+      return "⚠️ Approval could not be saved — the settings file is unreadable/corrupt (nothing was overwritten). This approval is one-time; repair the file to persist approvals.";
+    case "write_failed":
+      return "⚠️ Approval could not be saved — writing the settings file failed (permissions/disk?). This approval is one-time; check the enforcement log for details.";
+    case "trust_unknown":
+      return "⚠️ Approval could not be saved — the project settings file's trust could not be verified (git check failed). This approval is one-time; retry once git is available so it can be stored safely.";
+    case "project_untrusted":
+      return "⚠️ Approval could not be saved to the project — its settings file is not trustable (git-tracked or symlinked). Choose \"everywhere\" to store the approval globally, or run once.";
+  }
+}
+
+/** Post-save notices for the allow-all path: failures get their reason.
+ * A global-scope store needs no notice anymore — the user CHOSE "everywhere"
+ * explicitly in the prompt (PR #950 R8; the old silent-fallback notice is
+ * gone along with the fallback itself). */
+async function notifyApprovalResults(
+  saved: number,
+  failed: number,
+  _scopes: string[],
+  ui?: { notify: (msg: string, level: "info" | "warning" | "error") => Promise<void> | void },
+): Promise<void> {
+  void _scopes;
+  if (failed > 0) {
+    await ui?.notify(
+      `⚠️ ${failed} approval${failed > 1 ? "s" : ""} could not be saved — treated as run-once (see the enforcement log for the reason).`,
+      "warning",
+    );
+  }
+}
+
 /** Dangerous command confirmation with UI prompt */
 async function checkDangerousCommands(command: string, cwd: string, ctx: any): Promise<EnforcementResult> {
   // Split on statement separators AND pipes (incl. single `&` — background
@@ -428,12 +464,16 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
       ),
     ];
     const unapproved: string[] = [];
+    // ONE trust check + ONE settings read per command (Qodo PR #950 R8
+    // perf): the per-statement findDangerousAllowlistEntry ran a synchronous
+    // git exec per statement — batch the load and match in memory.
+    const allowlists = loadDangerousAllowlists(cwd);
     for (const stmt of dangerousStmts) {
       if (isStdinFedShellStatement(stmt)) {
         unapproved.push(stmt);
         continue;
       }
-      const allowMatch = findDangerousAllowlistEntry(cwd, stmt);
+      const allowMatch = matchDangerousAllowlist(allowlists, stmt);
       if (!allowMatch) {
         unapproved.push(stmt);
         continue;
@@ -457,9 +497,13 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
       };
 
     // Interactive decision loop (user request, PR #950): every dangerous
-    // statement gets its own "Always allow: <stmt>" option (plus run-once,
-    // allow-all, and No). Choosing one statement persists just that entry
-    // and re-prompts for the remainder until nothing dangerous is left.
+    // statement gets its own "Always allow" option in BOTH scopes — "this
+    // project" and "everywhere" (user request, R8: the user chooses where a
+    // persistent approval lives; global is never a silent fallback) — plus
+    // run-once, allow-all (both scopes), and No. Choosing one statement
+    // persists just that entry and re-prompts for the remainder until
+    // nothing dangerous is left.
+    const projectTrustable = projectSettingsTrust(cwd) === "untracked";
     const decide = async (remaining: string[]): Promise<EnforcementResult | undefined> => {
       const list = remaining
         .map((stmt) => {
@@ -470,6 +514,9 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
           return `  ${stmt}\n    ↳ ${label}${stdinFed}`;
         })
         .join("\n");
+      const scopeNote = projectTrustable
+        ? ""
+        : "\n\nℹ️ The project settings file is not trustable for approvals (git-tracked or\nsymlinked) — persistent approvals can only be stored globally.";
       // Only statements that carry their own script are persistently
       // approvable (Qodo PR #950 R6) — stdin-fed shells are run-once only.
       const persistable = remaining.filter((stmt) => !isStdinFedShellStatement(stmt));
@@ -485,24 +532,34 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
       const labeled = persistable.map((stmt) => ({ stmt, label: labelFor(stmt) }));
       const options = [
         "Yes — run once",
-        ...labeled.map(({ label }) => `Always allow: ${label}`),
-        ...(persistable.length > 1 ? ["Always allow all of the above"] : []),
+        ...labeled.flatMap(({ label }) => [
+          ...(projectTrustable ? [`Always allow (this project): ${label}`] : []),
+          `Always allow (everywhere): ${label}`,
+        ]),
+        ...(persistable.length > 1
+          ? [
+              ...(projectTrustable ? ["Always allow all of the above (this project)"] : []),
+              "Always allow all of the above (everywhere)",
+            ]
+          : []),
         "No",
       ];
       const ok = await ctx.ui.select(
-        `⚠️ Dangerous statement${remaining.length > 1 ? "s" : ""} (of the full command):\n\n${list}\n\nAllow?`,
+        `⚠️ Dangerous statement${remaining.length > 1 ? "s" : ""} (of the full command):\n\n${list}${scopeNote}\n\nAllow?`,
         options,
       );
       if (ok === "No" || ok === undefined)
         return { block: true, reason: "Blocked by user. Do NOT retry with an equivalent command (e.g., find -delete, perl, python os.remove). Stop and report this block to the user." };
-      if (ok === "Yes — run once" || ok === "Always allow all of the above") {
-        if (ok === "Always allow all of the above") {
+      if (ok === "Yes — run once" || ok.startsWith("Always allow all of the above")) {
+        if (ok.startsWith("Always allow all of the above")) {
           // Persist only the persistable statements — stdin-fed shells are
           // run-once by design and must never land in the settings file.
+          // The scope comes from the CHOSEN option — never a silent fallback.
           // Report the REAL outcome: a failed write is a one-time approval,
           // not a stored one (Qodo PR #950 R7 — the audit trail must not
           // claim a save that did not happen).
-          const results = persistable.map((stmt) => addDangerousAllowlistEntry(cwd, stmt));
+          const scope = ok.endsWith("(everywhere)") ? "global" : "project";
+          const results = persistable.map((stmt) => addDangerousAllowlistEntry(cwd, stmt, scope));
           const saved = results.filter((r) => r.ok);
           const failed = results.length - saved.length;
           const scopes = [...new Set(saved.map((r) => (r.ok ? r.scope : "")))];
@@ -511,45 +568,27 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
             failed,
             storedIn: scopes.length === 1 ? `${scopes[0]} settings (dangerous_command_allowlist)` : scopes.join("+"),
           });
-          if (failed > 0) {
-            await ctx.ui.notify(
-              `⚠️ ${failed} approval${failed > 1 ? "s" : ""} could not be saved (settings unreadable) — treated as run-once. Repair the settings file to persist approvals.`,
-              "warning",
-            );
-          } else if (saved.length > 0 && scopes.includes("global")) {
-            await ctx.ui.notify(
-              "ℹ️ Project settings file is git-tracked (untrusted for approvals) — approval stored in your GLOBAL settings instead.",
-              "info",
-            );
-          }
+          await notifyApprovalResults(saved.length, failed, scopes, ctx.ui);
         }
         return undefined;
       }
-      if (ok.startsWith("Always allow: ")) {
-        const chosen = labeled.find(({ label }) => ok === `Always allow: ${label}`)?.stmt;
+      if (ok.startsWith("Always allow (this project): ") || ok.startsWith("Always allow (everywhere): ")) {
+        const scope = ok.startsWith("Always allow (everywhere): ") ? "global" : "project";
+        const chosen = labeled.find(({ label }) => ok === `Always allow (${scope === "global" ? "everywhere" : "this project"}): ${label}`)?.stmt;
         if (chosen !== undefined) {
-          const result = addDangerousAllowlistEntry(cwd, chosen);
+          const result = addDangerousAllowlistEntry(cwd, chosen, scope);
           if (result.ok) {
             log.info("dangerous_command_allowlist_entry_added", {
               dangerousPattern: dangerousPatternLabel(DANGEROUS.find((p) => p.test(chosen)) ?? /./),
               hashPrefix: dangerousCommandHash(chosen).slice(0, 12),
               storedIn: `${result.scope} settings (dangerous_command_allowlist)`,
             });
-            if (result.scope === "global") {
-              await ctx.ui.notify(
-                "ℹ️ Project settings file is git-tracked (untrusted for approvals) — approval stored in your GLOBAL settings instead.",
-                "info",
-              );
-            }
           } else {
             log.warn("dangerous_allowlist_entry_add_failed", {
               reason: result.reason,
               hashPrefix: dangerousCommandHash(chosen).slice(0, 12),
             });
-            await ctx.ui.notify(
-              "⚠️ Approval could not be saved (settings unreadable) — treated as run-once. Repair the settings file to persist approvals.",
-              "warning",
-            );
+            await ctx.ui.notify(approvalFailureMessage(result.reason), "warning");
           }
           const still = remaining.filter((s) => s !== chosen);
           if (still.length === 0) return undefined;
@@ -653,7 +692,10 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           }
         };
         const resolved = resolve(ctx.cwd, filePath);
-        // Both filename variants (.jsonc first, .json) in both scopes
+        // Both filename variants (.jsonc first, .json) in both scopes, PLUS
+        // the resolved global path itself — its basename may differ from the
+        // standard filenames (e.g. the test-runner sandbox), and the global
+        // file carries the machine-wide allowlist either way.
         const settingsTargets = new Set<string>();
         for (const base of [dirname(getSettingsPath(ctx.cwd)), dirname(getGlobalSettingsPath())]) {
           for (const name of SETTINGS_FILENAMES) {
@@ -661,6 +703,8 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
             settingsTargets.add(toReal(join(base, name)));
           }
         }
+        settingsTargets.add(getGlobalSettingsPath());
+        settingsTargets.add(toReal(getGlobalSettingsPath()));
         if (settingsTargets.has(resolved) || settingsTargets.has(toReal(resolved))) {
           return {
             block: true,

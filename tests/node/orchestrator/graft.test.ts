@@ -380,6 +380,33 @@ describe("Graft retrieval and accounting", () => {
       assert.deepEqual(r.calls.find(call => call.args[0] === "build")?.cwd, firstRoot);
     } finally { releaseBuild?.(); rmSync(firstRoot, { recursive: true, force: true }); rmSync(nextRoot, { recursive: true, force: true }); }
   });
+  it("discards a pending refresh completion after session_shutdown and never touches the stale ctx (reload postmortem, PR #950)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "graft-refresh-shutdown-"));
+    let releaseBuild!: () => void;
+    const buildPending = new Promise<void>(resolve => { releaseBuild = resolve; });
+    try {
+      const r = register({ run: async (args: readonly string[], { cwd }: { cwd: string }) => {
+        r.calls.push({ args, cwd });
+        if (args[0] === "build") await buildPending;
+        return { stdout: "", stderr: "", code: 0 };
+      } });
+      const c = await start(r, ctx(root, true, "shutdown-session"));
+      r.handlers.get("tool_result")![0]({ toolName: "edit", input: { path: "src/a.ts" }, content: [], isError: false }, c);
+      r.handlers.get("agent_end")![0]({}, c);
+      await new Promise(resolve => setImmediate(resolve));
+      const lock = join(root, "graft/.graph/pi-build.lock");
+      assert.equal(existsSync(lock), true);
+      // Session ends (reload/quit) while the build is in flight: the
+      // generation bump must make the completion a no-op — no setState on
+      // the stale ctx, no unhandled rejection.
+      await r.handlers.get("session_shutdown")![0]({}, undefined);
+      const statusCount = c.status.length;
+      releaseBuild();
+      await assert.doesNotReject(async () => { await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve)); });
+      assert.equal(c.status.length, statusCount, "refresh completion after shutdown must not write the stale ctx footer");
+      assert.equal(existsSync(lock), false, "lock released");
+    } finally { releaseBuild?.(); rmSync(root, { recursive: true, force: true }); }
+  });
   it("keeps a stale graph queryable while the owner rebuilds it", async () => {
     let release!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });

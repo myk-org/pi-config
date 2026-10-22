@@ -1204,7 +1204,7 @@ export interface DangerousAllowlistMatch {
  * `{"dangerous_command_allowlist": ["*"]}` and disable the gate for everyone
  * who opens it. Only the user's own untracked project file (or the global
  * file on their machine) can approve commands. */
-const trackedSettingsCache = new Map<string, boolean>();
+const trackedSettingsCache = new Map<string, ProjectSettingsTrust>();
 /** Test hook: clear the tracked-settings cache (git state changed under us). */
 export function clearTrackedSettingsCache(): void {
   trackedSettingsCache.clear();
@@ -1223,10 +1223,11 @@ export function projectSettingsTrust(cwd: string): ProjectSettingsTrust {
   // Cache ONLY the confirmed-untrusted (tracked) verdict — it can only
   // become MORE true. A trusted (untracked) verdict is re-checked on every
   // use so a later `git pull` / checkout that starts tracking the file is
-  // caught immediately instead of trusting a cloned repo's shipped settings
-  // for the life of the process (Qodo PR #950 R5). An "unknown" verdict
-  // (git failed transiently) is never cached — the next check retries
-  // (Qodo PR #950 R7).
+  // caught on the very next check, not for the life of the process (Qodo
+  // PR #950 R5). An "unknown" verdict (git failed transiently) is never
+  // cached — the next check retries git (R7). Per-command batching (one
+  // git exec per gate evaluation, not per statement) lives in
+  // loadDangerousAllowlists — the per-CALL re-check semantics stay intact.
   if (verdict === "tracked") trackedSettingsCache.set(file, verdict);
   return verdict;
 }
@@ -1314,48 +1315,103 @@ function projectSettingsTrustUncached(cwd: string, file: string): ProjectSetting
   }
 }
 
-export function findDangerousAllowlistEntry(cwd: string, command: string): DangerousAllowlistMatch | null {
+/** Allowlists loaded once per gate evaluation (Qodo PR #950 R8 perf:
+ * loading per STATEMENT ran one synchronous git exec + two file reads per
+ * statement — now one per command). `project` is null when the project
+ * settings file is not trustable (tracked/symlinked/unverifiable). */
+export interface DangerousAllowlists {
+  project: string[] | null;
+  global: string[];
+}
+
+/** Load both allowlist scopes for a cwd — ONE trust check + ONE read per
+ * scope. Call this once per command and match statements against the
+ * result via matchDangerousAllowlist. */
+export function loadDangerousAllowlists(cwd: string): DangerousAllowlists {
+  const project = projectSettingsUntracked(cwd)
+    ? (loadProjectSettings(cwd).dangerous_command_allowlist ?? [])
+    : null;
+  const global = loadGlobalSettings().dangerous_command_allowlist ?? [];
+  return { project, global };
+}
+
+/** Match one normalized statement against pre-loaded allowlists (no git,
+ * no file I/O — safe to call per statement). */
+export function matchDangerousAllowlist(lists: DangerousAllowlists, command: string): DangerousAllowlistMatch | null {
   // Defense in depth (Qodo PR #950 R6): a stdin-fed shell statement (`bash`,
   // `sh -s`, ...) executes whatever script is fed to it — even a hand-added
   // settings entry can never approve it. The gate already refuses to offer
   // persistent approval for such statements.
   if (isStdinFedShellStatement(command)) return null;
-  if (projectSettingsUntracked(cwd)) {
-    const project = loadProjectSettings(cwd).dangerous_command_allowlist ?? [];
-    const p = project.find((e) => allowlistGlobToRegExp(e).test(command));
+  if (lists.project) {
+    const p = lists.project.find((e) => allowlistGlobToRegExp(e).test(command));
     if (p) return { entry: p, source: "project" };
   }
-  const global = loadGlobalSettings().dangerous_command_allowlist ?? [];
-  const g = global.find((e) => allowlistGlobToRegExp(e).test(command));
+  const g = lists.global.find((e) => allowlistGlobToRegExp(e).test(command));
   return g ? { entry: g, source: "global" } : null;
+}
+
+export function findDangerousAllowlistEntry(cwd: string, command: string): DangerousAllowlistMatch | null {
+  // Per-CALL semantics (unchanged since R5): every call re-checks trust, so
+  // a `git pull` that starts tracking the project file is caught on the
+  // very next call. The gate uses the batched loadDangerousAllowlists path
+  // for per-command efficiency; direct callers keep the strict behavior.
+  return matchDangerousAllowlist(loadDangerousAllowlists(cwd), command);
 }
 
 /** Result of persisting a dangerous-command approval. `scope` is where the
  * entry ACTUALLY landed — the caller logs/notifies it, and "global" means
- * the project file was untrusted (tracked/symlinked/unverifiable) so the
- * approval was stored in the user's global settings instead, where lookup
- * will honor it (Qodo PR #950 R7). */
+ * the project file was CONFIRMED untrustworthy (git-tracked or symlinked)
+ * so the approval was stored in the user's global settings instead, where
+ * lookup will honor it (Qodo PR #950 R7/R8). A `trust_unknown` failure is
+ * deliberately NOT persisted anywhere: a transient git failure in one
+ * project must not mint a machine-wide approval (R8) — the approval is
+ * one-time and the user can retry once git answers. */
 export type DangerousAllowlistWriteResult =
   | { ok: true; scope: "project" | "global"; file: string }
-  | { ok: false; reason: string; file: string };
+  | { ok: false; reason: "corrupt" | "write_failed" | "trust_unknown" | "project_untrusted"; file: string };
 
 /** Append the exact command text (glob metachars escaped, so the entry stays
  * literal) to the settings file. Fail-soft (returns a result, never throws).
  * A mkdir-based lock serializes writers so concurrent approvals cannot drop
- * each other (read-merge-write race). When the PROJECT file is not trustable
- * (git-tracked, symlinked, or unverifiable), the entry goes to the GLOBAL
- * file — writing it to the project file would produce an approval that
- * lookup can never match (Qodo PR #950 R7). */
-export function addDangerousAllowlistEntry(cwd: string, command: string): DangerousAllowlistWriteResult {
+ * each other (read-merge-write race).
+ *
+ * Scope is EXPLICIT (user request, PR #950 R8): the prompt offers "this
+ * project" and "everywhere" as distinct choices. `scope: "project"` writes
+ * the project file and FAILS when it is not trustable (git-tracked or
+ * symlinked — the caller must not have offered the option, but fail safe
+ * anyway). `scope: "global"` writes the user's machine-wide file — the
+ * caller only offers it as an explicit choice, never a silent fallback.
+ * When trust is UNKNOWN (git failed transiently) a project write is
+ * refused: run-once only (R8) — a transient failure must not mint a
+ * machine-wide approval either. */
+export function addDangerousAllowlistEntry(
+  cwd: string,
+  command: string,
+  scope: "project" | "global" = "project",
+): DangerousAllowlistWriteResult {
   const trust = projectSettingsTrust(cwd);
-  const file = trust === "untracked" ? getSettingsPath(cwd) : getGlobalSettingsPath();
-  const scope = trust === "untracked" ? "project" : "global";
-  if (trust !== "untracked") {
-    enfLog.warn("dangerous_allowlist_project_untrusted_fallback", {
-      trust,
-      reason: "project settings file cannot be trusted for approvals — storing globally",
-    });
+  if (scope === "project") {
+    if (trust === "tracked") {
+      // The option should not have been offered — refuse the write rather
+      // than silently redirecting scope (fail safe, no silent fallback).
+      enfLog.warn("dangerous_allowlist_project_untrusted_refused", {
+        trust,
+        reason: "project settings file is not trustable — project-scope approval refused",
+      });
+      return { ok: false, reason: "project_untrusted", file: getSettingsPath(cwd) };
+    }
+    if (trust === "unknown") {
+      // Never persist on an unverifiable state (Qodo PR #950 R8): fail the
+      // write; the gate tells the user this approval is one-time until git
+      // can verify the project file.
+      enfLog.warn("dangerous_allowlist_trust_unknown", {
+        reason: "project settings trust could not be verified (git check failed) — approval is one-time",
+      });
+      return { ok: false, reason: "trust_unknown", file: getSettingsPath(cwd) };
+    }
   }
+  const file = scope === "project" ? getSettingsPath(cwd) : getGlobalSettingsPath();
   const lockDir = `${file}.lock`;
   const entry = command.replace(/[\\*?]/g, (c) => `\\${c}`);
   let locked = false;

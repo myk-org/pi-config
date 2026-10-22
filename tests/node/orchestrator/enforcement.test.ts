@@ -4,7 +4,7 @@
  */
 import { describe, it, before, after, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
@@ -3145,15 +3145,23 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   it("the prompt offers run-once, per-statement always-allow, allow-all, and No", async () => {
     choice = "No";
     await runBash("sudo reboot");
-    assert.deepEqual(promptCalls[0].opts, ["Yes — run once", "Always allow: sudo reboot", "No"]);
-    // Multi-statement command: one option per dangerous statement + allow-all
+    assert.deepEqual(promptCalls[0].opts, [
+      "Yes — run once",
+      "Always allow (this project): sudo reboot",
+      "Always allow (everywhere): sudo reboot",
+      "No",
+    ]);
+    // Multi-statement command: both scopes per dangerous statement + allow-all in both scopes
     choice = "No";
     await runBash("cat x; sudo reboot; bash run.sh");
     assert.deepEqual(promptCalls[1].opts, [
       "Yes — run once",
-      "Always allow: sudo reboot",
-      "Always allow: bash run.sh",
-      "Always allow all of the above",
+      "Always allow (this project): sudo reboot",
+      "Always allow (everywhere): sudo reboot",
+      "Always allow (this project): bash run.sh",
+      "Always allow (everywhere): bash run.sh",
+      "Always allow all of the above (this project)",
+      "Always allow all of the above (everywhere)",
       "No",
     ]);
     // The prompt names the matched rule per statement
@@ -3162,7 +3170,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   it("'always allow' writes the settings entry and silences future headless runs", async () => {
-    choice = "Always allow: sudo reboot";
+    choice = "Always allow (this project): sudo reboot";
     const res = await runBash("sudo reboot");
     assert.equal(res?.block, undefined, "approved command runs");
     const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
@@ -3174,6 +3182,95 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
 
   // Qodo PR #950 R7: an approval written to a TRACKED project file can never
   // match (lookup rejects tracked files) — it must fall back to GLOBAL scope.
+  // Qodo PR #950 R8: a transient git failure (unknown trust) must NOT mint a
+  // machine-wide approval — nothing is written, the approval is one-time.
+  it("an UNKNOWN trust verdict (git unavailable) writes NOTHING — run-once only", async () => {
+    const tdir = mkdtempSync(join(tmpdir(), "rl-trust-unknown-"));
+    mkdirSync(join(tdir, ".pi"), { recursive: true });
+    writeFileSync(getSettingsPath(tdir), "{}");
+    const savedPath = process.env.PATH;
+    const savedGlobal: string | null = null;
+    const globalFile = join(tdir, "global-settings.json");
+    writeFileSync(globalFile, "{}");
+    setGlobalSettingsPath(globalFile);
+    try {
+      process.env.PATH = "/nonexistent-path-for-test"; // git binary unreachable
+      clearTrackedSettingsCache();
+      const result = addDangerousAllowlistEntry(tdir, "sudo reboot");
+      assert.ok(!result.ok, "write refused on unknown trust");
+      assert.equal((result as { reason?: string }).reason, "trust_unknown");
+      const g = JSON.parse(readFileSync(globalFile, "utf-8"));
+      assert.deepEqual(g.dangerous_command_allowlist, undefined, "nothing written globally");
+      const p = JSON.parse(readFileSync(getSettingsPath(tdir), "utf-8"));
+      assert.deepEqual(p.dangerous_command_allowlist, undefined, "nothing written to the project either");
+    } finally {
+      process.env.PATH = savedPath;
+      setGlobalSettingsPath(null);
+      clearTrackedSettingsCache();
+      rmSync(tdir, { recursive: true, force: true });
+    }
+    void savedGlobal;
+  });
+
+  // Qodo PR #950 R8 (perf): the untracked verdict is memoized briefly so a
+  // multi-statement chain costs one git call — but a LATER check still sees
+  // the file become tracked (cache cleared / TTL expired).
+  it("a global-scope write without a test override NEVER touches the real user settings (sandbox)", async () => {
+    const tdir = mkdtempSync(join(tmpdir(), "rl-sandbox-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: tdir });
+      mkdirSync(join(tdir, ".pi"), { recursive: true });
+      writeFileSync(getSettingsPath(tdir), "{}");
+      execFileSync("git", ["add", "-f", getSettingsPath(tdir)], { cwd: tdir });
+      clearTrackedSettingsCache();
+      // NO setGlobalSettingsPath here — the sandbox must engage by itself.
+      const result = addDangerousAllowlistEntry(tdir, "sudo reboot", "global");
+      assert.ok(result.ok, "write succeeded");
+      assert.equal(result.scope, "global", "explicit global scope honored");
+      assert.ok(!result.file.startsWith(homedir()), `global write must not be under the real home (got ${result.file})`);
+      assert.match(result.file, /pi-config-test-global-settings-/, "fallback went to the test sandbox path");
+      // And the real file (if present) must not carry the entry
+      const realGlobal = join(homedir(), ".pi", "pi-config-settings.json");
+      if (existsSync(realGlobal)) {
+        const real = JSON.parse(readFileSync(realGlobal, "utf-8"));
+        assert.deepEqual(real.dangerous_command_allowlist ?? [], [], "user's real global settings untouched by tests");
+      }
+    } finally {
+      // The sandbox file is per-PROCESS — a written entry would leak into
+      // every later test in this run (they read the same "global" file).
+      // Remove it and flush the settings cache so the run stays hermetic.
+      try {
+        rmSync(join(tmpdir(), `pi-config-test-global-settings-${process.pid}.json`), { force: true });
+        clearSettingsCache();
+      } catch {
+        // best-effort cleanup only
+      }
+      clearTrackedSettingsCache();
+      rmSync(tdir, { recursive: true, force: true });
+    }
+  });
+  it("'always allow (everywhere)' stores in the GLOBAL settings file (explicit scope choice)", async () => {
+    const globalFile = join(cwd, "global-settings.json");
+    writeFileSync(globalFile, "{}");
+    setGlobalSettingsPath(globalFile);
+    try {
+      // A command NOT used by the neighboring tests: the repeat-command
+      // guard blocks the 3rd consecutive identical command in a process.
+      choice = "Always allow (everywhere): sudo poweroff";
+      const res = await runBash("sudo poweroff");
+      assert.equal(res?.block, undefined, "approved command runs");
+      const g = JSON.parse(readFileSync(globalFile, "utf-8"));
+      assert.deepEqual(g.dangerous_command_allowlist, ["sudo poweroff"], "entry landed in the global file");
+      const projectFile = getSettingsPath(cwd);
+      if (existsSync(projectFile)) {
+        const p = JSON.parse(readFileSync(projectFile, "utf-8"));
+        assert.deepEqual(p.dangerous_command_allowlist ?? [], [], "project file untouched");
+      }
+    } finally {
+      setGlobalSettingsPath(null);
+    }
+  });
+
   it("'always allow' in a repo with a TRACKED settings file stores globally, where lookup honors it", async () => {
     const tdir = mkdtempSync(join(tmpdir(), "rl-tracked-approve-"));
     execFileSync("git", ["init", "-q"], { cwd: tdir });
@@ -3185,9 +3282,15 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     writeFileSync(globalFile, "{}");
     setGlobalSettingsPath(globalFile);
     try {
-      const result = addDangerousAllowlistEntry(tdir, "sudo reboot");
-      assert.ok(result.ok, "write succeeded");
-      assert.equal(result.scope, "global", "tracked project file forces global fallback");
+      // Explicit scope choice (R8): the gate only offers "everywhere" for a
+      // tracked project file — and a project-scope write is REFUSED, never
+      // silently redirected.
+      const refused = addDangerousAllowlistEntry(tdir, "sudo reboot", "project");
+      assert.ok(!refused.ok, "project-scope write on a tracked file is refused");
+      assert.equal((refused as { reason?: string }).reason, "project_untrusted");
+      const result = addDangerousAllowlistEntry(tdir, "sudo reboot", "global");
+      assert.ok(result.ok, "explicit global write succeeded");
+      assert.equal(result.scope, "global", "explicit scope honored");
       const g = JSON.parse(readFileSync(globalFile, "utf-8"));
       assert.deepEqual(g.dangerous_command_allowlist, ["sudo reboot"], "entry landed in global file");
       const p = JSON.parse(readFileSync(getSettingsPath(tdir), "utf-8"));
@@ -3227,7 +3330,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   it("'always allow' on a chain stores the normalized dangerous statements only", async () => {
-    choice = "Always allow all of the above";
+    choice = "Always allow all of the above (this project)";
     const res = await runBash("echo start; bash .dev/deploy-all.sh 2>&1; echo done");
     assert.equal(res?.block, undefined);
     const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
@@ -3235,7 +3338,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   it("picking one statement's always-allow persists it and re-prompts the remainder", async () => {
-    const choices = ["Always allow: sudo reboot", "No"];
+    const choices = ["Always allow (this project): sudo reboot", "No"];
     let call = 0;
     promptCalls.length = 0;
     choice = undefined;
@@ -3289,7 +3392,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   it("'allow all' persists only the persistable statements", async () => {
-    choice = "Always allow all of the above";
+    choice = "Always allow all of the above (this project)";
     const res = await runBash("cat gen.sh | bash; bash run.sh");
     assert.equal(res?.block, undefined);
     const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
