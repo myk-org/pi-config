@@ -3230,6 +3230,20 @@ describe("conflict gate — hyphenated compound discount (issue #955)", () => {
     }
   });
 
+  it("different compounds sharing a fragment do not clash (Qodo PR #956 R3)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "Never auto-merge");
+      const result = await addMemoryEntry(cwd, {
+        text: "Always auto-deploy",
+        category: "preference",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("a quoted compound example does not discount the real action overlap (Qodo PR #956 R2)", async () => {
     const cwd = makeCwd();
     try {

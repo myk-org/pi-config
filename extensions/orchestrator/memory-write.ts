@@ -1188,7 +1188,27 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
             (negRem[0] === x && permRem[0] === y) ||
             (negRem[0] === y && permRem[0] === x),
         );
-      if (!(shared >= 2 || (shared >= 1 && shared === shorter) || verbSynShared)) continue;
+      // Whole-action exception needs an actual shared action CONCEPT
+      // (Qodo PR #956 R3): a part shared between two DIFFERENT compounds
+      // ("auto" in auto-merge vs auto-deploy) is a fragment, not an action —
+      // the exception fires only when a qualifying compound was discounted
+      // (the shared concept IS the compound) or a shared word stands alone
+      // outside every compound on both sides.
+      const sharedWords = [...negMasked].filter((w) => permMasked.has(w));
+      const compoundParts = new Set<string>();
+      for (const parts of [...maskedCompoundParts(neg), ...maskedCompoundParts(perm)]) {
+        for (const part of parts) compoundParts.add(part);
+      }
+      const wholeActionShared =
+        discount > 0 || sharedWords.some((w) => !compoundParts.has(w));
+      if (
+        !(
+          shared >= 2 ||
+          (shared >= 1 && shared === shorter && wholeActionShared) ||
+          verbSynShared
+        )
+      )
+        continue;
       // Distinct-target exclusion on RAW words (Qodo 4fe7b1c3, 6d0214c7):
       // quoted tool names ARE the targets — "never use 'npm'" vs "always
       // use 'uv'" differ by exactly one mid-clause word per side and are
@@ -1948,16 +1968,26 @@ function compoundSharedDiscount(
  *  undiscounted set size let "Never auto-deploy" vs "Always auto-deploy"
  *  coexist (shared 1, size 2, 1 !== 2). Collapsing is per-side and
  *  signature-deduplicated, mirroring the pairwise discount. */
-function collapsedActionSize(words: Set<string>, rawClause: string): number {
-  const compounds = rawClause.toLowerCase().match(/[a-z][a-z0-9#]*(?:-[a-z][a-z0-9#]*)+/g) ?? [];
-  let collapse = 0;
-  const seenSignatures = new Set<string>();
-  for (const compound of compounds) {
-    const parts = compound
+/** Quote-masked compound part-lists of a text — quoted examples are never
+ *  the action (Qodo 29a4da4e), so compounds inside quotes are invisible to
+ *  every compound-aware check. Shared by the collapse and whole-action
+ *  logic (Qodo PR #956). */
+function maskedCompoundParts(text: string): string[][] {
+  const compounds =
+    quotedMask(text).toLowerCase().match(/[a-z][a-z0-9#]*(?:-[a-z][a-z0-9#]*)+/g) ?? [];
+  return compounds.map((c) =>
+    c
       .split("-")
       .filter((w) => !STOP_WORDS.has(w))
       .map(stem)
-      .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
+      .filter((w) => w.length >= 2 && !STOP_WORDS.has(w)),
+  );
+}
+
+function collapsedActionSize(words: Set<string>, rawClause: string): number {
+  let collapse = 0;
+  const seenSignatures = new Set<string>();
+  for (const parts of maskedCompoundParts(rawClause)) {
     if (parts.length < 2 || !parts.every((p) => words.has(p))) continue;
     const signature = parts.join("+");
     if (seenSignatures.has(signature)) continue;
