@@ -2106,10 +2106,13 @@ export async function findContradiction(
     // Collapsed sizes (Qodo PR #956 R2): "Never auto-deploy" is a two-word
     // rule (marker + one compound action) — the shortPair admission must
     // see the compound as one concept or the discounted shared count (1)
-    // can never corroborate an identical-compound flip.
+    // can never corroborate an identical-compound flip. Quote-masked
+    // (Qodo PR #956 R4): quoted examples are never the action, so their
+    // words must not lengthen the rule either — "Never merge 'auto-merge'"
+    // is a two-word rule whose flip on "merge" must reach the clause gate.
     const shortPair =
-      collapsedActionSize(contentWords(text), text) <= 2 &&
-      collapsedActionSize(contentWords(candidate.text), candidate.text) <= 2;
+      collapsedActionSize(contentWords(quotedMask(text)), text) <= 2 &&
+      collapsedActionSize(contentWords(quotedMask(candidate.text)), candidate.text) <= 2;
     // Time-scoped rules (Qodo 205f7330): clock-time tokens tokenize to the
     // stop word "am"/"pm", so a time-scoped pair can corroborate on the
     // action alone — "Never deploy at 4am or at 2am" vs "Always deploy

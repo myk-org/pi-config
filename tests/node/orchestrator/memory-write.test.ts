@@ -3230,6 +3230,21 @@ describe("conflict gate — hyphenated compound discount (issue #955)", () => {
     }
   });
 
+  it("a quoted example does not lengthen a short rule past shortPair (Qodo PR #956 R4)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "Never merge 'auto-merge'");
+      const result = await addMemoryEntry(cwd, {
+        text: "Always merge",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("a compound permission does not bypass a standalone ban (Qodo PR #956 R4)", async () => {
     const cwd = makeCwd();
     try {
