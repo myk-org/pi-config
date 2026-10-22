@@ -1160,9 +1160,12 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       const permMasked = maskedActionWords(stripTimes(perm));
       // Compound discount (issue #955): a hyphenated brand name present in
       // both clauses is one concept, not two shared action words.
-      const shared =
-        sharedCount(negMasked, permMasked) -
-        compoundSharedDiscount(neg, perm, negMasked, permMasked);
+      const rawShared = sharedCount(negMasked, permMasked);
+      const discount = compoundSharedDiscount(neg, perm, negMasked, permMasked);
+      const shared = Math.max(0, rawShared - discount);
+      if (discount > 0) {
+        log.debug("memory-write: clause compound discount applied", { rawShared, discount, shared });
+      }
       const shorter = Math.min(negMasked.size, permMasked.size);
       // Action-verb synonyms count as the shared action (Qodo e8564269):
       // "Never run 'npm install'" vs "Always execute 'npm install'" —
@@ -1860,7 +1863,13 @@ function diffWordIsMidClause(
 function sharedContentWords(a: string, b: string): number {
   const wa = contentWords(a);
   const wb = contentWords(b);
-  return Math.max(0, sharedCount(wa, wb) - compoundSharedDiscount(a, b, wa, wb));
+  const raw = sharedCount(wa, wb);
+  const discount = compoundSharedDiscount(a, b, wa, wb);
+  const shared = Math.max(0, raw - discount);
+  if (discount > 0) {
+    log.debug("memory-write: compound discount applied", { rawShared: raw, discount, shared });
+  }
+  return shared;
 }
 
 /** Hyphenated compounds present VERBATIM in both texts contribute their
@@ -1884,17 +1893,42 @@ function compoundSharedDiscount(
   const aCompounds = compoundsIn(aRaw);
   if (aCompounds.size === 0) return 0;
   const bCompounds = compoundsIn(bRaw);
-  let discount = 0;
+  // Qualifying compounds: hyphenated in BOTH texts, with every part shared
+  // on both sides. Part filtering mirrors contentWords exactly (Qodo PR
+  // #956): RAW stop words are dropped BEFORE stemming — a stemmed stop word
+  // ("thes") is not in STOP_WORDS (72013bb5), so checking only the stemmed
+  // form kept a stop-word part ("of") in the list, failed the every-part
+  // test, and silently retained the brand-pair false positive.
+  const qualifying: string[][] = [];
+  const seenSignatures = new Set<string>();
   for (const compound of aCompounds) {
     if (!bCompounds.has(compound)) continue;
     const parts = compound
       .split("-")
+      .filter((w) => !STOP_WORDS.has(w))
       .map(stem)
       .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
-    if (parts.length >= 2 && parts.every((p) => aWords.has(p) && bWords.has(p))) {
-      discount += parts.length - 1;
-    }
+    if (parts.length < 2 || !parts.every((p) => aWords.has(p) && bWords.has(p))) continue;
+    // Pluralized variants ("npm-package" vs "npm-packages") stem to the
+    // same part set — one signature, one discount slot (Qodo PR #956).
+    const signature = parts.join("+");
+    if (seenSignatures.has(signature)) continue;
+    seenSignatures.add(signature);
+    qualifying.push(parts);
   }
+  if (qualifying.length === 0) return 0;
+  // Overlapping compounds ("pi-config" + "pi-config-sidecar") share parts,
+  // but sharedCount counts each stem ONCE — a per-compound summation
+  // deducted the shared stems twice and erased real conflicts (Qodo PR
+  // #956). Deduct each DISTINCT shared part once; every qualifying
+  // compound still counts as exactly one shared word.
+  const distinctParts = new Set(qualifying.flat());
+  const discount = Math.max(0, distinctParts.size - qualifying.length);
+  log.debug("memory-write: compound discount", {
+    compounds: qualifying.length,
+    distinctSharedParts: distinctParts.size,
+    discount,
+  });
   return discount;
 }
 

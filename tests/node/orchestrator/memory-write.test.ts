@@ -3201,6 +3201,50 @@ describe("conflict gate — hyphenated compound discount (issue #955)", () => {
     }
   });
 
+  it("overlapping compounds do not erase a real conflict (Qodo PR #956)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "never touch pi-config pi-config-sidecar");
+      const result = await addMemoryEntry(cwd, {
+        text: "always touch pi-config pi-config-sidecar",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a compound with a stop-word part is still discounted (raw stop-word filter, Qodo PR #956)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "ALWAYS mention out-of-band quietly", { pinned: true });
+      const result = await addMemoryEntry(cwd, {
+        text: "never deploy out-of-band loudly",
+        category: "preference",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a stop-word-part compound does not over-discount a real flip (Qodo PR #956)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "lesson", "never deploy out-of-band");
+      const result = await addMemoryEntry(cwd, {
+        text: "always deploy out-of-band",
+        category: "lesson",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("identical compounds on both sides of a real flip still conflict", async () => {
     const cwd = makeCwd();
     try {
