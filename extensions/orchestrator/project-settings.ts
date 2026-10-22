@@ -20,7 +20,7 @@
 
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import stripJsonComments from "strip-json-comments";
 import { resolveRepoRoot } from "./utils.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -98,6 +98,8 @@ interface ProjectSettings {
   coms_probe_timeout_ms?: number;
   /** Pidiff: stale lock timeout in ms. */
   pidiff_stale_lock_timeout_ms?: number;
+  /** Glob patterns of pre-approved dangerous commands (* any run, ? one char, matched against the full command text). */
+  dangerous_command_allowlist?: string[];
   /** Pidiff: daemon startup timeout in seconds. */
   pidiff_daemon_startup_timeout_s?: number;
   /** Distill addressed review findings into memory lessons after `reviews address`. Default: true. */
@@ -270,6 +272,14 @@ export function parseSettingsFile(filePath: string): ProjectSettings {
         case "number":
           if (typeof val === "number" && Number.isFinite(val)) (result as any)[k] = val;
           break;
+        case "string_list":
+          if (Array.isArray(val)) {
+            const list = val.filter((e: unknown): e is string => typeof e === "string" && e.length > 0);
+            const rejected = val.length - list.length;
+            if (rejected > 0) console.debug(`[project-settings] ${filePath}: dropped ${rejected} invalid string_list entrie(s) for ${k}`);
+            if (list.length > 0) (result as any)[k] = list;
+          }
+          break;
       }
     }
     return result;
@@ -292,9 +302,20 @@ export function setGlobalSettingsPath(path: string | null): void {
   clearSettingsCache();
 }
 
-/** Resolved global settings file path (honors test override). */
+/** Resolved global settings file path (honors test override).
+ *
+ * TEST-RUNNER SAFETY NET (PR #950 R8, learned the hard way): a unit test
+ * that forgets `setGlobalSettingsPath` must never read — let alone WRITE —
+ * the user's real machine-wide settings. Under node:test
+ * (`NODE_TEST_CONTEXT` is set by the runner) an unset override resolves to
+ * a throwaway per-process temp file instead of `~/.pi/...`, so a stray
+ * global-scope write lands in /tmp, never in the user's allowlist. */
 export function getGlobalSettingsPath(): string {
-  return globalSettingsPathOverride ?? findSettingsFile(join(homedir(), ".pi")) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
+  if (globalSettingsPathOverride) return globalSettingsPathOverride;
+  if (process.env.NODE_TEST_CONTEXT !== undefined) {
+    return join(tmpdir(), `pi-config-test-global-settings-${process.pid}.json`);
+  }
+  return findSettingsFile(join(homedir(), ".pi")) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
 }
 
 export function loadGlobalSettings(): ProjectSettings {
@@ -485,6 +506,7 @@ export function getSetting(cwd: string, key: "coms_entry_grace_period_ms"): numb
 export function getSetting(cwd: string, key: "coms_probe_timeout_ms"): number;
 export function getSetting(cwd: string, key: "pidiff_stale_lock_timeout_ms"): number;
 export function getSetting(cwd: string, key: "pidiff_daemon_startup_timeout_s"): number;
+export function getSetting(cwd: string, key: "dangerous_command_allowlist"): string[];
 export function getSetting(cwd: string, key: "review_learning"): boolean;
 export function getSetting(cwd: string, key: string): boolean | string | number | string[] | Record<string, { provider?: string | null; model?: string | null }> {
   const settings = getSettings(cwd);
@@ -624,6 +646,10 @@ export function getSetting(cwd: string, key: string): boolean | string | number 
         if (env !== undefined && env !== "") return env.trim();
       }
       return def.default as string;
+    }
+    case "string_list": {
+      if (merged !== undefined) return merged as string[];
+      return Array.isArray(def.default) ? (def.default as string[]) : [];
     }
     default:
       return false;

@@ -15,6 +15,9 @@ import {
 } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import type { SettingsKeyDef } from "./project-settings.js";
+import { createLogger } from "../shared/logger.js";
+
+const stringListLog = createLogger("settings_tui");
 
 // ── Input submenu component ─────────────────────────────────────────
 
@@ -640,6 +643,130 @@ export class AgentOverridesSubmenu implements Component {
         // Provider changed to a real value — clear model to prevent stale cross-provider model
         this.overrides[agent]!.model = null;
       }
+    }
+  }
+
+  invalidate(): void {}
+}
+
+// ── String list submenu (e.g. dangerous_command_allowlist) ──────────
+
+/**
+ * Edits a list of free-text patterns (one per entry). List mode navigates
+ * with ↑↓, Enter edits (or adds via the trailing "add" row), `d` deletes;
+ * Esc commits the current list (done receives JSON), edits cancel with Esc.
+ */
+export class StringListSubmenu implements Component {
+  private entries: string[];
+  private dirty: boolean;
+  private key: string;
+  private selectedIndex: number;
+  private done: (value?: string) => void;
+  private label: string;
+  private theme: Theme;
+  private mode: "list" | "edit";
+  private editIndex: number; // -1 = adding a new entry
+  private editInput: Input;
+
+  constructor(label: string, currentEntries: string[], theme: Theme, done: (value?: string) => void, key = "unknown") {
+    this.label = label;
+    this.key = key;
+    this.entries = [...currentEntries];
+    this.dirty = false;
+    this.selectedIndex = 0;
+    this.done = done;
+    this.theme = theme;
+    this.mode = "list";
+    this.editIndex = -1;
+    this.editInput = new Input();
+  }
+
+  private get rowCount(): number {
+    return this.entries.length + 1; // + "add" row
+  }
+
+  render(width: number): string[] {
+    const t = this.theme;
+    const lines: string[] = [];
+    lines.push(truncateToWidth(`  ${t.fg("accent", t.bold(this.label))}`, width));
+    lines.push(truncateToWidth(`  ${t.fg("dim", "Glob patterns: * any run, ? one char, \\ escapes a literal")}`, width));
+    lines.push("");
+
+    if (this.mode === "list") {
+      for (let i = 0; i < this.entries.length; i++) {
+        const cursor = i === this.selectedIndex ? t.fg("accent", "❯") : " ";
+        const text = i === this.selectedIndex ? t.fg("accent", this.entries[i]) : t.fg("text", this.entries[i]);
+        lines.push(truncateToWidth(`  ${cursor} ${text}`, width));
+      }
+      const addCursor = this.selectedIndex === this.entries.length ? t.fg("accent", "❯") : " ";
+      const addText = this.selectedIndex === this.entries.length ? t.fg("accent", "＋ add pattern") : t.fg("dim", "＋ add pattern");
+      lines.push(truncateToWidth(`  ${addCursor} ${addText}`, width));
+      lines.push("");
+      lines.push(truncateToWidth(`  ${t.fg("dim", "↑↓ navigate · Enter edit/add · d delete · Esc save & close")}`, width));
+    } else {
+      const verb = this.editIndex === -1 ? "Add pattern" : "Edit pattern";
+      lines.push(truncateToWidth(`  ${t.fg("text", verb)}`, width));
+      lines.push("");
+      const inputLines = this.editInput.render(Math.max(10, width - 4));
+      for (const line of inputLines) {
+        lines.push(truncateToWidth(`  ${line}`, width));
+      }
+      lines.push("");
+      lines.push(truncateToWidth(`  ${t.fg("dim", "Enter: save · Esc: cancel")}`, width));
+    }
+
+    return lines;
+  }
+
+  handleInput(data: string): void {
+    if (this.mode === "edit") {
+      if (matchesKey(data, Key.escape)) {
+        this.mode = "list";
+        return;
+      }
+      this.editInput.handleInput(data);
+      return;
+    }
+
+    if (matchesKey(data, Key.escape)) {
+      // No edits → no write (Qodo PR #950 R3: Esc must not resubmit a stale
+      // or untouched list). Only a dirty editor commits.
+      if (this.dirty) {
+        stringListLog.debug("string_list_edited", this.key, this.entries.length);
+        this.done(JSON.stringify(this.entries));
+      } else {
+        this.done(undefined);
+      }
+      return;
+    }
+    if (matchesKey(data, Key.up)) {
+      this.selectedIndex = (this.selectedIndex - 1 + this.rowCount) % this.rowCount;
+      return;
+    }
+    if (matchesKey(data, Key.down)) {
+      this.selectedIndex = (this.selectedIndex + 1) % this.rowCount;
+      return;
+    }
+    if (matchesKey(data, Key.enter)) {
+      this.editIndex = this.selectedIndex < this.entries.length ? this.selectedIndex : -1;
+      this.editInput = new Input();
+      this.editInput.setValue(this.editIndex === -1 ? "" : this.entries[this.editIndex]);
+      this.editInput.onSubmit = (val: string) => {
+        const trimmed = val.trim();
+        if (trimmed !== "") {
+          if (this.editIndex === -1) this.entries.push(trimmed);
+          else this.entries[this.editIndex] = trimmed;
+          this.dirty = true;
+        }
+        this.mode = "list";
+      };
+      this.mode = "edit";
+      return;
+    }
+    if (data === "d" && this.selectedIndex < this.entries.length) {
+      this.entries.splice(this.selectedIndex, 1);
+      this.dirty = true;
+      if (this.selectedIndex >= this.rowCount) this.selectedIndex = Math.max(0, this.rowCount - 1);
     }
   }
 

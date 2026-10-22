@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import re
@@ -34,7 +35,7 @@ def _load_settings_keys() -> dict[str, Any]:
 
 SETTINGS_KEYS: dict[str, Any] = _load_settings_keys()
 SUPPORTED_KEYS = tuple(SETTINGS_KEYS.keys())
-ENV_BY_KEY: dict[str, str] = {k: v["env"] for k, v in SETTINGS_KEYS.items() if "env" in v}
+ENV_BY_KEY: dict[str, str] = {k: v["env"] for k, v in SETTINGS_KEYS.items() if isinstance(v.get("env"), str)}
 
 SettingValue = bool | str | int | float | list[str] | dict[str, Any]
 
@@ -154,6 +155,17 @@ def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> A
         return value if isinstance(value, (str, list)) else None
     if typ == "agent_overrides":
         return _parse_agent_overrides(value)
+    if typ == "string_list":
+        if isinstance(value, list):
+            filtered = [e for e in value if isinstance(e, str) and e]
+            rejected = len(value) - len(filtered)
+            if rejected:
+                logging.getLogger(__name__).debug(
+                    "settings: dropped %d invalid string_list entrie(s) for %s", rejected, key
+                )
+            if filtered:
+                return filtered
+        return None
     return None
 
 

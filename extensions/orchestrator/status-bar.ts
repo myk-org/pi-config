@@ -6,7 +6,18 @@
  *
  * Adding a new slot: add to SLOTS, import setSlot in the consumer.
  * Reordering: change the sort-key prefix here — nothing else changes.
+ *
+ * Stale-ctx safety (reload crash postmortem, PR #950): ctx.ui getters call
+ * assertActive() and THROW after a runtime reload/replacement — an async
+ * continuation (e.g. a graft build resolving across a reload) or a
+ * session_shutdown handler touching a captured ctx must never crash the
+ * process over a footer update. Guarded with isLiveExtensionCtx + try/catch.
  */
+
+import { isLiveExtensionCtx } from "../shared/live-ctx.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("status-bar");
 
 /** Slot sort-keys — alphabetical order determines left-to-right position in the bar. */
 const SLOTS = {
@@ -21,12 +32,24 @@ const SLOTS = {
 
 export type StatusBarSlot = keyof typeof SLOTS;
 
+function safeSetStatus(key: string, text: string | undefined, ctx: any): void {
+  if (!isLiveExtensionCtx(ctx)) {
+    log.debug("status_update_skipped_stale_ctx", { key });
+    return;
+  }
+  try {
+    ctx.ui.setStatus(key, text);
+  } catch (e: unknown) {
+    log.warn("status_update_failed", { key, error: String(e) });
+  }
+}
+
 /** Set a status bar slot value. Pass undefined to clear. */
 export function setSlot(slot: StatusBarSlot, text: string | undefined, ctx: any): void {
-  ctx?.ui?.setStatus(SLOTS[slot], text);
+  safeSetStatus(SLOTS[slot], text, ctx);
 }
 
 /** Clear a status bar slot. */
 export function clearSlot(slot: StatusBarSlot, ctx: any): void {
-  ctx?.ui?.setStatus(SLOTS[slot], undefined);
+  safeSetStatus(SLOTS[slot], undefined, ctx);
 }

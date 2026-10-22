@@ -53,6 +53,7 @@ import {
   PickerSubmenu,
   MultiSelectSubmenu,
   AgentOverridesSubmenu,
+  StringListSubmenu,
   SelectSubmenu,
 } from "./settings-tui-submenus.js";
 
@@ -275,6 +276,27 @@ export function buildCategoryItems(
           };
           break;
 
+        case "string_list": {
+          item.submenu = (_current: string, done: (val?: string) => void): Component => {
+            // Read the SCOPE'S OWN list fresh at every open — never the merged
+            // effective value (a project override must not leak into the global
+            // editor) and never a stale closure captured before a save
+            // (Qodo PR #950 R3).
+            const scopeFile = getFilePathForScope(editScope, cwd);
+            const raw = readSettingsFile(scopeFile);
+            const scopeList = raw && Array.isArray(raw[key]) ? (raw[key] as string[]).filter((e): e is string => typeof e === "string") : [];
+            log.debug("settings_string_list_open", key, editScope, scopeList.length);
+            return new StringListSubmenu(
+              `${key} — patterns`,
+              scopeList,
+              theme,
+              done,
+              key,
+            );
+          };
+          break;
+        }
+
         case "agent_overrides":
           item.submenu = (_current: string, done: (val?: string) => void): Component => {
             const currentOverrides = (typeof effectiveValue === "object" && effectiveValue !== null && !Array.isArray(effectiveValue))
@@ -317,7 +339,10 @@ export function buildSettingItems(
 // ── Safe SettingsList state access ──────────────────────────────────
 // SettingsList fields are TypeScript-private (compile-time only) — accessible at runtime.
 
-function getSettingsListState(list: SettingsList): {
+// Exported for tests: the overlay's Tab/category-switch guard keys off
+// hasActiveSubmenu (Qodo PR #950 R7 — switching tabs while a StringListSubmenu
+// holds dirty edits would drop them).
+export function getSettingsListState(list: SettingsList): {
   hasActiveSearch: boolean;
   hasActiveSubmenu: boolean;
   selectedIndex: number;
@@ -449,7 +474,14 @@ class SettingsOverlay implements Component {
           this.notify(msg, "error");
           return;
         }
-        log.info("settings_changed", id, String(parsed).slice(0, 60));
+        // Array-valued settings (e.g. dangerous_command_allowlist) log only
+        // their entry COUNT — entries may contain inline credentials, and the
+        // settings log must not copy them out of the settings file
+        // (Qodo PR #950 R5).
+        const logValue = Array.isArray(parsed)
+          ? `${parsed.length} entr${parsed.length === 1 ? "y" : "ies"} (values not logged)`
+          : String(parsed).slice(0, 60);
+        log.info("settings_changed", id, logValue);
         if (filePath.endsWith(".jsonc")) {
           this.notify("Note: comments were stripped from .jsonc file", "info");
         }
@@ -480,8 +512,15 @@ class SettingsOverlay implements Component {
   }
 
   handleInput(data: string): void {
+    // While a submenu (e.g. StringListSubmenu) is open, its local edits exist
+    // ONLY in the submenu component — rebuilding the settings list would
+    // silently drop them (Qodo PR #950 R7). Tab / category arrows must not
+    // switch anything until the submenu closes (Esc submits or cancels).
+    const state = getSettingsListState(this.settingsList);
+    const submenuOpen = state.hasActiveSubmenu;
+
     // Tab to switch scope
-    if (matchesKey(data, Key.tab)) {
+    if (!submenuOpen && matchesKey(data, Key.tab)) {
       this.editScope = this.editScope === "project" ? "global" : "project";
       this.rebuild();
       this.tui.requestRender();
@@ -489,13 +528,13 @@ class SettingsOverlay implements Component {
     }
 
     // Left/Right to switch category tabs
-    if (matchesKey(data, Key.left)) {
+    if (!submenuOpen && matchesKey(data, Key.left)) {
       this.categoryIndex = (this.categoryIndex - 1 + CATEGORIES.length) % CATEGORIES.length;
       this.rebuild();
       this.tui.requestRender();
       return;
     }
-    if (matchesKey(data, Key.right)) {
+    if (!submenuOpen && matchesKey(data, Key.right)) {
       this.categoryIndex = (this.categoryIndex + 1) % CATEGORIES.length;
       this.rebuild();
       this.tui.requestRender();
@@ -504,7 +543,6 @@ class SettingsOverlay implements Component {
 
     // Delete key: remove setting from current scope (skip when search active or submenu open)
     if (matchesKey(data, Key.delete)) {
-      const state = getSettingsListState(this.settingsList);
       if (!state.hasActiveSubmenu && !state.hasActiveSearch) {
         const selectedItem = state.displayItems[state.selectedIndex];
         if (selectedItem) {

@@ -4,9 +4,14 @@
  */
 
 import { createLogger } from "../shared/logger.js";
-import { realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { lstatSync, realpathSync, mkdirSync, rmdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { join } from "node:path";
+import { getProjectDataDir } from "./utils.js";
+import { getGlobalSettingsPath, getSettingsPath, loadGlobalSettings, loadProjectSettings } from "./project-settings.js";
+import { readSettingsFile, writeSettingsFile } from "./settings-tui-helpers.js";
 import { DANGEROUS, executableText, getCurrentBranch, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
@@ -920,6 +925,15 @@ function stripSingleQuotedRegions(stmt: string): string {
       i++;
       continue;
     }
+    if (ch === "\\" && i + 1 < stmt.length) {
+      // Unquoted \x is a literal pair (bash escapes) — a backslash must never
+      // turn the NEXT character into a quote delimiter. Without this, a
+      // nested strip of `echo \' $(rm -rf /) \'` would treat \' as opening a
+      // single-quoted region and hide the live deletion (Qodo PR #950 R2).
+      out += stmt.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
     if (ch === "'") {
       inSingle = true;
       singleOpenIndex = i;
@@ -936,6 +950,57 @@ function stripSingleQuotedRegions(stmt: string): string {
     i++;
   }
   if (inSingle && singleOpenIndex >= 0) out += stmt.slice(singleOpenIndex);
+  return out;
+}
+
+/**
+ * Replace the CONTENT of quoted regions ('...', "...") with a single space,
+ * keeping the delimiters, so filename/redirect guards see shell STRUCTURE
+ * without prose (Qodo PR #950 R5: `--body "settings => pi-config-settings.json"`
+ * must not trip the redirect tripwire). Backslash-escape aware (\" never toggles
+ * a quote); an UNTERMINATED quoted region is re-emitted raw — a stray quote
+ * must not hide the rest of the command from the guards.
+ */
+export function maskQuotedRegions(cmd: string): string {
+  let out = "";
+  let i = 0;
+  let quote: "'" | '"' | null = null;
+  let openIndex = -1;
+  while (i < cmd.length) {
+    const ch = cmd[i];
+    if (quote !== null) {
+      if (quote === '"' && ch === "\\" && i + 1 < cmd.length) {
+        i += 2;
+        continue;
+      }
+      if (ch === quote) {
+        // Keep the delimiters, replace only the content — structure survives.
+        out += " ";
+        out += quote;
+        quote = null;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < cmd.length) {
+      // Unquoted \x is a literal pair — a backslash must never turn the next
+      // character into a quote delimiter (same rule as
+      // stripSingleQuotedRegions, Qodo PR #950 R2).
+      out += cmd.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      openIndex = i;
+      out += ch;
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  if (quote !== null && openIndex >= 0) out += cmd.slice(openIndex + 1);
   return out;
 }
 
@@ -969,7 +1034,7 @@ export function extractSubshells(stmt: string): string[] {
         j++;
       }
       if (depth === 0) {
-        results.push(withoutSingleQuoted.slice(start, j - 1));
+        results.push(stripSingleQuotedRegions(withoutSingleQuoted.slice(start, j - 1)));
       }
       i = j;
       continue;
@@ -986,7 +1051,7 @@ export function extractSubshells(stmt: string): string[] {
         j++;
       }
       if (j < withoutSingleQuoted.length) {
-        results.push(withoutSingleQuoted.slice(i + 1, j));
+        results.push(stripSingleQuotedRegions(withoutSingleQuoted.slice(i + 1, j)));
         i = j + 1;
         continue;
       }
@@ -1042,6 +1107,387 @@ export function splitBashStatements(command: string): string[] {
     .split(/\n|;|&&|(?<!>)&|\|\||\|/)
     .map((s: string) => s.trim())
     .filter(Boolean);
+}
+
+/**
+ * User-approved allowlist for recurring legitimate dangerous-looking commands
+ * (issue #949, PR #950). Entries live in the `dangerous_command_allowlist`
+ * setting (project `.pi/pi-config-settings.json(c)`, global `~/.pi/...`) so
+ * the user can inspect, edit, and extend them — including wildcards:
+ * `*` matches any run of characters, `?` exactly one, `\` escapes a literal
+ * metachar. Patterns match the FULL command text (anchored, case-sensitive).
+ *
+ * Entries added via the interactive "always allow" prompt option are the
+ * command text with glob metachars ESCAPED — an approval covers exactly the
+ * text that was approved; widening to a wildcard family is a deliberate
+ * human edit of the settings file. Agents cannot write the entries
+ * themselves: the settings files are enforcement-protected (see
+ * enforcement.ts) — approvals flow only through the prompt.
+ */
+
+/** Glob → anchored RegExp. `*` any run, `?` one char, `\` escapes a literal, rest literal. */
+export function allowlistGlobToRegExp(pattern: string): RegExp {
+  let re = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === "\\" && i + 1 < pattern.length) {
+      re += (pattern[++i] as string).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    } else if (c === "*") {
+      re += ".*";
+    } else if (c === "?") {
+      re += ".";
+    } else {
+      re += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  // `s` flag: multi-line commands — `*` must span newlines
+  return new RegExp(`^${re}$`, "s");
+}
+
+/** Normalize a dangerous statement for allowlist matching and storage:
+ * trailing I/O redirections (`> /dev/null`, `2>&1`, `2>/dev/null`, `&>f`)
+ * are plumbing, not danger — strip them so `bash x 2>&1` matches an entry
+ * (or an approval) of `bash x`. Iterated because tails stack
+ * (`... > /dev/null 2>&1`). User request, PR #950. */
+export function normalizeDangerousStatement(stmt: string): string {
+  let s = stmt.trim();
+  let prev = "";
+  while (prev !== s) {
+    prev = s;
+    // Strip only BENIGN plumbing tails (Qodo PR #950 R6): descriptor
+    // duplication (`2>&1`) and /dev/null targets. A redirect to any other
+    // target (file, device, $(...)) STAYS part of the statement — it is
+    // side effect, not plumbing, and must not silently inherit an approval
+    // granted to the un-redirected statement.
+    s = s
+      .replace(/\s*\d+>&\d+\s*$/, "")
+      .replace(/\s*\d*(?:>{1,2}|&>)\s*\/dev\/null\s*$/, "")
+      .trim();
+  }
+  return s;
+}
+
+/**
+ * True for shell statements that read their SCRIPT from stdin — a bare
+ * `bash`/`sh`/`zsh` (optionally with flags, wrappers like sudo/nohup/env,
+ * and variable assignments) and no script path or -c payload. Such a
+ * statement carries none of the script it will execute: `x | bash`,
+ * `bash <<EOF`, `base64 -d | bash` all reduce to it. Approving it
+ * persistently would approve EVERY future script fed to that shell
+ * (Qodo PR #950 R6), so these statements are never allowlist-matchable
+ * and never offered a persistent approval — only run-once.
+ */
+export function isStdinFedShellStatement(stmt: string): boolean {
+  return /^(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:sudo|nohup|env|command|builtin|exec)\s+)*(?:(?:timeout|nice)\s+(?:-\S+\s+)?(?:\S+\s+)?)*(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh(?:\s+-\w+)*\s*$/.test(
+    stmt.trim(),
+  );
+}
+
+/** SHA-256 of a command (or entry) — hash prefixes for logs, never the text itself. */
+export function dangerousCommandHash(command: string): string {
+  return createHash("sha256").update(command).digest("hex");
+}
+
+export interface DangerousAllowlistMatch {
+  /** The matched settings entry (may contain wildcards). */
+  entry: string;
+  /** Which settings file provided it. */
+  source: "project" | "global";
+}
+
+/** Matched allowlist entry for the full command text, or null.
+ * Project settings take precedence over global; no env layer (deliberate:
+ * ambient env must not silently approve dangerous commands).
+ *
+ * Security (Qodo PR #950 R3): a project settings file that is TRACKED by git
+ * is not trusted for the allowlist — a cloned repo must not be able to ship
+ * `{"dangerous_command_allowlist": ["*"]}` and disable the gate for everyone
+ * who opens it. Only the user's own untracked project file (or the global
+ * file on their machine) can approve commands. */
+const trackedSettingsCache = new Map<string, ProjectSettingsTrust>();
+/** Expiry for cached "tracked" verdicts (Qodo PR #950 R9): the tracked
+ * verdict used to be cached forever, so a user who untracks the file
+ * (`git rm --cached`) kept losing project approvals until process restart.
+ * A TTL keeps the anti-clone property (a fresh process always runs the git
+ * check; a clone's shipped tracked settings are rejected on first sight)
+ * while honoring untracking within seconds. The unsafe direction —
+ * untracked — is still NEVER cached. */
+const trackedVerdictExpires = new Map<string, number>();
+let trackedVerdictTtlMs = 30_000;
+/** Test hook: shrink the tracked-verdict TTL so expiry is testable. */
+export function setTrackedVerdictTtlForTests(ms: number): void {
+  trackedVerdictTtlMs = ms;
+}
+/** Test hook: clear the tracked-settings cache (git state changed under us). */
+export function clearTrackedSettingsCache(): void {
+  trackedSettingsCache.clear();
+  trackedSettingsWarned.clear();
+  trackedVerdictExpires.clear();
+}
+const trackedSettingsWarned = new Set<string>();
+/** Current trust verdict for the project settings file (public for the
+ * approval writer: it must know WHERE a new entry can be stored — a
+ * tracked/untrusted project file would swallow approvals that lookup
+ * can never match, Qodo PR #950 R7). */
+export function projectSettingsTrust(cwd: string): ProjectSettingsTrust {
+  const file = getSettingsPath(cwd);
+  const cached = trackedSettingsCache.get(file);
+  if (cached !== undefined) {
+    const expires = trackedVerdictExpires.get(file);
+    if (expires === undefined || expires > Date.now()) return cached;
+    // Cached tracked verdict expired — re-check (the user may have
+    // untracked the file; Qodo PR #950 R9).
+    trackedSettingsCache.delete(file);
+    trackedVerdictExpires.delete(file);
+  }
+  const verdict = projectSettingsTrustUncached(cwd, file);
+  // Cache the confirmed-untrusted (tracked) verdict WITH a TTL — it can
+  // only become more true, but the user may legitimately untrack the file,
+  // and that must recover without a process restart (R9). A trusted
+  // (untracked) verdict is re-checked on EVERY use so a later `git pull` /
+  // checkout that starts tracking the file is caught on the very next
+  // check, not for the life of the process (Qodo PR #950 R5). An "unknown"
+  // verdict (git failed transiently) is never cached — the next check
+  // retries git (R7). Per-command batching (one git exec per gate
+  // evaluation, not per statement) lives in loadDangerousAllowlists — the
+  // per-CALL re-check semantics stay intact.
+  if (verdict === "tracked") {
+    trackedSettingsCache.set(file, verdict);
+    trackedVerdictExpires.set(file, Date.now() + trackedVerdictTtlMs);
+  }
+  return verdict;
+}
+function projectSettingsUntracked(cwd: string): boolean {
+  // Fail closed on "unknown": an unverifiable file is treated as untrusted
+  // for THIS check (global entries still work); the verdict is not cached,
+  // so the next check retries git.
+  return projectSettingsTrust(cwd) === "untracked";
+}
+/** Trust verdict for a project settings file:
+ * - "untracked" — CONFIRMED trustable (git exit 1, or no repo here): the
+ *   file is not tracked, so it cannot have shipped with a clone.
+ * - "tracked" — CONFIRMED untrusted (git listed it, or the path traverses
+ *   a symlink): a cloned repo may have shipped it.
+ * - "unknown" — git failed for an unrelated reason (missing binary,
+ *   timeout, dubious ownership, locked index, cwd gone). Treated as
+ *   untrusted for the CURRENT check but NEVER cached — the next check
+ *   retries (Qodo PR #950 R7: a transient failure must not freeze the
+ *   verdict for the life of the process). */
+type ProjectSettingsTrust = "untracked" | "tracked" | "unknown";
+
+function projectSettingsTrustUncached(cwd: string, file: string): ProjectSettingsTrust {
+  // A settings path reached through a SYMLINK is not trustable (Qodo PR
+  // #950 R6): a repo can track `.pi` as a symlink to its root and ship a
+  // `*`-allowlist at the target — `git ls-files` misses the lexical path
+  // while the settings loader follows the link. lstat (no follow) catches
+  // both a symlinked settings file and a symlinked `.pi` dir without
+  // false-positiving on symlinked session cwds (/tmp vs /private/tmp).
+  // Each lstat is guarded SEPARATELY (Qodo PR #950 R9): a single try around
+  // both made a MISSING settings file discard the already-read `.pi` dir
+  // verdict — the first approval through a symlinked `.pi` then wrote an
+  // entry the next lookup (file now existing) would reject as untrusted.
+  const dirLstat = (() => { try { return lstatSync(path.dirname(file)); } catch { return null; } })();
+  const fileLstat = (() => { try { return lstatSync(file); } catch { return null; } })();
+  if ((dirLstat && dirLstat.isSymbolicLink()) || (fileLstat && fileLstat.isSymbolicLink())) {
+    enfLog.warn("dangerous_allowlist_settings_symlink", {
+      file,
+      reason: "settings path traverses a symlink — not trusted for dangerous-command approvals",
+    });
+    return "tracked"; // structural, not transient — cacheable untrusted
+  }
+  // Run git from a directory that exists: `path.dirname(file)` may not
+  // exist yet on a first-ever approval (Qodo PR #950 R7 — running from a
+  // missing cwd threw ENOENT, which fail-closed AND cached, freezing the
+  // verdict even after the approval created the file).
+  let gitCwd = path.dirname(file);
+  try {
+    lstatSync(gitCwd);
+  } catch {
+    gitCwd = cwd;
+  }
+  try {
+    const out = execFileSync(
+      "git",
+      ["ls-files", "--error-unmatch", file],
+      { cwd: gitCwd, encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "pipe"] },
+    ).trim();
+    if (out) {
+      if (!trackedSettingsWarned.has(file)) {
+        trackedSettingsWarned.add(file);
+        enfLog.warn("dangerous_allowlist_project_file_tracked", {
+          file,
+          reason: "tracked settings files are not trusted for dangerous-command approvals",
+        });
+      }
+      return "tracked";
+    }
+    return "untracked";
+  } catch (e: unknown) {
+    const err = e as { status?: number; stderr?: string };
+    // Exit 1 = the file is genuinely not tracked — the normal, trustable case.
+    if (err.status === 1) return "untracked";
+    // Exit 128 + "not a git repository" = no repo here, so nothing could have
+    // been cloned in — trustable. Other 128s (e.g. dubious-ownership refusal)
+    // are NOT trustable: an attacker-owned checkout fails exactly like that.
+    if (err.status === 128 && /not a git repository/i.test(String(err.stderr ?? ""))) return "untracked";
+    // git binary missing, timeout, dubious ownership, locked index, cwd
+    // gone — UNKNOWN: untrusted for this check, retried on the next one.
+    enfLog.warn("dangerous_allowlist_git_check_failed", {
+      file,
+      status: err.status,
+      fallback: "untrusted (not cached — next check retries)",
+    });
+    return "unknown";
+  }
+}
+
+/** Allowlists loaded once per gate evaluation (Qodo PR #950 R8 perf:
+ * loading per STATEMENT ran one synchronous git exec + two file reads per
+ * statement — now one per command). `project` is null when the project
+ * settings file is not trustable (tracked/symlinked/unverifiable). */
+export interface DangerousAllowlists {
+  project: string[] | null;
+  global: string[];
+}
+
+/** Load both allowlist scopes for a cwd — ONE trust check + ONE read per
+ * scope. Call this once per command and match statements against the
+ * result via matchDangerousAllowlist. */
+export function loadDangerousAllowlists(cwd: string): DangerousAllowlists {
+  const project = projectSettingsUntracked(cwd)
+    ? (loadProjectSettings(cwd).dangerous_command_allowlist ?? [])
+    : null;
+  const global = loadGlobalSettings().dangerous_command_allowlist ?? [];
+  return { project, global };
+}
+
+/** Match one normalized statement against pre-loaded allowlists (no git,
+ * no file I/O — safe to call per statement). */
+export function matchDangerousAllowlist(lists: DangerousAllowlists, command: string): DangerousAllowlistMatch | null {
+  // Defense in depth (Qodo PR #950 R6): a stdin-fed shell statement (`bash`,
+  // `sh -s`, ...) executes whatever script is fed to it — even a hand-added
+  // settings entry can never approve it. The gate already refuses to offer
+  // persistent approval for such statements.
+  if (isStdinFedShellStatement(command)) return null;
+  if (lists.project) {
+    const p = lists.project.find((e) => allowlistGlobToRegExp(e).test(command));
+    if (p) return { entry: p, source: "project" };
+  }
+  const g = lists.global.find((e) => allowlistGlobToRegExp(e).test(command));
+  return g ? { entry: g, source: "global" } : null;
+}
+
+export function findDangerousAllowlistEntry(cwd: string, command: string): DangerousAllowlistMatch | null {
+  // Per-CALL semantics (unchanged since R5): every call re-checks trust, so
+  // a `git pull` that starts tracking the project file is caught on the
+  // very next call. The gate uses the batched loadDangerousAllowlists path
+  // for per-command efficiency; direct callers keep the strict behavior.
+  return matchDangerousAllowlist(loadDangerousAllowlists(cwd), command);
+}
+
+/** Result of persisting a dangerous-command approval. `scope` is where the
+ * entry ACTUALLY landed — the caller logs/notifies it, and "global" means
+ * the project file was CONFIRMED untrustworthy (git-tracked or symlinked)
+ * so the approval was stored in the user's global settings instead, where
+ * lookup will honor it (Qodo PR #950 R7/R8). A `trust_unknown` failure is
+ * deliberately NOT persisted anywhere: a transient git failure in one
+ * project must not mint a machine-wide approval (R8) — the approval is
+ * one-time and the user can retry once git answers. */
+export type DangerousAllowlistWriteResult =
+  | { ok: true; scope: "project" | "global"; file: string }
+  | { ok: false; reason: "corrupt" | "write_failed" | "trust_unknown" | "project_untrusted"; file: string };
+
+/** Append the exact command text (glob metachars escaped, so the entry stays
+ * literal) to the settings file. Fail-soft (returns a result, never throws).
+ * A mkdir-based lock serializes writers so concurrent approvals cannot drop
+ * each other (read-merge-write race).
+ *
+ * Scope is EXPLICIT (user request, PR #950 R8): the prompt offers "this
+ * project" and "everywhere" as distinct choices. `scope: "project"` writes
+ * the project file and FAILS when it is not trustable (git-tracked or
+ * symlinked — the caller must not have offered the option, but fail safe
+ * anyway). `scope: "global"` writes the user's machine-wide file — the
+ * caller only offers it as an explicit choice, never a silent fallback.
+ * When trust is UNKNOWN (git failed transiently) a project write is
+ * refused: run-once only (R8) — a transient failure must not mint a
+ * machine-wide approval either. */
+export function addDangerousAllowlistEntry(
+  cwd: string,
+  command: string,
+  scope: "project" | "global" = "project",
+): DangerousAllowlistWriteResult {
+  const trust = projectSettingsTrust(cwd);
+  if (scope === "project") {
+    if (trust === "tracked") {
+      // The option should not have been offered — refuse the write rather
+      // than silently redirecting scope (fail safe, no silent fallback).
+      enfLog.warn("dangerous_allowlist_project_untrusted_refused", {
+        trust,
+        reason: "project settings file is not trustable — project-scope approval refused",
+      });
+      return { ok: false, reason: "project_untrusted", file: getSettingsPath(cwd) };
+    }
+    if (trust === "unknown") {
+      // Never persist on an unverifiable state (Qodo PR #950 R8): fail the
+      // write; the gate tells the user this approval is one-time until git
+      // can verify the project file.
+      enfLog.warn("dangerous_allowlist_trust_unknown", {
+        reason: "project settings trust could not be verified (git check failed) — approval is one-time",
+      });
+      return { ok: false, reason: "trust_unknown", file: getSettingsPath(cwd) };
+    }
+  }
+  const file = scope === "project" ? getSettingsPath(cwd) : getGlobalSettingsPath();
+  const lockDir = `${file}.lock`;
+  const entry = command.replace(/[\\*?]/g, (c) => `\\${c}`);
+  let locked = false;
+  try {
+    // The lock dir's parent may not exist yet on a first-ever write
+    mkdirSync(path.dirname(file), { recursive: true });
+    for (let attempt = 0; attempt < 10 && !locked; attempt++) {
+      try {
+        mkdirSync(lockDir);
+        locked = true;
+      } catch {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); // 50ms backoff
+      }
+    }
+    const data = readSettingsFile(file);
+    if (data === null) {
+      // Corrupt/unparseable settings file — NEVER overwrite it with just the
+      // new entry: earlier approvals and every other setting would be lost
+      // (Qodo PR #950 R2). Bail fail-soft and let the user repair the file.
+      enfLog.warn("dangerous_allowlist_settings_unreadable", {
+        file,
+        hashPrefix: dangerousCommandHash(command).slice(0, 12),
+      });
+      return { ok: false, reason: "corrupt", file };
+    }
+    const list = Array.isArray(data.dangerous_command_allowlist)
+      ? data.dangerous_command_allowlist.filter((e: unknown): e is string => typeof e === "string" && e.length > 0)
+      : [];
+    if (!list.includes(entry)) list.push(entry);
+    data.dangerous_command_allowlist = list;
+    writeSettingsFile(file, data);
+    return { ok: true, scope, file };
+  } catch (error: any) {
+    // Hash prefix + path identify the affected approval without copying
+    // command text into global logs (Qodo PR #950).
+    enfLog.warn("dangerous_allowlist_write_failed", {
+      reason: String(error?.message ?? error).slice(0, 200),
+      hashPrefix: dangerousCommandHash(command).slice(0, 12),
+      file,
+    });
+    return { ok: false, reason: "write_failed", file };
+  } finally {
+    if (locked) {
+      try {
+        rmdirSync(lockDir);
+      } catch {
+        // stale lock — the next writer's retry loop handles it
+      }
+    }
+  }
 }
 
 /**

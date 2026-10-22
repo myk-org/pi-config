@@ -2,16 +2,28 @@
  * Tests for enforcement dangerous-command helpers.
  * Run with: npx tsx --test tests/node/orchestrator/enforcement.test.ts
  */
-import { describe, it, before, after, afterEach } from "node:test";
+import { describe, it, before, after, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { DANGEROUS } from "../../../extensions/orchestrator/git-helpers.js";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
+import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import {
   READ_ONLY_COMMANDS,
   extractSubshells,
+  addDangerousAllowlistEntry,
+  findDangerousAllowlistEntry,
+  allowlistGlobToRegExp,
+  clearTrackedSettingsCache,
+  setTrackedVerdictTtlForTests,
+  maskQuotedRegions,
+  isStdinFedShellStatement,
+  normalizeDangerousStatement,
   isReadOnlyStatement,
   splitBashStatements,
   isRmInProjectTmp,
@@ -2828,5 +2840,741 @@ describe("descriptor-duplication redirects survive the split (PR #948 R3)", () =
   it("still splits a background & (regression)", () => {
     const stmts = splitBashStatements('command echo ok & rm -rf "$HOME/project"');
     assert.deepStrictEqual(stmts, ["command echo ok", 'rm -rf "$HOME/project"']);
+  });
+});
+
+// ── issue #949: exact-command dangerous allowlist ──
+
+describe("dangerous command allowlist (issue #949)", () => {
+  const mkCwd = (): string => mkdtempSync(join(tmpdir(), "rl-allow-"));
+  const BARE_SHELL_RE = DANGEROUS[DANGEROUS.length - 1] as RegExp;
+
+  const writeSettings = (cwd: string, data: Record<string, unknown>) => {
+    const file = getSettingsPath(cwd);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(data, null, 2));
+  };
+
+  it("glob compile: * any run, ? one char, escaped metachars literal, anchored", () => {
+    assert.ok(allowlistGlobToRegExp("sudo zsh").test("sudo zsh"));
+    assert.ok(!allowlistGlobToRegExp("sudo zsh").test("sudo reboot "));
+    assert.ok(!allowlistGlobToRegExp("sudo zsh").test("echo sudo zsh"), "anchored — no substring match");
+    assert.ok(allowlistGlobToRegExp("nc 127.0.0.1 44??").test("nc 127.0.0.1 4444"));
+    assert.ok(!allowlistGlobToRegExp("nc 127.0.0.1 44??").test("nc 127.0.0.1 444"));
+    assert.ok(allowlistGlobToRegExp("nohup *nc 127.0.0.1 4444*").test("nohup bash -c stuff nc 127.0.0.1 4444 tail"));
+    // Escaped metachars are literal
+    assert.ok(allowlistGlobToRegExp(String.raw`rm -rf \*`).test("rm -rf *"));
+    assert.ok(!allowlistGlobToRegExp(String.raw`rm -rf \*`).test("rm -rf anything"));
+    // Multi-line commands: * spans newlines (s flag)
+    assert.ok(allowlistGlobToRegExp("cat << *").test("cat << EOF\nrm -rf /\nEOF"));
+  });
+
+  it("matches from project settings, reports the source", () => {
+    const cwd = mkCwd();
+    writeSettings(cwd, { dangerous_command_allowlist: ["sudo reboot"] });
+    const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
+    assert.ok(m);
+    assert.equal(m!.source, "project");
+    assert.equal(m!.entry, "sudo reboot");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo poweroff"));
+  });
+
+  it("wildcard entries from settings match command families", () => {
+    const cwd = mkCwd();
+    writeSettings(cwd, { dangerous_command_allowlist: ["nohup bash -c *nc 127.0.0.1 4444*"] });
+    const cmd = 'nohup bash -c "exec tail -f $FIFO | exec nc 127.0.0.1 4444 > $OUT" &';
+    assert.ok(findDangerousAllowlistEntry(cwd, cmd));
+    assert.ok(!findDangerousAllowlistEntry(cwd, "nohup bash -c evil"), "outside the family");
+  });
+
+  it("global settings are consulted when the project has no entry", () => {
+    const cwd = mkCwd();
+    const globalFile = join(cwd, "global-settings.json");
+    writeFileSync(globalFile, JSON.stringify({ dangerous_command_allowlist: ["sudo reboot"] }));
+    setGlobalSettingsPath(globalFile);
+    try {
+      const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
+      assert.ok(m);
+      assert.equal(m!.source, "global");
+    } finally {
+      setGlobalSettingsPath(null);
+    }
+  });
+
+  it("non-string or empty entries in settings are ignored", () => {
+    const cwd = mkCwd();
+    writeSettings(cwd, { dangerous_command_allowlist: [42, null, "", "sudo reboot"] });
+    const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
+    assert.ok(m, "valid string entry still matches");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "42"));
+  });
+
+  it("'always allow' appends the exact command, metachar-escaped, to project settings", () => {
+    const cwd = mkCwd();
+    const cmd = 'nohup bash -c "exec tail -f $FIFO" * &';
+    addDangerousAllowlistEntry(cwd, cmd);
+    const file = getSettingsPath(cwd);
+    const raw = JSON.parse(readFileSync(file, "utf-8"));
+    assert.equal(raw.dangerous_command_allowlist.length, 1);
+    // The literal * in the command is escaped so the auto entry stays exact
+    assert.equal(raw.dangerous_command_allowlist[0], 'nohup bash -c "exec tail -f $FIFO" \\* &');
+    // The exact command now matches; a variant does not
+    assert.ok(findDangerousAllowlistEntry(cwd, cmd));
+    assert.ok(!findDangerousAllowlistEntry(cwd, 'nohup bash -c "exec tail -f $OTHER" anything &'));
+    // Adding again dedupes
+    addDangerousAllowlistEntry(cwd, cmd);
+    assert.equal(JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8")).dangerous_command_allowlist.length, 1);
+  });
+
+  it("'always allow' preserves other settings keys", () => {
+    const cwd = mkCwd();
+    writeSettings(cwd, { dco: true, review_loop_enforcement: true });
+    addDangerousAllowlistEntry(cwd, "sudo reboot");
+    const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
+    assert.equal(raw.dco, true);
+    assert.equal(raw.review_loop_enforcement, true);
+    assert.equal(raw.dangerous_command_allowlist.length, 1);
+  });
+
+  it("any mutation re-prompts — exact auto entries do not cover variants", () => {
+    const cwd = mkCwd();
+    addDangerousAllowlistEntry(cwd, "sudo reboot");
+    assert.ok(findDangerousAllowlistEntry(cwd, "sudo reboot"));
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo reboot now"), "extra argument differs");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo poweroff"), "different command");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "echo x; sudo reboot"), "bigger chain differs");
+  });
+
+  it("a corrupt settings file is treated as empty, never throws", () => {
+    const cwd = mkCwd();
+    const file = getSettingsPath(cwd);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "not json {");
+    assert.ok(!findDangerousAllowlistEntry(cwd, "sudo reboot"));
+  });
+
+  // Qodo PR #950 R1 finding 6 regression: an inert search term inside single
+  // quotes within a double-quoted command substitution must not trip DANGEROUS.
+  it("quoted search inside a command substitution does not look dangerous", () => {
+    assert.ok(isReadOnlyStatement(`echo "Result: $(grep -c 'sudo' file)"`));
+  });
+
+  // Qodo PR #950 R2 finding 1: backslash-escaped apostrophes must not open a
+  // single-quoted region during the nested strip of extracted contents —
+  // the live deletion stays visible.
+  it("escaped apostrophes cannot hide a nested deletion", () => {
+    const nested = String.raw`echo "$(echo \' $(rm -rf /) \')"`;
+    assert.ok(!isReadOnlyStatement(nested), "deletion must stay visible");
+    const subs = extractSubshells(nested);
+    assert.ok(subs.some((s) => /rm\s+-rf/.test(s)), `extracted: ${JSON.stringify(subs)}`);
+    // Unquoted \' is a literal apostrophe outside double quotes too
+    assert.ok(!isReadOnlyStatement(String.raw`echo it\'s fine $(rm -rf /)`));
+  });
+
+  // Qodo PR #950 R2 finding 3: a corrupt settings file must not be clobbered
+  // by the next approval write — earlier entries stay on disk for repair.
+  it("'always allow' never overwrites a corrupt settings file", () => {
+    const cwd = mkCwd();
+    const file = getSettingsPath(cwd);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "not json {");
+    addDangerousAllowlistEntry(cwd, "sudo zsh");
+    assert.equal(readFileSync(file, "utf-8"), "not json {", "corrupt file preserved");
+  });
+
+  // Qodo PR #950 R1 finding 3 regressions: shells behind option-value-carrying
+  // timeout and control keywords left at a split-statement head.
+  it("timeout -s KILL 5 sh still prompts (option value before duration)", () => {
+    assert.ok(!isReadOnlyStatement("timeout -s KILL 5 sh"));
+    assert.ok(BARE_SHELL_RE.test("timeout -s KILL 5 sh"));
+  });
+
+  it("shells behind then/do/else still prompt", () => {
+    assert.ok(BARE_SHELL_RE.test("then sh"));
+    assert.ok(BARE_SHELL_RE.test("do zsh"));
+    assert.ok(BARE_SHELL_RE.test("else ksh"));
+  });
+
+  // Qodo PR #950 R3 finding 15: a cloned repo that SHIPS a settings file with
+  // a wildcard must not pre-approve commands — tracked project settings are
+  // not trusted for the allowlist.
+  it("maskQuotedRegions masks quote content but preserves structure (Qodo PR #950 R5)", () => {
+    assert.equal(maskQuotedRegions(`gh pr create --body "settings => file.json"`), `gh pr create --body " "`);
+    assert.equal(maskQuotedRegions("echo 'a > b' cmd"), "echo ' ' cmd");
+    // Backslash-escaped quote inside double quotes never toggles
+    assert.equal(maskQuotedRegions(`echo "a \\" b" tail`), `echo " " tail`);
+    // Unterminated region: re-emitted raw
+    assert.equal(maskQuotedRegions("it's fine $(rm -rf /)"), "it's fine $(rm -rf /)");
+    // Unquoted redirect with quoted argument survives
+    assert.equal(maskQuotedRegions(`echo "payload" > out.json`), `echo " " > out.json`);
+  });
+
+  it("isStdinFedShellStatement flags bare shells, not script-bearing ones (Qodo PR #950 R6)", () => {
+    for (const yes of ["bash", "sh", "zsh", "ksh", "bash -s", "sudo bash", "nohup sh", "env zsh", "timeout 5 bash", "nice bash"]) {
+      assert.ok(isStdinFedShellStatement(yes), `expected stdin-fed: ${yes}`);
+    }
+    for (const no of ["bash script.sh", 'bash -c "rm -rf /"', "flush", "bash < script.sh", "timeout 5 bash script.sh"]) {
+      assert.ok(!isStdinFedShellStatement(no), `expected NOT stdin-fed: ${no}`);
+    }
+  });
+
+  it("normalizeDangerousStatement strips only benign plumbing (Qodo PR #950 R6)", () => {
+    assert.equal(normalizeDangerousStatement("sudo cat image > /dev/sda"), "sudo cat image > /dev/sda");
+    assert.equal(normalizeDangerousStatement("bash build.sh >> log.txt"), "bash build.sh >> log.txt");
+    assert.equal(normalizeDangerousStatement("rm -rf build 2> err.log"), "rm -rf build 2> err.log");
+    assert.equal(normalizeDangerousStatement("cmd $(rm -rf /)"), "cmd $(rm -rf /)");
+    assert.equal(normalizeDangerousStatement("cmd 2>&1"), "cmd");
+    assert.equal(normalizeDangerousStatement("cmd > /dev/null 2>&1"), "cmd");
+    assert.equal(normalizeDangerousStatement("cmd 2>/dev/null"), "cmd");
+  });
+
+  it("a git-TRACKED project settings file is not trusted for the allowlist", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "rl-tracked-"));
+    execFileSync("git", ["init", "-q"], { cwd });
+    writeSettings(cwd, { dangerous_command_allowlist: ["*"] });
+    execFileSync("git", ["add", "-f", getSettingsPath(cwd)], { cwd });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"], { cwd });
+    const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
+    assert.equal(m, null, "tracked settings file must not approve");
+    // The user's own untracked file still works: remove it from the index
+    execFileSync("git", ["rm", "-q", "--cached", getSettingsPath(cwd)], { cwd });
+    clearTrackedSettingsCache();
+    const m2 = findDangerousAllowlistEntry(cwd, "sudo reboot");
+    assert.ok(m2, "untracked settings file approves again");
+    assert.equal(m2!.source, "project");
+  });
+
+  // Qodo PR #950 R5: the TRUSTED (untracked) verdict must not be cached —
+  // a later `git add` + commit that starts tracking the file must be caught
+  // on the very next check, without anyone clearing the cache.
+  it("a settings file that becomes tracked later is untrusted on the next check (no trusted-cache)", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "rl-later-tracked-"));
+    execFileSync("git", ["init", "-q"], { cwd });
+    writeSettings(cwd, { dangerous_command_allowlist: ["*"] });
+    const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
+    assert.ok(m, "untracked file approves (first check)");
+    // Upstream (or an attacker) starts tracking the file — next pull/checkout
+    execFileSync("git", ["add", "-f", getSettingsPath(cwd)], { cwd });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"], { cwd });
+    const m2 = findDangerousAllowlistEntry(cwd, "sudo reboot");
+    assert.equal(m2, null, "newly tracked file must not approve without cache clearing");
+  });
+
+  // Qodo PR #950 R6: a symlinked `.pi` dir (or settings file) hides the real
+  // file from `git ls-files` while the loader follows the link — not trusted.
+  it("a symlinked settings path is not trusted for the allowlist", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "rl-symlinked-"));
+    execFileSync("git", ["init", "-q"], { cwd });
+    // Root file with a wildcard approval, and `.pi` symlinked to the root
+    writeFileSync(join(cwd, "pi-config-settings.jsonc"), JSON.stringify({ dangerous_command_allowlist: ["*"] }));
+    symlinkSync(cwd, join(cwd, ".pi"));
+    const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
+    assert.equal(m, null, "settings reached through a symlinked .pi must not approve");
+    rmSync(join(cwd, ".pi"));
+  });
+});
+
+// Qodo PR #950 R1 finding 9: exercise the gate itself (checkDangerousCommands
+// through the tool_call hook) — lookup, prompt options, interactive approval
+// choice, headless bypass/block, and the self-approval write blocks.
+describe("dangerous command allowlist — gate level (issue #949 / PR #950)", () => {
+  let hooks: Map<string, Function>;
+  let cwd: string;
+  let promptCalls: { msg: string; opts: string[] }[];
+  let choice: string | undefined;
+
+  const mkCtx = (hasUI: boolean) => ({
+    cwd,
+    model: { id: "test-model", provider: "openai" },
+    hasUI,
+    ui: {
+      select: async (msg: string, opts: string[]) => {
+        promptCalls.push({ msg, opts });
+        return choice;
+      },
+    },
+  });
+
+  const runBash = async (command: string, hasUI = true) =>
+    hooks.get("tool_call")!({ type: "tool_call", toolName: "bash", input: { command } }, mkCtx(hasUI));
+
+  const seedSettings = (allowlist: string[]) => {
+    const file = getSettingsPath(cwd);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ dangerous_command_allowlist: allowlist }, null, 2));
+  };
+
+  before(() => {
+    hooks = new Map();
+    registerEnforcement({
+      on: (name: string, handler: Function) => hooks.set(name, handler),
+      registerTool: () => {},
+      registerCommand: () => {},
+    } as any);
+  });
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), "rl-gate-"));
+    promptCalls = [];
+    choice = undefined;
+  });
+
+  it("an allowlisted command runs with NO prompt", async () => {
+    seedSettings(["sudo reboot"]);
+    const res = await runBash("sudo reboot");
+    assert.equal(res?.block, undefined);
+    assert.equal(promptCalls.length, 0, "allowlisted hit must not prompt");
+  });
+
+  it("a wildcard settings entry covers the command family", async () => {
+    // Statements split on pipes even inside quotes (deliberate — biases
+    // toward prompts), so the dangerous statement is the leading fragment.
+    seedSettings(['nohup bash -c "tail*']);
+    const res = await runBash('nohup bash -c "tail -f x | nc 127.0.0.1 4444" &');
+    assert.equal(res?.block, undefined);
+    assert.equal(promptCalls.length, 0);
+  });
+
+  it("a mutated command re-prompts and 'No' blocks", async () => {
+    seedSettings(["sudo reboot"]);
+    choice = "No";
+    const res = await runBash("sudo reboot now");
+    assert.equal(res?.block, true);
+    assert.equal(promptCalls.length, 1, "mutation must re-prompt");
+  });
+
+  it("the prompt offers run-once, per-statement always-allow, allow-all, and No", async () => {
+    choice = "No";
+    await runBash("sudo reboot");
+    assert.deepEqual(promptCalls[0].opts, [
+      "Yes — run once",
+      "Always allow (this project): sudo reboot",
+      "Always allow (everywhere): sudo reboot",
+      "No",
+    ]);
+    // Multi-statement command: both scopes per dangerous statement + allow-all in both scopes
+    choice = "No";
+    await runBash("cat x; sudo reboot; bash run.sh");
+    assert.deepEqual(promptCalls[1].opts, [
+      "Yes — run once",
+      "Always allow (this project): sudo reboot",
+      "Always allow (everywhere): sudo reboot",
+      "Always allow (this project): bash run.sh",
+      "Always allow (everywhere): bash run.sh",
+      "Always allow all of the above (this project)",
+      "Always allow all of the above (everywhere)",
+      "No",
+    ]);
+    // The prompt names the matched rule per statement
+    assert.match(promptCalls[1].msg, /sudo reboot\n\s+↳ sudo/);
+    assert.match(promptCalls[1].msg, /bash run.sh\n\s+↳ bare shell invocation/);
+  });
+
+  it("'always allow' writes the settings entry and silences future headless runs", async () => {
+    choice = "Always allow (this project): sudo reboot";
+    const res = await runBash("sudo reboot");
+    assert.equal(res?.block, undefined, "approved command runs");
+    const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
+    assert.equal(raw.dangerous_command_allowlist[0], "sudo reboot");
+    // Headless run of the now-approved command passes without a UI
+    const res2 = await runBash("sudo reboot", false);
+    assert.equal(res2?.block, undefined);
+  });
+
+  // Qodo PR #950 R7: an approval written to a TRACKED project file can never
+  // match (lookup rejects tracked files) — it must fall back to GLOBAL scope.
+  // Qodo PR #950 R8: a transient git failure (unknown trust) must NOT mint a
+  // machine-wide approval — nothing is written, the approval is one-time.
+  it("an UNKNOWN trust verdict (git unavailable) writes NOTHING — run-once only", async () => {
+    const tdir = mkdtempSync(join(tmpdir(), "rl-trust-unknown-"));
+    mkdirSync(join(tdir, ".pi"), { recursive: true });
+    writeFileSync(getSettingsPath(tdir), "{}");
+    const savedPath = process.env.PATH;
+    const savedGlobal: string | null = null;
+    const globalFile = join(tdir, "global-settings.json");
+    writeFileSync(globalFile, "{}");
+    setGlobalSettingsPath(globalFile);
+    try {
+      process.env.PATH = "/nonexistent-path-for-test"; // git binary unreachable
+      clearTrackedSettingsCache();
+      const result = addDangerousAllowlistEntry(tdir, "sudo reboot");
+      assert.ok(!result.ok, "write refused on unknown trust");
+      assert.equal((result as { reason?: string }).reason, "trust_unknown");
+      const g = JSON.parse(readFileSync(globalFile, "utf-8"));
+      assert.deepEqual(g.dangerous_command_allowlist, undefined, "nothing written globally");
+      const p = JSON.parse(readFileSync(getSettingsPath(tdir), "utf-8"));
+      assert.deepEqual(p.dangerous_command_allowlist, undefined, "nothing written to the project either");
+    } finally {
+      process.env.PATH = savedPath;
+      setGlobalSettingsPath(null);
+      clearTrackedSettingsCache();
+      rmSync(tdir, { recursive: true, force: true });
+    }
+    void savedGlobal;
+  });
+
+  // Qodo PR #950 R8 (perf): the untracked verdict is memoized briefly so a
+  // multi-statement chain costs one git call — but a LATER check still sees
+  // the file become tracked (cache cleared / TTL expired).
+  // Qodo PR #950 R9: a symlinked `.pi` must be untrusted EVEN WHEN the
+  // settings file does not exist yet — the old single-try lstat discarded
+  // the dir verdict when the file was missing, so the first approval wrote
+  // an entry the next lookup would reject.
+  it("a symlinked .pi dir is untrusted even before the settings file exists (first approval refused)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "rl-symlink-missing-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd });
+      // `.pi` symlinked to the repo root; NO settings file at the target
+      symlinkSync(cwd, join(cwd, ".pi"));
+      clearTrackedSettingsCache();
+      const refused = addDangerousAllowlistEntry(cwd, "sudo reboot", "project");
+      assert.ok(!refused.ok, "project-scope approval through a symlinked .pi must be refused");
+      assert.equal((refused as { reason?: string }).reason, "project_untrusted");
+      // And lookup never honors project entries reached through the link
+      assert.equal(findDangerousAllowlistEntry(cwd, "sudo reboot"), null);
+    } finally {
+      clearTrackedSettingsCache();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // Qodo PR #950 R9: untracking the settings file must restore project
+  // approvals WITHOUT a process restart — the tracked verdict is TTL-cached,
+  // not cached forever.
+  it("untracking the settings file recovers project trust after the TTL (no restart)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "rl-untrack-ttl-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd });
+      mkdirSync(join(cwd, ".pi"), { recursive: true });
+      writeFileSync(getSettingsPath(cwd), JSON.stringify({ dangerous_command_allowlist: ["sudo reboot"] }));
+      execFileSync("git", ["add", "-f", getSettingsPath(cwd)], { cwd });
+      setTrackedVerdictTtlForTests(250);
+      clearTrackedSettingsCache();
+      // Tracked → untrusted (cached with the tiny TTL)
+      assert.equal(findDangerousAllowlistEntry(cwd, "sudo reboot"), null, "tracked file must not approve");
+      // User untracks the file but keeps it locally
+      execFileSync("git", ["rm", "-q", "--cached", getSettingsPath(cwd)], { cwd });
+      // Within the TTL the fail-closed verdict still applies
+      assert.equal(findDangerousAllowlistEntry(cwd, "sudo reboot"), null, "still untrusted inside the TTL window");
+      await new Promise((r) => setTimeout(r, 350));
+      // After expiry the check re-runs git and trust is restored — no
+      // clearTrackedSettingsCache(), no process restart.
+      const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
+      assert.ok(m, "untracked file approves again after TTL expiry");
+      assert.equal(m!.source, "project");
+    } finally {
+      setTrackedVerdictTtlForTests(30_000);
+      clearTrackedSettingsCache();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a global-scope write without a test override NEVER touches the real user settings (sandbox)", async () => {
+    const tdir = mkdtempSync(join(tmpdir(), "rl-sandbox-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: tdir });
+      mkdirSync(join(tdir, ".pi"), { recursive: true });
+      writeFileSync(getSettingsPath(tdir), "{}");
+      execFileSync("git", ["add", "-f", getSettingsPath(tdir)], { cwd: tdir });
+      clearTrackedSettingsCache();
+      // NO setGlobalSettingsPath here — the sandbox must engage by itself.
+      const result = addDangerousAllowlistEntry(tdir, "sudo reboot", "global");
+      assert.ok(result.ok, "write succeeded");
+      assert.equal(result.scope, "global", "explicit global scope honored");
+      assert.ok(!result.file.startsWith(homedir()), `global write must not be under the real home (got ${result.file})`);
+      assert.match(result.file, /pi-config-test-global-settings-/, "fallback went to the test sandbox path");
+      // And the real file (if present) must not carry the entry
+      const realGlobal = join(homedir(), ".pi", "pi-config-settings.json");
+      if (existsSync(realGlobal)) {
+        const real = JSON.parse(readFileSync(realGlobal, "utf-8"));
+        assert.deepEqual(real.dangerous_command_allowlist ?? [], [], "user's real global settings untouched by tests");
+      }
+    } finally {
+      // The sandbox file is per-PROCESS — a written entry would leak into
+      // every later test in this run (they read the same "global" file).
+      // Remove it and flush the settings cache so the run stays hermetic.
+      try {
+        rmSync(join(tmpdir(), `pi-config-test-global-settings-${process.pid}.json`), { force: true });
+        clearSettingsCache();
+      } catch {
+        // best-effort cleanup only
+      }
+      clearTrackedSettingsCache();
+      rmSync(tdir, { recursive: true, force: true });
+    }
+  });
+  it("'always allow (everywhere)' stores in the GLOBAL settings file (explicit scope choice)", async () => {
+    const globalFile = join(cwd, "global-settings.json");
+    writeFileSync(globalFile, "{}");
+    setGlobalSettingsPath(globalFile);
+    try {
+      // A command NOT used by the neighboring tests: the repeat-command
+      // guard blocks the 3rd consecutive identical command in a process.
+      choice = "Always allow (everywhere): sudo poweroff";
+      const res = await runBash("sudo poweroff");
+      assert.equal(res?.block, undefined, "approved command runs");
+      const g = JSON.parse(readFileSync(globalFile, "utf-8"));
+      assert.deepEqual(g.dangerous_command_allowlist, ["sudo poweroff"], "entry landed in the global file");
+      const projectFile = getSettingsPath(cwd);
+      if (existsSync(projectFile)) {
+        const p = JSON.parse(readFileSync(projectFile, "utf-8"));
+        assert.deepEqual(p.dangerous_command_allowlist ?? [], [], "project file untouched");
+      }
+    } finally {
+      setGlobalSettingsPath(null);
+    }
+  });
+
+  it("'always allow' in a repo with a TRACKED settings file stores globally, where lookup honors it", async () => {
+    const tdir = mkdtempSync(join(tmpdir(), "rl-tracked-approve-"));
+    execFileSync("git", ["init", "-q"], { cwd: tdir });
+    mkdirSync(join(tdir, ".pi"), { recursive: true });
+    writeFileSync(getSettingsPath(tdir), "{}");
+    execFileSync("git", ["add", "-f", getSettingsPath(tdir)], { cwd: tdir });
+    const savedGlobal: string | null = null;
+    const globalFile = join(tdir, "global-settings.json");
+    writeFileSync(globalFile, "{}");
+    setGlobalSettingsPath(globalFile);
+    try {
+      // Explicit scope choice (R8): the gate only offers "everywhere" for a
+      // tracked project file — and a project-scope write is REFUSED, never
+      // silently redirected.
+      const refused = addDangerousAllowlistEntry(tdir, "sudo reboot", "project");
+      assert.ok(!refused.ok, "project-scope write on a tracked file is refused");
+      assert.equal((refused as { reason?: string }).reason, "project_untrusted");
+      const result = addDangerousAllowlistEntry(tdir, "sudo reboot", "global");
+      assert.ok(result.ok, "explicit global write succeeded");
+      assert.equal(result.scope, "global", "explicit scope honored");
+      const g = JSON.parse(readFileSync(globalFile, "utf-8"));
+      assert.deepEqual(g.dangerous_command_allowlist, ["sudo reboot"], "entry landed in global file");
+      const p = JSON.parse(readFileSync(getSettingsPath(tdir), "utf-8"));
+      assert.deepEqual(p.dangerous_command_allowlist, undefined, "project file untouched");
+      // And lookup honors it via the global file
+      const m = findDangerousAllowlistEntry(tdir, "sudo reboot");
+      assert.ok(m, "global fallback approval matches");
+      assert.equal(m!.source, "global");
+    } finally {
+      setGlobalSettingsPath(null);
+      rmSync(tdir, { recursive: true, force: true });
+    }
+  });
+
+  // User request (PR #950): the allowlist matches the DANGEROUS STATEMENT,
+  // not the whole chain — `bash .dev/deploy-all.sh` approved once covers any
+  // chain containing exactly that statement.
+  it("a statement-level entry covers the dangerous part of a bigger chain", async () => {
+    seedSettings(["bash .dev/deploy-all.sh"]);
+    const chain =
+      "cd ~/git/pi-config && npx tsx --test tests/node/**/*.test.ts 2>&1 | rtk rg \"^. pass|^. fail\"; " +
+      "uv run --group tests pytest -q 2>&1 | tail -1; echo ALL-OK; bash .dev/deploy-all.sh 2>&1 | tail -1";
+    const res = await runBash(chain);
+    assert.equal(res?.block, undefined, "the only dangerous statement is allowlisted");
+    assert.equal(promptCalls.length, 0);
+  });
+
+  it("a chain with an UNapproved dangerous statement still prompts for just that statement", async () => {
+    seedSettings(["bash .dev/deploy-all.sh"]);
+    choice = "No";
+    const res = await runBash("cat README.md; sudo reboot; bash .dev/deploy-all.sh");
+    assert.equal(res?.block, true);
+    assert.equal(promptCalls.length, 1);
+    // The prompt names the unapproved statement, not the whole chain
+    assert.match(promptCalls[0].msg, /sudo reboot/);
+    assert.doesNotMatch(promptCalls[0].msg, /README/);
+  });
+
+  it("'always allow' on a chain stores the normalized dangerous statements only", async () => {
+    choice = "Always allow all of the above (this project)";
+    const res = await runBash("echo start; bash .dev/deploy-all.sh 2>&1; echo done");
+    assert.equal(res?.block, undefined);
+    const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
+    assert.deepEqual(raw.dangerous_command_allowlist, ["bash .dev/deploy-all.sh"]);
+  });
+
+  it("picking one statement's always-allow persists it and re-prompts the remainder", async () => {
+    const choices = ["Always allow (this project): sudo reboot", "No"];
+    let call = 0;
+    promptCalls.length = 0;
+    choice = undefined;
+    const ctx = {
+      cwd,
+      model: { id: "m", provider: "openai" },
+      hasUI: true,
+      ui: {
+        select: async (_msg: string, _opts: string[]) => {
+          promptCalls.push({ msg: _msg, opts: _opts });
+          return choices[call++];
+        },
+      },
+    };
+    const res = await hooks.get("tool_call")!(
+      { type: "tool_call", toolName: "bash", input: { command: "cat x; sudo reboot; bash run.sh" } },
+      ctx as any,
+    );
+    assert.equal(res?.block, true, "second round answered No");
+    assert.equal(promptCalls.length, 2, "re-prompted for the remainder");
+    assert.match(promptCalls[0].msg, /sudo reboot/);
+    assert.match(promptCalls[0].msg, /bash run.sh/);
+    assert.doesNotMatch(promptCalls[1].msg, /sudo zsh/, "approved statement no longer listed");
+    assert.match(promptCalls[1].msg, /bash run.sh/);
+    // The first statement was persisted
+    const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
+    assert.deepEqual(raw.dangerous_command_allowlist, ["sudo reboot"]);
+  });
+
+  it("a trailing redirect does not defeat an exact entry", async () => {
+    seedSettings(["sudo reboot"]);
+    const res = await runBash("sudo reboot 2>&1");
+    assert.equal(res?.block, undefined, "2>&1 is plumbing, not danger");
+  });
+
+  // Qodo PR #950 R6: a stdin-fed shell (bare bash/sh with wrappers or flags)
+  // is never persistently approvable and never allowlist-matchable —
+  // `gen.sh | bash`, `bash <<EOF`, and `base64 -d | bash` all reduce to it.
+  it("a stdin-fed shell never matches an allowlist entry, even hand-added", async () => {
+    seedSettings(["bash", "sudo sh"]);
+    const res = await runBash("echo hi | bash");
+    assert.equal(res?.block, true, "must prompt despite a hand-added bare-shell entry");
+  });
+
+  it("the prompt offers NO persistent option for a stdin-fed shell", async () => {
+    choice = "No";
+    const res = await runBash("cat gen.sh | bash");
+    assert.equal(res?.block, true);
+    assert.deepEqual(promptCalls[0].opts, ["Yes — run once", "No"]);
+    assert.match(promptCalls[0].msg, /reads its script from stdin — run-once only/);
+  });
+
+  it("'allow all' persists only the persistable statements", async () => {
+    choice = "Always allow all of the above (this project)";
+    const res = await runBash("cat gen.sh | bash; bash run.sh");
+    assert.equal(res?.block, undefined);
+    const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
+    assert.deepEqual(raw.dangerous_command_allowlist, ["bash run.sh"], "stdin-fed shell not persisted");
+  });
+
+  it("a heredoc-fed shell reduces to a stdin-fed shell and re-prompts every time", async () => {
+    choice = "No";
+    await runBash("bash <<'EOF'\nrm -rf /tmp/x\nEOF");
+    assert.equal(promptCalls[0].opts.includes("Yes — run once"), true);
+    assert.equal(promptCalls[0].opts.some((o: string) => o.startsWith("Always allow")), false);
+  });
+
+  // Qodo PR #950 R6: destructive redirects stay part of the statement —
+  // an approval of the un-redirected form must not cover them.
+  it("a destructive redirect target is NOT stripped from the statement", async () => {
+    seedSettings(["sudo cat image"]);
+    const res = await runBash("sudo cat image > /dev/sda");
+    assert.equal(res?.block, true, "redirect to a device must not inherit the approval");
+    const res2 = await runBash("sudo cat image > /dev/null");
+    assert.equal(res2?.block, undefined, "/dev/null is plumbing");
+  });
+
+  it("headless + not allowlisted still hard-blocks", async () => {
+    const res = await runBash("sudo dash", false);
+    assert.equal(res?.block, true);
+    assert.match(res?.reason ?? "", /no UI/i);
+  });
+
+  // Qodo PR #950 R1 finding 1: the agent must not be able to approve its own
+  // commands by writing the settings files directly.
+  it("bash writing the project settings file is blocked", async () => {
+    const settingsFile = getSettingsPath(cwd);
+    for (const cmd of [
+      `echo '{}' > ${settingsFile}`,
+      `echo '{}' >> ${settingsFile}`,
+      `echo '{}' >| ${settingsFile}`,
+      `tee ${settingsFile} < other`,
+      `sponge ${settingsFile} < other`,
+    ]) {
+      const res = await runBash(cmd);
+      assert.equal(res?.block, true, cmd);
+      assert.match(res?.reason ?? "", /pi-config-settings/);
+    }
+  });
+
+  it("mentioning the filename in an interpreter/heredoc does NOT block (deliberate, user decision)", async () => {
+    // Narrow guard: interpreter co-occurrence was rejected — it taxed
+    // legitimate development (editing source/docs that mention the file)
+    // while determined agents bypass text guards anyway.
+    for (const cmd of [
+      `python3 -c "open('${getSettingsPath(cwd)}','w')"`,
+      `cp other.json ${getSettingsPath(cwd)}`,
+    ]) {
+      const res = await runBash(cmd);
+      assert.notEqual(res?.block, true, cmd);
+    }
+  });
+
+  // Qodo PR #950 R3 finding 26: a symlinked directory alias of .pi must not
+  // slip past the write/edit guard.
+  it("a symlinked alias of the settings dir cannot bypass the write guard", async () => {
+    const settingsFile = getSettingsPath(cwd);
+    mkdirSync(dirname(settingsFile), { recursive: true });
+    writeFileSync(settingsFile, "{}"); // so realpath resolves
+    symlinkSync(dirname(settingsFile), join(cwd, "alias"));
+    const aliased = join(cwd, "alias", "pi-config-settings.json");
+    const res = await hooks.get("tool_call")!(
+      { type: "tool_call", toolName: "write", input: { path: aliased, content: "{}" } },
+      mkCtx(true),
+    );
+    assert.equal(res?.block, true, "symlinked alias must be blocked");
+  });
+
+  it("merely mentioning the settings file does not block (reads, commit text)", async () => {
+    for (const cmd of [
+      `cat ${getSettingsPath(cwd)}`,
+      "echo docs mention pi-config-settings.json layout",
+      "rg pi-config-settings docs/",
+    ]) {
+      const res = await runBash(cmd);
+      assert.notEqual(res?.block, true, cmd);
+    }
+  });
+
+  // Qodo PR #950 R5: prose containing ">" and the filename inside quotes
+  // (PR bodies, docs heredocs) must not trip the redirect tripwire.
+  it("quoted prose with '>' and the settings filename does NOT block", async () => {
+    for (const cmd of [
+      `gh pr create --body "settings => pi-config-settings.json migration"`,
+      `echo 'run: ./x > pi-config-settings.json (never do this)'`,
+      `gh pr comment 1 --body "the flow: apply > write pi-config-settings.json done"`,
+    ]) {
+      const res = await runBash(cmd);
+      assert.notEqual(res?.block, true, cmd);
+    }
+  });
+
+  it("a QUOTED redirect target still blocks", async () => {
+    const res = await runBash(`echo '{}' > "pi-config-settings.json"`);
+    assert.equal(res?.block, true, "quoted target is still a write");
+    const res2 = await runBash(`tee '.pi/pi-config-settings.json' < other`);
+    assert.equal(res2?.block, true, "quoted tee target is still a write");
+  });
+
+  it("unquoted redirect and tee targets still block after masking", async () => {
+    const settingsFile = getSettingsPath(cwd);
+    const res = await runBash(`echo "payload" > ${settingsFile}`);
+    assert.equal(res?.block, true, "unquoted redirect survives masking");
+  });
+
+  it("write/edit tool calls targeting the settings files are blocked", async () => {
+    const globalFile = getGlobalSettingsPath();
+    for (const toolName of ["write", "edit"]) {
+      // Both filename variants in the project dir, plus the global file
+      const targets = [
+        getSettingsPath(cwd),
+        join(dirname(getSettingsPath(cwd)), "pi-config-settings.json"),
+        globalFile,
+      ];
+      for (const target of targets) {
+        const res = await hooks.get("tool_call")!(
+          { type: "tool_call", toolName, input: { path: target, content: "{}" } },
+          mkCtx(true),
+        );
+        assert.equal(res?.block, true, `${toolName} ${target}`);
+        assert.match(res?.reason ?? "", /pi-config-settings/);
+      }
+    }
   });
 });

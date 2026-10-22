@@ -380,6 +380,68 @@ describe("Graft retrieval and accounting", () => {
       assert.deepEqual(r.calls.find(call => call.args[0] === "build")?.cwd, firstRoot);
     } finally { releaseBuild?.(); rmSync(firstRoot, { recursive: true, force: true }); rmSync(nextRoot, { recursive: true, force: true }); }
   });
+  it("retries the refresh after a reload could not acquire the in-flight build's lock (Qodo PR #950 R9)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "graft-reload-lock-"));
+    let releaseFirst!: () => void;
+    const firstBuildPending = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let buildCalls = 0;
+    try {
+      const r = register({ graph: async () => "stale", run: async (args: readonly string[], { cwd }: { cwd: string }) => {
+        r.calls.push({ args, cwd });
+        if (args[0] === "build") {
+          buildCalls++;
+          if (buildCalls === 1) await firstBuildPending; // pre-reload build hangs
+        }
+        return { stdout: "", stderr: "", code: 0 };
+      } });
+      const c1 = await start(r, ctx(root, true, "old-session"));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(buildCalls, 1, "first build in flight, lock held");
+      // Reload while the build runs: the old runtime dies, the build keeps
+      // the cross-process lock.
+      await r.handlers.get("session_shutdown")![0]({}, undefined);
+      const c2 = ctx(root, true, "new-session");
+      await r.handlers.get("session_start")![0]({ reason: "reload" }, c2);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(buildCalls, 1, "new runtime could not acquire the lock — no second build yet");
+      // Old build finishes; its completion is discarded (generation bump).
+      releaseFirst();
+      await new Promise(resolve => setImmediate(resolve));
+      // agent_end must retry the refresh now that the lock is free —
+      // without the refresh_locked dirty flag this never rebuilt.
+      await r.handlers.get("agent_end")![0]({}, c2);
+      await new Promise(resolve => setImmediate(resolve));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.ok(buildCalls >= 2, `refresh retried after the lock freed (builds: ${buildCalls})`);
+    } finally { releaseFirst?.(); rmSync(root, { recursive: true, force: true }); }
+  });
+  it("discards a pending refresh completion after session_shutdown and never touches the stale ctx (reload postmortem, PR #950)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "graft-refresh-shutdown-"));
+    let releaseBuild!: () => void;
+    const buildPending = new Promise<void>(resolve => { releaseBuild = resolve; });
+    try {
+      const r = register({ run: async (args: readonly string[], { cwd }: { cwd: string }) => {
+        r.calls.push({ args, cwd });
+        if (args[0] === "build") await buildPending;
+        return { stdout: "", stderr: "", code: 0 };
+      } });
+      const c = await start(r, ctx(root, true, "shutdown-session"));
+      r.handlers.get("tool_result")![0]({ toolName: "edit", input: { path: "src/a.ts" }, content: [], isError: false }, c);
+      r.handlers.get("agent_end")![0]({}, c);
+      await new Promise(resolve => setImmediate(resolve));
+      const lock = join(root, "graft/.graph/pi-build.lock");
+      assert.equal(existsSync(lock), true);
+      // Session ends (reload/quit) while the build is in flight: the
+      // generation bump must make the completion a no-op — no setState on
+      // the stale ctx, no unhandled rejection.
+      await r.handlers.get("session_shutdown")![0]({}, undefined);
+      const statusCount = c.status.length;
+      releaseBuild();
+      await assert.doesNotReject(async () => { await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve)); });
+      assert.equal(c.status.length, statusCount, "refresh completion after shutdown must not write the stale ctx footer");
+      assert.equal(existsSync(lock), false, "lock released");
+    } finally { releaseBuild?.(); rmSync(root, { recursive: true, force: true }); }
+  });
   it("keeps a stale graph queryable while the owner rebuilds it", async () => {
     let release!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });

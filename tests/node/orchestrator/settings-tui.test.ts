@@ -1,8 +1,11 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
+import { StringListSubmenu } from "../../../extensions/orchestrator/settings-tui-submenus.js";
+import { SettingsList } from "@earendil-works/pi-tui";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { getSettingsListState } from "../../../extensions/orchestrator/settings-tui.js";
 import {
   detectSource,
   formatValue,
@@ -100,6 +103,15 @@ describe("detectSource", () => {
 // ── formatValue ─────────────────────────────────────────────────────
 
 describe("formatValue", () => {
+  it("formats string_list arrays as a count, empty as sentinel (Qodo PR #950 R6)", () => {
+    const def = SETTINGS_KEYS.dangerous_command_allowlist;
+    assert.equal(formatValue("dangerous_command_allowlist", ["a", "b", "c"], def), "3 pattern(s)");
+    assert.equal(formatValue("dangerous_command_allowlist", ["a"], def), "1 pattern(s)");
+    assert.equal(formatValue("dangerous_command_allowlist", [], def), "(empty)");
+    // Non-array garbage degrades to String(), never throws
+    assert.equal(formatValue("dangerous_command_allowlist", "oops", def), "oops");
+  });
+
   it("formats bool true", () => {
     assert.equal(formatValue("dco", true, SETTINGS_KEYS.dco), "true");
   });
@@ -266,6 +278,23 @@ describe("parseRawValue", () => {
 
   it("parses string", () => {
     assert.equal(parseRawValue("image_model", "gemini-2.0-flash", SETTINGS_KEYS.image_model), "gemini-2.0-flash");
+  });
+
+  // Qodo PR #950 R6: string_list parse/format coverage — JSON arrays,
+  // hand-typed patterns, invalid entries, empty input, and the display path.
+  it("parses string_list from a JSON array, dropping invalid entries", () => {
+    const def = SETTINGS_KEYS.dangerous_command_allowlist;
+    assert.deepEqual(parseRawValue("dangerous_command_allowlist", '["a","b"]', def), ["a", "b"]);
+    // Non-string and empty entries are dropped, order preserved
+    assert.deepEqual(parseRawValue("dangerous_command_allowlist", '["a", 42, null, "", "b"]', def), ["a", "b"]);
+    // A JSON non-array falls through to the single-pattern path
+    assert.deepEqual(parseRawValue("dangerous_command_allowlist", '42', def), ["42"]);
+  });
+
+  it("parses string_list hand-typed single pattern and empty input", () => {
+    const def = SETTINGS_KEYS.dangerous_command_allowlist;
+    assert.deepEqual(parseRawValue("dangerous_command_allowlist", 'sudo rm -rf build', def), ["sudo rm -rf build"]);
+    assert.deepEqual(parseRawValue("dangerous_command_allowlist", '  ', def), []);
   });
 
   it("parses empty string to empty", () => {
@@ -490,7 +519,7 @@ describe("getFilePathForScope", () => {
 
 describe("buildSettingItems integration", () => {
   it("every CATEGORIES key has a matching SETTINGS_KEYS entry with valid type", () => {
-    const validTypes = new Set(["bool", "bool_enable", "bool_or_string", "string", "int", "port", "number", "agent_list", "agent_overrides"]);
+    const validTypes = new Set(["bool", "bool_enable", "bool_or_string", "string", "int", "port", "number", "agent_list", "agent_overrides", "string_list"]);
     for (const category of CATEGORIES) {
       for (const key of category.keys) {
         const def = SETTINGS_KEYS[key];
@@ -983,5 +1012,118 @@ describe("isImageGenModelId / isImageCapablePickerItem", () => {
       }),
       false,
     );
+  });
+});
+
+// ── Tab-switch guard inputs (Qodo PR #950 R7) ──────────────────────
+
+describe("getSettingsListState (overlay Tab-guard inputs)", () => {
+  const ENTER = "\r";
+
+  it("reports hasActiveSubmenu=true while a submenu is open, false after it closes", () => {
+    // A string_list item whose submenu factory creates a real StringListSubmenu
+    const items: any[] = [
+      {
+        id: "dangerous_command_allowlist",
+        label: "dangerous_command_allowlist",
+        type: "string_list",
+        submenu: (_current: string, done: (val?: string) => void) =>
+          new StringListSubmenu("t", ["a"], {} as any, done),
+      },
+    ];
+    const list = new SettingsList(items as any, {} as any);
+    assert.equal(getSettingsListState(list).hasActiveSubmenu, false, "no submenu initially");
+    list.handleInput(ENTER); // open the item's submenu
+    assert.equal(getSettingsListState(list).hasActiveSubmenu, true, "submenu open — Tab/category switching must be suppressed");
+    list.handleInput("\x1b"); // Esc closes the submenu
+    assert.equal(getSettingsListState(list).hasActiveSubmenu, false, "submenu closed — switching is safe again");
+  });
+});
+
+// ── StringListSubmenu behavior (Qodo PR #950 R3) ───────────────────
+
+describe("StringListSubmenu behavior", () => {
+  const ENTER = "\r";
+  const ESC = "\x1b";
+  const UP = "\x1b[A";
+  const DOWN = "\x1b[B";
+  // Identity theme — the component only styles text through it
+  const theme: any = { fg: (_c: string, s: string) => s, bold: (s: string) => s, dim: (s: string) => s };
+
+  const render = (c: { render(w: number): string[] }): string => c.render(80).join("\n");
+
+  it("renders entries, the add row, and navigation help", () => {
+    const c = new StringListSubmenu("test — patterns", ["sudo zsh", "nohup *"], theme, () => {});
+    const out = render(c);
+    assert.match(out, /sudo zsh/);
+    assert.match(out, /nohup \*/);
+    assert.match(out, /＋ add pattern/);
+    assert.match(out, /Enter edit\/add/);
+  });
+
+  it("Esc with no edits submits nothing (done gets undefined)", () => {
+    let submitted: string | undefined = "SENTINEL";
+    const c = new StringListSubmenu("t", ["a"], theme, (v) => { submitted = v; });
+    c.handleInput(ESC);
+    assert.equal(submitted, undefined);
+  });
+
+  it("add → type → Enter adds the entry; Esc then submits the dirty list as JSON", () => {
+    let submitted: string | undefined;
+    const c = new StringListSubmenu("t", ["a"], theme, (v) => { submitted = v; });
+    // move to the add row and open it
+    c.handleInput(DOWN);
+    c.handleInput(ENTER);
+    for (const ch of "sudo ksh") c.handleInput(ch);
+    c.handleInput(ENTER); // save entry, back to list
+    c.handleInput(ESC); // commit
+    assert.deepEqual(JSON.parse(submitted!), ["a", "sudo ksh"]);
+  });
+
+  it("an empty add is ignored — Esc stays clean", () => {
+    let submitted: string | undefined = "SENTINEL";
+    const c = new StringListSubmenu("t", ["a"], theme, (v) => { submitted = v; });
+    c.handleInput(DOWN);
+    c.handleInput(ENTER);
+    c.handleInput(ENTER); // empty value → no add
+    c.handleInput(ESC);
+    assert.equal(submitted, undefined, "no edits → no commit");
+  });
+
+  it("'d' deletes the selected entry and only a dirty list commits", () => {
+    let submitted: string | undefined;
+    const c = new StringListSubmenu("t", ["a", "b"], theme, (v) => { submitted = v; });
+    c.handleInput("d");
+    c.handleInput(ESC);
+    assert.deepEqual(JSON.parse(submitted!), ["b"]);
+  });
+
+  it("editing an existing entry replaces it in place", () => {
+    let submitted: string | undefined;
+    const c = new StringListSubmenu("t", ["a", "b"], theme, (v) => { submitted = v; });
+    c.handleInput(DOWN); // select "b"
+    c.handleInput(ENTER); // edit — Input prefills "b" with the cursor at position 0
+    for (const ch of "b2") c.handleInput(ch); // typed text inserts BEFORE the prefill
+    c.handleInput(ENTER);
+    c.handleInput(ESC);
+    assert.deepEqual(JSON.parse(submitted!), ["a", "b2b"]);
+  });
+
+  it("Esc inside the editor cancels back to the list without marking dirty", () => {
+    let submitted: string | undefined = "SENTINEL";
+    const c = new StringListSubmenu("t", ["a"], theme, (v) => { submitted = v; });
+    c.handleInput(DOWN);
+    c.handleInput(ENTER);
+    for (const ch of "x") c.handleInput(ch);
+    c.handleInput(ESC); // cancel edit
+    c.handleInput(ESC); // close — still clean
+    assert.equal(submitted, undefined);
+  });
+
+  it("UP wraps around from the first row to the add row", () => {
+    const c = new StringListSubmenu("t", ["a"], theme, () => {});
+    c.handleInput(UP); // wraps to add row
+    const out = render(c);
+    assert.match(out, /❯ ＋ add pattern/);
   });
 });

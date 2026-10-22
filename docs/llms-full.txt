@@ -6590,6 +6590,130 @@ Or set `enforcement_allowed_commands` in `pi-config-settings.json`. Once the set
 - Independently of the allowlist, `run_after` still refuses commands matching `curl`/`wget` piped into a shell, `rm -rf /`-style paths, `sudo`, and world-writable `chmod`
 - Each command runs with a 60s timeout; keep follow-up commands fast so they do not slow down normal edits
 
+## Pre-approve a recurring dangerous command
+
+The dangerous-command gate (background shells, `sudo`, recursive `rm`, …) asks
+for confirmation every time it sees a matching command. For commands you run
+over and over — a debug skill that starts `nohup bash -c … | nc 127.0.0.1 4444`,
+for example — the prompt offers persistent approvals per statement:
+
+```text
+    ⚠️ Dangerous statements (of the full command):
+
+      sudo zsh
+        ↳ sudo
+      bash .dev/deploy-all.sh
+        ↳ bare shell invocation
+
+    Allow?
+
+      → Yes — run once
+        Always allow (this project): sudo zsh
+        Always allow (everywhere): sudo zsh
+        Always allow (this project): bash .dev/deploy-all.sh
+        Always allow (everywhere): bash .dev/deploy-all.sh
+        Always allow all of the above (this project)
+        Always allow all of the above (everywhere)
+        No
+```
+
+You choose the SCOPE of a persistent approval explicitly: **this project**
+stores it in the project's settings file, **everywhere** stores it in your
+global settings (`~/.pi/pi-config-settings.json`) — machine-wide. When the
+project settings file is not trustable (git-tracked or reached through a
+symlink — a cloned repo must not be able to ship approvals), the "this
+project" options are omitted and the prompt says so: global is then the only
+persistent choice, never a silent fallback.
+
+**"Always allow: \<statement\>"** appends that statement (trailing I/O
+redirections like `2>&1` and `> /dev/null` stripped — they are plumbing,
+not danger; redirects to any other target stay part of the statement) to the
+`dangerous_command_allowlist` setting in the chosen scope's settings file,
+then re-prompts for any remaining dangerous statements. Later commands whose
+dangerous statements are all allowlisted pass silently — but never invisibly:
+every allowlisted hit logs a `dangerous_command_allowlisted` warning naming
+the rule that matched.
+
+Because the entries are a regular setting, you can review, edit, and extend
+them — via `/pi-config-settings` (Enforcement category, with a list editor)
+or by editing the file directly:
+
+```json
+    {
+      "dangerous_command_allowlist": [
+        "nohup bash -c \"exec tail -f $FIFO | exec nc 127.0.0.1 4444\" &",
+        "sudo systemctl restart myservice"
+      ]
+    }
+```
+
+### Wildcards
+
+Entries are glob patterns matched against a **single dangerous statement**
+(anchored, case-sensitive) — the statement the gate split out of your command,
+with benign plumbing tails (`2>&1`, `> /dev/null`) stripped:
+
+- `*` — any run of characters within that statement
+- `?` — exactly one character
+- `\` — escapes a literal `*`, `?`, or `\`
+
+Because matching is per statement, an entry containing `|`, `;`, `&`, or a
+newline can never match anything — those are the separators the gate splits
+on. Keep entries to one statement.
+
+For example, the gate splits `nohup bash -c "tail -f /fifo | nc 127.0.0.1
+4444" &` at the pipe (inside quotes — splitting is deliberately
+quote-unaware), so the dangerous statement is the leading fragment
+`nohup bash -c "tail -f /fifo`, and the entry `nohup bash -c "tail -f *`
+covers it for any FIFO name.
+
+⚠️ **Scope wildcards tightly.** `*` matches everything between its anchors —
+including quotes and redirections *inside the statement*. Keep wildcards
+inside a quoted, fixed-shape region (`"… * …"`) and never bridge across a
+spot where another redirect or argument could be injected.
+
+⚠️ **Stdin-fed shells are never persistently approvable.** A bare `bash`,
+`sh`, `zsh` (optionally with flags or `sudo`/`nohup`/`env`/`timeout`
+wrappers) carries none of the script it will run — `gen.sh | bash`,
+`bash <<EOF`, and `base64 -d | bash` all reduce to the same statement. The
+prompt offers **run-once only** for those, every time, and a hand-added
+entry can never approve them.
+
+⚠️ **Redirects (other than `2>&1` / `/dev/null`) are part of the statement.**
+Approving `sudo cat image` does not cover `sudo cat image > /dev/sda` —
+benign plumbing is stripped, destructive redirects are not.
+
+Entries added via the prompt option are stored with metachars **escaped** — an
+approval covers exactly the statement you approved, and any change (one
+character, a different port, an extra redirect) re-prompts. Widening an entry
+to a wildcard family is a deliberate human edit.
+
+### Properties, by design
+
+- **Project or global.** The project file wins; global
+  `~/.pi/pi-config-settings.json` is consulted when the project has no
+  matching entry. Entries never cross projects unless you put them in the
+  global file yourself.
+- **Cloned repos cannot pre-approve.** A project settings file that is
+  *tracked by git* is not trusted for the allowlist — a repository shipping
+  `"*"` cannot disable your dangerous-command gate. Only your own untracked
+  project file (or the global file on your machine) approves commands.
+- **Prompt-only writes.** Agents cannot add entries through the normal
+  paths: edit/write tool calls targeting the settings files are blocked, as
+  are bash redirects into them (`>`, `>>`, `>|`, `tee`, `sponge`) — the
+  allowlist flows only through the interactive prompt (or your own editor).
+  A rogue agent can't self-approve `rm -rf` with the obvious one-liners;
+  note that no text-based guard can stop a *determined* same-user agent, so
+  the warn logging and tracked-file checks below are the audit trail.
+- **Works headless.** The check needs no UI, so a pre-approved command stops
+  hard-blocking `-p`/RPC sessions; unapproved ones still block.
+- **Auditable.** Allowlisted hits log the matched pattern and an entry hash
+  prefix — command text (which may contain credentials) stays out of global
+  log files.
+
+To revoke an approval, delete the entry (or the whole setting). The next run
+of that command prompts again.
+
 ## Related Pages
 
 - [Curating Project Memory](curating-project-memory.html)

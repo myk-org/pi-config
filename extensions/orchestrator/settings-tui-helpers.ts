@@ -34,6 +34,19 @@ function logWarn(msg: string): void {
   } catch {}
 }
 
+const loggedDebug = new Set<string>();
+function logDebug(msg: string): void {
+  // Deduplicate per message — these sit on parse paths that run often
+  if (loggedDebug.has(msg)) return;
+  loggedDebug.add(msg);
+  try {
+    const logDir = joinPath(homedir(), ".pi", "logs");
+    if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true, mode: 0o700 });
+    const logPath = joinPath(logDir, "settings-tui.log");
+    appendFileSync(logPath, `${new Date().toISOString()} ${LOG_PREFIX} DEBUG ${msg}\n`);
+  } catch {}
+}
+
 // ── Category grouping ───────────────────────────────────────────────
 
 export interface CategoryDef {
@@ -111,6 +124,9 @@ export function formatValue(key: string, value: unknown, def: SettingsKeyDef): s
     case "agent_list":
       if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : EMPTY_VALUE_SENTINEL;
       return String(value);
+    case "string_list":
+      if (Array.isArray(value)) return value.length > 0 ? `${value.length} pattern(s)` : EMPTY_VALUE_SENTINEL;
+      return String(value);
     case "agent_overrides":
       if (typeof value === "object" && value !== null) {
         const entries = Object.entries(value);
@@ -154,6 +170,21 @@ export function parseRawValue(key: string, rawValue: string, def: SettingsKeyDef
     case "agent_list":
       if (!rawValue || rawValue === EMPTY_VALUE_SENTINEL) return [];
       return rawValue.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+
+    case "string_list": {
+      // StringListSubmenu commits JSON; accept a hand-typed single pattern too
+      try {
+        const parsed = JSON.parse(rawValue);
+        if (Array.isArray(parsed)) {
+          const list = parsed.filter((e): e is string => typeof e === "string" && e.length > 0);
+          logDebug(`string_list parsed ${list.length} entrie(s) for ${key}`);
+          return list;
+        }
+      } catch {
+        logDebug(`string_list raw value for ${key} is not JSON — treating as a single pattern`);
+      }
+      return rawValue.trim() !== "" ? [rawValue.trim()] : [];
+    }
 
     default:
       return rawValue;
