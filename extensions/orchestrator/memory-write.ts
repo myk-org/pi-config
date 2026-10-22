@@ -1166,7 +1166,10 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
       if (discount > 0) {
         log.debug("memory-write: clause compound discount applied", { rawShared, discount, shared });
       }
-      const shorter = Math.min(negMasked.size, permMasked.size);
+      // Collapsed sizes (Qodo PR #956): the "shared === shorter" whole-action
+      // test must compare against compound-collapsed clause sizes, or a
+      // discounted compound action never counts as the whole action.
+      const shorter = Math.min(collapsedActionSize(negMasked, neg), collapsedActionSize(permMasked, perm));
       // Action-verb synonyms count as the shared action (Qodo e8564269):
       // "Never run 'npm install'" vs "Always execute 'npm install'" —
       // the quoted command is masked on both sides, so run/execute is
@@ -1932,6 +1935,32 @@ function compoundSharedDiscount(
   return discount;
 }
 
+/** Effective action-word count of one clause with its OWN hyphenated
+ *  compounds collapsed (Qodo PR #956): "auto-deploy" is one action concept,
+ *  not two words. Used for the clause gate's "the shared word IS the whole
+ *  action" test — comparing a DISCOUNTED shared count against the
+ *  undiscounted set size let "Never auto-deploy" vs "Always auto-deploy"
+ *  coexist (shared 1, size 2, 1 !== 2). Collapsing is per-side and
+ *  signature-deduplicated, mirroring the pairwise discount. */
+function collapsedActionSize(words: Set<string>, rawClause: string): number {
+  const compounds = rawClause.toLowerCase().match(/[a-z][a-z0-9#]*(?:-[a-z][a-z0-9#]*)+/g) ?? [];
+  let collapse = 0;
+  const seenSignatures = new Set<string>();
+  for (const compound of compounds) {
+    const parts = compound
+      .split("-")
+      .filter((w) => !STOP_WORDS.has(w))
+      .map(stem)
+      .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
+    if (parts.length < 2 || !parts.every((p) => words.has(p))) continue;
+    const signature = parts.join("+");
+    if (seenSignatures.has(signature)) continue;
+    seenSignatures.add(signature);
+    collapse += parts.length - 1;
+  }
+  return Math.max(1, words.size - collapse);
+}
+
 function isEnforcedEntry(entry: ScoredEntry | undefined): boolean {
   return !!entry && (!!((entry.trigger && entry.action) || entry.verifier));
 }
@@ -2034,8 +2063,13 @@ export async function findContradiction(
     // would discard the candidate before the clause gate ever sees the
     // polarity flip. Admit one shared word when BOTH texts are that short
     // (≤ 2 content words); the clause-level clash thresholds still apply.
+    // Collapsed sizes (Qodo PR #956 R2): "Never auto-deploy" is a two-word
+    // rule (marker + one compound action) — the shortPair admission must
+    // see the compound as one concept or the discounted shared count (1)
+    // can never corroborate an identical-compound flip.
     const shortPair =
-      contentWords(text).size <= 2 && contentWords(candidate.text).size <= 2;
+      collapsedActionSize(contentWords(text), text) <= 2 &&
+      collapsedActionSize(contentWords(candidate.text), candidate.text) <= 2;
     // Time-scoped rules (Qodo 205f7330): clock-time tokens tokenize to the
     // stop word "am"/"pm", so a time-scoped pair can corroborate on the
     // action alone — "Never deploy at 4am or at 2am" vs "Always deploy

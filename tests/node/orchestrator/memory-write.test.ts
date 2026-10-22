@@ -3230,6 +3230,21 @@ describe("conflict gate — hyphenated compound discount (issue #955)", () => {
     }
   });
 
+  it("an identical hyphenated ACTION flip still conflicts — compound as the whole action (Qodo PR #956 R2)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedEntry(cwd, "preference", "Never auto-deploy");
+      const result = await addMemoryEntry(cwd, {
+        text: "Always auto-deploy",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("a stop-word-part compound does not over-discount a real flip (Qodo PR #956)", async () => {
     const cwd = makeCwd();
     try {
