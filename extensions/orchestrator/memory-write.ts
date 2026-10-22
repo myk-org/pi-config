@@ -1158,7 +1158,11 @@ function polarizedClausesClash(negA: string[], permA: string[], negB: string[], 
         s.replace(/\d{1,2}:\d{2}(?:am|pm)?|\d{1,2}(?:am|pm)|\b(?:noon|midnight)\b/gi, " ");
       const negMasked = maskedActionWords(stripTimes(neg));
       const permMasked = maskedActionWords(stripTimes(perm));
-      const shared = sharedCount(negMasked, permMasked);
+      // Compound discount (issue #955): a hyphenated brand name present in
+      // both clauses is one concept, not two shared action words.
+      const shared =
+        sharedCount(negMasked, permMasked) -
+        compoundSharedDiscount(neg, perm, negMasked, permMasked);
       const shorter = Math.min(negMasked.size, permMasked.size);
       // Action-verb synonyms count as the shared action (Qodo e8564269):
       // "Never run 'npm install'" vs "Always execute 'npm install'" —
@@ -1855,11 +1859,43 @@ function diffWordIsMidClause(
 
 function sharedContentWords(a: string, b: string): number {
   const wa = contentWords(a);
-  let shared = 0;
-  for (const w of contentWords(b)) {
-    if (wa.has(w)) shared++;
+  const wb = contentWords(b);
+  return Math.max(0, sharedCount(wa, wb) - compoundSharedDiscount(a, b, wa, wb));
+}
+
+/** Hyphenated compounds present VERBATIM in both texts contribute their
+ *  parts as ONE shared word (issue #955): "pi-config" tokenizes to the two
+ *  generic words "pi" + "configuration", and those two alone satisfied the
+ *  ≥ 2 shared-word requirement in both conflict gates — any two rules that
+ *  mention the project name were declared contradictions. The discount only
+ *  applies when the compound appears hyphenated in BOTH texts, so the
+ *  5ed24d35 equivalence is preserved ("npm-package" in one text vs "npm
+ *  package" in the other keeps full part overlap), and only when EVERY
+ *  non-stop part is actually shared on both sides — a partially-shared
+ *  compound leaves the genuine shared word counted. */
+function compoundSharedDiscount(
+  aRaw: string,
+  bRaw: string,
+  aWords: Set<string>,
+  bWords: Set<string>,
+): number {
+  const compoundsIn = (text: string): Set<string> =>
+    new Set(text.toLowerCase().match(/[a-z][a-z0-9#]*(?:-[a-z][a-z0-9#]*)+/g) ?? []);
+  const aCompounds = compoundsIn(aRaw);
+  if (aCompounds.size === 0) return 0;
+  const bCompounds = compoundsIn(bRaw);
+  let discount = 0;
+  for (const compound of aCompounds) {
+    if (!bCompounds.has(compound)) continue;
+    const parts = compound
+      .split("-")
+      .map(stem)
+      .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
+    if (parts.length >= 2 && parts.every((p) => aWords.has(p) && bWords.has(p))) {
+      discount += parts.length - 1;
+    }
   }
-  return shared;
+  return discount;
 }
 
 function isEnforcedEntry(entry: ScoredEntry | undefined): boolean {
