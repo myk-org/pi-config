@@ -3135,6 +3135,68 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     assert.equal(promptCalls.length, 0);
   });
 
+  // ── Recursive rm absolute-path requirement (issue #963) ──
+
+  it("blocks relative-path recursive rm with rewrite guidance", async () => {
+    const res = await runBash("rm -rf build");
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+    assert.match(res.reason, /rm -rf \/.*\/build/);
+    assert.equal(promptCalls.length, 0, "rewrite rule must block, never prompt");
+  });
+
+  it("blocks wrapped, variable, and glob recursive rm targets", async () => {
+    for (const cmd of ["sudo rm -rf rel/dir", "rm -rf $TMPDIR/x", "rm -rf *", "rm -fr cache"]) {
+      const res = await runBash(cmd);
+      assert.equal(res?.block, true, cmd);
+      assert.match(res.reason, /ABSOLUTE/i);
+    }
+  });
+
+  it("blocks relative rm in a compound command", async () => {
+    const res = await runBash("cd /tmp && rm -rf leftover");
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+  });
+
+  it("blocks relative .pi/tmp rm — full-path rule fires before the tmp exemption", async () => {
+    mkdirSync(join(cwd, ".pi", "tmp", "x"), { recursive: true });
+    const res = await runBash("rm -rf .pi/tmp/x");
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+  });
+
+  it("absolute .pi/tmp rm keeps the silent exemption", async () => {
+    mkdirSync(join(cwd, ".pi", "tmp", "x"), { recursive: true });
+    const res = await runBash(`rm -rf ${join(cwd, ".pi", "tmp", "x")}`);
+    assert.equal(res?.block, undefined, "absolute tmp target must stay silently exempt");
+    assert.equal(promptCalls.length, 0);
+  });
+
+  it("absolute recursive rm flows to the normal dangerous prompt", async () => {
+    const res = await runBash("rm -rf /var/lib/precious-data");
+    // Not the rewrite-block: the normal dangerous prompt fires (choice=undefined → user blocks)
+    assert.equal(res?.block, true);
+    assert.ok(!/ABSOLUTE/.test(res.reason), "must not hit the full-path rewrite rule");
+    assert.equal(promptCalls.length, 1, "normal dangerous prompt must fire");
+  });
+
+  it("tilde-rooted recursive rm passes the full-path rule", async () => {
+    const res = await runBash("rm -rf ~/scratch/build-artifacts");
+    assert.ok(!res || !/ABSOLUTE/.test(res.reason ?? ""), "~ is a full path");
+  });
+
+  it("find -delete and xargs rm are exempt from the full-path rule", async () => {
+    const res = await runBash("find . -name '*.log' -delete");
+    assert.ok(!res || !/ABSOLUTE/.test(res.reason ?? ""), "find -delete carries its own targets");
+  });
+
+  it("non-recursive rm is untouched", async () => {
+    const res = await runBash("rm notes.txt");
+    assert.equal(res?.block, undefined);
+    assert.equal(promptCalls.length, 0);
+  });
+
   it("a mutated command re-prompts and 'No' blocks", async () => {
     seedSettings(["sudo reboot"]);
     choice = "No";

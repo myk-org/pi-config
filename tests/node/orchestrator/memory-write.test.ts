@@ -18,6 +18,7 @@ import {
   saveScores,
   extractPreferences,
   isGrantText,
+  isTaskScopedText,
   isEntryActiveForSession,
   type ScoredEntry,
 } from "../../../extensions/orchestrator/memory-scoring.js";
@@ -97,6 +98,87 @@ describe("addMemoryEntry — grant-phrase guardrail", () => {
       assert.ok(scores.entries[hash], "score entry created");
       assert.equal(scores.entries[hash]!.scope, "session");
       assert.ok(scores.entries[hash]!.expiresAt, "session scope gets expiry safety net");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("addMemoryEntry — task-scope guardrail (issue #961)", () => {
+  it("isTaskScopedText detects one-off deliverable asks", () => {
+    assert.ok(isTaskScopedText("Once everything is done I want an html report of the results"));
+    assert.ok(isTaskScopedText("When you're finished, generate a summary table for me"));
+    assert.ok(isTaskScopedText("I want a full diff when the work is complete"));
+    assert.ok(isTaskScopedText("after this is done give me the numbers in a csv"));
+  });
+
+  it("isTaskScopedText detects version-pinned migration steps and config-change notes", () => {
+    assert.ok(isTaskScopedText("When bumping to 1.4.0, drop the vendor directory"));
+    assert.ok(isTaskScopedText("when upgrading to v3 remove the legacy shim first"));
+    assert.ok(isTaskScopedText("PR readiness cron interval: every 30min (changed from 1h)"));
+    assert.ok(isTaskScopedText("For this report, include the latency numbers"));
+  });
+
+  it("isTaskScopedText does NOT match standing rules", () => {
+    assert.ok(!isTaskScopedText("When done, commit and push everything"));
+    assert.ok(!isTaskScopedText("After PR merge, switch back to main and pull"));
+    assert.ok(!isTaskScopedText("After every release, publish npm and PyPI immediately"));
+    assert.ok(!isTaskScopedText("I prefer tables in presentations"));
+    assert.ok(!isTaskScopedText("From now on, always run the linter before committing"));
+    assert.ok(!isTaskScopedText("Always use shadcn/ui components, never native HTML title attributes"));
+  });
+
+  it("rejects a task-scoped deliverable ask", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "When done, I want an html report of the test results",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /task-scoped/i);
+      assert.equal(readAllTopicEntries(cwd).length, 0);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a version-pinned migration checklist", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "When bumping to 1.4.0, drop sidecar-helper/vendor and restore the registry dep",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /task-scoped/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows task-scoped text when explicitly session-scoped", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "When done, I want an html report — session note",
+        category: "lesson",
+        scope: "session",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a rephrased standing rule", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Always produce an HTML report when a verification task completes",
+        category: "preference",
+      });
+      assert.equal(result.status, "added");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

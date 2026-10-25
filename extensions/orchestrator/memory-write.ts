@@ -36,6 +36,7 @@ import {
   newEntryId,
   reinforce,
   isGrantText,
+  isTaskScopedText,
 } from "./memory-scoring.js";
 import { CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, readAllTopicEntries, formatTopicLine, findTopicLine, invalidateTopicFileCache } from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch } from "./memory-embeddings.js";
@@ -2400,6 +2401,25 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
         `One-off grants are session instructions, NOT memories — do not store them. ` +
         `If the user confirmed a standing rule, rephrase it as the durable rule itself ` +
         `(e.g. "Agent may merge release-flow bump PRs") without grant phrasing.`,
+    };
+  }
+
+  // 2b. Task-scope guardrail (issue #961): task-scoped instructions are task
+  // attributes or session instructions, not durable memories. High-precision
+  // shapes only (deliverable asks tied to a completion event, version-pinned
+  // migration steps, bounded deliverable references, config-change notes) —
+  // the same relative-path logic as the grant gate: a stored approval/rule
+  // must bind to a standing behavior, not to ONE task's deliverable.
+  if (isTaskScopedText(text) && input.scope !== "session") {
+    return {
+      status: "rejected",
+      message:
+        `Rejected: "${text}" reads like a task-scoped instruction (e.g. "when done, I want an ` +
+        `html report" or "when bumping to 1.4.0, drop the vendor dir"). ` +
+        `Task-scoped asks belong to the CURRENT task (its description, a task attribute, or a ` +
+        `session instruction) — NOT memory. If the user confirmed a standing rule, rephrase it ` +
+        `as the durable rule itself (e.g. "Always produce an HTML report when a task completes") ` +
+        `without the task-scoped phrasing.`,
     };
   }
 

@@ -1,52 +1,105 @@
 /**
- * Preference Auto-Extractor — detects user preferences from conversation.
+ * Preference Auto-Extractor — detects user preference statements from
+ * conversation and queues them for dreaming review (issue #961).
  *
- * Listens to user input and routes detected preference statements through the
- * unified memory write path (memory-write.ts, issue #915). Extraction filters
- * out questions and one-off permission grants; the write path enforces the
- * topic cap, near-duplicate dedup, and the contradiction gate — the extractor
- * no longer bypasses any memory_add safeguard.
+ * The extractor no longer lands memories directly. Regex extraction fires
+ * on PHRASE, not meaning, so direct writes stored verbatim sentences —
+ * including half-finished, task-scoped thoughts — as durable preferences
+ * (e.g. "for the tag normalization we should have maping for datadog in
+ * the settings, i always prefer to have", cut mid-sentence at the 100-char
+ * topic-line cap). Candidates now go to
+ * .pi/memory/preference-candidates.jsonl (full sentence, source session)
+ * and dreaming distills/lands only the durable standing preferences.
+ * Questions, one-off grants, and task-scoped instructions are filtered
+ * before queueing; the LLM path (memory_add + guardrails) remains for
+ * immediate capture.
  *
  * Architecture inspired by OpenHuman (https://github.com/tinyhumansai/openhuman).
  * Clean-room TypeScript implementation under MIT — not a code translation.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import fs from "node:fs";
+import { join } from "node:path";
 import { createLogger } from "../shared/logger.js";
-import { extractPreferences, entryHash } from "./memory-scoring.js";
-import { addMemoryEntry } from "./memory-write.js";
+import { extractPreferences } from "./memory-scoring.js";
+import { getProjectMemoryDir } from "./utils.js";
 
 const log = createLogger("memory");
 
 // Debounce: don't extract from every message, only meaningful ones
 const MIN_MESSAGE_LENGTH = 20;
 
-// Cooldown: don't re-extract the same preference within 1 hour. Tracked
-// per pending write and only STAMPED once the write actually lands (added or
-// reinforced) — a rejected write (conflict gate, cap, guardrail) must not
-// suppress the next attempt for an hour (Qodo #14, PR #916).
-const COOLDOWN_MS = 60 * 60 * 1000;
-const recentExtractions = new Map<string, number>();
+// Candidate queue bounds: the file stays small (dreaming consumes it each
+// cycle), but a repo where dreaming never runs must not grow it unbounded.
+const MAX_CANDIDATES = 200;
+const CANDIDATE_FILE = "preference-candidates.jsonl";
 
-// Pending fire-and-forget writes — drained on session shutdown so a write is
-// never lost to process exit (Qodo #13, PR #916).
-const pendingWrites = new Set<Promise<unknown>>();
+export function candidateQueuePath(cwd: string): string {
+  return join(getProjectMemoryDir(cwd), CANDIDATE_FILE);
+}
+
+interface PreferenceCandidate {
+  text: string;
+  sourceSession: string | null;
+  timestamp: string;
+}
+
+function readCandidates(file: string): PreferenceCandidate[] {
+  try {
+    return fs
+      .readFileSync(file, "utf-8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          const parsed = JSON.parse(line) as Partial<PreferenceCandidate>;
+          return {
+            text: String(parsed.text ?? ""),
+            sourceSession: parsed.sourceSession ?? null,
+            timestamp: String(parsed.timestamp ?? ""),
+          };
+        } catch {
+          return null; // malformed line — dropped below
+        }
+      })
+      .filter((c): c is PreferenceCandidate => c !== null && c.text.length > 0);
+  } catch {
+    return []; // no file yet
+  }
+}
+
+/** Append a preference candidate for dreaming review. Synchronous by
+ *  design: the queue file is bounded (≤ MAX_CANDIDATES short lines), so
+ *  the append is sub-millisecond and never blocks user input. Returns
+ *  "queued" or "duplicate" (exact text already pending review). */
+export function appendPreferenceCandidate(
+  cwd: string,
+  text: string,
+  sourceSession?: string,
+): "queued" | "duplicate" {
+  const file = candidateQueuePath(cwd);
+  const existing = readCandidates(file);
+  if (existing.some((c) => c.text === text)) return "duplicate";
+  existing.push({
+    text,
+    sourceSession: sourceSession ?? null,
+    timestamp: new Date().toISOString(),
+  });
+  const trimmed =
+    existing.length > MAX_CANDIDATES ? existing.slice(-MAX_CANDIDATES) : existing;
+  fs.writeFileSync(file, trimmed.map((c) => JSON.stringify(c)).join("\n") + "\n");
+  return "queued";
+}
+
+/** Read the pending preference candidates (used by dreaming tooling/tests). */
+export function readPreferenceCandidates(cwd: string): PreferenceCandidate[] {
+  return readCandidates(candidateQueuePath(cwd));
+}
 
 export function registerPreferenceExtractor(pi: ExtensionAPI): void {
   // Only run in the orchestrator, not in subagents
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
-
-  pi.on("session_shutdown", async () => {
-    if (pendingWrites.size === 0) return;
-    const pending = [...pendingWrites];
-    log.debug("preference-extractor: draining pending memory writes on shutdown", pending.length);
-    try {
-      await Promise.allSettled(pending);
-    } catch {
-      // allSettled never rejects — belt and braces
-    }
-    log.info("preference-extractor: drained pending memory writes", pending.length);
-  });
 
   pi.on("input", (event, ctx) => {
     const text = event.text;
@@ -61,34 +114,12 @@ export function registerPreferenceExtractor(pi: ExtensionAPI): void {
       (ctx as any).sessionManager?.getSessionId?.() || undefined;
 
     for (const pref of preferences) {
-      const hash = entryHash(`- [preference] ${pref}`);
-
-      // Cooldown check (against LANDED writes only)
-      const lastExtracted = recentExtractions.get(hash);
-      if (lastExtracted && Date.now() - lastExtracted < COOLDOWN_MS) continue;
-
-      // Fire-and-forget: the write path may load the embedding model on first
-      // use (~2.7s) — never block user input on it. The promise is tracked so
-      // session_shutdown can drain it before the process exits.
-      const write = addMemoryEntry(ctx.cwd, {
-        text: pref,
-        category: "preference",
-        sourceSession,
-      })
-        .then((result) => {
-          log.info("preference_extracted", pref.slice(0, 60), result.status);
-          // Stamp cooldown only on success — a rejected write must retry
-          if (result.status !== "rejected") {
-            recentExtractions.set(hash, Date.now());
-          }
-        })
-        .catch((err) => {
-          log.warn("preference extraction failed:", err?.message || err);
-        })
-        .finally(() => {
-          pendingWrites.delete(write);
-        });
-      pendingWrites.add(write);
+      try {
+        const status = appendPreferenceCandidate(ctx.cwd, pref, sourceSession);
+        log.info("preference_candidate", status, pref.slice(0, 60));
+      } catch (err) {
+        log.warn("preference candidate queue append failed:", (err as Error)?.message || err);
+      }
     }
   });
 }

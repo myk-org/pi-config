@@ -1511,28 +1511,11 @@ export function isReadOnlyStatement(stmt: string): boolean {
 /** Pattern matching direct recursive rm commands (subset of DANGEROUS patterns). */
 const RM_PATTERN = /\brm\s+(?:-[a-zA-Z]+\s+)*(-[a-zA-Z]*r[a-zA-Z]*|--recursive)/i;
 
-/**
- * Check if a dangerous rm command only targets paths within .pi/tmp/ or /tmp/<something>.
- * Returns true if the command should be silently allowed.
- * Note: bare /tmp (without subpath) is NOT allowed — only /tmp/<file-or-folder>.
- */
-export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
-  // Only applies to direct rm commands, not find/xargs variants
-  if (!RM_PATTERN.test(stmt)) return false;
-
-  // Ensure rm is the actual command, not an argument to another command (e.g., xargs rm)
-  const firstWord = stmt.trim().split(/\s+/)[0];
-  if (firstWord !== "rm" && !firstWord?.endsWith("/rm")) return false;
-
-  // Don't silently allow if the statement also matches other DANGEROUS patterns
-  // (e.g., sudo rm -rf .pi/tmp/foo — sudo should still trigger confirmation)
-  if (/\bsudo\b/i.test(stmt)) return false;
-
-  // Reject statements containing subshells or process substitutions — these could
-  // embed arbitrary commands that bypass the allowlist check
-  if (extractSubshells(stmt).length > 0) return false;
-
-  // Parse arguments: split on whitespace, skip flags, handle -- separator
+/** Tokenize the target paths of an rm command found in `stmt` (flags, the
+ *  `--` separator, and shell redirections skipped; surrounding quotes
+ *  stripped). Returns null when no rm token is present. Shared by
+ *  isRmInProjectTmp and relativeRecursiveRmTarget (issue #963). */
+function parseRmPathTokens(stmt: string): string[] | null {
   const tokens = stmt.trim().split(/\s+/);
   const paths: string[] = [];
   let pastSeparator = false;
@@ -1565,8 +1548,65 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
     paths.push(token.replace(/^["']|["']$/g, ""));
   }
 
+  return pastRm ? paths : null;
+}
+
+/** Leading wrapper prefixes that may precede a direct `rm` invocation
+ *  (issue #963). Same family as the bare-shell wrapper alternation in the
+ *  DANGEROUS patterns, but INCLUDES sudo: the absolute-path requirement
+ *  applies to `sudo rm -rf rel` just as much as to bare `rm -rf rel`. */
+const RM_LEADING_WRAPPERS_RE =
+  /^\s*(?:\S+=\S*\s+|sudo(?:\s+-\S+(?:\s+\S+)?)*\s+|rtk(?:\s+-\S+)*\s+|(?:command|builtin|exec)\s+|env(?:\s+(?:-\S+(?:\s+\S+)?|\S+=\S*))*\s+|timeout\s+(?:-\S+(?:\s+\S+)?\s+)*\S+\s+|nice(?:\s+(?:-\S+(?:\s+\S+)?))*\s+|nohup\s+)+/;
+
+/**
+ * First non-absolute target of a direct (optionally wrapped) recursive rm
+ * statement, or null (issue #963). "Absolute" = starts with `/` or `~`.
+ *
+ * find -exec / xargs rm variants return null — their targets come from find
+ * output / stdin, not statement text. Recursive rm with a relative target
+ * must be blocked: a persistent "always allow" approval stores the
+ * statement text, so a relative target would approve the identical text in
+ * ANY directory; an absolute path binds the approval to exactly one folder.
+ */
+export function relativeRecursiveRmTarget(stmt: string): string | null {
+  if (!RM_PATTERN.test(stmt)) return null;
+  // find -exec rm / xargs rm carry their targets from find output / stdin
+  if (/\b(?:find|xargs)\b/.test(stmt)) return null;
+  const stripped = stmt.replace(RM_LEADING_WRAPPERS_RE, "");
+  const paths = parseRmPathTokens(stripped);
+  if (!paths || paths.length === 0) return null;
+  for (const p of paths) {
+    if (!p.startsWith("/") && !p.startsWith("~")) return p;
+  }
+  return null;
+}
+
+/**
+ * Check if a dangerous rm command only targets paths within .pi/tmp/ or /tmp/<something>.
+ * Returns true if the command should be silently allowed.
+ * Note: bare /tmp (without subpath) is NOT allowed — only /tmp/<file-or-folder>.
+ */
+export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
+  // Only applies to direct rm commands, not find/xargs variants
+  if (!RM_PATTERN.test(stmt)) return false;
+
+  // Ensure rm is the actual command, not an argument to another command (e.g., xargs rm)
+  const firstWord = stmt.trim().split(/\s+/)[0];
+  if (firstWord !== "rm" && !firstWord?.endsWith("/rm")) return false;
+
+  // Don't silently allow if the statement also matches other DANGEROUS patterns
+  // (e.g., sudo rm -rf .pi/tmp/foo — sudo should still trigger confirmation)
+  if (/\bsudo\b/i.test(stmt)) return false;
+
+  // Reject statements containing subshells or process substitutions — these could
+  // embed arbitrary commands that bypass the allowlist check
+  if (extractSubshells(stmt).length > 0) return false;
+
+  // Parse arguments: flags, -- separator, redirections (shared tokenizer)
+  const paths = parseRmPathTokens(stmt);
+
   // Guard against vacuous truth — if no paths extracted, don't silently allow
-  if (paths.length === 0) return false;
+  if (!paths || paths.length === 0) return false;
 
   // Resolve and substitute PROJECT_TMP_DIR env var
   const projectTmpDir = path.join(cwd, ".pi", "tmp");

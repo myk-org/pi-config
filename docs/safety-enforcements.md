@@ -127,6 +127,22 @@ Or set `enforcement_allowed_commands` in `pi-config-settings.json`. Once the set
 - Independently of the allowlist, `run_after` still refuses commands matching `curl`/`wget` piped into a shell, `rm -rf /`-style paths, `sudo`, and world-writable `chmod`
 - Each command runs with a 60s timeout; keep follow-up commands fast so they do not slow down normal edits
 
+### Recursive rm must use absolute paths
+
+A persistent approval stores the **statement text**. A relative-path recursive
+rm like `rm -rf build` would therefore approve the identical text in ANY
+directory — the next `rm -rf build` anywhere on the machine would match the
+allowlist and run silently against whatever folder has that name there (#963).
+
+For that reason the gate **blocks** (never prompts) recursive rm whose targets
+are not full paths (`/…` or `~/…` — relative paths, variables, and globs all
+block) and tells the agent to rewrite with the absolute path. `find -delete`
+and `xargs rm` are exempt — their targets come from find output or stdin, not
+from the statement text. Once the command spells out the full path, it flows
+through the normal gates: an "always allow" then binds to exactly one folder
+you know. Absolute `rm -rf <project>/.pi/tmp/…` and `/tmp/<sub>` targets keep
+their silent exemption.
+
 ## Pre-approve a recurring dangerous command
 
 The dangerous-command gate (background shells, `sudo`, recursive `rm`, …) asks

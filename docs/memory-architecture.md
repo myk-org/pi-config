@@ -231,13 +231,17 @@ Compaction summaries whose turn is retried (overflow recovery) are skipped so co
 
 The agent can also query it directly with the `session_search` tool — see [Commands and Tools Reference](commands-and-tools.html).
 
-### Stated preferences are captured automatically
+### Stated preferences are captured for dreaming review
 
 `preference-extractor.ts` watches conversation for phrases such as "I prefer …", "always use …", or "never …".
-When it detects one, it routes the preference through the unified write path (`memory-write.ts`), so automatic
-extraction gets the same safeguards as an explicit `memory_add`: topic caps, near-duplicate dedup, and the
-contradiction gate. Questions ("Do I always need to…?") and one-off permission grants ("you can merge this PR")
-are filtered out before extraction.
+Regex extraction fires on phrase, not meaning, so detected statements are queued as **candidates** in
+`.pi/memory/preference-candidates.jsonl` (full sentence, source session) — the extractor no longer
+lands memories directly (#961). Questions ("Do I always need to…?"), one-off permission grants
+("you can merge this PR"), and task-scoped instructions ("when done, I want an html report",
+"when bumping to 1.4.0, drop the vendor dir") are filtered out before queueing. Dreaming reviews
+the queue each cycle: durable standing preferences are distilled into clean one-line entries,
+everything else is discarded, and the queue is truncated. The LLM path (`memory_add` + guardrails)
+remains available for immediate capture.
 
 ### The write path guards against bad memories
 
@@ -246,7 +250,14 @@ in order:
 
 1. **Grant-phrase guardrail** — text that reads like a one-off permission ("you can merge this PR",
    "go ahead", "just this once") is rejected: one-off grants are session instructions, not memories.
-2. **Contradiction gate** — an add that flips permission polarity against an existing entry (one text
+2. **Task-scope guardrail** (#961) — text that reads like a task-scoped instruction is rejected:
+   deliverable asks tied to a completion event ("when done, I want an html report"), version-pinned
+   migration steps ("when bumping to 1.4.0, drop the vendor dir"), bounded deliverable references
+   ("for this report"), and config-change notes ("every 30min (changed from 1h)"). These belong to
+   the current task or the session, not memory. Standing rules ("When done, commit and push
+   everything") do not match — the detector is high-precision by design and fuzzy cases are left
+   to dreaming review.
+3. **Contradiction gate** — an add that flips permission polarity against an existing entry (one text
    forbids what the other permits, on the same action) is refused and the model is told to ask the user.
    The check is **clause-scoped** (#936): a polarity marker only governs its own clause, so
    "never publish with a dead token" does not contradict "always publish to npm" — the polarized

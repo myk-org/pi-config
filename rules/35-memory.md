@@ -43,6 +43,14 @@ When a correction is mechanical (can be checked by code), add `trigger` + `actio
 Never `memory_add` them. The write path rejects grant phrasing and contradictions of pinned entries.
 Only standing, repeated rules are durable.
 
+**Task-scoped instructions are NOT memories** (issue #961). "When done, I want an HTML report",
+"when bumping to 1.4.0, drop the vendor dir", "every 30min (changed from 1h)" — deliverable formats,
+one-time migration steps, and config-change notes belong to the current task (its description or a
+session instruction), never to memory. The write path rejects task-scoped phrasing.
+
+**Apply the standing test before storing any preference:** would it apply to a future, unrelated task?
+No → it is a session instruction or a task attribute, not a memory.
+
 **Conflicts are decision points, not dead ends.** When `memory_add` reports a contradiction:
 
 1. Ask the user (`ask_user`) which rule is correct — never decide for them.
@@ -127,8 +135,9 @@ The situation report header shows usage: `# Project Memory [72% — 1,224/1,700 
 | PR merged | `done` | Learned |
 | User corrects you | `lesson` | Learned |
 | Multiple fix attempts | `mistake` | Learned |
-| User states a preference | `preference` | Learned |
+| User states a preference that passes the standing test | `preference` | Learned |
 | User grants a one-off permission ("you can merge this PR") | — | **NOT a memory** — session instruction only |
+| User asks for a one-off deliverable/format ("when done, I want an html report") | — | **NOT a memory** — task attribute or session instruction |
 
 ---
 
@@ -180,6 +189,8 @@ If it's knowledge that informs decisions but can't be checked mechanically — p
 - Unfinished conversations where no conclusion was reached
 - User requirements that were never implemented
 - One-off permissions granted for a specific PR, task, or session — session instructions, not durable rules
+- Task-scoped instructions: deliverable formats for the current task, one-time migration steps,
+  session config notes — task attributes or session instructions, not durable rules
 
 Only memorize **outcomes** (what happened), not **intentions** (what was discussed but dropped).
 
@@ -212,6 +223,9 @@ agent.
 
 **Dreaming follows the same NEVER memorize rules as per-turn self-improvement:**
 do NOT extract rejected/abandoned ideas, unfinished conversations, or unimplemented requirements.
+Do NOT extract one-off permissions or task-scoped instructions (deliverable formats, one-time
+migration steps, config-change notes) — dreaming also distills the preference candidate queue
+(`.pi/memory/preference-candidates.jsonl`) into durable standing preferences and discards the rest.
 Only extract outcomes, not intentions.
 
 ---
