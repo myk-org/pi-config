@@ -28,6 +28,7 @@ from myk_pi_tools.reviews.coderabbit_parser import parse_review_body_comments
 
 # Map Qodo finding types to our type field
 from myk_pi_tools.reviews.constants import QODO_TYPE_MAP as _QODO_TYPE_MAP  # noqa: E402
+from myk_pi_tools.reviews.qodo_cli import fetch_qodo_cli_threads  # noqa: E402
 from myk_pi_tools.reviews.qodo_parser import is_qodo_sticky_comment, parse_qodo_sticky_comment
 from myk_pi_tools.utils import merge_paginated_json
 
@@ -1416,9 +1417,11 @@ def run(
 
         # Fetch PR author
         pr_author: str | None = None
+        head_sha: str | None = None
         author_data = run_gh_api(f"/repos/{owner}/{repo}/pulls/{pr_number}")
         if isinstance(author_data, dict):
             pr_author = author_data.get("user", {}).get("login") if author_data.get("user") else None
+            head_sha = author_data.get("head", {}).get("sha") or None
         else:
             print_stderr(f"Warning: Could not fetch PR author (API returned {type(author_data).__name__})")
 
@@ -1436,6 +1439,7 @@ def run(
 
         # Skip bot comment fetching when filtering by specific user
         qodo_replies: list[dict[str, Any]] | None = None
+        qodo_cli_state: dict[str, Any] | None = None  # set when the qodo CLI branch ran (issue #958)
         issue_comments: list[dict[str, Any]] | None = None
         if not user:
             # Fetch CodeRabbit body-embedded comments from review bodies
@@ -1450,13 +1454,27 @@ def run(
                 f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100", paginate=True
             )
 
-            # Fetch Qodo sticky comment findings
-            print_stderr("Fetching Qodo sticky comment findings...")
-            qodo_sticky_findings = fetch_qodo_sticky_findings(owner, repo, pr_number, comments=issue_comments)
-            if qodo_sticky_findings:
-                print_stderr(f"Found {len(qodo_sticky_findings)} unresolved Qodo sticky finding(s)")
+            # Qodo source: CLI-first (issue #958). Structured read through the
+            # qodo CLI when it is installed and authenticated; the GitHub
+            # sticky scrape below is unchanged and remains the fallback for a
+            # missing bin, a failed probe, or any per-cycle CLI failure (fail
+            # open). READ ONLY — replies stay GitHub comments via `reviews
+            # address`; this branch never writes to Qodo's DB.
+            pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+            cli_threads, qodo_cli_state = fetch_qodo_cli_threads(pr_url, head_sha)
+            if cli_threads is not None:
+                open_count = qodo_cli_state.get("unresolved_count", 0) if qodo_cli_state else 0
+                print_stderr(f"Found {open_count} open Qodo finding(s) via CLI")
+                if cli_threads:
+                    all_threads = merge_threads(all_threads, cli_threads)
+            else:
+                # Fetch Qodo sticky comment findings
+                print_stderr("Fetching Qodo sticky comment findings...")
+                qodo_sticky_findings = fetch_qodo_sticky_findings(owner, repo, pr_number, comments=issue_comments)
+                if qodo_sticky_findings:
+                    print_stderr(f"Found {len(qodo_sticky_findings)} unresolved Qodo sticky finding(s)")
 
-                all_threads = merge_threads(all_threads, qodo_sticky_findings)
+                    all_threads = merge_threads(all_threads, qodo_sticky_findings)
 
             # Fetch Qodo replies to our consolidated comments (independent of sticky findings)
             print_stderr("Fetching Qodo reply comments...")
@@ -1541,9 +1559,14 @@ def run(
         # Post-enrichment: auto-skip already-replied sticky findings where Qodo didn't push back
         auto_skip_replied_findings(categorized.get("qodo", []))
 
-        # Check Qodo approval status
-        _approval = is_qodo_approved(owner, repo, str(pr_number), comments=issue_comments)
-        _is_approved = bool(_approval and _approval.get("approved"))
+        # Check Qodo approval status — CLI state is authoritative when the
+        # CLI branch ran this cycle; otherwise the GitHub sticky heuristic.
+        if qodo_cli_state is not None:
+            _is_approved = bool(qodo_cli_state.get("approved"))
+            _approval: dict[str, Any] | None = qodo_cli_state if _is_approved else None
+        else:
+            _approval = is_qodo_approved(owner, repo, str(pr_number), comments=issue_comments)
+            _is_approved = bool(_approval and _approval.get("approved"))
 
         # Build final output
         final_output = {
@@ -1559,6 +1582,7 @@ def run(
             "coderabbit": categorized["coderabbit"],
             "approved": _is_approved,
             "qodo_cleanup_response": "",
+            "qodo_cli_state": qodo_cli_state,
         }
 
         # Save to file atomically

@@ -300,81 +300,116 @@ def _run_qodo_poll(review_url: str, owner: str, repo: str, pr_number: str, outpu
 
         # Step 2: Check approval and handle stuck reviews
         if fetch_ok:
-            # Check for stuck Qodo reviews (mid-review detection)
-            _comments_endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
-            _pr_comments = run_gh_api(_comments_endpoint, paginate=True)
-            if _is_qodo_reviewing(owner, repo, pr_number, comments=_pr_comments):
-                if _qodo_reviewing_since is None:
-                    _qodo_reviewing_since = time.time()
-                elif time.time() - _qodo_reviewing_since > _QODO_STUCK_TIMEOUT_SECONDS:
-                    print_stderr("[poll] Qodo has been reviewing for over 1 hour — likely stuck.")
-                    if _retrigger_qodo_review(owner, repo, pr_number):
+            # CLI state (issue #958): when the qodo CLI branch ran this cycle,
+            # its review_session is authoritative for in-progress detection
+            # and the approval summary — no comment-churn heuristics needed.
+            _cli_state = fetch_result.get("qodo_cli_state") if isinstance(fetch_result, dict) else None
+            if _cli_state is not None:
+                if _cli_state.get("reviewing"):
+                    if _qodo_reviewing_since is None:
                         _qodo_reviewing_since = time.time()
-                    else:
-                        _qodo_reviewing_since = (
-                            time.time() - _QODO_STUCK_TIMEOUT_SECONDS + _QODO_RETRIGGER_COOLDOWN_SECONDS
-                        )
-                print_stderr(
-                    "[poll] Qodo is currently reviewing — skipping approval check, waiting for review to complete."
-                )
-            elif isinstance(fetch_result, dict) and fetch_result.get("approved"):
-                _qodo_reviewing_since = None
-                print_stderr("[poll] Checking Qodo approval...")
-                print_stderr("[poll] Qodo approved — all findings resolved.")
-                # Get approval details for summary
-                _approval_detail = is_qodo_approved(owner, repo, pr_number, comments=_pr_comments)
-                if _approval_detail:
-                    print_approval_summary(_approval_detail)
-                fetch_result["qodo_cleanup_response"] = ""  # Clear — stale when approved
-                _result = fetch_result
-                break
-            else:
-                _qodo_reviewing_since = None
-                # Check for stale sticky findings and request cleanup
-                _cleanup_cooldown_elapsed = (
-                    _cleanup_last_requested_at == 0
-                    or time.time() - _cleanup_last_requested_at > _CLEANUP_RETRY_COOLDOWN_SECONDS
-                )
-                if _cleanup_cooldown_elapsed and not has_actionable:
-                    _review_path = Path(output_dir) / f"pr-{pr_number}-reviews.json"
-                    if _review_path.exists():
-                        try:
-                            _review_data = json.loads(_review_path.read_text())
-                            _has_stale = any(
-                                f.get("already_replied")
-                                and not f.get("thread_id")
-                                and f.get("type") in QODO_STICKY_TYPES
-                                for f in _review_data.get("qodo", [])
+                    elif time.time() - _qodo_reviewing_since > _QODO_STUCK_TIMEOUT_SECONDS:
+                        print_stderr("[poll] Qodo has been reviewing for over 1 hour — likely stuck.")
+                        if _retrigger_qodo_review(owner, repo, pr_number):
+                            _qodo_reviewing_since = time.time()
+                        else:
+                            _qodo_reviewing_since = (
+                                time.time() - _QODO_STUCK_TIMEOUT_SECONDS + _QODO_RETRIGGER_COOLDOWN_SECONDS
                             )
-                            if _has_stale:
-                                _retry_label = "Retrying" if _cleanup_last_requested_at > 0 else "Requesting"
-                                print_stderr(
-                                    f"[poll] Stale sticky findings detected — {_retry_label.lower()} Qodo cleanup."
+                    print_stderr(
+                        f"[poll] Qodo review in progress (CLI session status: {_cli_state.get('status')}) —"
+                        " skipping approval check, waiting for review to complete."
+                    )
+                elif isinstance(fetch_result, dict) and fetch_result.get("approved"):
+                    _qodo_reviewing_since = None
+                    print_stderr("[poll] Checking Qodo approval...")
+                    print_stderr("[poll] Qodo approved — all findings resolved.")
+                    print_approval_summary(_cli_state)
+                    fetch_result["qodo_cleanup_response"] = ""  # Clear — stale when approved
+                    _result = fetch_result
+                    break
+                else:
+                    # No open findings, not reviewing, not approved (session
+                    # behind head, etc.) — keep polling. Stale sticky cleanup
+                    # is a GitHub-scrape concern; in CLI mode attribution_status
+                    # is authoritative, so there is nothing to clean up.
+                    _qodo_reviewing_since = None
+            else:
+                # GitHub branch: comment-churn heuristics (unchanged)
+                _comments_endpoint = f"/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+                _pr_comments = run_gh_api(_comments_endpoint, paginate=True)
+                if _is_qodo_reviewing(owner, repo, pr_number, comments=_pr_comments):
+                    if _qodo_reviewing_since is None:
+                        _qodo_reviewing_since = time.time()
+                    elif time.time() - _qodo_reviewing_since > _QODO_STUCK_TIMEOUT_SECONDS:
+                        print_stderr("[poll] Qodo has been reviewing for over 1 hour — likely stuck.")
+                        if _retrigger_qodo_review(owner, repo, pr_number):
+                            _qodo_reviewing_since = time.time()
+                        else:
+                            _qodo_reviewing_since = (
+                                time.time() - _QODO_STUCK_TIMEOUT_SECONDS + _QODO_RETRIGGER_COOLDOWN_SECONDS
+                            )
+                    print_stderr(
+                        "[poll] Qodo is currently reviewing — skipping approval check, waiting for review to complete."
+                    )
+                elif isinstance(fetch_result, dict) and fetch_result.get("approved"):
+                    _qodo_reviewing_since = None
+                    print_stderr("[poll] Checking Qodo approval...")
+                    print_stderr("[poll] Qodo approved — all findings resolved.")
+                    # Get approval details for summary
+                    _approval_detail = is_qodo_approved(owner, repo, pr_number, comments=_pr_comments)
+                    if _approval_detail:
+                        print_approval_summary(_approval_detail)
+                    fetch_result["qodo_cleanup_response"] = ""  # Clear — stale when approved
+                    _result = fetch_result
+                    break
+                else:
+                    _qodo_reviewing_since = None
+                    # Check for stale sticky findings and request cleanup
+                    _cleanup_cooldown_elapsed = (
+                        _cleanup_last_requested_at == 0
+                        or time.time() - _cleanup_last_requested_at > _CLEANUP_RETRY_COOLDOWN_SECONDS
+                    )
+                    if _cleanup_cooldown_elapsed and not has_actionable:
+                        _review_path = Path(output_dir) / f"pr-{pr_number}-reviews.json"
+                        if _review_path.exists():
+                            try:
+                                _review_data = json.loads(_review_path.read_text())
+                                _has_stale = any(
+                                    f.get("already_replied")
+                                    and not f.get("thread_id")
+                                    and f.get("type") in QODO_STICKY_TYPES
+                                    for f in _review_data.get("qodo", [])
                                 )
-                                _cleanup_reply = _request_qodo_sticky_cleanup(owner, repo, pr_number)
-                                _cleanup_last_requested_at = time.time()
-                                if _cleanup_reply:
-                                    _cleanup_response = _cleanup_reply
-                                if _cleanup_reply:
-                                    # Re-fetch to get fresh data
-                                    _fresh = fetch_run(review_url, output_dir=output_dir)
-                                    if isinstance(_fresh, dict):
-                                        _fresh["qodo_cleanup_response"] = _cleanup_response
-                                        _fresh["approved"] = False
-                                        _result = _fresh
-                                        break
-                                else:
-                                    # Cleanup request timed out — Qodo didn't reply.
-                                    # Force a fresh review via /agentic_review so Qodo
-                                    # re-evaluates the PR and resolves stale stickies.
+                                if _has_stale:
+                                    _retry_label = "Retrying" if _cleanup_last_requested_at > 0 else "Requesting"
                                     print_stderr(
-                                        "[poll] Cleanup timed out — triggering /agentic_review"
-                                        " to force fresh Qodo review."
+                                        f"[poll] Stale sticky findings detected — {_retry_label.lower()} Qodo cleanup."
                                     )
-                                    _retrigger_qodo_review(owner, repo, pr_number)
+                                    _cleanup_reply = _request_qodo_sticky_cleanup(owner, repo, pr_number)
+                                    _cleanup_last_requested_at = time.time()
+                                    if _cleanup_reply:
+                                        _cleanup_response = _cleanup_reply
+                                    if _cleanup_reply:
+                                        # Re-fetch to get fresh data
+                                        _fresh = fetch_run(review_url, output_dir=output_dir)
+                                        if isinstance(_fresh, dict):
+                                            _fresh["qodo_cleanup_response"] = _cleanup_response
+                                            _fresh["approved"] = False
+                                            _result = _fresh
+                                            break
+                                    else:
+                                        # Cleanup request timed out — Qodo didn't reply.
+                                        # Force a fresh review via /agentic_review so Qodo
+                                        # re-evaluates the PR and resolves stale stickies.
+                                        print_stderr(
+                                            "[poll] Cleanup timed out — triggering /agentic_review"
+                                            " to force fresh Qodo review."
+                                        )
+                                        _retrigger_qodo_review(owner, repo, pr_number)
 
-                        except Exception as e:
-                            print_stderr(f"[poll] Cleanup check failed: {e}")
+                            except Exception as e:
+                                print_stderr(f"[poll] Cleanup check failed: {e}")
 
         if _result is not None:
             break

@@ -807,6 +807,7 @@ PI_PIDIFF_ENABLE=false pi
 | `myk-pi-tools release create`          | Create a GitHub release with changelog                                                                                                         |
 | `myk-pi-tools db`                      | Review database query commands                                                                                                                 |
 | `myk-pi-tools reviews`                 | Review handling commands (fetch, poll, address, post, store, store-session)                                                                   |
+| `myk-pi-tools reviews poll`            | Poll a PR for review comments until approved or actionable — `--source qodo` reads findings through the `qodo` CLI (structured, with spans and authoritative open/closed status) when the binary is installed and authenticated, and falls back to the GitHub sticky-comment scrape otherwise. Read-only: replies are always posted as GitHub comments via `reviews address` |
 | `myk-pi-tools reviews address`         | Apply replies/statuses to a fetched reviews JSON, then post and store it (see below)                                                           |
 | `myk-pi-tools reviews store-session`   | Store Qodo pr-review-session findings JSON into the reviews DB (idempotent; run at loop convergence)                                           |
 | `myk-pi-tools memory`                  | Project memory commands — persistent per-repo learning                                                                                         |
