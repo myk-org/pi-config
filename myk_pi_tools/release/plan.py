@@ -1,0 +1,388 @@
+"""Scoped-release plan: which packages changed since their last publish.
+
+Read-only detection engine behind ``myk-pi-tools release plan``
+(issue #965). For each package in release-map.toml:
+
+1. Last published version from the REGISTRY (npm view / PyPI JSON API) —
+   ground truth that cannot drift from tags.
+2. Anchor commit: the newest commit that touched one of the package's
+   version-files AND left it at the published version (the bump commit).
+   The diff window is therefore PER-PACKAGE — a package skipped for N
+   releases reaches back to its own last publish.
+3. ``git diff --name-only anchor..HEAD`` filtered through the map's
+   paths/excludes → non-empty = affected.
+4. Proposed bump from a conventional-commit scan over commits touching
+   those paths (feat → minor, fix → patch, BREAKING/``!`` → major,
+   default patch).
+
+The engine never writes anything. Repos without release-map.toml stay in
+lockstep mode and never reach this code path.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from myk_pi_tools.logger import create_logger
+from myk_pi_tools.release.release_map import PackageEntry, ReleaseMap
+
+log = create_logger("myk_pi_tools.release.plan")
+
+REGISTRY_TIMEOUT_SECONDS = 30
+GIT_TIMEOUT_SECONDS = 60
+
+# Conventional-commit bump types, checked in priority order.
+_BUMP_RES = (
+    (re.compile(r"^[a-z]+(\([^)]*\))?!:"), "major"),
+    (re.compile(r"^BREAKING[ -]CHANGE", re.IGNORECASE), "major"),
+    (re.compile(r"^feat(\([^)]*\))?:"), "minor"),
+    (re.compile(r"^fix(\([^)]*\))?:"), "patch"),
+)
+_DEFAULT_BUMP = "patch"
+
+_PY_VERSION_RE = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+
+
+@dataclass
+class PackagePlan:
+    """Detection result for one package."""
+
+    name: str
+    registry: str
+    affected: bool = False
+    forced: bool = False
+    published_version: str | None = None
+    anchor: str | None = None
+    changed_files: list[str] = field(default_factory=list)
+    bump_type: str | None = None
+    proposed_version: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "registry": self.registry,
+            "affected": self.affected,
+            "forced": self.forced,
+            "published_version": self.published_version,
+            "anchor": self.anchor,
+            "changed_files": self.changed_files,
+            "bump_type": self.bump_type,
+            "proposed_version": self.proposed_version,
+            "error": self.error,
+        }
+
+
+def _git(repo_root: Path, args: list[str], timeout: int = GIT_TIMEOUT_SECONDS) -> str:
+    """Run git in the repo; raise RuntimeError with context on failure."""
+    cmd = ["git", "-C", str(repo_root), *args]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"git timed out: {' '.join(args[:3])}…") from exc
+    if result.returncode != 0:
+        raise RuntimeError(f"git failed ({' '.join(args[:3])}…): {result.stderr.strip() or result.returncode}")
+    return result.stdout.strip()
+
+
+def _npm_version(package: str) -> str:
+    """Last published version from the npm registry."""
+    result = subprocess.run(
+        ["npm", "view", package, "version", "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=REGISTRY_TIMEOUT_SECONDS,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"npm view {package} failed: {result.stderr.strip()[:200]}")
+    version = json.loads(result.stdout)
+    # A never-published name returns "null" as JSON text in some npm versions.
+    if version is None or (isinstance(version, str) and version == "null"):
+        raise RuntimeError(f"npm registry has no version for {package}")
+    if isinstance(version, list):  # multiple tags — take the latest entry
+        version = version[-1]
+    if not isinstance(version, str):
+        raise RuntimeError(f"npm view {package} returned unexpected payload")
+    return version
+
+
+def _pypi_version(package: str) -> str:
+    """Last published version from PyPI's JSON API (no extra deps)."""
+    url = f"https://pypi.org/pypi/{package}/json"
+    try:
+        with urllib.request.urlopen(url, timeout=REGISTRY_TIMEOUT_SECONDS) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise RuntimeError(f"PyPI has no project {package}") from exc
+        raise RuntimeError(f"PyPI lookup for {package} failed: HTTP {exc.code}") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise RuntimeError(f"PyPI lookup for {package} failed: {exc}") from exc
+    version = data.get("info", {}).get("version")
+    if not version:
+        raise RuntimeError(f"PyPI project {package} has no version")
+    return version
+
+
+def registry_version(registry: str, package: str) -> str:
+    """Last published version for a (registry, package-name) pair."""
+    if registry == "npm":
+        return _npm_version(package)
+    if registry == "pypi":
+        return _pypi_version(package)
+    raise RuntimeError(f"unknown registry {registry!r}")
+
+
+def _extract_version(content: str, file_name: str) -> str:
+    """Read the version string out of a version file's content."""
+    if file_name.endswith("package.json"):
+        version = json.loads(content).get("version")
+        if not version:
+            raise RuntimeError(f"{file_name}: no .version field")
+        return version
+    if file_name.endswith(".py"):
+        match = _PY_VERSION_RE.search(content)
+        if not match:
+            raise RuntimeError(f"{file_name}: no __version__ assignment")
+        return match.group(1)
+    if file_name.endswith(".toml"):
+        try:
+            import tomllib
+        except ModuleNotFoundError:  # pragma: no cover
+            import tomli as tomllib  # type: ignore[no-redef]
+        parsed = tomllib.loads(content)
+        version = parsed.get("project", {}).get("version")
+        if not version:
+            raise RuntimeError(f"{file_name}: no [project].version")
+        return version
+    raise RuntimeError(f"unsupported version file type: {file_name}")
+
+
+def _find_anchor(repo_root: Path, version_files: tuple[str, ...], published: str) -> str:
+    """Newest commit that touched a version file and left it at ``published``.
+
+    ``git log -- <file>`` lists only commits that touched the file, so
+    unrelated commits cannot masquerade as anchors. The first entry
+    (newest-first) whose file content equals the registry version is the
+    bump commit — the per-package diff origin.
+    """
+    for version_file in version_files:
+        log_shas = _git(repo_root, ["log", "--format=%H", "--", version_file]).splitlines()
+        for sha in (s for s in log_shas if s):
+            try:
+                content = _git(repo_root, ["show", f"{sha}:{version_file}"])
+            except RuntimeError:
+                continue  # file did not exist at that commit (renamed/added later)
+            try:
+                if _extract_version(content, version_file) == published:
+                    return sha
+            except RuntimeError:
+                continue
+    raise RuntimeError(
+        f"no commit found where {list(version_files)} held published version {published!r} "
+        "— registry state and git history disagree (rewritten history or foreign publish?)"
+    )
+
+
+def _bump_version_string(version: str, bump_type: str) -> str:
+    parts = version.split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        raise RuntimeError(f"cannot bump non-semver version {version!r}")
+    major, minor, patch = (int(p) for p in parts)
+    if bump_type == "major":
+        return f"{major + 1}.0.0"
+    if bump_type == "minor":
+        return f"{major}.{minor + 1}.0"
+    return f"{major}.{minor}.{patch + 1}"
+
+
+def _commits_bump_type(subjects: list[str]) -> str:
+    """Highest conventional-commit bump among commit subjects."""
+    bump = _DEFAULT_BUMP
+    for subject in subjects:
+        for pattern, bump_type in _BUMP_RES:
+            if pattern.search(subject):
+                if bump == "major" or bump_type == "major":
+                    bump = "major"
+                elif bump == "patch" and bump_type == "minor":
+                    bump = "minor"
+                break
+    return bump
+
+
+class ReleasePlanner:
+    """Compute the affected-package plan for a repo with a release map."""
+
+    def __init__(
+        self,
+        repo_root: Path,
+        release_map: ReleaseMap,
+        *,
+        force_packages: tuple[str, ...] = (),
+        registry_lookup: Callable[[str, str], str] = registry_version,
+    ) -> None:
+        self.repo_root = repo_root
+        self.release_map = release_map
+        self.force_packages = force_packages
+        self._registry_lookup = registry_lookup  # injectable for tests
+
+    def plan(self) -> list[PackagePlan]:
+        plans: list[PackagePlan] = []
+        for pkg in self.release_map.packages:
+            plans.append(self._plan_package(pkg))
+        return plans
+
+    def _plan_package(self, pkg: PackageEntry) -> PackagePlan:
+        result = PackagePlan(name=pkg.name, registry=pkg.registry)
+        forced = pkg.name in self.force_packages
+        if forced:
+            result.forced = True
+
+        # 1. Registry ground truth for the last published version.
+        published: str | None = None
+        errors: list[str] = []
+        for registry, name in pkg.registry_names():
+            try:
+                published = self._registry_lookup(registry, name)
+                break  # first registry in priority order wins
+            except RuntimeError as exc:
+                errors.append(f"{registry}:{name}: {exc}")
+        if published is None:
+            # Both lookups failed (or none configured). For a read-only plan
+            # this is reportable, not fatal — the package shows as unknown.
+            result.error = "; ".join(errors) or "no registry configured"
+            log.warning("release plan: registry lookup failed for %s: %s", pkg.name, result.error)
+            if forced:
+                result.affected = True
+            return result
+        result.published_version = published
+
+        # 2. Per-package anchor commit (the bump that produced `published`).
+        try:
+            anchor = _find_anchor(self.repo_root, pkg.version_files, published)
+        except RuntimeError as exc:
+            result.error = str(exc)
+            log.warning("release plan: anchor lookup failed for %s: %s", pkg.name, exc)
+            if forced:
+                result.affected = True
+            return result
+        result.anchor = anchor
+
+        # 3. Changed paths since the anchor, filtered through the map.
+        changed = _git(self.repo_root, ["diff", "--name-only", f"{anchor}..HEAD"]).splitlines()
+        changed = [c for c in changed if c]
+        hits = [c for c in changed if pkg.affects(c)]
+        result.changed_files = hits
+        result.affected = bool(hits) or forced
+
+        if result.affected:
+            # 4. Proposed bump from conventional commits touching the hit
+            #    files (mapped paths only — excludes like scripts/docs_render
+            #    must not inflate an unrelated package's bump type).
+            if hits:
+                subjects = _git(
+                    self.repo_root,
+                    ["log", "--format=%s", f"{anchor}..HEAD", "--", *hits],
+                ).splitlines()
+                result.bump_type = _commits_bump_type([s for s in subjects if s])
+            else:
+                result.bump_type = _DEFAULT_BUMP  # forced, no source changes
+            result.proposed_version = _bump_version_string(published, result.bump_type)
+        return result
+
+
+def run(
+    repo_root: Path,
+    *,
+    force_packages: tuple[str, ...] = (),
+    as_json: bool = False,
+) -> None:
+    """CLI entry for ``myk-pi-tools release plan``.
+
+    No release-map.toml → lockstep mode message, exit 0 (generic repos
+    keep the default behavior; issue #965). Invalid map → hard error.
+    """
+    from myk_pi_tools.release.release_map import (
+        ReleaseMapError,
+        find_release_map,
+        load_release_map,
+    )
+
+    map_path = find_release_map(repo_root)
+    if map_path is None:
+        if as_json:
+            click_echo_json({"mode": "lockstep", "affected": []})
+        else:
+            print("No release-map.toml found — lockstep mode (all version files bump together).")
+            print("Nothing to plan. See issue #965 for the scoped-release opt-in.")
+        return
+
+    try:
+        release_map = load_release_map(repo_root)
+    except ReleaseMapError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+    unknown_forced = [p for p in force_packages if p not in {x.name for x in release_map.packages}]
+    if unknown_forced:
+        print(f"error: --force-package names not in the map: {', '.join(unknown_forced)}", file=sys.stderr)
+        raise SystemExit(1)
+
+    planner = ReleasePlanner(repo_root, release_map, force_packages=force_packages)
+    plans = planner.plan()
+
+    if as_json:
+        click_echo_json({
+            "mode": "scoped",
+            "map": str(map_path),
+            "affected": [p.to_dict() for p in plans if p.affected],
+            "skipped": [p.to_dict() for p in plans if not p.affected],
+        })
+        return
+
+    affected = [p for p in plans if p.affected]
+    skipped = [p for p in plans if not p.affected]
+    print(f"Scoped release plan ({release_map.mode} mode, map: {map_path.name})")
+    print()
+    if affected:
+        print(f"Affected packages ({len(affected)} of {len(plans)}):")
+        for p in affected:
+            tag = " [forced]" if p.forced else ""
+            if p.error:
+                print(f"  {p.name}: registry/history error — {p.error}{tag}")
+                continue
+            print(
+                f"  {p.name}  {p.published_version} → {p.proposed_version}"
+                f"  ({p.bump_type}; {len(p.changed_files)} changed files"
+                f" since {(p.anchor or '?')[:8]}){tag}"
+            )
+    else:
+        print("No affected packages — nothing to release.")
+    if skipped:
+        print()
+        print(f"Unchanged (skipped): {', '.join(p.name for p in skipped)}")
+    if release_map.container_rebuild_paths:
+        print()
+        print(
+            "Container image rebuilds when any package ships"
+            + (
+                f" or when {', '.join(release_map.container_rebuild_paths)} change"
+                if release_map.container_rebuild_paths
+                else ""
+            )
+            + "."
+        )
+
+
+def click_echo_json(payload: dict[str, object]) -> None:
+    """Print JSON without importing click here (CLI layer owns click)."""
+    print(json.dumps(payload, indent=2))
