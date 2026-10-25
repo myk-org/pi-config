@@ -1,6 +1,6 @@
 {
   "name": "@myk-org/pi-vertex-claude",
-  "version": "4.17.1",
+  "version": "4.18.0",
   "description": "Google Vertex AI Claude provider for Pi coding agent",
   "keywords": [
     "pi-package",
