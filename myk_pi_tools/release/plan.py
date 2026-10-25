@@ -39,13 +39,20 @@ log = create_logger("myk_pi_tools.release.plan")
 REGISTRY_TIMEOUT_SECONDS = 30
 GIT_TIMEOUT_SECONDS = 60
 
-# Conventional-commit bump types, checked in priority order.
-_BUMP_RES = (
+# Conventional-commit bump rules. SUBJECT rules match only the first line
+# of a commit message (the subject); FOOTER rules match any line of the
+# body. Splitting them keeps prose examples in a body ("...as in `feat: x`")
+# from inflating the bump, while real BREAKING CHANGE footers still count
+# (Qodo PR #966 round 3).
+_SUBJECT_BUMP_RES = (
     (re.compile(r"^[a-z]+(\([^)]*\))?!:"), "major"),
-    (re.compile(r"^BREAKING[ -]CHANGE", re.IGNORECASE), "major"),
     (re.compile(r"^feat(\([^)]*\))?:"), "minor"),
     (re.compile(r"^fix(\([^)]*\))?:"), "patch"),
 )
+# The colon is required: the conventional-commits footer is exactly
+# "BREAKING CHANGE:" — prose like "breaking change risk is low" must not
+# match (Qodo PR #966 round 3).
+_FOOTER_BUMP_RES = ((re.compile(r"^BREAKING[ -]CHANGE:", re.IGNORECASE), "major"),)
 _DEFAULT_BUMP = "patch"
 
 _PY_VERSION_RE = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
@@ -214,23 +221,42 @@ def _commits_bump_type(messages: list[str]) -> str:
     """Highest conventional-commit bump among commit messages.
 
     Each entry is a FULL commit message (``--format=%B``): the subject AND
-    the body footers, so ``BREAKING CHANGE:`` under a ``feat:`` subject
-    reaches the major rule (Qodo PR #966 — subject-only scanning gave
-    breaking changes minor versions). Every line of every message is
-    tested against the line-anchored rules.
+    the body footers, so a ``BREAKING CHANGE:`` footer under a ``feat:``
+    subject reaches the major rule (Qodo PR #966 — subject-only scanning
+    gave breaking changes minor versions).
+
+    Scope of each rule set (Qodo PR #966 round 3):
+
+    - SUBJECT rules (``feat:``, ``fix:``, ``feat!``) match only the FIRST
+      line of a message — prose examples in a body ("...as in `feat: x`")
+      must not inflate the bump.
+    - FOOTER rules (``BREAKING CHANGE:``) match any line, but require the
+      trailing colon — prose like "breaking change risk is low" is not a
+      conventional-commits footer.
     """
     bump = _DEFAULT_BUMP
-    lines: list[str] = []
+
+    def _apply(rule_bump: str) -> None:
+        nonlocal bump
+        if bump == "major" or rule_bump == "major":
+            bump = "major"
+        elif bump == "patch" and rule_bump == "minor":
+            bump = "minor"
+
     for message in messages:
-        lines.extend(message.splitlines())
-    for line in lines:
-        for pattern, bump_type in _BUMP_RES:
-            if pattern.search(line):
-                if bump == "major" or bump_type == "major":
-                    bump = "major"
-                elif bump == "patch" and bump_type == "minor":
-                    bump = "minor"
+        lines = message.splitlines()
+        if not lines:
+            continue
+        subject, body = lines[0], lines[1:]
+        for pattern, rule_bump in _SUBJECT_BUMP_RES:
+            if pattern.search(subject):
+                _apply(rule_bump)
                 break
+        for line in body:
+            for pattern, rule_bump in _FOOTER_BUMP_RES:
+                if pattern.search(line):
+                    _apply(rule_bump)
+                    break
     return bump
 
 
@@ -243,12 +269,15 @@ class ReleasePlanner:
         release_map: ReleaseMap,
         *,
         force_packages: tuple[str, ...] = (),
-        registry_lookup: Callable[[str, str], str] = registry_version,
+        registry_lookup: Callable[[str, str], str] | None = None,
     ) -> None:
         self.repo_root = repo_root
         self.release_map = release_map
         self.force_packages = force_packages
-        self._registry_lookup = registry_lookup  # injectable for tests
+        # Late-bound so tests can monkeypatch plan.registry_version and
+        # have run()-level (Click command) tests exercise the real default
+        # (Qodo PR #966 round 3 — a bound default arg ignored patches).
+        self._registry_lookup = registry_lookup or registry_version
 
     def plan(self) -> list[PackagePlan]:
         plans: list[PackagePlan] = []
@@ -268,19 +297,38 @@ class ReleasePlanner:
             return {"rebuild": False, "reason": "no rebuild paths configured"}
         any_affected = any(p.affected for p in plans)
         changed_paths: list[str] = []
+        git_error: str | None = None
+        last_tag = ""
         try:
             last_tag = _git(self.repo_root, ["describe", "--abbrev=0", "--tags"])
             changed = _git(self.repo_root, ["diff", "--name-only", f"{last_tag}..HEAD"]).splitlines()
             changed_paths = [c for c in changed if c and _path_under_any(c, self.release_map.container_rebuild_paths)]
-        except RuntimeError:
-            pass  # no tag yet (or git failed) — package-affected check only
-        rebuild = any_affected or bool(changed_paths)
-        why = (
-            f"rebuild paths changed since {last_tag}: {changed_paths}"
-            if changed_paths
-            else ("a package ships" if any_affected else "no trigger")
-        )
-        return {"rebuild": rebuild, "changed_rebuild_paths": changed_paths, "reason": why}
+        except RuntimeError as exc:
+            # No tag yet, or git failed. Either way the rebuild-path check
+            # could not run — a confident "no rebuild" here could skip an
+            # image rebuild after a Dockerfile change, so the decision is
+            # conservative: rebuild unless a package ships anyway (which
+            # already forces a rebuild) and always report why (Qodo PR #966
+            # round 3 — this used to be silently swallowed).
+            git_error = str(exc)
+        rebuild = any_affected or bool(changed_paths) or git_error is not None
+        if any_affected:
+            why = "a package ships"
+        elif changed_paths:
+            why = f"rebuild paths changed since {last_tag}: {changed_paths}"
+        elif git_error is not None:
+            why = (
+                f"could not determine rebuild-path changes ({git_error}) — "
+                "no repo tag or git failure; being conservative"
+            )
+        else:
+            why = "no trigger"
+        return {
+            "rebuild": rebuild,
+            "changed_rebuild_paths": changed_paths,
+            "reason": why,
+            "indeterminate": git_error is not None,
+        }
 
     def _plan_package(self, pkg: PackageEntry) -> PackagePlan:
         result = PackagePlan(name=pkg.name, registry=pkg.registry)
@@ -308,16 +356,23 @@ class ReleasePlanner:
                     f"but {name} is {version!r} — the artifacts must share one version"
                 )
                 log.warning("release plan: %s: %s", pkg.name, result.error)
-                if forced:
-                    result.affected = True
                 return result
         if published is None:
             # All lookups failed (or none configured). For a read-only plan
             # this is reportable, not fatal — the package shows as errored.
             result.error = "; ".join(errors) or "no registry configured"
             log.warning("release plan: registry lookup failed for %s: %s", pkg.name, result.error)
-            if forced:
-                result.affected = True
+            return result
+        if errors:
+            # A partial registry failure leaves the cross-registry version
+            # agreement unverified. Planning from the successful registry
+            # alone would hide a divergence, so the package is reported as
+            # errored instead (Qodo PR #966 round 3).
+            result.error = (
+                f"registry lookup failed ({'; '.join(errors)}) — cross-registry "
+                f"version agreement for {pkg.registry_names()} is unverified"
+            )
+            log.warning("release plan: %s: %s", pkg.name, result.error)
             return result
         result.published_version = published
 
@@ -328,7 +383,11 @@ class ReleasePlanner:
         except RuntimeError as exc:
             result.error = str(exc)
             log.warning("release plan: git operation failed for %s: %s", pkg.name, exc)
-            result.affected = forced
+            # Forced or not: an errored package has no proposed version, so
+            # it never enters the affected/shipping output (Qodo PR #966
+            # round 3 — forced errored packages used to appear in both
+            # lists without a usable version).
+            result.affected = False
             return result
 
     def _plan_from_anchor(
@@ -416,7 +475,7 @@ def run(
         click_echo_json({
             "mode": "scoped",
             "map": str(map_path),
-            "affected": [p.to_dict() for p in plans if p.affected],
+            "affected": [p.to_dict() for p in plans if p.affected and not p.error],
             "skipped": [p.to_dict() for p in plans if not p.affected and not p.error],
             "errored": [p.to_dict() for p in plans if p.error],
             "container": container,

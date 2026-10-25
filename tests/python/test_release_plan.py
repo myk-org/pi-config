@@ -290,7 +290,12 @@ def make_planner(repo: Path, published: dict[tuple[str, str], str], **kwargs: ob
 
 class TestPlanner:
     def test_no_changes_since_publish_all_skipped(self, fixture_repo: Path) -> None:
-        published = {("npm", "poc"): "1.0.0", ("pypi", "tools"): "1.0.0", ("npm", "@org/sidecar"): "1.0.0"}
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
         plans = make_planner(fixture_repo, published).plan()
         assert all(not p.affected for p in plans)
         assert all(p.anchor is not None for p in plans)
@@ -298,7 +303,12 @@ class TestPlanner:
     def test_extension_change_affects_only_poc_patch(self, fixture_repo: Path) -> None:
         (fixture_repo / "extensions" / "b.ts").write_text("// new\n", encoding="utf-8")
         commit(fixture_repo, "fix(orchestrator): guard the gate", "extensions/b.ts")
-        published = {("npm", "poc"): "1.0.0", ("pypi", "tools"): "1.0.0", ("npm", "@org/sidecar"): "1.0.0"}
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
         plans = {p.name: p for p in make_planner(fixture_repo, published).plan()}
         assert plans["poc"].affected
         assert plans["poc"].proposed_version == "1.0.1"
@@ -309,7 +319,12 @@ class TestPlanner:
     def test_feat_commit_bumps_minor(self, fixture_repo: Path) -> None:
         (fixture_repo / "myk_pi_tools" / "new.py").write_text("x = 1\n", encoding="utf-8")
         commit(fixture_repo, "feat(reviews): add scoped release plan", "myk_pi_tools/new.py")
-        published = {("npm", "poc"): "1.0.0", ("pypi", "tools"): "1.0.0", ("npm", "@org/sidecar"): "1.0.0"}
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
         plans = {p.name: p for p in make_planner(fixture_repo, published).plan()}
         assert plans["tools"].affected
         assert plans["tools"].proposed_version == "1.1.0"
@@ -317,7 +332,12 @@ class TestPlanner:
 
     def test_per_package_window_reaches_back(self, fixture_repo: Path) -> None:
         # poc published 1.0.0; tools was last published at the 0.9.0 commit.
-        published = {("npm", "poc"): "1.0.0", ("pypi", "tools"): "0.9.0", ("npm", "@org/sidecar"): "1.0.0"}
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "0.9.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
         plans = {p.name: p for p in make_planner(fixture_repo, published).plan()}
         # The 0.9.0→1.0.0 bump commit itself touched myk_pi_tools/__init__.py
         # (a tools path), so tools' window includes it → affected.
@@ -332,12 +352,22 @@ class TestPlanner:
         render.parent.mkdir(parents=True, exist_ok=True)
         render.write_text("x = 1\n", encoding="utf-8")
         commit(fixture_repo, "test: add coverage", "tests/python/test_x.py", "scripts/docs_render/render.py")
-        published = {("npm", "poc"): "1.0.0", ("pypi", "tools"): "1.0.0", ("npm", "@org/sidecar"): "1.0.0"}
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
         plans = make_planner(fixture_repo, published).plan()
         assert all(not p.affected for p in plans)
 
     def test_force_package_includes_without_changes(self, fixture_repo: Path) -> None:
-        published = {("npm", "poc"): "1.0.0", ("pypi", "tools"): "1.0.0", ("npm", "@org/sidecar"): "1.0.0"}
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
         planner = make_planner(fixture_repo, published, force_packages=("sidecar",))
         plans = {p.name: p for p in planner.plan()}
         assert plans["sidecar"].affected
@@ -356,7 +386,12 @@ class TestPlanner:
 
     def test_anchor_not_found_is_reported(self, fixture_repo: Path) -> None:
         # Registry claims a version git history never had.
-        published = {("npm", "poc"): "9.9.9", ("pypi", "tools"): "1.0.0", ("npm", "@org/sidecar"): "1.0.0"}
+        published = {
+            ("npm", "poc"): "9.9.9",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
         plans = {p.name: p for p in make_planner(fixture_repo, published).plan()}
         assert "9.9.9" in (plans["poc"].error or "")
         assert not plans["poc"].affected
@@ -364,7 +399,12 @@ class TestPlanner:
     def test_sidecar_prefers_npm_ground_truth(self, fixture_repo: Path) -> None:
         (fixture_repo / "packages" / "sidecar" / "src" / "new.ts").write_text("x = 1\n", encoding="utf-8")
         commit(fixture_repo, "fix(sidecar): session handling", "packages/sidecar/src/new.ts")
-        published = {("npm", "poc"): "1.0.0", ("npm", "@org/sidecar"): "1.0.0", ("pypi", "tools"): "1.0.0"}
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+        }
         plans = {p.name: p for p in make_planner(fixture_repo, published).plan()}
         assert plans["sidecar"].affected
         assert plans["sidecar"].proposed_version == "1.0.1"
@@ -436,8 +476,10 @@ class TestRegistryAgreement:
         assert "divergence" in (plans["sidecar"].error or "")
         assert not plans["sidecar"].affected
 
-    def test_failed_secondary_registry_still_plans(self, fixture_repo: Path) -> None:
-        # npm succeeds, pypi lookup fails → the npm answer stands.
+    def test_failed_secondary_registry_is_errored_not_planned(self, fixture_repo: Path) -> None:
+        # npm succeeds, pypi lookup fails → planning from npm alone would
+        # skip the cross-registry agreement check, so the package is
+        # errored instead (Qodo PR #966 round 3).
         published = {
             ("npm", "poc"): "1.0.0",
             ("pypi", "tools"): "1.0.0",
@@ -446,8 +488,8 @@ class TestRegistryAgreement:
         (fixture_repo / "packages" / "sidecar" / "src" / "new.ts").write_text("x = 1\n", encoding="utf-8")
         commit(fixture_repo, "fix(sidecar): x", "packages/sidecar/src/new.ts")
         plans = {p.name: p for p in make_planner(fixture_repo, published).plan()}
-        assert plans["sidecar"].affected
-        assert plans["sidecar"].proposed_version == "1.0.1"
+        assert "unverified" in (plans["sidecar"].error or "")
+        assert not plans["sidecar"].affected
 
 
 class TestPlannerGlobalExcludes:
@@ -458,7 +500,12 @@ class TestPlannerGlobalExcludes:
         test_file.parent.mkdir(parents=True, exist_ok=True)
         test_file.write_text("def test_x(): pass\n", encoding="utf-8")
         commit(fixture_repo, "test: sidecar coverage", "packages/sidecar/tests/test_x.py")
-        published = {("npm", "poc"): "1.0.0", ("pypi", "tools"): "1.0.0", ("npm", "@org/sidecar"): "1.0.0"}
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
         plans = {p.name: p for p in make_planner(fixture_repo, published).plan()}
         assert not plans["sidecar"].affected
 
@@ -467,14 +514,27 @@ class TestContainerRebuild:
     def test_rebuild_when_any_package_affected(self, fixture_repo: Path) -> None:
         (fixture_repo / "extensions" / "b.ts").write_text("// new\n", encoding="utf-8")
         commit(fixture_repo, "fix: gate", "extensions/b.ts")
-        published = {("npm", "poc"): "1.0.0", ("pypi", "tools"): "1.0.0", ("npm", "@org/sidecar"): "1.0.0"}
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
         planner = make_planner(fixture_repo, published)
         container = planner.container_rebuild(planner.plan())
         assert container["rebuild"] is True
         assert "a package ships" in str(container["reason"])
 
     def test_no_rebuild_when_nothing_affected(self, fixture_repo: Path) -> None:
-        published = {("npm", "poc"): "1.0.0", ("pypi", "tools"): "1.0.0", ("npm", "@org/sidecar"): "1.0.0"}
+        # Tag the repo so the rebuild-path check has a baseline; without a
+        # tag the decision is conservatively "rebuild" (indeterminate).
+        git(fixture_repo, "tag", "v1.0.0")
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
         planner = make_planner(fixture_repo, published)
         container = planner.container_rebuild(planner.plan())
         assert container["rebuild"] is False
@@ -483,7 +543,12 @@ class TestContainerRebuild:
         git(fixture_repo, "tag", "v1.0.0")
         (fixture_repo / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
         commit(fixture_repo, "build: image tweak", "Dockerfile")
-        published = {("npm", "poc"): "1.0.0", ("pypi", "tools"): "1.0.0", ("npm", "@org/sidecar"): "1.0.0"}
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
         planner = make_planner(fixture_repo, published)
         container = planner.container_rebuild(planner.plan())
         assert container["rebuild"] is True
@@ -502,7 +567,12 @@ class TestGitFailureContainment:
             return real_git(repo_root, args, timeout)
 
         monkeypatch.setattr(plan_mod, "_git", failing_git)
-        published = {("npm", "poc"): "1.0.0", ("pypi", "tools"): "1.0.0", ("npm", "@org/sidecar"): "1.0.0"}
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
         plans = make_planner(fixture_repo, published).plan()
         # Every package errored on the diff — but the plan COMPLETED.
         assert all(p.error is not None for p in plans)
@@ -584,7 +654,12 @@ class TestClickCommand:
 
 class TestErroredPresentation:
     def test_errored_packages_get_their_own_section(self, fixture_repo: Path) -> None:
-        published = {("npm", "poc"): "9.9.9", ("pypi", "tools"): "1.0.0", ("npm", "@org/sidecar"): "1.0.0"}
+        published = {
+            ("npm", "poc"): "9.9.9",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
         planner = make_planner(fixture_repo, published)
         plans = planner.plan()
         errored = [p for p in plans if p.error]
@@ -592,3 +667,129 @@ class TestErroredPresentation:
         # An errored package must not be counted as unchanged/skipped.
         skipped = [p for p in plans if not p.affected and not p.error]
         assert "poc" not in [p.name for p in skipped]
+
+
+# ── Round-3 behavior (Qodo PR #966) ──────────────────────────────────────
+
+
+class TestBumpScoping:
+    def test_breaking_footer_requires_colon(self) -> None:
+        # Prose ("Breaking change risk is low") is not a footer.
+        message = "fix: tweak\n\nBreaking change risk is low here.\n"
+        assert _commits_bump_type([message]) == "patch"
+
+    def test_real_breaking_footer_still_majors(self) -> None:
+        message = "fix: tweak\n\nBREAKING CHANGE: drops the old flag\n"
+        assert _commits_bump_type([message]) == "major"
+
+    def test_body_example_lines_do_not_inflate_bump(self) -> None:
+        # A body that MENTIONS "feat:" in prose/examples must not turn a
+        # fix commit into a minor release.
+        message = (
+            "fix: guard the gate\n\n"
+            "Rewrite suggestion examples to use conventional subjects like\n"
+            "feat: add thing\nfeat!: rename thing\n"
+        )
+        assert _commits_bump_type([message]) == "patch"
+
+    def test_subject_feat_still_minor(self) -> None:
+        assert _commits_bump_type(["feat: a"]) == "minor"
+
+
+class TestContainerGitFailure:
+    def test_git_failure_is_conservative_rebuild(self, fixture_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import myk_pi_tools.release.plan as plan_mod
+
+        real_git = plan_mod._git
+
+        def failing_git(repo_root: Path, args: list[str], timeout: int = 60) -> str:
+            if args and args[0] in ("describe", "diff"):
+                raise RuntimeError("git broken")
+            return real_git(repo_root, args, timeout)
+
+        monkeypatch.setattr(plan_mod, "_git", failing_git)
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
+        planner = make_planner(fixture_repo, published)
+        container = planner.container_rebuild(planner.plan())
+        # Never a confident False when the rebuild-path check could not run.
+        assert container["rebuild"] is True
+        assert container["indeterminate"] is True
+        assert "conservative" in str(container["reason"])
+
+    def test_no_repo_tag_is_conservative_rebuild(self, fixture_repo: Path) -> None:
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
+        planner = make_planner(fixture_repo, published)
+        container = planner.container_rebuild(planner.plan())
+        assert container["rebuild"] is True
+        assert container["indeterminate"] is True
+
+
+class TestForcedErroredExclusion:
+    def test_forced_errored_package_never_in_affected(
+        self,
+        fixture_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import json as _json
+
+        import myk_pi_tools.release.plan as plan_mod
+
+        # poc 9.9.9 has no anchor → errored; force must not rescue it into
+        # the affected/shipping list.
+        published = {
+            ("npm", "poc"): "9.9.9",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
+
+        def fake_lookup(registry: str, name: str) -> str:
+            return published[(registry, name)]
+
+        # run() builds its own planner with the module default — patch it
+        # so the test never touches the network.
+        monkeypatch.setattr(plan_mod, "registry_version", fake_lookup)
+        planner = make_planner(fixture_repo, published, force_packages=("poc",))
+        plans = {p.name: p for p in planner.plan()}
+        assert plans["poc"].error is not None
+        assert plans["poc"].forced
+        assert not plans["poc"].affected
+
+        # And through run()'s JSON: errored appears once, in "errored" only.
+        plan_run(fixture_repo, force_packages=("poc",), as_json=True)
+        payload = _json.loads(capsys.readouterr().out)
+        assert [p["name"] for p in payload["errored"]] == ["poc"]
+        assert [p["name"] for p in payload["affected"]] == []
+        assert "poc" not in [p["name"] for p in payload["skipped"]]
+
+
+class TestRunErroredOutput:
+    def test_errored_section_in_human_output(
+        self, fixture_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # run()-level regression test: the human-readable Errored section
+        # renders for a package whose registry version has no anchor
+        # (Qodo PR #966 round 3 — this path had no CLI-level coverage).
+        import myk_pi_tools.release.plan as plan_mod
+
+        def fake_lookup(registry: str, name: str) -> str:  # noqa: ARG001
+            if name == "poc":
+                return "9.9.9"  # never anchored
+            return "1.0.0"
+
+        monkeypatch.setattr(plan_mod, "registry_version", fake_lookup)
+        plan_run(fixture_repo)
+        out = capsys.readouterr().out
+        assert "Errored" in out
+        assert "poc" in out.split("Errored")[1]
