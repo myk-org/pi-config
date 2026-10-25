@@ -70,9 +70,14 @@ function readCandidates(file: string): PreferenceCandidate[] {
 }
 
 /** Append a preference candidate for dreaming review. Synchronous by
- *  design: the queue file is bounded (≤ MAX_CANDIDATES short lines), so
- *  the append is sub-millisecond and never blocks user input. Returns
- *  "queued" or "duplicate" (exact text already pending review). */
+ *  design: a single sub-millisecond line append. APPEND-ONLY (Qodo PR
+ *  #964): the old read-modify-write lost a concurrent session's candidate
+ *  when both read the same snapshot and each replaced the whole file.
+ *  `appendFileSync` composes line appends from concurrent writers — the
+ *  read-before-append dedup keeps the common case duplicate-free, and a
+ *  race-window duplicate is harmless (dreaming dedups at distillation).
+ *  The size cap is enforced during dream compaction, not here: a rewrite
+ *  here would reintroduce the lost-update race. */
 export function appendPreferenceCandidate(
   cwd: string,
   text: string,
@@ -81,14 +86,10 @@ export function appendPreferenceCandidate(
   const file = candidateQueuePath(cwd);
   const existing = readCandidates(file);
   if (existing.some((c) => c.text === text)) return "duplicate";
-  existing.push({
-    text,
-    sourceSession: sourceSession ?? null,
-    timestamp: new Date().toISOString(),
-  });
-  const trimmed =
-    existing.length > MAX_CANDIDATES ? existing.slice(-MAX_CANDIDATES) : existing;
-  fs.writeFileSync(file, trimmed.map((c) => JSON.stringify(c)).join("\n") + "\n");
+  fs.appendFileSync(
+    file,
+    JSON.stringify({ text, sourceSession: sourceSession ?? null, timestamp: new Date().toISOString() }) + "\n",
+  );
   return "queued";
 }
 
@@ -116,7 +117,11 @@ export function registerPreferenceExtractor(pi: ExtensionAPI): void {
     for (const pref of preferences) {
       try {
         const status = appendPreferenceCandidate(ctx.cwd, pref, sourceSession);
-        log.info("preference_candidate", status, pref.slice(0, 60));
+        // Routine queue/duplicate writes are debug, not info (Qodo PR
+        // #964): every user message with a preference-shaped sentence
+        // logs here — the queue file itself is the record, and info-level
+        // noise drowns real events. Failures stay warn.
+        log.debug("preference_candidate", status, pref.slice(0, 60));
       } catch (err) {
         log.warn("preference candidate queue append failed:", (err as Error)?.message || err);
       }

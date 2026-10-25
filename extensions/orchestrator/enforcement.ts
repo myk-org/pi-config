@@ -458,7 +458,7 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
           `Blocked: recursive rm must use ABSOLUTE paths — "${relativeRm.stmt.trim()}" targets ` +
           `"${relativeRm.target}", which is relative. A persistent "always allow" stores the ` +
           `statement text, so a relative target would approve the same text in ANY directory. ` +
-          `Rewrite as rm -rf ${resolve(cwd, relativeRm.target)} (full path) and re-run. ` +
+          `Rewrite as rm -rf ${resolve(resolveEffectiveCwd(command, cwd), relativeRm.target)} (full path) and re-run. ` +
           `Do NOT bypass with an equivalent command (find -delete, git clean, perl, python ` +
           `os.remove). Stop and report this block to the user if a rewrite is not possible.`,
       };

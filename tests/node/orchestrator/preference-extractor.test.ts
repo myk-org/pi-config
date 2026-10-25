@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { registerPreferenceExtractor, readPreferenceCandidates } from "../../../extensions/orchestrator/preference-extractor.js";
+import { registerPreferenceExtractor, readPreferenceCandidates, appendPreferenceCandidate } from "../../../extensions/orchestrator/preference-extractor.js";
 
 interface Harness {
   pi: any;
@@ -111,12 +111,12 @@ describe("registerPreferenceExtractor — candidate queue, no direct writes (iss
     );
   });
 
-  it("does not queue one-off grants or questions", async () => {
+  it("does not queue one-off grants nor questions", async () => {
     const h = makeHarness(cwd);
     registerPreferenceExtractor(h.pi);
     await h.emit("input", { text: "You can merge this PR, I always trust your judgment here" });
     await h.emit("input", { text: "Do I always need to run the linter before committing?" });
-    assert.equal(readPreferenceCandidates(cwd).length, 0, "grants and questions must not queue");
+    assert.equal(readPreferenceCandidates(cwd).length, 0, "grants plus questions must not queue");
   });
 
   it("keeps the FULL sentence — no mid-sentence cutoff at 100 chars (issue #961)", async () => {
@@ -134,7 +134,7 @@ describe("registerPreferenceExtractor — candidate queue, no direct writes (iss
     );
   });
 
-  it("skips slash commands and short messages", async () => {
+  it("skips slash commands plus short messages", async () => {
     const h = makeHarness(cwd);
     registerPreferenceExtractor(h.pi);
     await h.emit("input", { text: "/remember I always want tests run before merging anything" });
@@ -142,12 +142,23 @@ describe("registerPreferenceExtractor — candidate queue, no direct writes (iss
     assert.equal(readPreferenceCandidates(cwd).length, 0);
   });
 
-  it("queues at most 3 candidates per message and caps the file", async () => {
+  it("queues at most 3 candidates per message", async () => {
     const h = makeHarness(cwd);
     registerPreferenceExtractor(h.pi);
     await h.emit("input", {
       text: "I prefer tabs. I prefer spaces. I prefer semicolons. I prefer no semicolons. I prefer dark mode.",
     });
     assert.equal(readPreferenceCandidates(cwd).length, 3, "extractPreferences caps at 3 per message");
+  });
+
+  it("appends without losing prior candidates — append-only queue (Qodo #964)", () => {
+    // The old read-modify-write lost a concurrent session's candidate when
+    // both read the same snapshot. appendFileSync composes line appends.
+    const text = "From now on I always want concise status lines";
+    assert.equal(appendPreferenceCandidate(cwd, text, "session-a"), "queued");
+    assert.equal(appendPreferenceCandidate(cwd, "From now on I always want UTC timestamps", "session-b"), "queued");
+    const candidates = readPreferenceCandidates(cwd);
+    assert.equal(candidates.length, 2, "both candidates must survive");
+    assert.equal(candidates[0]!.text, text);
   });
 });

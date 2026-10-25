@@ -136,8 +136,12 @@ export function registerDreaming(
       `   - Durable standing preference → DISTILL it into a clean one-line [preference]\n` +
       `     (≤100 chars, actionable, no verbatim chatter) and add to preferences.md\n` +
       `   - Task-scoped instruction, one-off ask, question, or already covered → discard\n` +
-      `   After processing every candidate, rewrite preference-candidates.jsonl as an empty\n` +
-      `   file (truncate it to nothing).\n` +
+      `   After processing: RE-READ preference-candidates.jsonl and rewrite it keeping ONLY\n` +
+      `   the entries that appeared after your first read — the extractor appends\n` +
+      `   concurrently, so do NOT truncate the whole file (an entry queued between your\n` +
+      `   read and your rewrite would be erased before any dream cycle reviewed it).\n` +
+      `   Keep the file bounded: if it exceeds 200 lines, also drop the oldest entries\n` +
+      `   beyond that cap.\n` +
       `4. Scan past session files for unprocessed knowledge. Check if ${topicsDir}/../.dream-watermark exists.\n` +
       `   If it does, read the timestamp — only process sessions newer than that.\n` +
       `   Session directory: find .jsonl files under the pi sessions directory.\n` +

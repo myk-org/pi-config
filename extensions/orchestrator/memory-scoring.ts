@@ -674,13 +674,30 @@ const GRANT_PHRASE_RE: RegExp[] = [
   /\b(this|that|specific) (pr|issue|task|ticket|branch)\b/i,
 ];
 
+/** Strip quoted spans for natural-language guardrail text: double-quoted
+ *  spans always; single-quoted spans only when the opening quote is not
+ *  mid-word (excludes contractions like "user's"). Quoting someone else's
+ *  words is not granting or asking them (live-battery false positive,
+ *  issue #961): 'Never tell the user "you can test it live"' must not read
+ *  as a grant. */
+function stripQuotedText(text: string): string {
+  let out = text.replace(/"(?:\\.|[^"\\])*"/g, '""');
+  // Single quotes: opening ' must be at start or after whitespace/bracket —
+  // never directly after a letter (that is a contraction), and the span must
+  // contain a space (a quotation, not a possessive artifact).
+  out = out.replace(/(^|[\s(\[{])'([^']*\s[^']*)'/g, "$1''");
+  return out;
+}
+
 /** Detect one-off grant phrasing (shared by extractor and memory_add guardrail). */
 export function isGrantText(text: string): boolean {
+  // Quoted payloads are stripped first — a quoted example is not a grant.
   // Classification is logged (Qodo 64954ee5): the negation-aware grant
   // patterns decide whether a permission-looking sentence is a durable
   // rule or a one-off grant, and silent decisions left runtime
   // diagnostics blind when the classification changed behavior.
-  const matched = GRANT_PHRASE_RE.find((re) => re.test(text));
+  const stripped = stripQuotedText(text);
+  const matched = GRANT_PHRASE_RE.find((re) => re.test(stripped));
   if (matched) {
     memLog.debug("memory-scoring: grant phrase detected", text.slice(0, 120), matched.source);
   }
@@ -697,31 +714,62 @@ export function isGrantText(text: string): boolean {
  *  this regex. */
 const TASK_SCOPED_RE: RegExp[] = [
   // Deliverable asks tied to a completion event: "once it's done I want an
-  // html report", "when you're finished, generate a summary", "after this
-  // is done, give me a table". The want/give clause is what makes it a
-  // one-off deliverable ask rather than a standing workflow rule.
-  /\b(?:when|once|after)\b[^.?!]{0,50}\b(?:done|finished|complete[d]?)\b[^.?!]{0,60}\b(?:i (?:want|need|would like|'d like)|give me|send me|show me|produce|generate|create|make)\b/i,
+  // html report", "after this is done, give me a table". Only FIRST-PERSON
+  // wants count (Qodo PR #964): bare make/create/generate/produce also
+  // matched standing workflow rules like "when done, make sure the linter
+  // passes", rejecting durable rules as one-off asks.
+  /\b(?:when|once|after)\b[^.?!]{0,50}\b(?:done|finished|complete[d]?)\b[^.?!]{0,60}\b(?:i (?:want|need|would like|'d like)|give me|send me|show me|make me|(?:produce|generate|create)\b[^.?!]{0,30}\bfor me\b)\b/i,
   /\bi (?:want|need|would like|'d like)\b[^.?!]{0,60}\b(?:when|once|after)\b[^.?!]{0,50}\b(?:done|finished|complete[d]?)\b/i,
   // Version-pinned migration steps: "when bumping to 1.4.0, drop the
   // vendor dir" — a one-time transition checklist, not a standing rule.
   /\bwhen (?:bump(?:ing)?|upgrad(?:e|ing)|migrat(?:e|ing)|mov(?:e|ing)) to\s+v?\d/i,
-  // Bounded deliverable references: "for this report", "for this
-  // migration", "for this investigation".
-  /\bfor this (?:report|summary|document|doc|ticket|migration|demo|poc|analysis|investigation|presentation|benchmark)\b/i,
+  // Bounded deliverable references: "for this report", "for this task",
+  // "for this PR" (Qodo PR #964: explicit task/PR bounds passed the old
+  // list, so "For this task, always use pnpm" landed as durable).
+  /\bfor this (?:report|summary|document|doc|ticket|task|pr|migration|demo|poc|analysis|investigation|presentation|benchmark)\b/i,
   // Config-change notes: "every 30min (changed from 1h)" — a change log
-  // entry, not a preference.
+  // entry, not a preference. Category-locked to preferences: durable
+  // lessons/decisions describing a past change legitimately contain the
+  // phrase (Qodo PR #964).
   /\bchanged from\b/i,
 ];
 
+/** Categories whose entries are standing behavioral rules; only these
+ *  are screened by the task-scope and durability gates. Lessons, decisions,
+ *  mistakes, patterns, and completions are OUTCOME records — historical
+ *  facts are legitimately one-time and are stored as such (Qodo PR #964). */
+const STANDING_CATEGORIES = new Set(["preference"]);
+
 /** Detect task-scoped instruction phrasing (shared by extractor and
  *  memory_add guardrail). High precision, lower recall by design —
- *  ambiguous shapes go to the candidate queue for dreaming review. */
-export function isTaskScopedText(text: string): boolean {
-  const matched = TASK_SCOPED_RE.find((re) => re.test(text));
+ *  ambiguous shapes go to the candidate queue for dreaming review.
+ *  Quoted payloads are stripped first (quoting is not asking).
+ *  `category` (optional) locks config-change patterns to preferences. */
+export function isTaskScopedText(text: string, category?: string): boolean {
+  const stripped = stripQuotedText(text);
+  const patterns = TASK_SCOPED_RE.filter(
+    (re) =>
+      // "changed from" only rejects preferences: lessons and decisions
+      // describing a past change are exactly what those categories are for.
+      re.source !== "\\bchanged from\\b" || !category || STANDING_CATEGORIES.has(category),
+  );
+  const matched = patterns.find((re) => re.test(stripped));
   if (matched) {
     memLog.debug("memory-scoring: task-scoped instruction detected", text.slice(0, 120), matched.source);
   }
   return matched !== undefined;
+}
+
+const DURABILITY_MARKERS_RE =
+  /\b(?:always|never|only|prefer(?:s|ence|red)?|from now on|going forward|each time|whenever|every|permanently|exclusively|by default|make it a rule|as a rule)\b/i;
+
+/** Does the text carry an explicit durability marker? A preference is
+ *  durable only when the user marked it (always/never/from now on…) or
+ *  confirmed it — a single unmarked utterance is a guess, not a rule
+ *  (issue #961, live-battery discussion). Unmarked one-timers queue as
+ *  candidates and evaporate unless repeated. */
+export function hasDurabilityMarker(text: string): boolean {
+  return DURABILITY_MARKERS_RE.test(stripQuotedText(text));
 }
 
 /**
@@ -743,14 +791,14 @@ export function extractPreferences(text: string): string[] {
   for (const sentence of sentences) {
     if (sentence.endsWith("?")) continue; // question, not a statement
     if (isGrantText(sentence)) continue; // one-off grant, not a preference
-    if (isTaskScopedText(sentence)) continue; // task-scoped instruction, not a preference (issue #961)
+    if (isTaskScopedText(sentence, "preference")) continue; // task-scoped instruction, not a preference (issue #961)
     if (PREFERENCE_PATTERNS.some((p) => p.test(sentence))) {
-      // Normalize to a clean one-liner. Cap at 280 — the FULL thought, not a
-      // mid-sentence cutoff (issue #961: candidates land verbatim in the
-      // queue and dreaming distills them to ~100-char topic lines; a 100-cap
-      // here used to store truncated half-thoughts like "i always prefer to
-      // have").
-      const clean = sentence.replace(/\s+/g, " ").slice(0, 280);
+      // Normalize whitespace but keep the FULL sentence (Qodo PR #964): the
+      // 280-char slice still amputated long preferences mid-thought, and
+      // dreaming needs the omitted instructions to distill correctly.
+      // Input length is bounded by the message itself; a generous sanity
+      // cap of 1000 guards against pathological input.
+      const clean = sentence.replace(/\s+/g, " ").slice(0, 1000);
       found.push(clean);
     }
   }

@@ -112,7 +112,7 @@ describe("addMemoryEntry — task-scope guardrail (issue #961)", () => {
     assert.ok(isTaskScopedText("after this is done give me the numbers in a csv"));
   });
 
-  it("isTaskScopedText detects version-pinned migration steps and config-change notes", () => {
+  it("isTaskScopedText detects version-pinned migration steps, config-change notes", () => {
     assert.ok(isTaskScopedText("When bumping to 1.4.0, drop the vendor directory"));
     assert.ok(isTaskScopedText("when upgrading to v3 remove the legacy shim first"));
     assert.ok(isTaskScopedText("PR readiness cron interval: every 30min (changed from 1h)"));
@@ -126,6 +126,25 @@ describe("addMemoryEntry — task-scope guardrail (issue #961)", () => {
     assert.ok(!isTaskScopedText("I prefer tables in presentations"));
     assert.ok(!isTaskScopedText("From now on, always run the linter before committing"));
     assert.ok(!isTaskScopedText("Always use shadcn/ui components, never native HTML title attributes"));
+    // Qodo PR #964: bare make/create/generate used to reject standing
+    // workflow rules — only first-person deliverable wants count.
+    assert.ok(!isTaskScopedText("When done, make sure the linter passes"));
+    assert.ok(!isTaskScopedText("After the build is complete, create a release tag"));
+  });
+
+  it("isTaskScopedText detects explicit task/PR bounds (Qodo #964)", () => {
+    assert.ok(isTaskScopedText("For this task, always use pnpm"));
+    assert.ok(isTaskScopedText("For this PR, avoid rebasing"));
+  });
+
+  it("quoted payloads are not grants nor task-scoped asks (Qodo #964)", () => {
+    // Live-battery false positive: quoting a grant-shaped phrase inside a
+    // lesson must not read as granting it.
+    assert.ok(!isGrantText('Never tell the user "you can test it live if you want" — quoting is not granting'));
+    assert.ok(!isTaskScopedText('Always say "when done I want a report" when onboarding new agents'));
+    // Contractions must survive single-quote stripping: the apostrophe in
+    // user's is mid-word, not a quote opener.
+    assert.ok(isGrantText("The user says you can merge this PR"));
   });
 
   it("rejects a task-scoped deliverable ask", async () => {
@@ -179,6 +198,93 @@ describe("addMemoryEntry — task-scope guardrail (issue #961)", () => {
         category: "preference",
       });
       assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("addMemoryEntry — durability gate (issue #961, Qodo PR #964)", () => {
+  it("rejects an unmarked one-time preference", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Use tabs in this repo",
+        category: "preference",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /durability/i);
+      assert.equal(readAllTopicEntries(cwd).length, 0);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts the same preference when it carries a durability marker", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Always use tabs in this repo",
+        category: "preference",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts an unmarked preference when pinned by the user", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Use tabs in this repo",
+        category: "preference",
+        pinned: true,
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts an unmarked preference when session-scoped", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Use tabs in this repo",
+        category: "preference",
+        scope: "session",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("outcome categories skip the durability gate — one-time lessons are records", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Flaky test needed a retry in this one run",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("lessons describing a past change are not rejected by changed-from (Qodo #964)", async () => {
+    const cwd = makeCwd();
+    try {
+      const result = await addMemoryEntry(cwd, {
+        text: "Deployment timeout was raised to 60s (changed from 30s) to absorb cold starts",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
+      // The config-change pattern stays category-locked to preferences.
+      assert.ok(isTaskScopedText("cron interval: every 30min (changed from 1h)", "preference"));
+      assert.ok(!isTaskScopedText("cron interval: every 30min (changed from 1h)", "lesson"));
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
