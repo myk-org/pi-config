@@ -1,5 +1,6 @@
 """Release-related CLI commands."""
 
+import logging
 from pathlib import Path
 
 import click
@@ -62,6 +63,9 @@ def release_detect_versions() -> None:
     detect_run()
 
 
+log = logging.getLogger("myk_pi_tools.release.commands")
+
+
 @release.command("plan")
 @click.option(
     "--repo",
@@ -83,7 +87,19 @@ def release_plan(repo_root: str, force_packages: tuple[str, ...], as_json: bool)
     Read-only. Uses release-map.toml at the repo root; a repo without a
     map stays in lockstep mode (issue #965).
     """
-    plan_run(Path(repo_root), force_packages=force_packages, as_json=as_json)
+    log.debug(
+        "release plan invoked: repo_root=%s force=%s json=%s",
+        repo_root,
+        list(force_packages),
+        as_json,
+    )
+    try:
+        plan_run(Path(repo_root), force_packages=force_packages, as_json=as_json)
+    except SystemExit:
+        raise
+    except Exception:
+        log.exception("release plan failed for %s", repo_root)
+        raise
 
 
 @release.command("bump-version")

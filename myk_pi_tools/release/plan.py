@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from myk_pi_tools.logger import create_logger
-from myk_pi_tools.release.release_map import PackageEntry, ReleaseMap
+from myk_pi_tools.release.release_map import PackageEntry, ReleaseMap, _path_under_any
 
 log = create_logger("myk_pi_tools.release.plan")
 
@@ -95,13 +95,18 @@ def _git(repo_root: Path, args: list[str], timeout: int = GIT_TIMEOUT_SECONDS) -
 
 def _npm_version(package: str) -> str:
     """Last published version from the npm registry."""
-    result = subprocess.run(
-        ["npm", "view", package, "version", "--json"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=REGISTRY_TIMEOUT_SECONDS,
-    )
+    try:
+        result = subprocess.run(
+            ["npm", "view", package, "version", "--json"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=REGISTRY_TIMEOUT_SECONDS,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        # A missing npm binary or a timed-out view must surface as a
+        # per-package error, not abort the whole plan (Qodo PR #966).
+        raise RuntimeError(f"npm view {package} failed: {exc}") from exc
     if result.returncode != 0:
         raise RuntimeError(f"npm view {package} failed: {result.stderr.strip()[:200]}")
     version = json.loads(result.stdout)
@@ -205,12 +210,22 @@ def _bump_version_string(version: str, bump_type: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
-def _commits_bump_type(subjects: list[str]) -> str:
-    """Highest conventional-commit bump among commit subjects."""
+def _commits_bump_type(messages: list[str]) -> str:
+    """Highest conventional-commit bump among commit messages.
+
+    Each entry is a FULL commit message (``--format=%B``): the subject AND
+    the body footers, so ``BREAKING CHANGE:`` under a ``feat:`` subject
+    reaches the major rule (Qodo PR #966 — subject-only scanning gave
+    breaking changes minor versions). Every line of every message is
+    tested against the line-anchored rules.
+    """
     bump = _DEFAULT_BUMP
-    for subject in subjects:
+    lines: list[str] = []
+    for message in messages:
+        lines.extend(message.splitlines())
+    for line in lines:
         for pattern, bump_type in _BUMP_RES:
-            if pattern.search(subject):
+            if pattern.search(line):
                 if bump == "major" or bump_type == "major":
                     bump = "major"
                 elif bump == "patch" and bump_type == "minor":
@@ -241,24 +256,64 @@ class ReleasePlanner:
             plans.append(self._plan_package(pkg))
         return plans
 
+    def container_rebuild(self, plans: list[PackagePlan]) -> dict[str, object]:
+        """Container rebuild decision (Qodo PR #966).
+
+        The image is not a versioned package: it rebuilds whenever ANY
+        package ships, or when a rebuild-path (Dockerfile, entrypoints)
+        changed since the last repo tag — the repo-level anchor, since the
+        container has no per-package version history of its own.
+        """
+        if not self.release_map.container_rebuild_paths:
+            return {"rebuild": False, "reason": "no rebuild paths configured"}
+        any_affected = any(p.affected for p in plans)
+        changed_paths: list[str] = []
+        try:
+            last_tag = _git(self.repo_root, ["describe", "--abbrev=0", "--tags"])
+            changed = _git(self.repo_root, ["diff", "--name-only", f"{last_tag}..HEAD"]).splitlines()
+            changed_paths = [c for c in changed if c and _path_under_any(c, self.release_map.container_rebuild_paths)]
+        except RuntimeError:
+            pass  # no tag yet (or git failed) — package-affected check only
+        rebuild = any_affected or bool(changed_paths)
+        why = (
+            f"rebuild paths changed since {last_tag}: {changed_paths}"
+            if changed_paths
+            else ("a package ships" if any_affected else "no trigger")
+        )
+        return {"rebuild": rebuild, "changed_rebuild_paths": changed_paths, "reason": why}
+
     def _plan_package(self, pkg: PackageEntry) -> PackagePlan:
         result = PackagePlan(name=pkg.name, registry=pkg.registry)
         forced = pkg.name in self.force_packages
         if forced:
             result.forced = True
 
-        # 1. Registry ground truth for the last published version.
+        # 1. Registry ground truth for the last published version. For
+        #    multi-registry packages (npm+pypi) EVERY registry is queried:
+        #    the artifacts share one version, so a divergence is an error
+        #    on the package — not a silent npm-only answer (Qodo PR #966).
         published: str | None = None
         errors: list[str] = []
         for registry, name in pkg.registry_names():
             try:
-                published = self._registry_lookup(registry, name)
-                break  # first registry in priority order wins
+                version = self._registry_lookup(registry, name)
             except RuntimeError as exc:
                 errors.append(f"{registry}:{name}: {exc}")
+                continue
+            if published is None:
+                published = version
+            elif version != published:
+                result.error = (
+                    f"registry divergence: {pkg.registry_names()[0][1]} is {published!r} "
+                    f"but {name} is {version!r} — the artifacts must share one version"
+                )
+                log.warning("release plan: %s: %s", pkg.name, result.error)
+                if forced:
+                    result.affected = True
+                return result
         if published is None:
-            # Both lookups failed (or none configured). For a read-only plan
-            # this is reportable, not fatal — the package shows as unknown.
+            # All lookups failed (or none configured). For a read-only plan
+            # this is reportable, not fatal — the package shows as errored.
             result.error = "; ".join(errors) or "no registry configured"
             log.warning("release plan: registry lookup failed for %s: %s", pkg.name, result.error)
             if forced:
@@ -266,20 +321,33 @@ class ReleasePlanner:
             return result
         result.published_version = published
 
-        # 2. Per-package anchor commit (the bump that produced `published`).
+        # 2-4 are individually error-contained: a git failure on one
+        # package must not abort the plan for the others (Qodo PR #966).
         try:
-            anchor = _find_anchor(self.repo_root, pkg.version_files, published)
+            return self._plan_from_anchor(pkg, result, published, forced)
         except RuntimeError as exc:
             result.error = str(exc)
-            log.warning("release plan: anchor lookup failed for %s: %s", pkg.name, exc)
-            if forced:
-                result.affected = True
+            log.warning("release plan: git operation failed for %s: %s", pkg.name, exc)
+            result.affected = forced
             return result
+
+    def _plan_from_anchor(
+        self,
+        pkg: PackageEntry,
+        result: PackagePlan,
+        published: str,
+        forced: bool,
+    ) -> PackagePlan:
+        # 2. Per-package anchor commit (the bump that produced `published`).
+        anchor = _find_anchor(self.repo_root, pkg.version_files, published)
         result.anchor = anchor
 
-        # 3. Changed paths since the anchor, filtered through the map.
+        # 3. Changed paths since the anchor. GLOBAL excludes apply before
+        #    any package match: tests and generated docs never trigger a
+        #    release by themselves (Qodo PR #966 — the planner previously
+        #    bypassed the map's global excludes for per-package matching).
         changed = _git(self.repo_root, ["diff", "--name-only", f"{anchor}..HEAD"]).splitlines()
-        changed = [c for c in changed if c]
+        changed = [c for c in changed if c and not _path_under_any(c, self.release_map.global_excludes)]
         hits = [c for c in changed if pkg.affects(c)]
         result.changed_files = hits
         result.affected = bool(hits) or forced
@@ -287,13 +355,16 @@ class ReleasePlanner:
         if result.affected:
             # 4. Proposed bump from conventional commits touching the hit
             #    files (mapped paths only — excludes like scripts/docs_render
-            #    must not inflate an unrelated package's bump type).
+            #    must not inflate an unrelated package's bump type). Full
+            #    messages (%B) so BREAKING CHANGE footers reach the scan.
             if hits:
-                subjects = _git(
+                # %x00 null-terminates each full message so multi-line
+                # bodies split cleanly (plain %B output runs together).
+                messages = _git(
                     self.repo_root,
-                    ["log", "--format=%s", f"{anchor}..HEAD", "--", *hits],
-                ).splitlines()
-                result.bump_type = _commits_bump_type([s for s in subjects if s])
+                    ["log", "--format=%B%x00", f"{anchor}..HEAD", "--", *hits],
+                ).split("\0")
+                result.bump_type = _commits_bump_type([m for m in messages if m.strip()])
             else:
                 result.bump_type = _DEFAULT_BUMP  # forced, no source changes
             result.proposed_version = _bump_version_string(published, result.bump_type)
@@ -339,27 +410,28 @@ def run(
 
     planner = ReleasePlanner(repo_root, release_map, force_packages=force_packages)
     plans = planner.plan()
+    container = planner.container_rebuild(plans)
 
     if as_json:
         click_echo_json({
             "mode": "scoped",
             "map": str(map_path),
             "affected": [p.to_dict() for p in plans if p.affected],
-            "skipped": [p.to_dict() for p in plans if not p.affected],
+            "skipped": [p.to_dict() for p in plans if not p.affected and not p.error],
+            "errored": [p.to_dict() for p in plans if p.error],
+            "container": container,
         })
         return
 
-    affected = [p for p in plans if p.affected]
-    skipped = [p for p in plans if not p.affected]
+    affected = [p for p in plans if p.affected and not p.error]
+    errored = [p for p in plans if p.error]
+    skipped = [p for p in plans if not p.affected and not p.error]
     print(f"Scoped release plan ({release_map.mode} mode, map: {map_path.name})")
     print()
     if affected:
         print(f"Affected packages ({len(affected)} of {len(plans)}):")
         for p in affected:
             tag = " [forced]" if p.forced else ""
-            if p.error:
-                print(f"  {p.name}: registry/history error — {p.error}{tag}")
-                continue
             print(
                 f"  {p.name}  {p.published_version} → {p.proposed_version}"
                 f"  ({p.bump_type}; {len(p.changed_files)} changed files"
@@ -367,20 +439,21 @@ def run(
             )
     else:
         print("No affected packages — nothing to release.")
+    if errored:
+        # Errored packages are NOT silently "unchanged" — the operator
+        # must see them (Qodo PR #966).
+        print()
+        print(f"Errored — registry/history could not be resolved ({len(errored)}):")
+        for p in errored:
+            print(f"  {p.name}: {p.error}")
     if skipped:
         print()
         print(f"Unchanged (skipped): {', '.join(p.name for p in skipped)}")
-    if release_map.container_rebuild_paths:
-        print()
-        print(
-            "Container image rebuilds when any package ships"
-            + (
-                f" or when {', '.join(release_map.container_rebuild_paths)} change"
-                if release_map.container_rebuild_paths
-                else ""
-            )
-            + "."
-        )
+    print()
+    if container.get("rebuild"):
+        print(f"Container image: REBUILD — {container.get('reason')}")
+    else:
+        print(f"Container image: no rebuild — {container.get('reason')}")
 
 
 def click_echo_json(payload: dict[str, object]) -> None:

@@ -28,6 +28,10 @@ import fnmatch
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from myk_pi_tools.logger import create_logger
+
+log = create_logger("myk_pi_tools.release.map")
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - py<3.11 fallback
@@ -106,16 +110,32 @@ class ReleaseMap:
         return [pkg for pkg in self.packages if any(pkg.affects(p) for p in effective)]
 
 
+def _segments(value: str) -> list[str]:
+    return [seg for seg in value.split("/") if seg]
+
+
+def _glob_segments_match(path_segs: list[str], pattern_segs: list[str]) -> bool:
+    """fnmatch per path SEGMENT — a ``*`` in one segment never consumes
+    ``/`` (Qodo PR #966: full-path fnmatch let ``packages/*/tests/`` also
+    exclude the deeper ``packages/a/b/tests/``). The pattern is a
+    DIRECTORY prefix: files under it match, so the path may be deeper
+    than the pattern but never shallower."""
+    if len(path_segs) < len(pattern_segs):
+        return False
+    return all(fnmatch.fnmatch(p, pat) for p, pat in zip(path_segs, pattern_segs, strict=False))
+
+
 def _path_under_any(path: str, prefixes: tuple[str, ...]) -> bool:
     """Prefix-or-glob membership with path-segment semantics.
 
     ``extensions/`` matches ``extensions/x.ts`` and ``extensions/`` itself
     but not ``extensions-foo/``. A prefix containing glob metacharacters
-    (``packages/*/tests/``) falls back to fnmatch against the full path.
+    (``packages/*/tests/``) matches exactly that segment depth.
     """
+    path_segs = _segments(path)
     for prefix in prefixes:
         if any(ch in prefix for ch in "*?["):
-            if fnmatch.fnmatch(path, prefix.rstrip("/") + "/*") or fnmatch.fnmatch(path, prefix.rstrip("/")):
+            if _glob_segments_match(path_segs, _segments(prefix.rstrip("/"))):
                 return True
             continue
         norm = prefix.rstrip("/")
@@ -153,6 +173,13 @@ def load_release_map(repo_root: Path) -> ReleaseMap:
     mode = release_section.get("mode", "scoped")
     if not isinstance(mode, str) or not mode:
         raise ReleaseMapError(f"{RELEASE_MAP_FILENAME}: [release].mode must be a string")
+    if mode != "scoped":
+        # Only "scoped" is a meaningful mode today — anything else would
+        # silently still run the scoped planner (Qodo PR #966).
+        raise ReleaseMapError(
+            f"{RELEASE_MAP_FILENAME}: [release].mode must be 'scoped' (got {mode!r}); "
+            "remove the file for lockstep releases"
+        )
 
     global_excludes = _string_tuple(release_section, "exclude-paths", "[release]")
 
@@ -219,6 +246,11 @@ def load_release_map(repo_root: Path) -> ReleaseMap:
         raise ReleaseMapError(f"{RELEASE_MAP_FILENAME}: [container] must be a table")
     rebuild_paths = _string_tuple(container, "rebuild-paths", "[container]")
 
+    log.debug(
+        "release map loaded: %d packages, %d global excludes",
+        len(packages),
+        len(global_excludes),
+    )
     return ReleaseMap(
         mode=mode,
         packages=tuple(packages),

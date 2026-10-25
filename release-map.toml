@@ -40,6 +40,7 @@ paths = [
   "scripts/",
   "settings-keys.json",
   "package.json", # deps and npm scripts are artifact content
+  "README.md",    # npm auto-includes it in the tarball
 ]
 # docs_render belongs to the pi-docsite generator, not the orchestrator.
 exclude-paths = ["scripts/docs_render/"]
@@ -48,8 +49,9 @@ exclude-paths = ["scripts/docs_render/"]
 name = "myk-pi-tools"
 registry = "pypi"
 version-files = ["pyproject.toml", "myk_pi_tools/__init__.py"]
-# Root pyproject.toml is also the build config (deps, entry points).
-paths = ["myk_pi_tools/", "pyproject.toml"]
+# Root pyproject.toml is the build config (deps, entry points); README.md
+# ships in the PyPI sdist (readme field).
+paths = ["myk_pi_tools/", "pyproject.toml", "README.md"]
 
 [[package]]
 name = "pi-sidecar"
@@ -82,4 +84,4 @@ paths = ["packages/pi-docsite/", "scripts/docs_render/"]
 # package: it rebuilds whenever ANY package ships, or when these paths
 # change. Listed here so release plan can report it; never bumped itself.
 [container]
-rebuild-paths = ["Dockerfile", "entrypoint.sh"]
+rebuild-paths = ["Dockerfile", "entrypoint.sh", "init-entrypoint.sh"]
