@@ -3166,6 +3166,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
       const res = await runBash(cmd);
       assert.equal(res?.block, true, cmd);
       assert.match(res.reason, /ABSOLUTE/i);
+      assert.match(res.reason, /LITERAL full path/, "must not echo the glob back as the rewrite");
     }
   });
 
