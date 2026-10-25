@@ -1463,6 +1463,30 @@ def run(
             pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
             cli_threads, qodo_cli_state = fetch_qodo_cli_threads(pr_url, head_sha)
             if cli_threads is not None:
+                # Dedup (issue #958): Qodo's GitHub review threads duplicate the
+                # CLI findings — same PRRT thread_id, worse data (raw HTML
+                # bodies, approximate spans). The CLI entries are canonical
+                # (real spans, UUIDs, structured titles) and carry the same
+                # thread_id, so replies and thread resolution still work —
+                # post.py prefers thread_id and only falls back to node_id.
+                # Drop the GitHub twins so each finding appears exactly once;
+                # threads NOT covered by a CLI finding (human authors, or a
+                # truncated CLI read) are kept untouched.
+                cli_thread_ids = {t.get("thread_id") for t in cli_threads if t.get("thread_id")}
+                if cli_thread_ids:
+                    before = len(all_threads)
+                    all_threads = [
+                        t
+                        for t in all_threads
+                        if not (
+                            t.get("author") in ("qodo-code-review", "qodo-code-review[bot]")
+                            and t.get("thread_id") in cli_thread_ids
+                        )
+                    ]
+                    dropped = before - len(all_threads)
+                    if dropped:
+                        log.info("deduped GitHub threads covered by CLI findings", extra={"dropped": dropped})
+                        print_stderr(f"Deduped {dropped} GitHub thread(s) covered by CLI findings")
                 open_count = qodo_cli_state.get("unresolved_count", 0) if qodo_cli_state else 0
                 print_stderr(f"Found {open_count} open Qodo finding(s) via CLI")
                 if cli_threads:

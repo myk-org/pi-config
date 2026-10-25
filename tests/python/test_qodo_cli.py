@@ -633,6 +633,128 @@ def test_fetch_run_cli_branch_used(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert any(t.get("qodo_cli") for t in result["qodo"])
 
 
+def test_fetch_run_dedups_github_threads_covered_by_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """GitHub review threads duplicating CLI findings are dropped; others stay.
+
+    Qodo posts each finding as a GitHub review thread AND reports it through
+    the CLI session — same PRRT thread_id. The CLI entries are canonical;
+    the GitHub twins (raw HTML bodies) must not double every finding.
+    """
+    from myk_pi_tools.reviews import fetch as fetch_mod
+
+    cli_threads: list[dict[str, Any]] = [
+        {
+            "thread_id": "PRRT_dup",
+            "node_id": None,
+            "comment_id": 1,
+            "author": "qodo-code-review",
+            "path": "src/a.py",
+            "line": 3,
+            "end_line": 4,
+            "body": "**X**\n\ndesc",
+            "title": "X",
+            "quality_label": "Correctness",
+            "type": "qodo_bug",
+            "source": "qodo",
+            "priority": "HIGH",
+            "reply": None,
+            "status": "pending",
+            "code_diff": "",
+            "evidence": "",
+            "evidence_refs": [],
+            "agent_prompt": "",
+            "qodo_cli": True,
+            "attribution_status": "pending",
+            "finding_uuid": "u1",
+        },
+    ]
+    cli_state = {
+        "source": "qodo-cli",
+        "status": "completed",
+        "reviewing": False,
+        "approved": False,
+        "unresolved_count": 1,
+    }
+
+    # GitHub review threads: one duplicate of the CLI finding, one qodo thread
+    # NOT covered by the CLI read (e.g. truncated), one human thread.
+    gh_threads: list[dict[str, Any]] = [
+        {
+            "thread_id": "PRRT_dup",
+            "node_id": "PRRC_dup",
+            "comment_id": 11,
+            "author": "qodo-code-review",
+            "path": "src/a.py",
+            "line": 3,
+            "body": "<img badge> raw HTML twin",
+            "status": "pending",
+            "source": "qodo",
+            "priority": "HIGH",
+            "reply": None,
+            "replies": [],
+        },
+        {
+            "thread_id": "PRRT_only_gh",
+            "node_id": "PRRC_only_gh",
+            "comment_id": 12,
+            "author": "qodo-code-review",
+            "path": "src/c.py",
+            "line": 30,
+            "body": "qodo thread the CLI read missed",
+            "status": "pending",
+            "source": "qodo",
+            "priority": "HIGH",
+            "reply": None,
+            "replies": [],
+        },
+        {
+            "thread_id": "PRRT_human",
+            "node_id": "PRRC_human",
+            "comment_id": 13,
+            "author": "myakove",
+            "path": "src/d.py",
+            "line": 40,
+            "body": "human comment",
+            "status": "pending",
+            "source": "human",
+            "priority": "HIGH",
+            "reply": None,
+            "replies": [],
+        },
+    ]
+
+    monkeypatch.setattr(fetch_mod, "fetch_qodo_cli_threads", lambda _url, _head: (cli_threads, cli_state))
+    monkeypatch.setattr(
+        fetch_mod,
+        "fetch_qodo_sticky_findings",
+        lambda *_a, **_kw: pytest.fail("GitHub sticky scrape must not run when CLI succeeded"),
+    )
+    monkeypatch.setattr(fetch_mod, "fetch_qodo_reply_comments", lambda *_a, **_kw: [])
+    monkeypatch.setattr(fetch_mod, "fetch_review_threads", lambda *_a, **_kw: gh_threads)
+    monkeypatch.setattr(fetch_mod, "fetch_coderabbit_body_comments", lambda *_a, **_kw: [])
+    monkeypatch.setattr(
+        fetch_mod,
+        "run_gh_api",
+        lambda endpoint, paginate=False: (  # noqa: ARG005
+            {"user": {"login": "myakove"}, "head": {"sha": HEAD_SHA}} if "/pulls/" in endpoint else []
+        ),
+    )
+    monkeypatch.setattr(
+        fetch_mod, "is_qodo_approved", lambda *_a, **_kw: pytest.fail("GitHub approval must not run in CLI mode")
+    )
+
+    result = fetch_mod.run(PR_URL, output_dir=str(tmp_path))
+    assert isinstance(result, dict)
+    # The duplicate thread is gone; the CLI entry, the uncovered qodo thread,
+    # and the human thread all survive.
+    qodo_thread_ids = [t.get("thread_id") for t in result["qodo"]]
+    assert qodo_thread_ids.count("PRRT_dup") == 1
+    assert "PRRT_only_gh" in qodo_thread_ids
+    cli_entries = [t for t in result["qodo"] if t.get("qodo_cli")]
+    assert len(cli_entries) == 1
+    assert len([t for t in result["human"]]) == 1
+
+
 def test_fetch_run_cli_failure_falls_back_to_github(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """CLI read failure → GitHub sticky scrape runs for that cycle."""
     from myk_pi_tools.reviews import fetch as fetch_mod
