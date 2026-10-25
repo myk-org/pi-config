@@ -244,7 +244,10 @@ def _commits_bump_type(messages: list[str]) -> str:
             bump = "minor"
 
     for message in messages:
-        lines = message.splitlines()
+        # git log --format=%B%x00 records after the first start with a
+        # newline (%B ends with one), so an unstripped record would make
+        # lines[0] empty and hide the subject (Qodo PR #966 round 4).
+        lines = message.strip().splitlines()
         if not lines:
             continue
         subject, body = lines[0], lines[1:]

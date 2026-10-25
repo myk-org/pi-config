@@ -27,6 +27,7 @@ from __future__ import annotations
 import fnmatch
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from myk_pi_tools.logger import create_logger
 
@@ -164,8 +165,24 @@ def load_release_map(repo_root: Path) -> ReleaseMap:
     try:
         raw = tomllib.loads(map_path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
+        log.error("%s is not valid TOML: %s", map_path, exc)
         raise ReleaseMapError(f"{RELEASE_MAP_FILENAME} is not valid TOML: {exc}") from exc
 
+    try:
+        return _validate_map(raw, map_path)
+    except ReleaseMapError:
+        # Schema failures already carry a precise message; log them for
+        # runtime context (Qodo PR #966 round 4 — validation used to
+        # raise with no log record at all).
+        log.error("invalid release map %s", map_path, exc_info=True)
+        raise
+
+
+def _validate_map(raw: dict[str, Any], map_path: Path) -> ReleaseMap:  # noqa: ARG001
+    """Validate the parsed map and build the ReleaseMap.
+
+    ``map_path`` is kept for future path-relative validation.
+    """
     release_section = raw.get("release")
     if not isinstance(release_section, dict):
         raise ReleaseMapError(f"{RELEASE_MAP_FILENAME}: missing [release] section")

@@ -605,14 +605,24 @@ class TestNpmVersion:
 
         calls: list[tuple[str, str]] = []
 
-        def fake(registry: str, name: str) -> str:
-            calls.append((registry, name))
+        def fake_npm(package: str) -> str:
+            calls.append(("npm", package))
             return "1.0.0"
 
-        monkeypatch.setattr(plan_mod, "registry_version", fake)
-        # The dispatcher is the default lookup — call it via the module ref.
+        def fake_pypi(package: str) -> str:
+            calls.append(("pypi", package))
+            return "2.0.0"
+
+        monkeypatch.setattr(plan_mod, "_npm_version", fake_npm)
+        monkeypatch.setattr(plan_mod, "_pypi_version", fake_pypi)
+        # The REAL dispatcher — default lookup for every planner that does
+        # not inject a callback (Qodo PR #966 round 4: the old test
+        # monkeypatched registry_version itself and tested nothing).
         assert plan_mod.registry_version("npm", "x") == "1.0.0"
-        assert calls == [("npm", "x")]
+        assert plan_mod.registry_version("pypi", "y") == "2.0.0"
+        assert calls == [("npm", "x"), ("pypi", "y")]
+        with pytest.raises(RuntimeError, match="unknown registry"):
+            plan_mod.registry_version("gcr", "z")
 
 
 class TestClickCommand:
@@ -694,6 +704,30 @@ class TestBumpScoping:
 
     def test_subject_feat_still_minor(self) -> None:
         assert _commits_bump_type(["feat: a"]) == "minor"
+
+    def test_leading_newline_record_keeps_subject_visible(self) -> None:
+        # git log --format=%B%x00 records after the first start with a
+        # newline — the subject must still be read (Qodo PR #966 round 4:
+        # an empty lines[0] made older feat commits plan as patches).
+        assert _commits_bump_type(["\nfeat: older commit\n"]) == "minor"
+        assert _commits_bump_type(["\nfix!: older breaking\n"]) == "major"
+
+    def test_planner_reads_subjects_of_older_commits(self, fixture_repo: Path) -> None:
+        # End-to-end: two commits since the anchor, the FEAT one first —
+        # the bump must be minor, not patch.
+        (fixture_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+        commit(fixture_repo, "feat: add gate first", "extensions/b.ts")
+        (fixture_repo / "extensions" / "b.ts").write_text("// y\n", encoding="utf-8")
+        commit(fixture_repo, "fix: guard it after", "extensions/b.ts")
+        published = {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
+        plans = {p.name: p for p in make_planner(fixture_repo, published).plan()}
+        assert plans["poc"].bump_type == "minor"
+        assert plans["poc"].proposed_version == "1.1.0"
 
 
 class TestContainerGitFailure:
