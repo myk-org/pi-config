@@ -18,13 +18,14 @@ The CLI appends a trailing ``  trace <hex>`` line after the JSON —
 from __future__ import annotations
 
 import json
-import logging
 import re
 import shutil
 import subprocess
 from typing import Any
 
-log = logging.getLogger(__name__)
+from myk_pi_tools.logger import create_logger
+
+log = create_logger(__name__)
 
 # pr-review-session toolset with the dismiss/mark-implemented write pair
 # shipped well before this; 1.0.0 is a safe floor (verified live on 1.6.0).
@@ -151,10 +152,20 @@ def fetch_qodo_cli_findings(pr_url: str, *, extended: bool = False, timeout: int
         return None
 
     try:
-        return json.loads(_strip_trace_line(result.stdout))
+        data = json.loads(_strip_trace_line(result.stdout))
     except json.JSONDecodeError as exc:
         log.warning("qodo CLI read returned malformed JSON (%s) — falling back to GitHub scrape", exc)
         return None
+    # Shape validation (Qodo PR #959): syntactically valid JSON of the wrong
+    # shape (a list, a string, a changed schema) would crash the callers'
+    # data.get() calls instead of failing open to the GitHub scrape.
+    if not isinstance(data, dict) or "review_session" not in data or "findings" not in data:
+        log.warning(
+            "qodo CLI read returned unexpected JSON shape (keys: %s) — falling back to GitHub scrape",
+            sorted(data.keys()) if isinstance(data, dict) else type(data).__name__,
+        )
+        return None
+    return data
 
 
 def _thread_id_from_inline(inline_comment_id: str | None) -> str | None:
@@ -202,6 +213,7 @@ def map_cli_findings_to_threads(data: dict[str, Any]) -> list[dict[str, Any]]:
             "comment_id": finding.get("comment_id"),
             "author": "qodo-code-review",
             "path": finding.get("file_path") or "",
+            "side": finding.get("side"),
             "line": finding.get("start_line"),
             "end_line": finding.get("end_line"),
             "body": f"**{title}**\n\n{description}" if title else description,
@@ -214,7 +226,8 @@ def map_cli_findings_to_threads(data: dict[str, Any]) -> list[dict[str, Any]]:
             "status": "pending" if is_open else "skipped",
             "code_diff": finding.get("code_snippet") or "",
             "evidence": evidence.get("explanation", "") if isinstance(evidence, dict) else "",
-            "evidence_refs": [c.get("source_reference", "") for c in citations if isinstance(c, dict)],
+            # Citations carry their location in `source` (e.g. "path[start-end]")
+            "evidence_refs": [c.get("source", "") for c in citations if isinstance(c, dict)],
             "agent_prompt": "",
             "qodo_cli": True,
             "attribution_status": attribution,
@@ -303,6 +316,13 @@ def fetch_qodo_cli_threads(
     read only when OPEN findings exist (spans needed for reply mapping).
     """
     if not qodo_cli_available():
+        return None, None
+
+    # Without the PR head SHA the CLI state can never confirm freshness —
+    # approval would stall forever. Fall back to the GitHub scrape, whose
+    # approval heuristic does not need the head (Qodo PR #959).
+    if not head_sha:
+        log.warning("PR head SHA unavailable — qodo CLI branch cannot verify freshness, using GitHub scrape")
         return None, None
 
     data = fetch_qodo_cli_findings(pr_url, extended=False)

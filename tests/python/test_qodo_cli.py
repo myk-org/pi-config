@@ -113,9 +113,15 @@ sys.exit(cfg["read_rc"])
 # --- version parsing / trace stripping ---
 
 
-def test_parse_version_plain_and_next() -> None:
+def test_parse_version_plain() -> None:
     assert _parse_version("1.6.0\n") == (1, 6, 0)
+
+
+def test_parse_version_next_suffix() -> None:
     assert _parse_version("qodo 0.1.0-next.37\n") == (0, 1, 0)
+
+
+def test_parse_version_garbage() -> None:
     assert _parse_version("garbage") is None
 
 
@@ -154,9 +160,13 @@ def test_available_not_logged_in(fake_bin: Any) -> None:
     assert qodo_cli_available() is False
 
 
-def test_available_success_and_cache(fake_bin: Any) -> None:
+def test_available_success(fake_bin: Any) -> None:  # noqa: ARG001 — fixture installs the fake bin on PATH
     assert qodo_cli_available() is True
-    # Cached: second call does not re-run the probes (script overwritten to fail)
+
+
+def test_available_probe_result_cached(fake_bin: Any) -> None:
+    assert qodo_cli_available() is True
+    # Cached: second call does not re-run the probes (script now fails)
     fake_bin.version_rc = 1
     assert qodo_cli_available() is True
     assert qodo_cli_available(force_recheck=True) is False
@@ -181,7 +191,7 @@ def test_fetch_malformed_json_returns_none(fake_bin: Any) -> None:
     assert fetch_qodo_cli_findings(PR_URL) is None
 
 
-def test_fetch_parses_trace_and_json(fake_bin: Any) -> None:
+def test_fetch_parses_cli_output_with_trace_line(fake_bin: Any) -> None:
     fake_bin.read_output = (FIXTURES / "pr-956-compact-raw.txt").read_text()
     data = fetch_qodo_cli_findings(PR_URL)
     assert data is not None
@@ -227,7 +237,7 @@ def test_map_open_finding_shape() -> None:
                 end_line=12,
                 side="RIGHT",
                 code_snippet="+ foo()",
-                evidence={"explanation": "why", "citations": [{"source_reference": "src/a.py:10"}]},
+                evidence={"explanation": "why", "citations": [{"source": "src/a.py[10-12]"}]},
             )
         ],
     }
@@ -235,6 +245,7 @@ def test_map_open_finding_shape() -> None:
     assert len(threads) == 1
     t = threads[0]
     assert t["path"] == "src/a.py"
+    assert t["side"] == "RIGHT"
     assert t["line"] == 10
     assert t["end_line"] == 12
     assert t["thread_id"] == "PRRT_kwxxx"
@@ -246,7 +257,7 @@ def test_map_open_finding_shape() -> None:
     assert t["body"].startswith("**Sample finding**")
     assert t["code_diff"] == "+ foo()"
     assert t["evidence"] == "why"
-    assert t["evidence_refs"] == ["src/a.py:10"]
+    assert t["evidence_refs"] == ["src/a.py[10-12]"]
     assert t["qodo_cli"] is True
     assert t["finding_uuid"] == "uuid-1"
     assert "is_auto_skipped" not in t
@@ -346,6 +357,30 @@ def test_review_state_no_findings() -> None:
 
 
 # --- high-level fetch_qodo_cli_threads ---
+
+
+def test_fetch_wrong_shape_json_returns_none(fake_bin: Any) -> None:
+    """Syntactically valid JSON of the wrong shape fails open to the scrape."""
+    fake_bin.read_output = '["a", "list"]'
+    assert fetch_qodo_cli_findings(PR_URL) is None
+    fake_bin.read_output = '{"no_session_key": true}'
+    assert fetch_qodo_cli_findings(PR_URL) is None
+
+
+def test_threads_missing_head_sha_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without the PR head SHA the CLI branch can never confirm freshness —
+    approval would stall forever, so it must fall back to the GitHub scrape."""
+    monkeypatch.setattr(qodo_cli, "qodo_cli_available", lambda: True)
+    reads: list[str] = []
+
+    def fake_fetch(pr_url: str, *, extended: bool = False, timeout: int = 90) -> dict[str, Any] | None:  # noqa: ARG001
+        reads.append(pr_url)
+        return _load("pr-956-compact.json")
+
+    monkeypatch.setattr(qodo_cli, "fetch_qodo_cli_findings", fake_fetch)
+    threads, state = fetch_qodo_cli_threads(PR_URL, None)
+    assert threads is None and state is None
+    assert reads == []  # no CLI read attempted at all
 
 
 def test_threads_unavailable_returns_none_pair(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -803,3 +838,84 @@ def test_fetch_run_cli_failure_falls_back_to_github(monkeypatch: pytest.MonkeyPa
     assert scrape_ran["n"] == 1
     assert result["qodo_cli_state"] is None
     assert any(t["title"] == "Y" for t in result["qodo"])
+
+
+def test_fetch_run_stale_head_downgrades_cli_approval(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A push during the fetch must not let a stale CLI review approve."""
+    from myk_pi_tools.reviews import fetch as fetch_mod
+
+    cli_state = {
+        "source": "qodo-cli",
+        "status": "completed",
+        "reviewing": False,
+        "approved": True,
+        "reason": "all_resolved",
+        "total_findings": 1,
+        "resolved_count": 1,
+        "unresolved_count": 0,
+        "head_sha": "oldsha0000000000000000000000000000000000",
+        "commit_sha": "oldsha0000000000000000000000000000000000",
+    }
+
+    pulls_calls: list[int] = []
+
+    def fake_gh_api(endpoint: str, paginate: bool = False) -> Any:  # noqa: ARG001
+        if "/pulls/" in endpoint:
+            pulls_calls.append(1)
+            # First call: pre-read head. Second call (freshness re-check): new head.
+            head = (
+                "oldsha0000000000000000000000000000000000"
+                if len(pulls_calls) == 1
+                else "newsha00000000000000000000000000000000000"
+            )
+            return {"user": {"login": "myakove"}, "head": {"sha": head}}
+        return []
+
+    monkeypatch.setattr(fetch_mod, "fetch_qodo_cli_threads", lambda _url, _head: ([], cli_state))
+    monkeypatch.setattr(fetch_mod, "fetch_review_threads", lambda *_a, **_kw: [])
+    monkeypatch.setattr(fetch_mod, "fetch_coderabbit_body_comments", lambda *_a, **_kw: [])
+    monkeypatch.setattr(fetch_mod, "fetch_qodo_reply_comments", lambda *_a, **_kw: [])
+    monkeypatch.setattr(fetch_mod, "run_gh_api", fake_gh_api)
+    monkeypatch.setattr(
+        fetch_mod, "is_qodo_approved", lambda *_a, **_kw: pytest.fail("GitHub approval must not run in CLI mode")
+    )
+
+    result = fetch_mod.run(PR_URL, output_dir=str(tmp_path))
+    assert isinstance(result, dict)
+    assert len(pulls_calls) == 2  # pre-read + freshness re-check
+    assert result["approved"] is False
+    assert result["qodo_cli_state"]["reviewing"] is True
+
+
+def test_fetch_run_same_head_keeps_cli_approval(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No push during the fetch — the CLI approval stands."""
+    from myk_pi_tools.reviews import fetch as fetch_mod
+
+    cli_state = {
+        "source": "qodo-cli",
+        "status": "completed",
+        "reviewing": False,
+        "approved": True,
+        "reason": "all_resolved",
+        "total_findings": 1,
+        "resolved_count": 1,
+        "unresolved_count": 0,
+        "head_sha": HEAD_SHA,
+        "commit_sha": HEAD_SHA,
+    }
+
+    def fake_gh_api(endpoint: str, paginate: bool = False) -> Any:  # noqa: ARG001
+        if "/pulls/" in endpoint:
+            return {"user": {"login": "myakove"}, "head": {"sha": HEAD_SHA}}
+        return []
+
+    monkeypatch.setattr(fetch_mod, "fetch_qodo_cli_threads", lambda _url, _head: ([], cli_state))
+    monkeypatch.setattr(fetch_mod, "fetch_review_threads", lambda *_a, **_kw: [])
+    monkeypatch.setattr(fetch_mod, "fetch_coderabbit_body_comments", lambda *_a, **_kw: [])
+    monkeypatch.setattr(fetch_mod, "fetch_qodo_reply_comments", lambda *_a, **_kw: [])
+    monkeypatch.setattr(fetch_mod, "run_gh_api", fake_gh_api)
+    monkeypatch.setattr(fetch_mod, "is_qodo_approved", lambda *_a, **_kw: None)
+
+    result = fetch_mod.run(PR_URL, output_dir=str(tmp_path))
+    assert isinstance(result, dict)
+    assert result["approved"] is True

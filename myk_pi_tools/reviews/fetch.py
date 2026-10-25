@@ -1587,6 +1587,24 @@ def run(
         # CLI branch ran this cycle; otherwise the GitHub sticky heuristic.
         if qodo_cli_state is not None:
             _is_approved = bool(qodo_cli_state.get("approved"))
+            if _is_approved:
+                # Freshness re-check (Qodo PR #959): the head SHA was read
+                # BEFORE the CLI/GitHub reads — a push during the fetch would
+                # let a stale review approve code it never saw. Re-read the
+                # head now; a mismatch downgrades this cycle to reviewing
+                # (the next cycle re-reads the CLI state against the new head).
+                _fresh_head = None
+                _fresh_pr = run_gh_api(f"/repos/{owner}/{repo}/pulls/{pr_number}")
+                if isinstance(_fresh_pr, dict):
+                    _fresh_head = _fresh_pr.get("head", {}).get("sha") or None
+                if _fresh_head and _fresh_head != qodo_cli_state.get("head_sha"):
+                    log.info(
+                        "PR head moved during fetch — CLI approval is stale, treating as reviewing",
+                        extra={"state_head": qodo_cli_state.get("head_sha"), "fresh_head": _fresh_head},
+                    )
+                    print_stderr("[fetch] PR head moved during fetch — CLI approval stale, re-review pending.")
+                    qodo_cli_state = {**qodo_cli_state, "approved": False, "reviewing": True}
+                    _is_approved = False
             _approval: dict[str, Any] | None = qodo_cli_state if _is_approved else None
         else:
             _approval = is_qodo_approved(owner, repo, str(pr_number), comments=issue_comments)
