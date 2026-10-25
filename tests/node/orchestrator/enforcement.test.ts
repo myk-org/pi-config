@@ -3181,6 +3181,17 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     }
   });
 
+  it("blocks a non-literal suffix on the temp variable (Qodo r5)", async () => {
+    for (const cmd of [
+      "rm -rf ${PROJECT_TMP_DIR}/$TARGET",
+      'rm -rf "${PROJECT_TMP_DIR}/$TARGET"',
+    ]) {
+      const res = await runBash(cmd);
+      assert.equal(res?.block, true, cmd);
+      assert.match(res.reason, /ABSOLUTE/i);
+    }
+  });
+
   it("keeps the PROJECT_TMP_DIR exemption for plain subpaths (Qodo r4)", async () => {
     mkdirSync(join(cwd, ".pi", "tmp", "sub"), { recursive: true });
     const res = await runBash("rm -rf ${PROJECT_TMP_DIR}/sub");

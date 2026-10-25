@@ -1636,12 +1636,16 @@ export function relativeRecursiveRmTarget(stmt: string): string | null {
     // followed by / — a prefix match let $PROJECT_TMP_DIR_BACKUP skip the
     // gate. The variable expands unquoted AND inside double quotes.
     const projTmpVar = /^\$\{PROJECT_TMP_DIR\}(?:$|\/)|^\$PROJECT_TMP_DIR(?![\w$])(?:$|\/)/.test(t);
-    // Traversal drops the exemption (Qodo PR #964 round 4): a legit temp
-    // path never needs ".." — the variable already points at the tmp root.
-    // Without this, "${PROJECT_TMP_DIR}/../../important" skipped the gate
-    // and reached the approval flow, where a persistent "always allow"
-    // could approve text that expands outside the temp dir.
-    if (projTmpVar && p.quote !== "'" && !t.includes("..")) continue;
+    // Traversal and non-literal suffixes drop the exemption (Qodo PR #964
+    // rounds 4-5): a legit temp path never needs ".." (the variable already
+    // points at the tmp root), and its suffix must be LITERAL —
+    // "${PROJECT_TMP_DIR}/$TARGET" with TARGET=../../important expanded
+    // past both the gate and the tmp check while still looking exempt.
+    const suffix = t
+      .replace(/^\$\{PROJECT_TMP_DIR\}/, "")
+      .replace(/^\$PROJECT_TMP_DIR(?![\w$])/, "");
+    const suffixLiteral = !/[$`*?[\]]/.test(suffix) && !t.includes("..");
+    if (projTmpVar && p.quote !== "'" && suffixLiteral) continue;
     if (p.quote === "'") {
       // Single quotes: fully literal. A quoted tilde does NOT expand (it
       // is a relative path), and $/glob chars are inert — only a quoted
