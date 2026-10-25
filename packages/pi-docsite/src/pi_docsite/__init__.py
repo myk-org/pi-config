@@ -13,6 +13,6 @@ Adding or removing a page never requires editing this package -- see the
 frontmatter docs in generate.py.
 """
 
-__version__ = "4.17.1"
+__version__ = "4.18.0"
 
 __all__ = ["__version__"]
