@@ -1517,45 +1517,72 @@ const RM_PATTERN = /\brm\s+(?:-[a-zA-Z]+\s+)*(-[a-zA-Z]*r[a-zA-Z]*|--recursive)/
  *  isRmInProjectTmp and relativeRecursiveRmTarget (issue #963). */
 interface RmPathToken {
   value: string;
-  /** Token was surrounded by quotes — its content is LITERAL to the shell
-   *  (tilde and $VAR do not expand, glob chars are inert). */
-  quoted: boolean;
+  /** Quote character that surrounded the token, if any. SINGLE quotes make
+   *  the content fully literal; DOUBLE quotes still expand $VAR and
+   *  backticks while suppressing tilde expansion and globbing (Qodo PR
+   *  #964 round 3 — a boolean quoted flag conflated the two). */
+  quote: "'" | '"' | null;
+}
+
+/** Whitespace tokenizer that keeps quoted spans together: `rm -rf "/abs/My
+ *  Dir"` is ONE path token, not the fragments `"/abs/My` and `Dir"` (Qodo
+ *  PR #964 round 3). A quote character always starts a new token —
+ *  mid-token quotes (`--flag="x"`) split, which is conservative for rm
+ *  argument parsing. */
+function splitRmTokens(stmt: string): RmPathToken[] {
+  const out: RmPathToken[] = [];
+  let cur = "";
+  let quote: "'" | '"' | null = null;
+  const push = (q: "'" | '"' | null) => {
+    if (cur) out.push({ value: cur, quote: q });
+    cur = "";
+  };
+  for (const ch of stmt.trim()) {
+    if (quote) {
+      if (ch === quote) {
+        push(quote);
+        quote = null;
+      } else cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      push(null);
+      quote = ch;
+    } else if (/\s/.test(ch)) {
+      push(null);
+    } else cur += ch;
+  }
+  push(quote); // unterminated quote — keep the residue as its own token
+  return out;
 }
 
 function parseRmPathTokens(stmt: string): RmPathToken[] | null {
-  const tokens = stmt.trim().split(/\s+/);
   const paths: RmPathToken[] = [];
   let pastSeparator = false;
   let pastRm = false;
   let skipNext = false;
 
-  for (const token of tokens) {
+  for (const token of splitRmTokens(stmt)) {
     if (skipNext) {
       skipNext = false;
       continue;
     }
     if (!pastRm) {
-      if (token === "rm" || token.endsWith("/rm")) pastRm = true;
+      if (token.value === "rm" || token.value.endsWith("/rm")) pastRm = true;
       continue;
     }
-    if (token === "--") {
+    if (token.value === "--" && token.quote === null) {
       pastSeparator = true;
       continue;
     }
-    if (!pastSeparator && token.startsWith("-")) continue;
+    if (!pastSeparator && token.value.startsWith("-") && token.quote === null) continue;
     // Skip shell redirections — handle both joined (2>/dev/null) and spaced (2> /dev/null)
-    if (/^[0-9]*>{1,2}|^&>|^[0-9]*</.test(token)) {
+    if (/^[0-9]*>{1,2}|^&>|^[0-9]*</.test(token.value)) {
       // If the token is ONLY the operator (no target attached), skip the next token too
-      if (/^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/.test(token)) {
+      if (/^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/.test(token.value)) {
         skipNext = true;
       }
       continue;
     }
-    // Track quoting, not just strip it: a QUOTED tilde does not expand
-    // (rm -rf '~/build' deletes a literal '~' directory — a relative path),
-    // while quoted glob/$ chars are inert literals (Qodo PR #964).
-    const quoted = /^["'].+["']$/.test(token);
-    paths.push({ value: token.replace(/^["']|["']$/g, ""), quoted });
+    paths.push(token);
   }
 
   return pastRm ? paths : null;
@@ -1570,7 +1597,7 @@ function parseRmPathTokens(stmt: string): RmPathToken[] | null {
 // the command itself (`env -- rm -rf x` left `-rf x` with no command token,
 // evading the gate — Qodo PR #964).
 const RM_LEADING_WRAPPERS_RE =
-  /^\s*(?:\S+=\S*\s+|sudo(?:\s+(?:--|-(?!-)\S+(?:\s+\S+)?))*\s+|rtk(?:\s+-(?!-)\S+)*\s+|(?:command|builtin|exec)\s+|env(?:\s+(?:--|-(?!-)\S+(?:\s+\S+)?|\S+=\S*))*\s+|timeout\s+(?:(?:--|-(?!-)\S+(?:\s+\S+)?)\s+)*\S+\s+|nice(?:\s+(?:--|-(?!-)\S+(?:\s+\S+)?))*\s+|nohup\s+)+/;
+  /^\s*(?:\S+=\S*\s+|sudo(?:\s+(?:--\S+|--|-(?!-)\S+(?:\s+\S+)?))*\s+|rtk(?:\s+(?:--\S+|-(?!-)\S+))*\s+|(?:command|builtin|exec)\s+|env(?:\s+(?:--\S+|--|-(?!-)\S+(?:\s+\S+)?|\S+=\S*))*\s+|timeout\s+(?:(?:--\S+|--|-(?!-)\S+(?:\s+\S+)?)\s+)*\S+\s+|nice(?:\s+(?:--\S+|--|-(?!-)\S+(?:\s+\S+)?))*\s+|nohup\s+)+/;
 
 /**
  * First non-absolute target of a direct (optionally wrapped) recursive rm
@@ -1605,24 +1632,34 @@ export function relativeRecursiveRmTarget(stmt: string): string | null {
     // Project temp dir by variable: deterministic per-cwd, expanded and
     // validated by isRmInProjectTmp downstream (Qodo PR #964 — the gate
     // must not block the documented ${PROJECT_TMP_DIR} cleanup pattern).
-    if (/^\$\{?PROJECT_TMP_DIR\}?/.test(t) && !p.quoted) continue;
-    if (p.quoted) {
-      // Quoted text is literal: a quoted tilde does NOT expand (it is a
-      // relative path — a reused approval could delete a different
-      // directory named '~' in another cwd), and quoted $/glob chars are
-      // inert literals. A quoted $PROJECT_TMP_DIR does not expand either,
-      // so it falls through to "relative" and is blocked.
+    // ANCHORED (Qodo PR #964 round 3): the variable must END here or be
+    // followed by / — a prefix match let $PROJECT_TMP_DIR_BACKUP skip the
+    // gate. The variable expands unquoted AND inside double quotes.
+    const projTmpVar = /^\$\{PROJECT_TMP_DIR\}(?:$|\/)|^\$PROJECT_TMP_DIR(?![\w$])(?:$|\/)/.test(t);
+    if (projTmpVar && p.quote !== "'") continue;
+    if (p.quote === "'") {
+      // Single quotes: fully literal. A quoted tilde does NOT expand (it
+      // is a relative path), and $/glob chars are inert — only a quoted
+      // absolute path binds to one folder.
       if (t.startsWith("/")) continue;
       return t;
     }
-    if (t.startsWith("~")) continue; // unquoted tilde expands to $HOME — absolute
-    if (t.startsWith("/")) {
-      // Unquoted expansions and globs make the target non-literal: an
-      // approval for /home/$USER/build or /home/*/build must not bind to
-      // varying directories (Qodo PR #964).
-      if (/[$`*?[\]]/.test(t)) return t;
-      continue;
+    if (p.quote === '"') {
+      // Double quotes: tilde does NOT expand (relative → block), but $VAR
+      // and backticks DO — an approval for "/home/$USER/build" must not
+      // bind. Globs are inert inside quotes, so only / $ ` matter.
+      if (t.startsWith("~")) return t;
+      if (/[$`]/.test(t)) return t;
+      if (t.startsWith("/")) continue;
+      return t;
     }
+    // Unquoted: tilde expands to $HOME (absolute); any expansion or glob
+    // char makes the target non-literal — an approval for
+    // /home/$USER/build or /home/*/build must not bind to varying
+    // directories (Qodo PR #964).
+    if (t.startsWith("~")) continue;
+    if (/[$`*?[\]]/.test(t)) return t;
+    if (t.startsWith("/")) continue;
     return t;
   }
   return null;

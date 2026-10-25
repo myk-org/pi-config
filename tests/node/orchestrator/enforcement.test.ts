@@ -3170,6 +3170,51 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     }
   });
 
+  it("blocks a similarly-named variable — PROJECT_TMP_DIR prefix must not match (Qodo r3)", async () => {
+    const res = await runBash("rm -rf $PROJECT_TMP_DIR_BACKUP");
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+  });
+
+  it("blocks double-quoted variable paths — \"..\" still expands $VAR (Qodo r3)", async () => {
+    const res = await runBash('rm -rf "/home/$USER/build"');
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+  });
+
+  it("double-quoted PROJECT_TMP_DIR keeps the silent tmp exemption (Qodo r3)", async () => {
+    mkdirSync(join(cwd, ".pi", "tmp", "x"), { recursive: true });
+    const res = await runBash('rm -rf "${PROJECT_TMP_DIR}/x"');
+    assert.equal(res?.block, undefined, "double quotes expand the variable — exempt");
+    assert.equal(promptCalls.length, 0);
+  });
+
+  it("single-quoted variable paths are literal absolutes — normal prompt, no rewrite block (Qodo r3)", async () => {
+    promptCalls.length = 0;
+    const res = await runBash("rm -rf '/home/$USER/build'");
+    assert.ok(!res || !/ABSOLUTE/.test(res.reason ?? ""), "single quotes are literal");
+    assert.equal(promptCalls.length, 1, "dangerous prompt handles it");
+  });
+
+  it("blocks rm behind long wrapper flags (Qodo r3)", async () => {
+    const res = await runBash("env --ignore-environment rm -rf build");
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+  });
+
+  it("quoted absolute paths with spaces are one token — no rewrite block (Qodo r3)", async () => {
+    promptCalls.length = 0;
+    const res = await runBash('rm -rf "/var/My Dir"');
+    assert.ok(!res || !/ABSOLUTE/.test(res.reason ?? ""), "quoted path with spaces is absolute");
+    assert.equal(promptCalls.length, 1, "dangerous prompt handles it");
+  });
+
+  it("blocks a quoted RELATIVE path with spaces (Qodo r3)", async () => {
+    const res = await runBash('rm -rf "My Dir"');
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+  });
+
   it("blocks a relative target that happens to be named find (Qodo #964)", async () => {
     const res = await runBash("rm -rf find");
     assert.equal(res?.block, true);
