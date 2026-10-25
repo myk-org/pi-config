@@ -157,9 +157,16 @@ def fetch_qodo_cli_findings(pr_url: str, *, extended: bool = False, timeout: int
         log.warning("qodo CLI read returned malformed JSON (%s) — falling back to GitHub scrape", exc)
         return None
     # Shape validation (Qodo PR #959): syntactically valid JSON of the wrong
-    # shape (a list, a string, a changed schema) would crash the callers'
-    # data.get() calls instead of failing open to the GitHub scrape.
-    if not isinstance(data, dict) or "review_session" not in data or "findings" not in data:
+    # shape (a list, a string, a changed schema, non-object findings entries)
+    # would crash the callers' data.get() calls instead of failing open to
+    # the GitHub scrape.
+    findings = data.get("findings") if isinstance(data, dict) else None
+    if (
+        not isinstance(data, dict)
+        or "review_session" not in data
+        or not isinstance(findings, list)
+        or not all(isinstance(f, dict) for f in findings)
+    ):
         log.warning(
             "qodo CLI read returned unexpected JSON shape (keys: %s) — falling back to GitHub scrape",
             sorted(data.keys()) if isinstance(data, dict) else type(data).__name__,

@@ -365,6 +365,15 @@ def test_fetch_wrong_shape_json_returns_none(fake_bin: Any) -> None:
     assert fetch_qodo_cli_findings(PR_URL) is None
     fake_bin.read_output = '{"no_session_key": true}'
     assert fetch_qodo_cli_findings(PR_URL) is None
+    # null top level
+    fake_bin.read_output = "null"
+    assert fetch_qodo_cli_findings(PR_URL) is None
+    # findings not a list
+    fake_bin.read_output = '{"review_session": null, "findings": {"a": 1}}'
+    assert fetch_qodo_cli_findings(PR_URL) is None
+    # non-object entries inside the findings list
+    fake_bin.read_output = '{"review_session": null, "findings": ["not", "objects"]}'
+    assert fetch_qodo_cli_findings(PR_URL) is None
 
 
 def test_threads_missing_head_sha_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
