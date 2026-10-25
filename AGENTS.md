@@ -323,6 +323,11 @@ progress. It does not commit, push, create a PR, or post results.
 - Reviews address CLI: `uv run myk-pi-tools reviews address` — apply `<path>:<line>|<reply>` mapping rules (or `*|<reply>`) to the newest
   `pr-*-reviews.json` in `.pi/tmp`, flip statuses (`--set`), then run post + store; validation errors (ambiguous rule, invalid status for
   Qodo sticky findings) leave the JSON unchanged. Options and exit codes: see README `myk-pi-tools` subcommands.
+- Qodo CLI read source: `reviews fetch` / `reviews poll --source qodo` read Qodo findings through the `qodo` CLI's structured
+  pr-review-session tool when the binary is installed and authenticated (probed per process; stdout shows `via CLI`, the JSON carries
+  `qodo_cli_state`). Missing/unauthenticated bin, a failed read, or an unknown PR head falls back to the GitHub sticky scrape (fail
+  open). Read-only: replies are always GitHub comments via `reviews address` — never mark-implemented/dismiss. In CLI mode GitHub
+  review threads duplicating CLI findings (same thread id) are deduped.
 - Reviews store-session CLI: `uv run myk-pi-tools reviews store-session <json>` — store a Qodo pr-review-session findings JSON (the
   `qodo-<pr>-<sha>.json` a session-loop poll saves) into the reviews DB after every completed round; idempotent per finding UUID, and the
   input JSON is kept. See README `myk-pi-tools` subcommands.
