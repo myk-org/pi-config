@@ -1636,7 +1636,12 @@ export function relativeRecursiveRmTarget(stmt: string): string | null {
     // followed by / — a prefix match let $PROJECT_TMP_DIR_BACKUP skip the
     // gate. The variable expands unquoted AND inside double quotes.
     const projTmpVar = /^\$\{PROJECT_TMP_DIR\}(?:$|\/)|^\$PROJECT_TMP_DIR(?![\w$])(?:$|\/)/.test(t);
-    if (projTmpVar && p.quote !== "'") continue;
+    // Traversal drops the exemption (Qodo PR #964 round 4): a legit temp
+    // path never needs ".." — the variable already points at the tmp root.
+    // Without this, "${PROJECT_TMP_DIR}/../../important" skipped the gate
+    // and reached the approval flow, where a persistent "always allow"
+    // could approve text that expands outside the temp dir.
+    if (projTmpVar && p.quote !== "'" && !t.includes("..")) continue;
     if (p.quote === "'") {
       // Single quotes: fully literal. A quoted tilde does NOT expand (it
       // is a relative path), and $/glob chars are inert — only a quoted

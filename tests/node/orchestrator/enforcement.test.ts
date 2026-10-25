@@ -3170,6 +3170,24 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     }
   });
 
+  it("blocks PROJECT_TMP_DIR traversal — the exemption never escapes the tmp root (Qodo r4)", async () => {
+    for (const cmd of [
+      "rm -rf ${PROJECT_TMP_DIR}/../../important",
+      'rm -rf "${PROJECT_TMP_DIR}/../../important"',
+    ]) {
+      const res = await runBash(cmd);
+      assert.equal(res?.block, true, cmd);
+      assert.match(res.reason, /ABSOLUTE/i);
+    }
+  });
+
+  it("keeps the PROJECT_TMP_DIR exemption for plain subpaths (Qodo r4)", async () => {
+    mkdirSync(join(cwd, ".pi", "tmp", "sub"), { recursive: true });
+    const res = await runBash("rm -rf ${PROJECT_TMP_DIR}/sub");
+    assert.equal(res?.block, undefined, "subpath stays silently exempt");
+    assert.equal(promptCalls.length, 0);
+  });
+
   it("blocks a similarly-named variable — PROJECT_TMP_DIR prefix must not match (Qodo r3)", async () => {
     const res = await runBash("rm -rf $PROJECT_TMP_DIR_BACKUP");
     assert.equal(res?.block, true);
