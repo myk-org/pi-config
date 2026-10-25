@@ -36,6 +36,8 @@ import {
   newEntryId,
   reinforce,
   isGrantText,
+  isTaskScopedText,
+  hasDurabilityMarker,
 } from "./memory-scoring.js";
 import { CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, readAllTopicEntries, formatTopicLine, findTopicLine, invalidateTopicFileCache } from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch } from "./memory-embeddings.js";
@@ -2403,6 +2405,28 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
     };
   }
 
+  // 2b. Task-scope guardrail (issue #961): task-scoped instructions are task
+  // attributes or session instructions, not durable memories. High-precision
+  // shapes only (deliverable asks tied to a completion event, version-pinned
+  // migration steps, bounded deliverable references, config-change notes) —
+  // the same relative-path logic as the grant gate: a stored approval/rule
+  // must bind to a standing behavior, not to ONE task's deliverable.
+  // Category-locked config-change pattern: lessons/decisions describing a
+  // past change are legitimate outcome records (Qodo PR #964).
+  if (isTaskScopedText(text, category) && input.scope !== "session") {
+    log.info("memory_task_scoped_rejected", { category, text: text.slice(0, 120) });
+    return {
+      status: "rejected",
+      message:
+        `Rejected: "${text}" reads like a task-scoped instruction (e.g. "when done, I want an ` +
+        `html report" or "when bumping to 1.4.0, drop the vendor dir"). ` +
+        `Task-scoped asks belong to the CURRENT task (its description, a task attribute, or a ` +
+        `session instruction) — NOT memory. If the user confirmed a standing rule, rephrase it ` +
+        `as the durable rule itself (e.g. "Always produce an HTML report when a task completes") ` +
+        `without the task-scoped phrasing.`,
+    };
+  }
+
   // 3. Contradiction gate — before dedup, so a permission-flipping near-duplicate
   // is refused rather than silently reinforcing the wrong entry. A conflict is
   // a decision point, not a dead end (issue #915): the model asks the user, and
@@ -2468,6 +2492,37 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
         (conflicts.length > 1 ? ` (+${conflicts.length - 1} more)` : "");
     }
     log.info("memory_conflict_override", conflict.text.slice(0, 60), `count=${conflicts.length}`);
+  }
+
+  // 3b. Durability gate (issue #961, live-battery discussion): a preference
+  // is durable only when the user MARKED it (always/never/from now on…),
+  // pinned it, or confirmed it. A single unmarked utterance is a guess about
+  // intent — the same words are a task instruction when said casually and a
+  // standing rule when said emphatically, and phrasing cannot tell them
+  // apart. Unmarked one-timers belong to the session or the candidate queue
+  // (repetition earns durability); they must not silently apply to all
+  // future work. Outcome categories (lesson, decision, mistake, pattern,
+  // done) are exempt — they record what happened, not standing behavior.
+  // Runs AFTER the contradiction gate so a permission flip reports the
+  // conflict rather than a missing marker, and exempts overrideConflicts —
+  // a user-confirmed rule change is durable by definition.
+  if (
+    category === "preference" &&
+    !input.pinned &&
+    !input.overrideConflicts &&
+    input.scope !== "session" &&
+    !hasDurabilityMarker(text)
+  ) {
+    log.info("memory_unmarked_preference_rejected", { text: text.slice(0, 120) });
+    return {
+      status: "rejected",
+      message:
+        `Rejected: "${text}" carries no durability marker (always, never, prefer, from now on, ` +
+        `by default…). A preference said once, unmarked, is a session instruction — it must not ` +
+        `apply to all future work. Either confirm with the user that it is a standing rule ` +
+        `(then rephrase as the rule itself, e.g. "Always commit and push before reporting done"), ` +
+        `store it with scope=session, or pin it with "remember this".`,
+    };
   }
 
   const canonicalLine = `- [${category}] ${text}`;

@@ -123,9 +123,25 @@ export function registerDreaming(
       `   - Patterns or conventions → [pattern] → patterns.md\n` +
       `   - Architectural/design decisions → [decision] → decisions.md\n` +
       `   QUALITY GATE for extraction: one-off permissions granted in a single session\n` +
-      `   ("you can merge this PR", "skip tests just this once") are session instructions,\n` +
-      `   NOT memories — never extract them. Only standing, repeated rules are durable.\n` +
+      `   ("you can merge this PR", "skip tests just this once") AND task-scoped instructions\n` +
+      `   ("when done, I want an html report", "when bumping to 1.4.0, drop the vendor dir",\n` +
+      `   config-change notes like "every 30min (changed from 1h)") are session/task\n` +
+      `   instructions, NOT memories — never extract them. Apply the standing test: would\n` +
+      `   this apply to a future, unrelated task? No → discard. Only standing, repeated\n` +
+      `   rules are durable.\n` +
       `   Do NOT add duplicates of existing entries.\n` +
+      `3b. Review the preference candidate queue: if ${topicsDir}/../preference-candidates.jsonl\n` +
+      `   exists and has entries, each holds a VERBATIM sentence the regex extractor queued\n` +
+      `   from user input (issue #961). For each candidate:\n` +
+      `   - Durable standing preference → DISTILL it into a clean one-line [preference]\n` +
+      `     (≤100 chars, actionable, no verbatim chatter) and add to preferences.md\n` +
+      `   - Task-scoped instruction, one-off ask, question, or already covered → discard\n` +
+      `   After processing: RE-READ preference-candidates.jsonl and rewrite it keeping ONLY\n` +
+      `   the entries that appeared after your first read — the extractor appends\n` +
+      `   concurrently, so do NOT truncate the whole file (an entry queued between your\n` +
+      `   read and your rewrite would be erased before any dream cycle reviewed it).\n` +
+      `   Keep the file bounded: if it exceeds 200 lines, also drop the oldest entries\n` +
+      `   beyond that cap.\n` +
       `4. Scan past session files for unprocessed knowledge. Check if ${topicsDir}/../.dream-watermark exists.\n` +
       `   If it does, read the timestamp — only process sessions newer than that.\n` +
       `   Session directory: find .jsonl files under the pi sessions directory.\n` +
@@ -135,6 +151,11 @@ export function registerDreaming(
       `   - Remove duplicate or near-duplicate entries\n` +
       `   - Remove stale/useless entries\n` +
       `   - Remove session-scoped or expired entries — they are transient by design\n` +
+      `   - Remove task-scoped instruction entries (issue #961): verbatim user utterances\n` +
+      `     (colloquial chat captured raw), mid-sentence cutoffs, one-off deliverable asks\n` +
+      `     ("when done I want a report"), version-pinned migration checklists, config-change\n` +
+      `     notes — these are task/session artifacts, not durable rules. NEVER remove\n` +
+      `     pinned or enforced entries even when they match these shapes.\n` +
       `   - Keep each file at a reasonable size (aim for under 20 entries per topic)\n` +
       `   - NEVER remove or modify entries marked with *(pinned)*\n` +
       `   - NEVER remove or modify entries marked with *(enforced)* — these have code-enforced triggers/actions that are keyed by text hash. ANY text change destroys the enforcement binding.\n` +

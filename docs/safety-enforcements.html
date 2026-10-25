@@ -451,6 +451,19 @@ memory_add(
 <li>Independently of the allowlist, <code>run_after</code> still refuses commands matching <code>curl</code>/<code>wget</code> piped into a shell, <code>rm -rf /</code>-style paths, <code>sudo</code>, and world-writable <code>chmod</code></li>
 <li>Each command runs with a 60s timeout; keep follow-up commands fast so they do not slow down normal edits</li>
 </ul>
+<h3 id="recursive-rm-must-use-absolute-paths">Recursive rm must use absolute paths</h3>
+<p>A persistent approval stores the <strong>statement text</strong>. A relative-path recursive
+rm like <code>rm -rf build</code> would therefore approve the identical text in ANY
+directory — the next <code>rm -rf build</code> anywhere on the machine would match the
+allowlist and run silently against whatever folder has that name there (#963).</p>
+<p>For that reason the gate <strong>blocks</strong> (never prompts) recursive rm whose targets
+are not full paths (<code>/…</code> or <code>~/…</code> — relative paths, variables, and globs all
+block) and tells the agent to rewrite with the absolute path. <code>find -delete</code>
+and <code>xargs rm</code> are exempt — their targets come from find output or stdin, not
+from the statement text. Once the command spells out the full path, it flows
+through the normal gates: an "always allow" then binds to exactly one folder
+you know. Absolute <code>rm -rf &lt;project&gt;/.pi/tmp/…</code> and <code>/tmp/&lt;sub&gt;</code> targets keep
+their silent exemption.</p>
 <h2 id="pre-approve-a-recurring-dangerous-command">Pre-approve a recurring dangerous command</h2>
 <p>The dangerous-command gate (background shells, <code>sudo</code>, recursive <code>rm</code>, …) asks
 for confirmation every time it sees a matching command. For commands you run
@@ -605,7 +618,10 @@ of that command prompts again.</p>
 <li><a href="#warn-when-editing-secret-files">Warn when editing secret files</a></li>
 <li><a href="#require-approval-before-merging-a-pr">Require approval before merging a PR</a></li>
 <li><a href="#make-the-repo-read-only-for-direct-edits">Make the repo read-only for direct edits</a></li>
-<li><a href="#run-one-safe-follow-up-command-after-a-file-edit">Run one safe follow-up command after a file edit</a></li>
+<li><a href="#run-one-safe-follow-up-command-after-a-file-edit">Run one safe follow-up command after a file edit</a><ul>
+<li><a href="#recursive-rm-must-use-absolute-paths">Recursive rm must use absolute paths</a></li>
+</ul>
+</li>
 <li><a href="#pre-approve-a-recurring-dangerous-command">Pre-approve a recurring dangerous command</a><ul>
 <li><a href="#wildcards">Wildcards</a></li>
 <li><a href="#properties-by-design">Properties, by design</a></li>

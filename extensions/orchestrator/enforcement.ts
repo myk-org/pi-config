@@ -54,6 +54,7 @@ import {
   isReadOnlyStatement,
   isRealGitCommitOrPush,
   isRmInProjectTmp,
+  relativeRecursiveRmTarget,
   normalizeForRepeatCheck,
   realGitSub,
   resolveEffectiveCwd,
@@ -437,6 +438,40 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     return DANGEROUS.some((p) => p.test(stmt));
   });
   if (hasDangerous) {
+    // Absolute-path requirement for recursive rm (issue #963): a persistent
+    // "always allow" stores the statement TEXT, so a relative target would
+    // approve the identical text in ANY directory. Force the agent to spell
+    // out the full path — the approval then binds to exactly one folder the
+    // user knows. Blocks in every mode (headless included): this is a
+    // rewrite rule, not a confirmation.
+    const relativeRm = statements
+      .map((stmt) => ({
+        stmt,
+        target: isReadOnlyStatement(stmt) ? null : relativeRecursiveRmTarget(stmt),
+      }))
+      .find((r) => r.target !== null);
+    if (relativeRm && relativeRm.target !== null) {
+      log.warn("recursive_rm_relative_path_blocked", { target: relativeRm.target });
+      // A target with unquoted expansion chars ($VAR, globs) is not a literal
+      // folder — echoing it back as the "rewrite" would suggest re-running the
+      // same non-binding command (live battery, Qodo PR #964).
+      const nonLiteral = /[$`*?[\]]/.test(relativeRm.target);
+      const rewrite = nonLiteral
+        ? `Rewrite with a LITERAL full path (no variables or globs — an approval must bind to ` +
+          `one concrete folder) and re-run.`
+        : `Rewrite as rm -rf ${resolve(resolveEffectiveCwd(command, cwd), relativeRm.target)} (full path) and re-run. `;
+      return {
+        block: true,
+        reason:
+          `Blocked: recursive rm must use ABSOLUTE paths — "${relativeRm.stmt.trim()}" targets ` +
+          `"${relativeRm.target}", which is ${nonLiteral ? "not a literal path" : "relative"}. ` +
+          `A persistent "always allow" stores the statement text, so a relative ` +
+          `target would approve the same text in ANY directory. ${rewrite} ` +
+          `Do NOT bypass with an equivalent command (find -delete, git clean, perl, python ` +
+          `os.remove). Stop and report this block to the user if a rewrite is not possible.`,
+      };
+    }
+
     // Allow rm -rf targeting only .pi/tmp/ paths without confirmation
     const allRmInTmp = statements
       .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt))

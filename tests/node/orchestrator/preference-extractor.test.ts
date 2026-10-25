@@ -1,23 +1,23 @@
 /**
- * Preference extractor registration path tests (Qodo round 2, PR #916).
+ * Preference extractor candidate-queue tests (issue #961).
  * Run: npx tsx --test tests/node/orchestrator/preference-extractor.test.ts
  *
- * Covers: tracked async writes (cooldown stamped only after a write lands),
- * rejected writes retry on the next message, and pending writes drained on
- * session_shutdown.
+ * The extractor no longer lands memories directly — regex matches fire on
+ * PHRASE, not meaning, so candidates go to
+ * .pi/memory/preference-candidates.jsonl (full sentence, source session)
+ * for dreaming review. Questions, one-off grants, and task-scoped
+ * instructions are filtered before queueing.
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { registerPreferenceExtractor } from "../../../extensions/orchestrator/preference-extractor.js";
-import { entryHash, loadScores } from "../../../extensions/orchestrator/memory-scoring.js";
+import { registerPreferenceExtractor, readPreferenceCandidates, appendPreferenceCandidate } from "../../../extensions/orchestrator/preference-extractor.js";
 
 interface Harness {
   pi: any;
   emit: (event: string, data: any) => Promise<void>;
-  shutdown: () => Promise<void>;
 }
 
 const harnesses: Harness[] = [];
@@ -40,11 +40,6 @@ function makeHarness(cwd: string): Harness {
         await fn(data, { cwd, sessionManager: { getSessionId: () => "test-session" } });
       }
     },
-    async shutdown() {
-      for (const fn of handlers.get("session_shutdown") || []) {
-        await fn(undefined, { cwd });
-      }
-    },
   };
   harnesses.push(h);
   (h as any)._restore = () => {
@@ -60,95 +55,110 @@ function topicLines(cwd: string, file: string): string[] {
   return fs.readFileSync(p, "utf-8").split("\n").filter((l) => l.startsWith("- ["));
 }
 
-async function settle(ms = 300): Promise<void> {
-  await new Promise((r) => setTimeout(r, ms));
-}
-
-describe("registerPreferenceExtractor — tracked writes, cooldown, shutdown drain (Qodo round 2, PR #916)", () => {
+describe("registerPreferenceExtractor — candidate queue, no direct writes (issue #961)", () => {
   let cwd: string;
 
   beforeEach(() => {
     cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pref-extractor-"));
   });
 
-  afterEach(async () => {
-    // Drain anything pending so the next test starts from a settled state
+  afterEach(() => {
     for (const h of harnesses.splice(0)) {
-      try { await h.shutdown(); } catch { /* ignore */ }
       (h as any)._restore();
     }
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
-  it("writes an extracted preference to the topic file", async () => {
+  it("queues an extracted preference as a candidate — NOT in the topic file", async () => {
     const h = makeHarness(cwd);
     registerPreferenceExtractor(h.pi);
     await h.emit("input", { text: "Going forward I always want uv run for every Python command" });
-    await settle();
-    const lines = topicLines(cwd, "preferences.md");
-    assert.equal(lines.length, 1, "preference must land in the topic file");
-    assert.match(lines[0]!, /uv run/);
+    const candidates = readPreferenceCandidates(cwd);
+    assert.equal(candidates.length, 1, "candidate must be queued");
+    assert.match(candidates[0]!.text, /uv run/);
+    assert.equal(candidates[0]!.sourceSession, "test-session");
+    assert.ok(candidates[0]!.timestamp, "candidate carries a timestamp");
+    assert.equal(
+      topicLines(cwd, "preferences.md").length,
+      0,
+      "extractor must never write topic files directly",
+    );
   });
 
-  it("stamps the cooldown only after a successful write — duplicate input does not reinforce", async () => {
+  it("does not re-queue the same text — exact dedup against the queue file", async () => {
     const h = makeHarness(cwd);
     registerPreferenceExtractor(h.pi);
     const text = "From now on I always want timezone labels in UTC";
     await h.emit("input", { text });
-    await settle();
-    const hash = entryHash(`- [preference] ${text}`);
-    assert.equal(loadScores(cwd).entries[hash]?.evidenceCount, 1, "first write lands");
-
-    // Same input again within the cooldown — no reinforcement may happen
     await h.emit("input", { text });
-    await settle();
-    assert.equal(loadScores(cwd).entries[hash]?.evidenceCount, 1, "cooldown must suppress re-extraction");
+    assert.equal(readPreferenceCandidates(cwd).length, 1, "duplicate must not queue twice");
   });
 
-  it("does not stamp the cooldown when the write is rejected — a retried input succeeds once the blocker is gone", async () => {
+  it("does not queue task-scoped instructions (issue #961)", async () => {
     const h = makeHarness(cwd);
     registerPreferenceExtractor(h.pi);
-
-    // Seed a conflicting non-pinned rule so the first extraction attempt is
-    // rejected by the conflict gate
-    const topicsDir = path.join(cwd, ".pi", "memory", "topics");
-    fs.mkdirSync(topicsDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(topicsDir, "preferences.md"),
-      "# Preferences\n\n- [preference] Never use tabs for indentation, spaces only\n",
-    );
-
-    const text = "From now on it is fine to use tabs for indentation";
-    await h.emit("input", { text });
-    await settle();
-    // First attempt was rejected by the conflict gate — nothing written
+    await h.emit("input", {
+      text: "Once everything is done I want an html report of the results please",
+    });
+    await h.emit("input", {
+      text: "When bumping to 2.0.0 I always want the vendor dir dropped first",
+    });
+    await h.emit("input", { text: "For this report I always prefer to have a summary table" });
     assert.equal(
-      topicLines(cwd, "preferences.md").filter((l) => l.includes("fine to use tabs")).length,
+      readPreferenceCandidates(cwd).length,
       0,
-      "conflicting write must be rejected",
-    );
-
-    // Remove the blocker, then send the SAME input again: if the cooldown had
-    // been stamped on the rejected write, this would be suppressed
-    fs.writeFileSync(path.join(topicsDir, "preferences.md"), "# Preferences\n\n");
-    await h.emit("input", { text });
-    await settle();
-    assert.equal(
-      topicLines(cwd, "preferences.md").filter((l) => l.includes("fine to use tabs")).length,
-      1,
-      "rejected write must not suppress the retry",
+      "task-scoped instructions must not queue",
     );
   });
 
-  it("drains pending writes on session_shutdown", async () => {
+  it("does not queue one-off grants nor questions", async () => {
     const h = makeHarness(cwd);
     registerPreferenceExtractor(h.pi);
-    // Fire input and IMMEDIATELY shut down — the write is still pending
-    await h.emit("input", { text: "Going forward I always want terse commit messages" });
-    await h.shutdown();
-    // The drain must have awaited the in-flight write
-    const lines = topicLines(cwd, "preferences.md");
-    assert.equal(lines.length, 1, "pending write must land before shutdown completes");
-    assert.match(lines[0]!, /terse commit messages/);
+    await h.emit("input", { text: "You can merge this PR, I always trust your judgment here" });
+    await h.emit("input", { text: "Do I always need to run the linter before committing?" });
+    assert.equal(readPreferenceCandidates(cwd).length, 0, "grants plus questions must not queue");
+  });
+
+  it("keeps the FULL sentence — no mid-sentence cutoff at 100 chars (issue #961)", async () => {
+    const h = makeHarness(cwd);
+    registerPreferenceExtractor(h.pi);
+    const long =
+      "For dashboards I prefer compact cards over tables with lots of padding and borders everywhere around them";
+    assert.ok(long.length > 100, "fixture must exceed the old 100-char cap");
+    await h.emit("input", { text: long });
+    const candidates = readPreferenceCandidates(cwd);
+    assert.equal(candidates.length, 1);
+    assert.ok(
+      candidates[0]!.text.length > 100,
+      "candidate must carry the full thought, not a truncated half-sentence",
+    );
+  });
+
+  it("skips slash commands plus short messages", async () => {
+    const h = makeHarness(cwd);
+    registerPreferenceExtractor(h.pi);
+    await h.emit("input", { text: "/remember I always want tests run before merging anything" });
+    await h.emit("input", { text: "I prefer tabs" }); // < MIN_MESSAGE_LENGTH (20)
+    assert.equal(readPreferenceCandidates(cwd).length, 0);
+  });
+
+  it("queues at most 3 candidates per message", async () => {
+    const h = makeHarness(cwd);
+    registerPreferenceExtractor(h.pi);
+    await h.emit("input", {
+      text: "I prefer tabs. I prefer spaces. I prefer semicolons. I prefer no semicolons. I prefer dark mode.",
+    });
+    assert.equal(readPreferenceCandidates(cwd).length, 3, "extractPreferences caps at 3 per message");
+  });
+
+  it("appends without losing prior candidates — append-only queue (Qodo #964)", () => {
+    // The old read-modify-write lost a concurrent session's candidate when
+    // both read the same snapshot. appendFileSync composes line appends.
+    const text = "From now on I always want concise status lines";
+    assert.equal(appendPreferenceCandidate(cwd, text, "session-a"), "queued");
+    assert.equal(appendPreferenceCandidate(cwd, "From now on I always want UTC timestamps", "session-b"), "queued");
+    const candidates = readPreferenceCandidates(cwd);
+    assert.equal(candidates.length, 2, "both candidates must survive");
+    assert.equal(candidates[0]!.text, text);
   });
 });

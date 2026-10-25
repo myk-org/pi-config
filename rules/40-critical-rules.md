@@ -114,6 +114,14 @@ Skip when the user explicitly says "skip audit", has previously approved the sou
 
 ---
 
+## Truncated Command Output (rtk)
+
+When command output contains `[+N hidden: rtk recall <id>]` and you need the hidden results,
+run `rtk recall <id>` to retrieve them — never re-run the command or bypass with path-qualified
+binaries (`/usr/bin/grep`). If the hidden data is irrelevant, continue normally.
+
+---
+
 ## Temp Files
 
 All temp files go to `.pi/tmp/` via `getProjectTmpDir(cwd)` — NEVER create temp files directly in the project tree.

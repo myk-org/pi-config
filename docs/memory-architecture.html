@@ -742,12 +742,16 @@ summaries from the session file (issue #915), falling back to a join of user mes
 Compaction summaries whose turn is retried (overflow recovery) are skipped so content is not double-indexed, and
 <code>before_agent_start</code> auto-injects matches from relevant past sessions alongside the situation report.</p>
 <p>The agent can also query it directly with the <code>session_search</code> tool — see <a href="commands-and-tools.html">Commands and Tools Reference</a>.</p>
-<h3 id="stated-preferences-are-captured-automatically">Stated preferences are captured automatically</h3>
+<h3 id="stated-preferences-are-captured-for-dreaming-review">Stated preferences are captured for dreaming review</h3>
 <p><code>preference-extractor.ts</code> watches conversation for phrases such as "I prefer …", "always use …", or "never …".
-When it detects one, it routes the preference through the unified write path (<code>memory-write.ts</code>), so automatic
-extraction gets the same safeguards as an explicit <code>memory_add</code>: topic caps, near-duplicate dedup, and the
-contradiction gate. Questions ("Do I always need to…?") and one-off permission grants ("you can merge this PR")
-are filtered out before extraction.</p>
+Regex extraction fires on phrase, not meaning, so detected statements are queued as <strong>candidates</strong> in
+<code>.pi/memory/preference-candidates.jsonl</code> (full sentence, source session) — the extractor no longer
+lands memories directly (#961). Questions ("Do I always need to…?"), one-off permission grants
+("you can merge this PR"), and task-scoped instructions ("when done, I want an html report",
+"when bumping to 1.4.0, drop the vendor dir") are filtered out before queueing. Dreaming reviews
+the queue each cycle: durable standing preferences are distilled into clean one-line entries,
+everything else is discarded, and the queue is truncated. The LLM path (<code>memory_add</code> + guardrails)
+remains available for immediate capture.</p>
 <h3 id="the-write-path-guards-against-bad-memories">The write path guards against bad memories</h3>
 <p>Every producer — <code>memory_add</code>, the preference extractor — funnels through <code>memory-write.ts</code>, which enforces,
 in order:</p>
@@ -755,6 +759,15 @@ in order:</p>
 <li>
 <p><strong>Grant-phrase guardrail</strong> — text that reads like a one-off permission ("you can merge this PR",
    "go ahead", "just this once") is rejected: one-off grants are session instructions, not memories.</p>
+</li>
+<li>
+<p><strong>Task-scope guardrail</strong> (#961) — text that reads like a task-scoped instruction is rejected:
+   deliverable asks tied to a completion event ("when done, I want an html report"), version-pinned
+   migration steps ("when bumping to 1.4.0, drop the vendor dir"), bounded deliverable references
+   ("for this report"), and config-change notes ("every 30min (changed from 1h)"). These belong to
+   the current task or the session, not memory. Standing rules ("When done, commit and push
+   everything") do not match — the detector is high-precision by design and fuzzy cases are left
+   to dreaming review.</p>
 </li>
 <li>
 <p><strong>Contradiction gate</strong> — an add that flips permission polarity against an existing entry (one text
@@ -921,7 +934,7 @@ memory-backed enforcement is code-enforced, which is only injected, and which is
 <li><a href="#the-situation-report-is-the-runtime-view">The situation report is the runtime view</a></li>
 <li><a href="#query-classes-bias-what-gets-injected">Query classes bias what gets injected</a></li>
 <li><a href="#session-search-recalls-past-conversations">Session search recalls past conversations</a></li>
-<li><a href="#stated-preferences-are-captured-automatically">Stated preferences are captured automatically</a></li>
+<li><a href="#stated-preferences-are-captured-for-dreaming-review">Stated preferences are captured for dreaming review</a></li>
 <li><a href="#the-write-path-guards-against-bad-memories">The write path guards against bad memories</a></li>
 <li><a href="#promotion-turns-repeated-memories-into-stronger-structure">Promotion turns repeated memories into stronger structure</a></li>
 <li><a href="#provenance-is-merged-through-a-sidecar">Provenance is merged through a sidecar</a></li>

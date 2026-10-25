@@ -1511,6 +1511,169 @@ export function isReadOnlyStatement(stmt: string): boolean {
 /** Pattern matching direct recursive rm commands (subset of DANGEROUS patterns). */
 const RM_PATTERN = /\brm\s+(?:-[a-zA-Z]+\s+)*(-[a-zA-Z]*r[a-zA-Z]*|--recursive)/i;
 
+/** Tokenize the target paths of an rm command found in `stmt` (flags, the
+ *  `--` separator, and shell redirections skipped; surrounding quotes
+ *  stripped). Returns null when no rm token is present. Shared by
+ *  isRmInProjectTmp and relativeRecursiveRmTarget (issue #963). */
+interface RmPathToken {
+  value: string;
+  /** Quote character that surrounded the token, if any. SINGLE quotes make
+   *  the content fully literal; DOUBLE quotes still expand $VAR and
+   *  backticks while suppressing tilde expansion and globbing (Qodo PR
+   *  #964 round 3 — a boolean quoted flag conflated the two). */
+  quote: "'" | '"' | null;
+}
+
+/** Whitespace tokenizer that keeps quoted spans together: `rm -rf "/abs/My
+ *  Dir"` is ONE path token, not the fragments `"/abs/My` and `Dir"` (Qodo
+ *  PR #964 round 3). A quote character always starts a new token —
+ *  mid-token quotes (`--flag="x"`) split, which is conservative for rm
+ *  argument parsing. */
+function splitRmTokens(stmt: string): RmPathToken[] {
+  const out: RmPathToken[] = [];
+  let cur = "";
+  let quote: "'" | '"' | null = null;
+  const push = (q: "'" | '"' | null) => {
+    if (cur) out.push({ value: cur, quote: q });
+    cur = "";
+  };
+  for (const ch of stmt.trim()) {
+    if (quote) {
+      if (ch === quote) {
+        push(quote);
+        quote = null;
+      } else cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      push(null);
+      quote = ch;
+    } else if (/\s/.test(ch)) {
+      push(null);
+    } else cur += ch;
+  }
+  push(quote); // unterminated quote — keep the residue as its own token
+  return out;
+}
+
+function parseRmPathTokens(stmt: string): RmPathToken[] | null {
+  const paths: RmPathToken[] = [];
+  let pastSeparator = false;
+  let pastRm = false;
+  let skipNext = false;
+
+  for (const token of splitRmTokens(stmt)) {
+    if (skipNext) {
+      skipNext = false;
+      continue;
+    }
+    if (!pastRm) {
+      if (token.value === "rm" || token.value.endsWith("/rm")) pastRm = true;
+      continue;
+    }
+    if (token.value === "--" && token.quote === null) {
+      pastSeparator = true;
+      continue;
+    }
+    if (!pastSeparator && token.value.startsWith("-") && token.quote === null) continue;
+    // Skip shell redirections — handle both joined (2>/dev/null) and spaced (2> /dev/null)
+    if (/^[0-9]*>{1,2}|^&>|^[0-9]*</.test(token.value)) {
+      // If the token is ONLY the operator (no target attached), skip the next token too
+      if (/^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/.test(token.value)) {
+        skipNext = true;
+      }
+      continue;
+    }
+    paths.push(token);
+  }
+
+  return pastRm ? paths : null;
+}
+
+/** Leading wrapper prefixes that may precede a direct `rm` invocation
+ *  (issue #963). Same family as the bare-shell wrapper alternation in the
+ *  DANGEROUS patterns, but INCLUDES sudo: the absolute-path requirement
+ *  applies to `sudo rm -rf rel` just as much as to bare `rm -rf rel`. */
+// The `--` end-of-options marker is its own alternative that consumes NO
+// value: the old `-.S+` matched `--` and then its optional value slot ate
+// the command itself (`env -- rm -rf x` left `-rf x` with no command token,
+// evading the gate — Qodo PR #964).
+const RM_LEADING_WRAPPERS_RE =
+  /^\s*(?:\S+=\S*\s+|sudo(?:\s+(?:--\S+|--|-(?!-)\S+(?:\s+\S+)?))*\s+|rtk(?:\s+(?:--\S+|-(?!-)\S+))*\s+|(?:command|builtin|exec)\s+|env(?:\s+(?:--\S+|--|-(?!-)\S+(?:\s+\S+)?|\S+=\S*))*\s+|timeout\s+(?:(?:--\S+|--|-(?!-)\S+(?:\s+\S+)?)\s+)*\S+\s+|nice(?:\s+(?:--\S+|--|-(?!-)\S+(?:\s+\S+)?))*\s+|nohup\s+)+/;
+
+/**
+ * First non-absolute target of a direct (optionally wrapped) recursive rm
+ * statement, or null (issue #963). "Absolute" = starts with `/` or `~`.
+ *
+ * find -exec / xargs rm variants return null — their targets come from find
+ * output / stdin, not statement text. Recursive rm with a relative target
+ * must be blocked: a persistent "always allow" approval stores the
+ * statement text, so a relative target would approve the identical text in
+ * ANY directory; an absolute path binds the approval to exactly one folder.
+ */
+export function relativeRecursiveRmTarget(stmt: string): string | null {
+  if (!RM_PATTERN.test(stmt)) return null;
+  // rm must be the COMMAND, not a word inside another command (Qodo PR
+  // #964): `git rm -r --cached build` and `git commit -m "chore: rm -rf
+  // build dir"` previously matched because the tokenizer scanned for `rm`
+  // anywhere — hard-blocking git subcommands and commit messages that the
+  // dangerous-prompt path already handles.
+  const stripped = stmt.replace(/^\(\s*/, "").replace(RM_LEADING_WRAPPERS_RE, "");
+  const firstWord = stripped.trim().split(/\s+/)[0];
+  if (firstWord !== "rm" && !firstWord?.endsWith("/rm")) return null;
+  // find -exec rm / xargs rm carry their targets from find output / stdin.
+  // COMMAND-POSITION only: `rm -rf find` (a directory named find) must stay
+  // blocked (Qodo PR #964) — the old word-boundary test exempted it.
+  if (firstWord === "find" || /(?:^|\|\s*)xargs\s+rm\b/.test(stmt) || /\bfind\b[^|;]*-exec\b/.test(stmt)) {
+    return null;
+  }
+  const paths = parseRmPathTokens(stripped);
+  if (!paths || paths.length === 0) return null;
+  for (const p of paths) {
+    const t = p.value;
+    // Project temp dir by variable: deterministic per-cwd, expanded and
+    // validated by isRmInProjectTmp downstream (Qodo PR #964 — the gate
+    // must not block the documented ${PROJECT_TMP_DIR} cleanup pattern).
+    // ANCHORED (Qodo PR #964 round 3): the variable must END here or be
+    // followed by / — a prefix match let $PROJECT_TMP_DIR_BACKUP skip the
+    // gate. The variable expands unquoted AND inside double quotes.
+    const projTmpVar = /^\$\{PROJECT_TMP_DIR\}(?:$|\/)|^\$PROJECT_TMP_DIR(?![\w$])(?:$|\/)/.test(t);
+    // Traversal and non-literal suffixes drop the exemption (Qodo PR #964
+    // rounds 4-5): a legit temp path never needs ".." (the variable already
+    // points at the tmp root), and its suffix must be LITERAL —
+    // "${PROJECT_TMP_DIR}/$TARGET" with TARGET=../../important expanded
+    // past both the gate and the tmp check while still looking exempt.
+    const suffix = t
+      .replace(/^\$\{PROJECT_TMP_DIR\}/, "")
+      .replace(/^\$PROJECT_TMP_DIR(?![\w$])/, "");
+    const suffixLiteral = !/[$`*?[\]]/.test(suffix) && !t.includes("..");
+    if (projTmpVar && p.quote !== "'" && suffixLiteral) continue;
+    if (p.quote === "'") {
+      // Single quotes: fully literal. A quoted tilde does NOT expand (it
+      // is a relative path), and $/glob chars are inert — only a quoted
+      // absolute path binds to one folder.
+      if (t.startsWith("/")) continue;
+      return t;
+    }
+    if (p.quote === '"') {
+      // Double quotes: tilde does NOT expand (relative → block), but $VAR
+      // and backticks DO — an approval for "/home/$USER/build" must not
+      // bind. Globs are inert inside quotes, so only / $ ` matter.
+      if (t.startsWith("~")) return t;
+      if (/[$`]/.test(t)) return t;
+      if (t.startsWith("/")) continue;
+      return t;
+    }
+    // Unquoted: tilde expands to $HOME (absolute); any expansion or glob
+    // char makes the target non-literal — an approval for
+    // /home/$USER/build or /home/*/build must not bind to varying
+    // directories (Qodo PR #964).
+    if (t.startsWith("~")) continue;
+    if (/[$`*?[\]]/.test(t)) return t;
+    if (t.startsWith("/")) continue;
+    return t;
+  }
+  return null;
+}
+
 /**
  * Check if a dangerous rm command only targets paths within .pi/tmp/ or /tmp/<something>.
  * Returns true if the command should be silently allowed.
@@ -1532,41 +1695,12 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
   // embed arbitrary commands that bypass the allowlist check
   if (extractSubshells(stmt).length > 0) return false;
 
-  // Parse arguments: split on whitespace, skip flags, handle -- separator
-  const tokens = stmt.trim().split(/\s+/);
-  const paths: string[] = [];
-  let pastSeparator = false;
-  let pastRm = false;
-  let skipNext = false;
-
-  for (const token of tokens) {
-    if (skipNext) {
-      skipNext = false;
-      continue;
-    }
-    if (!pastRm) {
-      if (token === "rm" || token.endsWith("/rm")) pastRm = true;
-      continue;
-    }
-    if (token === "--") {
-      pastSeparator = true;
-      continue;
-    }
-    if (!pastSeparator && token.startsWith("-")) continue;
-    // Skip shell redirections — handle both joined (2>/dev/null) and spaced (2> /dev/null)
-    if (/^[0-9]*>{1,2}|^&>|^[0-9]*</.test(token)) {
-      // If the token is ONLY the operator (no target attached), skip the next token too
-      if (/^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/.test(token)) {
-        skipNext = true;
-      }
-      continue;
-    }
-    // Strip surrounding quotes — prevents false positives on rm -rf ".pi/tmp/foo"
-    paths.push(token.replace(/^["']|["']$/g, ""));
-  }
+  // Parse arguments: flags, -- separator, redirections (shared tokenizer)
+  const tokens = parseRmPathTokens(stmt);
 
   // Guard against vacuous truth — if no paths extracted, don't silently allow
-  if (paths.length === 0) return false;
+  if (!tokens || tokens.length === 0) return false;
+  const paths = tokens.map((t) => t.value);
 
   // Resolve and substitute PROJECT_TMP_DIR env var
   const projectTmpDir = path.join(cwd, ".pi", "tmp");

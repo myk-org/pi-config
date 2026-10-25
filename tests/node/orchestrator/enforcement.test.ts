@@ -3135,6 +3135,201 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     assert.equal(promptCalls.length, 0);
   });
 
+  // ── Recursive rm absolute-path requirement (issue #963) ──
+
+  it("blocks relative-path recursive rm with rewrite guidance", async () => {
+    const res = await runBash("rm -rf build");
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+    assert.match(res.reason, /rm -rf \/.*\/build/);
+    assert.equal(promptCalls.length, 0, "rewrite rule must block, never prompt");
+  });
+
+  it("blocks wrapped, variable, glob recursive rm targets", async () => {
+    for (const cmd of ["sudo rm -rf rel/dir", "rm -rf $TMPDIR/x", "rm -rf *", "rm -fr cache"]) {
+      const res = await runBash(cmd);
+      assert.equal(res?.block, true, cmd);
+      assert.match(res.reason, /ABSOLUTE/i);
+    }
+  });
+
+  it("blocks quoted tilde targets — quoted ~ does not expand (Qodo #964)", async () => {
+    for (const cmd of ["rm -rf '~/build'", 'rm -rf "~/build"']) {
+      const res = await runBash(cmd);
+      assert.equal(res?.block, true, cmd);
+      assert.match(res.reason, /ABSOLUTE/i);
+    }
+  });
+
+  it("blocks unquoted expansion chars in absolute targets (Qodo #964)", async () => {
+    for (const cmd of ["rm -rf /home/$USER/build", "rm -rf /home/*/build"]) {
+      const res = await runBash(cmd);
+      assert.equal(res?.block, true, cmd);
+      assert.match(res.reason, /ABSOLUTE/i);
+      assert.match(res.reason, /LITERAL full path/, "must not echo the glob back as the rewrite");
+    }
+  });
+
+  it("blocks PROJECT_TMP_DIR traversal — the exemption never escapes the tmp root (Qodo r4)", async () => {
+    for (const cmd of [
+      "rm -rf ${PROJECT_TMP_DIR}/../../important",
+      'rm -rf "${PROJECT_TMP_DIR}/../../important"',
+    ]) {
+      const res = await runBash(cmd);
+      assert.equal(res?.block, true, cmd);
+      assert.match(res.reason, /ABSOLUTE/i);
+    }
+  });
+
+  it("blocks a non-literal suffix on the temp variable (Qodo r5)", async () => {
+    for (const cmd of [
+      "rm -rf ${PROJECT_TMP_DIR}/$TARGET",
+      'rm -rf "${PROJECT_TMP_DIR}/$TARGET"',
+    ]) {
+      const res = await runBash(cmd);
+      assert.equal(res?.block, true, cmd);
+      assert.match(res.reason, /ABSOLUTE/i);
+    }
+  });
+
+  it("keeps the PROJECT_TMP_DIR exemption for plain subpaths (Qodo r4)", async () => {
+    mkdirSync(join(cwd, ".pi", "tmp", "sub"), { recursive: true });
+    const res = await runBash("rm -rf ${PROJECT_TMP_DIR}/sub");
+    assert.equal(res?.block, undefined, "subpath stays silently exempt");
+    assert.equal(promptCalls.length, 0);
+  });
+
+  it("blocks a similarly-named variable — PROJECT_TMP_DIR prefix must not match (Qodo r3)", async () => {
+    const res = await runBash("rm -rf $PROJECT_TMP_DIR_BACKUP");
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+  });
+
+  it("blocks double-quoted variable paths — \"..\" still expands $VAR (Qodo r3)", async () => {
+    const res = await runBash('rm -rf "/home/$USER/build"');
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+  });
+
+  it("double-quoted PROJECT_TMP_DIR keeps the silent tmp exemption (Qodo r3)", async () => {
+    mkdirSync(join(cwd, ".pi", "tmp", "x"), { recursive: true });
+    const res = await runBash('rm -rf "${PROJECT_TMP_DIR}/x"');
+    assert.equal(res?.block, undefined, "double quotes expand the variable — exempt");
+    assert.equal(promptCalls.length, 0);
+  });
+
+  it("single-quoted variable paths are literal absolutes — normal prompt, no rewrite block (Qodo r3)", async () => {
+    promptCalls.length = 0;
+    const res = await runBash("rm -rf '/home/$USER/build'");
+    assert.ok(!res || !/ABSOLUTE/.test(res.reason ?? ""), "single quotes are literal");
+    assert.equal(promptCalls.length, 1, "dangerous prompt handles it");
+  });
+
+  it("blocks rm behind long wrapper flags (Qodo r3)", async () => {
+    const res = await runBash("env --ignore-environment rm -rf build");
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+  });
+
+  it("quoted absolute paths with spaces are one token — no rewrite block (Qodo r3)", async () => {
+    promptCalls.length = 0;
+    const res = await runBash('rm -rf "/var/My Dir"');
+    assert.ok(!res || !/ABSOLUTE/.test(res.reason ?? ""), "quoted path with spaces is absolute");
+    assert.equal(promptCalls.length, 1, "dangerous prompt handles it");
+  });
+
+  it("blocks a quoted RELATIVE path with spaces (Qodo r3)", async () => {
+    const res = await runBash('rm -rf "My Dir"');
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+  });
+
+  it("blocks a relative target that happens to be named find (Qodo #964)", async () => {
+    const res = await runBash("rm -rf find");
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+  });
+
+  it("blocks wrapped rm after the -- end-of-options marker (Qodo #964)", async () => {
+    for (const cmd of ["env -- rm -rf ./victim", "sudo -- rm -rf victim"]) {
+      const res = await runBash(cmd);
+      assert.equal(res?.block, true, cmd);
+      assert.match(res.reason, /ABSOLUTE/i);
+    }
+  });
+
+  it("rm inside git subcommands keeps the dangerous prompt, not the rewrite block (Qodo #964)", async () => {
+    for (const cmd of ['git rm -r --cached build', 'git commit -m "chore: rm -rf build dir"']) {
+      promptCalls.length = 0;
+      const res = await runBash(cmd);
+      assert.ok(!res || !/ABSOLUTE/.test(res.reason ?? ""), cmd);
+    }
+  });
+
+  it("rm as an echo operand never hits the rewrite block", async () => {
+    const res = await runBash("echo -- rm -rf x");
+    assert.ok(!res || !/ABSOLUTE/.test(res.reason ?? ""));
+  });
+
+  it("PROJECT_TMP_DIR variable rm keeps the silent tmp exemption (Qodo #964)", async () => {
+    mkdirSync(join(cwd, ".pi", "tmp", "x"), { recursive: true });
+    const res = await runBash("rm -rf ${PROJECT_TMP_DIR}/x");
+    assert.equal(res?.block, undefined, "variable tmp target must stay silently exempt");
+    assert.equal(promptCalls.length, 0);
+  });
+
+  it("blocks relative rm in a compound command", async () => {
+    const res = await runBash("cd /tmp && rm -rf leftover");
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+    // The suggested rewrite must point into the cd'd directory, not the
+    // session cwd (Qodo PR #964).
+    assert.match(res.reason, /rm -rf \/tmp\/leftover/);
+  });
+
+  it("blocks relative .pi/tmp rm — full-path rule fires before the tmp exemption", async () => {
+    mkdirSync(join(cwd, ".pi", "tmp", "x"), { recursive: true });
+    const res = await runBash("rm -rf .pi/tmp/x");
+    assert.equal(res?.block, true);
+    assert.match(res.reason, /ABSOLUTE/i);
+  });
+
+  it("absolute .pi/tmp rm keeps the silent exemption", async () => {
+    mkdirSync(join(cwd, ".pi", "tmp", "x"), { recursive: true });
+    const res = await runBash(`rm -rf ${join(cwd, ".pi", "tmp", "x")}`);
+    assert.equal(res?.block, undefined, "absolute tmp target must stay silently exempt");
+    assert.equal(promptCalls.length, 0);
+  });
+
+  it("absolute recursive rm flows to the normal dangerous prompt", async () => {
+    const res = await runBash("rm -rf /var/lib/precious-data");
+    // Not the rewrite-block: the normal dangerous prompt fires (choice=undefined → user blocks)
+    assert.equal(res?.block, true);
+    assert.ok(!/ABSOLUTE/.test(res.reason), "must not hit the full-path rewrite rule");
+    assert.equal(promptCalls.length, 1, "normal dangerous prompt must fire");
+  });
+
+  it("tilde-rooted recursive rm passes the full-path rule", async () => {
+    const res = await runBash("rm -rf ~/scratch/build-artifacts");
+    assert.ok(!res || !/ABSOLUTE/.test(res.reason ?? ""), "~ is a full path");
+  });
+
+  it("find -delete is exempt from the full-path rule", async () => {
+    const res = await runBash("find . -name '*.log' -delete");
+    assert.ok(!res || !/ABSOLUTE/.test(res.reason ?? ""), "find -delete carries its own targets");
+  });
+
+  it("xargs rm is exempt from the full-path rule (Qodo #964)", async () => {
+    const res = await runBash("find . -name '*.log' | xargs rm -rf");
+    assert.ok(!res || !/ABSOLUTE/.test(res.reason ?? ""), "xargs rm targets come from stdin");
+  });
+
+  it("non-recursive rm is untouched", async () => {
+    const res = await runBash("rm notes.txt");
+    assert.equal(res?.block, undefined);
+    assert.equal(promptCalls.length, 0);
+  });
+
   it("a mutated command re-prompts and 'No' blocks", async () => {
     seedSettings(["sudo reboot"]);
     choice = "No";
