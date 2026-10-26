@@ -102,13 +102,24 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
         const evPath = (ev as any).settingsPath as string | undefined;
         const ownPath = settingsPathRef.current;
         const mine = (cwd ?? "").replace(/\/+$/, "");
-        if (scope === "project" && evPath && ownPath && evPath !== ownPath) {
-          log.debug("ignoring settings payload for a different settings file", { evPath, ownPath });
-          return;
-        }
-        if (scope === "project" && !evPath && sourceCwd && cwd && sourceCwd.replace(/\/+$/, "") !== mine) {
-          log.debug("ignoring project-scoped settings broadcast from another project", { sourceCwd });
-          return;
+        const isBroadcast = Boolean(sourceCwd);
+        if (scope === "project") {
+          if (!ownPath) {
+            // Identity not yet learned: only the panel's OWN settings-get
+            // reply (never a broadcast — those carry sourceCwd) may establish
+            // it, so a foreign project's broadcast arriving first cannot
+            // seize the filter (Qodo R7).
+            if (isBroadcast) {
+              log.debug("ignoring broadcast before own settings identity is learned", {});
+              return;
+            }
+          } else if (evPath && evPath !== ownPath) {
+            log.debug("ignoring settings payload for a different settings file", { evPath, ownPath });
+            return;
+          } else if (!evPath && sourceCwd && cwd && sourceCwd.replace(/\/+$/, "") !== mine) {
+            log.debug("ignoring project-scoped settings broadcast from another project", { sourceCwd });
+            return;
+          }
         }
         if (evPath) settingsPathRef.current = evPath;
         log.debug("settings payload received", { scope, keys: (ev as any).keys?.length });

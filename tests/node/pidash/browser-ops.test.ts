@@ -2,6 +2,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySetting, buildSettingsPayload, validateSettingValue } from "../../../extensions/pidash/browser-ops.ts";
@@ -34,6 +35,30 @@ describe("browser-ops settings", () => {
   it("invalid scope returns an error payload", () => {
     const payload = buildSettingsPayload("/tmp", "bogus");
     assert.ok(payload.error);
+  });
+
+  it("payload carries the resolved settings path — identical from a subdirectory (Qodo R7)", () => {
+    const dir = tempProject();
+    try {
+      const fromRoot = buildSettingsPayload(dir, "project");
+      assert.ok(fromRoot.settingsPath, "project payload carries settingsPath");
+      assert.equal(fromRoot.settingsPath, join(dir, ".pi", "pi-config-settings.jsonc"));
+
+      // A session running in a repo subdirectory resolves to the SAME
+      // settings file — this identity is what SettingsPanel uses to accept
+      // or reject cross-session broadcasts. getSettingsPath resolves through
+      // git rev-parse --git-common-dir, so the temp project must be a repo.
+      execFileSync("git", ["init", "-q", dir]);
+      mkdirSync(join(dir, "packages", "nested", "deeper"), { recursive: true });
+      const fromSub = buildSettingsPayload(join(dir, "packages", "nested", "deeper"), "project");
+      assert.equal(fromSub.settingsPath, fromRoot.settingsPath, "subdir resolves to the same settings file");
+
+      // Global scope has no project file identity.
+      const global = buildSettingsPayload(dir, "global");
+      assert.equal(global.settingsPath, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("applySetting writes project file and round-trips through payload", () => {
