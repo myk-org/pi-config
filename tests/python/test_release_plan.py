@@ -583,6 +583,35 @@ class TestUnmappedChanges:
         unmapped = planner.unmapped_changes()
         assert unmapped["files"] == []
 
+    def test_annotated_tag_on_old_commit_does_not_anchor(self, fixture_repo: Path) -> None:
+        """The window anchor is the most recent release COMMIT, not the
+        most recently created tag object: an annotated tag created later
+        for an older commit must lose (Qodo PR #970 rounds 2+3)."""
+        git(fixture_repo, "tag", "v1.0.0")
+        (fixture_repo / "DEVELOPMENT.md").write_text("# dev\n", encoding="utf-8")
+        commit(fixture_repo, "docs: orphan before the newer release", "DEVELOPMENT.md")
+        git(fixture_repo, "tag", "poc@1.1.0")
+        (fixture_repo / "AGENTS.md").write_text("# agents\n", encoding="utf-8")
+        commit(fixture_repo, "docs: orphan after the newer release", "AGENTS.md")
+        # Annotated, release-SHAPED tag, created LAST, pointing at the
+        # OLDER release commit (v1.0.0's commit is the seed) — only
+        # commit-date ordering can exclude it; shape filtering passes it.
+        git(fixture_repo, "tag", "-a", "tools@1.0.5", "-m", "late", "v1.0.0")
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        # Window is poc@1.1.0..HEAD: only the post-1.1.0 orphan shows.
+        files = unmapped["files"]
+        assert isinstance(files, list)
+        assert files == ["AGENTS.md"]
+
     def test_per_package_tags_anchor_the_window(self, fixture_repo: Path) -> None:
         """The window anchor is the newest release-shaped tag — a stray
         non-release tag must not shadow it, and per-package name@version
