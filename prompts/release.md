@@ -85,10 +85,12 @@ root only).
   (the LLM) decide the next version. IMPORTANT: a package's history
   reaches back to ITS last publish, which may predate the last repo tag
   — do NOT rely on the changelog alone. For each affected package run
-  `git log <anchor>..HEAD --oneline -- <its mapped paths>` (the plan's
-  JSON carries each package's `anchor` and `changed_files`) and apply
-  the standard semver rules to THOSE commits (`feat:` → minor, `fix:` →
-  patch, breaking → major). The plan does NOT propose versions — you
+  `git log <anchor>..HEAD --format="%h %s%n%b" -- <its mapped paths>`
+  (the plan's JSON carries each package's `anchor` and `changed_files`)
+  and apply the standard semver rules to THOSE commits (`feat:` →
+  minor, `fix:` → patch, breaking → major). Read FULL messages, not
+  just subjects — a `BREAKING CHANGE:` footer lives in the commit body
+  and forces major even under a `feat:`/`fix:` subject. The plan does NOT propose versions — you
   do. An explicit version argument (`/release X.Y.Z`) instead sets EVERY
   affected package to that version, skipping per-package decisions. The
   repo tag is the HIGHEST proposed version.
