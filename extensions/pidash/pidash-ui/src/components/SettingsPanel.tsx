@@ -10,6 +10,7 @@ interface Props {
   sendCmd: (command: string, extra?: Record<string, unknown>) => void;
   onMessage: (handler: (data: any) => void) => () => void;
   notify: (msg: string, level?: string) => void;
+  cwd?: string;
 }
 
 type Draft = Record<string, unknown>;
@@ -18,7 +19,7 @@ type Draft = Record<string, unknown>;
 
 /** #968 G — full /pi-config-settings parity: every key from settings-keys.json,
  *  grouped, typed editors, project + global scopes, stored/default/env visible. */
-export function SettingsPanel({ sendCmd, onMessage, notify }: Props) {
+export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
   const [scope, setScope] = useState<"project" | "global">("project");
   const [data, setData] = useState<SettingsData | null>(null);
   const [draft, setDraft] = useState<Draft>({});
@@ -83,6 +84,15 @@ export function SettingsPanel({ sendCmd, onMessage, notify }: Props) {
     sendCmd("settings-get", { scope });
     return onMessage((ev: any) => {
       if (ev.type === "settings-data" && ev.scope === scope) {
+        // Project-scoped broadcasts carry the WRITING project's cwd — a
+        // dashboard watching a different project must not adopt its values
+        // (Qodo R4). Global scope is machine-wide and applies to everyone.
+        const sourceCwd = (ev as any).sourceCwd as string | undefined;
+        const mine = (cwd ?? "").replace(/\/+$/, "");
+        if (scope === "project" && sourceCwd && cwd && sourceCwd.replace(/\/+$/, "") !== mine) {
+          log.debug("ignoring project-scoped settings broadcast from another project", { sourceCwd });
+          return;
+        }
         log.debug("settings payload received", { scope, keys: (ev as any).keys?.length });
         setData(ev as SettingsData);
         setDraft({});

@@ -527,7 +527,9 @@ export function registerPidash(
             // so browsers watching other sessions must not keep stale values
             // (Qodo R3). The daemon fans settings-broadcast out to all.
             const payload = buildSettingsPayload(cwd, parsed.scope);
-            if (ws && connected) ws.send(JSON.stringify({ type: "settings-broadcast", payload: { type: "settings-data", ...payload } }));
+            // sourceCwd lets browsers watching OTHER projects ignore a
+            // project-scoped broadcast that isn't theirs (Qodo R4)
+            if (ws && connected) ws.send(JSON.stringify({ type: "settings-broadcast", payload: { type: "settings-data", sourceCwd: cwd, ...payload } }));
           } else if (ws && connected) {
             ws.send(JSON.stringify({ type: "settings-error", scope: parsed.scope, key: parsed.key, error: result.error }));
           }
