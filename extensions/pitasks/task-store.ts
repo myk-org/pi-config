@@ -461,22 +461,27 @@ export class TaskStore {
 	}
 
 	deleteTasks(ids: string[]): number {
-		return this.withLock(() => {
-			let count = 0;
+		const count = this.withLock(() => {
+			let deleted = 0;
 			for (const id of ids) {
 				if (this.tasks.has(id)) {
 					this.tasks.delete(id);
-					count++;
+					deleted++;
 				}
 			}
-			if (count > 0) {
+			if (deleted > 0) {
 				for (const t of this.tasks.values()) {
 					t.blocks = t.blocks.filter(bid => !ids.includes(bid));
 					t.blockedBy = t.blockedBy.filter(bid => !ids.includes(bid));
 				}
 			}
-			return count;
+			return deleted;
 		});
+		// Broadcast the post-delete snapshot — bulk deletes must reach browser
+		// task panels like single deletes do (Qodo R1: stale entries otherwise
+		// linger until the next unrelated list request).
+		this.notifyChange();
+		return count;
 	}
 
 	clearAll(): number {

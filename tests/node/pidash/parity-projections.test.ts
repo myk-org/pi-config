@@ -55,6 +55,24 @@ describe("parseTypedSetting", () => {
     assert.ok(parseTypedSetting("abc", key("int")).error);
   });
 
+  it("int rejects trailing garbage instead of silently parsing a prefix", () => {
+    // parseInt("12abc") === 12 — must be an error, not a silent 12 (Qodo R1)
+    assert.ok(parseTypedSetting("12abc", key("int")).error);
+    assert.ok(parseTypedSetting("1.5", key("int")).error);
+    assert.deepEqual(parseTypedSetting("-3", key("int")), { value: -3 });
+  });
+
+  it("agent_overrides parses a JSON object and rejects strings/arrays", () => {
+    const def = key("agent_overrides");
+    assert.deepEqual(
+      parseTypedSetting('{"worker": {"model": "claude-opus-4-6"}}', def),
+      { value: { worker: { model: "claude-opus-4-6" } } },
+    );
+    assert.ok(parseTypedSetting("worker=claude", def).error);
+    assert.ok(parseTypedSetting('["worker"]', def).error);
+    assert.ok(parseTypedSetting("{broken", def).error);
+  });
+
   it("number accepts decimals", () => {
     assert.deepEqual(parseTypedSetting("1.5", key("number")), { value: 1.5 });
   });

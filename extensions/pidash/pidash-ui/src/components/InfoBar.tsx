@@ -139,14 +139,18 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
   }, [openMenu, send, session.sessionId]);
 
   return (
-    <div className={cn("flex items-center gap-3 px-4 py-2 border-t border-border text-sm text-muted-foreground relative max-md:flex-wrap max-md:gap-2 max-md:text-xs md:whitespace-nowrap md:scrollbar-none", inactive && "opacity-50 pointer-events-none")}>
+    <div className={cn("flex items-center gap-3 h-10 px-4 border-t border-border text-sm text-muted-foreground relative whitespace-nowrap shrink-0", inactive && "opacity-50 pointer-events-none")}>
+      {/* Stats zone — shrinks with ellipsis on narrow screens. Fixed bar
+          height means changing token counts / appearing 📦🧠 segments can
+          never resize the chat frame above. */}
+      <div className="flex items-center gap-3 min-w-0 shrink">
       {/* Model */}
-      <div className="relative">
+      <div className="relative min-w-0 shrink">
         <button
-          className="flex items-center gap-1 font-semibold text-foreground hover:text-primary transition-colors"
+          className="flex items-center gap-1 font-semibold text-foreground hover:text-primary transition-colors min-w-0"
           onClick={(e) => toggleMenu("models", e)}
         >
-          <Bot className="h-3.5 w-3.5" /> {displayModel} <ChevronDown className="h-3 w-3" />
+          <Bot className="h-3.5 w-3.5 shrink-0" /> <span className="truncate">{displayModel}</span> <ChevronDown className="h-3 w-3 shrink-0" />
         </button>
         {openMenu === "models" && (
           <div className="absolute bottom-full left-0 mb-1 z-50 bg-card border border-border rounded-lg shadow-xl py-1 min-w-[200px] max-h-60 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
@@ -187,7 +191,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
       <span className="text-border">|</span>
 
       {/* Thinking */}
-      {supportsReasoning(session) && <div className="relative">
+      {supportsReasoning(session) && <div className="relative shrink-0">
         <button
           ref={thinkingButtonRef}
           className="flex items-center gap-1 hover:text-primary transition-colors"
@@ -249,26 +253,28 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
 
       {supportsReasoning(session) && <span className="text-border">|</span>}
 
-      {/* Tokens */}
-      <span className="tabular-nums">
-        <span className="inline-block min-w-[3.5em] text-right">↑{fk(input)}</span>
+      {/* Tokens — fixed min-widths + titles: values change digit counts and
+          conditional segments (📦/🧠) appear per message, but a fixed-height
+          single-row bar means width churn can no longer resize the frame. */}
+      <span className="tabular-nums shrink-0">
+        <span className="inline-block min-w-[3.5em] text-right" title={`Input tokens: ${input.toLocaleString()}`}>↑{fk(input)}</span>
         {" "}
-        <span className="inline-block min-w-[3.5em] text-right">↓{fk(output)}</span>
-        {cache > 0 && <span className="inline-block min-w-[3.5em] text-right"> 📦{fk(cache)}</span>}
-        {(tokens?.reasoning ?? 0) > 0 && <span className="inline-block min-w-[3.5em] text-right"> 🧠{fk(tokens!.reasoning!)}</span>}
+        <span className="inline-block min-w-[3.5em] text-right" title={`Output tokens: ${output.toLocaleString()}`}>↓{fk(output)}</span>
+        {cache > 0 && <span className="inline-block min-w-[3.5em] text-right" title={`Cache-read tokens: ${cache.toLocaleString()}`}> 📦{fk(cache)}</span>}
+        {(tokens?.reasoning ?? 0) > 0 && <span className="inline-block min-w-[3.5em] text-right" title={`Reasoning tokens: ${(tokens!.reasoning ?? 0).toLocaleString()}`}> 🧠{fk(tokens!.reasoning!)}</span>}
       </span>
 
-      <span className="text-border">|</span>
+      <span className="text-border shrink-0">|</span>
 
       {/* Context */}
-      <span className={cn("tabular-nums inline-block min-w-[4em] text-right", pctColor)}>ctx {pct}%</span>
+      <span className={cn("tabular-nums inline-block min-w-[4em] text-right shrink-0", pctColor)} title={`Context window usage: ${input.toLocaleString()} / ${ctxWin.toLocaleString()} tokens`}>ctx {pct}%</span>
 
       {session.graftTokenSavings !== undefined && (
         <>
-          <span className="text-border">|</span>
+          <span className="text-border shrink-0">|</span>
           <span
-            className="tabular-nums text-green-500"
-            title={`${formatExactTotal(session.graftTokenSavings)} Graft tokens saved`}
+            className="tabular-nums text-green-500 shrink-0"
+            title={`${formatExactTotal(session.graftTokenSavings)} Graft tokens saved (retrieval instead of full-file reads)`}
           >
             ◤ {formatCompactTotal(session.graftTokenSavings)} saved
           </span>
@@ -278,14 +284,16 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
       {/* Git */}
       {session.branch && (
         <>
-          <span className="text-border">|</span>
-          <span className="flex items-center gap-1">
-            <GitBranch className="h-3.5 w-3.5" />
-            <span className={session.gitDirty ? "text-red-500" : "text-green-500"}>
+          <span className="text-border shrink-0">|</span>
+          <span
+            className="flex items-center gap-1 min-w-0 shrink"
+            title={`Git branch: ${session.branch}${session.gitDirty ? " — dirty (uncommitted changes)" : " — clean"}${session.gitChanges ? ` — ${session.gitChanges} changed files` : ""}`}
+          >
+            <GitBranch className="h-3.5 w-3.5 shrink-0" />
+            <span className={cn("shrink-0", session.gitDirty ? "text-red-500" : "text-green-500")}>
               {session.gitDirty ? "●" : "✓"}
             </span>
-            {session.branch}
-            {session.gitChanges ? ` ~${session.gitChanges}` : ""}
+            <span className="truncate">{session.branch}{session.gitChanges ? ` ~${session.gitChanges}` : ""}</span>
           </span>
         </>
       )}
@@ -293,8 +301,8 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
       {/* Diff viewer */}
       {session.diffPort && (
         <>
-          <span className="text-border">|</span>
-          <a href={`http://localhost:${session.diffPort}`} target="_blank" rel="noreferrer" className="flex items-center gap-0.5 text-primary hover:underline">
+          <span className="text-border shrink-0">|</span>
+          <a href={`http://localhost:${session.diffPort}`} target="_blank" rel="noreferrer" className="flex items-center gap-0.5 text-primary hover:underline shrink-0" title="Open the pidiff diff viewer for this session's working tree">
              diff <ExternalLink className="h-3 w-3" />
           </a>
         </>
@@ -303,27 +311,31 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
       {/* Container */}
       {session.container && (
         <>
-          <span className="text-border">|</span>
-          <span className="text-[10px] px-1.5 py-0.5 border border-border rounded">📦</span>
+          <span className="text-border shrink-0">|</span>
+          <span className="text-[10px] px-1.5 py-0.5 border border-border rounded shrink-0" title="Session runs inside a container">🧊</span>
         </>
       )}
 
       {/* Coms identity */}
       {session.comsName && (
         <>
-          <span className="text-border">|</span>
+          <span className="text-border shrink-0">|</span>
           <span
-            className="cursor-default"
-            title={[session.comsProject ? `Project: ${session.comsProject}` : '', session.comsPurpose ? `Purpose: ${session.comsPurpose}` : ''].filter(Boolean).join(' · ') || undefined}
+            className="flex items-center gap-1 min-w-0 shrink cursor-default"
+            title={[session.comsProject ? `Project: ${session.comsProject}` : '', session.comsPurpose ? `Purpose: ${session.comsPurpose}` : ''].filter(Boolean).join(' · ') || 'Coms peer identity'}
           >
-            📡 Coms: {session.comsName}
+            <span className="shrink-0">📡 Coms:</span> <span className="truncate">{session.comsName}</span>
           </span>
         </>
       )}
 
 
-      {/* Cron tasks — visible when active, pinned to far right alongside async */}
-      <div className="relative inline-block ml-auto">
+      {/* Cron tasks */}
+      </div>
+      {/* Actions zone — pinned right, never shrinks: compact and the panel
+          toggles can't be pushed off-screen by growing stats. */}
+      <div className="flex items-center gap-2 ml-auto shrink-0">
+      <div className="relative inline-block shrink-0">
         <Popover>
           <PopoverTrigger className={cn(
             "cursor-pointer text-xs",
@@ -377,8 +389,8 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         </Popover>
       </div>
 
-      {/* Async agents — always visible */}
-      <div className="relative inline-block">
+      {/* Async agents */}
+      <div className="relative inline-block shrink-0">
         <Popover>
           <PopoverTrigger className={cn(
             "cursor-pointer text-xs",
@@ -444,45 +456,37 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         </Popover>
       </div>
 
-      {/* #968 D: compact */}
-      <>
-        <span className="text-border">|</span>
+      {/* #968 D + parity panels — action icons. Compact is an icon here (not
+          a text button at the far end) so it stays compact and always visible. */}
+      <div className="flex items-center gap-1 shrink-0">
         <button
-          className="flex items-center gap-1 hover:text-primary transition-colors"
+          className={cn("p-1 rounded transition-colors", "text-muted-foreground hover:text-foreground hover:bg-accent/30")}
           onClick={onCompact}
-          title="Compact session context"
+          title="Compact session context (summarize history to free context window)"
         >
-          <Archive className="h-3.5 w-3.5" /> compact
+          <Archive className="h-3.5 w-3.5" />
         </button>
-      </>
-
-      {/* #968 parity panels */}
-      <>
-        <span className="text-border">|</span>
-        <div className="flex items-center gap-1">
-          {([
-            ["tasks", ListTodo, "Tasks panel"],
-            ["coms", Radio, "Coms peers"],
-            ["memory", Database, "Memory status"],
-            ["mcp", Plug, "MCP servers"],
-            ["settings", Settings2, "Settings"],
-          ] as Array<[PanelTab, typeof ListTodo, string]>).map(([tab, Icon, title]) => (
-            <button
-              key={tab}
-              className={cn("p-1 rounded transition-colors", activePanel === tab ? "text-primary bg-accent/50" : "text-muted-foreground hover:text-foreground hover:bg-accent/30")}
-              onClick={() => onOpenPanel(tab)}
-              title={title}
-            >
-              <Icon className="h-3.5 w-3.5" />
-            </button>
-          ))}
-        </div>
-      </>
+        {([
+          ["tasks", ListTodo, "Tasks panel"],
+          ["coms", Radio, "Coms peers"],
+          ["memory", Database, "Memory status"],
+          ["mcp", Plug, "MCP servers"],
+          ["settings", Settings2, "Settings"],
+        ] as Array<[PanelTab, typeof ListTodo, string]>).map(([tab, Icon, title]) => (
+          <button
+            key={tab}
+            className={cn("p-1 rounded transition-colors", activePanel === tab ? "text-primary bg-accent/50" : "text-muted-foreground hover:text-foreground hover:bg-accent/30")}
+            onClick={() => onOpenPanel(tab)}
+            title={title}
+          >
+            <Icon className="h-3.5 w-3.5" />
+          </button>
+        ))}
+      </div>
 
       {/* Sessions */}
       <>
-        <span className="text-border">|</span>
-        <div className="relative">
+        <div className="relative shrink-0">
           <button
             className="flex items-center gap-1 hover:text-primary transition-colors"
             onClick={(e) => toggleMenu("sessions", e)}
@@ -523,6 +527,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
           )}
         </div>
       </>
+      </div>
     </div>
   );
 }

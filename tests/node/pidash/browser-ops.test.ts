@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySetting, buildSettingsPayload } from "../../../extensions/pidash/browser-ops.ts";
+import { applySetting, buildSettingsPayload, validateSettingValue } from "../../../extensions/pidash/browser-ops.ts";
 import { SETTINGS_KEYS } from "../../../extensions/orchestrator/project-settings.ts";
 
 function tempProject(): string {
@@ -76,13 +76,82 @@ describe("browser-ops settings", () => {
     }
   });
 
-  it("unknown key and invalid scope are rejected", () => {
+  it("unknown key is rejected", () => {
     const dir = tempProject();
     try {
       assert.equal(applySetting(dir, "project", "not_a_real_key", true).ok, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("invalid scope is rejected", () => {
+    const dir = tempProject();
+    try {
       assert.equal(applySetting(dir, "galactic", "dco", true).ok, false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("dangerous_command_allowlist writes are refused from the browser", () => {
+    const dir = tempProject();
+    try {
+      const res = applySetting(dir, "project", "dangerous_command_allowlist", ["*"]);
+      assert.equal(res.ok, false);
+      assert.match(res.error!, /managed by the terminal settings editor/);
+      assert.ok(!existsSync(join(dir, ".pi", "pi-config-settings.json")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("malformed settings file refuses to save instead of being replaced", () => {
+    const dir = tempProject();
+    try {
+      const file = join(dir, ".pi", "pi-config-settings.json");
+      writeFileSync(file, "{ broken json !!");
+      const res = applySetting(dir, "project", "dco", true);
+      assert.equal(res.ok, false);
+      assert.match(res.error!, /malformed/);
+      // The user's broken file must still be intact — not rewritten
+      assert.equal(readFileSync(file, "utf-8"), "{ broken json !!");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("unknown keys in the settings file survive a browser write", () => {
+    const dir = tempProject();
+    try {
+      const file = join(dir, ".pi", "pi-config-settings.json");
+      writeFileSync(file, JSON.stringify({ some_future_key: "keep me", dco: false }));
+      const res = applySetting(dir, "project", "dco", true);
+      assert.equal(res.ok, true);
+      const after = JSON.parse(readFileSync(file, "utf-8"));
+      assert.equal(after.dco, true);
+      assert.equal(after.some_future_key, "keep me");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("validateSettingValue", () => {
+  it("bool rejects non-boolean values", () => {
+    assert.equal(validateSettingValue("dco", "yes"), "dco must be a boolean");
+    assert.equal(validateSettingValue("dco", null), null);
+    assert.equal(validateSettingValue("dco", true), null);
+  });
+
+  it("int enforces integer type and bounds", () => {
+    assert.match(validateSettingValue("review_loop_max_cycles", 2.5)!, /integer/);
+    assert.match(validateSettingValue("review_loop_max_cycles", 99)!, /<= 10/);
+    assert.equal(validateSettingValue("review_loop_max_cycles", 3), null);
+  });
+
+  it("agent_overrides requires an object", () => {
+    assert.match(validateSettingValue("agent_overrides", "worker")!, /object/);
+    assert.equal(validateSettingValue("agent_overrides", { worker: { model: "x" } }), null);
   });
 });

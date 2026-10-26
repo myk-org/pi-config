@@ -94,9 +94,13 @@ export default function (pi: ExtensionAPI) {
   // ── #968 part E: memory status surface for pidash ──────────────────
   // Read-only snapshot through the live orchestrator memory modules —
   // situation report, topic hotness, entry counts, budget usage.
-  pi.events.on("pidash:memory-status-request", () => {
+  // The requesting session's cwd comes in the event payload (the pidash
+  // browser may be watching a session in a different project than this
+  // process's cwd).
+  pi.events.on("pidash:memory-status-request", (data: unknown) => {
     try {
-      const cwd = process.cwd();
+      const payload = (typeof data === "object" && data !== null ? data : {}) as { cwd?: unknown };
+      const cwd = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd();
       const report = buildSituationReport(cwd);
       const topics = listTopics(cwd).map((t) => ({
         name: t.name,

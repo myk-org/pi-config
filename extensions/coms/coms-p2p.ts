@@ -1805,6 +1805,10 @@ Do not respond to this message.`;
 							existing.staleCount = 0;
 							existing.model = entry.model ?? existing.model;
 							log.debug("fs_watch_heartbeat", entry.name, "ctx", entry.context_used_pct, "busy", existing.busy);
+							// Heartbeats mutate peer fields without touching the widget
+							// refresh snapshot key — re-emit so browser peer cards stay
+							// current (Qodo R1: stale peer status otherwise lingers).
+							emitComsPeers();
 						} else if (entry && entry.coms_session_id && !peerCards.has(entry.coms_session_id)) {
 							const card: AgentCard & { staleCount: number } = {
 								name: entry.name, purpose: entry.purpose, model: entry.model,

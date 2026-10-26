@@ -240,7 +240,7 @@ export default function (pi: ExtensionAPI) {
 	function broadcastTasks(): void {
 		try {
 			pi.events.emit("pidash:tasks-list", { tasks: store.list().filter((t: any) => t.status !== "deleted") });
-		} catch (e: any) { log.debug("tasks broadcast error", e?.message); }
+		} catch (e: any) { log.warn("pidash_task_broadcast_failed", { error: e?.message }); }
 	}
 	function handleTaskOp(data: any): void {
 		const op = data?.op;

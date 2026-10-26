@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import type { SettingsData, SettingsKey } from "@/types";
 import { displaySettingValue as displayValue, parseTypedSetting as parseTyped } from "@/lib/settings-edit";
+import { createLogger } from "@/lib/create-logger";
+
+const log = createLogger("SettingsPanel");
 
 interface Props {
   sendCmd: (command: string, extra?: Record<string, unknown>) => void;
@@ -23,6 +26,36 @@ export function SettingsPanel({ sendCmd, onMessage, notify }: Props) {
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  // Pending write awaiting the server's ack (refreshed settings-data = ok,
+  // settings-error = failed). Success is only announced after the ack — a
+  // toast fired at send time would claim success for writes that fail
+  // server-side (Qodo R1).
+  const pendingOpRef = useRef<{ key: string; kind: "save" | "clear"; timer: ReturnType<typeof setTimeout> } | null>(null);
+
+  const settlePending = (ok: boolean, errorText?: string) => {
+    const pending = pendingOpRef.current;
+    pendingOpRef.current = null;
+    setSavingKey(null);
+    if (pending) clearTimeout(pending.timer);
+    if (!pending) return;
+    if (ok) {
+      log.info("setting saved", { key: pending.key, kind: pending.kind, scope });
+      notify(`${pending.kind === "clear" ? "Cleared" : "Saved"} ${pending.key} (${scope})`);
+    } else {
+      log.warn("setting write failed", { key: pending.key, kind: pending.kind, error: errorText });
+      notify(`Failed to ${pending.kind} ${pending.key}${errorText ? `: ${errorText}` : ""}`, "error");
+    }
+  };
+
+  const armPending = (key: string, kind: "save" | "clear") => {
+    if (pendingOpRef.current) clearTimeout(pendingOpRef.current.timer);
+    const timer = setTimeout(() => {
+      log.warn("setting write timed out — no server ack", { key, kind });
+      settlePending(false, "no response from server");
+    }, 10000);
+    pendingOpRef.current = { key, kind, timer };
+    setSavingKey(key);
+  };
 
   useEffect(() => {
     setData(null);
@@ -31,13 +64,18 @@ export function SettingsPanel({ sendCmd, onMessage, notify }: Props) {
     sendCmd("settings-get", { scope });
     return onMessage((ev: any) => {
       if (ev.type === "settings-data" && ev.scope === scope) {
+        log.debug("settings payload received", { scope, keys: (ev as any).keys?.length });
         setData(ev as SettingsData);
         setDraft({});
         setErrors({});
+        // A refreshed payload is the success ack for a pending write.
+        settlePending(true);
       }
       if (ev.type === "settings-error") {
-        notify(`Settings error (${ev.key}): ${ev.error}`, "error");
-        setSavingKey(null);
+        if (ev.scope !== undefined && ev.scope !== scope) return; // other scope's panel handles it
+        log.warn("settings error from server", { key: ev.key, error: ev.error });
+        if (pendingOpRef.current) settlePending(false, ev.error);
+        else notify(`Settings error (${ev.key}): ${ev.error}`, "error");
       }
     });
   }, [sendCmd, onMessage, scope, notify]);
@@ -73,22 +111,20 @@ export function SettingsPanel({ sendCmd, onMessage, notify }: Props) {
     else {
       const parsed = parseTyped(String(raw), def);
       if (parsed.error) {
+        log.warn("setting draft rejected", { key: def.key, error: parsed.error });
         setErrors((e) => ({ ...e, [def.key]: parsed.error! }));
         return;
       }
       value = parsed.value;
     }
     setSavingKey(def.key);
+    armPending(def.key, "save");
     sendCmd("settings-set", { scope, key: def.key, value });
-    notify(`Saved ${def.key} (${scope})`);
-    setSavingKey(null);
   };
 
   const clearKey = (key: string) => {
-    setSavingKey(key);
+    armPending(key, "clear");
     sendCmd("settings-set", { scope, key });
-    notify(`Cleared ${key} (${scope})`);
-    setSavingKey(null);
   };
 
   if (data?.error) return <div className="text-xs text-red-400 p-4">Settings load failed: {data.error}</div>;
@@ -161,6 +197,7 @@ export function SettingsPanel({ sendCmd, onMessage, notify }: Props) {
                             )}
                             onClick={() => {
                               setDraftValue(def.key, !boolEffective);
+                              armPending(def.key, "save");
                               sendCmd("settings-set", { scope, key: def.key, value: !boolEffective });
                             }}
                             disabled={savingKey === def.key}

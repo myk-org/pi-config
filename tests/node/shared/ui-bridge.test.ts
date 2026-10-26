@@ -101,7 +101,7 @@ describe("ui-bridge", () => {
     assert.equal((dismiss!.data as any).id, (req.data as any).id);
   });
 
-  it("confirm maps __confirmed__/__denied__ and Yes", async () => {
+  it("confirm maps a browser-confirmed answer to true", async () => {
     const pi = fakePi();
     const ctx = fakeCtx();
     const bridged = createBridgedUi(pi as any);
@@ -110,7 +110,9 @@ describe("ui-bridge", () => {
     assert.equal((req.data as any).method, "confirm");
     pi.fire("pidash:ui-response", { id: (req.data as any).id, confirmed: true });
     assert.equal(await p, true);
+  });
 
+  it("confirm maps a browser-denied answer to false", async () => {
     const pi2 = fakePi();
     const ctx2 = fakeCtx();
     const bridged2 = createBridgedUi(pi2 as any);

@@ -77,14 +77,37 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
     let externalDone: ((value: any) => void) | null = null;
 
     // Browser response — resolves through the same done() the TUI uses,
-    // closing the TUI dialog if it is still open.
+    // closing the TUI dialog if it is still open. The answer is validated
+    // against what this prompt actually offered: a select answer must be one
+    // of the options, a confirm must arrive as the confirmed boolean flag,
+    // and an input must be a string. Anything else is ignored (logged) so a
+    // crafted or stale browser message can never inject an unoffered choice
+    // into an enforcement decision.
     const unsubscribe = pi.events?.on?.("pidash:ui-response", (data: unknown) => {
       const resp = data as any;
       if (!resp || resp.id !== id || !externalDone) return;
       log.debug("bridged prompt answered from browser", { id, method });
-      if (resp.cancelled) externalDone(undefined);
-      else if (resp.value !== undefined) externalDone(resp.value);
-      else if (resp.confirmed !== undefined) externalDone(resp.confirmed ? "__confirmed__" : "__denied__");
+      if (resp.cancelled) {
+        externalDone(undefined);
+        return;
+      }
+      if (method === "confirm") {
+        if (typeof resp.confirmed === "boolean") {
+          externalDone(resp.confirmed ? "__confirmed__" : "__denied__");
+        } else {
+          log.warn("bridged confirm answer malformed — ignored", { id });
+        }
+        return;
+      }
+      if (typeof resp.value !== "string") {
+        log.warn("bridged answer not a string — ignored", { id, method });
+        return;
+      }
+      if (method === "select" && !options.includes(resp.value)) {
+        log.warn("bridged select answer not an offered option — ignored", { id });
+        return;
+      }
+      externalDone(resp.value);
     });
 
     try {
@@ -107,11 +130,13 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
           const input = new Input();
           input.onSubmit = (value: string) => { const t = value.trim(); if (t) resolve(t); };
           input.onEscape = () => resolve(undefined);
+          const header = new Text(theme.fg("accent", title) + (message ? theme.fg("muted", `\n${message}`) : ""), 1, 0);
           const label = new Text(theme.fg("dim", "Type your response • enter submit • esc cancel"), 1, 0);
           const topBorder = new DynamicBorder((s: string) => theme.fg("accent", s));
           const bottomBorder = new DynamicBorder((s: string) => theme.fg("accent", s));
           const container = new Container();
           container.addChild(topBorder);
+          container.addChild(header);
           container.addChild(input);
           container.addChild(label);
           container.addChild(bottomBorder);
@@ -125,8 +150,10 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
           };
         }
 
-        // select / confirm — SelectList with fuzzy filtering (ask_user parity)
-        const allItems: SelectItem[] = options.map((opt) => ({ value: opt, label: opt }));
+        // select / confirm — SelectList with fuzzy filtering (ask_user parity).
+        // confirm prompts carry their own Yes/No options; callers pass none.
+        const tuiOptions = method === "confirm" ? ["Yes", "No"] : options;
+        const allItems: SelectItem[] = tuiOptions.map((opt) => ({ value: opt, label: opt }));
         const selectTheme = {
           selectedPrefix: (t: string) => theme.fg("accent", t),
           selectedText: (t: string) => theme.fg("accent", t),
@@ -155,6 +182,7 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
         const buildContainer = () => {
           const c = new Container();
           c.addChild(topBorder);
+          c.addChild(new Text(theme.fg("accent", title) + (message ? theme.fg("muted", `\n${message}`) : ""), 1, 0));
           c.addChild(searchInput);
           c.addChild(selectList);
           c.addChild(help);
@@ -196,10 +224,9 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
 
   return {
     select: (ctx, title, options) => bridged<string>(ctx, "select", title, options),
-    confirm: async (ctx, title, message) => {
-      const v = await bridged<string>(ctx, "confirm", title, [], message);
-      return v === "__confirmed__" || v === "Yes";
-    },
+    confirm: (ctx, title, message) => bridged<string>(ctx, "confirm", title, ["Yes", "No"], message).then(
+      (v) => v === "__confirmed__" || v === "Yes",
+    ),
     input: (ctx, title) => bridged<string>(ctx, "input", title),
   };
 }

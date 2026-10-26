@@ -92,7 +92,7 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
   }, [scrollKey]);
 
   return (
-    <div className="flex-1 relative">
+    <div className="flex-1 relative min-h-0">
       {replaying && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-background">
           <div className="flex flex-col items-center gap-2 text-muted-foreground">

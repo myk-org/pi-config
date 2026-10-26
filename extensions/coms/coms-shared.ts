@@ -551,8 +551,6 @@ export function formatComsResponseText(targetName: string, response: any, error:
 		: `[coms response from ${targetName}${arrow}${queueNote}] ${JSON.stringify(response, null, 2)}`;
 }
 
-/** Sanitize a coms identity name for safe embedding in header strings.
- *  Strips all control characters (C0/C1), brackets; replaces whitespace with hyphens. */
 /** #968 C: pidash browser peer-list payload — pure projection of live cards. */
 export interface ComsPeerCard {
 	name: string;
@@ -588,6 +586,8 @@ export function buildComsPeersPayload(
 	};
 }
 
+/** Sanitize a coms identity name for safe embedding in header strings.
+ *  Strips all control characters (C0/C1), brackets; replaces whitespace with hyphens. */
 export function sanitizeComsName(name: string): string {
 	return name
 		.replace(/[\x00-\x1f\x7f-\x9f\[\]]/g, "") // strip C0/C1 control chars + brackets
