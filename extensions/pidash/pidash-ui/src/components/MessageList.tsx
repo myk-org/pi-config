@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@ui/collapsible";
 import { Button } from "@ui/button";
 import { ChevronRight, ChevronDown, Copy, Check } from "lucide-react";
@@ -58,10 +58,50 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
   const viewportRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
+  // Grouping memoized: it ran per render — during streaming that is every
+  // text delta over the whole (large) history (Qodo UX: slow UI).
+  const grouped = useMemo(() => {
+    const filtered = messages.filter((msg) => {
+      if (searchType && searchType !== "all" && msg.role !== searchType) return false;
+      if (searchQuery && !msg.text.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      return true;
+    });
+
+    // Group tool-call + tool-result by correlation ID (callId in meta)
+    const resultByCallId = new Map<string, ChatMessage>();
+    for (const msg of filtered) {
+      if (msg.className === "tool-result" && msg.meta?.callId) {
+        resultByCallId.set(msg.meta.callId, msg);
+      }
+    }
+    const usedResults = new Set<string>();
+    const out: Array<{ call?: ChatMessage; result?: ChatMessage } | ChatMessage> = [];
+    for (const msg of filtered) {
+      if (msg.className === "tool-call" && msg.meta?.callId) {
+        const result = resultByCallId.get(msg.meta.callId);
+        if (result) {
+          out.push({ call: msg, result });
+          usedResults.add(result.id);
+          continue;
+        }
+      }
+      // Skip results that were already grouped with their call
+      if (msg.className === "tool-result" && msg.meta?.callId && usedResults.has(msg.id)) continue;
+      out.push(msg);
+    }
+    return out;
+  }, [messages, searchQuery, searchType]);
+
   const [replaying, setReplaying] = useState(false);
 
   useEffect(() => {
-    if (autoScroll && !replaying) bottomRef.current?.scrollIntoView({ behavior: "instant" as any });
+    if (autoScroll && !replaying) {
+      // rAF-throttled direct scrollTop write — scrollIntoView walks the
+      // ancestor chain and forces layout per call; during streaming this ran
+      // per text delta.
+      const el = viewportRef.current;
+      if (el) requestAnimationFrame(() => { if (viewportRef.current) viewportRef.current.scrollTop = viewportRef.current.scrollHeight; });
+    }
   }, [messages, autoScroll, replaying]);
 
   // On session switch: show spinner overlay while messages replay invisibly,
@@ -114,44 +154,13 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
       }}
     >
       <div className="p-4 space-y-2">
-        {(() => {
-          const filtered = messages.filter((msg) => {
-            if (searchType && searchType !== "all" && msg.role !== searchType) return false;
-            if (searchQuery && !msg.text.toLowerCase().includes(searchQuery.toLowerCase())) return false;
-            return true;
-          });
-
-          // Group tool-call + tool-result by correlation ID (callId in meta)
-          const resultByCallId = new Map<string, ChatMessage>();
-          for (const msg of filtered) {
-            if (msg.className === "tool-result" && msg.meta?.callId) {
-              resultByCallId.set(msg.meta.callId, msg);
-            }
+        {grouped.map((item) => {
+          if ('call' in item) {
+            return <ToolGroup key={item.call!.id} call={item.call!} result={item.result!} searchQuery={searchQuery} />;
           }
-          const usedResults = new Set<string>();
-          const grouped: Array<{ call?: ChatMessage; result?: ChatMessage } | ChatMessage> = [];
-          for (const msg of filtered) {
-            if (msg.className === "tool-call" && msg.meta?.callId) {
-              const result = resultByCallId.get(msg.meta.callId);
-              if (result) {
-                grouped.push({ call: msg, result });
-                usedResults.add(result.id);
-                continue;
-              }
-            }
-            // Skip results that were already grouped with their call
-            if (msg.className === "tool-result" && msg.meta?.callId && usedResults.has(msg.id)) continue;
-            grouped.push(msg);
-          }
-
-          return grouped.map((item, idx) => {
-            if ('call' in item) {
-              return <ToolGroup key={item.call!.id} call={item.call!} result={item.result!} searchQuery={searchQuery} />;
-            }
-            const msg = item as ChatMessage;
-            return <MessageItem key={msg.id} msg={msg} searchQuery={searchQuery} onAskResponse={onAskResponse} />;
-          });
-        })()}
+          const msg = item as ChatMessage;
+          return <MessageItem key={msg.id} msg={msg} searchQuery={searchQuery} onAskResponse={onAskResponse} />;
+        })}
         {streaming && (
           <div className="flex items-center gap-2 py-2 text-muted-foreground text-xs">
             <div className="flex gap-1">
@@ -193,7 +202,9 @@ function CopyBtn({ text }: { text: string }) {
   );
 }
 
-function MessageItem({ msg, searchQuery, onAskResponse }: { msg: ChatMessage; searchQuery?: string; onAskResponse?: (id: string, value: string) => void }) {
+// Memoized: during streaming every text delta updates ONE message — without
+// memo the whole (potentially 1000+ item) list re-rendered per delta.
+const MessageItem = memo(function MessageItem({ msg, searchQuery, onAskResponse }: { msg: ChatMessage; searchQuery?: string; onAskResponse?: (id: string, value: string) => void }) {
   // Inline ask_user with clickable options
   if (msg.className?.startsWith("ask|") || msg.className?.startsWith("ask-answered|")) {
     const isAnswered = msg.className?.startsWith("ask-answered|");
@@ -255,7 +266,7 @@ function MessageItem({ msg, searchQuery, onAskResponse }: { msg: ChatMessage; se
   }
 
   return (
-    <div>
+    <div style={{ contentVisibility: "auto", containIntrinsicSize: "auto 90px" }}>
       <div className={cn("text-[10px] font-bold uppercase tracking-wider mb-0.5", getRoleColor(msg.role))}>
         {msg.timestamp && <span className="text-muted-foreground font-normal normal-case tracking-normal mr-1.5">[{formatClock(msg.timestamp)}]</span>}
         {msg.role}
@@ -269,9 +280,9 @@ function MessageItem({ msg, searchQuery, onAskResponse }: { msg: ChatMessage; se
       </div>
     </div>
   );
-}
+});
 
-function ToolGroup({ call, result, searchQuery }: { call: ChatMessage; result: ChatMessage; searchQuery?: string }) {
+const ToolGroup = memo(function ToolGroup({ call, result, searchQuery }: { call: ChatMessage; result: ChatMessage; searchQuery?: string }) {
   const [open, setOpen] = useState(false);
   const matchesSearch = searchQuery && (
     call.text.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -280,6 +291,7 @@ function ToolGroup({ call, result, searchQuery }: { call: ChatMessage; result: C
   const color = getRoleColor(call.role);
   const isError = result.text.startsWith("✗");
   const borderColor = isError ? "border-red-500" : "border-green-600";
+  const cv = { contentVisibility: "auto" as const, containIntrinsicSize: "auto 40px" };
 
   const meta = result.meta;
   const statusIcon = isError ? "✗" : "✓";
@@ -302,7 +314,7 @@ function ToolGroup({ call, result, searchQuery }: { call: ChatMessage; result: C
   }
 
   return (
-    <Collapsible open={open || !!matchesSearch} onOpenChange={setOpen}>
+    <Collapsible open={open || !!matchesSearch} onOpenChange={setOpen} style={cv}>
       <CollapsibleTrigger className={cn(
         "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider cursor-pointer select-none hover:opacity-80 w-full text-left",
         color,
@@ -339,7 +351,7 @@ function ToolGroup({ call, result, searchQuery }: { call: ChatMessage; result: C
       </CollapsibleContent>
     </Collapsible>
   );
-}
+});
 
 function CollapsibleMessage({ msg, searchQuery }: { msg: ChatMessage; searchQuery?: string }) {
   const [open, setOpen] = useState(false);
@@ -348,11 +360,15 @@ function CollapsibleMessage({ msg, searchQuery }: { msg: ChatMessage; searchQuer
   const isResult = msg.className === "tool-result";
   const isError = isResult && msg.text.startsWith("✗");
   const borderColor = msg.role === "thinking" ? "border-purple-500" : isResult ? (isError ? "border-red-500" : "border-green-600") : "border-orange-500";
+  // content-visibility: the browser skips layout/paint for offscreen items —
+  // with 1000+ history messages this is the difference between janky and
+  // instant scrolling.
+  const cv = { contentVisibility: "auto" as const, containIntrinsicSize: "auto 40px" };
 
   const summary = msg.text.split("\n")[0].slice(0, 100);
 
   return (
-    <Collapsible open={open || !!matchesSearch} onOpenChange={setOpen}>
+    <Collapsible open={open || !!matchesSearch} onOpenChange={setOpen} style={cv}>
       <CollapsibleTrigger className={cn(
         "flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider cursor-pointer select-none hover:opacity-80 w-full text-left",
         color,

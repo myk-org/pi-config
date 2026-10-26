@@ -18,15 +18,15 @@ import type { SessionInfo } from "@/types";
 
 const STORAGE_KEY = "pidash-state";
 
-function loadState(): { sidebarWidth: number; sidebarCollapsed: boolean; watchPid: number | null; watchSessionId: string | null } {
+function loadState(): { sidebarWidth: number; sidebarCollapsed: boolean; watchPid: number | null; watchSessionId: string | null; activePanel?: string | null } {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
   } catch {}
-  return { sidebarWidth: 280, sidebarCollapsed: false, watchPid: null, watchSessionId: null };
+  return { sidebarWidth: 280, sidebarCollapsed: false, watchPid: null, watchSessionId: null, activePanel: null };
 }
 
-function saveState(state: { sidebarWidth: number; sidebarCollapsed: boolean; watchPid: number | null; watchSessionId: string | null }) {
+function saveState(state: { sidebarWidth: number; sidebarCollapsed: boolean; watchPid: number | null; watchSessionId: string | null; activePanel?: string | null }) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
 }
 
@@ -43,8 +43,14 @@ export function App() {
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showNewSession, setShowNewSession] = useState(false);
-  const [activePanel, setActivePanel] = useState<PanelTab | null>(null);
   const saved = useRef(loadState());
+  // Restore the open panel across refreshes — the user's view survives a
+  // reload (not on phones, where the drawer is a full-screen overlay).
+  const [activePanel, setActivePanel] = useState<PanelTab | null>(() => {
+    if (typeof window !== "undefined" && window.innerWidth <= 768) return null;
+    const savedPanel = saved.current.activePanel;
+    return savedPanel === "tasks" || savedPanel === "coms" || savedPanel === "memory" || savedPanel === "mcp" || savedPanel === "settings" ? savedPanel : null;
+  });
   const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(isMobile ? true : saved.current.sidebarCollapsed);
   const [sidebarWidth, setSidebarWidth] = useState(saved.current.sidebarWidth);
@@ -125,8 +131,9 @@ export function App() {
       sidebarCollapsed: mobile ? true : sidebarCollapsed,
       watchPid: session?.pid ?? null,
       watchSessionId: session?.sessionId ?? null,
+      activePanel,
     });
-  }, [sidebarWidth, sidebarCollapsed, session]);
+  }, [sidebarWidth, sidebarCollapsed, session, activePanel]);
 
   // Reset restore state on disconnect so we re-watch after server restart
   useEffect(() => {
@@ -162,6 +169,21 @@ export function App() {
   const handleCompact = useCallback(() => {
     if (session) send({ type: "pidash-command", sessionId: session.sessionId, command: "compact" });
   }, [session, send]);
+
+  // Stable identity — MessageItem is memoized and this is a prop on every
+  // item; an inline arrow would defeat the memo and re-render the whole
+  // list on every App render.
+  const handleAskResponse = useCallback((id: string, value: string) => {
+    if (value === "__confirmed__") {
+      send({ type: "extension_ui_response", sessionId: sessionRefForAsk.current?.sessionId, id, confirmed: true });
+    } else if (value === "__denied__") {
+      send({ type: "extension_ui_response", sessionId: sessionRefForAsk.current?.sessionId, id, confirmed: false });
+    } else {
+      send({ type: "extension_ui_response", sessionId: sessionRefForAsk.current?.sessionId, id, value });
+    }
+  }, [send]);
+  const sessionRefForAsk = useRef(session);
+  useEffect(() => { sessionRefForAsk.current = session; }, [session]);
 
   const handleOpenPanel = useCallback((tab: PanelTab) => {
     setActivePanel((prev) => (prev === tab ? null : tab));
@@ -280,15 +302,7 @@ export function App() {
               searchType={searchType}
               streaming={streaming}
               scrollKey={scrollKey}
-              onAskResponse={(id, value) => {
-                if (value === "__confirmed__") {
-                  send({ type: "extension_ui_response", sessionId: session!.sessionId, id, confirmed: true });
-                } else if (value === "__denied__") {
-                  send({ type: "extension_ui_response", sessionId: session!.sessionId, id, confirmed: false });
-                } else {
-                  send({ type: "extension_ui_response", sessionId: session!.sessionId, id, value });
-                }
-              }}
+              onAskResponse={handleAskResponse}
             />
             {queuedCount > 0 && (
               <div className="px-3 py-1.5 bg-yellow-500/10 border-t border-yellow-500/20 text-xs text-yellow-500 flex items-center gap-1.5">
