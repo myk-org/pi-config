@@ -23,8 +23,12 @@ Releases run via `/release` (see README "Scoped releases" for the full picture).
 has a `release-map.toml`, so releases are **scoped**: only packages that changed since their
 own last registry-published version get bumped and released; the rest stay put.
 
-- `myk-pi-tools release plan` — read-only detection of what changed (run it anytime)
+- `myk-pi-tools release plan` — read-only detection of what changed (run it anytime);
+  it also reports unmapped changes (files that belong to no package) so nothing
+  ships-nowhere silently
 - `/release` decides per-package versions with you, then bumps via `release bump-scoped`
+- Each package versions from its own registry history; tags are per-package
+  (`<name>@<version>`) and each shipped package gets its own GitHub release
 - Without a map (any other repo), `/release` is the standard lockstep flow — unchanged
 
 Contributors don't need to do anything release-specific: conventional commits

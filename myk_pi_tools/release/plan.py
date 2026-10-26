@@ -159,6 +159,52 @@ def _extract_version(content: str, file_name: str) -> str:
     raise RuntimeError(f"unsupported version file type: {file_name}")
 
 
+# Release-tag shapes: legacy lockstep ``v1.2.3`` and per-package
+# ``name@1.2.3`` (issue #965), both with an optional prerelease suffix
+# (``-rc.1``) — ``create_release()`` accepts the same shapes, so the
+# planner must too or a prerelease release would fall outside every
+# repo-level window (Qodo PR #970 round 2). Anything else (stray
+# personal/experimental tags) must never anchor a window.
+_RELEASE_TAG_RE = re.compile(r"^(v|[A-Za-z0-9._-]+@)[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$")
+
+
+def _last_release_tag(repo_root: Path) -> str:
+    """The release-shaped tag on the most recent release commit in HEAD's history.
+
+    ``git describe --abbrev=0 --tags`` returns the NEAREST tag of ANY
+    kind — with per-package tags in play that can be one package's
+    release while a stray tag shadows the actual cycle boundary (Qodo
+    PR #970). This helper instead walks tags merged into HEAD in ONE
+    ``for-each-ref`` pass ordered by the pointed-at COMMIT's committer
+    date (for-each-ref peels annotated tags to their commit, so a tag
+    CREATED later for an OLDER commit still sorts by that old commit —
+    and a hotfix merged after an older mainline release sorts newer,
+    which pure ancestry depth gets wrong on branchy history — Qodo PR
+    #970 round 3) and returns the first whose name matches a release
+    shape (``v1.2.3`` or ``name@1.2.3``, prerelease suffixes allowed).
+    Tags sharing a commit produce the same window either way.
+
+    Raises RuntimeError when no release-shaped tag exists or the single
+    git walk fails — callers treat that as an indeterminate window,
+    never as "no changes".
+    """
+    output = _git(
+        repo_root,
+        [
+            "for-each-ref",
+            "--merged",
+            "HEAD",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+            "refs/tags",
+        ],
+    )
+    for tag in (t for t in output.splitlines() if t):
+        if _RELEASE_TAG_RE.match(tag):
+            return tag
+    raise RuntimeError("no release-shaped tag (vX.Y.Z or name@X.Y.Z) reachable from HEAD")
+
+
 def _find_anchor(repo_root: Path, version_files: tuple[str, ...], published: str) -> str:
     """Newest commit that touched a version file and left it at ``published``.
 
@@ -225,16 +271,17 @@ class ReleasePlanner:
         git_error: str | None = None
         last_tag = ""
         try:
-            last_tag = _git(self.repo_root, ["describe", "--abbrev=0", "--tags"])
+            last_tag = _last_release_tag(self.repo_root)
             changed = _git(self.repo_root, ["diff", "--name-only", f"{last_tag}..HEAD"]).splitlines()
             changed_paths = [c for c in changed if c and _path_under_any(c, self.release_map.container_rebuild_paths)]
         except RuntimeError as exc:
-            # No tag yet, or git failed. Either way the rebuild-path check
-            # could not run — a confident "no rebuild" here could skip an
-            # image rebuild after a Dockerfile change, so the decision is
-            # conservative: rebuild unless a package ships anyway (which
-            # already forces a rebuild) and always report why (Qodo PR #966
-            # round 3 — this used to be silently swallowed).
+            # No release-shaped tag yet or git failed. Either way the
+            # rebuild-path check could not run — a confident "no rebuild"
+            # here could skip an image rebuild after a Dockerfile change,
+            # so the decision is conservative: rebuild unless a package
+            # ships anyway (which already forces a rebuild) and always
+            # report why (Qodo PR #966 round 3 — this used to be silently
+            # swallowed).
             git_error = str(exc)
         rebuild = any_affected or bool(changed_paths) or git_error is not None
         if any_affected:
@@ -253,6 +300,48 @@ class ReleasePlanner:
             "changed_rebuild_paths": changed_paths,
             "reason": why,
             "indeterminate": git_error is not None,
+        }
+
+    def unmapped_changes(self) -> dict[str, object]:
+        """Files changed since the last release-shaped tag that belong to NO package.
+
+        A change matching no package's paths, no global exclude, and no
+        container rebuild-path would otherwise ship nowhere silently — the
+        "skipped changed" failure mode the map exists to prevent (issue
+        #965: e.g. DEVELOPMENT.md edits used to vanish without a trace).
+        Reported, never fatal: the operator decides whether to map the
+        path or accept a docs-only change. Uses the repo-level window
+        (last release-shaped tag → HEAD, via ``_last_release_tag``)
+        since unmapped files have no per-package anchor by definition.
+        """
+        try:
+            last_tag = _last_release_tag(self.repo_root)
+            changed = _git(self.repo_root, ["diff", "--name-only", f"{last_tag}..HEAD"]).splitlines()
+        except RuntimeError as exc:
+            # No release-shaped tag yet or git failure: detection could
+            # not run. Report indeterminate rather than a confident empty
+            # list (same conservative posture as container_rebuild). The
+            # anchor is the newest release-shaped tag — never the nearest
+            # tag of any kind, which with per-package tags can be one
+            # package's release while a stray tag shadows the real cycle
+            # boundary (Qodo PR #970).
+            return {
+                "files": [],
+                "indeterminate": True,
+                "reason": f"no release-shaped tag or git failure: {exc}",
+            }
+        unmapped = [
+            c
+            for c in changed
+            if c
+            and not _path_under_any(c, self.release_map.global_excludes)
+            and not _path_under_any(c, self.release_map.container_rebuild_paths)
+            and not any(pkg.affects(c) for pkg in self.release_map.packages)
+        ]
+        return {
+            "files": unmapped,
+            "indeterminate": False,
+            "reason": f"changed since {last_tag} and matched no package, exclude, or rebuild-path",
         }
 
     def _plan_package(self, pkg: PackageEntry) -> PackagePlan:
@@ -379,6 +468,7 @@ def run(
     planner = ReleasePlanner(repo_root, release_map, force_packages=force_packages)
     plans = planner.plan()
     container = planner.container_rebuild(plans)
+    unmapped = planner.unmapped_changes()
 
     if as_json:
         click_echo_json({
@@ -388,6 +478,7 @@ def run(
             "skipped": [p.to_dict() for p in plans if not p.affected and not p.error],
             "errored": [p.to_dict() for p in plans if p.error],
             "container": container,
+            "unmapped_changes": unmapped,
         })
         return
 
@@ -417,6 +508,16 @@ def run(
     if skipped:
         print()
         print(f"Unchanged (skipped): {', '.join(p.name for p in skipped)}")
+    unmapped_files = unmapped.get("files") or []
+    assert isinstance(unmapped_files, list)  # narrow dict[str, object] for mypy
+    if unmapped.get("indeterminate"):
+        print()
+        print(f"Unmapped changes: INDETERMINATE — {unmapped.get('reason')}")
+    elif unmapped_files:
+        print()
+        print("Unmapped changes (belong to no package — map them or consciously skip):")
+        for f in unmapped_files:
+            print(f"  {f}")
     print()
     if container.get("rebuild"):
         print(f"Container image: REBUILD — {container.get('reason')}")

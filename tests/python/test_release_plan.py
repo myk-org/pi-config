@@ -508,6 +508,150 @@ class TestContainerRebuild:
         assert "Dockerfile" in str(container.get("changed_rebuild_paths"))
 
 
+class TestUnmappedChanges:
+    def test_unmapped_file_is_reported(self, fixture_repo: Path) -> None:
+        """A changed file matching no package/exclude/rebuild-path is
+        surfaced, not silently ignored (issue #965: DEVELOPMENT.md edits
+        used to vanish without a trace)."""
+        git(fixture_repo, "tag", "v1.0.0")
+        (fixture_repo / "DEVELOPMENT.md").write_text("# dev docs\n", encoding="utf-8")
+        commit(fixture_repo, "docs: development guide", "DEVELOPMENT.md")
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        assert unmapped["indeterminate"] is False
+        files = unmapped["files"]
+        assert isinstance(files, list)  # narrow dict[str, object] for mypy
+        assert "DEVELOPMENT.md" in files
+
+    def test_mapped_files_are_not_unmapped(self, fixture_repo: Path) -> None:
+        """Files under a package's paths count as covered."""
+        git(fixture_repo, "tag", "v1.0.0")
+        (fixture_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+        commit(fixture_repo, "chore: mapped change", "extensions/b.ts")
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        assert unmapped["files"] == []
+
+    def test_globally_excluded_files_are_not_unmapped(self, fixture_repo: Path) -> None:
+        """Files under global excludes count as covered."""
+        git(fixture_repo, "tag", "v1.0.0")
+        (fixture_repo / "tests").mkdir(exist_ok=True)
+        (fixture_repo / "tests" / "test_x.py").write_text("# t\n", encoding="utf-8")
+        commit(fixture_repo, "chore: excluded change", "tests/test_x.py")
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        assert unmapped["files"] == []
+
+    def test_rebuild_path_files_are_not_unmapped(self, fixture_repo: Path) -> None:
+        """Files under container rebuild-paths count as covered."""
+        git(fixture_repo, "tag", "v1.0.0")
+        (fixture_repo / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+        commit(fixture_repo, "chore: rebuild-path change", "Dockerfile")
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        assert unmapped["files"] == []
+
+    def test_annotated_tag_on_old_commit_does_not_anchor(self, fixture_repo: Path) -> None:
+        """The window anchor is the most recent release COMMIT, not the
+        most recently created tag object: an annotated tag created later
+        for an older commit must lose (Qodo PR #970 rounds 2+3)."""
+        git(fixture_repo, "tag", "v1.0.0")
+        (fixture_repo / "DEVELOPMENT.md").write_text("# dev\n", encoding="utf-8")
+        commit(fixture_repo, "docs: orphan before the newer release", "DEVELOPMENT.md")
+        git(fixture_repo, "tag", "poc@1.1.0")
+        (fixture_repo / "AGENTS.md").write_text("# agents\n", encoding="utf-8")
+        commit(fixture_repo, "docs: orphan after the newer release", "AGENTS.md")
+        # Annotated, release-SHAPED tag, created LAST, pointing at the
+        # OLDER release commit (v1.0.0's commit is the seed) — only
+        # commit-date ordering can exclude it; shape filtering passes it.
+        git(fixture_repo, "tag", "-a", "tools@1.0.5", "-m", "late", "v1.0.0")
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        # Window is poc@1.1.0..HEAD: only the post-1.1.0 orphan shows.
+        files = unmapped["files"]
+        assert isinstance(files, list)
+        assert files == ["AGENTS.md"]
+
+    def test_per_package_tags_anchor_the_window(self, fixture_repo: Path) -> None:
+        """The window anchor is the newest release-shaped tag — a stray
+        non-release tag must not shadow it, and per-package name@version
+        tags count as release tags (Qodo PR #970)."""
+        git(fixture_repo, "tag", "v1.0.0")
+        (fixture_repo / "DEVELOPMENT.md").write_text("# dev\n", encoding="utf-8")
+        commit(fixture_repo, "docs: orphan", "DEVELOPMENT.md")
+        git(fixture_repo, "tag", "sidecar@1.1.0")
+        (fixture_repo / "AGENTS.md").write_text("# agents\n", encoding="utf-8")
+        commit(fixture_repo, "docs: another orphan after the package tag", "AGENTS.md")
+        git(fixture_repo, "tag", "experiment")  # stray non-release tag — must not anchor
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        assert unmapped["files"] == ["AGENTS.md"]
+
+    def test_no_tag_is_indeterminate(self, fixture_repo: Path) -> None:
+        """Without a release-shaped tag the window cannot be computed —
+        report indeterminate, never a confident empty list."""
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        assert unmapped["indeterminate"] is True
+        assert unmapped["files"] == []
+
+
 class TestGitFailureContainment:
     def test_diff_failure_becomes_package_error(self, fixture_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         import myk_pi_tools.release.plan as plan_mod
