@@ -14,7 +14,10 @@ import { SessionSwitcher } from "@/components/SessionSwitcher";
 import { KeybindingSettings } from "@/components/KeybindingSettings";
 import { SidePanel, type PanelTab } from "@/components/SidePanel";
 import { NewSessionDialog } from "@/components/NewSessionDialog";
+import { createLogger } from "@/lib/create-logger";
 import type { SessionInfo } from "@/types";
+
+const log = createLogger("App");
 
 const STORAGE_KEY = "pidash-state";
 
@@ -149,6 +152,7 @@ export function App() {
   watchedSessionIdRef.current = session?.sessionId ?? null;
   useEffect(() => {
     if (connected && watchedSessionIdRef.current) {
+      log.debug("watching session", { sessionId: watchedSessionIdRef.current, reconnect: true });
       send({ type: "watch", sessionId: watchedSessionIdRef.current });
     }
   }, [connected, send]);
@@ -174,6 +178,7 @@ export function App() {
   // item; an inline arrow would defeat the memo and re-render the whole
   // list on every App render.
   const handleAskResponse = useCallback((id: string, value: string) => {
+    log.debug("ask response sent", { id, confirmed: value === "__confirmed__" || value === "__denied__" ? value : "value" });
     if (value === "__confirmed__") {
       send({ type: "extension_ui_response", sessionId: sessionRefForAsk.current?.sessionId, id, confirmed: true });
     } else if (value === "__denied__") {

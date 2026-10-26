@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { createLogger } from "@/lib/create-logger";
 import type { SessionInfo } from "@/types";
+
+const log = createLogger("SidePanel");
 import { TasksPanel } from "./TasksPanel";
 import { ComsPanel } from "./ComsPanel";
 import { MemoryPanel } from "./MemoryPanel";
@@ -49,32 +52,46 @@ export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMe
   const MIN_W = 320;
   const MAX_W = 760;
   const [width, setWidth] = useState(() => {
-    const saved = Number(localStorage.getItem("pidash.panelWidth"));
-    return Number.isFinite(saved) && saved >= MIN_W && saved <= MAX_W ? saved : 340;
+    // Blocked/quota-limited storage must not crash the panel (Qodo R3)
+    try {
+      const saved = Number(localStorage.getItem("pidash.panelWidth"));
+      return Number.isFinite(saved) && saved >= MIN_W && saved <= MAX_W ? saved : 340;
+    } catch {
+      return 340;
+    }
   });
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);
+  const endDrag = () => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    try { localStorage.setItem("pidash.panelWidth", String(widthRef.current)); } catch (e) {
+      log.debug("panel width persistence failed", { error: String(e) });
+    }
+  };
   useEffect(() => {
     const move = (e: MouseEvent) => {
       const d = dragRef.current;
       if (!d) return;
       // Dragging the LEFT edge right decreases the width
       const next = Math.min(MAX_W, Math.max(MIN_W, d.startW - (e.clientX - d.startX)));
-      widthRef.current = next; // up-handler persists the freshest width even if the render hasn't committed yet
+      widthRef.current = next; // end-handler persists the freshest width even if the render hasn't committed yet
       setWidth(next);
     };
-    const up = () => {
-      if (!dragRef.current) return;
-      dragRef.current = null;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      try { localStorage.setItem("pidash.panelWidth", String(widthRef.current)); } catch {}
-    };
-    // widthRef so the up-handler persists the latest width without re-binding
+    // widthRef so the end-handler persists the latest width without re-binding
     window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
+    window.addEventListener("mouseup", endDrag);
     return () => {
       window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
+      window.removeEventListener("mouseup", endDrag);
+      // Unmount mid-drag (panel closed via keyboard/tab switch): restore the
+      // page and persist — otherwise the body stays cursor-locked with
+      // selection disabled (Qodo R3).
+      if (dragRef.current) {
+        endDrag();
+        log.debug("panel drag ended by unmount");
+      }
     };
   }, []);
   const widthRef = useRef(width);
@@ -84,6 +101,7 @@ export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMe
     dragRef.current = { startX: e.clientX, startW: widthRef.current };
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
+    log.debug("panel resize started", { from: widthRef.current });
   };
 
   const sendCmd = useCallback((command: string, extra?: Record<string, unknown>) => {
@@ -92,8 +110,12 @@ export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMe
 
   return (
     <div
-      className="relative max-md:w-full max-md:absolute max-md:inset-0 max-md:z-30 flex-shrink-0 border-l border-border flex flex-col bg-background max-md:bg-background/95"
-      style={{ width }}
+      className="relative w-[var(--panel-w)] max-md:w-full max-md:absolute max-md:inset-0 max-md:z-30 flex-shrink-0 border-l border-border flex flex-col bg-background max-md:bg-background/95"
+      // Width via CSS variable, not an inline width: the max-md:w-full
+      // variant must be able to override it on phones — an inline style would
+      // win the cascade and clamp the mobile drawer to the saved desktop
+      // width (Qodo R3).
+      style={{ "--panel-w": `${width}px` } as React.CSSProperties}
     >
       {/* Drag handle — resize the drawer by dragging its left edge */}
       <div

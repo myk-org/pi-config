@@ -5,6 +5,10 @@ import { ChevronRight, ChevronDown, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/types";
 
+import { createLogger } from "@/lib/create-logger";
+
+const log = createLogger("MessageList");
+
 interface Props {
   messages: ChatMessage[];
   searchQuery?: string;
@@ -93,20 +97,32 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
   }, [messages, searchQuery, searchType]);
 
   const [replaying, setReplaying] = useState(false);
+  const autoScrollRef = useRef(true);
+  useEffect(() => { autoScrollRef.current = autoScroll; }, [autoScroll]);
+  const scrollFrameRef = useRef<number | null>(null);
+  const replayingRef = useRef(false);
+  useEffect(() => { replayingRef.current = replaying; }, [replaying]);
 
   useEffect(() => {
     if (autoScroll && !replaying) {
-      // rAF-throttled direct scrollTop write — scrollIntoView walks the
-      // ancestor chain and forces layout per call; during streaming this ran
-      // per text delta.
-      const el = viewportRef.current;
-      if (el) requestAnimationFrame(() => { if (viewportRef.current) viewportRef.current.scrollTop = viewportRef.current.scrollHeight; });
+      // rAF-throttled direct scrollTop write, deduplicated: multiple deltas
+      // before a frame share ONE callback, and the callback re-checks
+      // autoScroll so a user scrolling up mid-frame is never yanked back to
+      // the bottom (Qodo R3).
+      if (scrollFrameRef.current !== null) return;
+      scrollFrameRef.current = requestAnimationFrame(() => {
+        scrollFrameRef.current = null;
+        if (autoScrollRef.current && !replayingRef.current && viewportRef.current) {
+          viewportRef.current.scrollTop = viewportRef.current.scrollHeight;
+        }
+      });
     }
   }, [messages, autoScroll, replaying]);
 
   // On session switch: show spinner overlay while messages replay invisibly,
   // then scroll to bottom and reveal the messages.
   useLayoutEffect(() => {
+    const replayStart = performance.now();
     setAutoScroll(true);
     setReplaying(true);
     const container = viewportRef.current;
@@ -117,6 +133,7 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
         container.style.visibility = "";
       }
       setReplaying(false);
+      log.debug("replay revealed", { ms: Math.round(performance.now() - replayStart) });
     };
     let settleTimer: ReturnType<typeof setTimeout>;
     const observer = container ? new MutationObserver(() => {

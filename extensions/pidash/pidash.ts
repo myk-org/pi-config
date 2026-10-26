@@ -522,9 +522,12 @@ export function registerPidash(
           const cwd = lastCtx?.cwd || process.cwd();
           const result = applySetting(cwd, parsed.scope, String(parsed.key), "value" in parsed ? parsed.value : null);
           if (result.ok) {
-            // Broadcast fresh state to every watching browser
+            // Broadcast fresh state to EVERY connected browser — settings
+            // files are shared across sessions (same project / global scope),
+            // so browsers watching other sessions must not keep stale values
+            // (Qodo R3). The daemon fans settings-broadcast out to all.
             const payload = buildSettingsPayload(cwd, parsed.scope);
-            if (ws && connected) ws.send(JSON.stringify({ type: "settings-data", ...payload }));
+            if (ws && connected) ws.send(JSON.stringify({ type: "settings-broadcast", payload: { type: "settings-data", ...payload } }));
           } else if (ws && connected) {
             ws.send(JSON.stringify({ type: "settings-error", scope: parsed.scope, key: parsed.key, error: result.error }));
           }

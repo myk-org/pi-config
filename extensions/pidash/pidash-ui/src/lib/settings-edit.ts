@@ -1,4 +1,7 @@
+import { createLogger } from "./create-logger";
 import type { SettingsKey } from "@/types";
+
+const log = createLogger("settings-edit");
 
 /** Parse a raw text draft into a typed setting value (#968 G settings page). */
 export function parseTypedSetting(raw: string, def: SettingsKey): { value: unknown; error?: string } {
@@ -22,9 +25,15 @@ export function parseTypedSetting(raw: string, def: SettingsKey): { value: unkno
     return { value: n };
   }
   if (t === "port") {
-    if (!/^\d+$/.test(raw.trim())) return { value: null, error: "not a number" };
+    if (!/^\d+$/.test(raw.trim())) {
+      log.debug("port draft rejected — not a number", { raw: raw.slice(0, 20) });
+      return { value: null, error: "not a number" };
+    }
     const p = Number(raw);
-    if (p < 1 || p > 65535) return { value: null, error: "must be 1-65535" };
+    if (p < 1 || p > 65535) {
+      log.debug("port draft rejected — out of range", { port: p });
+      return { value: null, error: "must be 1-65535" };
+    }
     return { value: p };
   }
   if (t === "string_list") {

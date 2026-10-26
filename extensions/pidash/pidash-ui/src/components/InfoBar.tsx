@@ -139,13 +139,13 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
   }, [openMenu, send, session.sessionId]);
 
   return (
-    <div className={cn("flex items-center gap-3 h-10 px-4 border-t border-border text-sm text-muted-foreground relative whitespace-nowrap shrink-0", inactive && "opacity-50 pointer-events-none")}>
+    <div className={cn("flex items-center gap-3 max-md:gap-1.5 h-10 px-4 max-md:px-2 border-t border-border text-sm text-muted-foreground relative whitespace-nowrap shrink-0", inactive && "opacity-50 pointer-events-none")}>
       {/* Stats zone — shrinks with ellipsis on narrow screens. Fixed bar
           height means changing token counts / appearing 📦🧠 segments can
           never resize the chat frame above. */}
       <div className="flex items-center gap-3 min-w-0 shrink">
       {/* Model */}
-      <div className="relative min-w-0 shrink max-w-full max-md:max-w-[140px]">
+      <div className="relative min-w-0 shrink max-w-full max-md:max-w-[90px]">
         <button
           className="flex items-center gap-1 font-semibold text-foreground hover:text-primary transition-colors min-w-0"
           onClick={(e) => toggleMenu("models", e)}
@@ -188,12 +188,11 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         )}
       </div>
 
-      <span className="text-border">|</span>
+      <span className="text-border max-md:hidden">|</span>
 
-      {/* Thinking — hidden on phones: the bar must keep the model selector,
-          stats scroller, and action icons reachable within a phone-width
-          column (Qodo R2). Tablets and desktops show it. */}
-      {supportsReasoning(session) && <div className="relative shrink-0 max-md:hidden">
+      {/* Thinking — compact on phones (icon + short level text) instead of
+          hidden: it is the only browser control for set-thinking (Qodo R3). */}
+      {supportsReasoning(session) && <div className="relative shrink-0">
         <button
           ref={thinkingButtonRef}
           className="flex items-center gap-1 hover:text-primary transition-colors"
@@ -208,7 +207,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
             setOpenMenu("thinking");
           }}
         >
-          <Brain className="h-3.5 w-3.5" /> {thinkingLevel} <ChevronDown className="h-3 w-3" />
+          <Brain className="h-3.5 w-3.5" /> <span className="max-md:text-[10px]">{thinkingLevel}</span> <ChevronDown className="h-3 w-3 max-md:hidden" />
         </button>
         {openMenu === "thinking" && (
           <div
@@ -255,11 +254,11 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
 
       {supportsReasoning(session) && <span className="text-border max-md:hidden">|</span>}
 
-      {/* Scrollable stats zone: on narrow viewports these scroll horizontally
-          instead of pushing the trailing controls out of the overflow-hidden
-          main column (Qodo R2). Model/thinking dropdowns stay OUTSIDE it so
-          their absolute menus are never clipped by a scroll container. */}
-      <div className="flex items-center gap-3 min-w-0 shrink overflow-x-auto scrollbar-none">
+      {/* Scrollable stats zone: on narrow viewports these are hidden (the
+          controls — model, thinking, sessions, action icons — must fit a
+          phone-width column; Qodo R3). Model/thinking dropdowns stay OUTSIDE
+          it so their absolute menus are never clipped by a scroll container. */}
+      <div className="flex items-center gap-3 min-w-0 shrink overflow-x-auto scrollbar-none max-md:hidden">
       {/* Tokens — fixed min-widths + titles: values change digit counts and
           conditional segments (📦/🧠) appear per message, but a fixed-height
           single-row bar means width churn can no longer resize the frame. */}
@@ -494,15 +493,17 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         ))}
       </div>
 
-      {/* Sessions — hidden on phones: session switching already lives in the
-          sidebar overlay there; the dropdown is desktop convenience (Qodo R2). */}
+      {/* Sessions — icon-only on phones (full label + chevron on desktop):
+          the sidebar only WATCHES sessions; this dropdown is the only way to
+          switch/resume the live session from the browser (Qodo R3). */}
       <>
-        <div className="relative shrink-0 max-md:hidden">
+        <div className="relative shrink-0">
           <button
             className="flex items-center gap-1 hover:text-primary transition-colors"
             onClick={(e) => toggleMenu("sessions", e)}
+            title="Switch session"
           >
-            <Folder className="h-3.5 w-3.5" /> sessions <ChevronDown className="h-3 w-3" />
+            <Folder className="h-3.5 w-3.5" /> <span className="max-md:hidden">sessions</span> <ChevronDown className="h-3 w-3 max-md:hidden" />
           </button>
           {openMenu === "sessions" && (
             <div className="absolute bottom-full right-0 mb-1 z-50 bg-card border border-border rounded-lg shadow-xl py-1 w-[320px] max-h-[300px] overflow-y-auto" onClick={(e) => e.stopPropagation()}>

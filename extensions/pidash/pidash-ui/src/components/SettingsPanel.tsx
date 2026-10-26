@@ -32,12 +32,19 @@ export function SettingsPanel({ sendCmd, onMessage, notify }: Props) {
   // server-side (Qodo R1).
   const pendingOpRef = useRef<{ key: string; kind: "save" | "clear"; scope: string; timer: ReturnType<typeof setTimeout> } | null>(null);
 
-  const settlePending = (ok: boolean, errorText?: string) => {
+  const settlePending = (ok: boolean | "cancelled", errorText?: string) => {
     const pending = pendingOpRef.current;
     pendingOpRef.current = null;
     setSavingKey(null);
     if (pending) clearTimeout(pending.timer);
     if (!pending) return;
+    if (ok === "cancelled") {
+      // The command WAS sent — the server may still apply it. Announce the
+      // unknown outcome, not a failure (Qodo R3).
+      log.info("setting write outcome unknown — scope switched", { key: pending.key, kind: pending.kind });
+      notify(`${pending.key}: write sent, result unknown (scope switched)`, "info");
+      return;
+    }
     if (ok) {
       log.info("setting saved", { key: pending.key, kind: pending.kind, scope });
       notify(`${pending.kind === "clear" ? "Cleared" : "Saved"} ${pending.key} (${scope})`);
@@ -64,7 +71,7 @@ export function SettingsPanel({ sendCmd, onMessage, notify }: Props) {
   const cancelPendingIfScopeChanged = () => {
     const pending = pendingOpRef.current;
     if (pending && pending.scope !== scope) {
-      settlePending(false, "cancelled — scope switched before the server responded");
+      settlePending("cancelled");
     }
   };
 
