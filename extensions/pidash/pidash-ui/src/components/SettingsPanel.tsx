@@ -133,7 +133,11 @@ export function SettingsPanel({ sendCmd, onMessage, notify }: Props) {
                 const isSet = def.stored !== undefined;
                 const draftVal = draft[def.key];
                 const dirty = def.key in draft && String(draftVal ?? "") !== storedStr && !(typeof draftVal === "boolean" && def.stored === draftVal);
-                const isBool = def.type === "bool";
+                const isBool = def.type === "bool" || def.type === "bool_enable";
+                // Toggle state: draft > stored value > schema default (unset keys show their default).
+                const boolEffective = typeof draftVal === "boolean"
+                  ? draftVal
+                  : def.stored !== undefined ? def.stored === true : def.default === true;
                 return (
                   <div key={def.key} className="px-2 py-2 bg-background">
                     <div className="flex items-start gap-2">
@@ -151,18 +155,17 @@ export function SettingsPanel({ sendCmd, onMessage, notify }: Props) {
                           <button
                             className={cn(
                               "w-full px-2 py-1 text-[11px] rounded border transition-colors",
-                              (typeof draftVal === "boolean" ? draftVal : def.stored === true)
+                              boolEffective
                                 ? "bg-green-500/20 text-green-400 border-green-500/40"
                                 : "bg-muted/40 text-muted-foreground border-border",
                             )}
                             onClick={() => {
-                              const current = typeof draftVal === "boolean" ? draftVal : def.stored === true;
-                              setDraftValue(def.key, !current);
-                              sendCmd("settings-set", { scope, key: def.key, value: !current });
+                              setDraftValue(def.key, !boolEffective);
+                              sendCmd("settings-set", { scope, key: def.key, value: !boolEffective });
                             }}
                             disabled={savingKey === def.key}
                           >
-                            {(typeof draftVal === "boolean" ? draftVal : def.stored === true) ? "enabled" : "disabled"}
+                            {boolEffective ? "enabled" : "disabled"}
                           </button>
                         ) : (
                           <input

@@ -133,6 +133,19 @@ export function App() {
     if (!connected) restoredRef.current = false;
   }, [connected]);
 
+  // Re-watch the current session on every reconnect — watchSession early-returns
+  // for an already-selected session, so a daemon restart would otherwise leave the
+  // tab watching nothing (commands still flow, but no events come back).
+  // Keyed on sessionId (not the session object): session_updated events replace
+  // the object on every stream tick and must not re-fire the watch.
+  const watchedSessionIdRef = useRef<string | null>(null);
+  watchedSessionIdRef.current = session?.sessionId ?? null;
+  useEffect(() => {
+    if (connected && watchedSessionIdRef.current) {
+      send({ type: "watch", sessionId: watchedSessionIdRef.current });
+    }
+  }, [connected, send]);
+
   useEffect(() => {
     if (!connected || !sessions.length || restoredRef.current) return;
     // Restore from localStorage

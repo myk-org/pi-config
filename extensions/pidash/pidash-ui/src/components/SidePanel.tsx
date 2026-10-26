@@ -33,16 +33,16 @@ interface Props {
  * events, so multiple browsers converge on the same state.
  */
 export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMessage }: Props) {
-  const notifyRef = useRef<(msg: string, level?: string) => void>(() => {});
-
-  // Route extension notifications into a transient toast line
+  // Route extension notifications into a transient toast line.
+  // Stable identity: panels use notify in effect deps — a new function per
+  // render would restart their fetch effects on every session_updated re-render.
   const [toast, setToast] = useState<{ msg: string; level: string } | null>(null);
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 4000);
     return () => clearTimeout(t);
   }, [toast]);
-  notifyRef.current = (msg, level) => setToast({ msg: String(msg), level: level || "info" });
+  const notify = useCallback((msg: string, level?: string) => setToast({ msg: String(msg), level: level || "info" }), []);
 
   const sendCmd = useCallback((command: string, extra?: Record<string, unknown>) => {
     send({ type: "pidash-command", sessionId: session.sessionId, command, ...extra });
@@ -68,11 +68,11 @@ export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMe
         </button>
       </div>
       <div className="flex-1 overflow-y-auto">
-        {activeTab === "tasks" && <TasksPanel sendCmd={sendCmd} onMessage={onMessage} notify={notifyRef.current} />}
-        {activeTab === "coms" && <ComsPanel sendCmd={sendCmd} onMessage={onMessage} notify={notifyRef.current} />}
+        {activeTab === "tasks" && <TasksPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} />}
+        {activeTab === "coms" && <ComsPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} />}
         {activeTab === "memory" && <MemoryPanel sendCmd={sendCmd} onMessage={onMessage} />}
-        {activeTab === "mcp" && <McpPanel sendCmd={sendCmd} onMessage={onMessage} notify={notifyRef.current} />}
-        {activeTab === "settings" && <SettingsPanel sendCmd={sendCmd} onMessage={onMessage} notify={notifyRef.current} />}
+        {activeTab === "mcp" && <McpPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} />}
+        {activeTab === "settings" && <SettingsPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} />}
       </div>
       {toast && (
         <div className={cn(

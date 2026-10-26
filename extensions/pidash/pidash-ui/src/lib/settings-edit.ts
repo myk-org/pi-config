@@ -3,11 +3,11 @@ import type { SettingsKey } from "@/types";
 /** Parse a raw text draft into a typed setting value (#968 G settings page). */
 export function parseTypedSetting(raw: string, def: SettingsKey): { value: unknown; error?: string } {
   const t = def.type;
-  if (t === "bool" || t === "bool_or_string") {
+  if (t === "bool" || t === "bool_enable" || t === "bool_or_string") {
     if (raw === "true") return { value: true };
     if (raw === "false") return { value: false };
-    if (t === "bool") return { value: null, error: "must be true/false" };
-    return { value: raw };
+    if (t === "bool_or_string") return { value: raw };
+    return { value: null, error: "must be true/false" };
   }
   if (t === "int" || t === "number") {
     const n = t === "int" ? Number.parseInt(raw, 10) : Number(raw);

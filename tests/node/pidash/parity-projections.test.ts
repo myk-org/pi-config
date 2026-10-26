@@ -38,6 +38,12 @@ describe("parseTypedSetting", () => {
     assert.ok(parseTypedSetting("yes", key("bool")).error);
   });
 
+  it("bool_enable toggles like bool (settings-keys.json taxonomy)", () => {
+    assert.deepEqual(parseTypedSetting("true", key("bool_enable")), { value: true });
+    assert.deepEqual(parseTypedSetting("false", key("bool_enable")), { value: false });
+    assert.ok(parseTypedSetting("yes", key("bool_enable")).error);
+  });
+
   it("bool_or_string falls back to the raw string", () => {
     assert.deepEqual(parseTypedSetting("rits", key("bool_or_string")), { value: "rits" });
   });
