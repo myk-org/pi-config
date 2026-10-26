@@ -531,21 +531,11 @@ class TestUnmappedChanges:
         assert isinstance(files, list)  # narrow dict[str, object] for mypy
         assert "DEVELOPMENT.md" in files
 
-    def test_mapped_excluded_and_rebuild_files_are_not_unmapped(self, fixture_repo: Path) -> None:
-        """Files under package paths, global excludes, or container
-        rebuild-paths count as covered — only true orphans warn."""
+    def test_mapped_files_are_not_unmapped(self, fixture_repo: Path) -> None:
+        """Files under a package's paths count as covered."""
         git(fixture_repo, "tag", "v1.0.0")
         (fixture_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
-        (fixture_repo / "tests").mkdir(exist_ok=True)
-        (fixture_repo / "tests" / "test_x.py").write_text("# t\n", encoding="utf-8")
-        (fixture_repo / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
-        commit(
-            fixture_repo,
-            "chore: mixed change",
-            "extensions/b.ts",
-            "tests/test_x.py",
-            "Dockerfile",
-        )
+        commit(fixture_repo, "chore: mapped change", "extensions/b.ts")
         planner = make_planner(
             fixture_repo,
             {
@@ -558,9 +548,67 @@ class TestUnmappedChanges:
         unmapped = planner.unmapped_changes()
         assert unmapped["files"] == []
 
+    def test_globally_excluded_files_are_not_unmapped(self, fixture_repo: Path) -> None:
+        """Files under global excludes count as covered."""
+        git(fixture_repo, "tag", "v1.0.0")
+        (fixture_repo / "tests").mkdir(exist_ok=True)
+        (fixture_repo / "tests" / "test_x.py").write_text("# t\n", encoding="utf-8")
+        commit(fixture_repo, "chore: excluded change", "tests/test_x.py")
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        assert unmapped["files"] == []
+
+    def test_rebuild_path_files_are_not_unmapped(self, fixture_repo: Path) -> None:
+        """Files under container rebuild-paths count as covered."""
+        git(fixture_repo, "tag", "v1.0.0")
+        (fixture_repo / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+        commit(fixture_repo, "chore: rebuild-path change", "Dockerfile")
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        assert unmapped["files"] == []
+
+    def test_per_package_tags_anchor_the_window(self, fixture_repo: Path) -> None:
+        """The window anchor is the newest release-shaped tag — a stray
+        non-release tag must not shadow it, and per-package name@version
+        tags count as release tags (Qodo PR #970)."""
+        git(fixture_repo, "tag", "v1.0.0")
+        (fixture_repo / "DEVELOPMENT.md").write_text("# dev\n", encoding="utf-8")
+        commit(fixture_repo, "docs: orphan", "DEVELOPMENT.md")
+        git(fixture_repo, "tag", "sidecar@1.1.0")
+        (fixture_repo / "AGENTS.md").write_text("# agents\n", encoding="utf-8")
+        commit(fixture_repo, "docs: another orphan after the package tag", "AGENTS.md")
+        git(fixture_repo, "tag", "experiment")  # stray non-release tag — must not anchor
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        assert unmapped["files"] == ["AGENTS.md"]
+
     def test_no_tag_is_indeterminate(self, fixture_repo: Path) -> None:
-        """Without a repo tag the window cannot be computed — report
-        indeterminate, never a confident empty list."""
+        """Without a release-shaped tag the window cannot be computed —
+        report indeterminate, never a confident empty list."""
         planner = make_planner(
             fixture_repo,
             {
