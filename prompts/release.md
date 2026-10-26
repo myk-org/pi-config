@@ -65,6 +65,38 @@ Check validations:
 - Working tree must be clean
 - Must be synced with remote
 
+### Scoped Mode Check (after Phase 1)
+
+Check for `release-map.toml` at the repository root (exact filename, repo
+root only).
+
+**If ABSENT:** continue with the standard lockstep flow below, unchanged.
+
+**If PRESENT:** run the SCOPED flow instead of Phases 2–5:
+
+- **Phase S2 — Plan:** `myk-pi-tools release plan` (parse the JSON via
+  `--json` if easier). If any package is errored, show the errors and
+  abort — do not bump. If no packages are affected, report
+  "nothing to release — no package changed since its last publish" and stop.
+- **Phase S3 — Changelog:** generate the changelog with the standard
+  Phase 3 rules, and prepend a **Shipped packages** list: each affected
+  package with `current → proposed` version. Per-package versions come
+  from the plan; an explicit version argument (`/release X.Y.Z`)
+  overrides EVERY affected package to that version. The repo tag is the
+  HIGHEST proposed version.
+- **Phase S4 — Approval:** standard Phase 4 pattern — show changelog +
+  shipped packages as text, then a short `ask_user`: `Release v<TAG>?`
+  (options: `yes`, `no`).
+- **Phase S5 — Bump:** `myk-pi-tools release bump-scoped` (add
+  `--version X.Y.Z` when the user passed an explicit version). Parse the
+  JSON: stage ONLY the files in `updated[]`, use `tag` as the release
+  version. Bump PR, merge, and branch sync follow the standard Phase 5
+  delegation (git-expert / github-expert), with the bump PR message
+  `chore: bump version to <TAG>`.
+- **Phase S6/S7:** unchanged — release create with `v<TAG>`, changelog
+  including the Shipped packages section, summary listing per-package
+  versions.
+
 ### Phase 2: Version Detection
 
 ```bash

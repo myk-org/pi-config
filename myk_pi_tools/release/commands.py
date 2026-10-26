@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from myk_pi_tools.release.bump_scoped import run as bump_scoped_run
 from myk_pi_tools.release.bump_version import run as bump_run
 from myk_pi_tools.release.create import run as create_run
 from myk_pi_tools.release.detect_versions import run as detect_run
@@ -108,3 +109,58 @@ def release_plan(repo_root: str, force_packages: tuple[str, ...], as_json: bool)
 def release_bump_version(version: str, files: tuple[str, ...]) -> None:
     """Update version strings in detected version files."""
     bump_run(version, list(files) if files else None)
+
+
+@release.command("bump-scoped")
+@click.option(
+    "--repo",
+    "repo_root",
+    type=click.Path(exists=True, file_okay=False),
+    default=".",
+    help="Repository root (default: current directory)",
+)
+@click.option(
+    "--force-package",
+    "force_packages",
+    multiple=True,
+    help="Include a package even if detection marks it unchanged (repeatable)",
+)
+@click.option(
+    "--version",
+    "version_override",
+    default=None,
+    help="Override every affected package's proposed version with this one",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit the bump result as JSON (for /release and other tooling)")
+def release_bump_scoped(
+    repo_root: str,
+    force_packages: tuple[str, ...],
+    version_override: str | None,
+    as_json: bool,
+) -> None:
+    """Bump ONLY the affected packages' version files (scoped releases).
+
+    Consumes the release plan (issue #965 phase 2): each affected package
+    is bumped to its own proposed version; the repo tag is the highest
+    proposed version. Requires a release-map.toml — repos without one
+    keep using bump-version (lockstep).
+    """
+    log.debug(
+        "release bump-scoped invoked: repo_root=%s force=%s override=%s json=%s",
+        repo_root,
+        list(force_packages),
+        version_override,
+        as_json,
+    )
+    try:
+        bump_scoped_run(
+            Path(repo_root),
+            force_packages=force_packages,
+            version_override=version_override,
+            as_json=as_json,
+        )
+    except SystemExit:
+        raise
+    except Exception:
+        log.exception("release bump-scoped failed for %s", repo_root)
+        raise

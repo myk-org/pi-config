@@ -219,6 +219,11 @@ def commit(repo: Path, message: str, *files: str) -> None:
 @pytest.fixture()
 def fixture_repo(tmp_path: Path) -> Path:
     """A git repo with two packages over a shared map, at v1.0.0 published."""
+    return build_fixture_repo(tmp_path)
+
+
+def build_fixture_repo(tmp_path: Path) -> Path:
+    """Build the fixture repo (plain builder — reusable by other test modules)."""
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init")
