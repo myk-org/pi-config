@@ -805,6 +805,7 @@ PI_PIDIFF_ENABLE=false pi
 | `myk-pi-tools pr get-skipped-comments` | Get previously skipped review comments for a PR                                                                                                |
 | `myk-pi-tools pr claude-md`            | Fetch `CLAUDE.md` and `AGENTS.md` content for a PR's repository                                                                                |
 | `myk-pi-tools release create`          | Create a GitHub release with changelog                                                                                                         |
+| `myk-pi-tools release plan`            | Scoped-release plan: which packages changed since their last publish (per-package registry-anchored diff windows, conventional-commit bump types). Read-only; requires `release-map.toml` at the repo root — without it, reports lockstep mode and changes nothing (issue #965) |
 | `myk-pi-tools db`                      | Review database query commands                                                                                                                 |
 | `myk-pi-tools reviews`                 | Review handling commands (fetch, poll, address, post, store, store-session)                                                                   |
 | `myk-pi-tools reviews poll`            | Poll a PR for review comments until approved or actionable — `--source qodo` reads findings through the `qodo` CLI (structured, with spans and authoritative open/closed status) when the binary is installed and authenticated, and falls back to the GitHub sticky-comment scrape otherwise. Read-only: replies are always posted as GitHub comments via `reviews address` |
@@ -814,6 +815,34 @@ PI_PIDIFF_ENABLE=false pi
 | `myk-pi-tools ai-cli`                  | AI CLI commands (cursor, claude, gemini)                                                                                                       |
 | `myk-pi-tools coderabbit`              | CodeRabbit commands (check, trigger, retry)                                                                                                    |
 | `myk-pi-tools settings get [key ...]`  | Resolve settings (project → global → env → default). No args = all keys                                                                        |
+
+### Scoped releases
+
+By default every release is **lockstep**: all detected version files bump together, exactly as before.
+A repo can opt into **scoped releases** by committing a `release-map.toml` at its root
+(see this repo's own map for the format): a `[release]` section, one `[[package]]` block per
+published artifact (`name`, `registry` `npm`/`pypi`/`npm+pypi`, `version-files`, `paths`,
+optional `exclude-paths`, `npm-name`/`pypi-name` overrides for scoped or renamed registry
+names), and a `[container]` `rebuild-paths` list.
+
+With a map present, `myk-pi-tools release plan` (read-only) reports which packages changed since **their own last publish**:
+
+```bash
+myk-pi-tools release plan            # human-readable plan
+myk-pi-tools release plan --json     # machine-readable, for tooling
+myk-pi-tools release plan --force-package pi-docsite
+```
+
+- The last published version comes from the registries (`npm view`, PyPI JSON API) — ground truth that cannot drift from tags.
+- Each package's diff window is anchored at the commit where its version file was bumped to
+  that published version, so a package skipped for several releases reaches back to its own last publish.
+- Proposed bumps come from conventional commits touching the mapped files (`feat` -> minor, `fix` -> patch, `feat!`/`BREAKING CHANGE` -> major, default patch).
+- Global excludes configured in the map (e.g. `tests/`) never trigger a release by themselves;
+  multi-registry packages must agree across their registries or they are reported as errored,
+  never silently skipped.
+- The container image is reported as needing a rebuild when any package ships or a `rebuild-paths` entry changed since the last repo tag.
+
+Without a `release-map.toml`, `release plan` reports lockstep mode and nothing else changes — the generic release flow is untouched.
 
 `reviews address` — bulk-apply replies to a fetched reviews JSON, then post and store it:
 

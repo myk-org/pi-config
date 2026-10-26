@@ -1,0 +1,87 @@
+# pi-config scoped-release map (issue #965).
+#
+# Presence of this file opts this repo into scoped releases: myk-pi-tools
+# release plan / bump-version use it, and /release takes the scoped branch.
+# A repo without this file keeps the default lockstep behavior — nothing
+# changes for generic pi-orchestrator-config users.
+#
+# Semantics:
+#   version-files  — the files a version bump writes; also the git-history
+#                    anchors for each package's per-package diff window
+#                    (the commit where the file reached the registry's
+#                    last-published version).
+#   paths          — source paths that affect the package's ARTIFACT
+#                    content. Non-empty diff since the package's own last
+#                    publish = affected = bumped + republished.
+#   exclude-paths  — carved out of paths (test-only or shared dirs that
+#                    belong to another package).
+#
+# Detection errs toward over-inclusion: a change in an ambiguous path maps
+# to every plausible package. Republishing an unchanged package is annoying;
+# skipping a changed one is broken.
+
+[release]
+mode = "scoped"
+# Test and generated-doc changes never trigger a package release by
+# themselves. If source changes alongside, the source path triggers anyway.
+exclude-paths = ["tests/", "packages/*/tests/", "docs/"]
+
+[[package]]
+name = "pi-orchestrator-config"
+registry = "npm"
+version-files = ["package.json"]
+paths = [
+  "extensions/",
+  "rules/",
+  "agents/",
+  "prompts/",
+  "templates/",
+  "skills/",
+  "scripts/",
+  "settings-keys.json",
+  "package.json", # deps and npm scripts are artifact content
+  "README.md",    # npm auto-includes it in the tarball
+]
+# docs_render belongs to the pi-docsite generator, not the orchestrator.
+exclude-paths = ["scripts/docs_render/"]
+
+[[package]]
+name = "myk-pi-tools"
+registry = "pypi"
+version-files = ["pyproject.toml", "myk_pi_tools/__init__.py"]
+# Root pyproject.toml is the build config (deps, entry points); README.md
+# ships in the PyPI sdist (readme field).
+paths = ["myk_pi_tools/", "pyproject.toml", "README.md"]
+
+[[package]]
+name = "pi-sidecar"
+# Ships @myk-org/pi-sidecar (npm) and pi-sidecar-client (PyPI) together —
+# same tree, same version, one bump.
+registry = "npm+pypi"
+npm-name = "@myk-org/pi-sidecar"
+pypi-name = "pi-sidecar-client"
+version-files = ["packages/pi-sidecar/package.json", "packages/pi-sidecar/pyproject.toml"]
+paths = ["packages/pi-sidecar/"]
+# The dual-copy session-cwd.ts under packages/pi-sidecar/src/ is kept in
+# sync manually with extensions/shared/session-cwd.ts; the sidecar copy is
+# inside this package's paths, so a sync edit triggers this package.
+
+[[package]]
+name = "pi-vertex-claude"
+registry = "npm"
+npm-name = "@myk-org/pi-vertex-claude"
+version-files = ["packages/pi-vertex-claude/package.json"]
+paths = ["packages/pi-vertex-claude/"]
+
+[[package]]
+name = "pi-docsite"
+registry = "pypi"
+# Dynamic version: pyproject pulls it from pi_docsite.__version__.
+version-files = ["packages/pi-docsite/src/pi_docsite/__init__.py"]
+paths = ["packages/pi-docsite/", "scripts/docs_render/"]
+
+# The container image (ghcr.io/myk-org/pi-config) is not a versioned
+# package: it rebuilds whenever ANY package ships, or when these paths
+# change. Listed here so release plan can report it; never bumped itself.
+[container]
+rebuild-paths = ["Dockerfile", "entrypoint.sh", "init-entrypoint.sh"]
