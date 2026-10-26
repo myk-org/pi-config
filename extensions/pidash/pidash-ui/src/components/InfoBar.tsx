@@ -145,7 +145,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
           never resize the chat frame above. */}
       <div className="flex items-center gap-3 min-w-0 shrink">
       {/* Model */}
-      <div className="relative min-w-0 shrink">
+      <div className="relative min-w-0 shrink max-w-full max-md:max-w-[140px]">
         <button
           className="flex items-center gap-1 font-semibold text-foreground hover:text-primary transition-colors min-w-0"
           onClick={(e) => toggleMenu("models", e)}
@@ -190,8 +190,10 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
 
       <span className="text-border">|</span>
 
-      {/* Thinking */}
-      {supportsReasoning(session) && <div className="relative shrink-0">
+      {/* Thinking — hidden on phones: the bar must keep the model selector,
+          stats scroller, and action icons reachable within a phone-width
+          column (Qodo R2). Tablets and desktops show it. */}
+      {supportsReasoning(session) && <div className="relative shrink-0 max-md:hidden">
         <button
           ref={thinkingButtonRef}
           className="flex items-center gap-1 hover:text-primary transition-colors"
@@ -251,8 +253,13 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         )}
       </div>}
 
-      {supportsReasoning(session) && <span className="text-border">|</span>}
+      {supportsReasoning(session) && <span className="text-border max-md:hidden">|</span>}
 
+      {/* Scrollable stats zone: on narrow viewports these scroll horizontally
+          instead of pushing the trailing controls out of the overflow-hidden
+          main column (Qodo R2). Model/thinking dropdowns stay OUTSIDE it so
+          their absolute menus are never clipped by a scroll container. */}
+      <div className="flex items-center gap-3 min-w-0 shrink overflow-x-auto scrollbar-none">
       {/* Tokens — fixed min-widths + titles: values change digit counts and
           conditional segments (📦/🧠) appear per message, but a fixed-height
           single-row bar means width churn can no longer resize the frame. */}
@@ -332,10 +339,13 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
 
       {/* Cron tasks */}
       </div>
+      </div>
       {/* Actions zone — pinned right, never shrinks: compact and the panel
           toggles can't be pushed off-screen by growing stats. */}
       <div className="flex items-center gap-2 ml-auto shrink-0">
-      <div className="relative inline-block shrink-0">
+      {/* Cron — hidden on phones while idle (count 0): the bar must keep the
+          action icons reachable on a phone-width column (Qodo R2). */}
+      <div className={cn("relative inline-block shrink-0", cronTasks.count === 0 && "max-md:hidden")}>
         <Popover>
           <PopoverTrigger className={cn(
             "cursor-pointer text-xs",
@@ -389,8 +399,8 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         </Popover>
       </div>
 
-      {/* Async agents */}
-      <div className="relative inline-block shrink-0">
+      {/* Async agents — hidden on phones while idle (count 0) */}
+      <div className={cn("relative inline-block shrink-0", asyncAgents.count === 0 && "max-md:hidden")}>
         <Popover>
           <PopoverTrigger className={cn(
             "cursor-pointer text-xs",
@@ -484,9 +494,10 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         ))}
       </div>
 
-      {/* Sessions */}
+      {/* Sessions — hidden on phones: session switching already lives in the
+          sidebar overlay there; the dropdown is desktop convenience (Qodo R2). */}
       <>
-        <div className="relative shrink-0">
+        <div className="relative shrink-0 max-md:hidden">
           <button
             className="flex items-center gap-1 hover:text-primary transition-colors"
             onClick={(e) => toggleMenu("sessions", e)}

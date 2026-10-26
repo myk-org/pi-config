@@ -30,7 +30,7 @@ export function SettingsPanel({ sendCmd, onMessage, notify }: Props) {
   // settings-error = failed). Success is only announced after the ack — a
   // toast fired at send time would claim success for writes that fail
   // server-side (Qodo R1).
-  const pendingOpRef = useRef<{ key: string; kind: "save" | "clear"; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const pendingOpRef = useRef<{ key: string; kind: "save" | "clear"; scope: string; timer: ReturnType<typeof setTimeout> } | null>(null);
 
   const settlePending = (ok: boolean, errorText?: string) => {
     const pending = pendingOpRef.current;
@@ -53,11 +53,23 @@ export function SettingsPanel({ sendCmd, onMessage, notify }: Props) {
       log.warn("setting write timed out — no server ack", { key, kind });
       settlePending(false, "no response from server");
     }, 10000);
-    pendingOpRef.current = { key, kind, timer };
+    pendingOpRef.current = { key, kind, scope, timer };
     setSavingKey(key);
   };
 
+  // A pending write belongs to the scope it was armed in. Switching scopes
+  // re-subscribes the handler; the old scope's ack/error will never arrive on
+  // the new subscription, and the new scope's ordinary fetch must NOT be
+  // mistaken for the old write's success ack (Qodo R2).
+  const cancelPendingIfScopeChanged = () => {
+    const pending = pendingOpRef.current;
+    if (pending && pending.scope !== scope) {
+      settlePending(false, "cancelled — scope switched before the server responded");
+    }
+  };
+
   useEffect(() => {
+    cancelPendingIfScopeChanged();
     setData(null);
     setDraft({});
     setErrors({});
@@ -68,8 +80,9 @@ export function SettingsPanel({ sendCmd, onMessage, notify }: Props) {
         setData(ev as SettingsData);
         setDraft({});
         setErrors({});
-        // A refreshed payload is the success ack for a pending write.
-        settlePending(true);
+        // A refreshed payload is the success ack for a pending write in THIS
+        // scope — never for one armed in the other scope (Qodo R2).
+        if (pendingOpRef.current?.scope === scope) settlePending(true);
       }
       if (ev.type === "settings-error") {
         if (ev.scope !== undefined && ev.scope !== scope) return; // other scope's panel handles it

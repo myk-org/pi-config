@@ -21,6 +21,12 @@ export function parseTypedSetting(raw: string, def: SettingsKey): { value: unkno
     if (def.max !== undefined && n > def.max) return { value: null, error: `max ${def.max}` };
     return { value: n };
   }
+  if (t === "port") {
+    if (!/^\d+$/.test(raw.trim())) return { value: null, error: "not a number" };
+    const p = Number(raw);
+    if (p < 1 || p > 65535) return { value: null, error: "must be 1-65535" };
+    return { value: p };
+  }
   if (t === "string_list") {
     const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
     return { value: list };

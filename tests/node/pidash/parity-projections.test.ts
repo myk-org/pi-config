@@ -62,6 +62,14 @@ describe("parseTypedSetting", () => {
     assert.deepEqual(parseTypedSetting("-3", key("int")), { value: -3 });
   });
 
+  it("port parses an integer in range and rejects out-of-range or garbage", () => {
+    const def = key("port");
+    assert.deepEqual(parseTypedSetting("19190", def), { value: 19190 });
+    assert.ok(parseTypedSetting("0", def).error);
+    assert.ok(parseTypedSetting("70000", def).error);
+    assert.ok(parseTypedSetting("19190abc", def).error);
+  });
+
   it("agent_overrides parses a JSON object and rejects strings/arrays", () => {
     const def = key("agent_overrides");
     assert.deepEqual(
