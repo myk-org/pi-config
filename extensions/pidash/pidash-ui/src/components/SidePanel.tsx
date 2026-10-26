@@ -44,12 +44,63 @@ export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMe
   }, [toast]);
   const notify = useCallback((msg: string, level?: string) => setToast({ msg: String(msg), level: level || "info" }), []);
 
+  // Drag-to-resize (persisted): the drawer width adapts to the content the
+  // user is reading — settings descriptions, task lists, peer cards.
+  const MIN_W = 320;
+  const MAX_W = 760;
+  const [width, setWidth] = useState(() => {
+    const saved = Number(localStorage.getItem("pidash.panelWidth"));
+    return Number.isFinite(saved) && saved >= MIN_W && saved <= MAX_W ? saved : 340;
+  });
+  const dragRef = useRef<{ startX: number; startW: number } | null>(null);
+  useEffect(() => {
+    const move = (e: MouseEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      // Dragging the LEFT edge right decreases the width
+      const next = Math.min(MAX_W, Math.max(MIN_W, d.startW - (e.clientX - d.startX)));
+      widthRef.current = next; // up-handler persists the freshest width even if the render hasn't committed yet
+      setWidth(next);
+    };
+    const up = () => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      try { localStorage.setItem("pidash.panelWidth", String(widthRef.current)); } catch {}
+    };
+    // widthRef so the up-handler persists the latest width without re-binding
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+  }, []);
+  const widthRef = useRef(width);
+  useEffect(() => { widthRef.current = width; }, [width]);
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startW: widthRef.current };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+
   const sendCmd = useCallback((command: string, extra?: Record<string, unknown>) => {
     send({ type: "pidash-command", sessionId: session.sessionId, command, ...extra });
   }, [send, session.sessionId]);
 
   return (
-    <div className="w-[340px] max-md:w-full max-md:absolute max-md:inset-0 max-md:z-30 flex-shrink-0 border-l border-border flex flex-col bg-background max-md:bg-background/95">
+    <div
+      className="relative max-md:w-full max-md:absolute max-md:inset-0 max-md:z-30 flex-shrink-0 border-l border-border flex flex-col bg-background max-md:bg-background/95"
+      style={{ width }}
+    >
+      {/* Drag handle — resize the drawer by dragging its left edge */}
+      <div
+        className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-primary/40 transition-colors z-10 max-md:hidden"
+        onMouseDown={startResize}
+        title="Drag to resize panel"
+      />
       <div className="flex items-center border-b border-border">
         {TABS.map((t) => (
           <button
