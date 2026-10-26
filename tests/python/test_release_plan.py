@@ -18,8 +18,6 @@ import pytest
 from myk_pi_tools.release.plan import (
     PackagePlan,
     ReleasePlanner,
-    _bump_version_string,
-    _commits_bump_type,
 )
 from myk_pi_tools.release.plan import (
     run as plan_run,
@@ -161,50 +159,6 @@ class TestPathMatching:
 # ── Bump math ─────────────────────────────────────────────────────────────
 
 
-class TestBump:
-    def test_patch_bumps_the_patch_segment(self) -> None:
-        assert _bump_version_string("1.2.3", "patch") == "1.2.4"
-
-    def test_minor_bumps_the_minor_segment(self) -> None:
-        assert _bump_version_string("1.2.3", "minor") == "1.3.0"
-
-    def test_major_bumps_the_major_segment(self) -> None:
-        assert _bump_version_string("1.2.3", "major") == "2.0.0"
-
-    def test_bump_version_string_rejects_non_semver(self) -> None:
-        with pytest.raises(RuntimeError, match="non-semver"):
-            _bump_version_string("1.2", "patch")
-
-    def test_fix_subject_maps_to_patch(self) -> None:
-        assert _commits_bump_type(["fix: a"]) == "patch"
-
-    def test_feat_subject_maps_to_minor(self) -> None:
-        assert _commits_bump_type(["feat: a"]) == "minor"
-
-    def test_scoped_feat_subject_maps_to_minor(self) -> None:
-        assert _commits_bump_type(["feat(scope): a"]) == "minor"
-
-    def test_feat_bang_subject_maps_to_major(self) -> None:
-        assert _commits_bump_type(["feat!: a"]) == "major"
-
-    def test_non_release_subject_defaults_to_patch(self) -> None:
-        assert _commits_bump_type(["chore: a"]) == "patch"
-
-    def test_breaking_change_footer_in_body_maps_to_major(self) -> None:
-        # %B full messages: the footer lives on a later line (Qodo #966).
-        message = "feat: add a thing\n\nSome body text.\n\nBREAKING CHANGE: drops the old flag\n"
-        assert _commits_bump_type([message]) == "major"
-
-    def test_feat_over_fix_wins_minor(self) -> None:
-        assert _commits_bump_type(["fix: a", "feat: b"]) == "minor"
-
-    def test_breaking_over_fix_wins_major(self) -> None:
-        assert _commits_bump_type(["fix: a", "feat!: b"]) == "major"
-
-
-# ── Detection engine (fixture git repo) ──────────────────────────────────
-
-
 def git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
 
@@ -219,6 +173,11 @@ def commit(repo: Path, message: str, *files: str) -> None:
 @pytest.fixture()
 def fixture_repo(tmp_path: Path) -> Path:
     """A git repo with two packages over a shared map, at v1.0.0 published."""
+    return build_fixture_repo(tmp_path)
+
+
+def build_fixture_repo(tmp_path: Path) -> Path:
+    """Build the fixture repo (plain builder — reusable by other test modules)."""
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init")
@@ -311,8 +270,6 @@ class TestPlanner:
         }
         plans = {p.name: p for p in make_planner(fixture_repo, published).plan()}
         assert plans["poc"].affected
-        assert plans["poc"].proposed_version == "1.0.1"
-        assert plans["poc"].bump_type == "patch"
         assert not plans["tools"].affected
         assert not plans["sidecar"].affected
 
@@ -327,7 +284,6 @@ class TestPlanner:
         }
         plans = {p.name: p for p in make_planner(fixture_repo, published).plan()}
         assert plans["tools"].affected
-        assert plans["tools"].proposed_version == "1.1.0"
         assert not plans["poc"].affected
 
     def test_per_package_window_reaches_back(self, fixture_repo: Path) -> None:
@@ -372,7 +328,6 @@ class TestPlanner:
         plans = {p.name: p for p in planner.plan()}
         assert plans["sidecar"].affected
         assert plans["sidecar"].forced
-        assert plans["sidecar"].proposed_version == "1.0.1"  # default patch
 
     def test_registry_failure_is_reported_not_raised(self, fixture_repo: Path) -> None:
         def failing_lookup(registry: str, name: str) -> str:  # noqa: ARG001
@@ -407,7 +362,6 @@ class TestPlanner:
         }
         plans = {p.name: p for p in make_planner(fixture_repo, published).plan()}
         assert plans["sidecar"].affected
-        assert plans["sidecar"].proposed_version == "1.0.1"
 
 
 # ── CLI entry (run) ───────────────────────────────────────────────────────
@@ -436,11 +390,10 @@ class TestRun:
         assert excinfo.value.code == 1
 
     def test_plan_dict_shape(self) -> None:
-        plan = PackagePlan(name="x", registry="npm", affected=True, proposed_version="1.0.1")
+        plan = PackagePlan(name="x", registry="npm", affected=True)
         d = plan.to_dict()
         assert d["name"] == "x"
         assert d["affected"] is True
-        assert d["proposed_version"] == "1.0.1"
 
 
 # ── Round-2 behavior (Qodo PR #966) ──────────────────────────────────────
@@ -680,54 +633,6 @@ class TestErroredPresentation:
 
 
 # ── Round-3 behavior (Qodo PR #966) ──────────────────────────────────────
-
-
-class TestBumpScoping:
-    def test_breaking_footer_requires_colon(self) -> None:
-        # Prose ("Breaking change risk is low") is not a footer.
-        message = "fix: tweak\n\nBreaking change risk is low here.\n"
-        assert _commits_bump_type([message]) == "patch"
-
-    def test_real_breaking_footer_still_majors(self) -> None:
-        message = "fix: tweak\n\nBREAKING CHANGE: drops the old flag\n"
-        assert _commits_bump_type([message]) == "major"
-
-    def test_body_example_lines_do_not_inflate_bump(self) -> None:
-        # A body that MENTIONS "feat:" in prose/examples must not turn a
-        # fix commit into a minor release.
-        message = (
-            "fix: guard the gate\n\n"
-            "Rewrite suggestion examples to use conventional subjects like\n"
-            "feat: add thing\nfeat!: rename thing\n"
-        )
-        assert _commits_bump_type([message]) == "patch"
-
-    def test_subject_feat_still_minor(self) -> None:
-        assert _commits_bump_type(["feat: a"]) == "minor"
-
-    def test_leading_newline_record_keeps_subject_visible(self) -> None:
-        # git log --format=%B%x00 records after the first start with a
-        # newline — the subject must still be read (Qodo PR #966 round 4:
-        # an empty lines[0] made older feat commits plan as patches).
-        assert _commits_bump_type(["\nfeat: older commit\n"]) == "minor"
-        assert _commits_bump_type(["\nfix!: older breaking\n"]) == "major"
-
-    def test_planner_reads_subjects_of_older_commits(self, fixture_repo: Path) -> None:
-        # End-to-end: two commits since the anchor, the FEAT one first —
-        # the bump must be minor, not patch.
-        (fixture_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
-        commit(fixture_repo, "feat: add gate first", "extensions/b.ts")
-        (fixture_repo / "extensions" / "b.ts").write_text("// y\n", encoding="utf-8")
-        commit(fixture_repo, "fix: guard it after", "extensions/b.ts")
-        published = {
-            ("npm", "poc"): "1.0.0",
-            ("pypi", "tools"): "1.0.0",
-            ("npm", "@org/sidecar"): "1.0.0",
-            ("pypi", "sidecar-client"): "1.0.0",
-        }
-        plans = {p.name: p for p in make_planner(fixture_repo, published).plan()}
-        assert plans["poc"].bump_type == "minor"
-        assert plans["poc"].proposed_version == "1.1.0"
 
 
 class TestContainerGitFailure:

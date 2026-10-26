@@ -39,22 +39,6 @@ log = create_logger("myk_pi_tools.release.plan")
 REGISTRY_TIMEOUT_SECONDS = 30
 GIT_TIMEOUT_SECONDS = 60
 
-# Conventional-commit bump rules. SUBJECT rules match only the first line
-# of a commit message (the subject); FOOTER rules match any line of the
-# body. Splitting them keeps prose examples in a body ("...as in `feat: x`")
-# from inflating the bump, while real BREAKING CHANGE footers still count
-# (Qodo PR #966 round 3).
-_SUBJECT_BUMP_RES = (
-    (re.compile(r"^[a-z]+(\([^)]*\))?!:"), "major"),
-    (re.compile(r"^feat(\([^)]*\))?:"), "minor"),
-    (re.compile(r"^fix(\([^)]*\))?:"), "patch"),
-)
-# The colon is required: the conventional-commits footer is exactly
-# "BREAKING CHANGE:" — prose like "breaking change risk is low" must not
-# match (Qodo PR #966 round 3).
-_FOOTER_BUMP_RES = ((re.compile(r"^BREAKING[ -]CHANGE:", re.IGNORECASE), "major"),)
-_DEFAULT_BUMP = "patch"
-
 _PY_VERSION_RE = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
 
 
@@ -69,8 +53,6 @@ class PackagePlan:
     published_version: str | None = None
     anchor: str | None = None
     changed_files: list[str] = field(default_factory=list)
-    bump_type: str | None = None
-    proposed_version: str | None = None
     error: str | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -82,8 +64,6 @@ class PackagePlan:
             "published_version": self.published_version,
             "anchor": self.anchor,
             "changed_files": self.changed_files,
-            "bump_type": self.bump_type,
-            "proposed_version": self.proposed_version,
             "error": self.error,
         }
 
@@ -203,64 +183,6 @@ def _find_anchor(repo_root: Path, version_files: tuple[str, ...], published: str
         f"no commit found where {list(version_files)} held published version {published!r} "
         "— registry state and git history disagree (rewritten history or foreign publish?)"
     )
-
-
-def _bump_version_string(version: str, bump_type: str) -> str:
-    parts = version.split(".")
-    if len(parts) != 3 or not all(p.isdigit() for p in parts):
-        raise RuntimeError(f"cannot bump non-semver version {version!r}")
-    major, minor, patch = (int(p) for p in parts)
-    if bump_type == "major":
-        return f"{major + 1}.0.0"
-    if bump_type == "minor":
-        return f"{major}.{minor + 1}.0"
-    return f"{major}.{minor}.{patch + 1}"
-
-
-def _commits_bump_type(messages: list[str]) -> str:
-    """Highest conventional-commit bump among commit messages.
-
-    Each entry is a FULL commit message (``--format=%B``): the subject AND
-    the body footers, so a ``BREAKING CHANGE:`` footer under a ``feat:``
-    subject reaches the major rule (Qodo PR #966 — subject-only scanning
-    gave breaking changes minor versions).
-
-    Scope of each rule set (Qodo PR #966 round 3):
-
-    - SUBJECT rules (``feat:``, ``fix:``, ``feat!``) match only the FIRST
-      line of a message — prose examples in a body ("...as in `feat: x`")
-      must not inflate the bump.
-    - FOOTER rules (``BREAKING CHANGE:``) match any line, but require the
-      trailing colon — prose like "breaking change risk is low" is not a
-      conventional-commits footer.
-    """
-    bump = _DEFAULT_BUMP
-
-    def _apply(rule_bump: str) -> None:
-        nonlocal bump
-        if bump == "major" or rule_bump == "major":
-            bump = "major"
-        elif bump == "patch" and rule_bump == "minor":
-            bump = "minor"
-
-    for message in messages:
-        # git log --format=%B%x00 records after the first start with a
-        # newline (%B ends with one), so an unstripped record would make
-        # lines[0] empty and hide the subject (Qodo PR #966 round 4).
-        lines = message.strip().splitlines()
-        if not lines:
-            continue
-        subject, body = lines[0], lines[1:]
-        for pattern, rule_bump in _SUBJECT_BUMP_RES:
-            if pattern.search(subject):
-                _apply(rule_bump)
-                break
-        for line in body:
-            for pattern, rule_bump in _FOOTER_BUMP_RES:
-                if pattern.search(line):
-                    _apply(rule_bump)
-                    break
-    return bump
 
 
 class ReleasePlanner:
@@ -414,22 +336,6 @@ class ReleasePlanner:
         result.changed_files = hits
         result.affected = bool(hits) or forced
 
-        if result.affected:
-            # 4. Proposed bump from conventional commits touching the hit
-            #    files (mapped paths only — excludes like scripts/docs_render
-            #    must not inflate an unrelated package's bump type). Full
-            #    messages (%B) so BREAKING CHANGE footers reach the scan.
-            if hits:
-                # %x00 null-terminates each full message so multi-line
-                # bodies split cleanly (plain %B output runs together).
-                messages = _git(
-                    self.repo_root,
-                    ["log", "--format=%B%x00", f"{anchor}..HEAD", "--", *hits],
-                ).split("\0")
-                result.bump_type = _commits_bump_type([m for m in messages if m.strip()])
-            else:
-                result.bump_type = _DEFAULT_BUMP  # forced, no source changes
-            result.proposed_version = _bump_version_string(published, result.bump_type)
         return result
 
 
@@ -495,8 +401,8 @@ def run(
         for p in affected:
             tag = " [forced]" if p.forced else ""
             print(
-                f"  {p.name}  {p.published_version} → {p.proposed_version}"
-                f"  ({p.bump_type}; {len(p.changed_files)} changed files"
+                f"  {p.name}  (published {p.published_version};"
+                f" {len(p.changed_files)} changed files"
                 f" since {(p.anchor or '?')[:8]}){tag}"
             )
     else:

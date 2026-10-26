@@ -65,6 +65,57 @@ Check validations:
 - Working tree must be clean
 - Must be synced with remote
 
+### Scoped Mode Check (after Phase 1)
+
+Check for `release-map.toml` at the repository root (exact filename, repo
+root only).
+
+**If ABSENT:** continue with the standard lockstep flow below, unchanged.
+
+**If PRESENT:** run the SCOPED flow instead of Phases 2–5:
+
+- **Phase S2 — Detection:** `myk-pi-tools release plan --json`. If any
+  package is errored, show the errors and abort — do not bump. If no
+  packages are affected, report "nothing to release — no package changed
+  since its last publish" and stop. The plan only reports WHICH packages
+  changed and their published versions — it does NOT decide the next
+  versions.
+- **Phase S3 — Changelog + version proposals:** generate the changelog
+  with the standard Phase 3 rules. Then, for EACH affected package, YOU
+  (the LLM) decide the next version. IMPORTANT: a package's history
+  reaches back to ITS last publish, which may predate the last repo tag
+  — do NOT rely on the changelog alone. For each affected package run
+  `git log <anchor>..HEAD --format="%h %s%n%b" -- <its mapped paths>`
+  (the plan's JSON carries each package's `anchor` and `changed_files`)
+  and apply the standard semver rules to THOSE commits (`feat:` →
+  minor, `fix:` → patch, breaking → major). Read FULL messages, not
+  just subjects — a `BREAKING CHANGE:` footer lives in the commit body
+  and forces major even under a `feat:`/`fix:` subject. The plan does NOT propose versions — you
+  do. An explicit version argument (`/release X.Y.Z`) instead sets EVERY
+  affected package to that version, skipping per-package decisions. The
+  repo tag is the HIGHEST proposed version.
+- **Phase S4 — Approval:** skip this phase entirely if an explicit
+  version was provided in the raw arguments (same contract as lockstep
+  Phase 4). Otherwise: show the changelog, the per-package version
+  proposals (`current → proposed`), AND the plan's skipped-packages
+  list as text — the human validates the detection on every scoped
+  release (a package wrongly skipped is the broken failure mode). Then
+  a short `ask_user`: `Release v<TAG>?` with options `yes`, `no`, plus
+  one override option per package in the form `<name>: <level>` (e.g.
+  `myk-pi-tools: minor`) so the user can adjust any package's level
+  before confirming.
+- **Phase S5 — Bump:** `myk-pi-tools release bump-scoped --json` with
+  one `--set <name>=<version>` per affected package carrying YOUR final
+  proposed versions (after any user overrides). Use `--version X.Y.Z`
+  instead when the user passed an explicit version. Parse the JSON:
+  stage ONLY the files in `updated[]`, use `tag` as the release version.
+  Bump PR, merge, and branch sync follow the standard Phase 5 delegation
+  (git-expert / github-expert), with the bump PR message
+  `chore: bump version to <TAG>`.
+- **Phase S6/S7:** unchanged — release create with `v<TAG>`, changelog
+  including the Shipped packages section, summary listing per-package
+  versions.
+
 ### Phase 2: Version Detection
 
 ```bash
