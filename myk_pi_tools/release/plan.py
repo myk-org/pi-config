@@ -160,22 +160,27 @@ def _extract_version(content: str, file_name: str) -> str:
 
 
 # Release-tag shapes: legacy lockstep ``v1.2.3`` and per-package
-# ``name@1.2.3`` (issue #965). Anything else (stray personal/experimental
-# tags) must never anchor a repo-level window.
-_RELEASE_TAG_RE = re.compile(r"^(v|[A-Za-z0-9._-]+@)[0-9]+\.[0-9]+\.[0-9]+$")
+# ``name@1.2.3`` (issue #965), both with an optional prerelease suffix
+# (``-rc.1``) — ``create_release()`` accepts the same shapes, so the
+# planner must too or a prerelease release would fall outside every
+# repo-level window (Qodo PR #970 round 2). Anything else (stray
+# personal/experimental tags) must never anchor a window.
+_RELEASE_TAG_RE = re.compile(r"^(v|[A-Za-z0-9._-]+@)[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$")
 
 
 def _last_release_tag(repo_root: Path) -> str:
-    """Newest release-shaped tag reachable from HEAD.
+    """The release-shaped tag on the NEWEST release commit in HEAD's history.
 
     ``git describe --abbrev=0 --tags`` returns the NEAREST tag of ANY
     kind — with per-package tags in play that can be one package's
-    release while an earlier stray tag shadows the actual cycle
-    boundary (Qodo PR #970). This helper instead lists only tags merged
-    into HEAD whose name matches a release shape (``v1.2.3`` or
-    ``name@1.2.3``), orders them by tag creation date, and returns the
-    newest — a deterministic cycle boundary no matter which packages
-    shipped in which cut.
+    release while a stray tag shadows the actual cycle boundary (Qodo
+    PR #970). This helper instead filters tags merged into HEAD to
+    release shapes (``v1.2.3`` or ``name@1.2.3``, prerelease suffixes
+    allowed) and picks the one whose COMMIT is deepest in history —
+    NOT the newest tag object: a tag created later for an older commit
+    must not win, and tags sharing a commit produce the same window
+    either way (Qodo PR #970 round 2 — creation-date ordering had both
+    failure modes).
 
     Raises RuntimeError when no release-shaped tag exists or git fails —
     callers treat that as an indeterminate window, never as "no
@@ -187,15 +192,31 @@ def _last_release_tag(repo_root: Path) -> str:
             "for-each-ref",
             "--merged",
             "HEAD",
-            "--sort=-creatordate",
             "--format=%(refname:short)",
             "refs/tags",
         ],
     )
-    for tag in (t for t in output.splitlines() if t):
-        if _RELEASE_TAG_RE.match(tag):
-            return tag
-    raise RuntimeError("no release-shaped tag (vX.Y.Z or name@X.Y.Z) reachable from HEAD")
+    candidates = sorted(t for t in output.splitlines() if t and _RELEASE_TAG_RE.match(t))
+    if not candidates:
+        raise RuntimeError("no release-shaped tag (vX.Y.Z or name@X.Y.Z) reachable from HEAD")
+
+    def commit_depth(tag: str) -> int:
+        # Commits reachable from the tag's commit: strictly larger along
+        # a linear history, so the deepest candidate is the newest
+        # release commit. int() failure raises ValueError, not
+        # RuntimeError — guard it.
+        try:
+            return int(_git(repo_root, ["rev-list", "--count", f"{tag}^{{commit}}"]))
+        except ValueError:
+            return -1
+
+    # max() is stable: among equal depths (same commit) the
+    # alphabetically-first sorted candidate wins — the window is
+    # identical regardless.
+    best = max(candidates, key=commit_depth)
+    if commit_depth(best) < 0:
+        raise RuntimeError("could not resolve any release-shaped tag to a commit")
+    return best
 
 
 def _find_anchor(repo_root: Path, version_files: tuple[str, ...], published: str) -> str:

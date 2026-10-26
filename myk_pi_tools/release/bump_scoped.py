@@ -227,6 +227,11 @@ def run(
         )
         if result.status == "failed":
             print(f"error: {name}: {result.error}", file=sys.stderr)
+            # quiet suppressed the per-file prints, so the skip reasons
+            # live ONLY in the result — surface them or an all-skipped
+            # bump exits with nothing actionable (Qodo PR #970 round 2).
+            for sk in result.skipped:
+                print(f"error: {name}: {sk['path']} ({sk['reason']})", file=sys.stderr)
             print(
                 "error: bump failed mid-way — previously written files remain on disk; "
                 "restore them (git checkout -- .) before retrying",

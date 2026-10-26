@@ -144,6 +144,53 @@ class TestBumpScoped:
             "tools": "tools@1.0.1",
         }
 
+    def test_quiet_scoped_bump_prints_no_per_file_progress(
+        self,
+        scoped_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """quiet=True suppresses the banner AND per-file Updated/Skipped
+        stderr prints — the scoped caller prints its own single summary
+        (Qodo PR #970 round 2: the flag previously guarded only the
+        banner, and nothing tested either)."""
+        (scoped_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+        commit(scoped_repo, "feat: gate", "extensions/b.ts")
+
+        import myk_pi_tools.release.plan as plan_mod
+
+        def lookup(registry: str, name: str) -> str:
+            return {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            }[(registry, name)]
+
+        monkeypatch.setattr(plan_mod, "registry_version", lookup)
+        bump_scoped_run(scoped_repo, set_versions={"poc": "1.1.0"})
+        err = capsys.readouterr().err
+        assert "Bumping version to" not in err
+        assert "Updated:" not in err
+        assert "Skipped:" not in err
+
+    def test_quiet_flag_direct(self, scoped_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Direct unit: quiet=True silences stderr; the CLI default stays
+        loud so lockstep keeps its progress output."""
+        from myk_pi_tools.release.bump_version import bump_version_files
+
+        result = bump_version_files(new_version="1.2.0", files=["package.json"], root=scoped_repo, quiet=True)
+        assert result.status == "success"
+        err = capsys.readouterr().err
+        assert "Bumping version to" not in err
+        assert "Updated:" not in err
+
+        loud = bump_version_files(new_version="1.3.0", files=["package.json"], root=scoped_repo, quiet=False)
+        assert loud.status == "success"
+        err = capsys.readouterr().err
+        assert "Bumping version to 1.3.0..." in err
+        assert "Updated: package.json" in err
+
     def test_untouched_package_files_stay_untouched(
         self,
         scoped_repo: Path,
