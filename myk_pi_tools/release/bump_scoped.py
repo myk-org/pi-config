@@ -36,20 +36,41 @@ def _semver_key(version: str) -> tuple[int, int, int]:
     return (int(parts[0]), int(parts[1]), int(parts[2]))
 
 
+def _parse_set_values(set_values: tuple[str, ...]) -> dict[str, str]:
+    """Parse ``--set name=version`` arguments into a dict."""
+    result: dict[str, str] = {}
+    for raw in set_values:
+        name, sep, version = raw.partition("=")
+        if not sep or not name.strip() or not version.strip():
+            raise SystemExit(f"error: --set expects NAME=VERSION, got {raw!r}")
+        result[name.strip()] = version.strip()
+    return result
+
+
 def run(
     repo_root: Path,
     *,
     force_packages: tuple[str, ...] = (),
     version_override: str | None = None,
+    set_versions: dict[str, str] | None = None,
     as_json: bool = False,
 ) -> None:
     """CLI entry for ``myk-pi-tools release bump-scoped``.
 
     Requires a release-map.toml. Errored packages abort BEFORE any file is
     written (the plan must be clean; use ``release plan`` to diagnose).
-    An explicit ``version_override`` sets every affected package to that
-    version (the ``/release X.Y.Z`` escape hatch); the tag is then that
-    version.
+
+    Version sources, in priority order:
+
+    - ``set_versions`` (``--set name=version``): the explicit per-package
+      versions decided by the LLM/user in the ``/release`` flow. The plan
+      only detects WHAT changed — the next version is a human/LLM
+      decision, not a mechanical one (issue #965 phase 2).
+    - ``version_override`` (``--version X.Y.Z``): one version for every
+      affected package (the ``/release X.Y.Z`` escape hatch).
+    - Otherwise: the plan's mechanical conventional-commit proposal
+      (standalone CLI fallback only — the ``/release`` flow always
+      passes ``--set``).
     """
     map_path = find_release_map(repo_root)
     if map_path is None:
@@ -71,6 +92,18 @@ def run(
         print(f"error: --force-package names not in the map: {', '.join(unknown_forced)}", file=sys.stderr)
         raise SystemExit(1)
 
+    # Validate explicit --set names against the map (typo safety) before
+    # anything else runs.
+    if set_versions:
+        known = {x.name for x in release_map.packages}
+        unknown_set = [n for n in set_versions if n not in known]
+        if unknown_set:
+            print(
+                f"error: --set names not in the map: {', '.join(sorted(unknown_set))}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
     planner = ReleasePlanner(repo_root, release_map, force_packages=force_packages)
     plans = planner.plan()
 
@@ -88,6 +121,19 @@ def run(
         raise SystemExit(1)
 
     affected = [p for p in plans if p.affected]
+
+    # A --set for a package the plan did not mark affected is a decision
+    # conflict — it needs an explicit --force-package to proceed.
+    if set_versions:
+        not_affected = [n for n in set_versions if n not in {p.name for p in affected}]
+        if not_affected:
+            print(
+                f"error: --set names not in the affected set: {', '.join(sorted(not_affected))} "
+                "(use --force-package to include them)",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
     if not affected:
         if as_json:
             print(json.dumps({"status": "nothing-to-bump", "packages": [], "tag": None}))
@@ -95,10 +141,16 @@ def run(
             print("Nothing to bump — no package changed since its last publish.")
         return
 
-    # Explicit version overrides every affected package's proposal.
+    # Version decision: explicit --set per package (the /release flow —
+    # the LLM and user decide), then the global override, then the
+    # mechanical proposal as a standalone-CLI fallback.
     if version_override is not None:
         for p in affected:
             p.proposed_version = version_override
+    elif set_versions:
+        for p in affected:
+            if p.name in set_versions:
+                p.proposed_version = set_versions[p.name]
 
     tag = max((p.proposed_version for p in affected if p.proposed_version), key=_semver_key)
 

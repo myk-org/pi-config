@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from myk_pi_tools.release.bump_scoped import _parse_set_values
 from myk_pi_tools.release.bump_scoped import run as bump_scoped_run
 from myk_pi_tools.release.bump_version import run as bump_run
 from myk_pi_tools.release.create import run as create_run
@@ -131,11 +132,19 @@ def release_bump_version(version: str, files: tuple[str, ...]) -> None:
     default=None,
     help="Override every affected package's proposed version with this one",
 )
+@click.option(
+    "--set",
+    "set_values",
+    multiple=True,
+    metavar="NAME=VERSION",
+    help="Explicit per-package version decided in the /release flow (repeatable)",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit the bump result as JSON (for /release and other tooling)")
 def release_bump_scoped(
     repo_root: str,
     force_packages: tuple[str, ...],
     version_override: str | None,
+    set_values: tuple[str, ...],
     as_json: bool,
 ) -> None:
     """Bump ONLY the affected packages' version files (scoped releases).
@@ -146,10 +155,11 @@ def release_bump_scoped(
     keep using bump-version (lockstep).
     """
     log.debug(
-        "release bump-scoped invoked: repo_root=%s force=%s override=%s json=%s",
+        "release bump-scoped invoked: repo_root=%s force=%s override=%s set=%s json=%s",
         repo_root,
         list(force_packages),
         version_override,
+        list(set_values),
         as_json,
     )
     try:
@@ -157,6 +167,7 @@ def release_bump_scoped(
             Path(repo_root),
             force_packages=force_packages,
             version_override=version_override,
+            set_versions=_parse_set_values(set_values),
             as_json=as_json,
         )
     except SystemExit:

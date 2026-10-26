@@ -290,3 +290,77 @@ class TestBumpScopedCli:
         result = runner.invoke(release, ["bump-scoped", "--repo", str(scoped_repo), "--json"])
         assert result.exit_code == 0
         assert json.loads(result.output)["status"] == "nothing-to-bump"
+
+
+class TestBumpScopedSetVersions:
+    """--set NAME=VERSION: the /release flow's explicit per-package versions."""
+
+    def _publish_all_at_1_0_0(self) -> dict[tuple[str, str], str]:
+        return {
+            ("npm", "poc"): "1.0.0",
+            ("pypi", "tools"): "1.0.0",
+            ("npm", "@org/sidecar"): "1.0.0",
+            ("pypi", "sidecar-client"): "1.0.0",
+        }
+
+    def test_set_versions_override_mechanical_proposal(
+        self,
+        scoped_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # feat commit would mechanically propose 1.1.0; the LLM/user
+        # decided 2.0.0 — the explicit decision wins.
+        (scoped_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+        commit(scoped_repo, "feat: gate", "extensions/b.ts")
+
+        import myk_pi_tools.release.plan as plan_mod
+
+        monkeypatch.setattr(plan_mod, "registry_version", lambda r, n: self._publish_all_at_1_0_0()[(r, n)])
+        bump_scoped_run(scoped_repo, set_versions={"poc": "2.0.0"}, as_json=True)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["packages"] == [{"name": "poc", "version": "2.0.0", "files": ["package.json"]}]
+        assert payload["tag"] == "2.0.0"
+        assert read_version(scoped_repo, "package.json") == "2.0.0"
+
+    def test_set_for_unaffected_package_errors(self, scoped_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import myk_pi_tools.release.plan as plan_mod
+
+        monkeypatch.setattr(plan_mod, "registry_version", lambda r, n: self._publish_all_at_1_0_0()[(r, n)])
+        with pytest.raises(SystemExit) as excinfo:
+            bump_scoped_run(scoped_repo, set_versions={"sidecar": "1.0.1"})
+        assert excinfo.value.code == 1
+
+    def test_set_with_force_package_bumps_unaffected(
+        self,
+        scoped_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        (scoped_repo / "package.json").write_text(
+            json.dumps({"name": "poc", "version": "1.0.0", "workspaces": ["packages/*"]}),
+            encoding="utf-8",
+        )
+        commit(scoped_repo, "chore: declare workspaces", "package.json")
+
+        import myk_pi_tools.release.plan as plan_mod
+
+        monkeypatch.setattr(plan_mod, "registry_version", lambda r, n: self._publish_all_at_1_0_0()[(r, n)])
+        bump_scoped_run(
+            scoped_repo,
+            force_packages=("sidecar",),
+            set_versions={"sidecar": "1.5.0"},
+            as_json=True,
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["packages"][0]["version"] == "1.5.0"
+        assert read_version(scoped_repo, "packages/sidecar/package.json") == "1.5.0"
+
+    def test_parse_set_values(self) -> None:
+        from myk_pi_tools.release.bump_scoped import _parse_set_values
+
+        assert _parse_set_values(("a=1.0.0", "b=2.0.0")) == {"a": "1.0.0", "b": "2.0.0"}
+        with pytest.raises(SystemExit):
+            _parse_set_values(("no-equals-sign",))
+        with pytest.raises(SystemExit):
+            _parse_set_values(("=1.0.0",))

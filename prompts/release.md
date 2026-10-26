@@ -74,24 +74,35 @@ root only).
 
 **If PRESENT:** run the SCOPED flow instead of Phases 2–5:
 
-- **Phase S2 — Plan:** `myk-pi-tools release plan` (parse the JSON via
-  `--json` if easier). If any package is errored, show the errors and
-  abort — do not bump. If no packages are affected, report
-  "nothing to release — no package changed since its last publish" and stop.
-- **Phase S3 — Changelog:** generate the changelog with the standard
-  Phase 3 rules, and prepend a **Shipped packages** list: each affected
-  package with `current → proposed` version. Per-package versions come
-  from the plan; an explicit version argument (`/release X.Y.Z`)
-  overrides EVERY affected package to that version. The repo tag is the
+- **Phase S2 — Detection:** `myk-pi-tools release plan --json`. If any
+  package is errored, show the errors and abort — do not bump. If no
+  packages are affected, report "nothing to release — no package changed
+  since its last publish" and stop. The plan only reports WHICH packages
+  changed and their published versions — it does NOT decide the next
+  versions.
+- **Phase S3 — Changelog + version proposals:** generate the changelog
+  with the standard Phase 3 rules. Then, for EACH affected package, YOU
+  (the LLM) decide the next version: examine that package's commits
+  since its last publish (its `changed_files` from the plan, the
+  changelog entries) and apply the standard semver rules (`feat:` →
+  minor, `fix:` → patch, breaking → major). The plan's printed proposals
+  are a mechanical hint only — your judgment wins. An explicit version
+  argument (`/release X.Y.Z`) instead sets EVERY affected package to
+  that version, skipping per-package decisions. The repo tag is the
   HIGHEST proposed version.
-- **Phase S4 — Approval:** standard Phase 4 pattern — show changelog +
-  shipped packages as text, then a short `ask_user`: `Release v<TAG>?`
-  (options: `yes`, `no`).
-- **Phase S5 — Bump:** `myk-pi-tools release bump-scoped` (add
-  `--version X.Y.Z` when the user passed an explicit version). Parse the
-  JSON: stage ONLY the files in `updated[]`, use `tag` as the release
-  version. Bump PR, merge, and branch sync follow the standard Phase 5
-  delegation (git-expert / github-expert), with the bump PR message
+- **Phase S4 — Approval:** standard Phase 4 pattern — show the changelog
+  and the per-package version proposals (`current → proposed`) as text,
+  then a short `ask_user`: `Release v<TAG>?` with options `yes`, `no`,
+  plus one override option per package in the form `<name>: <level>`
+  (e.g. `myk-pi-tools: minor`) so the user can adjust any package's
+  level before confirming.
+- **Phase S5 — Bump:** `myk-pi-tools release bump-scoped` with one
+  `--set <name>=<version>` per affected package carrying YOUR final
+  proposed versions (after any user overrides). Use `--version X.Y.Z`
+  instead when the user passed an explicit version. Parse the JSON:
+  stage ONLY the files in `updated[]`, use `tag` as the release version.
+  Bump PR, merge, and branch sync follow the standard Phase 5 delegation
+  (git-expert / github-expert), with the bump PR message
   `chore: bump version to <TAG>`.
 - **Phase S6/S7:** unchanged — release create with `v<TAG>`, changelog
   including the Shipped packages section, summary listing per-package
