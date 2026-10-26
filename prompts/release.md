@@ -132,8 +132,16 @@ root only).
   <name1>@<v1>[, <name2>@<v2>...]` (keep the `chore: bump version`
   prefix — it is filtered from changelogs).
 - **Phase S6/S7:** release create ONE GitHub RELEASE PER SHIPPED
-  PACKAGE, tag `<name>@<version>` from the bump JSON, same changelog
-  body (including the Shipped packages section), and PASS
+  PACKAGE, tag `<name>@<version>` from the bump JSON. Each release's
+  notes contain ONLY that package's changes: its own version line
+  (`<name> — <old> → <new> (<registry>)`), its own changelog entries
+  from its S3 per-package window, and a compare link
+  `compare/<previous tag of that package>...<name>@<version>` (previous
+  tag = `<name>@<its published version>` if that tag exists, else the
+  lockstep-era `v<published version>`). NEVER list other packages in a
+  release's notes — a release that ships only myk-pi-tools must not
+  claim pi-orchestrator-config shipped; cut-level context lives in the
+  bump PR, not in per-package releases. PASS
   `--title "<name> <version>"` explicitly — without it the release
   title defaults to the raw `name@version` tag. Tags are per-package
   and cannot collide — there is no repo-wide `v<TAG>` in scoped mode.
