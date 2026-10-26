@@ -92,20 +92,75 @@ class TestBumpScoped:
         import myk_pi_tools.release.plan as plan_mod
 
         monkeypatch.setattr(plan_mod, "registry_version", lookup)
-        bump_scoped_run(scoped_repo, as_json=True)
+        bump_scoped_run(
+            scoped_repo,
+            set_versions={"poc": "1.1.0", "tools": "1.0.1"},
+            as_json=True,
+        )
         payload = json.loads(capsys.readouterr().out)
 
-        # poc shipped a feat (1.0.0 -> 1.1.0), tools a fix (1.0.0 -> 1.0.1).
+        # Versions are ALWAYS explicit (--set from the /release decision).
         assert {p["name"]: p["version"] for p in payload["packages"]} == {
             "poc": "1.1.0",
             "tools": "1.0.1",
         }
-        # Tag = highest proposed version.
-        assert payload["tag"] == "1.1.0"
         # Only the affected packages' version files were written.
         assert read_version(scoped_repo, "package.json") == "1.1.0"
         assert read_version(scoped_repo, "pyproject.toml") == "1.0.1"
         assert read_version(scoped_repo, "myk_pi_tools/__init__.py") == "1.0.1"
+
+    def test_tag_is_the_highest_version(
+        self,
+        scoped_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        (scoped_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+        commit(scoped_repo, "feat: gate", "extensions/b.ts")
+        (scoped_repo / "myk_pi_tools" / "new2.py").write_text("y = 2\n", encoding="utf-8")
+        commit(scoped_repo, "fix: thing", "myk_pi_tools/new2.py")
+
+        def lookup(registry: str, name: str) -> str:
+            return {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            }[(registry, name)]
+
+        import myk_pi_tools.release.plan as plan_mod
+
+        monkeypatch.setattr(plan_mod, "registry_version", lookup)
+        bump_scoped_run(
+            scoped_repo,
+            set_versions={"poc": "1.1.0", "tools": "1.0.1"},
+            as_json=True,
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["tag"] == "1.1.0"
+
+    def test_untouched_package_files_stay_untouched(
+        self,
+        scoped_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        (scoped_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+        commit(scoped_repo, "feat: gate", "extensions/b.ts")
+
+        def lookup(registry: str, name: str) -> str:
+            return {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            }[(registry, name)]
+
+        import myk_pi_tools.release.plan as plan_mod
+
+        monkeypatch.setattr(plan_mod, "registry_version", lookup)
+        bump_scoped_run(scoped_repo, set_versions={"poc": "1.1.0"}, as_json=True)
+        payload = json.loads(capsys.readouterr().out)
         # sidecar untouched.
         assert read_version(scoped_repo, "packages/sidecar/package.json") == "1.0.0"
         updated_paths = {u["path"] for u in payload["updated"]}
@@ -152,7 +207,7 @@ class TestBumpScoped:
 
         monkeypatch.setattr(plan_mod, "registry_version", lookup)
         with pytest.raises(SystemExit) as excinfo:
-            bump_scoped_run(scoped_repo)
+            bump_scoped_run(scoped_repo, set_versions={"poc": "1.0.1"})
         assert excinfo.value.code == 1
         # Nothing was written even though poc is affected.
         assert read_version(scoped_repo, "package.json") == "1.0.0"
@@ -218,7 +273,12 @@ class TestBumpScoped:
         import myk_pi_tools.release.plan as plan_mod
 
         monkeypatch.setattr(plan_mod, "registry_version", lookup)
-        bump_scoped_run(scoped_repo, force_packages=("sidecar",), as_json=True)
+        bump_scoped_run(
+            scoped_repo,
+            force_packages=("sidecar",),
+            set_versions={"sidecar": "1.0.1"},
+            as_json=True,
+        )
         payload = json.loads(capsys.readouterr().out)
         assert [p["name"] for p in payload["packages"]] == ["sidecar"]
         assert read_version(scoped_repo, "packages/sidecar/package.json") == "1.0.1"
@@ -256,7 +316,7 @@ class TestBumpScoped:
 
         monkeypatch.setattr(plan_mod, "registry_version", lookup)
         with pytest.raises(SystemExit) as excinfo:
-            bump_scoped_run(scoped_repo)
+            bump_scoped_run(scoped_repo, set_versions={"poc": "1.0.1"})
         assert excinfo.value.code == 1
         assert "not detected" in capsys.readouterr().err
 
@@ -364,3 +424,143 @@ class TestBumpScopedSetVersions:
             _parse_set_values(("no-equals-sign",))
         with pytest.raises(SystemExit):
             _parse_set_values(("=1.0.0",))
+
+    def test_missing_set_versions_errors(self, scoped_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No mechanical fallback: without --set/--version there is no version."""
+        (scoped_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+        commit(scoped_repo, "feat: gate", "extensions/b.ts")
+
+        def lookup(registry: str, name: str) -> str:
+            return {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            }[(registry, name)]
+
+        import myk_pi_tools.release.plan as plan_mod
+
+        monkeypatch.setattr(plan_mod, "registry_version", lookup)
+        with pytest.raises(SystemExit) as excinfo:
+            bump_scoped_run(scoped_repo)
+        assert excinfo.value.code == 1
+        assert read_version(scoped_repo, "package.json") == "1.0.0"
+
+    def test_downgrade_version_errors(self, scoped_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """--set below the registry-published version never reaches manifests."""
+        (scoped_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+        commit(scoped_repo, "feat: gate", "extensions/b.ts")
+
+        def lookup(registry: str, name: str) -> str:
+            return {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            }[(registry, name)]
+
+        import myk_pi_tools.release.plan as plan_mod
+
+        monkeypatch.setattr(plan_mod, "registry_version", lookup)
+        with pytest.raises(SystemExit) as excinfo:
+            bump_scoped_run(scoped_repo, set_versions={"poc": "0.9.0"})
+        assert excinfo.value.code == 1
+        assert read_version(scoped_repo, "package.json") == "1.0.0"
+
+    def test_equal_version_errors(self, scoped_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """--set equal to the published version is also rejected."""
+        (scoped_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+        commit(scoped_repo, "feat: gate", "extensions/b.ts")
+
+        def lookup(registry: str, name: str) -> str:
+            return {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            }[(registry, name)]
+
+        import myk_pi_tools.release.plan as plan_mod
+
+        monkeypatch.setattr(plan_mod, "registry_version", lookup)
+        with pytest.raises(SystemExit) as excinfo:
+            bump_scoped_run(scoped_repo, set_versions={"poc": "1.0.0"})
+        assert excinfo.value.code == 1
+
+    def test_malformed_version_errors(self, scoped_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Non-semver and leading-zero versions exit 1, not a traceback."""
+        (scoped_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+        commit(scoped_repo, "feat: gate", "extensions/b.ts")
+
+        def lookup(registry: str, name: str) -> str:
+            return {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            }[(registry, name)]
+
+        import myk_pi_tools.release.plan as plan_mod
+
+        monkeypatch.setattr(plan_mod, "registry_version", lookup)
+        for bad in ("1.2", "01.2.3", "abc"):
+            with pytest.raises(SystemExit) as excinfo:
+                bump_scoped_run(scoped_repo, set_versions={"poc": bad})
+            assert excinfo.value.code == 1
+
+    def test_set_wins_over_version_override(
+        self,
+        scoped_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Both flags given: --set decides for its package, --version for the rest."""
+        (scoped_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+        commit(scoped_repo, "feat: gate", "extensions/b.ts")
+        (scoped_repo / "myk_pi_tools" / "new2.py").write_text("y = 2\n", encoding="utf-8")
+        commit(scoped_repo, "fix: thing", "myk_pi_tools/new2.py")
+
+        def lookup(registry: str, name: str) -> str:
+            return {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            }[(registry, name)]
+
+        import myk_pi_tools.release.plan as plan_mod
+
+        monkeypatch.setattr(plan_mod, "registry_version", lookup)
+        bump_scoped_run(
+            scoped_repo,
+            set_versions={"poc": "1.2.0"},
+            version_override="1.0.1",
+            as_json=True,
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert {p["name"]: p["version"] for p in payload["packages"]} == {
+            "poc": "1.2.0",
+            "tools": "1.0.1",
+        }
+
+    def test_tag_below_latest_repo_tag_errors(self, scoped_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A tag that does not move past the latest repo tag is rejected."""
+        (scoped_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+        commit(scoped_repo, "feat: gate", "extensions/b.ts")
+        git(scoped_repo, "tag", "v2.0.0")  # repo already far ahead
+
+        def lookup(registry: str, name: str) -> str:
+            return {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            }[(registry, name)]
+
+        import myk_pi_tools.release.plan as plan_mod
+
+        monkeypatch.setattr(plan_mod, "registry_version", lookup)
+        with pytest.raises(SystemExit) as excinfo:
+            bump_scoped_run(scoped_repo, set_versions={"poc": "1.1.0"})
+        assert excinfo.value.code == 1
+        assert read_version(scoped_repo, "package.json") == "1.0.0"

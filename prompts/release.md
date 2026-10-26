@@ -82,22 +82,28 @@ root only).
   versions.
 - **Phase S3 — Changelog + version proposals:** generate the changelog
   with the standard Phase 3 rules. Then, for EACH affected package, YOU
-  (the LLM) decide the next version: examine that package's commits
-  since its last publish (its `changed_files` from the plan, the
-  changelog entries) and apply the standard semver rules (`feat:` →
-  minor, `fix:` → patch, breaking → major). The plan's printed proposals
-  are a mechanical hint only — your judgment wins. An explicit version
-  argument (`/release X.Y.Z`) instead sets EVERY affected package to
-  that version, skipping per-package decisions. The repo tag is the
-  HIGHEST proposed version.
-- **Phase S4 — Approval:** standard Phase 4 pattern — show the changelog
-  and the per-package version proposals (`current → proposed`) as text,
-  then a short `ask_user`: `Release v<TAG>?` with options `yes`, `no`,
-  plus one override option per package in the form `<name>: <level>`
-  (e.g. `myk-pi-tools: minor`) so the user can adjust any package's
-  level before confirming.
-- **Phase S5 — Bump:** `myk-pi-tools release bump-scoped` with one
-  `--set <name>=<version>` per affected package carrying YOUR final
+  (the LLM) decide the next version. IMPORTANT: a package's history
+  reaches back to ITS last publish, which may predate the last repo tag
+  — do NOT rely on the changelog alone. For each affected package run
+  `git log <anchor>..HEAD --oneline -- <its mapped paths>` (the plan's
+  JSON carries each package's `anchor` and `changed_files`) and apply
+  the standard semver rules to THOSE commits (`feat:` → minor, `fix:` →
+  patch, breaking → major). The plan does NOT propose versions — you
+  do. An explicit version argument (`/release X.Y.Z`) instead sets EVERY
+  affected package to that version, skipping per-package decisions. The
+  repo tag is the HIGHEST proposed version.
+- **Phase S4 — Approval:** skip this phase entirely if an explicit
+  version was provided in the raw arguments (same contract as lockstep
+  Phase 4). Otherwise: show the changelog, the per-package version
+  proposals (`current → proposed`), AND the plan's skipped-packages
+  list as text — the human validates the detection on every scoped
+  release (a package wrongly skipped is the broken failure mode). Then
+  a short `ask_user`: `Release v<TAG>?` with options `yes`, `no`, plus
+  one override option per package in the form `<name>: <level>` (e.g.
+  `myk-pi-tools: minor`) so the user can adjust any package's level
+  before confirming.
+- **Phase S5 — Bump:** `myk-pi-tools release bump-scoped --json` with
+  one `--set <name>=<version>` per affected package carrying YOUR final
   proposed versions (after any user overrides). Use `--version X.Y.Z`
   instead when the user passed an explicit version. Parse the JSON:
   stage ONLY the files in `updated[]`, use `tag` as the release version.

@@ -805,8 +805,8 @@ PI_PIDIFF_ENABLE=false pi
 | `myk-pi-tools pr get-skipped-comments` | Get previously skipped review comments for a PR                                                                                                |
 | `myk-pi-tools pr claude-md`            | Fetch `CLAUDE.md` and `AGENTS.md` content for a PR's repository                                                                                |
 | `myk-pi-tools release create`          | Create a GitHub release with changelog                                                                                                         |
-| `myk-pi-tools release plan`            | Scoped-release plan: which packages changed since their last publish (per-package registry-anchored diff windows, conventional-commit bump types). Read-only; requires `release-map.toml` at the repo root — without it, reports lockstep mode and changes nothing (issue #965) |
-| `myk-pi-tools release bump-scoped`     | Bump ONLY the affected packages' version files. Versions come from `--set NAME=VERSION` (the per-package versions the LLM/user decided in the `/release` flow), a global `--version X.Y.Z` override, or — standalone only — the plan's mechanical conventional-commit proposal. Repo tag = highest version. Errored packages or undetected version files abort before any write. Requires `release-map.toml` — without it, exit 1 (use `bump-version` for lockstep) (issue #965) |
+| `myk-pi-tools release plan`            | Scoped-release plan: which packages changed since their last publish (per-package registry-anchored diff windows). Detection only — no proposed versions. Read-only; requires `release-map.toml` at the repo root — without it, reports lockstep mode and changes nothing (issue #965) |
+| `myk-pi-tools release bump-scoped`     | Bump ONLY the affected packages' version files. Versions are ALWAYS explicit: `--set NAME=VERSION` per affected package (the versions the LLM/user decided in the `/release` flow) or a global `--version X.Y.Z` — the plan never proposes versions. Repo tag = highest version and must exceed the latest existing repo tag. Versions are validated (strict x.y.z, no leading zeros, strictly greater than the registry-published version). Errored packages, undetected version files, or partially-updatable manifests abort before or at the first bad write. Requires `release-map.toml` — without it, exit 1 (use `bump-version` for lockstep) (issue #965) |
 | `myk-pi-tools db`                      | Review database query commands                                                                                                                 |
 | `myk-pi-tools reviews`                 | Review handling commands (fetch, poll, address, post, store, store-session)                                                                   |
 | `myk-pi-tools reviews poll`            | Poll a PR for review comments until approved or actionable — `--source qodo` reads findings through the `qodo` CLI (structured, with spans and authoritative open/closed status) when the binary is installed and authenticated, and falls back to the GitHub sticky-comment scrape otherwise. Read-only: replies are always posted as GitHub comments via `reviews address` |
@@ -837,7 +837,6 @@ myk-pi-tools release plan --force-package pi-docsite
 - The last published version comes from the registries (`npm view`, PyPI JSON API) — ground truth that cannot drift from tags.
 - Each package's diff window is anchored at the commit where its version file was bumped to
   that published version, so a package skipped for several releases reaches back to its own last publish.
-- Proposed bumps come from conventional commits touching the mapped files (`feat` -> minor, `fix` -> patch, `feat!`/`BREAKING CHANGE` -> major, default patch).
 - Global excludes configured in the map (e.g. `tests/`) never trigger a release by themselves;
   multi-registry packages must agree across their registries or they are reported as errored,
   never silently skipped.
@@ -846,9 +845,10 @@ myk-pi-tools release plan --force-package pi-docsite
 `myk-pi-tools release bump-scoped` performs the scoped version bump: only affected
 packages' version files are written, the repo tag is the highest version, and any errored
 package or undetected version file aborts before a single write. The plan detects WHAT
-changed; the next versions are decided by the LLM and the user in `/release` and passed as
-`--set NAME=VERSION` (the plan's printed proposals are a mechanical hint only). `/release X.Y.Z`
-overrides every affected package to that version. See the Scoped Mode Check in the release prompt.
+changed and nothing more — no proposed versions, no bump types. The next versions are decided
+by the LLM and the user in `/release` and passed as `--set NAME=VERSION` (without `--set` or
+`--version`, `bump-scoped` refuses to run). `/release X.Y.Z` overrides every affected package
+to that version. See the Scoped Mode Check in the release prompt.
 
 Without a `release-map.toml`, `release plan` reports lockstep mode and nothing else changes —
 the generic release flow is untouched.
