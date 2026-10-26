@@ -109,12 +109,13 @@ class TestBumpScoped:
         assert read_version(scoped_repo, "pyproject.toml") == "1.0.1"
         assert read_version(scoped_repo, "myk_pi_tools/__init__.py") == "1.0.1"
 
-    def test_tag_is_the_highest_version(
+    def test_per_package_tags(
         self,
         scoped_repo: Path,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
+        """Tags are per-package (name@version) — no global repo tag."""
         (scoped_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
         commit(scoped_repo, "feat: gate", "extensions/b.ts")
         (scoped_repo / "myk_pi_tools" / "new2.py").write_text("y = 2\n", encoding="utf-8")
@@ -137,7 +138,11 @@ class TestBumpScoped:
             as_json=True,
         )
         payload = json.loads(capsys.readouterr().out)
-        assert payload["tag"] == "1.1.0"
+        assert "tag" not in payload  # no global repo tag in scoped mode
+        assert {p["name"]: p["tag"] for p in payload["packages"]} == {
+            "poc": "poc@1.1.0",
+            "tools": "tools@1.0.1",
+        }
 
     def test_untouched_package_files_stay_untouched(
         self,
@@ -234,7 +239,7 @@ class TestBumpScoped:
         monkeypatch.setattr(plan_mod, "registry_version", lookup)
         bump_scoped_run(scoped_repo, version_override="3.2.1", as_json=True)
         payload = json.loads(capsys.readouterr().out)
-        assert payload["tag"] == "3.2.1"
+        assert {p["name"]: p["tag"] for p in payload["packages"]} == {"poc": "poc@3.2.1"}
         assert read_version(scoped_repo, "package.json") == "3.2.1"
 
     def test_without_map_refuses_and_exits_one(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -379,8 +384,9 @@ class TestBumpScopedSetVersions:
         monkeypatch.setattr(plan_mod, "registry_version", lambda r, n: self._publish_all_at_1_0_0()[(r, n)])
         bump_scoped_run(scoped_repo, set_versions={"poc": "2.0.0"}, as_json=True)
         payload = json.loads(capsys.readouterr().out)
-        assert payload["packages"] == [{"name": "poc", "version": "2.0.0", "files": ["package.json"]}]
-        assert payload["tag"] == "2.0.0"
+        assert payload["packages"] == [
+            {"name": "poc", "version": "2.0.0", "tag": "poc@2.0.0", "files": ["package.json"]}
+        ]
         assert read_version(scoped_repo, "package.json") == "2.0.0"
 
     def test_set_for_unaffected_package_errors(self, scoped_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -543,11 +549,19 @@ class TestBumpScopedSetVersions:
             "tools": "1.0.1",
         }
 
-    def test_tag_below_latest_repo_tag_errors(self, scoped_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A tag that does not move past the latest repo tag is rejected."""
+    def test_version_below_latest_repo_tag_is_allowed(
+        self,
+        scoped_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A package versions from ITS OWN registry history — the global repo
+        tag sequence must not force jumps (issue #965: a package skipped for
+        N releases takes the next version after its own publish, e.g.
+        1.0.0 → 1.1.0 even though the repo tag is already v2.0.0)."""
         (scoped_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
         commit(scoped_repo, "feat: gate", "extensions/b.ts")
-        git(scoped_repo, "tag", "v2.0.0")  # repo already far ahead
+        git(scoped_repo, "tag", "v2.0.0")  # repo far ahead — irrelevant now
 
         def lookup(registry: str, name: str) -> str:
             return {
@@ -560,7 +574,7 @@ class TestBumpScopedSetVersions:
         import myk_pi_tools.release.plan as plan_mod
 
         monkeypatch.setattr(plan_mod, "registry_version", lookup)
-        with pytest.raises(SystemExit) as excinfo:
-            bump_scoped_run(scoped_repo, set_versions={"poc": "1.1.0"})
-        assert excinfo.value.code == 1
-        assert read_version(scoped_repo, "package.json") == "1.0.0"
+        bump_scoped_run(scoped_repo, set_versions={"poc": "1.1.0"}, as_json=True)
+        payload = json.loads(capsys.readouterr().out)
+        assert {p["name"]: p["version"] for p in payload["packages"]} == {"poc": "1.1.0"}
+        assert read_version(scoped_repo, "package.json") == "1.1.0"

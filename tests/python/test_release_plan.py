@@ -508,6 +508,73 @@ class TestContainerRebuild:
         assert "Dockerfile" in str(container.get("changed_rebuild_paths"))
 
 
+class TestUnmappedChanges:
+    def test_unmapped_file_is_reported(self, fixture_repo: Path) -> None:
+        """A changed file matching no package/exclude/rebuild-path is
+        surfaced, not silently ignored (issue #965: DEVELOPMENT.md edits
+        used to vanish without a trace)."""
+        git(fixture_repo, "tag", "v1.0.0")
+        (fixture_repo / "DEVELOPMENT.md").write_text("# dev docs\n", encoding="utf-8")
+        commit(fixture_repo, "docs: development guide", "DEVELOPMENT.md")
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        assert unmapped["indeterminate"] is False
+        files = unmapped["files"]
+        assert isinstance(files, list)  # narrow dict[str, object] for mypy
+        assert "DEVELOPMENT.md" in files
+
+    def test_mapped_excluded_and_rebuild_files_are_not_unmapped(self, fixture_repo: Path) -> None:
+        """Files under package paths, global excludes, or container
+        rebuild-paths count as covered — only true orphans warn."""
+        git(fixture_repo, "tag", "v1.0.0")
+        (fixture_repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+        (fixture_repo / "tests").mkdir(exist_ok=True)
+        (fixture_repo / "tests" / "test_x.py").write_text("# t\n", encoding="utf-8")
+        (fixture_repo / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+        commit(
+            fixture_repo,
+            "chore: mixed change",
+            "extensions/b.ts",
+            "tests/test_x.py",
+            "Dockerfile",
+        )
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        assert unmapped["files"] == []
+
+    def test_no_tag_is_indeterminate(self, fixture_repo: Path) -> None:
+        """Without a repo tag the window cannot be computed — report
+        indeterminate, never a confident empty list."""
+        planner = make_planner(
+            fixture_repo,
+            {
+                ("npm", "poc"): "1.0.0",
+                ("pypi", "tools"): "1.0.0",
+                ("npm", "@org/sidecar"): "1.0.0",
+                ("pypi", "sidecar-client"): "1.0.0",
+            },
+        )
+        unmapped = planner.unmapped_changes()
+        assert unmapped["indeterminate"] is True
+        assert unmapped["files"] == []
+
+
 class TestGitFailureContainment:
     def test_diff_failure_becomes_package_error(self, fixture_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         import myk_pi_tools.release.plan as plan_mod

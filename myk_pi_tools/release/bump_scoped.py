@@ -1,9 +1,11 @@
 """Scoped version bumping driven by the release plan.
 
 Consumes ``release plan`` (issue #965): bumps ONLY the affected packages'
-version-files, each to its own proposed version. The repo tag for the
-release is the HIGHEST proposed version. No git operations — same
-contract as ``bump-version``.
+version-files, each to its own proposed version. Tags are PER PACKAGE
+(``<name>@<version>``) — each package versions from its own registry
+history, so versions are never forced past the repo's global tag
+sequence (no 4.18.0 → 4.23.0 jumps for a skipped package). No git
+operations — same contract as ``bump-version``.
 
 Without a release-map.toml this command refuses to run: the lockstep
 flow (``bump-version`` with all detected files) is the default and stays
@@ -40,11 +42,6 @@ def _validate_semver(version: str, where: str) -> tuple[int, int, int]:
     if any(len(p) > 1 and p.startswith("0") for p in parts):
         raise ValueError(f"{where}: {version!r} has a leading-zero component")
     return (int(parts[0]), int(parts[1]), int(parts[2]))
-
-
-def _semver_key(version: str) -> tuple[int, int, int]:
-    """Sort key for plain x.y.z versions (call _validate_semver first)."""
-    return _validate_semver(version, "version")
 
 
 def _parse_set_values(set_values: tuple[str, ...]) -> dict[str, str]:
@@ -145,7 +142,7 @@ def run(
 
     if not affected:
         if as_json:
-            print(json.dumps({"status": "nothing-to-bump", "packages": [], "tag": None}))
+            print(json.dumps({"status": "nothing-to-bump", "packages": []}))
         else:
             print("Nothing to bump — no package changed since its last publish.")
         return
@@ -170,8 +167,11 @@ def run(
 
     # Validate every explicit version BEFORE any write: strict x.y.z, no
     # leading zeros (Qodo PR #967), and strictly greater than the
-    # package's published version — a downgrade is always a mistake.
-    keys: dict[str, tuple[int, int, int]] = {}
+    # package's PUBLISHED version — each package versions from its own
+    # registry history only. There is deliberately NO global repo-tag
+    # guard: per-package tags (``name@version``) cannot collide, and a
+    # package skipped for N releases must not be forced past the global
+    # tag sequence (issue #965 — no 4.18.0 → 4.23.0 jumps).
     for p in affected:
         try:
             key = _validate_semver(versions[p.name], f"version for {p.name}")
@@ -191,34 +191,16 @@ def run(
                 file=sys.stderr,
             )
             raise SystemExit(1)
-        keys[p.name] = key
-
-    tag = max(versions.values(), key=_semver_key)
-
-    # The repo tag must move forward: with diverging package versions a
-    # lower-version-only release could otherwise reuse or fall below an
-    # existing tag (Qodo PR #967).
-    from myk_pi_tools.release.plan import _git
-
-    try:
-        last_tag = _git(repo_root, ["describe", "--abbrev=0", "--tags"]).lstrip("v")
-        if _validate_semver(tag, "repo tag") <= _validate_semver(last_tag, "latest repo tag"):
-            print(
-                f"error: proposed tag v{tag} is not greater than the latest repo tag "
-                f"v{last_tag} — raise the version (or --force past this guard is not "
-                "supported; fix the versions)",
-                file=sys.stderr,
-            )
-            raise SystemExit(1)
-    except RuntimeError:
-        pass  # no tags yet (first release) or git failed — the version guard above still ran
 
     # Pre-validate every affected package's version files against the
     # detector BEFORE the first write, so an unmapped/renamed file aborts
     # before any file changes (writes themselves stay atomic per file).
+    # The detected list is passed through to bump_version_files so the
+    # scan runs ONCE for the whole bump, not once per package.
     from myk_pi_tools.release.detect_versions import detect_version_files
 
-    detected_paths = {vf.path for vf in detect_version_files(repo_root)}
+    detected_files = detect_version_files(repo_root)
+    detected_paths = {vf.path for vf in detected_files}
     entries = {pkg.name: pkg for pkg in release_map.packages}
     per_package_files: list[tuple[str, str, list[str]]] = []
     for p in affected:
@@ -236,7 +218,13 @@ def run(
     updated_all: list[dict[str, str]] = []
     skipped_all: list[dict[str, str]] = []
     for name, new_version, files in per_package_files:
-        result = bump_version_files(new_version=new_version, files=files, root=repo_root)
+        result = bump_version_files(
+            new_version=new_version,
+            files=files,
+            root=repo_root,
+            detected=detected_files,
+            quiet=True,
+        )
         if result.status == "failed":
             print(f"error: {name}: {result.error}", file=sys.stderr)
             print(
@@ -260,13 +248,13 @@ def run(
         packages_out.append({
             "name": name,
             "version": new_version,
+            "tag": f"{name}@{new_version}",
             "files": [u["path"] for u in result.updated],
         })
         log.info("scoped bump: %s -> %s (%d files)", name, new_version, len(result.updated))
 
     payload = {
         "status": "success",
-        "tag": tag,
         "packages": packages_out,
         "updated": updated_all,
         "skipped": skipped_all,
@@ -274,9 +262,9 @@ def run(
     if as_json:
         print(json.dumps(payload))
     else:
-        print(f"Scoped bump — repo tag: {tag}")
-        for name, new_version, files in per_package_files:
-            print(f"  {name}  ->  {new_version}  ({len(files)} files)")
+        print("Scoped bump — per-package tags:")
+        for pkg in packages_out:
+            print(f"  {pkg['name']}  ->  {pkg['version']}  (tag {pkg['tag']})")
         for u in updated_all:
             print(f"  updated: {u['path']} ({u['old_version']} -> {u['new_version']})")
         for sk in skipped_all:

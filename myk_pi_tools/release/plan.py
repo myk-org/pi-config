@@ -255,6 +255,44 @@ class ReleasePlanner:
             "indeterminate": git_error is not None,
         }
 
+    def unmapped_changes(self) -> dict[str, object]:
+        """Files changed since the last repo tag that belong to NO package.
+
+        A change matching no package's paths, no global exclude, and no
+        container rebuild-path would otherwise ship nowhere silently — the
+        "skipped changed" failure mode the map exists to prevent (issue
+        #965: e.g. DEVELOPMENT.md edits used to vanish without a trace).
+        Reported, never fatal: the operator decides whether to map the
+        path or accept a docs-only change. Uses the repo-level window
+        (last tag → HEAD) since unmapped files have no per-package
+        anchor by definition.
+        """
+        try:
+            last_tag = _git(self.repo_root, ["describe", "--abbrev=0", "--tags"])
+            changed = _git(self.repo_root, ["diff", "--name-only", f"{last_tag}..HEAD"]).splitlines()
+        except RuntimeError as exc:
+            # No tag yet or git failure: detection could not run. Report
+            # indeterminate rather than a confident empty list (same
+            # conservative posture as container_rebuild).
+            return {
+                "files": [],
+                "indeterminate": True,
+                "reason": f"no repo tag or git failure: {exc}",
+            }
+        unmapped = [
+            c
+            for c in changed
+            if c
+            and not _path_under_any(c, self.release_map.global_excludes)
+            and not _path_under_any(c, self.release_map.container_rebuild_paths)
+            and not any(pkg.affects(c) for pkg in self.release_map.packages)
+        ]
+        return {
+            "files": unmapped,
+            "indeterminate": False,
+            "reason": f"changed since {last_tag} and matched no package, exclude, or rebuild-path",
+        }
+
     def _plan_package(self, pkg: PackageEntry) -> PackagePlan:
         result = PackagePlan(name=pkg.name, registry=pkg.registry)
         forced = pkg.name in self.force_packages
@@ -379,6 +417,7 @@ def run(
     planner = ReleasePlanner(repo_root, release_map, force_packages=force_packages)
     plans = planner.plan()
     container = planner.container_rebuild(plans)
+    unmapped = planner.unmapped_changes()
 
     if as_json:
         click_echo_json({
@@ -388,6 +427,7 @@ def run(
             "skipped": [p.to_dict() for p in plans if not p.affected and not p.error],
             "errored": [p.to_dict() for p in plans if p.error],
             "container": container,
+            "unmapped_changes": unmapped,
         })
         return
 
@@ -417,6 +457,16 @@ def run(
     if skipped:
         print()
         print(f"Unchanged (skipped): {', '.join(p.name for p in skipped)}")
+    unmapped_files = unmapped.get("files") or []
+    assert isinstance(unmapped_files, list)  # narrow dict[str, object] for mypy
+    if unmapped.get("indeterminate"):
+        print()
+        print(f"Unmapped changes: INDETERMINATE — {unmapped.get('reason')}")
+    elif unmapped_files:
+        print()
+        print("Unmapped changes (belong to no package — map them or consciously skip):")
+        for f in unmapped_files:
+            print(f"  {f}")
     print()
     if container.get("rebuild"):
         print(f"Container image: REBUILD — {container.get('reason')}")

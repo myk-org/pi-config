@@ -50,8 +50,14 @@ name = "myk-pi-tools"
 registry = "pypi"
 version-files = ["pyproject.toml", "myk_pi_tools/__init__.py"]
 # Root pyproject.toml is the build config (deps, entry points); README.md
-# ships in the PyPI sdist (readme field).
-paths = ["myk_pi_tools/", "pyproject.toml", "README.md"]
+# ships in the PyPI sdist (readme field). uv.lock pins this package's
+# resolved dependency tree — a lock refresh changes the build, so it
+# triggers. Deliberately NOT mapped to pi-sidecar/pi-docsite: the lock's
+# myk-pi-tools version entry changes on every release, which would
+# re-couple those packages to every myk-pi-tools bump (lockstep by the
+# back door); standalone lock refreshes surface via the plan's
+# unmapped-changes warning instead.
+paths = ["myk_pi_tools/", "pyproject.toml", "README.md", "uv.lock"]
 
 [[package]]
 name = "pi-sidecar"

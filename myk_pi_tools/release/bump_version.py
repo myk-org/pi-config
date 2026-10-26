@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from myk_pi_tools.release.detect_versions import detect_version_files
+from myk_pi_tools.release.detect_versions import VersionFile, detect_version_files
 
 
 def _atomic_write(filepath: Path, content: str) -> None:
@@ -199,6 +199,9 @@ def bump_version_files(
     new_version: str,
     files: list[str] | None = None,
     root: Path | None = None,
+    *,
+    detected: list[VersionFile] | None = None,
+    quiet: bool = False,
 ) -> BumpResult:
     """Update version strings in detected version files.
 
@@ -207,11 +210,18 @@ def bump_version_files(
         files: Optional list of specific file paths to update.
                If None, updates all detected version files.
         root: Repository root directory. Defaults to current working directory.
+        detected: Pre-detected version files. When given, detection is not
+               re-run — callers that already detected (e.g. bump-scoped's
+               pre-validation) pass their result to avoid repeated scans
+               and their per-scan stderr noise.
+        quiet: Suppress the per-file progress prints on stderr (the CLI
+               keeps them; programmatic callers print their own summary).
 
     Returns:
         BumpResult with status and details.
     """
-    print(f"Bumping version to {new_version}...", file=sys.stderr)
+    if not quiet:
+        print(f"Bumping version to {new_version}...", file=sys.stderr)
 
     if root is None:
         root = Path.cwd()
@@ -231,7 +241,8 @@ def bump_version_files(
     if not root.is_dir():
         return BumpResult(status="failed", error=f"Root path is not a directory: {root}")
 
-    detected = detect_version_files(root)
+    if detected is None:
+        detected = detect_version_files(root)
     if not detected:
         return BumpResult(status="failed", error="No version files found in repository.")
 

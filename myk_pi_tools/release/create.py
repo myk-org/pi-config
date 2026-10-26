@@ -74,8 +74,8 @@ def _validate_repo_format(repo: str) -> bool:
 
 
 def _is_semver_tag(tag: str) -> bool:
-    """Check if tag follows semantic versioning format (vX.Y.Z)."""
-    pattern = r"^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$"
+    """Check vX.Y.Z tags and per-package ``name@X.Y.Z`` tags (issue #965)."""
+    pattern = r"^(v[0-9]+\.[0-9]+\.[0-9]+|[A-Za-z0-9._-]+@[0-9]+\.[0-9]+\.[0-9]+)(-[a-zA-Z0-9.]+)?$"
     return bool(re.match(pattern, tag))
 
 

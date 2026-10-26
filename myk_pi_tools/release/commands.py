@@ -149,9 +149,10 @@ def release_bump_scoped(
 ) -> None:
     """Bump ONLY the affected packages' version files (scoped releases).
 
-    Consumes the release plan (issue #965 phase 2): each affected package
-    is bumped to its own proposed version; the repo tag is the highest
-    proposed version. Requires a release-map.toml — repos without one
+    Consumes the release plan (issue #965): each affected package
+    is bumped to its own proposed version; tags are per-package
+    (name@version) and each package versions from its own registry
+    history. Requires a release-map.toml — repos without one
     keep using bump-version (lockstep).
     """
     log.debug(
