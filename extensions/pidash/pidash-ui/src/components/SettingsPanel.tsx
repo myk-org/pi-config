@@ -32,6 +32,10 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
   // toast fired at send time would claim success for writes that fail
   // server-side (Qodo R1).
   const pendingOpRef = useRef<{ key: string; kind: "save" | "clear"; scope: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  // This panel's resolved project settings file path, learned from the first
+  // settings-data it accepts — the durable identity of "my settings file"
+  // across worktrees/subdirs of one repo (Qodo R5).
+  const settingsPathRef = useRef<string | null>(null);
 
   const settlePending = (ok: boolean | "cancelled", errorText?: string) => {
     const pending = pendingOpRef.current;
@@ -84,15 +88,24 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
     sendCmd("settings-get", { scope });
     return onMessage((ev: any) => {
       if (ev.type === "settings-data" && ev.scope === scope) {
-        // Project-scoped broadcasts carry the WRITING project's cwd — a
-        // dashboard watching a different project must not adopt its values
-        // (Qodo R4). Global scope is machine-wide and applies to everyone.
+        // Project-scoped payloads must describe THIS panel's settings file.
+        // Preferred identity: the resolved settings file path — two sessions
+        // in different worktrees/subdirs of one repo share the same file.
+        // Fallback (older daemons): raw cwd compare. Global scope is
+        // machine-wide and applies to everyone (Qodo R4/R5).
         const sourceCwd = (ev as any).sourceCwd as string | undefined;
+        const evPath = (ev as any).settingsPath as string | undefined;
+        const ownPath = settingsPathRef.current;
         const mine = (cwd ?? "").replace(/\/+$/, "");
-        if (scope === "project" && sourceCwd && cwd && sourceCwd.replace(/\/+$/, "") !== mine) {
+        if (scope === "project" && evPath && ownPath && evPath !== ownPath) {
+          log.debug("ignoring settings payload for a different settings file", { evPath, ownPath });
+          return;
+        }
+        if (scope === "project" && !evPath && sourceCwd && cwd && sourceCwd.replace(/\/+$/, "") !== mine) {
           log.debug("ignoring project-scoped settings broadcast from another project", { sourceCwd });
           return;
         }
+        if (evPath) settingsPathRef.current = evPath;
         log.debug("settings payload received", { scope, keys: (ev as any).keys?.length });
         setData(ev as SettingsData);
         setDraft({});

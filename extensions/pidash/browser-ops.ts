@@ -45,6 +45,10 @@ export interface SettingsPayload {
   scope: SettingsScope;
   keys: SettingsKeyPayload[];
   error?: string;
+  /** Resolved settings file path (project scope) — lets browsers decide
+   * whether a broadcast describes THEIR settings file even when their session
+   * cwd is a different worktree/subdir of the same repo (Qodo R5). */
+  settingsPath?: string;
 }
 
 function isSettingsScope(v: unknown): v is SettingsScope {
@@ -76,7 +80,9 @@ export function buildSettingsPayload(cwd: string, scope: unknown): SettingsPaylo
     }));
     keys.sort((a, b) => (a.group === b.group ? a.key.localeCompare(b.key) : a.group.localeCompare(b.group)));
     log.debug("settings_payload_built", { scope, keys: keys.length });
-    return { scope, keys };
+    // Resolved file path (project scope only) — identity of the settings
+    // file being described, independent of the session's cwd (Qodo R5).
+    return { scope, keys, settingsPath: scope === "project" ? getSettingsPath(cwd) : undefined };
   } catch (e: any) {
     log.warn("settings_payload_failed", { scope, error: e?.message });
     return { scope, keys: [], error: e?.message };
