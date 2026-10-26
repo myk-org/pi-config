@@ -135,10 +135,14 @@ root only).
   PACKAGE, tag `<name>@<version>` from the bump JSON. Each release's
   notes contain ONLY that package's changes: its own version line
   (`<name> — <old> → <new> (<registry>)`), its own changelog entries
-  from its S3 per-package window, and a compare link
-  `compare/<previous tag of that package>...<name>@<version>` (previous
-  tag = `<name>@<its published version>` if that tag exists, else the
-  lockstep-era `v<published version>`). NEVER list other packages in a
+  from its S3 per-package window, and a compare link whose base you
+  VERIFY before writing it: `git tag -l '<name>@<published>'` first,
+  then `git tag -l 'v<published>'` — if neither tag exists (package
+  never released under either scheme), use the package's `anchor`
+  commit SHA from the plan JSON as the base
+  (`compare/<anchor-sha>...<name>@<version>`; GitHub compare accepts
+  any ref). NEVER write a compare link with an unverified ref, and
+  NEVER list other packages in a
   release's notes — a release that ships only myk-pi-tools must not
   claim pi-orchestrator-config shipped; cut-level context lives in the
   bump PR, not in per-package releases. PASS
