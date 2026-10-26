@@ -82,6 +82,11 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
 
   useEffect(() => {
     cancelPendingIfScopeChanged();
+    // New session cwd = new settings file: drop the learned path and all
+    // state so the fresh settings-get reply is accepted and re-learned —
+    // otherwise the stale path rejected the new project's payload and the
+    // panel stayed blank until remounted (Qodo R6).
+    settingsPathRef.current = null;
     setData(null);
     setDraft({});
     setErrors({});
@@ -121,7 +126,7 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
         else notify(`Settings error (${ev.key}): ${ev.error}`, "error");
       }
     });
-  }, [sendCmd, onMessage, scope, notify]);
+  }, [sendCmd, onMessage, scope, notify, cwd]);
 
   const groups = useMemo(() => {
     if (!data) return [] as Array<[string, SettingsKey[]]>;
