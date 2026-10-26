@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ExternalLink, GitBranch, Brain, Bot, Check, ChevronDown, Folder } from "lucide-react";
+import { ExternalLink, GitBranch, Brain, Bot, Check, ChevronDown, Folder, ListTodo, Radio, Database, Plug, Settings2, Archive } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@ui/popover";
 import { cn } from "@/lib/utils";
 import type { SessionInfo, TokenUsage } from "@/types";
+import type { PanelTab } from "@/components/SidePanel";
 import { formatCompactTotal, formatExactTotal } from "@/lib/format-total";
 import { createLogger } from "@/lib/create-logger";
 import { supportsReasoning, THINKING_LEVELS } from "@/lib/model-capabilities";
@@ -28,6 +29,9 @@ interface Props {
   tokens: TokenUsage | null;
   send: (data: object) => void;
   onMessage: (handler: (data: any) => void) => () => void;
+  activePanel: PanelTab | null;
+  onOpenPanel: (tab: PanelTab) => void;
+  onCompact: () => void;
 }
 
 interface ProjectSession {
@@ -39,7 +43,7 @@ interface ProjectSession {
   modified?: string;
 }
 
-export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
+export function InfoBar({ session, model, tokens, send, onMessage, activePanel, onOpenPanel, onCompact }: Props) {
   const inactive = !session.active;
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [projectSessions, setProjectSessions] = useState<ProjectSession[]>([]);
@@ -439,6 +443,41 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
           )}
         </Popover>
       </div>
+
+      {/* #968 D: compact */}
+      <>
+        <span className="text-border">|</span>
+        <button
+          className="flex items-center gap-1 hover:text-primary transition-colors"
+          onClick={onCompact}
+          title="Compact session context"
+        >
+          <Archive className="h-3.5 w-3.5" /> compact
+        </button>
+      </>
+
+      {/* #968 parity panels */}
+      <>
+        <span className="text-border">|</span>
+        <div className="flex items-center gap-1">
+          {([
+            ["tasks", ListTodo, "Tasks panel"],
+            ["coms", Radio, "Coms peers"],
+            ["memory", Database, "Memory status"],
+            ["mcp", Plug, "MCP servers"],
+            ["settings", Settings2, "Settings"],
+          ] as Array<[PanelTab, typeof ListTodo, string]>).map(([tab, Icon, title]) => (
+            <button
+              key={tab}
+              className={cn("p-1 rounded transition-colors", activePanel === tab ? "text-primary bg-accent/50" : "text-muted-foreground hover:text-foreground hover:bg-accent/30")}
+              onClick={() => onOpenPanel(tab)}
+              title={title}
+            >
+              <Icon className="h-3.5 w-3.5" />
+            </button>
+          ))}
+        </div>
+      </>
 
       {/* Sessions */}
       <>

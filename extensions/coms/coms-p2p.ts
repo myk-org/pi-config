@@ -19,7 +19,8 @@ import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme } from "@ea
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
-import { ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, type BroadcastTargetResult } from "./coms-shared.js";
+import {
+	buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, type BroadcastTargetResult } from "./coms-shared.js";
 import { appendHistoryRecord, queryHistoryRecords, truncatePreview, type HistoryRecord } from "./coms-history.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import * as net from "node:net";
@@ -785,6 +786,7 @@ export default function (pi: ExtensionAPI) {
 		const key = `pending=${pc}|busy=${busyKey}|prog=${progressKey}`;
 		if (key === lastPoolSnapshot) return;
 		lastPoolSnapshot = key;
+		emitComsPeers();
 		try { installPoolWidget(currentCtx); } catch {}
 	}
 
@@ -3611,6 +3613,43 @@ Do not respond to this message.`;
 	pi.registerCommand("coms", {
 		description: "Force-refresh the coms pool widget (or filter with --all / --project <name>)",
 		handler: comsRefreshHandler,
+	});
+
+	// ━━ #968 part C: pidash browser bridge ─━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// Peer list + messaging from the browser, routed through the SAME
+	// resolveTarget/deliverPrompt path as coms_send — identical delivery
+	// semantics, browser is just another transport.
+	function emitComsPeers(): void {
+		try {
+			pi.events.emit("pidash:coms-peers", buildComsPeersPayload(
+				peerCards.values(),
+				identity ? { name: identity.name, purpose: identity.purpose, project: identity.project } : null,
+			));
+		} catch { /* pidash not loaded */ }
+	}
+	pi.events.on("pidash:coms-peers-request", () => emitComsPeers());
+	pi.events.on("pidash:coms-send", async (data: unknown) => {
+		const d = data as { requestId?: string; target?: string; prompt?: string; steer?: boolean; priority?: boolean };
+		if (!d?.target || !d?.prompt) {
+			pi.events.emit("pidash:coms-send-result", { requestId: d?.requestId, ok: false, error: "target and prompt required" });
+			return;
+		}
+		try {
+			if (!identity) throw new Error("coms not initialised");
+			const target = await resolveTarget(d.target);
+			if (!target) throw new Error(`peer not found: ${d.target}`);
+			const { msg_id } = await deliverPrompt(target, {
+				prompt: d.prompt,
+				...(d.steer ? { steer: true } : {}),
+				...(d.priority ? { priority: true } : {}),
+			});
+			log.info("pidash_coms_send", { target: target.name, msg_id, steer: !!d.steer });
+			pi.events.emit("pidash:coms-send-result", { requestId: d.requestId, ok: true, msg_id, target: target.name });
+		} catch (e) {
+			const error = e instanceof Error ? e.message : String(e);
+			log.warn("pidash_coms_send_failed", { target: d.target, error });
+			pi.events.emit("pidash:coms-send-result", { requestId: d.requestId, ok: false, error });
+		}
 	});
 
 	// ━━ /coms-queue command — view and kill queued messages ━━━━━━━━━━━━━━━

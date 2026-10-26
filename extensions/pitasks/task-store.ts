@@ -152,6 +152,12 @@ export class TaskStore {
 		this._onChange = cb;
 	}
 
+	/** #968 A: fire the change callback for an in-process mutation (external
+	 *  file changes fire it via the watcher; in-process ops must fire it too). */
+	notifyChange(): void {
+		if (this._onChange) this._onChange();
+	}
+
 	close(): void {
 		if (this._watcher) { this._watcher.close(); this._watcher = null; }
 	}
@@ -197,7 +203,7 @@ export class TaskStore {
 	}
 
 	create(subject: string, description: string, createdBy: Task["createdBy"], activeForm?: string, metadata?: Record<string, any>): Task {
-		return this.withLock(() => {
+		const __task = this.withLock(() => {
 			const now = Date.now();
 			const task: Task = {
 				id: String(this.nextId++),
@@ -222,10 +228,12 @@ export class TaskStore {
 			this.tasks.set(task.id, task);
 			return task;
 		});
+		this.notifyChange();
+		return __task;
 	}
 
 	createTasks(tasks: Array<{ subject: string; description: string; createdBy: Task["createdBy"]; blockedBy?: string[]; activeForm?: string; metadata?: Record<string, any> }>): Task[] {
-		return this.withLock(() => {
+		const __tasks = this.withLock(() => {
 			const now = Date.now();
 			const created: Task[] = [];
 			for (const t of tasks) {
@@ -254,6 +262,8 @@ export class TaskStore {
 			}
 			return created;
 		});
+		this.notifyChange();
+		return __tasks;
 	}
 
 	get(id: string): Task | undefined {
@@ -277,7 +287,7 @@ export class TaskStore {
 		addBlocks?: string[];
 		addBlockedBy?: string[];
 	}): { task: Task | undefined; changedFields: string[]; warnings: string[] } {
-		return this.withLock(() => {
+		const __result = this.withLock(() => {
 			const task = this.tasks.get(id);
 			log.debug("task_updated", { taskId: id, status: fields.status, hasTelemetry: fields.telemetry !== undefined });
 			if (!task) return { task: undefined, changedFields: [], warnings: [] };
@@ -353,10 +363,12 @@ export class TaskStore {
 			task.updatedAt = Date.now();
 			return { task, changedFields, warnings };
 		});
+		this.notifyChange();
+		return __result;
 	}
 
 	updateTasks(updates: Array<{ id: string; fields: Record<string, any> }>): Array<{ id: string; success: boolean; changedFields?: string[] }> {
-		return this.withLock(() => {
+		const __results = this.withLock(() => {
 			log.debug("tasks_updated", { count: updates.length, statusUpdates: updates.filter(update => update.fields.status !== undefined).length });
 			const results: Array<{ id: string; success: boolean; changedFields?: string[] }> = [];
 			for (const { id, fields } of updates) {
@@ -430,10 +442,12 @@ export class TaskStore {
 			}
 			return results;
 		});
+		this.notifyChange();
+		return __results;
 	}
 
 	delete(id: string): boolean {
-		return this.withLock(() => {
+		const __deleted = this.withLock(() => {
 			if (!this.tasks.has(id)) return false;
 			this.tasks.delete(id);
 			for (const t of this.tasks.values()) {
@@ -442,6 +456,8 @@ export class TaskStore {
 			}
 			return true;
 		});
+		this.notifyChange();
+		return __deleted;
 	}
 
 	deleteTasks(ids: string[]): number {
@@ -464,7 +480,9 @@ export class TaskStore {
 	}
 
 	clearAll(): number {
-		return this.withLock(() => { const count = this.tasks.size; this.tasks.clear(); return count; });
+		const __count = this.withLock(() => { const count = this.tasks.size; this.tasks.clear(); return count; });
+		this.notifyChange();
+		return __count;
 	}
 
 	snapshot(): TaskStoreData {
@@ -488,7 +506,7 @@ export class TaskStore {
 	}
 
 	clearCompleted(): number {
-		return this.withLock(() => {
+		const __cleared = this.withLock(() => {
 			let count = 0;
 			for (const [id, task] of this.tasks) {
 				if (task.status === "completed") { this.tasks.delete(id); count++; }
@@ -502,5 +520,7 @@ export class TaskStore {
 			}
 			return count;
 		});
+		this.notifyChange();
+		return __cleared;
 	}
 }

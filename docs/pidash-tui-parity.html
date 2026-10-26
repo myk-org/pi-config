@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pidash TUI Parity - pi-config</title>
+    <meta name="description" content="Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.">
+    <link rel="stylesheet" href="assets/style.css?v=66bf87bdd9">
+    <script>try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
+    <link rel="alternate" type="text/plain" title="LLM Documentation Index" href="llms.txt">
+    <link rel="alternate" type="text/plain" title="LLM Full Documentation" href="llms-full.txt">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="index.html" class="sidebar-logo">pi-config</a>
+            <p class="sidebar-tagline">Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar.</p>
+        </div>
+
+        <div class="sidebar-search">
+            <input type="text" id="search-input" placeholder="Search... (⌘K)" autocomplete="off" readonly>
+            <div id="search-results" class="search-results"></div>
+        </div>
+
+        <nav class="sidebar-nav">
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Getting Started</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="quickstart.html"
+                           class="nav-link">
+                            Installation &amp; Quickstart
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="configuration.html"
+                           class="nav-link">
+                            Configuration &amp; Settings
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Core Workflows</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="built-in-workflows.html"
+                           class="nav-link">
+                            Built-in Workflow Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="commands-and-tools.html"
+                           class="nav-link">
+                            Commands and Tools Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="automating-code-reviews.html"
+                           class="nav-link">
+                            Automating Code Reviews
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="custom-slash-commands.html"
+                           class="nav-link">
+                            Creating Slash Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="managing-custom-agents.html"
+                           class="nav-link">
+                            Managing Custom Agents
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="agents-reference.html"
+                           class="nav-link">
+                            Agent Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="rules-and-layers.html"
+                           class="nav-link">
+                            Rules and Layers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="using-the-web-dashboard.html"
+                           class="nav-link">
+                            Using the Web Dashboard
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Background &amp; Memory</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-agents-and-cron.html"
+                           class="nav-link">
+                            Running Background Agents and Scheduled Tasks
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="background-dreaming.html"
+                           class="nav-link">
+                            Background Memory Consolidation (Dreaming)
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="memory-architecture.html"
+                           class="nav-link">
+                            Memory Architecture
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="curating-project-memory.html"
+                           class="nav-link">
+                            Curating Project Memory
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Agents &amp; Integrations</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="inter-agent-communication.html"
+                           class="nav-link">
+                            Inter-Agent Communication Network
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="external-ai-agents.html"
+                           class="nav-link">
+                            External AI Agents &amp; CLI
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="image-generation.html"
+                           class="nav-link">
+                            Image Generation
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="neovim-integration.html"
+                           class="nav-link">
+                            Neovim Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="discord-bot.html"
+                           class="nav-link">
+                            Discord Bot Notifications
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Providers</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="acpx-provider.html"
+                           class="nav-link">
+                            ACPX Provider Integration
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="vertex-claude-provider.html"
+                           class="nav-link">
+                            Google Vertex Claude Provider
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Reference</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="pi-sidecar.html"
+                           class="nav-link">
+                            Pi Sidecar HTTP API
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="pi-docsite.html"
+                           class="nav-link">
+                            pi-docsite
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="mcp-servers.html"
+                           class="nav-link">
+                            MCP Servers
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-reference.html"
+                           class="nav-link">
+                            myk_pi_tools CLI Reference
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="safety-enforcements.html"
+                           class="nav-link">
+                            Implementing Command Guards
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="daemon-and-websockets.html"
+                           class="nav-link">
+                            Daemon &amp; Websocket Networking
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Architecture</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="async-internals.html"
+                           class="nav-link">
+                            Async &amp; Runtime Internals
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="cli-provider.html"
+                           class="nav-link">
+                            CLI Provider Internals
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">Development</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="extension-commands.html"
+                           class="nav-link">
+                            Extension Commands
+                        </a>
+                    </li>
+
+                    <li>
+                        <a href="project-settings.html"
+                           class="nav-link">
+                            Project Settings Internals
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+            <div class="nav-group">
+                <h3 class="nav-group-title">More</h3>
+                <ul class="nav-group-pages">
+
+                    <li>
+                        <a href="pidash-tui-parity.html"
+                           class="nav-link active" aria-current="page">
+                            Pidash TUI Parity
+                        </a>
+                    </li>
+
+                </ul>
+            </div>
+
+        </nav>
+    </aside>
+
+    <div class="main-wrapper">
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <a href="index.html" class="top-bar-title">pi-config</a>
+            </div>
+            <div class="top-bar-spacer"></div>
+            <div class="top-bar-right">
+                <button class="top-bar-search-btn" id="search-trigger" aria-label="Search">
+                    <kbd>&#8984;K</kbd> Search
+                </button>
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener" class="docsite-badge" title="documentation">
+                    ⚡ pi<span class="brand-accent">-docsite</span>
+                </a>
+
+                <a href="https://github.com/myk-org/pi-config" target="_blank" rel="noopener noreferrer" class="top-bar-github" id="github-link" data-repo-url="https://github.com/myk-org/pi-config">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span class="github-stars" id="github-stars" title="GitHub stars"></span>
+                </a>
+
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main class="content">
+
+            <article class="article">
+                <div class="article-body">
+                    <!-- SECURITY: |safe is intentional. Content is AI-generated markdown
+                         converted to HTML server-side by the markdown library, not
+                         user-supplied input. XSS risk is minimal and accepted since
+                         the AI generates the content, not end users. -->
+                    <h1 id="pidash-tui-parity">Pidash TUI Parity</h1>
+<p>Pidash is not a viewer — it is a peer surface. Every prompt the agent asks and
+every operation the TUI offers is answerable from either surface, and state
+converges: anything done in the TUI reflects in the browser and vice versa.
+This page documents the parity contract and the seamless-switch walkthrough
+(issue #968).</p>
+<h2 id="the-parity-contract">The parity contract</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>TUI</th>
+<th>Browser</th>
+<th>Convergence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ask_user questions</td>
+<td>overlay dialog</td>
+<td>inline action card</td>
+<td>first answer wins; other surface sees the prompt closed</td>
+</tr>
+<tr>
+<td>Dangerous-command approvals</td>
+<td><code>ui.select</code> prompt</td>
+<td>same prompt rendered inline</td>
+<td>first answer wins; enforcement semantics identical either way</td>
+</tr>
+<tr>
+<td>Commit-trailer selection</td>
+<td><code>ui.select</code> prompt</td>
+<td>same prompt rendered inline</td>
+<td>first answer wins</td>
+</tr>
+<tr>
+<td>Project-agent confirmation</td>
+<td><code>ui.confirm</code> prompt</td>
+<td>same prompt rendered inline</td>
+<td>first answer wins</td>
+</tr>
+<tr>
+<td><code>/tasks</code> menus</td>
+<td>bridged select menus</td>
+<td>Tasks panel (dedicated)</td>
+<td>both operate the same live TaskStore</td>
+</tr>
+<tr>
+<td>Coms peers</td>
+<td>pool widget</td>
+<td>Coms panel</td>
+<td>same registry, same <code>deliverPrompt</code> path</td>
+</tr>
+<tr>
+<td>New session / compact</td>
+<td><code>/new</code>, <code>/compact</code></td>
+<td>sidebar <code>+</code>, InfoBar <code>compact</code></td>
+<td>session lifecycle events broadcast to all browsers</td>
+</tr>
+<tr>
+<td>Memory status</td>
+<td>situation report (implicit)</td>
+<td>Memory panel</td>
+<td>read from the same scoring/topic modules</td>
+</tr>
+<tr>
+<td>MCP servers</td>
+<td><code>/mcp</code></td>
+<td>MCP panel</td>
+<td>both drive <code>pi mcp</code></td>
+</tr>
+<tr>
+<td>Settings</td>
+<td><code>/pi-config-settings</code></td>
+<td>Settings page</td>
+<td>both write through the live settings module</td>
+</tr>
+</tbody>
+</table></div>
+<p>Two invariants hold everywhere:</p>
+<ol>
+<li>
+<p><strong>Operations go through the live session's extension state.</strong> The browser
+   sends a <code>pidash-command</code>; the owning extension applies it via its own module
+   (TaskStore, coms <code>deliverPrompt</code>, project-settings writer); an event
+   broadcasts the new state to every connected browser. The daemon never writes
+   a store directly.</p>
+</li>
+<li>
+<p><strong>First answer wins.</strong> Prompt bridging (<code>extensions/shared/ui-bridge.ts</code>)
+   renders the prompt in the TUI <em>and</em> the browser simultaneously. Whichever
+   surface answers first resolves the prompt; the other sees it closed
+   (<code>ui-dismiss</code> for the browser, <code>done()</code> for the TUI dialog). Enforcement
+   semantics are never bypassed — the browser is just another transport for
+   the same decision.</p>
+</li>
+</ol>
+<h2 id="seamless-switch-walkthrough">Seamless-switch walkthrough</h2>
+<p>A scripted session driven alternately from TUI and browser with zero dead
+ends. Run it yourself to verify parity after changes.</p>
+<ol>
+<li>
+<p><strong>Start</strong> — <code>pi</code> in a project; open <code>http://localhost:19190</code> in two browser
+   tabs (both watch the session).</p>
+</li>
+<li>
+<p><strong>Chat from browser</strong> — type a prompt in tab A. Streaming appears in the
+   TUI, tab A, and tab B simultaneously.</p>
+</li>
+<li>
+<p><strong>Ask from TUI side</strong> — prompt the agent with something that triggers
+   <code>ask_user</code> (e.g. "ask me a question with options"). The question appears as
+   an action card in both tabs AND as a dialog in the TUI. Answer in tab B.
+   The TUI dialog closes instantly; tab A's card shows "✓ Answered".</p>
+</li>
+<li>
+<p><strong>Dangerous approval from browser</strong> — ask the agent to run a command that
+   trips the dangerous-command gate. The approval prompt (allow once / always
+   allow project / always allow everywhere / no) renders in both surfaces.
+   Answer "No" from the TUI: both browser cards close. Re-run and answer
+   "Yes — run once" from the browser: the command executes with identical
+   enforcement semantics.</p>
+</li>
+<li>
+<p><strong>Tasks from browser</strong> — open the Tasks panel (InfoBar <code>☐</code> icon). Create
+   "Demo task". The TUI task widget updates live. Start it from the browser;
+   the TUI spinner picks it up. Complete it from the TUI <code>/tasks</code> menu — the
+   panel's counter updates without refresh. Both tabs converge.</p>
+</li>
+<li>
+<p><strong>Coms from browser</strong> — with a peer session running, open the Coms panel:
+   the peer appears with live busy/queue/context state. Send a message from
+   the browser; the peer receives it through the same path as <code>coms_send</code>,
+   and the reply surfaces in chat.</p>
+</li>
+<li>
+<p><strong>Session lifecycle from browser</strong> — click <code>+</code> in the sidebar: name the
+   session, pick a model, create. The session switches everywhere (TUI shows
+   the new session; browsers replay it). Trigger <code>compact</code> from the InfoBar —
+   compaction runs and context usage drops in every surface.</p>
+</li>
+<li>
+<p><strong>Memory + MCP + Settings</strong> — Memory panel shows the situation report,
+   topics, and budget usage. MCP panel lists servers (<code>pi mcp list</code>) with
+   login/logout. The Settings page shows every key from <code>settings-keys.json</code>
+   with project/global scope tabs; toggle a boolean — it writes through the
+   live settings module (atomic write, comments-lost semantics identical to
+   <code>/pi-config-settings</code>) and both tabs refresh the stored value.</p>
+</li>
+<li>
+<p><strong>Switch mid-flight</strong> — while the agent streams, switch sessions from the
+   TUI (<code>/resume</code>) — the browser follows. Switch back from the browser session
+   menu — the TUI follows. No dead ends in either direction.</p>
+</li>
+</ol>
+<h2 id="architecture-notes">Architecture notes</h2>
+<ul>
+<li>
+<p><strong>Prompt bridging</strong> — <code>extensions/shared/ui-bridge.ts</code> (<code>createBridgedUi</code>):
+  <code>select</code>/<code>confirm</code>/<code>input</code> built on <code>ctx.ui.custom</code> so a browser answer can
+  close the TUI dialog via the <code>done</code> callback. Degrades to plain prompts when
+  the event bus or <code>ui.custom</code> is unavailable.</p>
+</li>
+<li>
+<p><strong>Event flow</strong> — browser → daemon (<code>pidash-command</code>) → pi session
+  (<code>handleWsMessage</code>) → owning extension (<code>pi.events</code>) → result event →
+  daemon → every browser watching the session.</p>
+</li>
+<li>
+<p><strong>Settings writes</strong> — <code>extensions/pidash/browser-ops.ts</code> reads and writes
+  through <code>getSettingsPath</code>/<code>parseSettingsFile</code>/<code>writeSettingsFile</code> and clears
+  the settings cache; <code>settings-keys.json</code> is the single source of truth for
+  the key list, types, and defaults.</p>
+</li>
+<li>
+<p><strong>Tests</strong> — <code>tests/node/shared/ui-bridge.test.ts</code> (race semantics),
+  <code>tests/node/pitasks/pidash-bridge.test.ts</code> (task ops + live broadcast),
+  <code>tests/node/pidash/browser-ops.test.ts</code> (settings round-trip),
+  <code>tests/node/pidash/parity-projections.test.ts</code> (coms/settings pure
+  projections).</p>
+</li>
+</ul>
+                </div>
+            </article>
+            <nav class="page-nav">
+
+                <a href="project-settings.html" class="page-nav-link page-nav-prev">
+                    <span class="page-nav-label">Previous</span>
+                    <span class="page-nav-title">Project Settings Internals</span>
+                </a>
+
+
+                <div></div>
+
+            </nav>
+
+            <aside class="toc-sidebar">
+                <div class="toc-container">
+                    <h3>On this page</h3>
+                    <div class="toc">
+<ul>
+<li><a href="#the-parity-contract">The parity contract</a></li>
+<li><a href="#seamless-switch-walkthrough">Seamless-switch walkthrough</a></li>
+<li><a href="#architecture-notes">Architecture notes</a></li>
+</ul>
+</div>
+
+                </div>
+            </aside>
+
+
+        </main>
+
+        <footer class="page-footer">
+
+            Built from <code>docs/*.md</code> by <code>pi-docsite</code>
+            <span class="footer-sep">&middot;</span>
+            <span class="footer-llm">LLM-friendly: <a href="llms.txt">llms.txt</a> &middot; <a href="llms-full.txt">llms-full.txt</a></span>
+        </footer>
+    </div>
+
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <script src="assets/theme.js?v=66bf87bdd9"></script>
+
+    <script src="assets/search.js?v=66bf87bdd9"></script>
+    <script src="assets/copy.js?v=66bf87bdd9"></script>
+    <script src="assets/callouts.js?v=66bf87bdd9"></script>
+    <script src="assets/scrollspy.js?v=66bf87bdd9"></script>
+    <script src="assets/codelabels.js?v=66bf87bdd9"></script>
+    <script src="assets/github.js?v=66bf87bdd9"></script>
+    <script>
+(function() {
+    var toggle = document.getElementById('sidebar-toggle');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (toggle && sidebar) {
+        toggle.addEventListener('click', function() {
+            sidebar.classList.toggle('open');
+            if (overlay) overlay.classList.toggle('open');
+            var expanded = sidebar.classList.contains('open');
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    }
+    if (overlay) {
+        overlay.addEventListener('click', function() {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('open');
+            if (toggle) toggle.setAttribute('aria-expanded', 'false');
+        });
+    }
+})();
+</script>
+<script>
+(function() {
+    var sidebar = document.querySelector('.sidebar-nav') || document.querySelector('.sidebar');
+    if (!sidebar) return;
+
+    // Restore scroll position
+    var saved = sessionStorage.getItem('sidebar-scroll');
+    if (saved) sidebar.scrollTop = parseInt(saved, 10);
+
+    // Save scroll position before navigating
+    sidebar.addEventListener('scroll', function() {
+        sessionStorage.setItem('sidebar-scroll', sidebar.scrollTop.toString());
+    });
+
+    // Also scroll active link into view if no saved position
+    if (!saved) {
+        var active = sidebar.querySelector('.nav-link.active');
+        if (active) {
+            active.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+    }
+})();
+</script>
+<!-- generated by pi-docsite -->
+</body>
+</html>

@@ -81,3 +81,61 @@ export interface ChatMessage {
     callId?: string;
   };
 }
+
+// ── #968 parity surfaces ──────────────────────────────────────────
+
+export interface TaskItem {
+  id: string;
+  subject: string;
+  description?: string;
+  status: "pending" | "in_progress" | "completed" | "deleted";
+  activeForm?: string;
+  createdBy?: { origin?: string };
+  statusHistory?: Record<string, string>;
+}
+
+export interface ComsPeer {
+  name: string;
+  purpose?: string;
+  model?: string;
+  busy: boolean;
+  queueDepth: number;
+  contextUsedPct: number;
+  tasksSummary?: string | null;
+}
+
+export interface MemoryStatus {
+  topics: Array<{ name: string; entryCount: number; hotness: number; newestEntry: string }>;
+  usagePct: number | null;
+  report: string;
+  error?: string;
+}
+
+export interface McpServerInfo {
+  name?: string;
+  server?: string;
+  status?: string;
+  state?: string;
+  tools?: number | Array<{ name: string }>;
+  error?: string;
+  [key: string]: unknown;
+}
+
+export interface SettingsKey {
+  key: string;
+  description: string;
+  type: string;
+  env?: string;
+  default: unknown;
+  group: string;
+  enum?: string[];
+  min?: number;
+  max?: number;
+  stored: unknown;
+}
+
+export interface SettingsData {
+  scope: "project" | "global";
+  keys: SettingsKey[];
+  error?: string;
+}

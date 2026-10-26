@@ -12,6 +12,8 @@ import { useMessageHandler, nextId } from "@/hooks/useMessageHandler";
 import { useKeyboardNavigation } from "@/hooks/useKeyboardNavigation";
 import { SessionSwitcher } from "@/components/SessionSwitcher";
 import { KeybindingSettings } from "@/components/KeybindingSettings";
+import { SidePanel, type PanelTab } from "@/components/SidePanel";
+import { NewSessionDialog } from "@/components/NewSessionDialog";
 import type { SessionInfo } from "@/types";
 
 const STORAGE_KEY = "pidash-state";
@@ -40,6 +42,8 @@ export function App() {
   const keybindings = useKeybindings();
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showNewSession, setShowNewSession] = useState(false);
+  const [activePanel, setActivePanel] = useState<PanelTab | null>(null);
   const saved = useRef(loadState());
   const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(isMobile ? true : saved.current.sidebarCollapsed);
@@ -142,6 +146,14 @@ export function App() {
     if (session) send({ type: "pidash-command", sessionId: session.sessionId, command: "abort" });
   }, [session, send]);
 
+  const handleCompact = useCallback(() => {
+    if (session) send({ type: "pidash-command", sessionId: session.sessionId, command: "compact" });
+  }, [session, send]);
+
+  const handleOpenPanel = useCallback((tab: PanelTab) => {
+    setActivePanel((prev) => (prev === tab ? null : tab));
+  }, []);
+
   // Flatten sessions matching sidebar order: active groups first, then alphabetical, active sessions first within groups
   const flatSessions = useMemo(() => {
     const groups = new Map<string, SessionInfo[]>();
@@ -198,6 +210,7 @@ export function App() {
             connected={connected}
             onSelect={watchSession}
             onRename={renameSession}
+            onNewSession={() => setShowNewSession(true)}
             collapsed={false}
             onToggle={() => setSidebarCollapsed(true)}
             notifications={notifications}
@@ -271,10 +284,25 @@ export function App() {
               </div>
             )}
             <InputBar disabled={!session.active} streaming={streaming} onSend={handleSend} onAbort={handleAbort} commands={availableCommands} />
-            <InfoBar session={selectedSession!} model={model} tokens={tokens} send={send} onMessage={onMessage} />
+            <InfoBar session={selectedSession!} model={model} tokens={tokens} send={send} onMessage={onMessage} activePanel={activePanel} onOpenPanel={handleOpenPanel} onCompact={handleCompact} />
           </>
         )}
       </div>
+
+      {session && activePanel && (
+        <SidePanel
+          session={selectedSession!}
+          activeTab={activePanel}
+          onTabChange={setActivePanel}
+          onClose={() => setActivePanel(null)}
+          send={send}
+          onMessage={onMessage}
+        />
+      )}
+
+      {session && showNewSession && (
+        <NewSessionDialog send={send} onMessage={onMessage} sessionId={session.sessionId} onClose={() => setShowNewSession(false)} />
+      )}
 
       {showSettings && (
         <KeybindingSettings

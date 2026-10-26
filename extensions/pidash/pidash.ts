@@ -24,6 +24,7 @@ import { firstLiveExtensionCtx, isLiveExtensionCtx, resolveSessionStartCtx } fro
 import { createLogger } from "../shared/logger.js";
 import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
+import { applySetting, buildSettingsPayload, mcpList, runMcp } from "./browser-ops.js";
 
 const log = createLogger("pidash");
 
@@ -405,6 +406,104 @@ export function registerPidash(
                 try { ws.send(JSON.stringify({ type: "update_info", name: newName })); } catch {}
               }
             } catch (e: any) { log.debug(`rename-session error: ${e.message}`); }
+          }
+        }
+
+        // ── #968 part D: session lifecycle ─────────────────────────
+        if (parsed.command === "compact") {
+          try {
+            (lastCtx as any)?.compact?.();
+            log.info("compact triggered from browser");
+          } catch (e: any) { log.warn(`compact error: ${e.message}`); }
+        }
+
+        if (parsed.command === "new-session") {
+          const ctx = lastCmdCtx ?? lastCtx;
+          if (ctx?.newSession) {
+            try {
+              await ctx.newSession();
+              if (parsed.name) {
+                try { (pi as any).setSessionName?.(String(parsed.name)); } catch (e: any) { log.debug(`setSessionName error: ${e.message}`); }
+              }
+              if (parsed.modelId && lastCtx?.modelRegistry) {
+                const model = lastCtx.modelRegistry.getAvailable()?.find((m: any) =>
+                  m.id === parsed.modelId || m.name === parsed.modelId || m.id.includes(parsed.modelId) || m.name.includes(parsed.modelId));
+                if (model) await (pi as any).setModel(model);
+              }
+              log.info("new-session created from browser", { name: parsed.name, modelId: parsed.modelId });
+            } catch (e: any) { log.warn(`new-session error: ${e.message}`); }
+          } else {
+            log.debug("new-session: no command context available");
+          }
+        }
+
+        // ── #968 parts A/C/E: route to owning extensions ────────────
+        if (parsed.command === "tasks-list") {
+          pi.events.emit("pidash:tasks-list-request", undefined);
+        }
+        if (parsed.command === "task-op") {
+          pi.events.emit("pidash:task-op", parsed);
+        }
+        if (parsed.command === "coms-peers") {
+          pi.events.emit("pidash:coms-peers-request", undefined);
+        }
+        if (parsed.command === "coms-send") {
+          pi.events.emit("pidash:coms-send", {
+            requestId: parsed.requestId,
+            target: parsed.target,
+            prompt: parsed.prompt,
+            steer: parsed.steer === true,
+            priority: parsed.priority === true,
+          });
+        }
+        if (parsed.command === "memory-status") {
+          pi.events.emit("pidash:memory-status-request", undefined);
+        }
+
+        // ── #968 part F: MCP management ─────────────────────────────
+        if (parsed.command === "mcp-list") {
+          const cwd = lastCtx?.cwd || process.cwd();
+          const result = mcpList(cwd);
+          if (ws && connected) ws.send(JSON.stringify({ type: "mcp-list", ...result }));
+        }
+        if (parsed.command === "mcp-login" && parsed.server) {
+          const cwd = lastCtx?.cwd || process.cwd();
+          try {
+            const out = runMcp(["login", String(parsed.server)], cwd, 180000);
+            log.info("mcp-login from browser", { server: parsed.server });
+            if (ws && connected) ws.send(JSON.stringify({ type: "mcp-op-result", op: "login", server: parsed.server, ok: true, output: out.slice(0, 4000) }));
+          } catch (e: any) {
+            log.warn(`mcp-login error: ${e?.message}`);
+            if (ws && connected) ws.send(JSON.stringify({ type: "mcp-op-result", op: "login", server: parsed.server, ok: false, output: String(e?.stderr || e?.message || e).slice(0, 4000) }));
+          }
+        }
+        if (parsed.command === "mcp-logout" && parsed.server) {
+          const cwd = lastCtx?.cwd || process.cwd();
+          try {
+            const out = runMcp(["logout", String(parsed.server)], cwd);
+            log.info("mcp-logout from browser", { server: parsed.server });
+            if (ws && connected) ws.send(JSON.stringify({ type: "mcp-op-result", op: "logout", server: parsed.server, ok: true, output: out.slice(0, 4000) }));
+          } catch (e: any) {
+            log.warn(`mcp-logout error: ${e?.message}`);
+            if (ws && connected) ws.send(JSON.stringify({ type: "mcp-op-result", op: "logout", server: parsed.server, ok: false, output: String(e?.stderr || e?.message || e).slice(0, 4000) }));
+          }
+        }
+
+        // ── #968 part G: settings page ──────────────────────────────
+        if (parsed.command === "settings-get") {
+          const cwd = lastCtx?.cwd || process.cwd();
+          const payload = buildSettingsPayload(cwd, parsed.scope);
+          if (ws && connected) ws.send(JSON.stringify({ type: "settings-data", ...payload }));
+        }
+        if (parsed.command === "settings-set" && parsed.key) {
+          const cwd = lastCtx?.cwd || process.cwd();
+          const result = applySetting(cwd, parsed.scope, String(parsed.key), "value" in parsed ? parsed.value : null);
+          if (result.ok) {
+            // Broadcast fresh state to every watching browser
+            const payload = buildSettingsPayload(cwd, parsed.scope);
+            if (ws && connected) ws.send(JSON.stringify({ type: "settings-data", ...payload }));
+          } else if (ws && connected) {
+            ws.send(JSON.stringify({ type: "settings-error", scope: parsed.scope, key: parsed.key, error: result.error }));
           }
         }
 
@@ -831,6 +930,32 @@ export function registerPidash(
     pi.events.on("pidash:cron-status", (data: unknown) => {
       if (ws && connected) {
         try { ws.send(JSON.stringify({ type: "cron-status", ...(data as any) })); } catch {}
+      }
+    });
+
+    // Forward task list updates to browser (#968 A)
+    pi.events.on("pidash:tasks-list", (data: unknown) => {
+      if (ws && connected) {
+        try { ws.send(JSON.stringify({ type: "tasks-list", ...(data as any) })); } catch {}
+      }
+    });
+
+    // Forward coms peer list / send results to browser (#968 C)
+    pi.events.on("pidash:coms-peers", (data: unknown) => {
+      if (ws && connected) {
+        try { ws.send(JSON.stringify({ type: "coms-peers", ...(data as any) })); } catch {}
+      }
+    });
+    pi.events.on("pidash:coms-send-result", (data: unknown) => {
+      if (ws && connected) {
+        try { ws.send(JSON.stringify({ type: "coms-send-result", ...(data as any) })); } catch {}
+      }
+    });
+
+    // Forward memory status to browser (#968 E)
+    pi.events.on("pidash:memory-status", (data: unknown) => {
+      if (ws && connected) {
+        try { ws.send(JSON.stringify({ type: "memory-status", ...(data as any) })); } catch {}
       }
     });
 

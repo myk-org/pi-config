@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings, Pencil } from "lucide-react";
+import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings, Pencil, Plus } from "lucide-react";
 import { Badge } from "@ui/badge";
 import { Button } from "@ui/button";
 import { ScrollArea } from "@ui/scroll-area";
@@ -24,6 +24,7 @@ interface Props {
   collapsed: boolean;
   onToggle: () => void;
   onSettings?: () => void;
+  onNewSession?: () => void;
   onRename?: (sessionId: string, name: string) => void;
   notifications?: {
     permission: NotificationPermission;
@@ -50,7 +51,7 @@ function saveCollapsedProjects(projects: Set<string>): void {
   try { localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...projects])); } catch {}
 }
 
-export function SessionSidebar({ sessions, activeSessionId, connected, onSelect, collapsed, onToggle, onSettings, onRename, notifications }: Props) {
+export function SessionSidebar({ sessions, activeSessionId, connected, onSelect, collapsed, onToggle, onSettings, onNewSession, onRename, notifications }: Props) {
   const [collapsedProjects, setCollapsedProjectsRaw] = useState<Set<string>>(() => loadCollapsedProjects());
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -106,6 +107,11 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
         <span className="text-sm font-bold text-primary">pidash</span>
         <span className="flex items-center gap-2">
           <Circle className={cn("h-2 w-2 fill-current", connected ? "text-green-500" : "text-red-500")} />
+          {onNewSession && (
+            <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground hover:text-primary" onClick={onNewSession} title="New session">
+              <Plus className="h-3.5 w-3.5" />
+            </Button>
+          )}
           {notifications && <NotificationSettings
             permission={notifications.permission}
             supported={notifications.supported}

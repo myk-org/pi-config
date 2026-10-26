@@ -11,6 +11,7 @@ import { TaskStore } from "./task-store.js";
 import { TaskWidget } from "./task-widget.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
+import { createBridgedUi } from "../shared/ui-bridge.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import {
@@ -190,6 +191,7 @@ export default function (pi: ExtensionAPI) {
 	taskStore = store;
 	currentStore = store;
 	const widget = new TaskWidget(store);
+	store.setOnChange(() => { widget.update(); broadcastTasks(); });
 	for (const taskId of resumedActiveTaskIds) widget.setActiveTask(taskId);
 	currentWidget = widget;
 	const instanceId = Math.random().toString(36).slice(2, 8);
@@ -209,7 +211,7 @@ export default function (pi: ExtensionAPI) {
 			taskStore = store;
 			currentStore = store;
 			widget.setStore(store);
-			store.setOnChange(() => { widget.update(); });
+			store.setOnChange(() => { widget.update(); broadcastTasks(); });
 			log.debug("store upgraded", path);
 		}
 		storeUpgraded = true;
@@ -231,6 +233,54 @@ export default function (pi: ExtensionAPI) {
 
 	// Register tools
 	registerTaskTools(pi, () => store, widget);
+
+	// ── #968 part A: pidash browser bridge ─────────────────────────────
+	// Operations go through THIS live store (single writer); results broadcast
+	// to every browser watching the session via pidash event forwarding.
+	function broadcastTasks(): void {
+		try {
+			pi.events.emit("pidash:tasks-list", { tasks: store.list().filter((t: any) => t.status !== "deleted") });
+		} catch (e: any) { log.debug("tasks broadcast error", e?.message); }
+	}
+	function handleTaskOp(data: any): void {
+		const op = data?.op;
+		try {
+			switch (op) {
+				case "create":
+					if (!data.subject) return;
+					store.create(data.subject, data.description || "", { type: "local", origin: "user", session: "", project: process.cwd() });
+					log.info("pidash_task_created", { subject: data.subject });
+					break;
+				case "start":
+					if (data.taskId) { store.update(data.taskId, { status: "in_progress" }); widget.setActiveTask(data.taskId, true); }
+					break;
+				case "complete":
+					if (data.taskId) { store.update(data.taskId, { status: "completed" }); widget.setActiveTask(data.taskId, false); }
+					break;
+				case "delete":
+					if (data.taskId) { store.update(data.taskId, { status: "deleted" }); widget.setActiveTask(data.taskId, false); }
+					break;
+				case "clear-completed":
+					store.clearCompleted();
+					if (taskScope === "session") store.deleteFileIfEmpty();
+					break;
+				case "clear-all":
+					store.clearAll();
+					if (taskScope === "session") store.deleteFileIfEmpty();
+					break;
+				default:
+					log.debug("pidash_task_op_unknown", op);
+					return;
+			}
+			widget.update();
+			broadcastTasks();
+			log.info("pidash_task_op", { op, taskId: data.taskId });
+		} catch (e: any) {
+			log.warn("pidash_task_op_failed", { op, error: e?.message });
+		}
+	}
+	pi.events.on("pidash:tasks-list-request", () => broadcastTasks());
+	pi.events.on("pidash:task-op", (data: unknown) => handleTaskOp(data as any));
 
 	// Time-based GC: auto-clear completed tasks after configured minutes
 	let gcTimer: ReturnType<typeof setInterval> | null = null;
@@ -375,7 +425,7 @@ export default function (pi: ExtensionAPI) {
 		log.debug("agentBusy", "session_start reset");
 		widget.reactivate(ctx.ui);
 		store.reopen();
-		store.setOnChange(() => { widget.update(); });
+		store.setOnChange(() => { widget.update(); broadcastTasks(); });
 		currentUiCtx = ctx.ui;
 		const reason = (event as any).reason;
 		log.debug("session_start", reason);
@@ -422,7 +472,8 @@ export default function (pi: ExtensionAPI) {
 			description: "Manage tasks — view, create, clear completed",
 			handler: tasksCmdHandler = async (_args: string, ctx: any) => {
 				log.debug("/tasks handler called");
-				const ui = ctx.ui;
+				// #968 part B: menus are bridged — answerable from TUI or pidash browser
+				const bridgedUi = createBridgedUi(pi);
 				const mainMenu = async (): Promise<void> => {
 					const tasks = taskStore.list();
 					const taskCount = tasks.length;
@@ -430,7 +481,7 @@ export default function (pi: ExtensionAPI) {
 					const choices = [`View all tasks (${taskCount})`, "Create task"];
 					if (completedCount > 0) choices.push(`Clear completed (${completedCount})`);
 					if (taskCount > 0) choices.push(`Clear all (${taskCount})`);
-					const choice = await ui.select("Tasks", choices);
+					const choice = await bridgedUi.select(ctx, "Tasks", choices);
 					if (!choice) return;
 					if (choice.startsWith("View")) await viewTasks();
 					else if (choice === "Create task") await createTask();
@@ -439,11 +490,11 @@ export default function (pi: ExtensionAPI) {
 				};
 				const viewTasks = async (): Promise<void> => {
 					const tasks = taskStore.list();
-					if (tasks.length === 0) { await ui.select("No tasks", ["← Back"]); return mainMenu(); }
+					if (tasks.length === 0) { await bridgedUi.select(ctx, "No tasks", ["← Back"]); return mainMenu(); }
 					const statusIcon = (s: string) => s === "completed" ? "✔" : s === "in_progress" ? "◼" : "◻";
 					const choices = tasks.map(t => `${statusIcon(t.status)} #${t.id} [${t.status}] ${t.subject}`);
 					choices.push("← Back");
-					const selected = await ui.select("Tasks", choices);
+					const selected = await bridgedUi.select(ctx, "Tasks", choices);
 					if (!selected || selected === "← Back") return mainMenu();
 					const match = selected.match(/#(\d+)/);
 					if (match) await viewTaskDetail(match[1]);
@@ -457,16 +508,16 @@ export default function (pi: ExtensionAPI) {
 					if (task.status === "in_progress") actions.push("✓ Complete");
 					actions.push("✗ Delete", "← Back");
 					const title = `#${task.id} [${task.status}] ${task.subject}\n${task.description}`;
-					const action = await ui.select(title, actions);
+					const action = await bridgedUi.select(ctx, title, actions);
 					if (action === "▸ Start (in_progress)") { taskStore.update(taskId, { status: "in_progress" }); currentWidget?.setActiveTask(taskId); currentWidget?.update(); return viewTasks(); }
 					else if (action === "✓ Complete") { taskStore.update(taskId, { status: "completed" }); currentWidget?.setActiveTask(taskId, false); currentWidget?.update(); return viewTasks(); }
 					else if (action === "✗ Delete") { taskStore.update(taskId, { status: "deleted" }); currentWidget?.setActiveTask(taskId, false); currentWidget?.update(); return viewTasks(); }
 					return viewTasks();
 				};
 				const createTask = async (): Promise<void> => {
-					const subject = await ui.input("Task subject");
+					const subject = await bridgedUi.input(ctx, "Task subject");
 					if (!subject) return mainMenu();
-					const description = await ui.input("Task description");
+					const description = await bridgedUi.input(ctx, "Task description");
 					if (!description) return mainMenu();
 					taskStore.create(subject, description, { type: "local", origin: "user", session: "", project: process.cwd() });
 					currentWidget?.update();
