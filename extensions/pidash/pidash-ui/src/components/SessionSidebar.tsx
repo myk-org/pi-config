@@ -8,6 +8,9 @@ import { cn } from "@/lib/utils";
 import type { SessionInfo, NotificationPreferences } from "@/types";
 import { sessionActivityDisplay } from "@/lib/activity-display";
 import { loadTheme, setTheme, type Theme } from "@/lib/theme";
+import { createLogger } from "@/lib/create-logger";
+
+const log = createLogger("SessionSidebar");
 
 function ago(iso: string): string {
   const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
@@ -42,7 +45,11 @@ interface Props {
 // Keys are NAMESPACED: a coms project and a directory can share a name ("tmp"),
 // and collapsing one must never collapse the other. Stored keys from before the
 // namespace existed have no prefix and are read as directory keys.
-const COLLAPSED_STORAGE_KEY = "pidash-collapsed-projects";
+const COLLAPSED_STORAGE_KEY = "pidash-collapsed-projects-v2";
+// v1 stored bare directory names. A legacy name may itself contain a colon
+// ("tmp:old"), so sniffing for ":" cannot tell legacy from namespaced — the
+// versioned key makes the migration unambiguous instead.
+const LEGACY_COLLAPSED_STORAGE_KEY = "pidash-collapsed-projects";
 
 const dirKey = (name: string) => `dir:${name}`;
 const comsKey = (project: string) => `coms:${project}`;
@@ -50,12 +57,14 @@ const comsKey = (project: string) => `coms:${project}`;
 function loadCollapsedProjects(): Set<string> {
   try {
     const raw = localStorage.getItem(COLLAPSED_STORAGE_KEY);
-    if (raw) {
-      return new Set(
-        (JSON.parse(raw) as string[]).map((key) =>
-          key.includes(":") ? key : dirKey(key),
-        ),
-      );
+    if (raw) return new Set(JSON.parse(raw) as string[]);
+    const legacy = localStorage.getItem(LEGACY_COLLAPSED_STORAGE_KEY);
+    if (legacy) {
+      // Every v1 entry was a directory name, colons and all.
+      const migrated = new Set((JSON.parse(legacy) as string[]).map(dirKey));
+      saveCollapsedProjects(migrated);
+      log.debug("migrated collapsed groups to namespaced keys", { count: migrated.size });
+      return migrated;
     }
   } catch {}
   return new Set();
@@ -78,6 +87,7 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
   const toggleComsSection = () => {
     setComsSectionOpen((prev) => {
       const next = !prev;
+      log.debug("coms section toggled", { open: next });
       try { localStorage.setItem("pidash-coms-section-open", String(next)); } catch {}
       return next;
     });
@@ -225,11 +235,12 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
     return a[0].localeCompare(b[0]);
   });
 
-  const toggleProject = (name: string) => {
+  const toggleProject = (key: string) => {
+    log.debug("group toggled", { key });
     setCollapsedProjects(prev => {
       const next = new Set(prev);
-      if (next.has(name)) next.delete(name); // was collapsed → expand
-      else next.add(name); // was expanded → collapse
+      if (next.has(key)) next.delete(key); // was collapsed → expand
+      else next.add(key); // was expanded → collapse
       return next;
     });
   };
@@ -301,6 +312,14 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
                   "hover:bg-accent/30",
                 )}
                 onClick={() => toggleProject(groupKey)}
+                role="button"
+                tabIndex={0}
+                aria-expanded={isExpanded}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  e.preventDefault();
+                  toggleProject(groupKey);
+                }}
               >
                 {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
                 <Folder className="h-3 w-3" />
@@ -320,9 +339,15 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
         {sortedComsProjects.length > 0 && (
           <div className="border-t border-border mt-1">
             <div
-              className="flex items-center gap-1.5 px-3 py-2 cursor-pointer text-sm font-semibold text-muted-foreground hover:bg-accent/30"
+              className="flex items-center gap-1.5 px-3 py-2 cursor-pointer text-sm font-semibold text-muted-foreground hover:bg-accent/30 focus:outline-none focus:ring-1 focus:ring-primary focus:ring-inset"
               onClick={toggleComsSection}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                toggleComsSection();
+              }}
               role="button"
+              tabIndex={0}
               aria-expanded={comsSectionOpen}
               title={`${comsMemberCount} session${comsMemberCount === 1 ? "" : "s"} in ${sortedComsProjects.length} coms project${sortedComsProjects.length === 1 ? "" : "s"}`}
             >
@@ -340,9 +365,15 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
               return (
                 <div key={projectKey}>
                   <div
-                    className="flex items-center gap-1.5 pl-5 pr-3 py-1.5 cursor-pointer text-xs font-medium text-muted-foreground hover:bg-accent/30"
+                    className="flex items-center gap-1.5 pl-5 pr-3 py-1.5 cursor-pointer text-xs font-medium text-muted-foreground hover:bg-accent/30 focus:outline-none focus:ring-1 focus:ring-primary focus:ring-inset"
                     onClick={() => toggleProject(projectKey)}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" && e.key !== " ") return;
+                      e.preventDefault();
+                      toggleProject(projectKey);
+                    }}
                     role="button"
+                    tabIndex={0}
                     aria-expanded={isProjectOpen}
                   >
                     {isProjectOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}

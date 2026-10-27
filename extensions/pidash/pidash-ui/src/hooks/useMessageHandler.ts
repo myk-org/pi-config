@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { ChatMessage, NotificationPreferences, PiEvent, SessionInfo, TokenUsage } from "@/types";
+import { createLogger } from "../lib/create-logger";
+
+const log = createLogger("MessageHandler");
 
 let counter = 0;
 export const nextId = () => `m-${++counter}`;
@@ -74,12 +77,18 @@ export function useMessageHandler(
             // Side effects stay OUT of the state updater: an updater may be
             // deferred or replayed, and this one used to carry the streaming
             // sync (Qodo 6284bef1 found it untested for exactly that reason).
-            if (session?.sessionId === update.sessionId) {
+            // sessionRef, never the closed-over `session`: this effect's deps omit
+            // it, so a session selected after mount would never match and the
+            // model label / Stop button would stop following the daemon (Qodo).
+            if (sessionRef.current?.sessionId === update.sessionId) {
               if (update.model !== undefined) setModel(update.model);
               // Keep the Stop button in step with the daemon: turns started or
               // settled outside this browser (TUI, another tab) change the
               // streaming flag with no agent_start/agent_settled here.
-              if (update.streaming !== undefined) setStreaming(update.streaming);
+              if (update.streaming !== undefined) {
+                log.debug("streaming synced from session_updated", { streaming: update.streaming });
+                setStreaming(update.streaming);
+              }
             }
             setSession((prev) => (prev && prev.sessionId === update.sessionId ? { ...prev, ...update } : prev));
             return;

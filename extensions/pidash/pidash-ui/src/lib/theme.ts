@@ -8,14 +8,22 @@
  * is already dark, and this module only overrides it when the user chose light.
  */
 
+import { createLogger } from "@/lib/create-logger";
+
+const log = createLogger("Theme");
+
 export type Theme = "dark" | "light";
 
 const STORAGE_KEY = "pidash-theme";
 
 export function loadTheme(): Theme {
   try {
-    return localStorage.getItem(STORAGE_KEY) === "light" ? "light" : "dark";
-  } catch {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    const theme: Theme = stored === "light" ? "light" : "dark";
+    log.debug("theme loaded", { stored, theme });
+    return theme;
+  } catch (error) {
+    log.warn("theme storage unavailable, defaulting to dark", { error: String(error) });
     return "dark";
   }
 }
@@ -23,6 +31,7 @@ export function loadTheme(): Theme {
 /** Apply a theme to the document (idempotent, safe before first render). */
 export function applyTheme(theme: Theme): void {
   const root = document.documentElement;
+  log.debug("theme applied", { theme });
   root.classList.toggle("dark", theme === "dark");
   // Keep form controls, scrollbars and the browser's own chrome in step.
   root.style.colorScheme = theme;
@@ -31,7 +40,9 @@ export function applyTheme(theme: Theme): void {
 export function saveTheme(theme: Theme): void {
   try {
     localStorage.setItem(STORAGE_KEY, theme);
-  } catch {
+    log.debug("theme persisted", { theme });
+  } catch (error) {
+    log.warn("theme could not be persisted", { theme, error: String(error) });
     // Private mode / blocked storage: the theme still applies for this page.
   }
 }

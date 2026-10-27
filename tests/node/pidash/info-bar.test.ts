@@ -176,6 +176,18 @@ describe("InfoBar thinking selector", () => {
     assert.match(gauge!.getAttribute("title") || "", /333,724 \/ 1,048,576 tokens \(92 fresh \+ 333,632 cache-read\)/);
   });
 
+  it("context gauge counts cache writes toward the prompt", async () => {
+    // Cache-write tokens are part of the prompt the model received; leaving them
+    // out under-reports the session's context on providers that report them.
+    const view = await renderInfoBarWithTokens(
+      session({ contextWindow: 1048576 }),
+      { input: 1000, output: 10, cacheRead: 100000, cacheWrite: 47000 },
+    );
+    const gauge = elements(view.container, "span").find((item: any) => /^ctx /.test((item.textContent || "").trim()));
+    assert.equal(gauge!.textContent.trim(), "ctx 14.1%/1.0M");
+    assert.match(gauge!.getAttribute("title") || "", /\(1,000 fresh \+ 100,000 cache-read \+ 47,000 cache-write\)/);
+  });
+
   it("context gauge shows the session window compactly", async () => {
     const view = await renderInfoBarWithTokens(session({ contextWindow: 262144 }), { input: 65536, output: 10 });
     const gauge = elements(view.container, "span").find((item: any) => /^ctx /.test((item.textContent || "").trim()));

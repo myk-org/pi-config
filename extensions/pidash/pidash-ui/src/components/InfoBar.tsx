@@ -78,6 +78,17 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
   // session it is a few dozen tokens and the gauge read 0% everywhere.
   const promptTokens = input + cache + cacheWrite;
   const pct = (promptTokens / ctxWin) * 100;
+  // Token accounting is the one place where a wrong number is invisible (a
+  // percentage looks plausible at any value), so record the inputs whenever they
+  // change — debug level, ordered, no per-render spam.
+  const gaugeRef = useRef<string>("");
+  const gaugeKey = `${input}:${cache}:${cacheWrite}:${ctxWin}`;
+  if (gaugeRef.current !== gaugeKey) {
+    gaugeRef.current = gaugeKey;
+    log.debug("context gauge", {
+      promptTokens, ctxWin, pct: Number(pct.toFixed(1)), input, cacheRead: cache, cacheWrite,
+    });
+  }
   const pctColor = pct > 80 ? "text-red-500" : pct > 50 ? "text-orange-400" : "";
   const sessionModel = model || session.model || "";
   // `session.model` carries the model ID; the discovered list carries the

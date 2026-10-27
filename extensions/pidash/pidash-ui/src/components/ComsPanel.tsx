@@ -73,37 +73,28 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
           // A peer is a coms identity; a pidash session with the same comsName
           // is the thing you can actually watch. Absent when the peer runs
           // outside this daemon (other machine, another project's server).
-          const peerSession = sessions.find((s) => s.comsName === p.name);
+          // Coms names are unique only inside a project, so a name match alone
+          // could jump to the same-named session of ANOTHER project. Prefer a
+          // member of this panel's project and fall back to a name match only
+          // when the project is unknown (older daemon payloads).
+          const peerSession =
+            sessions.find((s) => s.comsName === p.name && (!self?.project || s.comsProject === self.project)) ??
+            (self?.project ? undefined : sessions.find((s) => s.comsName === p.name));
           return (
           <div
             key={p.name}
             className={cn(
-              "w-full text-left rounded-md bg-card border text-xs transition-colors",
+              "rounded-md bg-card border text-xs transition-colors",
               selected?.name === p.name ? "border-primary" : "border-border hover:border-primary/50",
             )}
           >
+            {/* Two sibling controls, never nested: a role=button inside a
+                <button> is invalid and focus/activation are inconsistent. */}
             <button className="w-full text-left p-2" onClick={() => setSelected(p)}>
               <div className="flex items-center gap-2">
                 <span title={p.busy ? "busy" : "idle"}>{p.busy ? "⚙" : "●"}</span>
                 <span className="font-medium text-foreground flex-1 truncate">{p.name}</span>
                 {p.busy && <span className="text-[10px] text-yellow-600 dark:text-yellow-400">busy</span>}
-                {peerSession && onWatch && (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    title={`Watch this peer's session (${peerSession.cwd.split("/").pop()})`}
-                    className="text-[10px] text-muted-foreground hover:text-primary px-1 rounded border border-border"
-                    onClick={(e) => { e.stopPropagation(); onWatch(peerSession); }}
-                    onKeyDown={(e) => {
-                      if (e.key !== "Enter" && e.key !== " ") return;
-                      e.preventDefault();
-                      e.stopPropagation();
-                      onWatch(peerSession);
-                    }}
-                  >
-                    ⇢ session
-                  </span>
-                )}
               </div>
               <div className="text-[10px] text-muted-foreground truncate">{p.model}{p.purpose ? ` — ${p.purpose}` : ""}</div>
               <div className="text-[10px] text-muted-foreground">
@@ -111,6 +102,18 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
                 {!peerSession && <span className="opacity-60"> · no local session</span>}
               </div>
             </button>
+            {peerSession && onWatch && (
+              <div className="px-2 pb-1.5 -mt-0.5">
+                <button
+                  type="button"
+                  title={`Watch this peer's session (${peerSession.cwd})`}
+                  className="text-[10px] text-muted-foreground hover:text-primary px-1 rounded border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  onClick={() => onWatch(peerSession)}
+                >
+                  ⇢ watch {peerSession.cwd.split("/").pop()}
+                </button>
+              </div>
+            )}
           </div>
           );
         })}

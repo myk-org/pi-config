@@ -1,6 +1,9 @@
 import { useEffect, type Dispatch, type SetStateAction } from "react";
 import { isAbortKey, matchesKeybinding } from "@/hooks/useKeybindings";
 import type { SessionInfo } from "@/types";
+import { createLogger } from "../lib/create-logger";
+
+const log = createLogger("KeyboardNavigation");
 
 export function useKeyboardNavigation(opts: {
   streaming: boolean;
@@ -28,6 +31,7 @@ export function useKeyboardNavigation(opts: {
       // KeybindingSettings cancels a recording in the CAPTURE phase and stops
       // propagation, so Escape during recording still cancels only the capture.
       if (e.key === "Escape" && (showSwitcher || showSettings)) {
+        log.debug("escape closed an overlay", { switcher: showSwitcher, settings: showSettings });
         e.preventDefault();
         if (showSwitcher) setShowSwitcher(false);
         if (showSettings) setShowSettings(false);
