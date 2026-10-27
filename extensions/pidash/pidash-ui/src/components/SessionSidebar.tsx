@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings, Pencil, Plus, MessagesSquare, X, Sun, Moon } from "lucide-react";
+import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings, Pencil, Plus, MessagesSquare, Sun, Moon } from "lucide-react";
 import { Badge } from "@ui/badge";
 import { Button } from "@ui/button";
 import { ScrollArea } from "@ui/scroll-area";
@@ -38,12 +38,25 @@ interface Props {
 
 // Track which groups the user explicitly collapsed.
 // Everything NOT in this set is expanded by default.
+//
+// Keys are NAMESPACED: a coms project and a directory can share a name ("tmp"),
+// and collapsing one must never collapse the other. Stored keys from before the
+// namespace existed have no prefix and are read as directory keys.
 const COLLAPSED_STORAGE_KEY = "pidash-collapsed-projects";
+
+const dirKey = (name: string) => `dir:${name}`;
+const comsKey = (project: string) => `coms:${project}`;
 
 function loadCollapsedProjects(): Set<string> {
   try {
     const raw = localStorage.getItem(COLLAPSED_STORAGE_KEY);
-    if (raw) return new Set(JSON.parse(raw));
+    if (raw) {
+      return new Set(
+        (JSON.parse(raw) as string[]).map((key) =>
+          key.includes(":") ? key : dirKey(key),
+        ),
+      );
+    }
   } catch {}
   return new Set();
 }
@@ -56,9 +69,19 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
   const [collapsedProjects, setCollapsedProjectsRaw] = useState<Set<string>>(() => loadCollapsedProjects());
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
-  // Coms lens: a project name filters the whole list to its members. Transient
-  // by design — the directory tree is the default view, coms is a lens on it.
-  const [comsFilter, setComsFilter] = useState<string | null>(null);
+  // Coms section: a second, collapsible view at the BOTTOM of the list. Sessions
+  // appear both here (under their project) and in the directory tree — a cheap
+  // cross-reference, since rows cost nothing and members are few.
+  const [comsSectionOpen, setComsSectionOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem("pidash-coms-section-open") !== "false"; } catch { return true; }
+  });
+  const toggleComsSection = () => {
+    setComsSectionOpen((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("pidash-coms-section-open", String(next)); } catch {}
+      return next;
+    });
+  };
   const [theme, setThemeState] = useState<Theme>(() => loadTheme());
 
   // Wrap setter to persist to localStorage
@@ -73,7 +96,7 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
   if (collapsed) return null;
 
   /** One session row — shared by the directory tree and the coms lens. */
-  const renderSession = (s: SessionInfo) => {
+  const renderSession = (s: SessionInfo, showLocation = false) => {
     const isActive = s.sessionId === activeSessionId;
     const status = sessionActivityDisplay(s);
     return (
@@ -88,6 +111,15 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
         onClick={() => onSelect(s)}
       >
         <div className={cn("text-xs font-medium truncate flex items-center gap-1.5", s.active ? "text-primary" : "text-muted-foreground")}>
+          {showLocation && (
+            <span
+              className="shrink-0 flex items-center gap-0.5 px-1 rounded border border-border bg-muted text-[9px] font-normal text-muted-foreground"
+              title={`Session lives in ${s.cwd}`}
+            >
+              <Folder className="h-2.5 w-2.5" />
+              <span className="max-w-[6.5rem] truncate">{s.cwd.split("/").pop() || s.cwd}</span>
+            </span>
+          )}
           {!s.active && <Pause className="h-3 w-3 flex-shrink-0 text-muted-foreground" />}
           {s.active && status.isWorking && (
             <span className="relative flex h-2 w-2 flex-shrink-0" aria-label="working">
@@ -165,7 +197,12 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
     if (s.activity === "working") entry.busy += 1;
   }
   const sortedComsProjects = [...comsProjects.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  const filtered = comsFilter ? comsProjects.get(comsFilter)?.sessions ?? [] : null;
+  const comsMemberCount = sortedComsProjects.reduce((n, [, info]) => n + info.sessions.length, 0);
+  const comsBusyCount = sortedComsProjects.reduce((n, [, info]) => n + info.busy, 0);
+  // Active sessions first inside each project, like the directory groups.
+  for (const [, info] of sortedComsProjects) {
+    info.sessions.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
+  }
 
   // Group sessions by project name (last segment of cwd)
   const groups = new Map<string, { cwd: string; sessions: SessionInfo[] }>();
@@ -248,66 +285,9 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
           <p className="p-4 text-center text-xs text-muted-foreground">No sessions</p>
         )}
 
-        {/* Coms lens — projects are a collaboration namespace, the tree below is
-            the filesystem. Clicking one filters; nothing is ever listed twice. */}
-        {sortedComsProjects.length > 0 && (
-          <div className="px-3 py-2 border-b border-border">
-            <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-              <MessagesSquare className="h-3 w-3" />
-              <span>Coms</span>
-              {comsFilter && (
-                <button
-                  className="ml-auto flex items-center gap-0.5 text-[10px] normal-case text-muted-foreground hover:text-foreground"
-                  onClick={() => setComsFilter(null)}
-                  title="Show all sessions"
-                >
-                  <X className="h-3 w-3" /> clear
-                </button>
-              )}
-            </div>
-            <div className="flex flex-wrap gap-1 mt-1.5">
-              {sortedComsProjects.map(([project, info]) => {
-                const isFiltered = comsFilter === project;
-                return (
-                  <button
-                    key={project}
-                    className={cn(
-                      "flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] transition-colors",
-                      isFiltered
-                        ? "border-primary text-primary bg-accent"
-                        : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground",
-                    )}
-                    onClick={() => setComsFilter((prev) => (prev === project ? null : project))}
-                    title={`${info.sessions.length} session${info.sessions.length === 1 ? "" : "s"}${info.busy ? ` · ${info.busy} busy` : ""} in coms project ${project}`}
-                    aria-pressed={isFiltered}
-                  >
-                    <span aria-hidden="true">◆</span>
-                    <span className="truncate max-w-[7rem]">{project}</span>
-                    <span className="tabular-nums opacity-70">{info.sessions.length}</span>
-                    {info.busy > 0 && <span className="text-green-600 dark:text-green-400">●</span>}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Filtered view: one project, its members, no duplication */}
-        {filtered && (
-          <div>
-            <div className="flex items-center gap-1.5 px-3 py-2 text-sm font-semibold border-b border-border text-primary">
-              <span aria-hidden="true">◆</span>
-              <span className="truncate">{comsFilter}</span>
-              <span className="ml-auto text-[10px] font-normal">{filtered.length}</span>
-            </div>
-            {filtered.length === 0 && (
-              <p className="p-4 text-center text-xs text-muted-foreground">No sessions in this project</p>
-            )}
-            {filtered.map(renderSession)}
-          </div>
-        )}
-        {!filtered && sortedGroups.map(([name, group]) => {
-          const isExpanded = !collapsedProjects.has(name);
+        {sortedGroups.map(([name, group]) => {
+          const groupKey = dirKey(name);
+          const isExpanded = !collapsedProjects.has(groupKey);
           const hasActive = group.sessions.some(s => s.active);
           const count = group.sessions.length;
 
@@ -320,7 +300,7 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
                   hasActive ? "text-primary" : "text-muted-foreground",
                   "hover:bg-accent/30",
                 )}
-                onClick={() => toggleProject(name)}
+                onClick={() => toggleProject(groupKey)}
               >
                 {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
                 <Folder className="h-3 w-3" />
@@ -329,10 +309,53 @@ export function SessionSidebar({ sessions, activeSessionId, connected, onSelect,
               </div>
 
               {/* Sessions in this group */}
-              {isExpanded && group.sessions.map(renderSession)}
+              {isExpanded && group.sessions.map((s) => renderSession(s))}
             </div>
           );
         })}
+        {/* Coms section — AFTER the sessions, not above them. A session shows up
+            both here (under its project) and in its directory group: rows are
+            cheap, and the cross-reference is the point. Each project collapses
+            independently (namespaced keys), and the whole section can be closed. */}
+        {sortedComsProjects.length > 0 && (
+          <div className="border-t border-border mt-1">
+            <div
+              className="flex items-center gap-1.5 px-3 py-2 cursor-pointer text-sm font-semibold text-muted-foreground hover:bg-accent/30"
+              onClick={toggleComsSection}
+              role="button"
+              aria-expanded={comsSectionOpen}
+              title={`${comsMemberCount} session${comsMemberCount === 1 ? "" : "s"} in ${sortedComsProjects.length} coms project${sortedComsProjects.length === 1 ? "" : "s"}`}
+            >
+              {comsSectionOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              <MessagesSquare className="h-3 w-3" />
+              <span className="truncate">Coms</span>
+              <span className="ml-auto flex items-center gap-1 text-[10px] font-normal">
+                {comsMemberCount}
+                {comsBusyCount > 0 && <span className="text-green-600 dark:text-green-400">●{comsBusyCount}</span>}
+              </span>
+            </div>
+            {comsSectionOpen && sortedComsProjects.map(([project, info]) => {
+              const projectKey = comsKey(project);
+              const isProjectOpen = !collapsedProjects.has(projectKey);
+              return (
+                <div key={projectKey}>
+                  <div
+                    className="flex items-center gap-1.5 pl-5 pr-3 py-1.5 cursor-pointer text-xs font-medium text-muted-foreground hover:bg-accent/30"
+                    onClick={() => toggleProject(projectKey)}
+                    role="button"
+                    aria-expanded={isProjectOpen}
+                  >
+                    {isProjectOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                    <span aria-hidden="true" className="text-cyan-700 dark:text-cyan-400/90">◆</span>
+                    <span className="truncate">{project}</span>
+                    <span className="ml-auto text-[10px] font-normal">{info.sessions.length}</span>
+                  </div>
+                  {isProjectOpen && info.sessions.map((s) => renderSession(s, true))}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </ScrollArea>
     </div>
   );
