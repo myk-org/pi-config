@@ -25,7 +25,7 @@ import { createLogger } from "../shared/logger.js";
 import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
 import { applySetting, buildSettingsPayload, mcpList, runMcp } from "./browser-ops.js";
-import { supportsImagesFor } from "../../scripts/pidash-session-state.ts";
+import { modelInfoPayload, supportsImagesFor } from "../../scripts/pidash-session-state.ts";
 
 const log = createLogger("pidash");
 
@@ -352,13 +352,7 @@ export function registerPidash(
             if (model) {
               await (pi as any).setModel(model);
               log.debug(`model set to: ${model.name}`);
-              ws.send(JSON.stringify({
-                type: "update_info",
-                model: model.name,
-                contextWindow: model.contextWindow || 0,
-                reasoning: model.reasoning === true,
-                supportsImages: supportsImagesFor(model),
-              }));
+              ws.send(JSON.stringify({ type: "update_info", ...modelInfoPayload(model) }));
             }
           } catch (e: any) { log.debug(`set-model error: ${e.message}`); }
         }
@@ -1077,13 +1071,9 @@ export function registerPidash(
         cwd: switchCtx.cwd,
         branch: getCurrentBranch(switchCtx.cwd),
         sessionFile: switchCtx.sessionManager?.getSessionFile?.() || switchCtx.sessionFile || "",
-        model: switchCtx.model?.name || switchCtx.model?.id || "",
-        // Without this the daemon keeps the PREVIOUS model's capability after a
-        // session switch, so images are dropped or sent to a model that cannot
-        // read them (Qodo 3e547c6d).
-        supportsImages: supportsImagesFor(switchCtx.model),
-        reasoning: switchCtx.model?.reasoning === true,
-        contextWindow: switchCtx.model?.contextWindow || 0,
+        // One producer for every model field, so a switch cannot omit the
+        // capability the daemon relies on (Qodo 3e547c6d / 24f50129).
+        ...modelInfoPayload(switchCtx.model),
         thinkingLevel: (pi as any).getThinkingLevel?.() || "medium",
         graftTokenSavings,
       }));

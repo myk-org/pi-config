@@ -57,7 +57,27 @@ function registeredSession(parsed: any): SessionInfo {
  * instead of four inline expressions (Qodo 24f50129).
  */
 export function supportsImagesFor(model: { input?: unknown } | null | undefined): boolean {
-  return Array.isArray(model?.input) && model.input.includes("image");
+  const supported = Array.isArray(model?.input) && model.input.includes("image");
+  log.debug("model image support", { model: (model as { name?: string } | null)?.name ?? null, supported });
+  return supported;
+}
+
+/**
+ * The model fields every payload that names a model must carry.
+ *
+ * Extracted so the SESSION SWITCH producer — not just the consumer — is covered
+ * by a test: a switch that omits the capability left the daemon holding the
+ * previous model's value (Qodo 24f50129).
+ */
+export function modelInfoPayload(
+  model: { name?: string; id?: string; input?: unknown; reasoning?: boolean; contextWindow?: number } | null | undefined,
+): { model: string; supportsImages: boolean; reasoning: boolean; contextWindow: number } {
+  return {
+    model: model?.name || model?.id || "",
+    supportsImages: supportsImagesFor(model),
+    reasoning: model?.reasoning === true,
+    contextWindow: model?.contextWindow || 0,
+  };
 }
 
 export function registerPidashSession(

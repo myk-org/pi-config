@@ -155,7 +155,17 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
     // satisfy session B's question (Qodo bb922cda). The fallback exists only for a
     // message that arrived outside any thread.
     if (sessionId) return prompts[sessionId] ?? null;
-    return Object.values(prompts)[0] ?? null;
+    // No session (a DM): answer the MOST RECENT question — the one the user is
+    // looking at — instead of "whichever session happened to be first", which
+    // could answer a different agent than the one that just asked (Qodo 4e656bb3).
+    const waiting = Object.values(prompts).sort((a, b) => b.createdAt - a.createdAt);
+    return waiting[0] ?? null;
+  }
+
+  /** Sessions with a question waiting, newest first — used to disambiguate a DM. */
+  function waitingSessions(state: ChatRuntimeState): string[] {
+    const prompts = state.pendingPrompts ?? {};
+    return Object.values(prompts).sort((a, b) => b.createdAt - a.createdAt).map((prompt) => prompt.sessionId);
   }
 
   function setPending(state: ChatRuntimeState, sessionId: string, prompt: PendingPrompt | null): void {
@@ -343,7 +353,12 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
         return "expired";
       }
       if (!isAnswerLike(prompt, text)) return "not-an-answer";
-      const ok = this.answer(state, text, reply, sessionId);
+      const waiting = waitingSessions(state);
+      // Say WHICH session was answered when the user could not tell from context.
+      const contextualReply = !sessionId && waiting.length > 1
+        ? (content: string) => reply(`${content} (session: ${prompt.sessionId})`)
+        : reply;
+      const ok = this.answer(state, text, contextualReply, prompt.sessionId);
       if (!ok) return "not-an-answer";
       return mapAnswer(prompt, text).kind === "cancel" ? "cancelled" : "answered";
     },

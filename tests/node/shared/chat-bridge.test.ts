@@ -340,3 +340,38 @@ describe("review regressions: echo queue and cross-thread answers", () => {
     assert.deepEqual(payloads.at(-1), { sessionId: "a", type: "extension_ui_response", id: "q-a", confirmed: true });
   });
 });
+
+describe("DM disambiguation with several waiting prompts (Qodo 4e656bb3)", () => {
+  it("answers the most recent question, and says which session it answered", () => {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("a", { channelId: "dm" });
+    state.targets = { a: { channelId: "dm" }, b: { channelId: "dm" } };
+    const payloads: Array<Record<string, unknown>> = [];
+    const replies: string[] = [];
+    const bridge = createChatBridge({
+      adapter: mem.adapter, users: () => new Map([["u", state]]).entries(),
+      sendToSession: (id, payload) => { payloads.push({ sessionId: id, ...payload }); return true; },
+    });
+    // A asks first, B asks later; the user answers from a DM (no session id).
+    bridge.askUser("a", { id: "qa", method: "confirm", title: "A?" }, state);
+    state.pendingPrompts!.a.createdAt = Date.now() - 5000;
+    bridge.askUser("b", { id: "qb", method: "confirm", title: "B?" }, state);
+
+    assert.equal(bridge.handleInbound(state, "yes", (text) => replies.push(text)), "answered");
+    assert.deepEqual(payloads.at(-1), { sessionId: "b", type: "extension_ui_response", id: "qb", confirmed: true });
+    assert.match(replies.at(-1) ?? "", /session: b/, "the user is told which session was answered");
+    assert.equal(state.pendingPrompts?.a?.id, "qa", "the older question is untouched");
+  });
+
+  it("stays quiet when only one session is waiting", () => {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("a", { channelId: "dm" });
+    const replies: string[] = [];
+    const bridge = createChatBridge({
+      adapter: mem.adapter, users: () => new Map([["u", state]]).entries(), sendToSession: () => true,
+    });
+    bridge.askUser("a", { id: "qa", method: "confirm", title: "A?" }, state);
+    bridge.handleInbound(state, "yes", (text) => replies.push(text));
+    assert.equal(replies.at(-1), "Answer sent.");
+  });
+});

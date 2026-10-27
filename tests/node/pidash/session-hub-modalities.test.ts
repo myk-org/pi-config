@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createPidashSessionState, supportsImagesFor, updatePidashSession } from "../../../scripts/pidash-session-state.ts";
+import { createPidashSessionState, modelInfoPayload, supportsImagesFor, updatePidashSession } from "../../../scripts/pidash-session-state.ts";
 
 const noopWs = { send: () => {}, readyState: 1 };
 
@@ -48,5 +48,21 @@ describe("image modality producer (Qodo 24f50129)", () => {
     assert.equal(supportsImagesFor({}), false, "no input list means no image support");
     assert.equal(supportsImagesFor(null), false);
     assert.equal(supportsImagesFor(undefined), false);
+  });
+});
+
+describe("model payload producer on session switch (Qodo 24f50129)", () => {
+  it("builds every model field a switch must carry", () => {
+    const payload = modelInfoPayload({ name: "GLM 5.3", input: ["text"], reasoning: true, contextWindow: 262144 });
+    assert.deepEqual(payload, { model: "GLM 5.3", supportsImages: false, reasoning: true, contextWindow: 262144 });
+  });
+
+  it("falls back to the model id and reports no image support without a list", () => {
+    const payload = modelInfoPayload({ id: "plain-model" });
+    assert.deepEqual(payload, { model: "plain-model", supportsImages: false, reasoning: false, contextWindow: 0 });
+  });
+
+  it("handles a switch with no model at all", () => {
+    assert.deepEqual(modelInfoPayload(null), { model: "", supportsImages: false, reasoning: false, contextWindow: 0 });
   });
 });
