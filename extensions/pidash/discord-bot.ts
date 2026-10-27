@@ -17,6 +17,7 @@ import {
   describeSkippedAttachment,
   fetchAttachment,
   formatKB,
+  imageSupportNote,
   MAX_IMAGE_BYTES,
   MAX_INLINE_TEXT_BYTES,
 } from "../shared/chat/chat-attachments.ts";
@@ -908,6 +909,14 @@ export function setupDiscordBot(opts: {
       if (described) notes.push(described);
     }
 
+    // A model without image input cannot use what we just downloaded; say so
+    // rather than sending a prompt that silently fails.
+    const imageNote = imageSupportNote(client.session?.supportsImages, images.length);
+    if (imageNote) {
+      notes.push(imageNote);
+      images.length = 0;
+    }
+
     if (!text && images.length === 0 && notes.length === 0) return;
 
     const fullText = notes.length ? (text ? `${text}\n\n` : "") + notes.join("\n\n") : text;
@@ -915,7 +924,12 @@ export function setupDiscordBot(opts: {
     state.render.expectedEcho = fullText;
     client.ws.send(JSON.stringify({ type: "prompt", text: fullText, images: images.length ? images : undefined }));
     log.info("prompt forwarded from discord", {
-      userId, session: sessionName(targetSessionId), chars: fullText.length, images: images.length,
+      userId,
+      session: sessionName(targetSessionId),
+      chars: fullText.length,
+      images: images.length,
+      // Visible here so a live upload proves the modality field reached us.
+      supportsImages: client.session?.supportsImages ?? null,
     });
   });
 

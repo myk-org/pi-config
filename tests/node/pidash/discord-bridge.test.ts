@@ -11,6 +11,7 @@ import {
   classifyAttachment,
   describeSkippedAttachment,
   fetchAttachment,
+  imageSupportNote,
   MAX_IMAGE_BYTES,
   MAX_INLINE_TEXT_BYTES,
   formatKB,
@@ -470,5 +471,19 @@ describe("discord attachment download (Qodo bdb68b09)", () => {
 
   it("returns null when the fetch itself fails", async () => {
     assert.equal(await fetchAttachment("https://cdn.example/x", 100, async () => { throw new Error("boom"); }), null);
+  });
+});
+
+describe("image modality guard", () => {
+  it("says nothing when the model accepts images or none were sent", () => {
+    assert.equal(imageSupportNote(true, 1), null);
+    assert.equal(imageSupportNote(undefined, 1), null, "unknown capability is not a refusal");
+    assert.equal(imageSupportNote(false, 0), null);
+  });
+
+  it("tells the user when the watched model cannot read images", () => {
+    const note = imageSupportNote(false, 2);
+    assert.match(note ?? "", /2 images not sent/);
+    assert.match(note ?? "", /does not accept image input/);
   });
 });

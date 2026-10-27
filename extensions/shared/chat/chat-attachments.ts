@@ -126,3 +126,19 @@ export async function fetchAttachment(
     clearTimeout(timer);
   }
 }
+
+/**
+ * What to tell the user when images arrive but the watched model cannot read
+ * them.
+ *
+ * Without this the image was forwarded anyway and failed downstream, with the
+ * prompt looking accepted. Returns `null` when images are fine.
+ */
+export function imageSupportNote(
+  supportsImages: boolean | undefined,
+  imageCount: number,
+): string | null {
+  if (imageCount <= 0) return null;
+  if (supportsImages !== false) return null;
+  return `[${imageCount} image${imageCount === 1 ? "" : "s"} not sent — the watched session's model does not accept image input]`;
+}

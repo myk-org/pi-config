@@ -4587,7 +4587,7 @@ Any prompt can be dismissed with `/cancel`. A prompt that is not answered **expi
 
 | Kind | Behaviour |
 |---|---|
-| Images ≤ 8MB | forwarded to the agent as images |
+| Images ≤ 8MB | forwarded to the agent as images — **only if the watched session's model accepts image input**; otherwise you are told they were not sent |
 | Text-like files ≤ 100KB | inlined into the prompt |
 | Larger or binary files | named in the prompt, with the reason they were not included |
 

@@ -351,7 +351,13 @@ export function registerPidash(
             if (model) {
               await (pi as any).setModel(model);
               log.debug(`model set to: ${model.name}`);
-              ws.send(JSON.stringify({ type: "update_info", model: model.name, contextWindow: model.contextWindow || 0, reasoning: model.reasoning === true }));
+              ws.send(JSON.stringify({
+                type: "update_info",
+                model: model.name,
+                contextWindow: model.contextWindow || 0,
+                reasoning: model.reasoning === true,
+                supportsImages: Array.isArray(model.input) && model.input.includes("image"),
+              }));
             }
           } catch (e: any) { log.debug(`set-model error: ${e.message}`); }
         }
@@ -707,6 +713,7 @@ export function registerPidash(
           container: isContainer(),
           model: m?.name || m?.id || "",
           reasoning: m?.reasoning === true,
+          supportsImages: Array.isArray(m?.input) && m.input.includes("image"),
           contextWindow: m?.contextWindow || 0,
           startedAt: new Date().toISOString(),
           activity,
