@@ -74,6 +74,10 @@ export function useMessageHandler(
             setSession((prev) => {
               if (prev?.sessionId === ev.session!.sessionId) {
                 if (ev.session!.model !== undefined) setModel(ev.session!.model);
+                // Keep the Stop button in step with the daemon: turns started
+                // or settled outside this browser (TUI, another tab) change
+                // the streaming flag with no agent_start/agent_settled here.
+                if (ev.session!.streaming !== undefined) setStreaming(ev.session!.streaming);
                 return { ...prev, ...ev.session };
               }
               return prev;

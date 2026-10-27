@@ -156,12 +156,20 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
       <div className="relative min-w-[9rem] max-w-[22rem] shrink max-md:min-w-0 max-md:max-w-[90px]">
         <button
           className="flex items-center gap-1 font-semibold text-foreground hover:text-primary transition-colors min-w-0 w-full"
+          aria-haspopup="menu"
+          aria-expanded={openMenu === "models"}
+          aria-controls="model-menu"
           onClick={(e) => toggleMenu("models", e)}
         >
           <Bot className="h-3.5 w-3.5 shrink-0" /> <span className="truncate min-w-0">{displayModel}</span> <ChevronDown className="h-3 w-3 shrink-0" />
         </button>
         {openMenu === "models" && (
-          <div className="absolute bottom-full left-0 mb-1 z-50 bg-card border border-border rounded-lg shadow-xl py-1 min-w-[200px] max-h-60 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+          <div
+            id="model-menu"
+            role="menu"
+            className="absolute bottom-full left-0 mb-1 z-50 bg-card border border-border rounded-lg shadow-xl py-1 min-w-[200px] max-h-60 overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="px-2 py-1">
               <input
                 ref={openMenu === "models" ? filterRef : undefined}

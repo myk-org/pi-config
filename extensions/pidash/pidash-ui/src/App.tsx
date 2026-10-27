@@ -110,7 +110,11 @@ export function App() {
       setModel(s.model || "");
       setTokens(null);
     }
-    setStreaming(false);
+    // Adopt the daemon's streaming truth instead of assuming idle: a page
+    // reloaded mid-turn never receives the agent_start that would have set
+    // this, and the Stop button is the ONLY abort path now that no key is
+    // bound to abort — guessing "idle" would strand a running turn.
+    setStreaming(s.streaming === true || s.activity === "working");
     setQueuedCount(0);
     setSearchQuery("");
     setSearchType("all");

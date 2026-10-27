@@ -34,6 +34,9 @@ export function KeybindingSettings({ bindings, onUpdate, onReset, onClose }: Pro
   }, [recording, handleKeyCapture]);
 
   const formatKey = (key: string) => {
+    if (!key) {
+      return <span className="text-xs italic text-muted-foreground">Not set</span>;
+    }
     return key.split("+").map((part, i) => (
       <span key={i}>
         {i > 0 && <span className="text-muted-foreground mx-0.5">+</span>}

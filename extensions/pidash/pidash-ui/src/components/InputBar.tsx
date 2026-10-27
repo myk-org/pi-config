@@ -155,7 +155,7 @@ export function InputBar({ disabled, streaming, onSend, onAbort, commands = [] }
         <textarea
           ref={ref}
           rows={1}
-          placeholder={disabled ? "Session inactive" : streaming ? "Press Esc to stop..." : "Send a message... (/ for commands)"}
+          placeholder={disabled ? "Session inactive" : streaming ? "Working... press ■ to stop" : "Send a message... (/ for commands)"}
           disabled={disabled}
           autoComplete="off"
           className="flex-1 font-mono text-sm bg-card border border-border rounded-md px-3 py-2 outline-none focus:border-primary resize-none text-base md:text-sm"
@@ -201,11 +201,11 @@ export function InputBar({ disabled, streaming, onSend, onAbort, commands = [] }
           onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
         />
         {streaming ? (
-          <Button size="sm" variant="destructive" onClick={onAbort} title="Stop (Esc)" className="mb-0.5">
+          <Button size="sm" variant="destructive" onClick={onAbort} title="Stop the running turn" aria-label="Stop" className="mb-0.5">
             <Square className="h-4 w-4" />
           </Button>
         ) : (
-          <Button size="sm" onClick={handleSend} disabled={disabled} className="mb-0.5">
+          <Button size="sm" onClick={handleSend} disabled={disabled} title="Send" aria-label="Send" className="mb-0.5">
             <Send className="h-4 w-4" />
           </Button>
         )}

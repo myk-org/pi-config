@@ -67,14 +67,14 @@ function key(target: any, value: string) {
 describe("InfoBar thinking selector", () => {
   it("renders only for reasoning-capable sessions", async () => {
     const view = await renderInfoBar(session({ reasoning: false }));
-    assert.equal(elements(view.container, "button").some((item: any) => item.getAttribute("aria-haspopup") === "menu"), false);
+    assert.equal(elements(view.container, "button").some((item: any) => item.getAttribute("aria-controls") === "thinking-level-menu"), false);
     await view.rerender(session({ reasoning: true }));
-    assert.equal(elements(view.container, "button").some((item: any) => item.getAttribute("aria-haspopup") === "menu"), true);
+    assert.equal(elements(view.container, "button").some((item: any) => item.getAttribute("aria-controls") === "thinking-level-menu"), true);
   });
 
   it("supports keyboard navigation", async () => {
     const view = await renderInfoBar(session({ reasoning: true, thinkingLevel: "medium" }));
-    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-haspopup") === "menu");
+    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-controls") === "thinking-level-menu");
     await act(async () => key(trigger, "ArrowDown"));
     await act(async () => new Promise((resolve) => setTimeout(resolve, 1)));
     assert.equal(view.document.activeElement.textContent.trim(), "medium");
@@ -85,7 +85,7 @@ describe("InfoBar thinking selector", () => {
   it("dispatches keyboard selection", async () => {
     const sent: object[] = [];
     const view = await renderInfoBar(session({ reasoning: true, thinkingLevel: "medium" }), (data) => sent.push(data));
-    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-haspopup") === "menu");
+    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-controls") === "thinking-level-menu");
     await act(async () => key(trigger, "ArrowDown"));
     await act(async () => new Promise((resolve) => setTimeout(resolve, 1)));
     await act(async () => key(view.document.activeElement, "End"));
@@ -95,7 +95,7 @@ describe("InfoBar thinking selector", () => {
 
   it("restores trigger focus after selection", async () => {
     const view = await renderInfoBar(session({ reasoning: true, thinkingLevel: "medium" }));
-    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-haspopup") === "menu");
+    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-controls") === "thinking-level-menu");
     await act(async () => key(trigger, "ArrowDown"));
     await act(async () => new Promise((resolve) => setTimeout(resolve, 1)));
     await act(async () => view.document.activeElement.dispatchEvent(new MouseEvent("click", { bubbles: true })));
@@ -105,7 +105,7 @@ describe("InfoBar thinking selector", () => {
 
   it("restores trigger focus when Escape closes the menu", async () => {
     const view = await renderInfoBar(session({ reasoning: true, thinkingLevel: "high" }));
-    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-haspopup") === "menu");
+    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-controls") === "thinking-level-menu");
     await act(async () => trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await act(async () => new Promise((resolve) => setTimeout(resolve, 1)));
     assert.equal(view.document.activeElement.textContent.trim(), "high");
@@ -114,10 +114,37 @@ describe("InfoBar thinking selector", () => {
     assert.equal(trigger.getAttribute("aria-expanded"), "false");
   });
 
+  it("model menu is a real menu: its trigger's aria-controls resolves", async () => {
+    // The trigger points at #model-menu; a dangling reference tells screen
+    // readers and tests nothing about what opened.
+    const view = await renderInfoBar(session());
+    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-controls") === "model-menu");
+    assert.ok(trigger, "model trigger exposes aria-controls");
+    await act(async () => trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 1)));
+    assert.equal(trigger.getAttribute("aria-expanded"), "true");
+    // The shim exposes a node tree, not a live DOM — traverse it like the
+    // other tests here instead of calling querySelector.
+    const menu = elements(view.container, "div").find((item: any) => item.getAttribute("id") === "model-menu");
+    assert.ok(menu, "#model-menu exists while open");
+    assert.equal(menu!.getAttribute("role"), "menu");
+  });
+
+  it("Escape closes the model menu", async () => {
+    const view = await renderInfoBar(session());
+    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-controls") === "model-menu");
+    await act(async () => trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 1)));
+    await act(async () => view.document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+    assert.equal(trigger.getAttribute("aria-expanded"), "false");
+    const stillOpen = elements(view.container, "div").some((item: any) => item.getAttribute("id") === "model-menu");
+    assert.equal(stillOpen, false, "menu removed from the tree");
+  });
+
   it("updates reasoning visibility", async () => {
     const view = await renderInfoBar(session({ reasoning: false, thinkingLevel: "xhigh" }));
     await view.rerender(session({ reasoning: true, thinkingLevel: "xhigh" }));
-    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-haspopup") === "menu");
+    const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-controls") === "thinking-level-menu");
     assert.match(trigger?.textContent ?? "", /xhigh/);
   });
 

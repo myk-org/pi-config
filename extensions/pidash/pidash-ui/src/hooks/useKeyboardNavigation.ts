@@ -1,5 +1,5 @@
 import { useEffect, type Dispatch, type SetStateAction } from "react";
-import { matchesKeybinding } from "@/hooks/useKeybindings";
+import { isAbortKey, matchesKeybinding } from "@/hooks/useKeybindings";
 import type { SessionInfo } from "@/types";
 
 export function useKeyboardNavigation(opts: {
@@ -22,7 +22,9 @@ export function useKeyboardNavigation(opts: {
       const tag = (e.target as HTMLElement)?.tagName;
       const isInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 
-      if (matchesKeybinding(e, getKey("abort"))) {
+      // Abort is unbound by default, so this never fires on Escape (menus
+      // dismiss with it constantly); the composer's Stop button aborts.
+      if (isAbortKey(e, getKey("abort"))) {
         if (streaming && session) { e.preventDefault(); handleAbort(); }
         if (showSwitcher) { e.preventDefault(); setShowSwitcher(false); }
         if (showSettings) { e.preventDefault(); setShowSettings(false); }
