@@ -74,7 +74,15 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
   const cache = tokens?.cacheRead || 0;
   const pct = Math.round((input / ctxWin) * 100);
   const pctColor = pct > 80 ? "text-red-500" : pct > 50 ? "text-orange-400" : "";
-  const displayModel = model || session.model || "—";
+  const sessionModel = model || session.model || "";
+  // `session.model` carries the model ID; the discovered list carries the
+  // display name. Resolve the name so a long id never becomes the label
+  // (reconnect and session-switch paths only have the id). When only an id is
+  // known, drop the provider prefix — "rits/deepseek-ai/DeepSeek-V4.1-Flash"
+  // truncates to "rits/dee…" in a narrow slot while the leaf name stays legible.
+  const displayModel = sessionModel
+    ? models.find((m) => m.id === sessionModel)?.name || sessionModel.split("/").filter(Boolean).pop() || sessionModel
+    : "—";
 
   // Reset async agents and cron tasks when session changes
   useEffect(() => {
@@ -145,12 +153,12 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
           never resize the chat frame above. */}
       <div className="flex items-center gap-3 min-w-0 shrink">
       {/* Model */}
-      <div className="relative min-w-0 shrink max-w-full max-md:max-w-[90px]">
+      <div className="relative min-w-[9rem] max-w-[22rem] shrink max-md:min-w-0 max-md:max-w-[90px]">
         <button
-          className="flex items-center gap-1 font-semibold text-foreground hover:text-primary transition-colors min-w-0"
+          className="flex items-center gap-1 font-semibold text-foreground hover:text-primary transition-colors min-w-0 w-full"
           onClick={(e) => toggleMenu("models", e)}
         >
-          <Bot className="h-3.5 w-3.5 shrink-0" /> <span className="truncate">{displayModel}</span> <ChevronDown className="h-3 w-3 shrink-0" />
+          <Bot className="h-3.5 w-3.5 shrink-0" /> <span className="truncate min-w-0">{displayModel}</span> <ChevronDown className="h-3 w-3 shrink-0" />
         </button>
         {openMenu === "models" && (
           <div className="absolute bottom-full left-0 mb-1 z-50 bg-card border border-border rounded-lg shadow-xl py-1 min-w-[200px] max-h-60 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
@@ -258,6 +266,13 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
           controls — model, thinking, sessions, action icons — must fit a
           phone-width column; Qodo R3). Model/thinking dropdowns stay OUTSIDE
           it so their absolute menus are never clipped by a scroll container. */}
+      {/* Context gauge — OUTSIDE the scrolling strip below: compaction
+          proximity must stay visible even when the token counters are
+          scrolled out of view in a narrow bar. */}
+      <span className={cn("tabular-nums inline-block min-w-[4em] text-right shrink-0", pctColor)} title={`Context window usage: ${input.toLocaleString()} / ${ctxWin.toLocaleString()} tokens`}>ctx {pct}%</span>
+
+      <span className="text-border shrink-0">|</span>
+
       <div className="flex items-center gap-3 min-w-0 shrink overflow-x-auto scrollbar-none max-md:hidden">
       {/* Tokens — fixed min-widths + titles: values change digit counts and
           conditional segments (📦/🧠) appear per message, but a fixed-height
@@ -270,10 +285,6 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         {(tokens?.reasoning ?? 0) > 0 && <span className="inline-block min-w-[3.5em] text-right" title={`Reasoning tokens: ${(tokens!.reasoning ?? 0).toLocaleString()}`}> 🧠{fk(tokens!.reasoning!)}</span>}
       </span>
 
-      <span className="text-border shrink-0">|</span>
-
-      {/* Context */}
-      <span className={cn("tabular-nums inline-block min-w-[4em] text-right shrink-0", pctColor)} title={`Context window usage: ${input.toLocaleString()} / ${ctxWin.toLocaleString()} tokens`}>ctx {pct}%</span>
 
       {session.graftTokenSavings !== undefined && (
         <>

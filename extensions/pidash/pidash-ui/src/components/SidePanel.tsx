@@ -109,8 +109,10 @@ export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMe
   }, [send, session.sessionId]);
 
   return (
+    // Phone drawer (max-md) is FULL WIDTH and opaque: at 95% the session list
+    // behind it stayed faintly legible and read as panel content.
     <div
-      className="relative w-[var(--panel-w)] max-md:w-full max-md:absolute max-md:inset-0 max-md:z-30 flex-shrink-0 border-l border-border flex flex-col bg-background max-md:bg-background/95"
+      className="relative w-[var(--panel-w)] max-md:w-full max-md:absolute max-md:inset-0 max-md:z-30 flex-shrink-0 border-l border-border flex flex-col bg-background"
       // Width via CSS variable, not an inline width: the max-md:w-full
       // variant must be able to override it on phones — an inline style would
       // win the cascade and clamp the mobile drawer to the saved desktop
