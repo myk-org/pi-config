@@ -81,7 +81,7 @@ repos:
         entry: >-
           bash -c 'test -f node_modules/.bin/tsx || { echo "node-tests: run npm install first"; exit 1; }; env -u GIT_INDEX_FILE -u GIT_PREFIX -u GIT_DIR -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_NAME npx tsx --test "tests/node/**/*.test.ts"'
         pass_filenames: false
-        files: \.(ts|tsx|mts)$|^(package\.json|tsconfig\.typecheck\.json)$
+        files: \.(ts|tsx|mts)$|(^|/)(package\.json|tsconfig\.typecheck\.json)$
       - id: sidecar-tests
         name: npx tsx --test packages/pi-sidecar/tests/test_ts/*.test.ts
         language: system
@@ -90,7 +90,7 @@ repos:
         pass_filenames: false
         # extensions/shared/ is consumed by the sidecar: its changes must be
         # covered by the sidecar suite, not just by tests/node.
-        files: \.(ts|tsx|mts)$|^(package\.json|tsconfig\.typecheck\.json)$
+        files: \.(ts|tsx|mts)$|(^|/)(package\.json|tsconfig\.typecheck\.json)$
   - repo: local
     hooks:
       - id: tsc-typecheck
@@ -106,7 +106,7 @@ repos:
         # files filter only decides WHEN it runs, not WHAT it checks. Covers
         # .ts/.tsx/.mts (incl. .d.mts declarations), tsconfigs, and package.json
         # (dependency changes can break compilation) — Qodo PR #954.
-        files: \.(ts|tsx|mts)$|^(tsconfig\.typecheck\.json|package\.json)$|/tsconfig\.json$
+        files: \.(ts|tsx|mts)$|(^|/)(tsconfig\.typecheck\.json|package\.json)$|/tsconfig\.json$
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.44.0
