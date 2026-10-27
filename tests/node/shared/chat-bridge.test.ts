@@ -342,7 +342,7 @@ describe("review regressions: echo queue and cross-thread answers", () => {
 });
 
 describe("DM disambiguation with several waiting prompts (Qodo 4e656bb3)", () => {
-  it("answers the most recent question, and says which session it answered", () => {
+  function twoWaiting() {
     const mem = memoryAdapter();
     const state = initialChatRuntime("a", { channelId: "dm" });
     state.targets = { a: { channelId: "dm" }, b: { channelId: "dm" } };
@@ -356,11 +356,20 @@ describe("DM disambiguation with several waiting prompts (Qodo 4e656bb3)", () =>
     bridge.askUser("a", { id: "qa", method: "confirm", title: "A?" }, state);
     state.pendingPrompts!.a.createdAt = Date.now() - 5000;
     bridge.askUser("b", { id: "qb", method: "confirm", title: "B?" }, state);
+    return { bridge, state, payloads, replies };
+  }
 
+  it("answers the MOST RECENT question when a DM has several waiting", () => {
+    const { bridge, state, payloads, replies } = twoWaiting();
     assert.equal(bridge.handleInbound(state, "yes", (text) => replies.push(text)), "answered");
     assert.deepEqual(payloads.at(-1), { sessionId: "b", type: "extension_ui_response", id: "qb", confirmed: true });
-    assert.match(replies.at(-1) ?? "", /session: b/, "the user is told which session was answered");
     assert.equal(state.pendingPrompts?.a?.id, "qa", "the older question is untouched");
+  });
+
+  it("names the session it answered when several are waiting", () => {
+    const { bridge, state, replies } = twoWaiting();
+    bridge.handleInbound(state, "yes", (text) => replies.push(text));
+    assert.match(replies.at(-1) ?? "", /session: b/);
   });
 
   it("stays quiet when only one session is waiting", () => {

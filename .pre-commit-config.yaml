@@ -67,6 +67,32 @@ repos:
 
   - repo: local
     hooks:
+      # The Definition of Done requires these suites; before this hook nothing ran
+      # them — no CI workflow exists in this repo and the gate only typechecked
+      # (Qodo 775217d5). Scoped to .ts changes so docs-only commits stay fast.
+      - id: node-tests
+        name: npx tsx --test tests/node/**/*.test.ts
+        language: system
+        # Git exports GIT_INDEX_FILE (a RELATIVE .git/index) and GIT_PREFIX into
+        # hooks; tests that create temp worktrees inherit them and fail with
+        # "index file open failed: Not a directory". PI_SUBAGENT_CHILD makes the
+        # subagent tool early-return, failing the subagent tests from an agent
+        # session. Strip both so the gate behaves the same for every committer.
+        entry: >-
+          bash -c 'test -f node_modules/.bin/tsx || { echo "node-tests: run npm install first"; exit 1; }; env -u GIT_INDEX_FILE -u GIT_PREFIX -u GIT_DIR -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_NAME npx tsx --test "tests/node/**/*.test.ts"'
+        pass_filenames: false
+        files: \.(ts|tsx|mts)$|^(package\.json|tsconfig\.typecheck\.json)$
+      - id: sidecar-tests
+        name: npx tsx --test packages/pi-sidecar/tests/test_ts/*.test.ts
+        language: system
+        entry: >-
+          bash -c 'test -f node_modules/.bin/tsx || { echo "sidecar-tests: run npm install first"; exit 1; }; env -u GIT_INDEX_FILE -u GIT_PREFIX -u GIT_DIR -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_NAME npx tsx --test packages/pi-sidecar/tests/test_ts/*.test.ts'
+        pass_filenames: false
+        # extensions/shared/ is consumed by the sidecar: its changes must be
+        # covered by the sidecar suite, not just by tests/node.
+        files: \.(ts|tsx|mts)$|^(package\.json|tsconfig\.typecheck\.json)$
+  - repo: local
+    hooks:
       - id: tsc-typecheck
         name: npm run typecheck (repo TypeScript gate, issue #951)
         language: system
