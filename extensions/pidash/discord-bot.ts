@@ -487,6 +487,9 @@ export function setupDiscordBot(opts: {
         // Threads are what hydration rebuilds targets from: keeping them meant a
         // disconnected session resumed streaming after a restart (Qodo 267001b4).
         state.threads = {};
+        // Stale stream ids pointed at messages in the threads we just forgot, so
+        // re-watching in a new thread edited the old message (Qodo d6a4636c).
+        state.streams = {};
         persist();
         await acknowledge(interaction, "Disconnected.");
         return;
@@ -898,7 +901,10 @@ export function setupDiscordBot(opts: {
       }
       // Clearing locally left the agent waiting forever: the cancelled response
       // has to travel back through ui-bridge (Qodo 7e102371).
-      bridge.answer(state, "/cancel", (content) => void message.reply(content).catch(() => {}), threadSessionId ?? state.watchedSessionId ?? undefined);
+      // Only a THREAD names a session. A DM is session-agnostic: passing the
+      // watched session made an older session's question unreachable (Qodo
+      // d9b80852).
+      bridge.answer(state, "/cancel", (content) => void message.reply(content).catch(() => {}), threadSessionId ?? undefined);
       return;
     }
 
@@ -906,7 +912,7 @@ export function setupDiscordBot(opts: {
       const outcome = bridge.handleInbound(
         state, text,
         (content) => void message.reply(content).catch(() => {}),
-        threadSessionId ?? state.watchedSessionId ?? undefined,
+        threadSessionId ?? undefined,
       );
       if (outcome === "answered" || outcome === "cancelled") return;
       if (outcome === "expired") {

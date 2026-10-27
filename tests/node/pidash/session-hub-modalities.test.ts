@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createPidashSessionState, updatePidashSession } from "../../../scripts/pidash-session-state.ts";
+import { createPidashSessionState, supportsImagesFor, updatePidashSession } from "../../../scripts/pidash-session-state.ts";
 
 const noopWs = { send: () => {}, readyState: 1 };
 
@@ -38,5 +38,15 @@ describe("session hub image modality", () => {
     const session: any = { sessionId: "s1", supportsImages: true };
     updatePidashSession(session, { type: "update_info", supportsImages: "yes" });
     assert.equal(session.supportsImages, true);
+  });
+});
+
+describe("image modality producer (Qodo 24f50129)", () => {
+  it("derives the capability from the model's input list", () => {
+    assert.equal(supportsImagesFor({ input: ["text", "image"] }), true);
+    assert.equal(supportsImagesFor({ input: ["text"] }), false);
+    assert.equal(supportsImagesFor({}), false, "no input list means no image support");
+    assert.equal(supportsImagesFor(null), false);
+    assert.equal(supportsImagesFor(undefined), false);
   });
 });

@@ -278,3 +278,65 @@ describe("concurrent sessions do not merge streams (Qodo be90d322)", () => {
     assert.ok(sent.some((entry) => entry.channelId === "thread-b"));
   });
 });
+
+describe("review regressions: echo queue and cross-thread answers", () => {
+  it("keeps every forwarded prompt in the echo queue, including identical text", async () => {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("s1", { channelId: "c" });
+    const sent: string[] = [];
+    const adapter = { ...mem.adapter, async sendText(_t: ChatTarget, text: string) { sent.push(text); return "m"; } };
+    const bridge = createChatBridge({ adapter, users: () => new Map([["u", state]]).entries(), sendToSession: () => true });
+
+    // two prompts before either echo arrives, with the SAME text
+    bridge.expectEcho(state, "s1", "status");
+    bridge.expectEcho(state, "s1", "status");
+    assert.equal(state.streams?.s1.pendingEchoes?.length, 2, "both markers are queued");
+
+    bridge.onPiEvent("s1", { type: "message_start", message: { role: "user", content: [{ type: "text", text: "status" }] } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(sent.filter((entry) => entry.includes("USER:")).length, 0, "first echo suppressed");
+    assert.equal(state.streams?.s1.pendingEchoes?.length, 1, "one marker consumed");
+
+    bridge.onPiEvent("s1", { type: "message_start", message: { role: "user", content: [{ type: "text", text: "status" }] } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(sent.filter((entry) => entry.includes("USER:")).length, 0, "second echo suppressed too");
+    assert.equal(state.streams?.s1.pendingEchoes?.length, 0);
+  });
+
+  it("answers the prompt of the session the message names", () => {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("a", { channelId: "ta", threadId: "ta" });
+    state.targets = { a: { channelId: "ta", threadId: "ta" }, b: { channelId: "tb", threadId: "tb" } };
+    const payloads: Array<Record<string, unknown>> = [];
+    const bridge = createChatBridge({
+      adapter: mem.adapter, users: () => new Map([["u", state]]).entries(),
+      sendToSession: (id, payload) => { payloads.push({ sessionId: id, ...payload }); return true; },
+    });
+    bridge.askUser("a", { id: "qa", method: "confirm", title: "A?" }, state);
+    bridge.askUser("b", { id: "qb", method: "confirm", title: "B?" }, state);
+
+    // a reply in thread A must answer A and leave B waiting
+    assert.equal(bridge.handleInbound(state, "yes", () => {}, "a"), "answered");
+    assert.deepEqual(payloads.at(-1), { sessionId: "a", type: "extension_ui_response", id: "qa", confirmed: true });
+    assert.equal(state.pendingPrompts?.b?.id, "qb", "session B still waiting");
+
+    // and the reverse: a reply in thread B answers B, not A
+    assert.equal(bridge.handleInbound(state, "no", () => {}, "b"), "answered");
+    assert.deepEqual(payloads.at(-1), { sessionId: "b", type: "extension_ui_response", id: "qb", confirmed: false });
+  });
+
+  it("a DM (no session) still reaches the one pending prompt", () => {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("a", { channelId: "dm" });
+    const payloads: Array<Record<string, unknown>> = [];
+    const bridge = createChatBridge({
+      adapter: mem.adapter, users: () => new Map([["u", state]]).entries(),
+      sendToSession: (id, payload) => { payloads.push({ sessionId: id, ...payload }); return true; },
+    });
+    // The question belongs to the watched session (a target always exists there);
+    // the user then answers from the DM, which carries no thread/session id.
+    bridge.askUser("a", { id: "q-a", method: "confirm", title: "Proceed?" }, state);
+    assert.equal(bridge.handleInbound(state, "yes", () => {}), "answered");
+    assert.deepEqual(payloads.at(-1), { sessionId: "a", type: "extension_ui_response", id: "q-a", confirmed: true });
+  });
+});

@@ -25,6 +25,7 @@ import { createLogger } from "../shared/logger.js";
 import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
 import { applySetting, buildSettingsPayload, mcpList, runMcp } from "./browser-ops.js";
+import { supportsImagesFor } from "../../scripts/pidash-session-state.ts";
 
 const log = createLogger("pidash");
 
@@ -356,7 +357,7 @@ export function registerPidash(
                 model: model.name,
                 contextWindow: model.contextWindow || 0,
                 reasoning: model.reasoning === true,
-                supportsImages: Array.isArray(model.input) && model.input.includes("image"),
+                supportsImages: supportsImagesFor(model),
               }));
             }
           } catch (e: any) { log.debug(`set-model error: ${e.message}`); }
@@ -713,7 +714,7 @@ export function registerPidash(
           container: isContainer(),
           model: m?.name || m?.id || "",
           reasoning: m?.reasoning === true,
-          supportsImages: Array.isArray(m?.input) && m.input.includes("image"),
+          supportsImages: supportsImagesFor(m),
           contextWindow: m?.contextWindow || 0,
           startedAt: new Date().toISOString(),
           activity,
@@ -1080,7 +1081,7 @@ export function registerPidash(
         // Without this the daemon keeps the PREVIOUS model's capability after a
         // session switch, so images are dropped or sent to a model that cannot
         // read them (Qodo 3e547c6d).
-        supportsImages: Array.isArray(switchCtx.model?.input) && switchCtx.model.input.includes("image"),
+        supportsImages: supportsImagesFor(switchCtx.model),
         reasoning: switchCtx.model?.reasoning === true,
         contextWindow: switchCtx.model?.contextWindow || 0,
         thinkingLevel: (pi as any).getThinkingLevel?.() || "medium",

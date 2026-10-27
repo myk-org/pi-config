@@ -49,6 +49,17 @@ function registeredSession(parsed: any): SessionInfo {
   };
 }
 
+/**
+ * Whether a model accepts image input.
+ *
+ * One helper for every payload that names a model (registration, update_info,
+ * set-model, session switch) so the producer side is a single tested function
+ * instead of four inline expressions (Qodo 24f50129).
+ */
+export function supportsImagesFor(model: { input?: unknown } | null | undefined): boolean {
+  return Array.isArray(model?.input) && model.input.includes("image");
+}
+
 export function registerPidashSession(
   sessions: Map<string, PiClient>,
   ws: any,
