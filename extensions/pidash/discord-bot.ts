@@ -610,8 +610,10 @@ export function setupDiscordBot(opts: {
   });
 
   /** Native controls (buttons/menus) answer through the engine too. */
-  function resolvePrompt(_prompt: PendingPrompt, raw: string, state: RuntimeUserState, interaction: any): void {
-    bridge.answer(state, raw, (content) => void acknowledge(interaction, content));
+  function resolvePrompt(prompt: PendingPrompt, raw: string, state: RuntimeUserState, interaction: any): void {
+    // Scoped to the prompt's session: cancelling in one thread must not stop
+    // another session's waiting agent (Qodo 1eec9a4d).
+    bridge.answer(state, raw, (content) => void acknowledge(interaction, content), prompt.sessionId);
   }
 
   /**
@@ -657,11 +659,16 @@ export function setupDiscordBot(opts: {
       }
     }
     state.threadId = threadId;
-    state.target = threadId
+    const target = threadId
       ? { channelId: threadId, threadId }
       : state.responseChannelId
         ? { channelId: state.responseChannelId, threadId: null }
         : null;
+    state.target = target;
+    // Keep the per-session target map in step: a retained thread must keep
+    // receiving its own session's output after the user switches away.
+    state.targets = state.targets ?? {};
+    if (target) state.targets[sessionId] = target;
     if (!threadId) {
       try {
         state.responseChannelId = (await interaction.user.createDM()).id;
@@ -834,7 +841,11 @@ export function setupDiscordBot(opts: {
     state.updatedAt = Date.now();
     if (!message.guildId) {
       state.responseChannelId = message.channelId;
-      if (!state.threadId) state.target = { channelId: message.channelId, threadId: null };
+      if (!state.threadId) {
+        state.target = { channelId: message.channelId, threadId: null };
+        state.targets = state.targets ?? {};
+        if (state.watchedSessionId) state.targets[state.watchedSessionId] = state.target;
+      }
     }
 
     const text = (message.content || "").trim();
@@ -857,12 +868,16 @@ export function setupDiscordBot(opts: {
       }
       // Clearing locally left the agent waiting forever: the cancelled response
       // has to travel back through ui-bridge (Qodo 7e102371).
-      bridge.answer(state, "/cancel", (content) => void message.reply(content).catch(() => {}));
+      bridge.answer(state, "/cancel", (content) => void message.reply(content).catch(() => {}), threadSessionId ?? state.watchedSessionId ?? undefined);
       return;
     }
 
     if (state.pendingPrompt) {
-      const outcome = bridge.handleInbound(state, text, (content) => void message.reply(content).catch(() => {}));
+      const outcome = bridge.handleInbound(
+        state, text,
+        (content) => void message.reply(content).catch(() => {}),
+        threadSessionId ?? state.watchedSessionId ?? undefined,
+      );
       if (outcome === "answered" || outcome === "cancelled") return;
       if (outcome === "expired") {
         await message.reply("The waiting prompt expired; sending your message as a new prompt.").catch(() => {});
@@ -921,7 +936,7 @@ export function setupDiscordBot(opts: {
 
     const fullText = notes.length ? (text ? `${text}\n\n` : "") + notes.join("\n\n") : text;
     // The engine suppresses this echo per watcher using the state's marker.
-    state.render.expectedEcho = fullText;
+    state.render.expectedEcho = { ...(state.render.expectedEcho ?? {}), [targetSessionId!]: fullText };
     client.ws.send(JSON.stringify({ type: "prompt", text: fullText, images: images.length ? images : undefined }));
     log.info("prompt forwarded from discord", {
       userId,

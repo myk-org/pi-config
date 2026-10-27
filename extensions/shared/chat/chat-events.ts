@@ -20,14 +20,14 @@ export interface RenderState {
   /** Last text pushed to the live message, to skip no-op edits. */
   streamedText: string;
   /**
-   * Prompt we forwarded that will come back as a user message. Per state, so two
-   * watchers of one session both suppress the echo instead of one consuming it.
+   * Prompt we forwarded that will come back as a user message, keyed by session:
+   * a user may watch several sessions, each with its own pending echo.
    */
-  expectedEcho?: string;
+  expectedEcho?: Record<string, string>;
 }
 
 export function initialRenderState(): RenderState {
-  return { pendingText: "", streamMessageId: null, streamedText: "", expectedEcho: undefined };
+  return { pendingText: "", streamMessageId: null, streamedText: "", expectedEcho: {} };
 }
 
 export type RenderAction =

@@ -20,7 +20,17 @@ const log = createLogger("chat-bridge");
 
 /** Per-user, per-session runtime the host owns and passes in. */
 export interface ChatRuntimeState {
+  /** Default session for messages that arrive outside any thread. */
   watchedSessionId: string | null;
+  /**
+   * sessionId -> where that session's output goes. A user may hold a thread per
+   * session, so output must follow the thread, not the "current" watch — the old
+   * single-target model sent prompts from an old thread but posted its replies
+   * nowhere (Qodo 721fc807).
+   */
+  targets?: Record<string, ChatTarget>;
+  /** Pending prompts per session: two sessions can each be waiting on an answer. */
+  pendingPrompts?: Record<string, PendingPrompt>;
   /**
    * Bumped whenever a turn's final text is published; an edit queued before that
    * point is discarded, so streaming cannot replace a finished reply (Qodo
@@ -37,6 +47,8 @@ export interface ChatRuntimeState {
 export function initialChatRuntime(watchedSessionId: string | null = null, target: ChatTarget | null = null): ChatRuntimeState {
   return {
     watchedSessionId,
+    targets: watchedSessionId && target ? { [watchedSessionId]: target } : {},
+    pendingPrompts: {},
     target,
     pendingPrompt: null,
     render: initialRenderState(),
@@ -68,9 +80,10 @@ export interface ChatBridge {
     state: ChatRuntimeState,
     text: string,
     reply: (text: string) => void,
+    sessionId?: string,
   ): "answered" | "cancelled" | "not-an-answer" | "expired" | "no-prompt";
   /** Answer a pending prompt from a native control (button/menu). */
-  answer(state: ChatRuntimeState, raw: string, reply: (text: string) => void): boolean;
+  answer(state: ChatRuntimeState, raw: string, reply: (text: string) => void, sessionId?: string): boolean;
   /** Send the agent's question to a user and remember it as pending. */
   askUser(sessionId: string, event: any, state: ChatRuntimeState): PendingPrompt | null;
 }
@@ -79,10 +92,41 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
   const { adapter } = host;
   const caps: ChatCapabilities = adapter.capabilities;
   const interval = host.streamEditIntervalMs ?? 1500;
+  /**
+   * One in-flight operation per channel. Streaming edits and the final publish
+   * used to fire without ordering, so a fast turn overlapped several sends and
+   * edits and could trip the platform's rate limit (Qodo e8b2817c).
+   */
+  const channelQueues = new Map<string, Promise<unknown>>();
+  function queued<T>(channelId: string, task: () => Promise<T>): Promise<T> {
+    const previous = channelQueues.get(channelId) ?? Promise.resolve();
+    const next = previous.then(task, task);
+    channelQueues.set(channelId, next.catch(() => undefined));
+    return next;
+  }
   const ttlMs = host.promptTtlMs ?? 10 * 60 * 1000;
 
-  function targetOf(state: ChatRuntimeState): ChatTarget | null {
-    return state.target;
+  function targetOf(state: ChatRuntimeState, sessionId: string): ChatTarget | null {
+    return state.targets?.[sessionId] ?? (state.watchedSessionId === sessionId ? state.target : null);
+  }
+
+  function sessionsFor(state: ChatRuntimeState): string[] {
+    const ids = new Set(Object.keys(state.targets ?? {}));
+    if (state.watchedSessionId) ids.add(state.watchedSessionId);
+    return [...ids];
+  }
+
+  function pendingFor(state: ChatRuntimeState, sessionId?: string): PendingPrompt | null {
+    const prompts = state.pendingPrompts ?? {};
+    if (sessionId && prompts[sessionId]) return prompts[sessionId];
+    return Object.values(prompts)[0] ?? null;
+  }
+
+  function setPending(state: ChatRuntimeState, sessionId: string, prompt: PendingPrompt | null): void {
+    state.pendingPrompts = state.pendingPrompts ?? {};
+    if (prompt) state.pendingPrompts[sessionId] = prompt;
+    else delete state.pendingPrompts[sessionId];
+    state.pendingPrompt = prompt ?? Object.values(state.pendingPrompts)[0] ?? null;
   }
 
   async function publishFinal(text: string, state: ChatRuntimeState, target: ChatTarget): Promise<void> {
@@ -92,10 +136,10 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
     state.render.streamedText = "";
     if (!chunks.length) return;
     if (liveMessageId && caps.supportsEdit && (await adapter.editText(target, liveMessageId, chunks[0]))) {
-      for (const chunk of chunks.slice(1)) await adapter.sendText(target, chunk);
+      for (const chunk of chunks.slice(1)) await queued(target.channelId, () => adapter.sendText(target, chunk));
       return;
     }
-    for (const chunk of chunks) await adapter.sendText(target, chunk);
+    for (const chunk of chunks) await queued(target.channelId, () => adapter.sendText(target, chunk));
   }
 
   return {
@@ -118,15 +162,15 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
         : "";
 
       for (const [, state] of host.users()) {
-        if (state.watchedSessionId !== sessionId) continue;
-        const target = targetOf(state);
+        if (!sessionsFor(state).includes(sessionId)) continue;
+        const target = targetOf(state, sessionId);
         if (!target) continue;
 
         // Echo suppression is decided per state, so two watchers of one session
         // both suppress (the old code consumed a shared marker once).
-        const expected = state.render.expectedEcho;
+        const expected = state.render.expectedEcho?.[sessionId];
         const suppressEcho = isUserEvent && shouldSuppressEcho(expected, userText);
-        if (suppressEcho) state.render.expectedEcho = undefined;
+        if (suppressEcho) delete state.render.expectedEcho?.[sessionId];
 
         const action = renderEvent(event, state.render);
 
@@ -142,7 +186,7 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
           state.lastStreamEdit = now;
           const text = state.render.pendingText;
           if (!state.render.streamMessageId && !state.streamSend) {
-            state.streamSend = adapter.sendText(target, streamingView(text, caps.maxMessageLength)).then((id) => {
+            state.streamSend = queued(target.channelId, () => adapter.sendText(target, streamingView(text, caps.maxMessageLength))).then((id) => {
               state.render.streamMessageId = id;
               state.render.streamedText = text;
               state.streamSend = null;
@@ -150,7 +194,7 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
             });
           } else if (state.render.streamMessageId && text !== state.render.streamedText) {
             const generation = state.renderGeneration ?? 0;
-            void adapter.editText(target, state.render.streamMessageId, text).then(() => {
+            void queued(target.channelId, () => adapter.editText(target, state.render.streamMessageId!, text)).then(() => {
               if ((state.renderGeneration ?? 0) !== generation) return; // reply already final
               state.render.streamedText = text;
             });
@@ -169,13 +213,13 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
         }
 
         if (action.kind === "tool") {
-          void adapter.sendText(target, action.text);
+          void queued(target.channelId, () => adapter.sendText(target, action.text));
           continue;
         }
 
         if (action.kind === "user") {
           if (suppressEcho) continue;
-          void adapter.sendText(target, `───\n▶ **USER:** ${userText}`);
+          void queued(target.channelId, () => adapter.sendText(target, `───\n▶ **USER:** ${userText}`));
           continue;
         }
 
@@ -191,13 +235,19 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
     onUiEvent(sessionId: string, event: any): void {
       if (event?.type === "ui-dismiss" || event?.type === "ui_prompt_end") {
         for (const [, state] of host.users()) {
-          if (!state.pendingPrompt) continue;
-          // A dismissal names its prompt; a prompt-end belongs to ONE session and
-          // must not clear every other user's question (Qodo 57dd1e20).
+          const prompts = state.pendingPrompts ?? {};
           if (event.type === "ui_prompt_end") {
-            if (state.pendingPrompt.sessionId === sessionId) state.pendingPrompt = null;
-          } else if (state.pendingPrompt.id === event.id) {
-            state.pendingPrompt = null;
+            if (prompts[sessionId]) {
+              // A prompt-end belongs to ONE session; clearing everyone's was a bug.
+              setPending(state, sessionId, null);
+              log.debug("pending prompt cleared", { reason: "ui_prompt_end", sessionId });
+            }
+            continue;
+          }
+          for (const [pendingSessionId, prompt] of Object.entries(prompts)) {
+            if (prompt.id !== event.id) continue;
+            setPending(state, pendingSessionId, null);
+            log.debug("pending prompt dismissed elsewhere", { sessionId: pendingSessionId, promptId: prompt.id });
           }
         }
         return;
@@ -209,7 +259,7 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
     },
 
     askUser(sessionId: string, event: any, state: ChatRuntimeState): PendingPrompt | null {
-      const target = targetOf(state);
+      const target = targetOf(state, sessionId);
       if (!target) return null;
       const method = (event?.method || "input") as PromptMethod;
       const prompt: PendingPrompt = {
@@ -219,28 +269,28 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
         options: method === "confirm" ? ["Yes", "No"] : Array.isArray(event.options) ? event.options : [],
         createdAt: Date.now(),
       };
-      state.pendingPrompt = prompt;
+      setPending(state, sessionId, prompt);
       const body = renderPrompt(prompt, String(event.title || "The agent is asking").slice(0, 500));
       void adapter.sendText(target, body);
       log.info("prompt forwarded to chat", { platform: adapter.platform, sessionId, method });
       return prompt;
     },
 
-    handleInbound(state, text, reply) {
-      const prompt = state.pendingPrompt;
+    handleInbound(state, text, reply, sessionId) {
+      const prompt = pendingFor(state, sessionId);
       if (!prompt) return "no-prompt";
       if (isPromptExpired(prompt, Date.now(), ttlMs)) {
-        state.pendingPrompt = null;
+        setPending(state, prompt.sessionId, null);
         return "expired";
       }
       if (!isAnswerLike(prompt, text)) return "not-an-answer";
-      const ok = this.answer(state, text, reply);
+      const ok = this.answer(state, text, reply, sessionId);
       if (!ok) return "not-an-answer";
       return mapAnswer(prompt, text).kind === "cancel" ? "cancelled" : "answered";
     },
 
-    answer(state, raw, reply) {
-      const prompt = state.pendingPrompt;
+    answer(state, raw, reply, sessionId) {
+      const prompt = pendingFor(state, sessionId);
       if (!prompt) return false;
       const answer = mapAnswer(prompt, raw);
       if (answer.kind === "reject") {
@@ -252,7 +302,7 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
         reply("The session is not connected.");
         return false;
       }
-      state.pendingPrompt = null;
+      setPending(state, prompt.sessionId, null);
       reply(answer.kind === "cancel" ? "Dismissed." : "Answer sent.");
       return true;
     },

@@ -110,7 +110,7 @@ describe("chat engine with a non-Discord adapter", () => {
 
   it("suppresses the echo of a forwarded prompt per watcher", async () => {
     const { bridge, state, sent } = setup();
-    state.render.expectedEcho = "run the tests";
+    state.render.expectedEcho = { s1: "run the tests" };
     bridge.onPiEvent("s1", { type: "message_start", message: { role: "user", content: [{ type: "text", text: "run the tests" }] } });
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(sent.filter((entry) => entry.text.includes("USER:")).length, 0);
@@ -197,5 +197,52 @@ describe("chat engine regressions found in review (R2)", () => {
     bridge.onPiEvent("s1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "late" } });
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(state.renderGeneration, generation, "no new generation without a new turn");
+  });
+});
+
+describe("multiple sessions per user (Qodo 721fc807 / 1eec9a4d)", () => {
+  function twoSessions() {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("a", { channelId: "thread-a", threadId: "thread-a" });
+    state.targets = { a: { channelId: "thread-a", threadId: "thread-a" }, b: { channelId: "thread-b", threadId: "thread-b" } };
+    const states = new Map([["u", state]]);
+    const sent: Array<{ channelId: string; text: string }> = [];
+    const adapter = { ...mem.adapter, async sendText(target: ChatTarget, text: string) { sent.push({ channelId: target.channelId, text }); return "m"; } };
+    const payloads: Array<Record<string, unknown>> = [];
+    const bridge = createChatBridge({
+      adapter, users: () => states.entries(), sendToSession: (id, payload) => { payloads.push({ sessionId: id, ...payload }); return true; },
+    });
+    return { bridge, state, sent, payloads, states, mem };
+  }
+
+  it("posts a session's output into ITS thread even while another is watched", async () => {
+    const { bridge, sent } = twoSessions();
+    bridge.onPiEvent("b", { type: "message_start", message: { role: "user", content: [{ type: "text", text: "from thread b" }] } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(sent.at(-1)?.channelId, "thread-b", "reply follows the session, not the watch");
+  });
+
+  it("keeps one pending prompt per session", () => {
+    const { bridge, state, payloads } = twoSessions();
+    bridge.askUser("a", { id: "qa", method: "confirm", title: "A?" }, state);
+    bridge.askUser("b", { id: "qb", method: "confirm", title: "B?" }, state);
+    assert.deepEqual(Object.keys(state.pendingPrompts ?? {}).sort(), ["a", "b"]);
+
+    // cancelling for session a must not touch b's prompt
+    bridge.answer(state, "/cancel", () => {}, "a");
+    assert.equal(state.pendingPrompts?.b?.id, "qb");
+    assert.equal(state.pendingPrompts?.a, undefined);
+    assert.deepEqual(payloads.at(-1), { sessionId: "a", type: "extension_ui_response", id: "qa", cancelled: true });
+  });
+
+  it("expires a prompt without clearing the other session's", () => {
+    const { bridge, state } = twoSessions();
+    const stale = { id: "old", sessionId: "b", method: "confirm" as const, options: ["Yes", "No"], createdAt: Date.now() - 11 * 60 * 1000 };
+    state.pendingPrompts = { b: stale };
+    state.pendingPrompt = stale;
+    bridge.askUser("a", { id: "fresh", method: "confirm", title: "A?" }, state);
+    assert.equal(bridge.handleInbound(state, "yes", () => {}, "b"), "expired");
+    assert.equal(state.pendingPrompts?.b, undefined);
+    assert.equal(state.pendingPrompts?.a?.id, "fresh", "the other session keeps its question");
   });
 });
