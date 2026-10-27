@@ -19,6 +19,17 @@ import { isAnswerLike, isPromptExpired, mapAnswer, renderPrompt, toBridgeRespons
 const log = createLogger("chat-bridge");
 
 /** Per-user, per-session runtime the host owns and passes in. */
+export interface ChatSessionStream {
+  render: RenderState;
+  lastStreamEdit: number;
+  streamSend: Promise<string | null> | null;
+  generation: number;
+}
+
+function newStream(): ChatSessionStream {
+  return { render: initialRenderState(), lastStreamEdit: 0, streamSend: null, generation: 0 };
+}
+
 export interface ChatRuntimeState {
   /** Default session for messages that arrive outside any thread. */
   watchedSessionId: string | null;
@@ -31,6 +42,12 @@ export interface ChatRuntimeState {
   targets?: Record<string, ChatTarget>;
   /** Pending prompts per session: two sessions can each be waiting on an answer. */
   pendingPrompts?: Record<string, PendingPrompt>;
+  /**
+   * Per-session streaming state. One shared buffer meant two live sessions
+   * interleaved their deltas into a single message and one could finalise the
+   * other's text (Qodo be90d322).
+   */
+  streams?: Record<string, ChatSessionStream>;
   /**
    * Bumped whenever a turn's final text is published; an edit queued before that
    * point is discarded, so streaming cannot replace a finished reply (Qodo
@@ -49,6 +66,7 @@ export function initialChatRuntime(watchedSessionId: string | null = null, targe
     watchedSessionId,
     targets: watchedSessionId && target ? { [watchedSessionId]: target } : {},
     pendingPrompts: {},
+    streams: {},
     target,
     pendingPrompt: null,
     render: initialRenderState(),
@@ -82,6 +100,8 @@ export interface ChatBridge {
     reply: (text: string) => void,
     sessionId?: string,
   ): "answered" | "cancelled" | "not-an-answer" | "expired" | "no-prompt";
+  /** Remember that we forwarded this text, so its echo is suppressed. */
+  expectEcho(state: ChatRuntimeState, sessionId: string, text: string): void;
   /** Answer a pending prompt from a native control (button/menu). */
   answer(state: ChatRuntimeState, raw: string, reply: (text: string) => void, sessionId?: string): boolean;
   /** Send the agent's question to a user and remember it as pending. */
@@ -110,6 +130,12 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
     return state.targets?.[sessionId] ?? (state.watchedSessionId === sessionId ? state.target : null);
   }
 
+  function streamFor(state: ChatRuntimeState, sessionId: string): ChatSessionStream {
+    state.streams = state.streams ?? {};
+    if (!state.streams[sessionId]) state.streams[sessionId] = newStream();
+    return state.streams[sessionId];
+  }
+
   function sessionsFor(state: ChatRuntimeState): string[] {
     const ids = new Set(Object.keys(state.targets ?? {}));
     if (state.watchedSessionId) ids.add(state.watchedSessionId);
@@ -129,11 +155,11 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
     state.pendingPrompt = prompt ?? Object.values(state.pendingPrompts)[0] ?? null;
   }
 
-  async function publishFinal(text: string, state: ChatRuntimeState, target: ChatTarget): Promise<void> {
+  async function publishFinal(text: string, stream: ChatSessionStream, target: ChatTarget): Promise<void> {
     const chunks = chunkText(text, caps.maxMessageLength);
-    const liveMessageId = state.render.streamMessageId;
-    state.render.streamMessageId = null;
-    state.render.streamedText = "";
+    const liveMessageId = stream.render.streamMessageId;
+    stream.render.streamMessageId = null;
+    stream.render.streamedText = "";
     if (!chunks.length) return;
     if (liveMessageId && caps.supportsEdit && (await adapter.editText(target, liveMessageId, chunks[0]))) {
       for (const chunk of chunks.slice(1)) await queued(target.channelId, () => adapter.sendText(target, chunk));
@@ -165,14 +191,15 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
         if (!sessionsFor(state).includes(sessionId)) continue;
         const target = targetOf(state, sessionId);
         if (!target) continue;
+        const stream = streamFor(state, sessionId);
 
-        // Echo suppression is decided per state, so two watchers of one session
-        // both suppress (the old code consumed a shared marker once).
-        const expected = state.render.expectedEcho?.[sessionId];
+        // Echo suppression is decided per session and per user, so two watchers
+        // of one session both suppress (the old code consumed a shared marker).
+        const expected = stream.render.expectedEcho?.[sessionId];
         const suppressEcho = isUserEvent && shouldSuppressEcho(expected, userText);
-        if (suppressEcho) delete state.render.expectedEcho?.[sessionId];
+        if (suppressEcho) delete stream.render.expectedEcho?.[sessionId];
 
-        const action = renderEvent(event, state.render);
+        const action = renderEvent(event, stream.render);
 
         if (action.kind === "agent-start") {
           if (caps.supportsTyping) void adapter.setTyping?.(target, true);
@@ -182,21 +209,22 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
         if (action.kind === "append-text") {
           if (!caps.supportsEdit) continue; // no edit budget: the flush publishes once
           const now = Date.now();
-          if (now - state.lastStreamEdit < interval) continue;
-          state.lastStreamEdit = now;
-          const text = state.render.pendingText;
-          if (!state.render.streamMessageId && !state.streamSend) {
-            state.streamSend = queued(target.channelId, () => adapter.sendText(target, streamingView(text, caps.maxMessageLength))).then((id) => {
-              state.render.streamMessageId = id;
-              state.render.streamedText = text;
-              state.streamSend = null;
+          if (now - stream.lastStreamEdit < interval) continue;
+          stream.lastStreamEdit = now;
+          const text = stream.render.pendingText;
+          if (!stream.render.streamMessageId && !stream.streamSend) {
+            stream.streamSend = queued(target.channelId, () => adapter.sendText(target, streamingView(text, caps.maxMessageLength))).then((id) => {
+              stream.render.streamMessageId = id;
+              stream.render.streamedText = text;
+              stream.streamSend = null;
               return id;
             });
-          } else if (state.render.streamMessageId && text !== state.render.streamedText) {
-            const generation = state.renderGeneration ?? 0;
-            void queued(target.channelId, () => adapter.editText(target, state.render.streamMessageId!, text)).then(() => {
-              if ((state.renderGeneration ?? 0) !== generation) return; // reply already final
-              state.render.streamedText = text;
+          } else if (stream.render.streamMessageId && text !== stream.render.streamedText) {
+            const generation = stream.generation;
+            const messageId = stream.render.streamMessageId;
+            void queued(target.channelId, () => adapter.editText(target, messageId, text)).then(() => {
+              if (stream.generation !== generation) return; // reply already final
+              stream.render.streamedText = text;
             });
           }
           continue;
@@ -204,10 +232,10 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
 
         if (action.kind === "flush-assistant") {
           const text = action.text;
-          state.renderGeneration = (state.renderGeneration ?? 0) + 1;
+          stream.generation += 1;
           void (async () => {
-            if (state.streamSend) await state.streamSend;
-            await publishFinal(text, state, target);
+            if (stream.streamSend) await stream.streamSend;
+            await publishFinal(text, stream, target);
           })();
           continue;
         }
@@ -225,8 +253,8 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
 
         if (action.kind === "agent-end") {
           if (caps.supportsTyping) void adapter.setTyping?.(target, false);
-          state.render.streamMessageId = null;
-          state.render.streamedText = "";
+          stream.render.streamMessageId = null;
+          stream.render.streamedText = "";
         }
       }
       log.debug("pi event handled", { sessionId, type: event?.type });
@@ -256,6 +284,11 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
         if (state.watchedSessionId !== sessionId) continue;
         this.askUser(sessionId, event, state);
       }
+    },
+
+    expectEcho(state: ChatRuntimeState, sessionId: string, text: string): void {
+      const stream = streamFor(state, sessionId);
+      stream.render.expectedEcho = { ...(stream.render.expectedEcho ?? {}), [sessionId]: text };
     },
 
     askUser(sessionId: string, event: any, state: ChatRuntimeState): PendingPrompt | null {

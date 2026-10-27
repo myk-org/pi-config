@@ -139,8 +139,20 @@ export function setupDiscordBot(opts: {
   function makeRuntime(stored: DiscordUserState | undefined): RuntimeUserState {
     const watched = stored?.watchedSessionId ?? null;
     const channelId = stored?.threadId || stored?.responseChannelId || null;
+    const base = initialChatRuntime(watched, channelId ? { channelId, threadId: stored?.threadId ?? null } : null);
+    // Retained threads must keep their session's output after a restart: without
+    // rebuilding targets from the stored thread ids, a thread could send prompts
+    // and receive nothing (Qodo 8c6acae5).
+    const targets: Record<string, { channelId: string; threadId: string | null }> = {};
+    for (const [sessionId, threadId] of Object.entries(stored?.threads ?? {})) {
+      targets[sessionId] = { channelId: threadId, threadId };
+    }
+    if (watched && !targets[watched] && stored?.responseChannelId) {
+      targets[watched] = { channelId: stored.responseChannelId, threadId: null };
+    }
     return {
-      ...initialChatRuntime(watched, channelId ? { channelId, threadId: stored?.threadId ?? null } : null),
+      ...base,
+      targets,
       responseChannelId: stored?.responseChannelId ?? null,
       threadId: stored?.threadId ?? null,
       threads: { ...(stored?.threads ?? {}) },
@@ -351,8 +363,8 @@ export function setupDiscordBot(opts: {
     }
     const method = (event.method || "input") as PromptMethod;
     for (const [userId, state] of runtime) {
-      if (state.watchedSessionId !== sessionId) continue;
-      const target = state.target;
+      // Any session with a target gets its question, not just the watched one.
+      const target = state.targets?.[sessionId] ?? (state.watchedSessionId === sessionId ? state.target : null);
       if (!target) continue;
       const prompt = bridge.askUser(sessionId, event, state);
       if (!prompt) continue;
@@ -454,9 +466,12 @@ export function setupDiscordBot(opts: {
     if (isComponent(interaction)) {
       const customId: string = interaction.customId || "";
       if (customId === "unwatch") {
+        // Disconnect means silence: leaving `targets` populated kept every
+        // retained thread streaming to the user (Qodo 124a8b74).
         state.watchedSessionId = null;
         state.threadId = null;
         state.target = null;
+        state.targets = {};
         persist();
         await acknowledge(interaction, "Disconnected.");
         return;
@@ -930,13 +945,16 @@ export function setupDiscordBot(opts: {
     if (imageNote) {
       notes.push(imageNote);
       images.length = 0;
+      // The agent gets the note, but the person who sent the image needs to know
+      // it was dropped (Qodo e2a451fc).
+      await message.reply(imageNote).catch(() => {});
     }
 
     if (!text && images.length === 0 && notes.length === 0) return;
 
     const fullText = notes.length ? (text ? `${text}\n\n` : "") + notes.join("\n\n") : text;
     // The engine suppresses this echo per watcher using the state's marker.
-    state.render.expectedEcho = { ...(state.render.expectedEcho ?? {}), [targetSessionId!]: fullText };
+    bridge.expectEcho(state, targetSessionId!, fullText);
     client.ws.send(JSON.stringify({ type: "prompt", text: fullText, images: images.length ? images : undefined }));
     log.info("prompt forwarded from discord", {
       userId,

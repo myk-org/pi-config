@@ -22,6 +22,7 @@ function registeredSession(parsed: any): SessionInfo {
     branch: parsed.branch || "",
     model: parsed.model || "",
     reasoning: typeof parsed.reasoning === "boolean" ? parsed.reasoning : undefined,
+    supportsImages: typeof parsed.supportsImages === "boolean" ? parsed.supportsImages : undefined,
     startedAt: parsed.startedAt || new Date().toISOString(),
     lastActivity: Date.now(),
     active: true,
@@ -77,6 +78,7 @@ export function registerPidashSession(
 
 export function updatePidashSession(session: SessionInfo, parsed: any): void {
   if (typeof parsed.reasoning === "boolean") session.reasoning = parsed.reasoning;
+  if (typeof parsed.supportsImages === "boolean") session.supportsImages = parsed.supportsImages;
   if (parsed.graftTokenSavings !== undefined && Number.isSafeInteger(parsed.graftTokenSavings) && parsed.graftTokenSavings >= 0) {
     session.graftTokenSavings = parsed.graftTokenSavings;
   }

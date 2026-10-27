@@ -110,7 +110,7 @@ describe("chat engine with a non-Discord adapter", () => {
 
   it("suppresses the echo of a forwarded prompt per watcher", async () => {
     const { bridge, state, sent } = setup();
-    state.render.expectedEcho = { s1: "run the tests" };
+    bridge.expectEcho(state, "s1", "run the tests");
     bridge.onPiEvent("s1", { type: "message_start", message: { role: "user", content: [{ type: "text", text: "run the tests" }] } });
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(sent.filter((entry) => entry.text.includes("USER:")).length, 0);
@@ -244,5 +244,37 @@ describe("multiple sessions per user (Qodo 721fc807 / 1eec9a4d)", () => {
     assert.equal(bridge.handleInbound(state, "yes", () => {}, "b"), "expired");
     assert.equal(state.pendingPrompts?.b, undefined);
     assert.equal(state.pendingPrompts?.a?.id, "fresh", "the other session keeps its question");
+  });
+});
+
+describe("concurrent sessions do not merge streams (Qodo be90d322)", () => {
+  it("keeps a separate streaming buffer and message per session", async () => {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("a", { channelId: "thread-a", threadId: "thread-a" });
+    state.targets = { a: { channelId: "thread-a", threadId: "thread-a" }, b: { channelId: "thread-b", threadId: "thread-b" } };
+    const sent: Array<{ channelId: string; text: string }> = [];
+    const edits: Array<{ id: string; text: string }> = [];
+    const adapter = {
+      ...mem.adapter,
+      async sendText(target: ChatTarget, text: string) { sent.push({ channelId: target.channelId, text }); return `m-${target.channelId}`; },
+      async editText(_t: ChatTarget, id: string, text: string) { edits.push({ id, text }); return true; },
+    };
+    const bridge = createChatBridge({ adapter, users: () => new Map([["u", state]]).entries(), sendToSession: () => true, streamEditIntervalMs: 0 });
+
+    // interleaved deltas from two sessions
+    bridge.onPiEvent("a", { type: "agent_start" });
+    bridge.onPiEvent("b", { type: "agent_start" });
+    bridge.onPiEvent("a", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "AAA" } });
+    bridge.onPiEvent("b", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "BBB" } });
+    bridge.onPiEvent("a", { type: "message_end", message: { role: "assistant" } });
+    bridge.onPiEvent("b", { type: "message_end", message: { role: "assistant" } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const finalA = edits.find((edit) => edit.id === "m-thread-a")?.text;
+    const finalB = edits.find((edit) => edit.id === "m-thread-b")?.text;
+    assert.equal(finalA, "AAA", "session a keeps only its own text");
+    assert.equal(finalB, "BBB", "session b keeps only its own text");
+    assert.ok(sent.some((entry) => entry.channelId === "thread-a"));
+    assert.ok(sent.some((entry) => entry.channelId === "thread-b"));
   });
 });
