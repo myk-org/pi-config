@@ -81,8 +81,11 @@ export function setupDiscordBot(opts: {
   const _require = createRequire(import.meta.url);
 
   const home = process.env.HOME;
-  // Credentials file may define the token itself.
-  let envFile = path.join(home || "", ".pi", "discord.env");
+  // Credentials file may define the token itself. The path is resolved from the
+  // environment FIRST — the configured path used to be computed later and the
+  // file was already read from the default location (Qodo 6ebd5ca4).
+  let envFile = process.env.PIDASH_DISCORD_ENV_FILE
+    || path.join(home || "", ".pi", "discord.env");
   hardenFilePermissions(envFile);
   try {
     Object.assign(process.env, {
@@ -232,26 +235,6 @@ export function setupDiscordBot(opts: {
     }
   }
 
-  /**
-   * Publish a finished assistant turn.
-   *
-   * Editing the live message with `streamingView` kept only the tail of long
-   * answers, silently dropping their beginning (Qodo 555cdf81). The live message
-   * gets the first chunk and the remainder follows as new messages.
-   */
-  async function publishFinal(text: string, state: RuntimeUserState, channelId: string): Promise<void> {
-    const chunks = chunkDiscordText(text);
-    const liveMessageId = state.render.streamMessageId;
-    state.render.streamMessageId = null;
-    state.render.streamedText = "";
-    if (!chunks.length) return;
-    if (liveMessageId && (await editText(channelId, liveMessageId, chunks[0]))) {
-      for (const chunk of chunks.slice(1)) await sendText(channelId, chunk);
-      return;
-    }
-    for (const chunk of chunks) await sendText(channelId, chunk);
-  }
-
   function startTyping(state: RuntimeUserState, channelId: string): void {
     clearTyping(state);
     const send = () => {
@@ -338,12 +321,21 @@ export function setupDiscordBot(opts: {
     },
   });
 
-  function forwardSessionEvent(sessionId: string, event: any): void {
+  /**
+   * The daemon dispatches session events ONLY through registered hooks, so this
+   * registration is what makes the bot live at all. Questions take the Discord
+   * path (native buttons/menus); everything else goes through the engine.
+   */
+  piEventHooks.push((sessionId: string, event: any) => {
+    if (event?.type === "extension_ui_request") {
+      onUiRequest(sessionId, event);
+      return;
+    }
     if (runtime.size === 0) return;
     // Replay frames are history, not live activity.
     if (piClients.get(sessionId)?.replaying) return;
     bridge.onPiEvent(sessionId, event);
-  }
+  });
 
   // ── ask-user prompts ─────────────────────────────────────────────────────
   /**
@@ -676,6 +668,12 @@ export function setupDiscordBot(opts: {
         log.warn("could not open DM", { user: interaction.user.username });
       }
     }
+    if (!threadId && !state.responseChannelId && interaction.channelId) {
+      // Watching from a server where neither a thread nor a DM is available left
+      // the session with nowhere to write (Qodo a2346451).
+      state.responseChannelId = interaction.channelId;
+      log.info("falling back to the command channel for output", { channelId: interaction.channelId });
+    }
     persist();
 
     // A thread is guild-visible: no session inventory here, only the checkout.
@@ -820,13 +818,17 @@ export function setupDiscordBot(opts: {
     }
 
     const state = userState(userId);
-    // Threads are guild channels; only ours are accepted, so server chatter and
-    // other channels stay out (and prompts typed in the thread now work at all).
+    // Threads are guild channels; only ours are accepted. A message is routed by
+    // the SESSION its thread belongs to, so writing in an older session's thread
+    // cannot spill into whichever session is currently watched (Qodo 0d2dca6d).
+    let threadSessionId: string | null = null;
     if (message.guildId) {
-      if (!state.threadId || message.channelId !== state.threadId) {
-        const owner = userForThread(message.channelId);
-        if (!owner || owner[0] !== userId) return;
-      }
+      const owner = userForThread(message.channelId);
+      if (!owner || owner[0] !== userId) return;
+      const [, ownerState] = owner;
+      threadSessionId = Object.entries(ownerState.threads ?? {})
+        .find(([, threadId]) => threadId === message.channelId)?.[0] ?? null;
+      if (!threadSessionId) return;
     }
     state.updatedAt = Date.now();
     if (!message.guildId) {
@@ -848,9 +850,13 @@ export function setupDiscordBot(opts: {
       return;
     }
     if (/^\/(cancel|dismiss)$/i.test(text)) {
-      const had = Boolean(state.pendingPrompt);
-      state.pendingPrompt = null;
-      await message.reply(had ? "Dismissed." : "Nothing pending.").catch(() => {});
+      if (!state.pendingPrompt) {
+        await message.reply("Nothing pending.").catch(() => {});
+        return;
+      }
+      // Clearing locally left the agent waiting forever: the cancelled response
+      // has to travel back through ui-bridge (Qodo 7e102371).
+      bridge.answer(state, "/cancel", (content) => void message.reply(content).catch(() => {}));
       return;
     }
 
@@ -866,11 +872,12 @@ export function setupDiscordBot(opts: {
       }
     }
 
-    if (!state.watchedSessionId) {
+    const targetSessionId = threadSessionId ?? state.watchedSessionId;
+    if (!targetSessionId) {
       await message.reply("Not watching any session. Use `/sessions` and pick one.").catch(() => {});
       return;
     }
-    const client = piClients.get(state.watchedSessionId);
+    const client = piClients.get(targetSessionId);
     if (!client?.ws) {
       await message.reply("The watched session is disconnected.").catch(() => {});
       return;
@@ -908,7 +915,7 @@ export function setupDiscordBot(opts: {
     state.render.expectedEcho = fullText;
     client.ws.send(JSON.stringify({ type: "prompt", text: fullText, images: images.length ? images : undefined }));
     log.info("prompt forwarded from discord", {
-      userId, session: sessionName(state.watchedSessionId), chars: fullText.length, images: images.length,
+      userId, session: sessionName(targetSessionId), chars: fullText.length, images: images.length,
     });
   });
 

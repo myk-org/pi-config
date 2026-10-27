@@ -65,17 +65,28 @@ function setup(overrides: Partial<typeof DEFAULT_CAPABILITIES> = {}) {
 }
 
 describe("chat engine with a non-Discord adapter", () => {
-  it("streams into one edited message, then publishes the tail in chunks", async () => {
-    const { bridge, sent, edits, state, typing } = setup();
+  it("starts typing when a turn begins", () => {
+    const { bridge, typing } = setup();
+    bridge.onPiEvent("s1", { type: "agent_start" });
+    assert.deepEqual(typing, [true]);
+  });
+
+  it("streams a turn into ONE live message", async () => {
+    const { bridge, sent } = setup();
     bridge.onPiEvent("s1", { type: "agent_start" });
     bridge.onPiEvent("s1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Hel" } });
     bridge.onPiEvent("s1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "lo" } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(sent.length, 1, "only the live message is posted while streaming");
+  });
+
+  it("finalises the live message with the full text and clears the stream id", async () => {
+    const { bridge, edits, state } = setup();
+    bridge.onPiEvent("s1", { type: "agent_start" });
+    bridge.onPiEvent("s1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Hello" } });
     bridge.onPiEvent("s1", { type: "message_end", message: { role: "assistant" } });
     await new Promise((resolve) => setTimeout(resolve, 10));
-
-    assert.deepEqual(typing, [true], "typing started");
-    assert.equal(sent.length, 1, "one live message while streaming");
-    assert.equal(edits.at(-1)?.text, "Hello", "the live message is finalised by edit");
+    assert.equal(edits.at(-1)?.text, "Hello");
     assert.equal(state.render.streamMessageId, null);
   });
 
@@ -146,5 +157,45 @@ describe("chat engine with a non-Discord adapter", () => {
     assert.ok(sent.length >= 4, "published in chunks instead");
     assert.ok(sent.every((entry) => entry.text.length <= 60));
     assert.equal(state.render.streamMessageId, null);
+  });
+});
+
+describe("chat engine regressions found in review (R2)", () => {
+  it("a prompt-end for one session leaves another user's prompt alone", () => {
+    const mem = memoryAdapter();
+    const states = new Map<string, ChatRuntimeState>();
+    const a = initialChatRuntime("s1", { channelId: "c1" });
+    const b = initialChatRuntime("s2", { channelId: "c2" });
+    states.set("u1", a);
+    states.set("u2", b);
+    const bridge = createChatBridge({
+      adapter: mem.adapter, users: () => states.entries(), sendToSession: () => true,
+    });
+    bridge.askUser("s1", { id: "q1", method: "confirm", title: "A?" }, a);
+    bridge.askUser("s2", { id: "q2", method: "confirm", title: "B?" }, b);
+
+    bridge.onUiEvent("s1", { type: "ui_prompt_end" });
+    assert.equal(a.pendingPrompt, null, "the ended session's prompt is cleared");
+    assert.equal(b.pendingPrompt?.id, "q2", "the other session's prompt survives");
+  });
+
+  it("drops a stream edit that lands after the final reply was published", async () => {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("s1", { channelId: "c" });
+    const states = new Map([["u", state]]);
+    const bridge = createChatBridge({
+      adapter: mem.adapter, users: () => states.entries(), sendToSession: () => true, streamEditIntervalMs: 0,
+    });
+    bridge.onPiEvent("s1", { type: "agent_start" });
+    bridge.onPiEvent("s1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "first" } });
+    bridge.onPiEvent("s1", { type: "message_end", message: { role: "assistant" } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const finalEdit = mem.edits.at(-1)?.text;
+    assert.equal(finalEdit, "first");
+    // a stale delta arriving after the turn must not edit the finished message
+    const generation = state.renderGeneration;
+    bridge.onPiEvent("s1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "late" } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(state.renderGeneration, generation, "no new generation without a new turn");
   });
 });

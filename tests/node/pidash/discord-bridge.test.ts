@@ -10,6 +10,7 @@ import { chunkDiscordText, truncateLine, DISCORD_TEXT_LIMIT, NO_MENTIONS } from 
 import {
   classifyAttachment,
   describeSkippedAttachment,
+  fetchAttachment,
   MAX_IMAGE_BYTES,
   MAX_INLINE_TEXT_BYTES,
   formatKB,
@@ -440,5 +441,34 @@ describe("chunk size invariant (Qodo 983b4f6f)", () => {
       const chunks = fenced(limit, text);
       assert.ok(chunks.every((chunk) => chunk.length <= limit), `limit ${limit} exceeded`);
     }
+  });
+});
+
+describe("discord attachment download (Qodo bdb68b09)", () => {
+  it("returns the body when it fits the cap", async () => {
+    const response = new Response("hello", { headers: { "content-type": "text/plain", "content-length": "5" } });
+    const result = await fetchAttachment("https://cdn.example/x", 100, async () => response);
+    assert.equal(result?.buffer.toString(), "hello");
+    assert.equal(result?.contentType, "text/plain");
+  });
+
+  it("refuses a declared body larger than the cap without reading it", async () => {
+    const response = new Response("x".repeat(500), { headers: { "content-length": "500" } });
+    assert.equal(await fetchAttachment("https://cdn.example/x", 10, async () => response), null);
+  });
+
+  it("refuses a body that only turns out to be oversized after download", async () => {
+    // No content-length: the cap has to be enforced on the bytes themselves.
+    const response = new Response("y".repeat(500), { headers: {} });
+    assert.equal(await fetchAttachment("https://cdn.example/x", 10, async () => response), null);
+  });
+
+  it("returns null on an HTTP error instead of throwing", async () => {
+    const response = new Response("nope", { status: 403 });
+    assert.equal(await fetchAttachment("https://cdn.example/x", 100, async () => response), null);
+  });
+
+  it("returns null when the fetch itself fails", async () => {
+    assert.equal(await fetchAttachment("https://cdn.example/x", 100, async () => { throw new Error("boom"); }), null);
   });
 });

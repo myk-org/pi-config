@@ -21,6 +21,12 @@ const log = createLogger("chat-bridge");
 /** Per-user, per-session runtime the host owns and passes in. */
 export interface ChatRuntimeState {
   watchedSessionId: string | null;
+  /**
+   * Bumped whenever a turn's final text is published; an edit queued before that
+   * point is discarded, so streaming cannot replace a finished reply (Qodo
+   * 172504b4).
+   */
+  renderGeneration?: number;
   target: ChatTarget | null;
   pendingPrompt: PendingPrompt | null;
   render: RenderState;
@@ -36,6 +42,7 @@ export function initialChatRuntime(watchedSessionId: string | null = null, targe
     render: initialRenderState(),
     lastStreamEdit: 0,
     streamSend: null,
+    renderGeneration: 0,
   };
 }
 
@@ -142,7 +149,9 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
               return id;
             });
           } else if (state.render.streamMessageId && text !== state.render.streamedText) {
+            const generation = state.renderGeneration ?? 0;
             void adapter.editText(target, state.render.streamMessageId, text).then(() => {
+              if ((state.renderGeneration ?? 0) !== generation) return; // reply already final
               state.render.streamedText = text;
             });
           }
@@ -151,6 +160,7 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
 
         if (action.kind === "flush-assistant") {
           const text = action.text;
+          state.renderGeneration = (state.renderGeneration ?? 0) + 1;
           void (async () => {
             if (state.streamSend) await state.streamSend;
             await publishFinal(text, state, target);
@@ -182,7 +192,13 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
       if (event?.type === "ui-dismiss" || event?.type === "ui_prompt_end") {
         for (const [, state] of host.users()) {
           if (!state.pendingPrompt) continue;
-          if (event.type === "ui_prompt_end" || state.pendingPrompt.id === event.id) state.pendingPrompt = null;
+          // A dismissal names its prompt; a prompt-end belongs to ONE session and
+          // must not clear every other user's question (Qodo 57dd1e20).
+          if (event.type === "ui_prompt_end") {
+            if (state.pendingPrompt.sessionId === sessionId) state.pendingPrompt = null;
+          } else if (state.pendingPrompt.id === event.id) {
+            state.pendingPrompt = null;
+          }
         }
         return;
       }
