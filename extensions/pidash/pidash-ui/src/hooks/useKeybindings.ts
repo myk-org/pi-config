@@ -9,7 +9,7 @@ export interface Keybinding {
 
 const STORAGE_KEY = "pidash-keybindings";
 
-const DEFAULT_KEYBINDINGS: Keybinding[] = [
+export const DEFAULT_KEYBINDINGS: Keybinding[] = [
   { id: "session-switcher", label: "Open session switcher", defaultKey: "Ctrl+K", key: "Ctrl+K" },
   { id: "prev-session", label: "Previous session", defaultKey: "Ctrl+ArrowUp", key: "Ctrl+ArrowUp" },
   { id: "next-session", label: "Next session", defaultKey: "Ctrl+ArrowDown", key: "Ctrl+ArrowDown" },
@@ -22,7 +22,12 @@ const DEFAULT_KEYBINDINGS: Keybinding[] = [
   { id: "session-7", label: "Jump to session 7", defaultKey: "Ctrl+7", key: "Ctrl+7" },
   { id: "session-8", label: "Jump to session 8", defaultKey: "Ctrl+8", key: "Ctrl+8" },
   { id: "session-9", label: "Jump to session 9", defaultKey: "Ctrl+9", key: "Ctrl+9" },
-  { id: "abort", label: "Abort / Stop", defaultKey: "Escape", key: "Escape" },
+  // Abort is intentionally UNBOUND in the browser UI: the Stop button in the
+  // composer is the only way to kill a run. Escape is pressed constantly for
+  // menu dismissal and out of habit, and a stray keypress silently destroying
+  // an in-flight turn is not an acceptable default. Users who want a key can
+  // assign one in Keyboard shortcuts.
+  { id: "abort", label: "Abort / Stop", defaultKey: "", key: "" },
 ];
 
 function loadKeybindings(): Keybinding[] {
@@ -30,7 +35,12 @@ function loadKeybindings(): Keybinding[] {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_KEYBINDINGS.map(k => ({ ...k }));
     const saved: Record<string, string> = JSON.parse(raw);
-    return DEFAULT_KEYBINDINGS.map(k => ({ ...k, key: saved[k.id] || k.defaultKey }));
+    return DEFAULT_KEYBINDINGS.map(k => ({
+      ...k,
+      // Drop a persisted Escape->abort from older versions: it was the default
+      // that silently killed runs, so it must not survive an upgrade.
+      key: k.id === "abort" && saved[k.id] === "Escape" ? k.defaultKey : saved[k.id] || k.defaultKey,
+    }));
   } catch {
     return DEFAULT_KEYBINDINGS.map(k => ({ ...k }));
   }
@@ -69,6 +79,17 @@ export function matchesKeybinding(e: KeyboardEvent, keyStr: string): boolean {
 
   const eventKey = e.key.length === 1 ? e.key.toUpperCase() : e.key;
   return eventKey === keyPart;
+}
+
+/**
+ * True only when a real key is configured AND it matches the event.
+ *
+ * Abort ships unbound (`""`) because Escape is pressed constantly for menu
+ * dismissal; `matchesKeybinding(e, "")` would otherwise match every keypress
+ * and silently destroy an in-flight turn. The Stop button is the abort path.
+ */
+export function isAbortKey(e: KeyboardEvent, keyStr: string): boolean {
+  return Boolean(keyStr) && matchesKeybinding(e, keyStr);
 }
 
 export function useKeybindings() {

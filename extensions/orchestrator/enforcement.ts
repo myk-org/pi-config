@@ -6,6 +6,7 @@
  */
 
 import { createLogger } from "../shared/logger.js";
+import { createBridgedUi } from "../shared/ui-bridge.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -119,6 +120,9 @@ function commitTrailerModelId(ctx: any): string {
 }
 
 /** Inject commit trailer into command (Assisted-by, Co-authored-by, etc.) */
+/** #968 B: set by registerEnforcement; null → plain ctx.ui prompts (tests, unregistered). */
+let bridgedUi: ReturnType<typeof createBridgedUi> | null = null;
+
 async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd: string): Promise<EnforcementResult> {
   // #932: rewrite a literal `$PI_MODEL` in the trailer identity — an agent
   // following the git-expert trailer instruction may write the placeholder
@@ -159,10 +163,9 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
       // No UI available — default to first option
       trailerName = options[0];
     } else {
-      const selected = await ctx.ui.select(
-        "Select commit trailer:",
-        options,
-      );
+      const selected = bridgedUi
+        ? await bridgedUi.select(ctx, "Select commit trailer:", options)
+        : await ctx.ui.select("Select commit trailer:", options);
       if (!selected || !options.includes(selected)) {
         return {
           block: true,
@@ -579,10 +582,10 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
           : []),
         "No",
       ];
-      const ok = await ctx.ui.select(
-        `⚠️ Dangerous statement${remaining.length > 1 ? "s" : ""} (of the full command):\n\n${list}${scopeNote}\n\nAllow?`,
-        options,
-      );
+      const promptTitle = `⚠️ Dangerous statement${remaining.length > 1 ? "s" : ""} (of the full command):\n\n${list}${scopeNote}\n\nAllow?`;
+      const ok = bridgedUi
+        ? await bridgedUi.select(ctx, promptTitle, options)
+        : await ctx.ui.select(promptTitle, options);
       if (ok === "No" || ok === undefined)
         return { block: true, reason: "Blocked by user. Do NOT retry with an equivalent command (e.g., find -delete, perl, python os.remove). Stop and report this block to the user." };
       if (ok === "Yes — run once" || ok.startsWith("Always allow all of the above")) {
@@ -639,6 +642,11 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
 }
 
 export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): void {
+  // #968 part B: enforcement prompts (dangerous-command approvals, trailer
+  // selection) are bridged — answerable from TUI or pidash browser, first
+  // answer wins, same enforcement semantics either way. Module-level check
+  // functions read this ref; null (unregistered / tests) falls back to plain ui.
+  bridgedUi = createBridgedUi(pi);
 
   pi.on("session_start", (_event, ctx) => {
     cachedTrailerSelection = null;

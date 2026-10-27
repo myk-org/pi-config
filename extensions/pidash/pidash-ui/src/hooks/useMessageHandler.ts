@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { ChatMessage, NotificationPreferences, PiEvent, SessionInfo, TokenUsage } from "@/types";
+import { createLogger } from "../lib/create-logger";
+
+const log = createLogger("MessageHandler");
 
 let counter = 0;
 export const nextId = () => `m-${++counter}`;
@@ -59,17 +62,40 @@ export function useMessageHandler(
   }, []);
 
   useEffect(() => {
-    return onMessage((ev: PiEvent) => {
+    // Replay buffering (session-switch UX): during a session replay the server
+    // sends one websocket message per historical delta — processing each as it
+    // arrives means one React render per event over a growing non-virtualized
+    // list (O(N²) work) and a slow visible crawl. Buffer everything between
+    // replay_start and replay_end, then apply the whole batch in ONE
+    // synchronous pass — React batches it into a single render.
+    const replayBuffer: PiEvent[] = [];
+    let replaying = false;
+    const processEvent = (ev: PiEvent) => {
       if (ev.type === "session_added" || ev.type === "session_removed") return;
           if (ev.type === "session_updated" && ev.session) {
-            // Update active session if it's the one we're watching
-            setSession((prev) => {
-              if (prev?.sessionId === ev.session!.sessionId) {
-                if (ev.session!.model !== undefined) setModel(ev.session!.model);
-                return { ...prev, ...ev.session };
+            const update = ev.session;
+            // Side effects stay OUT of the state updater: an updater may be
+            // deferred or replayed, and this one used to carry the streaming
+            // sync (Qodo 6284bef1 found it untested for exactly that reason).
+            // sessionRef, never the closed-over `session`: this effect's deps omit
+            // it, so a session selected after mount would never match and the
+            // model label / Stop button would stop following the daemon (Qodo).
+            if (sessionRef.current?.sessionId === update.sessionId) {
+              if (update.model !== undefined) {
+                log.debug("model synced from session_updated", { sessionId: update.sessionId, model: update.model });
+                setModel(update.model);
               }
-              return prev;
-            });
+              // Keep the Stop button in step with the daemon: turns started or
+              // settled outside this browser (TUI, another tab) change the
+              // streaming flag with no agent_start/agent_settled here.
+              if (update.streaming !== undefined) {
+                log.debug("streaming synced from session_updated", {
+                  sessionId: update.sessionId, streaming: update.streaming,
+                });
+                setStreaming(update.streaming);
+              }
+            }
+            setSession((prev) => (prev && prev.sessionId === update.sessionId ? { ...prev, ...update } : prev));
             return;
           }
 
@@ -412,6 +438,50 @@ export function useMessageHandler(
           }));
           break;
       }
+    };
+    // Coalesce the events of one task into a single processing pass. A history
+    // replay arrives as thousands of individual frames; handling each one in
+    // its own task gave one React render per event over a growing, unvirtualized
+    // list, which the user sees as the transcript crawling to the bottom.
+    let pending: PiEvent[] = [];
+    let flushScheduled = false;
+    const flush = () => {
+      flushScheduled = false;
+      const batch = pending;
+      pending = [];
+      for (const item of batch) handleEvent(item);
+    };
+    const handleEvent = (ev: PiEvent) => {
+      if (ev.type === "replay_start") {
+        replaying = true;
+        replayBuffer.length = 0;
+        log.debug("replay buffering started");
+        processEvent(ev); // clears the message list
+        return;
+      }
+      if (ev.type === "replay_end") {
+        if (replaying) {
+          replaying = false;
+          const buffered = replayBuffer.splice(0);
+          log.debug("replay buffering applied", { events: buffered.length });
+          for (const buffered_ev of buffered) processEvent(buffered_ev);
+        }
+        processEvent(ev);
+        return;
+      }
+      if (replaying) {
+        replayBuffer.push(ev);
+        return;
+      }
+      processEvent(ev);
+    };
+    return onMessage((ev: PiEvent) => {
+      pending.push(ev);
+      if (flushScheduled) return;
+      flushScheduled = true;
+      // Microtask, not a frame: deltas that arrived together in one task are
+      // applied together without adding latency to the live stream.
+      queueMicrotask(flush);
     });
   }, [onMessage, addMsg, updMsg, updCls, updMeta]);
 

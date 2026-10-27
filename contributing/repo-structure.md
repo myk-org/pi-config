@@ -90,6 +90,7 @@ pi-config/
 │   ├── pidash/                      # Live web dashboard extension (standalone)
 │   │   ├── index.ts                 # Entry point
 │   │   ├── pidash.ts                # Dashboard logic (connects to pidash daemon, forwards provider response info)
+│   │   ├── browser-ops.ts           # #968 browser operations — settings read/write (project-settings modules) + pi mcp CLI
 │   │   └── pidash-ui/               # React + shadcn/ui web dashboard
 │   │       ├── src/                 # React source (components, hooks, types)
 │   │       └── dist/               # Built output (generated, gitignored)
@@ -115,6 +116,7 @@ pi-config/
 │   │   ├── managed-refresh.ts       # Managed snapshot refresh with periodic re-probe (t3code pattern)
 │   │   ├── openai-compatible-discovery.ts # Discovery config, requests, header resolution, cache, diagnostics
 │   │   ├── daemon-manager.ts        # Server infrastructure (spawn, health check, WebSocket) — shared by pidash and pidiff
+│   │   ├── ui-bridge.ts            # #968 bidirectional prompt bridging (select/confirm/input in TUI + browser, first answer wins)
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
 │   │   ├── ws-client.ts             # WebSocket heartbeat + reconnect helpers (used by pidash, pidiff)
 │   │   ├── coms-active.ts           # Process-local P2P coms active flag (rules + coms; avoids circular imports)

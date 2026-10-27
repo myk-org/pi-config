@@ -34,6 +34,8 @@ import { registerMemoryTools } from "./memory-tools.js";
 import { registerReviewUI } from "./review-ui.js";
 import { registerSessionSearch } from "./session-search.js";
 import { registerSettingsTui } from "./settings-tui.js";
+import { buildSituationReport } from "./situation-report.js";
+import { listTopics } from "./memory-tree.js";
 import { registerMarkdownTransformer } from "./markdown-transformer.js";
 import { registerGraft } from "./graft.js";
 import { registerReviewLearning } from "./review-learning.js";
@@ -86,6 +88,36 @@ export default function (pi: ExtensionAPI) {
   pi.events.on("pidash:request-commands", () => {
     for (const [name, handler] of commandHandlerRegistry) {
       pi.events.emit("pidash:register-command", { name, handler });
+    }
+  });
+
+  // ── #968 part E: memory status surface for pidash ──────────────────
+  // Read-only snapshot through the live orchestrator memory modules —
+  // situation report, topic hotness, entry counts, budget usage.
+  // The requesting session's cwd comes in the event payload (the pidash
+  // browser may be watching a session in a different project than this
+  // process's cwd).
+  pi.events.on("pidash:memory-status-request", (data: unknown) => {
+    try {
+      const payload = (typeof data === "object" && data !== null ? data : {}) as { cwd?: unknown };
+      const cwd = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd();
+      const report = buildSituationReport(cwd);
+      const topics = listTopics(cwd).map((t) => ({
+        name: t.name,
+        entryCount: t.entryCount,
+        hotness: Math.round(t.hotness),
+        newestEntry: t.newestEntry,
+      }));
+      const usageMatch = report.match(/# Project Memory \[([0-9]+)%[^\]]*\]/);
+      pi.events.emit("pidash:memory-status", {
+        topics,
+        usagePct: usageMatch ? Number(usageMatch[1]) : null,
+        report,
+      });
+      log.info("pidash_memory_status_sent", { topics: topics.length });
+    } catch (e: any) {
+      log.warn("pidash_memory_status_failed", { error: e?.message });
+      pi.events.emit("pidash:memory-status", { topics: [], usagePct: null, report: "", error: e?.message });
     }
   });
 

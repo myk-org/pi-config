@@ -17,6 +17,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
+import { createBridgedUi } from "../shared/ui-bridge.js";
 import {
   getMarkdownTheme,
   withFileMutationQueue,
@@ -601,6 +602,10 @@ export function registerSubagentTool(
   // Only the orchestrator (top-level pi) can spawn subagents.
   // Child processes set PI_SUBAGENT_CHILD=1 to prevent infinite recursion.
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
+
+  // #968 part B: the project-agent approval is bridged — answerable from
+  // TUI or pidash browser, first answer wins.
+  const bridgedUi = createBridgedUi(pi);
 
   // ── Extracted execute helpers (closure over pi, spawnAsyncAgent, killAsyncAgent) ──
 
@@ -1627,7 +1632,8 @@ export function registerSubagentTool(
           .map((n) => agents.find((a) => a.name === n))
           .filter((a): a is AgentConfig => a?.source === "project");
         if (projAgents.length > 0) {
-          const ok = await ctx.ui.confirm(
+          const ok = await bridgedUi.confirm(
+            ctx,
             "Run project-local agents?",
             `Agents: ${projAgents.map((a) => a.name).join(", ")}\nSource: ${discovery.projectAgentsDir}`,
           );

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ExternalLink, GitBranch, Brain, Bot, Check, ChevronDown, Folder } from "lucide-react";
+import { ExternalLink, GitBranch, Brain, Bot, Check, ChevronDown, Folder, ListTodo, Radio, Database, Plug, Settings2, Archive } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@ui/popover";
 import { cn } from "@/lib/utils";
 import type { SessionInfo, TokenUsage } from "@/types";
+import type { PanelTab } from "@/components/SidePanel";
 import { formatCompactTotal, formatExactTotal } from "@/lib/format-total";
 import { createLogger } from "@/lib/create-logger";
 import { supportsReasoning, THINKING_LEVELS } from "@/lib/model-capabilities";
@@ -28,6 +29,9 @@ interface Props {
   tokens: TokenUsage | null;
   send: (data: object) => void;
   onMessage: (handler: (data: any) => void) => () => void;
+  activePanel: PanelTab | null;
+  onOpenPanel: (tab: PanelTab) => void;
+  onCompact: () => void;
 }
 
 interface ProjectSession {
@@ -39,7 +43,7 @@ interface ProjectSession {
   modified?: string;
 }
 
-export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
+export function InfoBar({ session, model, tokens, send, onMessage, activePanel, onOpenPanel, onCompact }: Props) {
   const inactive = !session.active;
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [projectSessions, setProjectSessions] = useState<ProjectSession[]>([]);
@@ -68,9 +72,33 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
   const input = tokens?.input || 0;
   const output = tokens?.output || 0;
   const cache = tokens?.cacheRead || 0;
-  const pct = Math.round((input / ctxWin) * 100);
+  const cacheWrite = tokens?.cacheWrite || 0;
+  // Prompt size = everything that entered the window this turn. `input` is the
+  // FRESH tokens only (cache reads are reported separately), so in a cached
+  // session it is a few dozen tokens and the gauge read 0% everywhere.
+  const promptTokens = input + cache + cacheWrite;
+  const pct = (promptTokens / ctxWin) * 100;
+  // Token accounting is the one place where a wrong number is invisible (a
+  // percentage looks plausible at any value), so record the inputs whenever they
+  // change — debug level, ordered, no per-render spam.
+  const gaugeRef = useRef<string>("");
+  const gaugeKey = `${input}:${cache}:${cacheWrite}:${ctxWin}`;
+  if (gaugeRef.current !== gaugeKey) {
+    gaugeRef.current = gaugeKey;
+    log.debug("context gauge", {
+      promptTokens, ctxWin, pct: Number(pct.toFixed(1)), input, cacheRead: cache, cacheWrite,
+    });
+  }
   const pctColor = pct > 80 ? "text-red-500" : pct > 50 ? "text-orange-400" : "";
-  const displayModel = model || session.model || "—";
+  const sessionModel = model || session.model || "";
+  // `session.model` carries the model ID; the discovered list carries the
+  // display name. Resolve the name so a long id never becomes the label
+  // (reconnect and session-switch paths only have the id). When only an id is
+  // known, drop the provider prefix — "rits/deepseek-ai/DeepSeek-V4.1-Flash"
+  // truncates to "rits/dee…" in a narrow slot while the leaf name stays legible.
+  const displayModel = sessionModel
+    ? models.find((m) => m.id === sessionModel)?.name || sessionModel.split("/").filter(Boolean).pop() || sessionModel
+    : "—";
 
   // Reset async agents and cron tasks when session changes
   useEffect(() => {
@@ -82,7 +110,12 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
     return onMessage((ev: any) => {
       if (ev.type === "models-list" && ev.models) {
         setModels(ev.models);
-        setOpenMenu("models"); // Auto-open the models dropdown
+        // NEVER open the picker here: models-list is broadcast to every
+        // connected browser, so opening on the event made the dropdown pop up
+        // in tabs whose user never clicked it (any other tab, or automation,
+        // requesting the list was enough). The click that asks for the list
+        // already opens the menu; the response only fills it.
+        log.debug("models list received", { count: ev.models.length });
       }
       if (ev.type === "update_info") {
         if (ev.thinkingLevel) setThinkingLevel(ev.thinkingLevel);
@@ -135,17 +168,30 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
   }, [openMenu, send, session.sessionId]);
 
   return (
-    <div className={cn("flex items-center gap-3 px-4 py-2 border-t border-border text-sm text-muted-foreground relative max-md:flex-wrap max-md:gap-2 max-md:text-xs md:whitespace-nowrap md:scrollbar-none", inactive && "opacity-50 pointer-events-none")}>
+    <div className={cn("flex items-center gap-3 max-md:gap-1.5 h-10 px-4 max-md:px-2 border-t border-border text-sm text-muted-foreground relative whitespace-nowrap shrink-0", inactive && "opacity-50 pointer-events-none")}>
+      {/* Stats zone — shrinks with ellipsis on narrow screens. Fixed bar
+          height means changing token counts / appearing cache+reasoning segments can
+          never resize the chat frame above. */}
+      <div className="flex items-center gap-3 min-w-0 flex-1">
       {/* Model */}
-      <div className="relative">
+      <div className="relative min-w-[9rem] max-w-[22rem] shrink max-md:min-w-0 max-md:max-w-[90px]">
         <button
-          className="flex items-center gap-1 font-semibold text-foreground hover:text-primary transition-colors"
+          className="flex items-center gap-1 font-semibold text-foreground hover:text-primary transition-colors min-w-0 w-full"
+          aria-haspopup="dialog"
+          aria-expanded={openMenu === "models"}
+          aria-controls="model-menu"
           onClick={(e) => toggleMenu("models", e)}
         >
-          <Bot className="h-3.5 w-3.5" /> {displayModel} <ChevronDown className="h-3 w-3" />
+          <Bot className="h-3.5 w-3.5 shrink-0" /> <span className="truncate min-w-0">{displayModel}</span> <ChevronDown className="h-3 w-3 shrink-0" />
         </button>
         {openMenu === "models" && (
-          <div className="absolute bottom-full left-0 mb-1 z-50 bg-card border border-border rounded-lg shadow-xl py-1 min-w-[200px] max-h-60 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+          <div
+            id="model-menu"
+            role="dialog"
+            aria-label="Select model"
+            className="absolute bottom-full left-0 mb-1 z-50 bg-card border border-border rounded-lg shadow-xl py-1 min-w-[200px] max-h-60 overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="px-2 py-1">
               <input
                 ref={openMenu === "models" ? filterRef : undefined}
@@ -180,13 +226,14 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
         )}
       </div>
 
-      <span className="text-border">|</span>
+      <span className="text-border max-md:hidden">|</span>
 
-      {/* Thinking */}
-      {supportsReasoning(session) && <div className="relative">
+      {/* Thinking — compact on phones (icon + short level text) instead of
+          hidden: it is the only browser control for set-thinking (Qodo R3). */}
+      {supportsReasoning(session) && <div className="relative shrink-0">
         <button
           ref={thinkingButtonRef}
-          className="flex items-center gap-1 hover:text-primary transition-colors"
+          className="flex items-center gap-1 hover:text-primary transition-colors min-w-[4.75rem]"
           aria-haspopup="menu"
           aria-expanded={openMenu === "thinking"}
           aria-controls="thinking-level-menu"
@@ -198,7 +245,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
             setOpenMenu("thinking");
           }}
         >
-          <Brain className="h-3.5 w-3.5" /> {thinkingLevel} <ChevronDown className="h-3 w-3" />
+          <Brain className="h-3.5 w-3.5" /> <span className="max-md:text-[10px]">{thinkingLevel}</span> <ChevronDown className="h-3 w-3 max-md:hidden" />
         </button>
         {openMenu === "thinking" && (
           <div
@@ -243,83 +290,97 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
         )}
       </div>}
 
-      {supportsReasoning(session) && <span className="text-border">|</span>}
+      {supportsReasoning(session) && <span className="text-border max-md:hidden">|</span>}
 
-      {/* Tokens */}
-      <span className="tabular-nums">
-        <span className="inline-block min-w-[3.5em] text-right">↑{fk(input)}</span>
+      {/* Scrollable stats zone: on narrow viewports these are hidden (the
+          controls — model, thinking, sessions, action icons — must fit a
+          phone-width column; Qodo R3). Model/thinking dropdowns stay OUTSIDE
+          it so their absolute menus are never clipped by a scroll container. */}
+      {/* Context gauge — OUTSIDE the scrolling strip below: compaction
+          proximity must stay visible even when the token counters are
+          scrolled out of view in a narrow bar. */}
+      {/* Same shape as the TUI footer: one decimal plus the window, e.g.
+          "ctx 32.0%/1.0M". The percentage is the SESSION's context — the prompt
+          the model actually received last turn (fresh + cache), not the running
+          turn's fresh-token count. */}
+      <span className={cn("tabular-nums inline-block min-w-[9.5em] text-right shrink-0", pctColor)} title={`Context window usage: ${promptTokens.toLocaleString()} / ${ctxWin.toLocaleString()} tokens (${input.toLocaleString()} fresh + ${cache.toLocaleString()} cache-read${cacheWrite ? ` + ${cacheWrite.toLocaleString()} cache-write` : ""})`}>ctx {pct.toFixed(1)}%/{fk(ctxWin)}</span>
+
+      <span className="text-border shrink-0">|</span>
+
+      <div className="flex items-center gap-3 min-w-0 shrink overflow-x-auto scrollbar-none max-md:hidden">
+      {/* Tokens — fixed min-widths + titles: values change digit counts and
+          conditional segments (cache / reasoning) appear per message, but a fixed-height
+          single-row bar means width churn can no longer resize the frame. */}
+      <span className="tabular-nums shrink-0">
+        <span className="inline-block min-w-[3.5em] text-right" title={`Input tokens: ${input.toLocaleString()}`}>↑{fk(input)}</span>
         {" "}
-        <span className="inline-block min-w-[3.5em] text-right">↓{fk(output)}</span>
-        {cache > 0 && <span className="inline-block min-w-[3.5em] text-right"> 📦{fk(cache)}</span>}
-        {(tokens?.reasoning ?? 0) > 0 && <span className="inline-block min-w-[3.5em] text-right"> 🧠{fk(tokens!.reasoning!)}</span>}
+        <span className="inline-block min-w-[3.5em] text-right" title={`Output tokens: ${output.toLocaleString()}`}>↓{fk(output)}</span>
+        {/* Always mounted, hidden when empty: appearing/disappearing segments
+            changed the row's width mid-turn and made the bar dance. */}
+        <span className={cn("inline-block min-w-[3.5em] text-right", cache > 0 ? "" : "invisible")} title={`Cache-read tokens: ${cache.toLocaleString()}`}> {fk(cache)}</span>
+        <span className={cn("inline-block min-w-[3.5em] text-right", (tokens?.reasoning ?? 0) > 0 ? "" : "invisible")} title={`Reasoning tokens: ${(tokens?.reasoning ?? 0).toLocaleString()}`}> {fk(tokens?.reasoning ?? 0)}</span>
       </span>
 
-      <span className="text-border">|</span>
 
-      {/* Context */}
-      <span className={cn("tabular-nums inline-block min-w-[4em] text-right", pctColor)}>ctx {pct}%</span>
-
-      {session.graftTokenSavings !== undefined && (
-        <>
-          <span className="text-border">|</span>
-          <span
-            className="tabular-nums text-green-500"
-            title={`${formatExactTotal(session.graftTokenSavings)} Graft tokens saved`}
-          >
-            ◤ {formatCompactTotal(session.graftTokenSavings)} saved
-          </span>
-        </>
-      )}
+      <span className="text-border shrink-0">|</span>
+      <span
+        className={cn("tabular-nums text-green-500 shrink-0 w-[6.5rem] text-right", session.graftTokenSavings === undefined && "invisible")}
+        title={session.graftTokenSavings === undefined ? "" : `${formatExactTotal(session.graftTokenSavings)} Graft tokens saved (retrieval instead of full-file reads)`}
+      >
+        ◤ {formatCompactTotal(session.graftTokenSavings ?? 0)} saved
+      </span>
 
       {/* Git */}
       {session.branch && (
         <>
-          <span className="text-border">|</span>
-          <span className="flex items-center gap-1">
-            <GitBranch className="h-3.5 w-3.5" />
-            <span className={session.gitDirty ? "text-red-500" : "text-green-500"}>
+          <span className="text-border shrink-0">|</span>
+          <span
+            className="flex items-center gap-1 min-w-0 shrink"
+            title={`Git branch: ${session.branch}${session.gitDirty ? " — dirty (uncommitted changes)" : " — clean"}${session.gitChanges ? ` — ${session.gitChanges} changed files` : ""}`}
+          >
+            <GitBranch className="h-3.5 w-3.5 shrink-0" />
+            <span className={cn("shrink-0", session.gitDirty ? "text-red-500" : "text-green-500")}>
               {session.gitDirty ? "●" : "✓"}
             </span>
-            {session.branch}
-            {session.gitChanges ? ` ~${session.gitChanges}` : ""}
+            <span className="truncate">{session.branch}{session.gitChanges ? ` ~${session.gitChanges}` : ""}</span>
           </span>
         </>
       )}
 
       {/* Diff viewer */}
-      {session.diffPort && (
-        <>
-          <span className="text-border">|</span>
-          <a href={`http://localhost:${session.diffPort}`} target="_blank" rel="noreferrer" className="flex items-center gap-0.5 text-primary hover:underline">
+      <span className="text-border shrink-0">|</span>
+      {session.diffPort
+        ? (
+          <a href={`http://localhost:${session.diffPort}`} target="_blank" rel="noreferrer" className="flex items-center gap-0.5 text-primary hover:underline shrink-0" title="Open the pidiff diff viewer for this session's working tree">
              diff <ExternalLink className="h-3 w-3" />
           </a>
-        </>
-      )}
+        )
+        : <span className="invisible flex items-center gap-0.5 shrink-0" aria-hidden="true"> diff <ExternalLink className="h-3 w-3" /></span>}
 
       {/* Container */}
-      {session.container && (
-        <>
-          <span className="text-border">|</span>
-          <span className="text-[10px] px-1.5 py-0.5 border border-border rounded">📦</span>
-        </>
-      )}
+      <span className={cn("text-[10px] px-1.5 py-0.5 border border-border rounded shrink-0", session.container ? "" : "invisible")} title="Session runs inside a container" aria-hidden={!session.container}>🧊</span>
 
       {/* Coms identity */}
-      {session.comsName && (
-        <>
-          <span className="text-border">|</span>
+      <span className="text-border shrink-0">|</span>
+      {(
           <span
-            className="cursor-default"
-            title={[session.comsProject ? `Project: ${session.comsProject}` : '', session.comsPurpose ? `Purpose: ${session.comsPurpose}` : ''].filter(Boolean).join(' · ') || undefined}
+            className={cn("flex items-center gap-1 min-w-0 shrink cursor-default w-[8.5rem]", !session.comsName && "invisible")}
+            title={[session.comsProject ? `Project: ${session.comsProject}` : '', session.comsPurpose ? `Purpose: ${session.comsPurpose}` : ''].filter(Boolean).join(' · ') || 'Coms peer identity'}
           >
-            📡 Coms: {session.comsName}
+            <span className="shrink-0">📡 Coms:</span> <span className="truncate">{session.comsName || "—"}</span>
           </span>
-        </>
       )}
 
 
-      {/* Cron tasks — visible when active, pinned to far right alongside async */}
-      <div className="relative inline-block ml-auto">
+      {/* Cron tasks */}
+      </div>
+      </div>
+      {/* Actions zone — pinned right, never shrinks: compact and the panel
+          toggles can't be pushed off-screen by growing stats. */}
+      <div className="flex items-center gap-2 ml-auto shrink-0">
+      {/* Cron — hidden on phones while idle (count 0): the bar must keep the
+          action icons reachable on a phone-width column (Qodo R2). */}
+      <div className={cn("relative inline-block shrink-0", cronTasks.count === 0 && "max-md:hidden")}>
         <Popover>
           <PopoverTrigger className={cn(
             "cursor-pointer text-xs",
@@ -373,8 +434,8 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
         </Popover>
       </div>
 
-      {/* Async agents — always visible */}
-      <div className="relative inline-block">
+      {/* Async agents — hidden on phones while idle (count 0) */}
+      <div className={cn("relative inline-block shrink-0", asyncAgents.count === 0 && "max-md:hidden")}>
         <Popover>
           <PopoverTrigger className={cn(
             "cursor-pointer text-xs",
@@ -440,15 +501,45 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
         </Popover>
       </div>
 
-      {/* Sessions */}
+      {/* #968 D + parity panels — action icons. Compact is an icon here (not
+          a text button at the far end) so it stays compact and always visible. */}
+      <div className="flex items-center gap-1 shrink-0">
+        <button
+          className={cn("p-1 rounded transition-colors", "text-muted-foreground hover:text-foreground hover:bg-accent/30")}
+          onClick={onCompact}
+          title="Compact session context (summarize history to free context window)"
+        >
+          <Archive className="h-3.5 w-3.5" />
+        </button>
+        {([
+          ["tasks", ListTodo, "Tasks panel"],
+          ["coms", Radio, "Coms peers"],
+          ["memory", Database, "Memory status"],
+          ["mcp", Plug, "MCP servers"],
+          ["settings", Settings2, "Settings"],
+        ] as Array<[PanelTab, typeof ListTodo, string]>).map(([tab, Icon, title]) => (
+          <button
+            key={tab}
+            className={cn("p-1 rounded transition-colors", activePanel === tab ? "text-primary bg-accent/50" : "text-muted-foreground hover:text-foreground hover:bg-accent/30")}
+            onClick={() => onOpenPanel(tab)}
+            title={title}
+          >
+            <Icon className="h-3.5 w-3.5" />
+          </button>
+        ))}
+      </div>
+
+      {/* Sessions — icon-only on phones (full label + chevron on desktop):
+          the sidebar only WATCHES sessions; this dropdown is the only way to
+          switch/resume the live session from the browser (Qodo R3). */}
       <>
-        <span className="text-border">|</span>
-        <div className="relative">
+        <div className="relative shrink-0">
           <button
             className="flex items-center gap-1 hover:text-primary transition-colors"
             onClick={(e) => toggleMenu("sessions", e)}
+            title="Switch session"
           >
-            <Folder className="h-3.5 w-3.5" /> sessions <ChevronDown className="h-3 w-3" />
+            <Folder className="h-3.5 w-3.5" /> <span className="max-md:hidden">sessions</span> <ChevronDown className="h-3 w-3 max-md:hidden" />
           </button>
           {openMenu === "sessions" && (
             <div className="absolute bottom-full right-0 mb-1 z-50 bg-card border border-border rounded-lg shadow-xl py-1 w-[320px] max-h-[300px] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
@@ -484,6 +575,7 @@ export function InfoBar({ session, model, tokens, send, onMessage }: Props) {
           )}
         </div>
       </>
+      </div>
     </div>
   );
 }

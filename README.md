@@ -661,6 +661,14 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - Per-project diff viewer (pidiff) — opens in browser via clickable `pi-diff` status-line link, powered by `@pierre/diffs` + `@pierre/trees`, with review comments
 - Collapsible thinking and tool blocks with copy buttons
 - ask_user tool bridging (answer from browser or TUI)
+- **Full TUI parity (#968)** — every interactive prompt and surface is answerable/operable from either TUI or browser, first answer wins:
+  - Dangerous-command approvals, commit-trailer selection, project-agent confirmations, and `/tasks` menus render in both surfaces
+  - Tasks panel (view/create/start/complete/delete/clear) driven through the live TaskStore with live updates
+  - Coms peer list (busy state, queue depth, context %) + send message to a peer (same delivery path as `coms_send`)
+  - New-session creation (name + initial model) and `/compact` from the browser
+  - Memory status (usage, topics, situation report)
+  - MCP server management (list/login/logout)
+  - Full settings page — every key from `settings-keys.json`, project + global scopes, typed editors, written through the live settings module (same semantics as `/pi-config-settings`)
 - Mobile responsive
 - Event buffering for message replay on refresh
 - Browser push notifications for background events (configurable per event type)

@@ -1,6 +1,9 @@
 import { useEffect, type Dispatch, type SetStateAction } from "react";
-import { matchesKeybinding } from "@/hooks/useKeybindings";
+import { isAbortKey, matchesKeybinding } from "@/hooks/useKeybindings";
 import type { SessionInfo } from "@/types";
+import { createLogger } from "../lib/create-logger";
+
+const log = createLogger("KeyboardNavigation");
 
 export function useKeyboardNavigation(opts: {
   streaming: boolean;
@@ -22,10 +25,24 @@ export function useKeyboardNavigation(opts: {
       const tag = (e.target as HTMLElement)?.tagName;
       const isInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 
-      if (matchesKeybinding(e, getKey("abort"))) {
+      // Overlay dismissal is independent of any binding: Escape always closes an
+      // open dialog (this used to live inside the abort branch, so unbinding
+      // abort silently made the shortcuts dialog uncloseable by keyboard).
+      // KeybindingSettings cancels a recording in the CAPTURE phase and stops
+      // propagation, so Escape during recording still cancels only the capture.
+      if (e.key === "Escape" && (showSwitcher || showSettings)) {
+        log.debug("escape closed an overlay", { switcher: showSwitcher, settings: showSettings });
+        e.preventDefault();
+        if (showSwitcher) setShowSwitcher(false);
+        if (showSettings) setShowSettings(false);
+        return;
+      }
+
+      // Abort is unbound by default, so this never fires on Escape (menus
+      // dismiss with it constantly); the composer's Stop button aborts.
+      if (isAbortKey(e, getKey("abort"))) {
+        log.debug("abort key matched", { streaming, sessionId: session?.sessionId ?? null, aborted: Boolean(streaming && session) });
         if (streaming && session) { e.preventDefault(); handleAbort(); }
-        if (showSwitcher) { e.preventDefault(); setShowSwitcher(false); }
-        if (showSettings) { e.preventDefault(); setShowSettings(false); }
         return;
       }
 

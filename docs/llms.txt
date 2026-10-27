@@ -56,3 +56,7 @@
 
 - [Extension Commands](extension-commands.md)
 - [Project Settings Internals](project-settings.md)
+
+## More
+
+- [Pidash TUI Parity](pidash-tui-parity.md)

@@ -141,6 +141,14 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     return;
   }
 
+  // #968: settings files are shared across sessions — a settings write must
+  // fan out to EVERY connected browser, not just watchers of the writing
+  // session (Qodo R3: shared settings stayed stale across sessions).
+  if (parsed.type === "settings-broadcast" && parsed.payload) {
+    broadcastToBrowsers(parsed.payload);
+    return;
+  }
+
   // Forward pi event to browsers watching this session + buffer
   if (piClient) {
     piClient.session.lastActivity = Date.now();

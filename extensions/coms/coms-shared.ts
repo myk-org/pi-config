@@ -551,6 +551,41 @@ export function formatComsResponseText(targetName: string, response: any, error:
 		: `[coms response from ${targetName}${arrow}${queueNote}] ${JSON.stringify(response, null, 2)}`;
 }
 
+/** #968 C: pidash browser peer-list payload — pure projection of live cards. */
+export interface ComsPeerCard {
+	name: string;
+	purpose: string;
+	model: string;
+	color: string;
+	context_used_pct?: number;
+	queue_depth?: number;
+	busy?: boolean;
+	tasks_summary?: unknown;
+	staleCount: number;
+}
+
+export function buildComsPeersPayload(
+	cards: Iterable<ComsPeerCard>,
+	self: { name: string; purpose?: string; project?: string } | null,
+): { self: { name: string; purpose: string; project: string } | null; peers: Array<Record<string, unknown>> } {
+	const peers: Array<Record<string, unknown>> = [];
+	for (const card of cards) {
+		peers.push({
+			name: card.name,
+			purpose: card.purpose,
+			model: card.model,
+			busy: card.busy ?? false,
+			queueDepth: card.queue_depth ?? 0,
+			contextUsedPct: card.context_used_pct ?? 0,
+			tasksSummary: card.tasks_summary ?? null,
+		});
+	}
+	return {
+		self: self ? { name: self.name, purpose: self.purpose || "", project: self.project || "" } : null,
+		peers,
+	};
+}
+
 /** Sanitize a coms identity name for safe embedding in header strings.
  *  Strips all control characters (C0/C1), brackets; replaces whitespace with hyphens. */
 export function sanitizeComsName(name: string): string {

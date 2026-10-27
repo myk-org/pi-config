@@ -12,19 +12,24 @@ import { useMessageHandler, nextId } from "@/hooks/useMessageHandler";
 import { useKeyboardNavigation } from "@/hooks/useKeyboardNavigation";
 import { SessionSwitcher } from "@/components/SessionSwitcher";
 import { KeybindingSettings } from "@/components/KeybindingSettings";
+import { SidePanel, type PanelTab } from "@/components/SidePanel";
+import { NewSessionDialog } from "@/components/NewSessionDialog";
+import { createLogger } from "@/lib/create-logger";
 import type { SessionInfo } from "@/types";
+
+const log = createLogger("App");
 
 const STORAGE_KEY = "pidash-state";
 
-function loadState(): { sidebarWidth: number; sidebarCollapsed: boolean; watchPid: number | null; watchSessionId: string | null } {
+function loadState(): { sidebarWidth: number; sidebarCollapsed: boolean; watchPid: number | null; watchSessionId: string | null; activePanel?: string | null } {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
   } catch {}
-  return { sidebarWidth: 280, sidebarCollapsed: false, watchPid: null, watchSessionId: null };
+  return { sidebarWidth: 280, sidebarCollapsed: false, watchPid: null, watchSessionId: null, activePanel: null };
 }
 
-function saveState(state: { sidebarWidth: number; sidebarCollapsed: boolean; watchPid: number | null; watchSessionId: string | null }) {
+function saveState(state: { sidebarWidth: number; sidebarCollapsed: boolean; watchPid: number | null; watchSessionId: string | null; activePanel?: string | null }) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
 }
 
@@ -40,7 +45,15 @@ export function App() {
   const keybindings = useKeybindings();
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showNewSession, setShowNewSession] = useState(false);
   const saved = useRef(loadState());
+  // Restore the open panel across refreshes — the user's view survives a
+  // reload (not on phones, where the drawer is a full-screen overlay).
+  const [activePanel, setActivePanel] = useState<PanelTab | null>(() => {
+    if (typeof window !== "undefined" && window.innerWidth <= 768) return null;
+    const savedPanel = saved.current.activePanel;
+    return savedPanel === "tasks" || savedPanel === "coms" || savedPanel === "memory" || savedPanel === "mcp" || savedPanel === "settings" ? savedPanel : null;
+  });
   const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(isMobile ? true : saved.current.sidebarCollapsed);
   const [sidebarWidth, setSidebarWidth] = useState(saved.current.sidebarWidth);
@@ -97,7 +110,11 @@ export function App() {
       setModel(s.model || "");
       setTokens(null);
     }
-    setStreaming(false);
+    // Adopt the daemon's streaming truth instead of assuming idle: a page
+    // reloaded mid-turn never receives the agent_start that would have set
+    // this, and the Stop button is the ONLY abort path now that no key is
+    // bound to abort — guessing "idle" would strand a running turn.
+    setStreaming(s.streaming === true || s.activity === "working");
     setQueuedCount(0);
     setSearchQuery("");
     setSearchType("all");
@@ -121,13 +138,28 @@ export function App() {
       sidebarCollapsed: mobile ? true : sidebarCollapsed,
       watchPid: session?.pid ?? null,
       watchSessionId: session?.sessionId ?? null,
+      activePanel,
     });
-  }, [sidebarWidth, sidebarCollapsed, session]);
+  }, [sidebarWidth, sidebarCollapsed, session, activePanel]);
 
   // Reset restore state on disconnect so we re-watch after server restart
   useEffect(() => {
     if (!connected) restoredRef.current = false;
   }, [connected]);
+
+  // Re-watch the current session on every reconnect — watchSession early-returns
+  // for an already-selected session, so a daemon restart would otherwise leave the
+  // tab watching nothing (commands still flow, but no events come back).
+  // Keyed on sessionId (not the session object): session_updated events replace
+  // the object on every stream tick and must not re-fire the watch.
+  const watchedSessionIdRef = useRef<string | null>(null);
+  watchedSessionIdRef.current = session?.sessionId ?? null;
+  useEffect(() => {
+    if (connected && watchedSessionIdRef.current) {
+      log.debug("watching session", { sessionId: watchedSessionIdRef.current, reconnect: true });
+      send({ type: "watch", sessionId: watchedSessionIdRef.current });
+    }
+  }, [connected, send]);
 
   useEffect(() => {
     if (!connected || !sessions.length || restoredRef.current) return;
@@ -141,6 +173,30 @@ export function App() {
   const handleAbort = useCallback(() => {
     if (session) send({ type: "pidash-command", sessionId: session.sessionId, command: "abort" });
   }, [session, send]);
+
+  const handleCompact = useCallback(() => {
+    if (session) send({ type: "pidash-command", sessionId: session.sessionId, command: "compact" });
+  }, [session, send]);
+
+  // Stable identity — MessageItem is memoized and this is a prop on every
+  // item; an inline arrow would defeat the memo and re-render the whole
+  // list on every App render.
+  const handleAskResponse = useCallback((id: string, value: string) => {
+    log.debug("ask response sent", { id, confirmed: value === "__confirmed__" || value === "__denied__" ? value : "value" });
+    if (value === "__confirmed__") {
+      send({ type: "extension_ui_response", sessionId: sessionRefForAsk.current?.sessionId, id, confirmed: true });
+    } else if (value === "__denied__") {
+      send({ type: "extension_ui_response", sessionId: sessionRefForAsk.current?.sessionId, id, confirmed: false });
+    } else {
+      send({ type: "extension_ui_response", sessionId: sessionRefForAsk.current?.sessionId, id, value });
+    }
+  }, [send]);
+  const sessionRefForAsk = useRef(session);
+  useEffect(() => { sessionRefForAsk.current = session; }, [session]);
+
+  const handleOpenPanel = useCallback((tab: PanelTab) => {
+    setActivePanel((prev) => (prev === tab ? null : tab));
+  }, []);
 
   // Flatten sessions matching sidebar order: active groups first, then alphabetical, active sessions first within groups
   const flatSessions = useMemo(() => {
@@ -198,6 +254,7 @@ export function App() {
             connected={connected}
             onSelect={watchSession}
             onRename={renameSession}
+            onNewSession={() => setShowNewSession(true)}
             collapsed={false}
             onToggle={() => setSidebarCollapsed(true)}
             notifications={notifications}
@@ -254,15 +311,7 @@ export function App() {
               searchType={searchType}
               streaming={streaming}
               scrollKey={scrollKey}
-              onAskResponse={(id, value) => {
-                if (value === "__confirmed__") {
-                  send({ type: "extension_ui_response", sessionId: session!.sessionId, id, confirmed: true });
-                } else if (value === "__denied__") {
-                  send({ type: "extension_ui_response", sessionId: session!.sessionId, id, confirmed: false });
-                } else {
-                  send({ type: "extension_ui_response", sessionId: session!.sessionId, id, value });
-                }
-              }}
+              onAskResponse={handleAskResponse}
             />
             {queuedCount > 0 && (
               <div className="px-3 py-1.5 bg-yellow-500/10 border-t border-yellow-500/20 text-xs text-yellow-500 flex items-center gap-1.5">
@@ -271,10 +320,27 @@ export function App() {
               </div>
             )}
             <InputBar disabled={!session.active} streaming={streaming} onSend={handleSend} onAbort={handleAbort} commands={availableCommands} />
-            <InfoBar session={selectedSession!} model={model} tokens={tokens} send={send} onMessage={onMessage} />
+            <InfoBar session={selectedSession!} model={model} tokens={tokens} send={send} onMessage={onMessage} activePanel={activePanel} onOpenPanel={handleOpenPanel} onCompact={handleCompact} />
           </>
         )}
       </div>
+
+      {session && activePanel && (
+        <SidePanel
+          session={selectedSession!}
+          activeTab={activePanel}
+          onTabChange={setActivePanel}
+          onClose={() => setActivePanel(null)}
+          send={send}
+          onMessage={onMessage}
+          sessions={flatSessions}
+          onWatch={watchSession}
+        />
+      )}
+
+      {session && showNewSession && (
+        <NewSessionDialog send={send} onMessage={onMessage} sessionId={session.sessionId} onClose={() => setShowNewSession(false)} />
+      )}
 
       {showSettings && (
         <KeybindingSettings
