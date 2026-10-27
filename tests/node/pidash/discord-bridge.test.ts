@@ -19,7 +19,9 @@ import {
   toBridgeResponse,
   isPromptExpired,
   renderPrompt,
-  PENDING_PROMPT_TTL_MS,
+  DEFAULT_PENDING_PROMPT_TTL_MS,
+  resolvePromptTtlMs,
+  isAnswerLike,
   type PendingPrompt,
 } from "../../../extensions/pidash/discord-answers.ts";
 import {
@@ -33,7 +35,9 @@ import {
   SESSIONS_PER_PAGE,
   type SessionSummary,
 } from "../../../extensions/pidash/discord-sessions-view.ts";
-import { renderEvent, initialRenderState, toolLine, streamingView } from "../../../extensions/pidash/discord-render.ts";
+import { renderEvent, initialRenderState, toolLine, streamingView, shouldSuppressEcho } from "../../../extensions/pidash/discord-render.ts";
+import { resolveDiscordConfig, parseEnvFile } from "../../../extensions/pidash/discord-config.ts";
+import { boundListText } from "../../../extensions/pidash/discord-sessions-view.ts";
 import { migrateState, pruneState, STATE_VERSION, emptyState } from "../../../extensions/pidash/discord-state.ts";
 
 describe("discord chunking", () => {
@@ -147,6 +151,26 @@ describe("discord prompt answers", () => {
     assert.equal(mapAnswer(select, "9").kind, "reject");
   });
 
+  it("accepts free text for a select, like the TUI does", () => {
+    // ask_user's select allows a custom answer; the old bot allowed it too.
+    const custom = mapAnswer(select, "use the staging cluster");
+    assert.deepEqual(custom, { kind: "value", value: "use the staging cluster" });
+  });
+
+  it("knows whether a reply is an answer at all", () => {
+    assert.equal(isAnswerLike(confirm, "yes"), true);
+    assert.equal(isAnswerLike(confirm, "deploy it now"), false);
+    assert.equal(isAnswerLike(select, "anything"), true);
+  });
+
+  it("reads the prompt TTL from the environment within sane bounds", () => {
+    assert.equal(resolvePromptTtlMs({}), DEFAULT_PENDING_PROMPT_TTL_MS);
+    assert.equal(resolvePromptTtlMs({ DISCORD_PROMPT_TTL_MS: "60000" }), 60000);
+    assert.equal(resolvePromptTtlMs({ DISCORD_PROMPT_TTL_MS: "1" }), 30000, "clamped up");
+    assert.equal(resolvePromptTtlMs({ DISCORD_PROMPT_TTL_MS: "999999999" }), 24 * 3600 * 1000, "clamped down");
+    assert.equal(resolvePromptTtlMs({ DISCORD_PROMPT_TTL_MS: "nope" }), DEFAULT_PENDING_PROMPT_TTL_MS);
+  });
+
   it("refuses an ambiguous prefix", () => {
     const ambiguous: PendingPrompt = { ...select, options: ["Deny", "Delete"] };
     assert.equal(mapAnswer(ambiguous, "de").kind, "reject");
@@ -161,7 +185,7 @@ describe("discord prompt answers", () => {
   });
 
   it("expires a stale prompt so it cannot eat a later message", () => {
-    const old = { ...confirm, createdAt: Date.now() - PENDING_PROMPT_TTL_MS - 1 };
+    const old = { ...confirm, createdAt: Date.now() - DEFAULT_PENDING_PROMPT_TTL_MS - 1 };
     assert.equal(isPromptExpired(old), true);
     assert.equal(isPromptExpired(confirm), false);
   });
@@ -295,5 +319,126 @@ describe("discord state migration", () => {
       users: Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`u${i}`, { watchedSessionId: null, responseChannelId: "c", updatedAt: now - i }])),
     };
     assert.equal(Object.keys(pruneState(many, now).users).length, 200);
+  });
+});
+
+describe("discord echo correlation (Qodo 8faf3fdd / 9306351e)", () => {
+  it("suppresses only the exact prompt we forwarded", () => {
+    assert.equal(shouldSuppressEcho("deploy it", "deploy it"), true);
+    assert.equal(shouldSuppressEcho("deploy it", "  deploy it  "), true);
+    assert.equal(shouldSuppressEcho("deploy it", "deploy it now"), false);
+    assert.equal(shouldSuppressEcho(undefined, "anything"), false, "no marker means no suppression");
+  });
+
+  it("is a pure decision, so two watchers cannot consume it in turn", () => {
+    // The old code deleted the marker inside the watcher loop; the same input
+    // must now give the same answer for every watcher.
+    const expected = "run the tests";
+    const actual = "run the tests";
+    assert.equal(shouldSuppressEcho(expected, actual), true);
+    assert.equal(shouldSuppressEcho(expected, actual), true);
+  });
+});
+
+describe("session list bounding (Qodo 56dd47a3)", () => {
+  it("keeps a long list inside the message limit and says what it dropped", () => {
+    const text = Array.from({ length: 60 }, (_, i) => `[active] **${i}.** very-long-session-name-${i} — model-name (branch-name)`).join("\n");
+    const bounded = boundListText(text, 500);
+    assert.ok(bounded.length <= 540, `bounded to ${bounded.length}`);
+    assert.match(bounded, /and \d+ more/);
+  });
+
+  it("leaves a short list untouched", () => {
+    assert.equal(boundListText("two\nlines", 500), "two\nlines");
+  });
+});
+
+describe("discord startup configuration (Qodo 5e9bc957)", () => {
+  it("refuses to start without a token", () => {
+    const result = resolveDiscordConfig({ HOME: "/home/x" });
+    assert.equal(result.ok, false);
+    assert.match((result as any).reason, /DISCORD_BOT_TOKEN/);
+  });
+
+  it("fails closed when no allowlist and no explicit opt-in", () => {
+    const result = resolveDiscordConfig({ HOME: "/home/x", DISCORD_BOT_TOKEN: "t" });
+    assert.equal(result.ok, false, "a token alone must not mean open access");
+    assert.match((result as any).reason, /DISCORD_ALLOWED_USERS/);
+  });
+
+  it("accepts an explicit open-access opt-in", () => {
+    const result = resolveDiscordConfig({ HOME: "/home/x", DISCORD_BOT_TOKEN: "t", DISCORD_ALLOW_ALL: "true" });
+    assert.equal(result.ok, true);
+    assert.equal((result as any).config.allowAll, true);
+  });
+
+  it("parses a comma-separated allowlist and ignores blanks", () => {
+    const result = resolveDiscordConfig({ HOME: "/home/x", DISCORD_BOT_TOKEN: "t", DISCORD_ALLOWED_USERS: " 1, 2 ,,3 " });
+    assert.deepEqual([...(result as any).config.allowedUsers], ["1", "2", "3"]);
+  });
+
+  it("resolves the state/env paths from HOME", () => {
+    const result = resolveDiscordConfig({ HOME: "/home/x", DISCORD_BOT_TOKEN: "t", DISCORD_ALLOWED_USERS: "1" });
+    assert.equal((result as any).config.stateFile, "/home/x/.pi/discord-state.json");
+    assert.equal((result as any).config.envFile, "/home/x/.pi/discord.env");
+  });
+
+  it("parses the credentials file", () => {
+    const env = parseEnvFile("# comment\nDISCORD_BOT_TOKEN=abc\n\nDISCORD_ALLOWED_USERS=1,2");
+    assert.deepEqual(env, { DISCORD_BOT_TOKEN: "abc", DISCORD_ALLOWED_USERS: "1,2" });
+  });
+});
+
+describe("discord session identity (user report)", () => {
+  const messy: SessionSummary = {
+    sessionId: "s1",
+    cwd: "/home/me/git/pi-config",
+    name: "check pi changelog [1.2.0] - whats new",
+    model: "DeepSeek V4.1 Flash",
+    branch: "main",
+  };
+
+  it("labels a session by its checkout, not by its first message", () => {
+    // The first message ("local run is running…") identifies nothing; the
+    // checkout is what a human recognises.
+    assert.match(sessionLabel(messy), /^pi-config/);
+    assert.match(sessionLabel({ sessionId: "s", cwd: "/tmp/scratch", name: "fix the bug" }), /scratch/);
+  });
+
+  it("lists the checkout first, then the name and model", () => {
+    const page = buildSessionPage([messy], 1);
+    const line = renderSessionsPage(page, null);
+    assert.match(line, /📁 \*\*pi-config\*\*/);
+    assert.ok(line.indexOf("pi-config") < line.indexOf("check pi changelog"), "checkout before name");
+  });
+
+  it("autocompletes on the checkout name", () => {
+    const choices = filterSessionChoices([messy], "pi-config");
+    assert.equal(choices.length, 1);
+    assert.match(choices[0].name, /^pi-config/);
+  });
+});
+
+describe("chunk size invariant (Qodo 983b4f6f)", () => {
+  const fenced = (limit: number, text: string) => chunkDiscordText(text, limit);
+
+  it("never exceeds the limit for a fenced block of long lines", () => {
+    const text = "```ts\n" + Array.from({ length: 40 }, (_, i) => `const v${i} = ${"x".repeat(120)};`).join("\n") + "\n```";
+    assert.ok(fenced(300, text).every((chunk) => chunk.length <= 300));
+  });
+
+  it("never exceeds the limit for a fenced block holding one giant line", () => {
+    // This is the case that produced 402-char chunks at a 400 limit.
+    const text = "```\n" + "y".repeat(5000) + "\n```";
+    const chunks = fenced(400, text);
+    assert.ok(chunks.every((chunk) => chunk.length <= 400), `max ${Math.max(...chunks.map((c) => c.length))}`);
+  });
+
+  it("keeps the invariant across mixed content and limits", () => {
+    const text = "a\n```js\nx\n```\nb\n```py\ny\n```\nc\n" + "z".repeat(900) + "\n" + "w ".repeat(500);
+    for (const limit of [120, 200, 250, 500, 1000]) {
+      const chunks = fenced(limit, text);
+      assert.ok(chunks.every((chunk) => chunk.length <= limit), `limit ${limit} exceeded`);
+    }
   });
 });

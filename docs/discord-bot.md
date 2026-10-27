@@ -110,6 +110,7 @@ The image cap matters: the previous version had no limit and base64'd any image 
 
 ## Related Pages
 
+- [Chat Clients (Signal, Telegram, …)](chat-clients.html) — the shared adapter contract this bot implements
 - [Using the Web Dashboard](using-the-web-dashboard.html)
 - [Daemon & Websocket Networking](daemon-and-websockets.html)
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)

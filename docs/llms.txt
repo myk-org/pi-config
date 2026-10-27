@@ -59,4 +59,5 @@
 
 ## More
 
+- [Chat Clients (Signal, Telegram, …)](chat-clients.md)
 - [Pidash TUI Parity](pidash-tui-parity.md)

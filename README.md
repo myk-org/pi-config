@@ -983,6 +983,10 @@ Control your pi sessions from your phone via Discord DMs.
 
    Find your Discord user ID: Settings > Advanced > Developer Mode ON, then right-click yourself > Copy User ID.
 
+   > The bot refuses to start without `DISCORD_ALLOWED_USERS` — a token alone must
+   > not mean "anyone who DMs the bot drives your agent". Set
+   > `DISCORD_ALLOW_ALL=true` only if you really want open access.
+
 3. **Restart pidash:**
    The Discord bot runs inside the pidash server daemon. Restart it to pick up the config:
 
@@ -992,15 +996,28 @@ Control your pi sessions from your phone via Discord DMs.
 
 ### Discord Commands
 
-| Command     | Description                         |
-| ----------- | ----------------------------------- |
-| `!sessions` | List active pi sessions             |
-| `!watch N`  | Watch/switch to session N           |
-| `!status`   | Show current session info           |
-| `!abort`    | Abort current operation             |
-| `!help`     | Show commands                       |
-| Any text    | Send as prompt to watched session   |
-| `/command`  | Forward slash command to pi session |
+| Command              | Description                                        |
+| -------------------- | -------------------------------------------------- |
+| `/sessions`          | Paginated, ephemeral list with watch buttons       |
+| `/watch session:<n>` | Watch a session by name (autocomplete)             |
+| `/status`            | Watched session: model, branch, state, cwd         |
+| `/stop`              | Interrupt the running turn                         |
+| `/compact`           | Compact the watched session's context              |
+| `/model [value]`     | Show or switch the model                           |
+| `/thinking [value]`  | Show or set the thinking level                     |
+| `/tasks` `/coms` `/memory` `/mcp` `/diff` | Inspect the watched session       |
+| `/file path:<rel>`   | Send a file from the session cwd (8MB max)         |
+| `/notify on\|off`     | DM when a turn finishes in an unwatched session    |
+| Any text (DM/thread) | Send as a prompt to the watched session            |
+| `/cancel`            | Dismiss a pending agent question                   |
+
+Agent questions arrive with **Approve/Deny** buttons or a dropdown; you can also
+reply `yes`/`no`, an option number, or the option text. In a server, watching a
+session opens a **thread** for it (DMs are used as a fallback).
+
+The bot fails closed: without `DISCORD_ALLOWED_USERS` it refuses to start unless
+you set `DISCORD_ALLOW_ALL=true`. See [docs/discord-bot.md](docs/discord-bot.md)
+for the full surface.
 
 ### How It Works
 
