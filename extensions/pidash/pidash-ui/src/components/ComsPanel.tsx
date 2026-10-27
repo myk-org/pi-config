@@ -1,15 +1,18 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
-import type { ComsPeer } from "@/types";
+import type { ComsPeer, SessionInfo } from "@/types";
 
 interface Props {
   sendCmd: (command: string, extra?: Record<string, unknown>) => void;
   onMessage: (handler: (data: any) => void) => () => void;
   notify: (msg: string, level?: string) => void;
+  /** Sessions known to this daemon — used to jump from a coms peer to its session. */
+  sessions?: SessionInfo[];
+  onWatch?: (s: SessionInfo) => void;
 }
 
 /** #968 C — coms peer list with live state + send message to a peer. */
-export function ComsPanel({ sendCmd, onMessage, notify }: Props) {
+export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }: Props) {
   const [peers, setPeers] = useState<ComsPeer[]>([]);
   const [self, setSelf] = useState<{ name?: string; purpose?: string; project?: string } | null>(null);
   const [selected, setSelected] = useState<ComsPeer | null>(null);
@@ -54,32 +57,63 @@ export function ComsPanel({ sendCmd, onMessage, notify }: Props) {
   return (
     <div className="p-3 space-y-2">
       <div className="text-xs font-semibold text-foreground">
-        Coms {self?.name && <span className="text-muted-foreground font-normal">— you are {self.name}</span>}
+        Coms
+        {self?.project && (
+          <span className="ml-1 px-1.5 py-0.5 rounded border border-border text-[10px] font-normal text-cyan-700 dark:text-cyan-400/90" title="Coms project (collaboration namespace, spans repos)">
+            ◆ {self.project}
+          </span>
+        )}
+        {self?.name && <span className="text-muted-foreground font-normal"> — you are {self.name}</span>}
       </div>
 
       {peers.length === 0 && <div className="text-xs text-muted-foreground py-4 text-center">No peers connected</div>}
 
       <div className="space-y-1">
-        {peers.map((p) => (
-          <button
+        {peers.map((p) => {
+          // A peer is a coms identity; a pidash session with the same comsName
+          // is the thing you can actually watch. Absent when the peer runs
+          // outside this daemon (other machine, another project's server).
+          const peerSession = sessions.find((s) => s.comsName === p.name);
+          return (
+          <div
             key={p.name}
             className={cn(
-              "w-full text-left p-2 rounded-md bg-card border text-xs transition-colors",
+              "w-full text-left rounded-md bg-card border text-xs transition-colors",
               selected?.name === p.name ? "border-primary" : "border-border hover:border-primary/50",
             )}
-            onClick={() => setSelected(p)}
           >
-            <div className="flex items-center gap-2">
-              <span title={p.busy ? "busy" : "idle"}>{p.busy ? "⚙" : "●"}</span>
-              <span className="font-medium text-foreground flex-1 truncate">{p.name}</span>
-              {p.busy && <span className="text-[10px] text-yellow-400">busy</span>}
-            </div>
-            <div className="text-[10px] text-muted-foreground truncate">{p.model}{p.purpose ? ` — ${p.purpose}` : ""}</div>
-            <div className="text-[10px] text-muted-foreground">
-              ctx {p.contextUsedPct}%{p.queueDepth > 0 && <span className="text-yellow-400"> · queue {p.queueDepth}</span>}
-            </div>
-          </button>
-        ))}
+            <button className="w-full text-left p-2" onClick={() => setSelected(p)}>
+              <div className="flex items-center gap-2">
+                <span title={p.busy ? "busy" : "idle"}>{p.busy ? "⚙" : "●"}</span>
+                <span className="font-medium text-foreground flex-1 truncate">{p.name}</span>
+                {p.busy && <span className="text-[10px] text-yellow-600 dark:text-yellow-400">busy</span>}
+                {peerSession && onWatch && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    title={`Watch this peer's session (${peerSession.cwd.split("/").pop()})`}
+                    className="text-[10px] text-muted-foreground hover:text-primary px-1 rounded border border-border"
+                    onClick={(e) => { e.stopPropagation(); onWatch(peerSession); }}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" && e.key !== " ") return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onWatch(peerSession);
+                    }}
+                  >
+                    ⇢ session
+                  </span>
+                )}
+              </div>
+              <div className="text-[10px] text-muted-foreground truncate">{p.model}{p.purpose ? ` — ${p.purpose}` : ""}</div>
+              <div className="text-[10px] text-muted-foreground">
+                ctx {p.contextUsedPct}%{p.queueDepth > 0 && <span className="text-yellow-600 dark:text-yellow-400"> · queue {p.queueDepth}</span>}
+                {!peerSession && <span className="opacity-60"> · no local session</span>}
+              </div>
+            </button>
+          </div>
+          );
+        })}
       </div>
 
       {selected && (

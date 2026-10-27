@@ -70,18 +70,18 @@ export function useMessageHandler(
     const processEvent = (ev: PiEvent) => {
       if (ev.type === "session_added" || ev.type === "session_removed") return;
           if (ev.type === "session_updated" && ev.session) {
-            // Update active session if it's the one we're watching
-            setSession((prev) => {
-              if (prev?.sessionId === ev.session!.sessionId) {
-                if (ev.session!.model !== undefined) setModel(ev.session!.model);
-                // Keep the Stop button in step with the daemon: turns started
-                // or settled outside this browser (TUI, another tab) change
-                // the streaming flag with no agent_start/agent_settled here.
-                if (ev.session!.streaming !== undefined) setStreaming(ev.session!.streaming);
-                return { ...prev, ...ev.session };
-              }
-              return prev;
-            });
+            const update = ev.session;
+            // Side effects stay OUT of the state updater: an updater may be
+            // deferred or replayed, and this one used to carry the streaming
+            // sync (Qodo 6284bef1 found it untested for exactly that reason).
+            if (session?.sessionId === update.sessionId) {
+              if (update.model !== undefined) setModel(update.model);
+              // Keep the Stop button in step with the daemon: turns started or
+              // settled outside this browser (TUI, another tab) change the
+              // streaming flag with no agent_start/agent_settled here.
+              if (update.streaming !== undefined) setStreaming(update.streaming);
+            }
+            setSession((prev) => (prev && prev.sessionId === update.sessionId ? { ...prev, ...update } : prev));
             return;
           }
 

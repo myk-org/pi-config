@@ -333,6 +333,8 @@ export function App() {
           onClose={() => setActivePanel(null)}
           send={send}
           onMessage={onMessage}
+          sessions={flatSessions}
+          onWatch={watchSession}
         />
       )}
 

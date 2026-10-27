@@ -127,7 +127,11 @@ describe("InfoBar thinking selector", () => {
     // other tests here instead of calling querySelector.
     const menu = elements(view.container, "div").find((item: any) => item.getAttribute("id") === "model-menu");
     assert.ok(menu, "#model-menu exists while open");
-    assert.equal(menu!.getAttribute("role"), "menu");
+    // The popup is a searchable dialog, not an ARIA menu: it has no menu items
+    // or arrow-key navigation, so it must not claim role="menu".
+    assert.equal(menu!.getAttribute("role"), "dialog");
+    assert.equal(menu!.getAttribute("aria-label"), "Select model");
+    assert.equal(trigger.getAttribute("aria-haspopup"), "dialog");
   });
 
   it("Escape closes the model menu", async () => {
@@ -148,9 +152,19 @@ describe("InfoBar thinking selector", () => {
     assert.match(trigger?.textContent ?? "", /xhigh/);
   });
 
-  it("updates Graft savings", async () => {
-    const view = await renderInfoBar(session({ reasoning: false, thinkingLevel: "xhigh" }));
-    await view.rerender(session({ reasoning: true, thinkingLevel: "xhigh", graftTokenSavings: 1250 }));
+  it("reserves the Graft slot when savings are unknown", async () => {
+    // The bar must not reflow when this value appears mid-turn: the slot is
+    // always mounted and hidden instead of being conditionally created.
+    const view = await renderInfoBar(session());
+    assert.match(view.container.textContent, /◤\s*0 saved/);
+    const slot = elements(view.container, "span").find(
+      (item: any) => /saved/.test(item.textContent || "") && /invisible/.test(String(item.getAttribute("class") || "")),
+    );
+    assert.ok(slot, "graft slot is reserved (invisible) when unknown");
+  });
+
+  it("shows Graft savings when reported", async () => {
+    const view = await renderInfoBar(session({ graftTokenSavings: 1250 }));
     assert.match(view.container.textContent, /1\.3k saved/);
   });
 
@@ -163,7 +177,12 @@ describe("InfoBar thinking selector", () => {
     await act(async () => render(session({ reasoning: false })));
     await act(async () => render(session({ reasoning: true, graftTokenSavings: 1250 })));
     assert.deepEqual({ mounts, unmounts }, { mounts: 1, unmounts: 0 });
-    assert.match(container.textContent, /1\.3k saved/);
+    // Capability updates must reach the same instance (the thinking control
+    // appears without re-running the onMessage subscription).
+    assert.ok(
+      elements(container, "button").some((item: any) => item.getAttribute("aria-controls") === "thinking-level-menu"),
+      "thinking control reflects the updated capability",
+    );
     await act(async () => root.unmount()); mounted.pop();
     assert.equal(unmounts, 1);
   });

@@ -151,12 +151,12 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
       {/* Stats zone — shrinks with ellipsis on narrow screens. Fixed bar
           height means changing token counts / appearing 📦🧠 segments can
           never resize the chat frame above. */}
-      <div className="flex items-center gap-3 min-w-0 shrink">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
       {/* Model */}
       <div className="relative min-w-[9rem] max-w-[22rem] shrink max-md:min-w-0 max-md:max-w-[90px]">
         <button
           className="flex items-center gap-1 font-semibold text-foreground hover:text-primary transition-colors min-w-0 w-full"
-          aria-haspopup="menu"
+          aria-haspopup="dialog"
           aria-expanded={openMenu === "models"}
           aria-controls="model-menu"
           onClick={(e) => toggleMenu("models", e)}
@@ -166,7 +166,8 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         {openMenu === "models" && (
           <div
             id="model-menu"
-            role="menu"
+            role="dialog"
+            aria-label="Select model"
             className="absolute bottom-full left-0 mb-1 z-50 bg-card border border-border rounded-lg shadow-xl py-1 min-w-[200px] max-h-60 overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
@@ -211,7 +212,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
       {supportsReasoning(session) && <div className="relative shrink-0">
         <button
           ref={thinkingButtonRef}
-          className="flex items-center gap-1 hover:text-primary transition-colors"
+          className="flex items-center gap-1 hover:text-primary transition-colors min-w-[4.75rem]"
           aria-haspopup="menu"
           aria-expanded={openMenu === "thinking"}
           aria-controls="thinking-level-menu"
@@ -289,22 +290,20 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         <span className="inline-block min-w-[3.5em] text-right" title={`Input tokens: ${input.toLocaleString()}`}>↑{fk(input)}</span>
         {" "}
         <span className="inline-block min-w-[3.5em] text-right" title={`Output tokens: ${output.toLocaleString()}`}>↓{fk(output)}</span>
-        {cache > 0 && <span className="inline-block min-w-[3.5em] text-right" title={`Cache-read tokens: ${cache.toLocaleString()}`}> 📦{fk(cache)}</span>}
-        {(tokens?.reasoning ?? 0) > 0 && <span className="inline-block min-w-[3.5em] text-right" title={`Reasoning tokens: ${(tokens!.reasoning ?? 0).toLocaleString()}`}> 🧠{fk(tokens!.reasoning!)}</span>}
+        {/* Always mounted, hidden when empty: appearing/disappearing segments
+            changed the row's width mid-turn and made the bar dance. */}
+        <span className={cn("inline-block min-w-[3.5em] text-right", cache > 0 ? "" : "invisible")} title={`Cache-read tokens: ${cache.toLocaleString()}`}> 📦{fk(cache)}</span>
+        <span className={cn("inline-block min-w-[3.5em] text-right", (tokens?.reasoning ?? 0) > 0 ? "" : "invisible")} title={`Reasoning tokens: ${(tokens?.reasoning ?? 0).toLocaleString()}`}> 🧠{fk(tokens?.reasoning ?? 0)}</span>
       </span>
 
 
-      {session.graftTokenSavings !== undefined && (
-        <>
-          <span className="text-border shrink-0">|</span>
-          <span
-            className="tabular-nums text-green-500 shrink-0"
-            title={`${formatExactTotal(session.graftTokenSavings)} Graft tokens saved (retrieval instead of full-file reads)`}
-          >
-            ◤ {formatCompactTotal(session.graftTokenSavings)} saved
-          </span>
-        </>
-      )}
+      <span className="text-border shrink-0">|</span>
+      <span
+        className={cn("tabular-nums text-green-500 shrink-0 w-[6.5rem] text-right", session.graftTokenSavings === undefined && "invisible")}
+        title={session.graftTokenSavings === undefined ? "" : `${formatExactTotal(session.graftTokenSavings)} Graft tokens saved (retrieval instead of full-file reads)`}
+      >
+        ◤ {formatCompactTotal(session.graftTokenSavings ?? 0)} saved
+      </span>
 
       {/* Git */}
       {session.branch && (
@@ -324,34 +323,27 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
       )}
 
       {/* Diff viewer */}
-      {session.diffPort && (
-        <>
-          <span className="text-border shrink-0">|</span>
+      <span className="text-border shrink-0">|</span>
+      {session.diffPort
+        ? (
           <a href={`http://localhost:${session.diffPort}`} target="_blank" rel="noreferrer" className="flex items-center gap-0.5 text-primary hover:underline shrink-0" title="Open the pidiff diff viewer for this session's working tree">
              diff <ExternalLink className="h-3 w-3" />
           </a>
-        </>
-      )}
+        )
+        : <span className="invisible flex items-center gap-0.5 shrink-0" aria-hidden="true"> diff <ExternalLink className="h-3 w-3" /></span>}
 
       {/* Container */}
-      {session.container && (
-        <>
-          <span className="text-border shrink-0">|</span>
-          <span className="text-[10px] px-1.5 py-0.5 border border-border rounded shrink-0" title="Session runs inside a container">🧊</span>
-        </>
-      )}
+      <span className={cn("text-[10px] px-1.5 py-0.5 border border-border rounded shrink-0", session.container ? "" : "invisible")} title="Session runs inside a container" aria-hidden={!session.container}>🧊</span>
 
       {/* Coms identity */}
-      {session.comsName && (
-        <>
-          <span className="text-border shrink-0">|</span>
+      <span className="text-border shrink-0">|</span>
+      {(
           <span
-            className="flex items-center gap-1 min-w-0 shrink cursor-default"
+            className={cn("flex items-center gap-1 min-w-0 shrink cursor-default w-[8.5rem]", !session.comsName && "invisible")}
             title={[session.comsProject ? `Project: ${session.comsProject}` : '', session.comsPurpose ? `Purpose: ${session.comsPurpose}` : ''].filter(Boolean).join(' · ') || 'Coms peer identity'}
           >
-            <span className="shrink-0">📡 Coms:</span> <span className="truncate">{session.comsName}</span>
+            <span className="shrink-0">📡 Coms:</span> <span className="truncate">{session.comsName || "—"}</span>
           </span>
-        </>
       )}
 
 

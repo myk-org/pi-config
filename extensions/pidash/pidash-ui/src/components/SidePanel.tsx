@@ -28,6 +28,8 @@ interface Props {
   onClose: () => void;
   send: (data: object) => void;
   onMessage: (handler: (data: any) => void) => () => void;
+  sessions?: SessionInfo[];
+  onWatch?: (s: SessionInfo) => void;
 }
 
 /**
@@ -35,7 +37,7 @@ interface Props {
  * Every surface fetches through pidash-commands and updates from broadcast
  * events, so multiple browsers converge on the same state.
  */
-export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMessage }: Props) {
+export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMessage, sessions, onWatch }: Props) {
   // Route extension notifications into a transient toast line.
   // Stable identity: panels use notify in effect deps — a new function per
   // render would restart their fetch effects on every session_updated re-render.
@@ -144,7 +146,7 @@ export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMe
       </div>
       <div className="flex-1 overflow-y-auto">
         {activeTab === "tasks" && <TasksPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} />}
-        {activeTab === "coms" && <ComsPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} />}
+        {activeTab === "coms" && <ComsPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} sessions={sessions} onWatch={onWatch} />}
         {activeTab === "memory" && <MemoryPanel sendCmd={sendCmd} onMessage={onMessage} />}
         {activeTab === "mcp" && <McpPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} />}
         {activeTab === "settings" && <SettingsPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} cwd={session.cwd} />}

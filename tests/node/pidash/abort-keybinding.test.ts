@@ -29,13 +29,19 @@ describe("abort keybinding", () => {
     assert.equal(isAbortKey(keydown({ key: "Escape" }), ""), false);
   });
 
-  it("the raw matcher is not inert for an unbound key — isAbortKey is", () => {
-    // The raw matcher compares against an empty key part: real keys never
-    // match it, but a degenerate event with key "" does. Hence the explicit
-    // Boolean guard in isAbortKey rather than relying on the string compare.
+  it("raw matching: real keys never match an empty binding", () => {
+    // The matcher compares against an empty key part, so real keys are inert.
     assert.equal(matchesKeybinding(keydown({ key: "Escape" }), ""), false);
     assert.equal(matchesKeybinding(keydown({ key: "a" }), ""), false);
+  });
+
+  it("raw matching: a degenerate empty-key event DOES match an empty binding", () => {
+    // This is why the guard is explicit — the string compare alone is not a
+    // safe "nothing is bound" test.
     assert.equal(matchesKeybinding(keydown({ key: "" }), ""), true);
+  });
+
+  it("isAbortKey suppresses even the degenerate empty-key event", () => {
     assert.equal(isAbortKey(keydown({ key: "" }), ""), false);
   });
 

@@ -22,12 +22,22 @@ export function useKeyboardNavigation(opts: {
       const tag = (e.target as HTMLElement)?.tagName;
       const isInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 
+      // Overlay dismissal is independent of any binding: Escape always closes an
+      // open dialog (this used to live inside the abort branch, so unbinding
+      // abort silently made the shortcuts dialog uncloseable by keyboard).
+      // KeybindingSettings cancels a recording in the CAPTURE phase and stops
+      // propagation, so Escape during recording still cancels only the capture.
+      if (e.key === "Escape" && (showSwitcher || showSettings)) {
+        e.preventDefault();
+        if (showSwitcher) setShowSwitcher(false);
+        if (showSettings) setShowSettings(false);
+        return;
+      }
+
       // Abort is unbound by default, so this never fires on Escape (menus
       // dismiss with it constantly); the composer's Stop button aborts.
       if (isAbortKey(e, getKey("abort"))) {
         if (streaming && session) { e.preventDefault(); handleAbort(); }
-        if (showSwitcher) { e.preventDefault(); setShowSwitcher(false); }
-        if (showSettings) { e.preventDefault(); setShowSettings(false); }
         return;
       }
 
