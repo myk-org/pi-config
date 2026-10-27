@@ -8,7 +8,7 @@
  * is already dark, and this module only overrides it when the user chose light.
  */
 
-import { createLogger } from "@/lib/create-logger";
+import { createLogger } from "./create-logger";
 
 const log = createLogger("Theme");
 

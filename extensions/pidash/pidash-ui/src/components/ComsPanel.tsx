@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import type { ComsPeer, SessionInfo } from "@/types";
+import { createLogger } from "@/lib/create-logger";
+
+const log = createLogger("ComsPanel");
 
 interface Props {
   sendCmd: (command: string, extra?: Record<string, unknown>) => void;
@@ -80,6 +83,9 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
           const peerSession =
             sessions.find((s) => s.comsName === p.name && (!self?.project || s.comsProject === self.project)) ??
             (self?.project ? undefined : sessions.find((s) => s.comsName === p.name));
+          if (!peerSession) {
+            log.debug("peer has no local session", { peer: p.name, project: self?.project ?? null });
+          }
           return (
           <div
             key={p.name}
@@ -108,7 +114,12 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
                   type="button"
                   title={`Watch this peer's session (${peerSession.cwd})`}
                   className="text-[10px] text-muted-foreground hover:text-primary px-1 rounded border border-border focus:outline-none focus:ring-1 focus:ring-primary"
-                  onClick={() => onWatch(peerSession)}
+                  onClick={() => {
+                    log.debug("watching peer session", {
+                      peer: p.name, sessionId: peerSession.sessionId, cwd: peerSession.cwd,
+                    });
+                    onWatch(peerSession);
+                  }}
                 >
                   ⇢ watch {peerSession.cwd.split("/").pop()}
                 </button>

@@ -81,12 +81,17 @@ export function useMessageHandler(
             // it, so a session selected after mount would never match and the
             // model label / Stop button would stop following the daemon (Qodo).
             if (sessionRef.current?.sessionId === update.sessionId) {
-              if (update.model !== undefined) setModel(update.model);
+              if (update.model !== undefined) {
+                log.debug("model synced from session_updated", { sessionId: update.sessionId, model: update.model });
+                setModel(update.model);
+              }
               // Keep the Stop button in step with the daemon: turns started or
               // settled outside this browser (TUI, another tab) change the
               // streaming flag with no agent_start/agent_settled here.
               if (update.streaming !== undefined) {
-                log.debug("streaming synced from session_updated", { streaming: update.streaming });
+                log.debug("streaming synced from session_updated", {
+                  sessionId: update.sessionId, streaming: update.streaming,
+                });
                 setStreaming(update.streaming);
               }
             }
@@ -438,6 +443,7 @@ export function useMessageHandler(
       if (ev.type === "replay_start") {
         replaying = true;
         replayBuffer.length = 0;
+        log.debug("replay buffering started");
         processEvent(ev); // clears the message list
         return;
       }
@@ -445,6 +451,7 @@ export function useMessageHandler(
         if (replaying) {
           replaying = false;
           const buffered = replayBuffer.splice(0);
+          log.debug("replay buffering applied", { events: buffered.length });
           for (const buffered_ev of buffered) processEvent(buffered_ev);
         }
         processEvent(ev);

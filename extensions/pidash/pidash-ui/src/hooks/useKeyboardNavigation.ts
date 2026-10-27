@@ -41,6 +41,7 @@ export function useKeyboardNavigation(opts: {
       // Abort is unbound by default, so this never fires on Escape (menus
       // dismiss with it constantly); the composer's Stop button aborts.
       if (isAbortKey(e, getKey("abort"))) {
+        log.debug("abort key matched", { streaming, sessionId: session?.sessionId ?? null, aborted: Boolean(streaming && session) });
         if (streaming && session) { e.preventDefault(); handleAbort(); }
         return;
       }
