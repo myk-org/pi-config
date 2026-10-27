@@ -143,6 +143,24 @@ describe("InfoBar thinking selector", () => {
     assert.equal(trigger.getAttribute("aria-haspopup"), "dialog");
   });
 
+  it("a broadcast models-list does not open the picker", async () => {
+    // models-list is broadcast to every browser: any other tab (or automation)
+    // asking for the list used to pop this tab's dropdown open.
+    let emit: (ev: any) => void = () => {};
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+    const value = session();
+    await act(async () => root.render(createElement(InfoBar, {
+      session: value, model: value.model, tokens: null, send: () => {},
+      onMessage: (handler: any) => { emit = handler; return () => {}; },
+    })));
+    await act(async () => emit({ type: "models-list", models: [{ id: "m", name: "M", provider: "p", reasoning: true }] }));
+    const trigger = elements(container, "button").find((item: any) => item.getAttribute("aria-controls") === "model-menu");
+    assert.equal(trigger.getAttribute("aria-expanded"), "false", "picker stays closed");
+    assert.equal(elements(container, "div").some((item: any) => item.getAttribute("id") === "model-menu"), false);
+  });
+
   it("Escape closes the model menu", async () => {
     const view = await renderInfoBar(session());
     const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-controls") === "model-menu");

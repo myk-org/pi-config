@@ -127,25 +127,41 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
     setReplaying(true);
     const container = viewportRef.current;
     if (container) container.style.visibility = "hidden";
-    const reveal = () => {
+    let revealed = false;
+    const reveal = (reason: string) => {
+      if (revealed) return;
+      revealed = true;
+      clearTimeout(fallback);
       if (container) {
+        // ONE jump, then one more after a frame: images/code blocks can settle
+        // late and change scrollHeight after the first write.
         container.scrollTop = container.scrollHeight;
-        container.style.visibility = "";
+        requestAnimationFrame(() => {
+          if (!container) return;
+          container.scrollTop = container.scrollHeight;
+          container.style.visibility = "";
+        });
       }
       setReplaying(false);
-      log.debug("replay revealed", { ms: Math.round(performance.now() - replayStart) });
+      log.debug("replay revealed", { ms: Math.round(performance.now() - replayStart), reason });
     };
-    let settleTimer: ReturnType<typeof setTimeout>;
+    let settleTimer: ReturnType<typeof setTimeout> | undefined;
+    // No scrollTop write per mutation: on a large transcript that forced a
+    // layout on every appended event and was the visible crawl. Only the settle
+    // timer restarts; the single jump happens at reveal.
     const observer = container ? new MutationObserver(() => {
       clearTimeout(settleTimer);
-      if (container) container.scrollTop = container.scrollHeight;
-      settleTimer = setTimeout(reveal, 300);
+      settleTimer = setTimeout(() => reveal("settled"), 200);
     }) : null;
     if (observer && container) {
       observer.observe(container, { childList: true, subtree: true });
     }
-    const fallback = setTimeout(reveal, 1500);
-    return () => { observer?.disconnect(); clearTimeout(settleTimer!); clearTimeout(fallback); };
+    // Safety net for a session with nothing to replay. It is CANCELLED as soon
+    // as the replay settles — previously this fired at 1.5s even mid-replay,
+    // which revealed the list while the backlog was still streaming in, so the
+    // user watched the rest of the history scroll past.
+    const fallback = setTimeout(() => reveal("fallback"), 1500);
+    return () => { observer?.disconnect(); clearTimeout(settleTimer); clearTimeout(fallback); };
   }, [scrollKey]);
 
   return (

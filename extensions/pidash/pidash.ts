@@ -186,6 +186,12 @@ export function registerPidash(
 
   /** Replay session history to the WebSocket client for browser display. */
   function replaySessionHistory(wsClient: any, ctx: any, pushBuffered: (ev: string) => void): void {
+    // Wrap the whole history in the replay markers the browser already
+    // understands. Without them every entry arrived as its own frame, so a
+    // large transcript cost one React render per event and the browser visibly
+    // crawled through the history before reaching the bottom.
+    const send = (ev: object) => { try { pushBuffered(JSON.stringify(ev)); } catch {} };
+    send({ type: "replay_start" });
     try {
       const entries = ctx.sessionManager?.getEntries?.() || [];
       let historyCount = 0;
@@ -275,6 +281,8 @@ export function registerPidash(
       log.debug(`session history load error: ${e.message}`);
     }
 
+    // Close the batch: the browser applies the buffered history in ONE pass.
+    send({ type: "replay_end" });
     // Signal replay is complete so the server can stop suppressing notifications
     try { wsClient.send(JSON.stringify({ type: "replay_complete" })); } catch {}
   }

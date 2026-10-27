@@ -149,7 +149,7 @@ export function InputBar({ disabled, streaming, onSend, onAbort, commands = [] }
         </div>
       )}
       <div className="flex items-end gap-2 p-3 border-t border-border">
-        <Button size="sm" variant="ghost" onClick={() => fileInputRef.current?.click()} disabled={disabled} className="mb-0.5" title="Attach file">
+        <Button size="sm" variant="ghost" onClick={() => fileInputRef.current?.click()} disabled={disabled} className="h-[38px] w-[38px] shrink-0 p-0" title="Attach file">
           <Paperclip className="h-4 w-4" />
         </Button>
         <textarea
@@ -158,7 +158,7 @@ export function InputBar({ disabled, streaming, onSend, onAbort, commands = [] }
           placeholder={disabled ? "Session inactive" : streaming ? "Working... press ■ to stop" : "Send a message... (/ for commands)"}
           disabled={disabled}
           autoComplete="off"
-          className="flex-1 font-mono text-sm bg-card border border-border rounded-md px-3 py-2 outline-none focus:border-primary resize-none text-base md:text-sm"
+          className="flex-1 min-h-[38px] font-mono text-sm bg-card border border-border rounded-md px-3 py-2 outline-none focus:border-primary resize-none text-base md:text-sm"
           onKeyDown={(e) => {
             if (showSuggestions) {
               if (e.key === "ArrowDown") { e.preventDefault(); setSelectedIdx(i => Math.min(i + 1, suggestions.length - 1)); return; }
@@ -201,11 +201,11 @@ export function InputBar({ disabled, streaming, onSend, onAbort, commands = [] }
           onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
         />
         {streaming ? (
-          <Button size="sm" variant="destructive" onClick={onAbort} title="Stop the running turn" aria-label="Stop" className="mb-0.5">
+          <Button size="sm" variant="destructive" onClick={onAbort} title="Stop the running turn" aria-label="Stop" className="h-[38px] w-[38px] shrink-0 p-0">
             <Square className="h-4 w-4" />
           </Button>
         ) : (
-          <Button size="sm" onClick={handleSend} disabled={disabled} title="Send" aria-label="Send" className="mb-0.5">
+          <Button size="sm" onClick={handleSend} disabled={disabled} title="Send" aria-label="Send" className="h-[38px] w-[38px] shrink-0 p-0">
             <Send className="h-4 w-4" />
           </Button>
         )}

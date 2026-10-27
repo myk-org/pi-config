@@ -110,7 +110,12 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
     return onMessage((ev: any) => {
       if (ev.type === "models-list" && ev.models) {
         setModels(ev.models);
-        setOpenMenu("models"); // Auto-open the models dropdown
+        // NEVER open the picker here: models-list is broadcast to every
+        // connected browser, so opening on the event made the dropdown pop up
+        // in tabs whose user never clicked it (any other tab, or automation,
+        // requesting the list was enough). The click that asks for the list
+        // already opens the menu; the response only fills it.
+        log.debug("models list received", { count: ev.models.length });
       }
       if (ev.type === "update_info") {
         if (ev.thinkingLevel) setThinkingLevel(ev.thinkingLevel);

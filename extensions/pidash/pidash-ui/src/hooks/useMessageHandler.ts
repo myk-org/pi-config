@@ -439,7 +439,19 @@ export function useMessageHandler(
           break;
       }
     };
-    return onMessage((ev: PiEvent) => {
+    // Coalesce the events of one task into a single processing pass. A history
+    // replay arrives as thousands of individual frames; handling each one in
+    // its own task gave one React render per event over a growing, unvirtualized
+    // list, which the user sees as the transcript crawling to the bottom.
+    let pending: PiEvent[] = [];
+    let flushScheduled = false;
+    const flush = () => {
+      flushScheduled = false;
+      const batch = pending;
+      pending = [];
+      for (const item of batch) handleEvent(item);
+    };
+    const handleEvent = (ev: PiEvent) => {
       if (ev.type === "replay_start") {
         replaying = true;
         replayBuffer.length = 0;
@@ -462,6 +474,14 @@ export function useMessageHandler(
         return;
       }
       processEvent(ev);
+    };
+    return onMessage((ev: PiEvent) => {
+      pending.push(ev);
+      if (flushScheduled) return;
+      flushScheduled = true;
+      // Microtask, not a frame: deltas that arrived together in one task are
+      // applied together without adding latency to the live stream.
+      queueMicrotask(flush);
     });
   }, [onMessage, addMsg, updMsg, updCls, updMeta]);
 
