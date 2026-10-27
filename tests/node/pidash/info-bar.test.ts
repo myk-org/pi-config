@@ -54,6 +54,15 @@ async function renderInfoBar(value: SessionInfo, send: (data: object) => void = 
   };
 }
 
+async function renderInfoBarWithTokens(value: SessionInfo, tokens: any) {
+  const { container, document } = installReactDomShim();
+  const root = createRoot(container);
+  mounted.push(root);
+  const props = { session: value, model: value.model, tokens, send: () => {}, onMessage: () => () => {} };
+  await act(async () => root.render(createElement(InfoBar, props)));
+  return { container, document, root };
+}
+
 function button(root: any, text: string) {
   const match = elements(root, "button").find((item: any) => item.textContent.trim() === text);
   assert.ok(match, `button ${text} should exist`);
@@ -150,6 +159,33 @@ describe("InfoBar thinking selector", () => {
     await view.rerender(session({ reasoning: true, thinkingLevel: "xhigh" }));
     const trigger = elements(view.container, "button").find((item: any) => item.getAttribute("aria-controls") === "thinking-level-menu");
     assert.match(trigger?.textContent ?? "", /xhigh/);
+  });
+
+  it("context gauge matches the TUI shape and counts the cached prompt", async () => {
+    // Regression: the gauge divided only `tokens.input` (fresh tokens) by the
+    // window, so an almost fully cached session read "ctx 0%".
+    const view = await renderInfoBarWithTokens(
+      session({ contextWindow: 1048576 }),
+      { input: 92, output: 10, cacheRead: 333632 },
+    );
+    const gauge = elements(view.container, "span").find((item: any) =>
+      /^ctx /.test((item.textContent || "").trim()),
+    );
+    assert.ok(gauge, "context gauge rendered");
+    assert.equal(gauge!.textContent.trim(), "ctx 31.8%/1.0M");
+    assert.match(gauge!.getAttribute("title") || "", /333,724 \/ 1,048,576 tokens \(92 fresh \+ 333,632 cache-read\)/);
+  });
+
+  it("context gauge shows the session window compactly", async () => {
+    const view = await renderInfoBarWithTokens(session({ contextWindow: 262144 }), { input: 65536, output: 10 });
+    const gauge = elements(view.container, "span").find((item: any) => /^ctx /.test((item.textContent || "").trim()));
+    assert.equal(gauge!.textContent.trim(), "ctx 25.0%/262.1K");
+  });
+
+  it("context gauge falls back to a 1M window when the session reports none", async () => {
+    const view = await renderInfoBarWithTokens(session(), { input: 524288, output: 1 });
+    const gauge = elements(view.container, "span").find((item: any) => /^ctx /.test((item.textContent || "").trim()));
+    assert.equal(gauge!.textContent.trim(), "ctx 52.4%/1.0M");
   });
 
   it("reserves the Graft slot when savings are unknown", async () => {

@@ -72,7 +72,12 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
   const input = tokens?.input || 0;
   const output = tokens?.output || 0;
   const cache = tokens?.cacheRead || 0;
-  const pct = Math.round((input / ctxWin) * 100);
+  const cacheWrite = tokens?.cacheWrite || 0;
+  // Prompt size = everything that entered the window this turn. `input` is the
+  // FRESH tokens only (cache reads are reported separately), so in a cached
+  // session it is a few dozen tokens and the gauge read 0% everywhere.
+  const promptTokens = input + cache + cacheWrite;
+  const pct = (promptTokens / ctxWin) * 100;
   const pctColor = pct > 80 ? "text-red-500" : pct > 50 ? "text-orange-400" : "";
   const sessionModel = model || session.model || "";
   // `session.model` carries the model ID; the discovered list carries the
@@ -149,7 +154,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
   return (
     <div className={cn("flex items-center gap-3 max-md:gap-1.5 h-10 px-4 max-md:px-2 border-t border-border text-sm text-muted-foreground relative whitespace-nowrap shrink-0", inactive && "opacity-50 pointer-events-none")}>
       {/* Stats zone — shrinks with ellipsis on narrow screens. Fixed bar
-          height means changing token counts / appearing 📦🧠 segments can
+          height means changing token counts / appearing cache+reasoning segments can
           never resize the chat frame above. */}
       <div className="flex items-center gap-3 min-w-0 flex-1">
       {/* Model */}
@@ -278,13 +283,17 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
       {/* Context gauge — OUTSIDE the scrolling strip below: compaction
           proximity must stay visible even when the token counters are
           scrolled out of view in a narrow bar. */}
-      <span className={cn("tabular-nums inline-block min-w-[4em] text-right shrink-0", pctColor)} title={`Context window usage: ${input.toLocaleString()} / ${ctxWin.toLocaleString()} tokens`}>ctx {pct}%</span>
+      {/* Same shape as the TUI footer: one decimal plus the window, e.g.
+          "ctx 32.0%/1.0M". The percentage is the SESSION's context — the prompt
+          the model actually received last turn (fresh + cache), not the running
+          turn's fresh-token count. */}
+      <span className={cn("tabular-nums inline-block min-w-[9.5em] text-right shrink-0", pctColor)} title={`Context window usage: ${promptTokens.toLocaleString()} / ${ctxWin.toLocaleString()} tokens (${input.toLocaleString()} fresh + ${cache.toLocaleString()} cache-read${cacheWrite ? ` + ${cacheWrite.toLocaleString()} cache-write` : ""})`}>ctx {pct.toFixed(1)}%/{fk(ctxWin)}</span>
 
       <span className="text-border shrink-0">|</span>
 
       <div className="flex items-center gap-3 min-w-0 shrink overflow-x-auto scrollbar-none max-md:hidden">
       {/* Tokens — fixed min-widths + titles: values change digit counts and
-          conditional segments (📦/🧠) appear per message, but a fixed-height
+          conditional segments (cache / reasoning) appear per message, but a fixed-height
           single-row bar means width churn can no longer resize the frame. */}
       <span className="tabular-nums shrink-0">
         <span className="inline-block min-w-[3.5em] text-right" title={`Input tokens: ${input.toLocaleString()}`}>↑{fk(input)}</span>
@@ -292,8 +301,8 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         <span className="inline-block min-w-[3.5em] text-right" title={`Output tokens: ${output.toLocaleString()}`}>↓{fk(output)}</span>
         {/* Always mounted, hidden when empty: appearing/disappearing segments
             changed the row's width mid-turn and made the bar dance. */}
-        <span className={cn("inline-block min-w-[3.5em] text-right", cache > 0 ? "" : "invisible")} title={`Cache-read tokens: ${cache.toLocaleString()}`}> 📦{fk(cache)}</span>
-        <span className={cn("inline-block min-w-[3.5em] text-right", (tokens?.reasoning ?? 0) > 0 ? "" : "invisible")} title={`Reasoning tokens: ${(tokens?.reasoning ?? 0).toLocaleString()}`}> 🧠{fk(tokens?.reasoning ?? 0)}</span>
+        <span className={cn("inline-block min-w-[3.5em] text-right", cache > 0 ? "" : "invisible")} title={`Cache-read tokens: ${cache.toLocaleString()}`}> {fk(cache)}</span>
+        <span className={cn("inline-block min-w-[3.5em] text-right", (tokens?.reasoning ?? 0) > 0 ? "" : "invisible")} title={`Reasoning tokens: ${(tokens?.reasoning ?? 0).toLocaleString()}`}> {fk(tokens?.reasoning ?? 0)}</span>
       </span>
 
 
