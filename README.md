@@ -978,6 +978,10 @@ Control your pi sessions from your phone via Discord DMs.
    cat > ~/.pi/discord.env << EOF
    DISCORD_BOT_TOKEN=your-token-here
    DISCORD_ALLOWED_USERS=your-discord-user-id
+   # Optional: open access without an allowlist (off by default)
+   # DISCORD_ALLOW_ALL=true
+   # Optional: how long a pending agent question waits (default 10m, min 30s)
+   # DISCORD_PROMPT_TTL_MS=600000
    EOF
    ```
 
