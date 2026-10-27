@@ -166,8 +166,20 @@ export function setupDiscordBot(opts: {
   // Saved watches must be live again after a restart: the loops below iterate
   // `runtime`, and a lazily-created entry meant a restored watch received no
   // output or approval prompts until its user happened to interact (Qodo).
+  let droppedUsers = 0;
   for (const [userId, stored] of Object.entries(persisted.users)) {
+    // A user removed from the allowlist must stop receiving output; restoring
+    // their targets kept streaming session material to them (Qodo c30b0ca9).
+    if (!config.allowAll && !config.allowedUsers.has(userId)) {
+      delete persisted.users[userId];
+      droppedUsers += 1;
+      continue;
+    }
     runtime.set(userId, makeRuntime(stored));
+  }
+  if (droppedUsers > 0) {
+    log.info("dropped users no longer on the allowlist", { dropped: droppedUsers });
+    persist();
   }
   log.info("discord state hydrated", { users: runtime.size, watching: [...runtime.values()].filter((s) => s.watchedSessionId).length });
 
@@ -472,6 +484,9 @@ export function setupDiscordBot(opts: {
         state.threadId = null;
         state.target = null;
         state.targets = {};
+        // Threads are what hydration rebuilds targets from: keeping them meant a
+        // disconnected session resumed streaming after a restart (Qodo 267001b4).
+        state.threads = {};
         persist();
         await acknowledge(interaction, "Disconnected.");
         return;

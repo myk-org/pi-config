@@ -21,14 +21,21 @@ const log = createLogger("chat-bridge");
 /** Per-user, per-session runtime the host owns and passes in. */
 export interface ChatSessionStream {
   render: RenderState;
+  /** Recent forwarded prompts awaiting their echo, oldest first. */
+  pendingEchoes?: string[];
+  /** True while the final publication is still running. */
+  publishing?: boolean;
   lastStreamEdit: number;
   streamSend: Promise<string | null> | null;
   generation: number;
 }
 
 function newStream(): ChatSessionStream {
-  return { render: initialRenderState(), lastStreamEdit: 0, streamSend: null, generation: 0 };
+  return { render: initialRenderState(), pendingEchoes: [], lastStreamEdit: 0, streamSend: null, generation: 0 };
 }
+
+/** How many forwarded prompts can await their echo at once. */
+const MAX_PENDING_ECHOES = 8;
 
 export interface ChatRuntimeState {
   /** Default session for messages that arrive outside any thread. */
@@ -144,7 +151,10 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
 
   function pendingFor(state: ChatRuntimeState, sessionId?: string): PendingPrompt | null {
     const prompts = state.pendingPrompts ?? {};
-    if (sessionId && prompts[sessionId]) return prompts[sessionId];
+    // With a known session there is NO fallback: answering in thread A must never
+    // satisfy session B's question (Qodo bb922cda). The fallback exists only for a
+    // message that arrived outside any thread.
+    if (sessionId) return prompts[sessionId] ?? null;
     return Object.values(prompts)[0] ?? null;
   }
 
@@ -195,9 +205,15 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
 
         // Echo suppression is decided per session and per user, so two watchers
         // of one session both suppress (the old code consumed a shared marker).
-        const expected = stream.render.expectedEcho?.[sessionId];
-        const suppressEcho = isUserEvent && shouldSuppressEcho(expected, userText);
-        if (suppressEcho) delete stream.render.expectedEcho?.[sessionId];
+        // Compare against EVERY prompt still awaiting its echo: storing a single
+        // marker per session lost the earlier one when prompts came in fast
+        // (Qodo 6f6c01b5).
+        const pendingEchoes = stream.pendingEchoes ?? [];
+        const matchedIndex = isUserEvent
+          ? pendingEchoes.findIndex((candidate) => shouldSuppressEcho(candidate, userText))
+          : -1;
+        const suppressEcho = matchedIndex >= 0;
+        if (suppressEcho) pendingEchoes.splice(matchedIndex, 1);
 
         const action = renderEvent(event, stream.render);
 
@@ -233,9 +249,14 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
         if (action.kind === "flush-assistant") {
           const text = action.text;
           stream.generation += 1;
+          stream.publishing = true;
           void (async () => {
-            if (stream.streamSend) await stream.streamSend;
-            await publishFinal(text, stream, target);
+            try {
+              if (stream.streamSend) await stream.streamSend;
+              await publishFinal(text, stream, target);
+            } finally {
+              stream.publishing = false;
+            }
           })();
           continue;
         }
@@ -253,8 +274,13 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
 
         if (action.kind === "agent-end") {
           if (caps.supportsTyping) void adapter.setTyping?.(target, false);
-          stream.render.streamMessageId = null;
-          stream.render.streamedText = "";
+          // Clearing the id here raced the unawaited final publication, which then
+          // posted a duplicate message instead of editing the live one (Qodo
+          // c13a78c0). publishFinal clears it itself once it is done.
+          if (!stream.publishing) {
+            stream.render.streamMessageId = null;
+            stream.render.streamedText = "";
+          }
         }
       }
       log.debug("pi event handled", { sessionId, type: event?.type });
@@ -288,7 +314,7 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
 
     expectEcho(state: ChatRuntimeState, sessionId: string, text: string): void {
       const stream = streamFor(state, sessionId);
-      stream.render.expectedEcho = { ...(stream.render.expectedEcho ?? {}), [sessionId]: text };
+      stream.pendingEchoes = [...(stream.pendingEchoes ?? []), text].slice(-MAX_PENDING_ECHOES);
     },
 
     askUser(sessionId: string, event: any, state: ChatRuntimeState): PendingPrompt | null {

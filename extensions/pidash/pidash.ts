@@ -1077,6 +1077,10 @@ export function registerPidash(
         branch: getCurrentBranch(switchCtx.cwd),
         sessionFile: switchCtx.sessionManager?.getSessionFile?.() || switchCtx.sessionFile || "",
         model: switchCtx.model?.name || switchCtx.model?.id || "",
+        // Without this the daemon keeps the PREVIOUS model's capability after a
+        // session switch, so images are dropped or sent to a model that cannot
+        // read them (Qodo 3e547c6d).
+        supportsImages: Array.isArray(switchCtx.model?.input) && switchCtx.model.input.includes("image"),
         reasoning: switchCtx.model?.reasoning === true,
         contextWindow: switchCtx.model?.contextWindow || 0,
         thinkingLevel: (pi as any).getThinkingLevel?.() || "medium",

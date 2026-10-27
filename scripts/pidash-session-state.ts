@@ -22,6 +22,8 @@ function registeredSession(parsed: any): SessionInfo {
     branch: parsed.branch || "",
     model: parsed.model || "",
     reasoning: typeof parsed.reasoning === "boolean" ? parsed.reasoning : undefined,
+    // Explicit boolean: a model change to a text-only model must clear the flag,
+    // not leave the previous model's capability behind (Qodo 3e547c6d).
     supportsImages: typeof parsed.supportsImages === "boolean" ? parsed.supportsImages : undefined,
     startedAt: parsed.startedAt || new Date().toISOString(),
     lastActivity: Date.now(),
