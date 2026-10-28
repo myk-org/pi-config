@@ -4543,6 +4543,23 @@ Credentials are read at startup only.
 
 In a server, watching a session **creates a thread** named after it, so each session keeps its own history and several people can watch different sessions without sharing one stream. In DMs — or if thread creation fails — it falls back to the DM channel.
 
+## From a phone
+
+Commands work **in a DM** as well as in a server — the bot registers them with the
+`BotDM` and `PrivateChannel` contexts, and as a user-installable app an allowed
+user can add PI without an admin. No server is required for a one-handed workflow.
+
+`/status` is rendered as a card (session, state, model, branch, cwd, image
+capability) with **link buttons** to the dashboard and the diff viewer, using the
+machine's LAN address so the links actually open from a phone.
+
+**Right-click or long-press any message → Apps → "Ask PI about this"** sends that
+message to the watched session as a prompt. A stack trace or a log line in any
+channel becomes the task, without copying it.
+
+Streaming edits are sent with notifications suppressed, so a long turn does not
+buzz your phone on every delta — only the final message notifies.
+
 ## Sending prompts
 
 Once you are watching a session, the bot's thread or DM behaves like the Pi prompt:
@@ -4552,6 +4569,12 @@ Once you are watching a session, the bot's thread or DM behaves like the Pi prom
 - `/stop` also works as a plain DM message
 
 ## Answering the agent
+
+Questions arrive with **attached controls**: approve/deny buttons for a confirm,
+a dropdown for a choice, and an **Answer** button that opens a modal (multi-line,
+paste-friendly) for free text. Typed replies still work — `yes`/`no`, a number,
+the option text, or `/cancel` — but you should not have to type when a button
+will do.
 
 When the agent asks something, the question arrives with controls:
 
@@ -4573,7 +4596,8 @@ Any prompt can be dismissed with `/cancel`. A prompt that is not answered **expi
 | Command | What it does |
 |---|---|
 | `/compact` | Compact the watched session's context |
-| `/model [value]` | Show or switch the model |
+| `/disconnect` | Stop watching everything — clears the watch, its threads and pending questions |
+| `/model [value]` | Open a **model picker** (your current provider first), or switch directly by id |
 | `/thinking [value]` | Show or set `off`…`max` |
 | `/tasks` | Task list of the watched session |
 | `/coms` | Coms peers of the watched session's project |

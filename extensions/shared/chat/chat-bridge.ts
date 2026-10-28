@@ -83,12 +83,29 @@ export function initialChatRuntime(watchedSessionId: string | null = null, targe
   };
 }
 
+export interface ChatLabels {
+  /** Prefix for a message the human sent (e.g. "You"). */
+  user: string;
+  /** Prefix for agent output (e.g. "PI"). */
+  assistant: string;
+}
+
+/** Default speaker labels: a plain word beats a ▸ glyph and marks both sides. */
+export const DEFAULT_CHAT_LABELS: ChatLabels = { user: "You", assistant: "PI" };
+
 export interface ChatBridgeHost {
   adapter: ChatAdapter;
+  labels?: ChatLabels;
   /** Send a prompt (or an answer payload) to the pi session. */
   sendToSession(sessionId: string, payload: Record<string, unknown>): boolean;
   /** All users currently tracked; the bridge only touches their state. */
   users(): Iterable<[string, ChatRuntimeState]>;
+  /**
+   * Render an agent question. When provided, the host owns delivery so it can
+   * attach native controls (Discord buttons/selects/modals) to the SAME message.
+   * Without it the engine falls back to plain text.
+   */
+  renderPrompt?: (target: ChatTarget, prompt: PendingPrompt, body: string) => Promise<void> | void;
   /** Throttle for streaming edits; adapters with strict edit budgets lower it. */
   streamEditIntervalMs?: number;
   /** Pending-prompt TTL. */
@@ -119,6 +136,8 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
   const { adapter } = host;
   const caps: ChatCapabilities = adapter.capabilities;
   const interval = host.streamEditIntervalMs ?? 1500;
+  const labels: ChatLabels = host.labels ?? DEFAULT_CHAT_LABELS;
+  const withLabel = (label: string, text: string) => `**${label}:** ${text}`;
   /**
    * One in-flight operation per channel. Streaming edits and the final publish
    * used to fire without ordering, so a fast turn overlapped several sends and
@@ -176,7 +195,7 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
   }
 
   async function publishFinal(text: string, stream: ChatSessionStream, target: ChatTarget): Promise<void> {
-    const chunks = chunkText(text, caps.maxMessageLength);
+    const chunks = chunkText(withLabel(labels.assistant, text), caps.maxMessageLength);
     const liveMessageId = stream.render.streamMessageId;
     stream.render.streamMessageId = null;
     stream.render.streamedText = "";
@@ -239,7 +258,7 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
           stream.lastStreamEdit = now;
           const text = stream.render.pendingText;
           if (!stream.render.streamMessageId && !stream.streamSend) {
-            stream.streamSend = queued(target.channelId, () => adapter.sendText(target, streamingView(text, caps.maxMessageLength))).then((id) => {
+            stream.streamSend = queued(target.channelId, () => adapter.sendText(target, streamingView(withLabel(labels.assistant, text), caps.maxMessageLength))).then((id) => {
               stream.render.streamMessageId = id;
               stream.render.streamedText = text;
               stream.streamSend = null;
@@ -248,7 +267,7 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
           } else if (stream.render.streamMessageId && text !== stream.render.streamedText) {
             const generation = stream.generation;
             const messageId = stream.render.streamMessageId;
-            void queued(target.channelId, () => adapter.editText(target, messageId, text)).then(() => {
+            void queued(target.channelId, () => adapter.editText(target, messageId, withLabel(labels.assistant, text))).then(() => {
               if (stream.generation !== generation) return; // reply already final
               stream.render.streamedText = text;
             });
@@ -278,7 +297,7 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
 
         if (action.kind === "user") {
           if (suppressEcho) continue;
-          void queued(target.channelId, () => adapter.sendText(target, `───\n▶ **USER:** ${userText}`));
+          void queued(target.channelId, () => adapter.sendText(target, withLabel(labels.user, userText)));
           continue;
         }
 

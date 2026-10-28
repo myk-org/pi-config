@@ -86,7 +86,7 @@ describe("chat engine with a non-Discord adapter", () => {
     bridge.onPiEvent("s1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Hello" } });
     bridge.onPiEvent("s1", { type: "message_end", message: { role: "assistant" } });
     await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.equal(edits.at(-1)?.text, "Hello");
+    assert.equal(edits.at(-1)?.text, "**PI:** Hello");
     assert.equal(state.render.streamMessageId, null);
   });
 
@@ -103,7 +103,7 @@ describe("chat engine with a non-Discord adapter", () => {
 
     const finalText = edits.at(-1)?.text ?? "";
     const tail = sent.slice(1).map((entry) => entry.text).join("");
-    assert.ok(finalText.startsWith("START"), `beginning kept, got: ${finalText.slice(0, 20)}`);
+    assert.ok(finalText.startsWith("**PI:** START"), `beginning kept, got: ${finalText.slice(0, 24)}`);
     assert.ok(`${finalText}${tail}`.includes("END"), "end kept");
     assert.ok(sent.every((entry) => entry.text.length <= 120), "chunks respect the adapter limit");
   });
@@ -191,7 +191,7 @@ describe("chat engine regressions found in review (R2)", () => {
     bridge.onPiEvent("s1", { type: "message_end", message: { role: "assistant" } });
     await new Promise((resolve) => setTimeout(resolve, 20));
     const finalEdit = mem.edits.at(-1)?.text;
-    assert.equal(finalEdit, "first");
+    assert.equal(finalEdit, "**PI:** first");
     // a stale delta arriving after the turn must not edit the finished message
     const generation = state.renderGeneration;
     bridge.onPiEvent("s1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "late" } });
@@ -272,8 +272,8 @@ describe("concurrent sessions do not merge streams (Qodo be90d322)", () => {
 
     const finalA = edits.find((edit) => edit.id === "m-thread-a")?.text;
     const finalB = edits.find((edit) => edit.id === "m-thread-b")?.text;
-    assert.equal(finalA, "AAA", "session a keeps only its own text");
-    assert.equal(finalB, "BBB", "session b keeps only its own text");
+    assert.equal(finalA, "**PI:** AAA", "session a keeps only its own text");
+    assert.equal(finalB, "**PI:** BBB", "session b keeps only its own text");
     assert.ok(sent.some((entry) => entry.channelId === "thread-a"));
     assert.ok(sent.some((entry) => entry.channelId === "thread-b"));
   });

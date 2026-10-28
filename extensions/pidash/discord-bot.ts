@@ -23,6 +23,12 @@ import {
 } from "../shared/chat/chat-attachments.ts";
 import { renderPrompt, type PendingPrompt, type PromptMethod } from "../shared/chat/chat-prompts.ts";
 import {
+  buildPickerPage,
+  entriesFromModels,
+  pickerLabel,
+  PICKER_PAGE_SIZE,
+} from "../shared/chat/chat-picker.ts";
+import {
   buildSessionPage,
   renderSessionsPage,
   filterSessionChoices,
@@ -118,7 +124,10 @@ export function setupDiscordBot(opts: {
     Client: DiscordClient, GatewayIntentBits, Partials,
     REST, Routes, SlashCommandBuilder,
     ActionRowBuilder, ButtonBuilder, ButtonStyle,
-    StringSelectMenuBuilder,
+    StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
+    ContainerBuilder, TextDisplayBuilder, SeparatorBuilder, MessageFlags,
+    SeparatorSpacingSize, ApplicationIntegrationType, InteractionContextType,
+    ContextMenuCommandBuilder, ApplicationCommandType,
   } = _require("discord.js");
 
   const discord = new DiscordClient({
@@ -231,13 +240,36 @@ export function setupDiscordBot(opts: {
   const notifyUsers = new Set<string>();
 
   // ── sending ──────────────────────────────────────────────────────────────
-  async function sendText(channelId: string, text: string): Promise<string | null> {
+  /**
+   * Send text, optionally with components ATTACHED IN THE SAME MESSAGE.
+   *
+   * The question flow used to post text and then edit the message to add its
+   * buttons; that edit failed silently in a DM and the user saw "reply with a
+   * number" with nothing to tap. One send, one failure mode, and failures are
+   * logged instead of swallowed.
+   */
+  async function sendText(
+    channelId: string,
+    text: string,
+    components: any[] = [],
+    options: { notify?: boolean } = {},
+  ): Promise<string | null> {
     try {
       const channel = await discord.channels.fetch(channelId);
       if (!channel || !channel.isTextBased()) return null;
+      const notify = options.notify === true;
       let lastId: string | null = null;
-      for (const chunk of chunkDiscordText(text)) {
-        const sent = await (channel as any).send({ content: chunk, ...NO_MENTIONS });
+      const chunks = chunkDiscordText(text);
+      for (let i = 0; i < chunks.length; i++) {
+        const payload: any = {
+          content: chunks[i],
+          ...NO_MENTIONS,
+          // Streaming edits must not buzz a phone on every delta; the final
+          // message is the one worth a notification.
+          ...(notify ? {} : { flags: MessageFlags.SuppressNotifications }),
+        };
+        if (i === chunks.length - 1 && components.length) payload.components = components;
+        const sent = await (channel as any).send(payload);
         lastId = sent?.id ?? lastId;
       }
       return lastId;
@@ -247,12 +279,33 @@ export function setupDiscordBot(opts: {
     }
   }
 
+  /** Components-v2 message (a card, not a text wall). */
+  async function sendCard(channelId: string, container: any, notify = false): Promise<string | null> {
+    try {
+      const channel = await discord.channels.fetch(channelId);
+      if (!channel || !channel.isTextBased()) return null;
+      const sent = await (channel as any).send({
+        components: [container],
+        flags: MessageFlags.IsComponentsV2 | (notify ? 0 : MessageFlags.SuppressNotifications),
+        ...NO_MENTIONS,
+      });
+      return sent?.id ?? null;
+    } catch (error) {
+      log.warn("discord card send failed", { channelId, error: String(error) });
+      return null;
+    }
+  }
+
   async function editText(channelId: string, messageId: string, text: string): Promise<boolean> {
     try {
       const channel = await discord.channels.fetch(channelId);
       if (!channel || !channel.isTextBased()) return false;
       const message = await (channel as any).messages.fetch(messageId);
-      await message.edit({ content: streamingView(text, DISCORD_TEXT_LIMIT), ...NO_MENTIONS });
+      await message.edit({
+        content: streamingView(text, DISCORD_TEXT_LIMIT),
+        ...NO_MENTIONS,
+        flags: MessageFlags.SuppressNotifications,
+      });
       return true;
     } catch (error) {
       log.debug("discord edit failed", { messageId, error: String(error) });
@@ -277,6 +330,25 @@ export function setupDiscordBot(opts: {
     if (state.typingSafety) clearTimeout(state.typingSafety);
     state.typingInterval = null;
     state.typingSafety = null;
+  }
+
+  /** First non-internal IPv4 so a phone on the LAN can open the dashboard. */
+  function lanHost(): string | null {
+    try {
+      const os = _require("node:os") as typeof import("node:os");
+      for (const addresses of Object.values(os.networkInterfaces())) {
+        for (const address of addresses ?? []) {
+          if (address.family === "IPv4" && !address.internal) return address.address;
+        }
+      }
+    } catch {}
+    return null;
+  }
+
+  function dashboardUrl(): string | null {
+    const host = lanHost();
+    if (!host) return null;
+    return `http://${host}:${process.env.PI_PIDASH_PORT || 19190}`;
   }
 
   function sessionName(sessionId: string | null): string {
@@ -328,11 +400,41 @@ export function setupDiscordBot(opts: {
     },
   };
 
+  /** Native controls for a question: buttons, a select, or a modal button. */
+  function promptControls(prompt: PendingPrompt): any[] {
+    if (prompt.method === "confirm") {
+      return [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`answer:${prompt.id}:yes`).setLabel("Approve").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`answer:${prompt.id}:no`).setLabel("Deny").setStyle(ButtonStyle.Danger),
+      )];
+    }
+    if (prompt.options.length > 0 && prompt.options.length <= 25) {
+      return [new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`answer:${prompt.id}:select`)
+          .setPlaceholder("Choose an option")
+          .addOptions(prompt.options.slice(0, 25).map((option: string, i: number) => ({
+            label: truncateLine(option, 100), value: String(i),
+          }))),
+      )];
+    }
+    // Free-text question: a modal beats "type your answer as a chat message".
+    return [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`answer-modal:${prompt.id}`).setLabel("Answer").setStyle(ButtonStyle.Primary),
+    )];
+  }
+
   const bridge: ChatBridge = createChatBridge({
     adapter,
     promptTtlMs: config.promptTtlMs,
     streamEditIntervalMs: STREAM_EDIT_INTERVAL_MS,
     users: () => runtime.entries(),
+    renderPrompt: async (target, prompt, body) => {
+      const controls = promptControls(prompt);
+      const sentId = await sendText(target.threadId || target.channelId, body, controls);
+      if (!sentId) log.warn("question could not be delivered", { promptId: prompt.id, session: prompt.sessionId });
+      else log.info("question delivered with controls", { promptId: prompt.id, controls: controls.length });
+    },
     sendToSession: (sessionId, payload) => {
       const client = piClients.get(sessionId);
       if (!client?.ws) return false;
@@ -380,22 +482,8 @@ export function setupDiscordBot(opts: {
       if (!target) continue;
       const prompt = bridge.askUser(sessionId, event, state);
       if (!prompt) continue;
-      const row = method === "confirm"
-        ? new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(`answer:${prompt.id}:yes`).setLabel("Approve").setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId(`answer:${prompt.id}:no`).setLabel("Deny").setStyle(ButtonStyle.Danger),
-          )
-        : prompt.options.length > 0 && prompt.options.length <= 25
-          ? new ActionRowBuilder().addComponents(
-              new StringSelectMenuBuilder()
-                .setCustomId(`answer:${prompt.id}:select`)
-                .setPlaceholder("Choose an option")
-                .addOptions(prompt.options.slice(0, 25).map((option: string, i: number) => ({
-                  label: truncateLine(option, 100), value: String(i),
-                }))),
-            )
-          : null;
-      log.info("prompt forwarded to discord", { userId, sessionId, method, controls: Boolean(row) });
+      // Delivery (with controls) happens in renderPrompt; this only records who was asked.
+      log.info("prompt forwarded to discord", { userId, sessionId, method, promptId: prompt.id });
     }
   }
 
@@ -404,6 +492,7 @@ export function setupDiscordBot(opts: {
     ["sessions", "List pi sessions — pick one to watch"],
     ["status", "Show the watched session"],
     ["stop", "Interrupt the running turn"],
+    ["disconnect", "Stop watching — clears the watch, its threads and pending questions"],
     ["compact", "Compact the watched session's context"],
     ["model", "Show or set the model"],
     ["thinking", "Show or set the thinking level"],
@@ -420,7 +509,22 @@ export function setupDiscordBot(opts: {
   async function registerCommands(clientId: string, guildId?: string): Promise<void> {
     const rest = new REST().setToken(config.token);
     const builders = COMMANDS.map(([name, description]) => {
-      const builder = new SlashCommandBuilder().setName(name).setDescription(description);
+      const builder = new SlashCommandBuilder()
+        .setName(name)
+        .setDescription(description)
+        // Usable in a DM and from a private channel: the bot should not require
+        // a server just to answer a question from a phone.
+        .setContexts(
+          InteractionContextType.Guild,
+          InteractionContextType.BotDM,
+          InteractionContextType.PrivateChannel,
+        )
+        // User install lets an allowed user add PI to their own servers/DMs
+        // without an admin (requires enabling it in the Discord developer portal).
+        .setIntegrationTypes(
+          ApplicationIntegrationType.GuildInstall,
+          ApplicationIntegrationType.UserInstall,
+        );
       if (name === "model") builder.addStringOption((o: any) => o.setName("value").setDescription("Model id to switch to"));
       if (name === "thinking") builder.addStringOption((o: any) => o.setName("value").setDescription("off | minimal | low | medium | high | xhigh | max"));
       if (name === "watch") {
@@ -431,7 +535,15 @@ export function setupDiscordBot(opts: {
       if (name === "file") builder.addStringOption((o: any) => o.setName("path").setDescription("Path relative to the session cwd").setRequired(true));
       return builder;
     });
-    const body = builders.map((b: any) => b.toJSON());
+    // Right-click / long-press a message → send it to the agent. Cheapest big
+    // win on a phone: stack traces and log lines become tasks without copying.
+    const askAbout = new ContextMenuCommandBuilder()
+      .setName("Ask PI about this")
+      .setType(ApplicationCommandType.Message)
+      .setContexts(InteractionContextType.Guild, InteractionContextType.PrivateChannel)
+      .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
+      .toJSON();
+    const body = [...builders.map((b: any) => b.toJSON()), askAbout];
     try {
       if (guildId) await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body });
       else await rest.put(Routes.applicationCommands(clientId), { body });
@@ -478,19 +590,7 @@ export function setupDiscordBot(opts: {
     if (isComponent(interaction)) {
       const customId: string = interaction.customId || "";
       if (customId === "unwatch") {
-        // Disconnect means silence: leaving `targets` populated kept every
-        // retained thread streaming to the user (Qodo 124a8b74).
-        state.watchedSessionId = null;
-        state.threadId = null;
-        state.target = null;
-        state.targets = {};
-        // Threads are what hydration rebuilds targets from: keeping them meant a
-        // disconnected session resumed streaming after a restart (Qodo 267001b4).
-        state.threads = {};
-        // Stale stream ids pointed at messages in the threads we just forgot, so
-        // re-watching in a new thread edited the old message (Qodo d6a4636c).
-        state.streams = {};
-        persist();
+        disconnectUser(state);
         await acknowledge(interaction, "Disconnected.");
         return;
       }
@@ -499,6 +599,32 @@ export function setupDiscordBot(opts: {
         await switchWatch(state, interaction, watch[1]);
         return;
       }
+      const modelPick = customId.match(/^modelpick:(\d+)$/);
+      if (modelPick && interaction.isStringSelectMenu?.()) {
+        const modelId = interaction.values?.[0];
+        if (!modelId) return;
+        command(state.watchedSessionId ?? "", { command: "set-model", modelId });
+        await acknowledge(interaction, `Switching model to \`${modelId}\`.`);
+        return;
+      }
+
+      const modelPage = customId.match(/^modelpage:(\d+)$/);
+      if (modelPage) {
+        const sessionId = state.watchedSessionId;
+        if (!sessionId) {
+          await acknowledge(interaction, "Not watching any session.");
+          return;
+        }
+        const models = await requestModels(sessionId);
+        const entries = entriesFromModels(models);
+        const page = buildPickerPage(entries, Number(modelPage[1]));
+        await interaction.update({
+          content: `**Model** — page ${page.page}/${page.pages} of ${page.total}`,
+          components: modelPickerComponents(page),
+        }).catch((error: any) => log.warn("model page failed", { error: String(error) }));
+        return;
+      }
+
       const page = customId.match(/^sessions:(\d+)$/);
       if (page) {
         const built = buildSessionPage(sessionSummaries(), Number(page[1]));
@@ -508,6 +634,32 @@ export function setupDiscordBot(opts: {
         }).catch(() => {});
         return;
       }
+      const modalOpen = customId.match(/^answer-modal:([^:]+)$/);
+      if (modalOpen) {
+        const promptId = modalOpen[1];
+        const owned = Object.entries(state.pendingPrompts ?? {}).find(([, prompt]) => prompt.id === promptId);
+        if (!owned) {
+          await acknowledge(interaction, "That prompt is no longer waiting.");
+          return;
+        }
+        const [, prompt] = owned;
+        const modal = new ModalBuilder()
+          .setCustomId(`answer-submit:${promptId}`)
+          .setTitle("Your answer")
+          .addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId("value")
+                .setLabel(truncateLine(prompt.options[0] || "Answer", 45))
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(true)
+                .setMaxLength(1800),
+            ),
+          );
+        await interaction.showModal(modal).catch((error: any) => log.warn("modal open failed", { error: String(error) }));
+        return;
+      }
+
       const answer = customId.match(/^answer:([^:]+):(.+)$/);
       if (answer) {
         const [, promptId, choice] = answer;
@@ -523,6 +675,56 @@ export function setupDiscordBot(opts: {
       return;
     }
 
+    if (interaction.isMessageContextMenuCommand?.()) {
+      const state = userState(interaction.user.id);
+      const targetSession = state.watchedSessionId;
+      if (!targetSession) {
+        await interaction.reply({ content: "Not watching any session. Use `/sessions` first.", ephemeral: true }).catch(() => {});
+        return;
+      }
+      const client = piClients.get(targetSession);
+      if (!client?.ws) {
+        await interaction.reply({ content: "The watched session is disconnected.", ephemeral: true }).catch(() => {});
+        return;
+      }
+      const message = interaction.targetMessage;
+      const attachmentNames = [...(message.attachments?.values?.() ?? [])].map((a: any) => a.name).filter(Boolean);
+      const quoted = (message.content || "").trim();
+      if (!quoted && !attachmentNames.length) {
+        await interaction.reply({ content: "That message has no text or attachments.", ephemeral: true }).catch(() => {});
+        return;
+      }
+      const header = `Asked from Discord on ${interaction.user.username}'s message`;
+      const prompt = [
+        `${header}:`,
+        "```",
+        quoted.slice(0, 1500),
+        "```",
+        attachmentNames.length ? `Attachments: ${attachmentNames.join(", ")}` : null,
+        "",
+        "Look at this and tell me what to do.",
+      ].filter(Boolean).join("\n");
+      bridge.expectEcho(state, targetSession, prompt);
+      client.ws.send(JSON.stringify({ type: "prompt", text: prompt }));
+      await interaction.reply({ content: `Sent to **${sessionName(targetSession)}**.`, ephemeral: true }).catch(() => {});
+      log.info("context menu prompt forwarded", { userId: interaction.user.id, session: targetSession, chars: prompt.length });
+      return;
+    }
+
+    if (interaction.isModalSubmit?.()) {
+      const submit = String(interaction.customId || "").match(/^answer-submit:([^:]+)$/);
+      if (!submit) return;
+      const owned = Object.entries(state.pendingPrompts ?? {}).find(([, prompt]) => prompt.id === submit[1]);
+      if (!owned) {
+        await acknowledge(interaction, "That prompt is no longer waiting.");
+        return;
+      }
+      const [promptSession, prompt] = owned;
+      const value = interaction.fields.getTextInputValue("value");
+      bridge.answer(state, value, (content) => void acknowledge(interaction, content), promptSession || prompt.sessionId);
+      return;
+    }
+
     if (!interaction.isChatInputCommand?.()) return;
     const name = interaction.commandName;
     const watched = state.watchedSessionId;
@@ -535,6 +737,16 @@ export function setupDiscordBot(opts: {
         components: sessions.length ? sessionComponents(built, state) : [],
         ephemeral: true,
       }).catch((error: any) => log.warn("sessions reply failed", { error: String(error) }));
+      return;
+    }
+
+    if (name === "disconnect") {
+      const wasWatching = state.watchedSessionId;
+      disconnectUser(state);
+      await interaction.reply({
+        content: wasWatching ? `Disconnected from **${sessionName(wasWatching)}**.` : "Was not watching anything.",
+        ephemeral: true,
+      }).catch(() => {});
       return;
     }
 
@@ -579,16 +791,8 @@ export function setupDiscordBot(opts: {
     const session = client.session;
 
     if (name === "status") {
-      await interaction.reply({
-        content: [
-          `**Session:** ${sessionName(watched)}`,
-          `**Model:** ${session.model || "—"}`,
-          `**Branch:** ${session.branch || "—"}`,
-          `**Status:** ${session.active ? (session.working ? "working" : "idle") : "detached"}`,
-          `**CWD:** ${session.cwd}`,
-        ].join("\n"),
-        ephemeral: true,
-      }).catch(() => {});
+      await interaction.reply(statusCard(session, watched)).catch((error: any) =>
+        log.warn("status card failed", { error: String(error) }));
       return;
     }
 
@@ -603,7 +807,22 @@ export function setupDiscordBot(opts: {
     const value = String(interaction.options?.getString?.("value") || "");
     if (name === "model") {
       if (!value) {
-        await interaction.reply({ content: `Model: **${session.model || "—"}**`, ephemeral: true }).catch(() => {});
+        // No id given → picker. Typing a model id on a phone is not a thing.
+        await interaction.deferReply({ ephemeral: true }).catch(() => {});
+        const models = await requestModels(watched);
+        if (!models.length) {
+          await interaction.editReply({ content: `Model: **${session.model || "—"}** (no model list available)` }).catch(() => {});
+          return;
+        }
+        const entries = entriesFromModels(models, session.model);
+        const currentGroup = entries.find((entry) => entry.current)?.group
+          ?? entries.find((entry) => entry.label === session.model)?.group
+          ?? null;
+        const page = buildPickerPage(entries, 1, { preferGroup: currentGroup });
+        await interaction.editReply({
+          content: `**Model** — current: ${session.model || "—"}\nPage ${page.page}/${page.pages} of ${page.total}`,
+          components: modelPickerComponents(page),
+        }).catch((error: any) => log.warn("model picker failed", { error: String(error) }));
         return;
       }
       command(watched, { command: "set-model", modelId: value });
@@ -641,6 +860,26 @@ export function setupDiscordBot(opts: {
       return;
     }
   });
+
+  /**
+   * Stop watching everything for this user.
+   *
+   * Disconnect used to live only behind /sessions → button; on a phone that is
+   * two screens away from "stop bothering me".
+   */
+  function disconnectUser(state: RuntimeUserState): void {
+    state.watchedSessionId = null;
+    state.threadId = null;
+    state.target = null;
+    state.targets = {};
+    // Hydration rebuilds targets from threads and streams point at messages in
+    // those threads, so both must go or a restart resurrects the watch.
+    state.threads = {};
+    state.streams = {};
+    state.pendingPrompts = {};
+    state.pendingPrompt = null;
+    persist();
+  }
 
   /** Native controls (buttons/menus) answer through the engine too. */
   function resolvePrompt(prompt: PendingPrompt, raw: string, state: RuntimeUserState, interaction: any): void {
@@ -767,6 +1006,90 @@ export function setupDiscordBot(opts: {
     } catch (error) {
       await acknowledge(interaction, `Could not read that file: ${String(error).slice(0, 120)}`);
     }
+  }
+
+  /**
+   * `/status` as a components-v2 card: title, state line, separator, details,
+   * and link buttons. The links use the LAN address because `localhost` on a
+   * phone points at the phone.
+   */
+  function statusCard(session: any, sessionId: string): any {
+    const state = session.active ? (session.working ? "working" : "idle") : "detached";
+    const badge = session.working ? "🟢" : session.active ? "⚪" : "🔴";
+    const container = new ContainerBuilder()
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(`# ${badge} ${sessionName(sessionId)}`),
+      )
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(
+          `**${state}** · ${session.model || "—"}${session.thinkingLevel ? ` · thinking ${session.thinkingLevel}` : ""}`,
+        ),
+      )
+      .addSeparatorComponents(new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small))
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent([
+          session.branch ? `**Branch:** ${session.branch}` : null,
+          `**CWD:** \`${session.cwd}\``,
+          session.supportsImages === undefined ? null : `**Images:** ${session.supportsImages ? "supported" : "not supported"}`,
+          session.container ? "**Container:** 📦" : null,
+        ].filter(Boolean).join("\n")),
+      );
+
+    const links: any[] = [];
+    const dashboard = dashboardUrl();
+    if (dashboard) links.push(new ButtonBuilder().setLabel("Dashboard").setStyle(ButtonStyle.Link).setURL(dashboard));
+    if (session.diffPort) {
+      const host = lanHost();
+      links.push(new ButtonBuilder()
+        .setLabel("Diff")
+        .setStyle(ButtonStyle.Link)
+        .setURL(`http://${host ?? "localhost"}:${session.diffPort}`));
+    }
+    if (links.length) container.addActionRowComponents(new ActionRowBuilder().addComponents(...links.slice(0, 5)));
+    return { components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral };
+  }
+
+  /** Select menu for one page of models, plus prev/next when paged. */
+  function modelPickerComponents(page: ReturnType<typeof buildPickerPage>): any[] {
+    const rows: any[] = [new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`modelpick:${page.page}`)
+        .setPlaceholder(`Choose a model (${page.total})`)
+        .addOptions(page.items.map((entry) => ({
+          label: pickerLabel(entry),
+          value: entry.id.slice(0, 100),
+          default: entry.current === true,
+        }))),
+    )];
+    if (page.pages > 1) {
+      rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`modelpage:${page.page - 1}`).setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(page.page <= 1),
+        new ButtonBuilder().setCustomId(`modelpage:${page.page + 1}`).setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(page.page >= page.pages),
+      ));
+    }
+    return rows;
+  }
+
+  /** The session's model list, via the same command the browser uses. */
+  async function requestModels(sessionId: string): Promise<Array<{ id: string; name?: string; provider?: string }>> {
+    const requestId = `discord-models-${Date.now()}`;
+    return new Promise((resolve) => {
+      const done = (models: Array<{ id: string; name?: string; provider?: string }>) => {
+        clearTimeout(timer);
+        const index = piEventHooks.indexOf(hook);
+        if (index >= 0) piEventHooks.splice(index, 1);
+        resolve(models);
+      };
+      const timer = setTimeout(() => done([]), 5000);
+      const hook = (eventSessionId: string, event: any) => {
+        if (eventSessionId !== sessionId) return;
+        if (event?.type !== "models-list" || !Array.isArray(event.models)) return;
+        if (event.requestId && event.requestId !== requestId) return;
+        done(event.models);
+      };
+      piEventHooks.push(hook);
+      if (!command(sessionId, { command: "list-models", requestId })) done([]);
+    });
   }
 
   function sessionSummaries(): SessionSummary[] {

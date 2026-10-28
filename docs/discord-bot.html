@@ -450,6 +450,18 @@ DISCORD_ALLOWED_USERS=123456789012345678
 </table></div>
 <p><code>/sessions</code> is <strong>ephemeral</strong> — session names, branches and models are yours, not the channel's. Lists paginate 20 at a time, and the buttons never exceed Discord's five-row limit (the old bot produced six rows and Discord rejected the whole message once you had more than 20 sessions).</p>
 <p>In a server, watching a session <strong>creates a thread</strong> named after it, so each session keeps its own history and several people can watch different sessions without sharing one stream. In DMs — or if thread creation fails — it falls back to the DM channel.</p>
+<h2 id="from-a-phone">From a phone</h2>
+<p>Commands work <strong>in a DM</strong> as well as in a server — the bot registers them with the
+<code>BotDM</code> and <code>PrivateChannel</code> contexts, and as a user-installable app an allowed
+user can add PI without an admin. No server is required for a one-handed workflow.</p>
+<p><code>/status</code> is rendered as a card (session, state, model, branch, cwd, image
+capability) with <strong>link buttons</strong> to the dashboard and the diff viewer, using the
+machine's LAN address so the links actually open from a phone.</p>
+<p><strong>Right-click or long-press any message → Apps → "Ask PI about this"</strong> sends that
+message to the watched session as a prompt. A stack trace or a log line in any
+channel becomes the task, without copying it.</p>
+<p>Streaming edits are sent with notifications suppressed, so a long turn does not
+buzz your phone on every delta — only the final message notifies.</p>
 <h2 id="sending-prompts">Sending prompts</h2>
 <p>Once you are watching a session, the bot's thread or DM behaves like the Pi prompt:</p>
 <ul>
@@ -458,6 +470,11 @@ DISCORD_ALLOWED_USERS=123456789012345678
 <li><code>/stop</code> also works as a plain DM message</li>
 </ul>
 <h2 id="answering-the-agent">Answering the agent</h2>
+<p>Questions arrive with <strong>attached controls</strong>: approve/deny buttons for a confirm,
+a dropdown for a choice, and an <strong>Answer</strong> button that opens a modal (multi-line,
+paste-friendly) for free text. Typed replies still work — <code>yes</code>/<code>no</code>, a number,
+the option text, or <code>/cancel</code> — but you should not have to type when a button
+will do.</p>
 <p>When the agent asks something, the question arrives with controls:</p>
 <ul>
 <li><strong>confirm prompts</strong> (including dangerous-command approvals) get <strong>Approve</strong> / <strong>Deny</strong> buttons, and you can also reply <code>yes</code> / <code>no</code></li>
@@ -486,8 +503,12 @@ DISCORD_ALLOWED_USERS=123456789012345678
 <td>Compact the watched session's context</td>
 </tr>
 <tr>
+<td><code>/disconnect</code></td>
+<td>Stop watching everything — clears the watch, its threads and pending questions</td>
+</tr>
+<tr>
 <td><code>/model [value]</code></td>
-<td>Show or switch the model</td>
+<td>Open a <strong>model picker</strong> (your current provider first), or switch directly by id</td>
 </tr>
 <tr>
 <td><code>/thinking [value]</code></td>
@@ -586,6 +607,7 @@ DISCORD_ALLOWED_USERS=123456789012345678
 </ul>
 </li>
 <li><a href="#picking-a-session">Picking a session</a></li>
+<li><a href="#from-a-phone">From a phone</a></li>
 <li><a href="#sending-prompts">Sending prompts</a></li>
 <li><a href="#answering-the-agent">Answering the agent</a></li>
 <li><a href="#what-you-see-while-it-works">What you see while it works</a></li>
