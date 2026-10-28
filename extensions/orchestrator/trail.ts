@@ -77,6 +77,11 @@ export function trailMapDir(root: string, logger: Logger = log): string | null {
   logger.debug("map_dir_resolved", { root, layout: "none" });
   return null;
 }
+/** A usable map on disk, not just the `.trail/` marker an unfinished build leaves behind. */
+function mapOnDisk(root: string, logger: Logger = log): boolean {
+  const dir = trailMapDir(root, logger);
+  return Boolean(dir && existsSync(join(dir, ".graph", "wiring.json")));
+}
 function wiring(root: string, logger: Logger = log): TrailWiring | null {
   const dir = trailMapDir(root, logger);
   if (!dir) return null;
@@ -239,9 +244,25 @@ function searchBinary(command: unknown): string | null {
   while (index < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]!) || SEARCH_WRAPPERS.has(tokens[index]!.toLowerCase()))) index++;
   const head = tokens[index];
   if (!head) return null;
-  if (head.toLowerCase() === "git" && tokens[index + 1]?.toLowerCase() === "grep") return "git grep";
   const binary = head.split("/").pop()!.toLowerCase();
+  // Git takes global options between `git` and its subcommand (`-C src`,
+  // `--no-pager`, `-c k=v`), so `grep` is not necessarily the next token.
+  if (binary === "git" && gitSearch(tokens.slice(index + 1))) return "git grep";
   return SEARCH_BINARIES.has(binary) ? binary : null;
+}
+/** `git` options whose value is the following token. */
+const GIT_VALUE_OPTIONS = new Set(["-c", "-C"]);
+/**
+ * Whether a `git` invocation searches: a bare `grep` subcommand before any other
+ * operand. `--grep=x` on another subcommand (`git log --grep=x`) is a filter.
+ */
+function gitSearch(tokens: string[]): boolean {
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (token.startsWith("-")) { if (GIT_VALUE_OPTIONS.has(token)) i++; continue; }
+    return token.toLowerCase() === "grep";
+  }
+  return false;
 }
 function searchTool(event: any, logger: Logger = log): boolean {
   const tool = String(event?.toolName ?? event?.name ?? "").toLowerCase();
@@ -407,7 +428,8 @@ export function createTrailIntegration(options: Options) {
       loadMap(root); state.dirty = result.code !== 0;
       if (!result.code && state.dirtySignal) try { for (const signal of readdirSync(state.dirtySignal)) try { unlinkSync(join(state.dirtySignal, signal)); } catch {} } catch {}
       setState(result.code === 0 ? "ready" : state.nodeCount ? "stale" : "failed");
-      log.info("refresh_end", { ok: result.code === 0, nodes: state.nodeCount, elapsedMs: Date.now() - started });
+      const outcome = { ok: result.code === 0, code: result.code, nodes: state.nodeCount, elapsedMs: Date.now() - started };
+      if (result.code) log.warn("refresh_end", outcome); else log.info("refresh_end", outcome);
       return result.code === 0;
     })().finally(() => { release(); if (state.refresh === pending) state.refresh = undefined; });
     state.refresh = pending;
@@ -570,7 +592,10 @@ export function createTrailIntegration(options: Options) {
         else if (status === "stale") setState("stale");
         else {
           const main = mainCheckoutRoot(root);
-          if (main && trailMapDir(main, log)) {
+          // Only a real map seeds. A main checkout that is "on trail" but never
+          // built has `.trail/cache` and nothing to copy, so fall through to the
+          // bounded background build instead of staying mapless forever.
+          if (main && mapOnDisk(main)) {
             // A worktree with no map of its own is seeded by the query from the
             // main checkout (a copy plus branch-diff repair, never a cold build).
             log.info("graph_seed_expected", { root, main });

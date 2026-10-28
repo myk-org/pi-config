@@ -570,7 +570,7 @@ describe("Shell search classification", () => {
     return { root, r, c };
   }
 
-  for (const command of ["rg authenticate src", "grep -rn authenticate src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "env FOO=1 rg authenticate"]) {
+  for (const command of ["rg authenticate src", "grep -rn authenticate src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "git -C src grep authenticate", "git --no-pager grep authenticate", "git -c core.pager=cat grep authenticate", "git -c x=y --no-pager grep authenticate", "env FOO=1 rg authenticate"]) {
     it(`blocks a first-segment search: ${command}`, async () => {
       const { root, r, c } = await armed();
       try {
@@ -581,7 +581,7 @@ describe("Shell search classification", () => {
     });
   }
 
-  for (const command of ["cat src/auth.ts | grep authenticate", "ps aux | grep pi", "git status --short", "ls; grep authenticate", "echo rg", "cat src/auth.ts | /usr/bin/grep authenticate"]) {
+  for (const command of ["cat src/auth.ts | grep authenticate", "ps aux | grep pi", "git status --short", "git log --grep=authenticate", "git -C src log --oneline", "ls; grep authenticate", "echo rg", "cat src/auth.ts | /usr/bin/grep authenticate"]) {
     it(`never blocks a shell command that does not search first: ${command}`, async () => {
       const { root, r, c } = await armed();
       try {
@@ -620,6 +620,26 @@ describe("Fresh checkout map build", () => {
       await r.handlers.get("before_agent_start")![0](promptEvent("yes"), c);
       assert.deepEqual(r.calls, []);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("builds in a worktree whose main checkout is on trail but has no wiring file", async () => {
+    const main = mkdtempSync(join(tmpdir(), "trail-behavior-pending-main-"));
+    const worktree = linkedWorktree(main);
+    try {
+      // ".trail/cache" only marks a checkout on trail; without a wiring file
+      // there is no map to seed from, so this worktree must build its own.
+      mkdirSync(join(main, ".trail/cache"), { recursive: true });
+      const log = turnLog();
+      const r = register({ logger: log.logger });
+      const c = await start(r, ctx(worktree));
+      const event = promptEvent("locate the authentication implementation");
+      await r.handlers.get("before_agent_start")![0](event, c);
+      assert.deepEqual(r.calls.map(call => call.args[0]), ["build"], "one background build, never a seed of a map that does not exist");
+      assert.equal(log.exits.at(-1)!.decision, "graph_building");
+      assert.match(event.systemPromptOptions.sections.trail, /trail build/);
+      assert.equal(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } }), undefined, "the turn fails open");
+      assert.equal(await toolCall(r, c, { toolName: "bash", input: { command: "rg authenticate" } }), undefined, "no gate is armed");
+    } finally { rmSync(worktree, { recursive: true, force: true }); rmSync(main, { recursive: true, force: true }); }
   });
 });
 

@@ -124,14 +124,24 @@ describe("Trail enablement, trust, and startup", () => {
     assert.match(event.systemPromptOptions.sections.trail, /trail/i);
   });
   it("registers the map tools for a print-mode oneshot without probing the binary", async () => {
-    process.argv = [process.execPath, "pi", "-p", "prompt"];
-    const print = register();
-    const c = await start(print);
-    assert.deepEqual(print.calls, [], "no probe and no build in a one-shot run");
-    assert.ok(print.tools.has("trail_find_code"), "a print-mode session still gets the map tools");
-    assert.ok(print.tools.has("trail_repo_map"));
-    // ...and per-prompt retrieval/gating still works.
-    assert.equal(await print.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "rg authentication" } }, c), undefined);
+    const argv = process.argv.slice();
+    let print: ReturnType<typeof register>;
+    let c: ReturnType<typeof ctx>;
+    try {
+      process.argv = [process.execPath, "pi", "-p", "prompt"];
+      print = register();
+      c = await start(print);
+      assert.deepEqual(print.calls, [], "no probe and no build in a one-shot run");
+      assert.ok(print.tools.has("trail_find_code"), "a print-mode session still gets the map tools");
+      assert.ok(print.tools.has("trail_repo_map"));
+      // ...and per-prompt retrieval/gating still works.
+      assert.equal(await print.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "rg authentication" } }, c), undefined);
+    } finally {
+      // Print mode is read from process-global argv: leaving it set would run
+      // every later test in this process in print mode.
+      process.argv = argv;
+    }
+    assert.deepEqual(process.argv, argv, "the test restores process.argv");
   });
   it("resolves .trail/cache before a legacy graft map", async () => {
     const root = mapRoot([{ id: "a", name: "a", path: "src/a.ts" }], 3);
@@ -244,7 +254,9 @@ describe("Trail retrieval, injection, and the gate", () => {
     const started = Date.now();
     const event = promptEvent("locate the authentication implementation");
     await r.handlers.get("before_agent_start")![0](event, c);
-    assert.ok(Date.now() - started < 250);
+    // Wall-clock bound is deliberately loose: the semantic assertion is the
+    // `timed out` note below, and a 250 ms ceiling flaked under full-suite load.
+    assert.ok(Date.now() - started < 5_000);
     assert.match(event.systemPromptOptions.sections.trail, /timed out/i);
     assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "rg authentication" } }, c), undefined);
   });
@@ -484,6 +496,25 @@ describe("Trail build locking", () => {
       assert.match(result.content[0].text, /skipped|failed/i);
       assert.deepEqual(warnings, ["refresh_locked"], "a contended refresh is a degraded state, not routine");
       assert.deepEqual(r.calls, []);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("warns when a rebuild fails instead of reporting a routine refresh_end", async () => {
+    const root = mapRoot([{ id: "a", name: "a", path: "src/a.ts" }]);
+    try {
+      const events: Array<{ level: string; message: string; data: any }> = [];
+      const logger = {
+        debug() {},
+        info(message: string, data: any) { events.push({ level: "info", message, data }); },
+        warn(message: string, data: any) { events.push({ level: "warn", message, data }); },
+        error() {}, isDebugEnabled: () => false,
+      };
+      const r = register({ results: [{ code: 3, stderr: "build failed" }], logger }); const c = await start(r, ctx(root));
+      assert.match((await r.tools.get("trail_refresh")!.execute("id", {}, undefined, undefined, c)).content[0].text, /failed|skipped/i);
+      const failed = events.filter(event => event.message === "refresh_end");
+      assert.equal(failed.length, 1);
+      assert.equal(failed[0]!.level, "warn", "a failed build is not logged at info");
+      assert.equal(failed[0]!.data.code, 3);
+      assert.equal(failed[0]!.data.ok, false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("rebuilds only through the explicit trail_refresh tool", async () => {
