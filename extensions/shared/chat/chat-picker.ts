@@ -66,13 +66,19 @@ export function orderPickerEntries(entries: PickerEntry[], preferGroup?: string 
   return withIndex.map((item) => item.entry);
 }
 
-export function buildPickerPage(
-  entries: PickerEntry[],
+/**
+ * Slice an ALREADY ordered list into a page.
+ *
+ * Kept separate from ordering because a select value is an index into the list
+ * the user was shown: re-deriving the order on the answering side is how a
+ * picker ends up reporting a different model than the one displayed (Qodo
+ * 9069f13c).
+ */
+export function slicePickerPage(
+  ordered: PickerEntry[],
   page: number,
-  options: { pageSize?: number; preferGroup?: string | null } = {},
+  pageSize = PICKER_PAGE_SIZE,
 ): PickerPage {
-  const pageSize = options.pageSize ?? PICKER_PAGE_SIZE;
-  const ordered = orderPickerEntries(entries, options.preferGroup);
   const pages = pickerPageCount(ordered.length, pageSize);
   const current = clampPickerPage(page, ordered.length, pageSize);
   const start = (current - 1) * pageSize;
@@ -83,6 +89,15 @@ export function buildPickerPage(
     pages,
     total: ordered.length,
   };
+}
+
+export function buildPickerPage(
+  entries: PickerEntry[],
+  page: number,
+  options: { pageSize?: number; preferGroup?: string | null } = {},
+): PickerPage {
+  const pageSize = options.pageSize ?? PICKER_PAGE_SIZE;
+  return slicePickerPage(orderPickerEntries(entries, options.preferGroup), page, pageSize);
 }
 
 /** Label for one entry, marking the active choice and its group. */

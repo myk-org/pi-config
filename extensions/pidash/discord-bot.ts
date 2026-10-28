@@ -23,10 +23,10 @@ import {
 } from "../shared/chat/chat-attachments.ts";
 import { renderPrompt, type PendingPrompt, type PromptMethod } from "../shared/chat/chat-prompts.ts";
 import {
-  buildPickerPage,
   entriesFromModels,
+  orderPickerEntries,
   pickerLabel,
-  PICKER_PAGE_SIZE,
+  slicePickerPage,
 } from "../shared/chat/chat-picker.ts";
 import {
   buildSessionPage,
@@ -632,7 +632,7 @@ export function setupDiscordBot(opts: {
           await acknowledge(interaction, "This model list expired — run `/model` again.");
           return;
         }
-        const choice = picker.entries[Number(interaction.values?.[0])];
+        const choice = picker.ordered[Number(interaction.values?.[0])];
         if (!choice) {
           await acknowledge(interaction, "That choice is no longer in the list — run `/model` again.");
           return;
@@ -651,7 +651,7 @@ export function setupDiscordBot(opts: {
         }
         // Same entries + same preference as page 1: paging never reorders, so
         // no model is skipped or shown twice across a boundary.
-        const page = buildPickerPage(picker.entries, Number(modelPage[1]), { preferGroup: picker.preferGroup });
+        const page = slicePickerPage(picker.ordered, Number(modelPage[1]));
         await interaction.update({
           content: `**Model** — page ${page.page}/${page.pages} of ${page.total}`,
           components: modelPickerComponents(page),
@@ -852,7 +852,9 @@ export function setupDiscordBot(opts: {
         const currentGroup = entries.find((entry) => entry.current)?.group
           ?? entries.find((entry) => entry.label === session.model)?.group
           ?? null;
-        const page = buildPickerPage(entries, 1, { preferGroup: currentGroup });
+        // Order ONCE and keep it: a select value is an index into this list.
+        const ordered = orderPickerEntries(entries, currentGroup);
+        const page = slicePickerPage(ordered, 1);
         const reply: any = await interaction.editReply({
           content: `**Model** — current: ${session.model || "—"}\nPage ${page.page}/${page.pages} of ${page.total}`,
           components: modelPickerComponents(page),
@@ -860,7 +862,7 @@ export function setupDiscordBot(opts: {
           log.warn("model picker failed", { error: String(error) });
           return null;
         });
-        if (reply?.id) rememberPicker(reply.id, { sessionId: watched ?? "", preferGroup: currentGroup, entries });
+        if (reply?.id) rememberPicker(reply.id, { sessionId: watched ?? "", preferGroup: currentGroup, ordered });
         return;
       }
       command(watched, { command: "set-model", modelId: value });
@@ -1110,7 +1112,8 @@ export function setupDiscordBot(opts: {
   interface PickerContext {
     sessionId: string;
     preferGroup: string | null;
-    entries: ReturnType<typeof entriesFromModels>;
+    /** The EXACT ordered list shown to the user — select values index this. */
+    ordered: ReturnType<typeof entriesFromModels>;
   }
 
   const pickerContexts = new Map<string, PickerContext>();
@@ -1123,11 +1126,11 @@ export function setupDiscordBot(opts: {
       if (oldest === undefined) break;
       pickerContexts.delete(oldest);
     }
-    log.debug("picker context stored", { messageId, session: context.sessionId, entries: context.entries.length });
+    log.debug("picker context stored", { messageId, session: context.sessionId, entries: context.ordered.length });
   }
 
   /** Select menu for one page of models, plus prev/next when paged. */
-  function modelPickerComponents(page: ReturnType<typeof buildPickerPage>): any[] {
+  function modelPickerComponents(page: ReturnType<typeof slicePickerPage>): any[] {
     const rows: any[] = [new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId(`modelpick:${page.page}`)

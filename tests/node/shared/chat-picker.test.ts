@@ -11,6 +11,7 @@ import {
   pickerPageCount,
   clampPickerPage,
   orderPickerEntries,
+  slicePickerPage,
   PICKER_PAGE_SIZE,
   type PickerEntry,
 } from "../../../extensions/shared/chat/chat-picker.ts";
@@ -132,5 +133,43 @@ describe("picker offsets", () => {
     const page = buildPickerPage(long, 1);
     assert.equal(page.offset + 0, 0);
     assert.ok(long[0].id.length > 100, "ids can exceed Discord's 100-char option value cap");
+  });
+});
+
+describe("displayed order is the answering order", () => {
+  // Qodo 9069f13c: option values indexed the reordered list while the handler
+  // indexed the original one, so a selection could report a different model —
+  // exactly the class of bug the whole picker exists to avoid.
+  const shuffled: PickerEntry[] = [
+    { id: "google/g", label: "Gemini", group: "google" },
+    { id: "EnMaaS/d", label: "DeepSeek", group: "EnMaaS", current: true },
+    { id: "openai/o", label: "GPT", group: "openai" },
+    { id: "EnMaaS/z", label: "GLM", group: "EnMaaS" },
+  ];
+
+  it("resolves an option index to the model that was displayed", () => {
+    const ordered = orderPickerEntries(shuffled, "EnMaaS");
+    for (let page = 1; page <= pickerPageCount(ordered.length); page++) {
+      const built = slicePickerPage(ordered, page);
+      built.items.forEach((shown, index) => {
+        // The value the menu sends, resolved the way the handler resolves it.
+        const value = built.offset + index;
+        assert.equal(ordered[value].id, shown.id, "the value must name the displayed model");
+      });
+    }
+  });
+
+  it("does not reorder when a page is re-sliced", () => {
+    const ordered = orderPickerEntries(shuffled, "EnMaaS");
+    const first = slicePickerPage(ordered, 1);
+    const again = slicePickerPage(ordered, 1);
+    assert.deepEqual(again.items.map((e) => e.id), first.items.map((e) => e.id));
+    assert.equal(first.items[0].id, "EnMaaS/d", "the current provider still leads");
+  });
+
+  it("keeps buildPickerPage equivalent to order-then-slice", () => {
+    const viaParts = slicePickerPage(orderPickerEntries(shuffled, "EnMaaS"), 2);
+    const viaOne = buildPickerPage(shuffled, 2, { preferGroup: "EnMaaS" });
+    assert.deepEqual(viaOne, viaParts);
   });
 });
