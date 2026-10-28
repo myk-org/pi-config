@@ -295,9 +295,13 @@ function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string):
   return paths.every(path => {
     const absolute = resolve(root, path);
     const rel = relative(root, absolute);
-    if (rel.startsWith("..") || isAbsolute(rel)) return true;
+    const outside = rel.startsWith("..") || isAbsolute(rel);
+    let info; try { info = statSync(absolute); } catch { return false; }
+    // Outside the checkout only a FILE is safe to search: a parent directory such
+    // as `..` recurses back into this checkout, so `rg foo ..` is navigation.
+    if (outside) return info.isFile();
     if (mapPaths.has(rel.split(sep).join("/"))) return false;
-    try { return statSync(absolute).isFile(); } catch { return false; }
+    return info.isFile();
   });
 }
 function searchTool(event: any, logger: Logger = log): boolean {

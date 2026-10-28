@@ -660,7 +660,7 @@ describe("Shell search classification", () => {
     return { root, r, c };
   }
 
-  for (const command of ["rg authenticate src", "grep -rn authenticate src", "grep -rn foo src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "git -C src grep authenticate", "git --no-pager grep authenticate", "git -c core.pager=cat grep authenticate", "git -c x=y --no-pager grep authenticate", "env FOO=1 rg authenticate", "rg foo", "rg foo .", "rg foo src/", "rg foo src/v1.2/", "rg foo src/v1.2", "grep foo package.json src"]) {
+  for (const command of ["rg authenticate src", "grep -rn authenticate src", "grep -rn foo src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "git -C src grep authenticate", "git --no-pager grep authenticate", "git -c core.pager=cat grep authenticate", "git -c x=y --no-pager grep authenticate", "env FOO=1 rg authenticate", "rg foo", "rg foo .", "rg foo src/", "rg foo src/v1.2/", "rg foo src/v1.2", "grep foo package.json src", "rg foo ..", "rg foo ../", "find .. -name '*.ts'"]) {
     it(`blocks a first-segment search: ${command}`, async () => {
       const { root, r, c } = await armed();
       try {
