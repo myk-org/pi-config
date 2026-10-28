@@ -87,6 +87,8 @@ function mapRoot(nodes: Array<{ id: string; name: string; path: string }>, nodeC
   writeFileSync(join(root, "package.json"), "{}\n");
   writeFileSync(join(root, "README.md"), "# fixture\n");
   mkdirSync(join(root, "src/v1.2"), { recursive: true });
+  mkdirSync(join(root, "docs"), { recursive: true });
+  writeFileSync(join(root, "docs/guide.md"), "# guide\n");
   return root;
 }
 /** Linked-worktree fixture: `<worktree>/.git` points at `<main>/.git/worktrees/wt`. */
@@ -708,7 +710,10 @@ describe("Shell search classification", () => {
     const { root, r, c } = await armed();
     try {
       assert.equal(blocked(await toolCall(r, c, { toolName: "grep", input: { pattern: "authenticate", path: "src/auth.ts" } })), true);
+      assert.equal(blocked(await toolCall(r, c, { toolName: "find", input: { path: "src" } })), true, "a directory the map holds files beneath is navigation");
+      assert.equal(blocked(await toolCall(r, c, { toolName: "grep", input: { pattern: "authenticate", path: "src/" } })), true);
       assert.equal(await toolCall(r, c, { toolName: "grep", input: { pattern: "name", path: "package.json" } }), undefined, "an unindexed file is not navigation");
+      assert.equal(await toolCall(r, c, { toolName: "find", input: { path: "docs" } }), undefined, "a directory with no indexed file beneath is not navigation");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

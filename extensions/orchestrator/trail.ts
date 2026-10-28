@@ -54,7 +54,7 @@ type Hit = { title?: string; pointer?: string; snippet?: string; code?: string }
 type Ask = { coverage?: number; coverageStrong?: number; hits?: Hit[] };
 type TrailNode = { id: string; name: string; path: string };
 type TrailEdge = { source: string; target: string; relation: string };
-type TrailWiring = { nodes?: TrailNode[]; edges?: TrailEdge[] };
+type TrailWiring = { nodes?: TrailNode[]; edges?: TrailEdge[]; meta?: { nodeCount?: number } };
 
 /**
  * Absolute path of the repo's code map, or null when no map exists yet.
@@ -397,7 +397,7 @@ export function createTrailIntegration(options: Options) {
   // telemetry into ~/.pi/logs/trail, which is the G1-G3 measurement source for #978.
   const log = options.logger ?? createLogger("trail");
   const child = process.env.PI_SUBAGENT_CHILD === "1";
-  const state = { generation: 0, root: "", store: "", dirtySignal: "", enabled: false, toolsRegistered: false, events: undefined as ExtensionAPI["events"] | undefined, value: "stale" as TrailState, nodeCount: 0, tokenSavings: 0, trailReads: 0, sourceReads: 0, repoMapShown: false, dirty: false, buildAttempted: false, refresh: undefined as Promise<boolean> | undefined, mapPaths: new Set<string>(), ctx: undefined as any, gate: { active: false, retrieved: false, pointers: new Set<string>() } };
+  const state = { generation: 0, root: "", store: "", dirtySignal: "", enabled: false, toolsRegistered: false, events: undefined as ExtensionAPI["events"] | undefined, value: "stale" as TrailState, nodeCount: 0, tokenSavings: 0, trailReads: 0, sourceReads: 0, repoMapShown: false, dirty: false, buildAttempted: false, refresh: undefined as Promise<boolean> | undefined, mapPaths: new Set<string>(), mapDirs: new Set<string>(), ctx: undefined as any, gate: { active: false, retrieved: false, pointers: new Set<string>() } };
   const publishSavings = () => {
     if (child || !state.events) return;
     state.events.emit("pidash:trail-savings", { tokenSavings: state.tokenSavings });
@@ -416,9 +416,18 @@ export function createTrailIntegration(options: Options) {
     publishSavings();
   };
   const loadMap = (root: string) => {
-    state.nodeCount = trailNodes(root, log);
-    state.mapPaths = indexedFiles(root, log);
-    log.debug("map_loaded", { root, nodes: state.nodeCount, indexed: state.mapPaths.size });
+    // One read of the wiring file feeds all three: the node count, the indexed file
+    // set, and the directory set. A directory counts as indexed when the map holds
+    // any file beneath it, so `find src` cannot walk files the map already answers for.
+    const graph = wiring(root, log);
+    const nodes = (graph?.nodes ?? []).map((node: any) => node?.path).filter((path: any): path is string => typeof path === "string");
+    state.nodeCount = Number.isSafeInteger(graph?.meta?.nodeCount) ? graph!.meta!.nodeCount! : nodes.length;
+    state.mapPaths = new Set(nodes);
+    state.mapDirs = new Set(["."]);
+    for (const path of nodes) {
+      for (let dir = dirname(path); dir && dir !== "." && dir !== "/"; dir = dirname(dir)) state.mapDirs.add(dir);
+    }
+    log.debug("map_loaded", { root, nodes: state.nodeCount, indexed: state.mapPaths.size, dirs: state.mapDirs.size });
   };
   const addSavings = (amount: number) => { if (!amount) return; state.tokenSavings = state.store ? writeSavings(state.store, amount, log) : state.tokenSavings + amount; };
   const rawRun: TrailRun = options.run ?? (async (args, { cwd, timeoutMs }) => { try { const result = await exec("trail", args as string[], { cwd, timeout: timeoutMs ?? TIMEOUT_MS, maxBuffer: MAX_BUFFER, env: { ...process.env, DO_NOT_TRACK: "1", npm_config_offline: "true" } }); return { stdout: String(result.stdout).slice(0, MAX_BUFFER), stderr: String(result.stderr).slice(0, MAX_BUFFER), code: 0 }; } catch (error: any) { return { stdout: String(error?.stdout ?? "").slice(0, MAX_BUFFER), stderr: String(error?.stderr || error?.message || "").slice(0, MAX_BUFFER), code: Number(error?.code) || 1 }; } });
@@ -592,9 +601,10 @@ export function createTrailIntegration(options: Options) {
         return;
       }
       // Same exemption for the dedicated search tools: searching a file the map
-      // never indexed (package.json, a doc) is not blind navigation.
+      // never indexed (package.json, a doc) is not blind navigation, and neither is
+      // a directory the map holds nothing beneath.
       const toolPath = tool === "grep" || tool === "find" ? repoRelative(state.root, event?.input?.path) : null;
-      if (toolPath && !state.mapPaths.has(toolPath)) {
+      if (toolPath && !state.mapPaths.has(toolPath) && !state.mapDirs.has(toolPath)) {
         log.debug("gate_allowed", { tool, path: toolPath, pathClass: "unindexed_search" });
         return;
       }
