@@ -449,3 +449,34 @@ describe("failed question delivery", () => {
     assert.equal(mem.sent.length, 0, "and nothing was posted as plain text either");
   });
 });
+
+describe("late delivery failure", () => {
+  it("does not erase a newer question for the same session", async () => {
+    const mem = memoryAdapter();
+    const states = new Map<string, ChatRuntimeState>();
+    const state = initialChatRuntime("s1", { channelId: "chan" });
+    states.set("user1", state);
+    let rejectFirst: ((error: Error) => void) | null = null;
+    const bridge = createChatBridge({
+      adapter: mem.adapter,
+      users: () => states.entries(),
+      sendToSession: () => true,
+      streamEditIntervalMs: 0,
+      renderPrompt: (_target, prompt) => {
+        if (prompt.id !== "slow") return;
+        return new Promise<void>((_resolve, reject) => {
+          rejectFirst = reject;
+        });
+      },
+    });
+
+    bridge.askUser("s1", { id: "slow", method: "confirm", title: "first?" }, state);
+    bridge.askUser("s1", { id: "fast", method: "confirm", title: "second?" }, state);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(state.pendingPrompts?.["s1"]?.id, "fast", "the newer question is waiting");
+
+    rejectFirst?.(new Error("delivery failed later"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(state.pendingPrompts?.["s1"]?.id, "fast", "a late failure must not delete the newer question");
+  });
+});

@@ -370,7 +370,9 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
           .then(() => host.renderPrompt!(target, prompt, body))
           .catch((error: unknown) => {
             log.error("question delivery failed", { sessionId, promptId: prompt.id, error: String(error) });
-            setPending(state, sessionId, null);
+            // Only drop THIS prompt: a late failure must not erase a newer
+            // question the session is already waiting on (Qodo 5c0bd935).
+            if (pendingFor(state, sessionId)?.id === prompt.id) setPending(state, sessionId, null);
           });
       } else {
         void adapter.sendText(target, body);
