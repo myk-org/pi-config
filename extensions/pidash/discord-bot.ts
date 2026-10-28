@@ -990,6 +990,14 @@ export function setupDiscordBot(opts: {
   // ── lifecycle ────────────────────────────────────────────────────────────
   discord.once("ready", async (client: any) => {
     log.info("bot connected", { tag: client.user.tag, allowAll: config.allowAll, allowed: config.allowedUsers.size });
+    // Visible capability per session: proves the producer -> hub -> bot chain
+    // end to end at startup, without waiting for someone to send an image.
+    log.info("session capabilities", {
+      sessions: getActiveSessions().slice(0, 10).map((session: any) => ({
+        session: String(session.sessionId).split(":").pop(),
+        supportsImages: session.supportsImages ?? null,
+      })),
+    });
     await registerCommands(client.user.id); // global: makes DMs work too
     for (const guild of discord.guilds.cache.values()) {
       await registerCommands(client.user.id, (guild as any).id);
