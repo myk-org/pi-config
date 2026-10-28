@@ -86,6 +86,13 @@ function fixtureRepo(): string {
     "export const handler = (token: string) => authenticate(token);",
     "",
   ].join("\n"));
+  // Indexed but unrelated to the auth query, so it is never an injected pointer.
+  writeFileSync(join(root, "src/format.ts"), [
+    "export function formatTotal(value: number): string {",
+    '  return `${value.toFixed(2)} B`;',
+    "}",
+    "",
+  ].join("\n"));
   return root;
 }
 /** The map file, in either layout the integration accepts. Fails with the CLI's stderr, never silently. */
@@ -165,12 +172,10 @@ describe("Real `trail` binary end-to-end", { skip: SKIP }, () => {
   });
 
   /**
-   * Known production gap, pinned as TODO (production deliberately untouched):
-   * the live CLI emits `src/auth.ts:L3-L6`, and `pointerPath()` only strips a
-   * numeric `:12` span, so the pointer keeps its span, never matches a map path,
-   * and reading the very file the turn just recommended stays blocked.
+   * Qodo round 4: the live CLI emits `src/auth.ts:L3-L6`, and the gate must
+   * recognise the file that this turn's own retrieval just injected.
    */
-  it("allows reading a file this turn's own retrieval injected", { todo: "pointerPath() does not strip the CLI's `path:L3-L6` span shape" }, async () => {
+  it("allows reading a file this turn's own retrieval injected", async () => {
     const root = fixtureRepo();
     try {
       assertBuild(root);
@@ -181,8 +186,15 @@ describe("Real `trail` binary end-to-end", { skip: SKIP }, () => {
       await mock.handlers.get("session_start")![0]({ reason: "startup" }, c);
       await mock.handlers.get("before_agent_start")![0](promptEvent(PROMPT), c);
       assert.equal(log.exits.at(-1)?.decision, "injected");
+      // The gate is armed: an indexed file the retrieval did not point at is blocked.
+      const unrelated = await mock.handlers.get("tool_call")![0]({ toolName: "read", input: { path: "src/format.ts" } }, c);
+      assert.equal(blocked(unrelated), true, "an indexed file outside this turn's pointers is still blocked");
+      // The live pointer shape (`src/auth.ts:L3-L6`) opens the file it names.
       const read = await mock.handlers.get("tool_call")![0]({ toolName: "read", input: { path: "src/auth.ts" } }, c);
       assert.equal(read, undefined, "the injected pointer is readable without a detour through trail_find_code");
+      // And that read is enough to satisfy the gate for the turn.
+      await mock.handlers.get("tool_result")![0]({ toolName: "read", input: { path: "src/auth.ts" }, content: [{ type: "text", text: "code" }], isError: false }, c);
+      assert.equal(await mock.handlers.get("tool_call")![0]({ toolName: "read", input: { path: "src/format.ts" } }, c), undefined, "reading an injected pointer releases the gate");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

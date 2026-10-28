@@ -47,7 +47,7 @@ import { getSetting } from "./project-settings.js";
 import { checkSyncLimit } from "./sync-limit.js";
 import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
-import { trailEnabled, withTrailTools } from "./trail.js";
+import { trailToolsArgs } from "./trail.js";
 import { parseModelOverride, mergeModelOverride } from "./parse-model-override.js";
 import { clockHHMM, getPiInvocation, getProjectTmpDir, djb2Hash } from "./utils.js";
 
@@ -424,8 +424,7 @@ export async function runSingleAgent(
   const { model: effectiveModel, provider: effectiveProvider } = resolveAgentModelProvider(agentName, agent, parentModelId, parentProvider, cwd, explicit);
   if (effectiveModel) args.push("--model", effectiveModel);
   if (effectiveProvider) args.push("--provider", effectiveProvider);
-  const tools = withTrailTools(agent.tools, trailEnabled(cwd));
-  if (tools?.length) args.push("--tools", tools.join(","));
+  args.push(...trailToolsArgs(agent.tools, cwd));
 
   let tmpDir: string | null = null;
   let tmpFile: string | null = null;

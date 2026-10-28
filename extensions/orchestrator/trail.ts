@@ -36,6 +36,15 @@ export function withTrailTools(tools: readonly string[] | undefined, enabled: bo
   if (!tools?.length || !enabled) return tools ? [...tools] : undefined;
   return [...new Set([...tools, ...TRAIL_QUERY_TOOLS])];
 }
+/**
+ * The `--tools` pair a spawner appends to its child command, or `[]` for none.
+ * `--tools ""` would restrict a child to zero tools, so only a non-empty list
+ * produces the flag; `undefined` (no declared list) stays unrestricted.
+ */
+export function trailToolsArgs(tools: readonly string[] | undefined, cwd: string): string[] {
+  const list = withTrailTools(tools, trailEnabled(cwd));
+  return list?.length ? ["--tools", list.join(",")] : [];
+}
 export type TrailState = "syncing" | "ready" | "stale" | "absent" | "failed";
 export type TrailRun = (args: readonly string[], options: { cwd: string; timeoutMs?: number }) => Promise<{ stdout: string; stderr: string; code: number }>;
 type GraphStatus = "fresh" | "stale" | "absent";
@@ -214,12 +223,17 @@ function promptQuery(event: any): { query: string | null; querySource: "prompt" 
   return { query: queryText(raw), querySource: "custom_message" };
 }
 function substantive(query: string): boolean { return query.length >= MIN_PROMPT_CHARS && !query.startsWith("/"); }
-function pointerPath(pointer: string): string | null {
-  // A pointer is `path:span`, a bare file path, or a comma-joined source list.
-  const first = pointer.split(",")[0].trim();
-  const span = /^(.+?):\d+(?::\d+)?$/.exec(first);
-  if (span) return span[1];
-  return /[/.]/.test(first) && !/\s/.test(first) ? first : null;
+/**
+ * The repo-relative path a pointer names. The live CLI emits `path:L3-L6`
+ * (`L3`, `3-6`, `12`, `12:5` also appear) and comma-joined lists, so the span
+ * and any list tail are stripped: the gate compares plain paths. Anything not
+ * path-shaped returns null, so a bogus pointer can never widen the gate.
+ */
+export function pointerPath(pointer: string): string | null {
+  const first = pointer.split(",")[0]?.trim() ?? "";
+  const path = first.replace(/:L?\d+(?:-L?\d+)?(?::\d+)?$/, "");
+  if (!path || /\s/.test(path) || isAbsolute(path) || /^[A-Za-z]:[\\/]/.test(path)) return null;
+  return /[/.]/.test(path) ? path : null;
 }
 /** The CLI may print a note line ("refreshed the graph…", "tokens saved ≈ …") before the JSON. */
 function parseAsk(stdout: string): Ask | null {

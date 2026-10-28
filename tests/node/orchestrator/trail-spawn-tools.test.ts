@@ -2,31 +2,87 @@
  * Trail #978 spawn-layer contract: what the child spawners actually put in
  * `--tools`. Qodo round 2: "some child agents receive no Trail tools".
  *
- * `withTrailTools` is asserted directly (the helper both spawners call) AND the
- * two call sites are pinned at source level, because the helper returning the
- * right thing is worthless if a spawner drops the "only when non-empty" guard:
- * `--tools ""` would restrict a child to zero tools instead of leaving it
- * unrestricted (where its own session registers Trail anyway).
+ * `trailToolsArgs` is the single exported assembly both spawners call, so it is
+ * asserted behaviourally here — a source-text pin on the call sites made an
+ * equivalent refactor fail (Qodo round 4), while `--tools ""` (a child restricted
+ * to zero tools instead of left unrestricted) still fails.
  *
  * Run: env -u PI_SUBAGENT_CHILD npx tsx --test tests/node/orchestrator/trail-spawn-tools.test.ts
  */
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { TRAIL_QUERY_TOOLS, withTrailTools } from "../../../extensions/orchestrator/trail.js";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { TRAIL_QUERY_TOOLS, trailToolsArgs, withTrailTools } from "../../../extensions/orchestrator/trail.js";
+import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 
-const orchestrator = join(dirname(fileURLToPath(import.meta.url)), "../../../extensions/orchestrator");
-const SPAWNERS = ["subagent-tool.ts", "async-agents.ts"];
+beforeEach(() => {
+  // Pin the global settings file: a developer's ~/.pi settings must never decide the result.
+  setGlobalSettingsPath(join(tmpdir(), `trail-spawn-global-${process.pid}.json`));
+  clearSettingsCache();
+});
+afterEach(() => {
+  setGlobalSettingsPath(null);
+  clearSettingsCache();
+});
+/** Temp repo whose own `.pi` settings say whether Trail is on. */
+function repo(trailEnable: boolean): string {
+  const root = mkdtempSync(join(tmpdir(), "trail-spawn-"));
+  mkdirSync(join(root, ".pi"), { recursive: true });
+  writeFileSync(join(root, ".pi/pi-config-settings.jsonc"), JSON.stringify({ trail_enable: trailEnable }));
+  return root;
+}
+const QUERY_TOOLS = "trail_find_code,trail_find_all,trail_file_api,trail_trace_calls,trail_repo_map";
 
-describe("withTrailTools (the helper the spawners call)", () => {
-  it("leaves a missing tool list missing, so the child stays unrestricted", () => {
+describe("trailToolsArgs (what the spawners append to the child command)", () => {
+  it("passes no --tools for an undeclared list, so the child stays unrestricted", () => {
     // A child with no --tools registers every tool in its own session, Trail
     // included: naming the five would narrow it, not widen it.
+    const root = repo(true);
+    try {
+      assert.deepEqual(trailToolsArgs(undefined, root), []);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("passes no --tools for an empty declared list (never `--tools \"\"`)", () => {
+    const root = repo(true);
+    try {
+      assert.deepEqual(trailToolsArgs([], root), []);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("appends the five query tools to a declared list", () => {
+    const root = repo(true);
+    try {
+      assert.deepEqual(trailToolsArgs(["read", "bash", "edit"], root), ["--tools", `read,bash,edit,${QUERY_TOOLS}`]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("does not duplicate Trail tools that are already declared", () => {
+    const root = repo(true);
+    try {
+      const [, list] = trailToolsArgs(["read", "trail_find_code", "trail_repo_map"], root);
+      const names = list!.split(",");
+      assert.equal(new Set(names).size, names.length, "no duplicates");
+      assert.deepEqual(names, ["read", "trail_find_code", "trail_repo_map", "trail_find_all", "trail_file_api", "trail_trace_calls"]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("forwards a declared list untouched when trail_enable is false, adding no Trail tools", () => {
+    // No Trail tools when disabled, but the agent's own restriction must still
+    // reach the child: dropping `--tools` would widen a read-only agent instead.
+    const root = repo(false);
+    try {
+      assert.deepEqual(trailToolsArgs(["read", "bash"], root), ["--tools", "read,bash"]);
+      assert.deepEqual(trailToolsArgs(undefined, root), []);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("withTrailTools (the list trailToolsArgs builds on)", () => {
+  it("leaves a missing tool list missing, so the child stays unrestricted", () => {
     assert.equal(withTrailTools(undefined, true), undefined);
-    // An empty declared list needs no Trail names; the spawner's length guard
-    // still passes no --tools, so the child stays unrestricted.
     assert.deepEqual(withTrailTools([], true), []);
     assert.equal(withTrailTools(undefined, false), undefined);
   });
@@ -52,21 +108,4 @@ describe("withTrailTools (the helper the spawners call)", () => {
     const declared = ["read"];
     assert.notEqual(withTrailTools(declared, false), declared);
   });
-});
-
-describe("spawner call sites (`--tools` is only pushed for a non-empty list)", () => {
-  for (const file of SPAWNERS) {
-    it(`${file} derives --tools from withTrailTools and guards on a non-empty result`, () => {
-      const source = readFileSync(join(orchestrator, file), "utf8");
-      const derived = /const tools = withTrailTools\(agent\.tools, trailEnabled\(cwd\)\);/.exec(source);
-      assert.ok(derived, `${file} must derive its child tool list from withTrailTools(agent.tools, trailEnabled(cwd))`);
-      // The exact guard: `if (tools?.length) <args>.push("--tools", tools.join(","))`.
-      // `tools &&` / `tools.length > 0` are equivalent, so allow them, but a bare
-      // push (no guard) or `tools ? …` (pushes for an empty list) must fail here.
-      const guard = /if \(tools(?:\?\.length|\.length(?: > 0)?| && tools\.length)\)\s*(\w+)\.push\("--tools", tools\.join\(","\)\);/.exec(source);
-      assert.ok(guard, `${file} must push --tools only when the list is non-empty (no --tools \"\" for an unrestricted child)`);
-      // Exactly one such push: a second, unguarded one would defeat the check above.
-      assert.equal(source.match(/\.push\("--tools"/g)?.length, 1, `${file} pushes --tools in exactly one place`);
-    });
-  }
 });

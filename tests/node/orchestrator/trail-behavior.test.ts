@@ -226,6 +226,51 @@ describe("Automatic retrieval never satisfies the navigation gate", () => {
   });
 });
 
+/**
+ * The live CLI's pointer shape is `path:L3-L6` (Qodo round 4: the gate blocked
+ * the very file retrieval had just injected, because only `path:12` was
+ * stripped). Every shape is asserted both as a pure parse and as gate behaviour.
+ */
+const POINTER_SHAPES: Array<[string, string]> = [
+  ["path:12", "src/auth.ts:12"],
+  ["path:12:5", "src/auth.ts:12:5"],
+  ["path:L3", "src/auth.ts:L3"],
+  ["path:L3-L6", "src/auth.ts:L3-L6"],
+  ["path:3-6", "src/auth.ts:3-6"],
+  ["comma-joined list", "src/auth.ts:L3-L6, src/other.ts:L9"],
+  ["bare path", "src/auth.ts"],
+];
+
+describe("Pointer normalisation", () => {
+  for (const [shape, pointer] of POINTER_SHAPES) {
+    it(`reads ${shape} as src/auth.ts`, () => {
+      assert.equal(trail.pointerPath(pointer), "src/auth.ts");
+    });
+
+    it(`lets a ${shape} pointer open exactly the file it names`, async () => {
+      const root = mapRoot(NODES);
+      try {
+        const output = JSON.stringify({ coverage: 0.9, hits: [{ title: "authenticate", pointer }] });
+        const r = register({ results: [{ stdout: output }] });
+        const c = await start(r, ctx(root));
+        await r.handlers.get("before_agent_start")![0](promptEvent("locate the authentication implementation"), c);
+        // Armed: an indexed file the turn did not inject stays blocked...
+        assert.equal(blocked(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } })), true);
+        // ...while the injected pointer is readable, and that read satisfies the gate.
+        assert.equal(await toolCall(r, c, { toolName: "read", input: { path: "src/auth.ts" } }), undefined);
+        await toolResult(r, c, { toolName: "read", input: { path: "src/auth.ts" }, content: toolText("code"), isError: false });
+        assert.equal(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } }), undefined);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+
+  it("rejects anything that is not path-shaped", () => {
+    for (const value of ["", "   ", "authenticate", "src/auth.ts:3 lines", "/abs/src/auth.ts", "/etc/passwd", ":L3-L6"]) {
+      assert.equal(trail.pointerPath(value), null, `not a pointer: ${JSON.stringify(value)}`);
+    }
+  });
+});
+
 describe("Custom-message turns (a subagent task)", () => {
   it("injects this turn's pointers for a task prompt", async () => {
     const root = mapRoot(NODES);
