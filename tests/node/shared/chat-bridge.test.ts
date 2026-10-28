@@ -384,3 +384,45 @@ describe("DM disambiguation with several waiting prompts (Qodo 4e656bb3)", () =>
     assert.equal(replies.at(-1), "Answer sent.");
   });
 });
+
+describe("question delivery is owned by the host", () => {
+  // The hook was declared and then ignored, so Discord users got question text
+  // with nothing to tap and had to type numbers. This fails if the engine ever
+  // bypasses the host again.
+  it("renders questions through the host instead of plain text", () => {
+    const mem = memoryAdapter();
+    const states = new Map<string, ChatRuntimeState>();
+    const state = initialChatRuntime("s1", { channelId: "chan" });
+    states.set("user1", state);
+    const rendered: Array<{ target: ChatTarget; promptId: string; body: string }> = [];
+    const bridge = createChatBridge({
+      adapter: mem.adapter,
+      users: () => states.entries(),
+      sendToSession: () => true,
+      streamEditIntervalMs: 0,
+      renderPrompt: (target, prompt, body) => {
+        rendered.push({ target, promptId: prompt.id, body });
+      },
+    });
+
+    const prompt = bridge.askUser("s1", {
+      id: "ask-1",
+      method: "select",
+      title: "Pick one",
+      options: ["alpha", "beta"],
+    }, state);
+
+    assert.ok(prompt);
+    assert.equal(rendered.length, 1, "the host must receive the question");
+    assert.equal(rendered[0].promptId, "ask-1");
+    assert.equal(rendered[0].target.channelId, "chan");
+    assert.match(rendered[0].body, /alpha/);
+    assert.equal(mem.sent.length, 0, "no plain-text fallback once the host renders");
+  });
+
+  it("falls back to the adapter when the host has no renderer", () => {
+    const { bridge, state, sent } = setup();
+    bridge.askUser("s1", { id: "ask-2", method: "confirm", title: "Sure?" }, state);
+    assert.equal(sent.length, 1, "a host without controls still gets the question");
+  });
+});

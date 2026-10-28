@@ -29,6 +29,16 @@ import { modelInfoPayload, supportsImagesFor } from "../../scripts/pidash-sessio
 
 const log = createLogger("pidash");
 
+/**
+ * Last pushed async/cron snapshots.
+ *
+ * The orchestrator emits these as events (browser gets them live); Discord asks
+ * on demand with `async-list` / `cron-list`, so the newest snapshot is kept here
+ * instead of forcing a round trip into the orchestrator.
+ */
+let lastAsyncStatus: Record<string, unknown> | null = null;
+let lastCronStatus: Record<string, unknown> | null = null;
+
 // Module-level ref — survives closure replacement on /reload.
 // raceWithBrowser captures `pi` from the closure, but after reload
 // the old `pi` is stale (assertActive throws). This ref is updated
@@ -395,6 +405,41 @@ export function registerPidash(
         if (parsed.command === "async-kill" && parsed.target) {
           log.debug(`async-kill from browser: ${parsed.target}`);
           pi.events.emit("pidash:async-kill", parsed.target);
+        }
+
+        if (parsed.command === "last-message") {
+          try {
+            const entries = lastCtx?.sessionManager?.getEntries?.() || [];
+            const last = [...entries].reverse().find((entry: any) =>
+              entry.type === "message" && entry.message?.role === "assistant");
+            const content = last?.message?.content;
+            const text = typeof content === "string"
+              ? content
+              : Array.isArray(content)
+                ? content.filter((block: any) => block.type === "text").map((block: any) => block.text).join("\n")
+                : "";
+            log.debug(`last-message from client: ${text.length} chars`);
+            if (ws && connected) {
+              ws.send(JSON.stringify({ type: "last-message", requestId: parsed.requestId, text: text.slice(0, 12000) }));
+            }
+          } catch (error: any) {
+            log.warn("last-message failed", { error: error?.message ?? String(error) });
+            if (ws && connected) {
+              ws.send(JSON.stringify({ type: "last-message", requestId: parsed.requestId, text: "" }));
+            }
+          }
+        }
+
+        if (parsed.command === "async-list") {
+          const snapshot = lastAsyncStatus ?? { count: 0, jobs: [] };
+          log.debug(`async-list from client: ${(snapshot as any).count ?? 0} running`);
+          try { ws.send(JSON.stringify({ type: "async-list", requestId: parsed.requestId, ...snapshot })); } catch {}
+        }
+
+        if (parsed.command === "cron-list") {
+          const snapshot = lastCronStatus ?? { count: 0, tasks: [] };
+          log.debug(`cron-list from client: ${(snapshot as any).count ?? 0} tasks`);
+          try { ws.send(JSON.stringify({ type: "cron-list", requestId: parsed.requestId, ...snapshot })); } catch {}
         }
 
         if (parsed.command === "cron-kill" && parsed.target) {
@@ -957,8 +1002,11 @@ export function registerPidash(
       }
     });
 
-    // Forward async agent status to browser
+    // Forward async agent status to browser, and keep the last snapshot: the
+    // orchestrator PUSHES these, so a client that asks later (Discord `/async`)
+    // needs something to read (request/response like every other command).
     pi.events.on("pidash:async-status", (data: unknown) => {
+      lastAsyncStatus = (data ?? {}) as Record<string, unknown>;
       if (ws && connected) {
         try { ws.send(JSON.stringify({ type: "async-status", ...(data as any) })); } catch {}
       }
@@ -966,6 +1014,7 @@ export function registerPidash(
 
     // Forward cron status to browser
     pi.events.on("pidash:cron-status", (data: unknown) => {
+      lastCronStatus = (data ?? {}) as Record<string, unknown>;
       if (ws && connected) {
         try { ws.send(JSON.stringify({ type: "cron-status", ...(data as any) })); } catch {}
       }

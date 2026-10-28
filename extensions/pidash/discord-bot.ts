@@ -517,7 +517,11 @@ export function setupDiscordBot(opts: {
     ["compact", "Compact the watched session's context"],
     ["model", "Show or set the model"],
     ["thinking", "Show or set the thinking level"],
-    ["tasks", "List tasks in the watched session"],
+    ["last", "Show the last reply from the watched session"],
+  ["ask", "Ask the watched session a question"],
+  ["async", "List or kill background async agents"],
+  ["cron", "List or kill scheduled cron jobs"],
+  ["tasks", "List tasks in the watched session"],
     ["coms", "List coms peers in the watched session's project"],
     ["memory", "Memory status of the watched session"],
     ["mcp", "MCP servers known to the watched session"],
@@ -526,6 +530,53 @@ export function setupDiscordBot(opts: {
     ["notify", "Turn turn-complete notifications on or off"],
     ["file", "Send a file from the session's working directory"],
   ] as const;
+
+  /**
+   * Do the registered commands still match what we want to register?
+   *
+   * Compares the fields that define a command — everything else Discord fills
+   * in (ids, versions, guild scope) is ignored so a restart is a no-op.
+   */
+  function commandPayloadChanged(current: any[], desired: any[]): boolean {
+    // Discord echoes fields we never set (localizations, min/max length, empty
+    // choice lists). Compare a canonical subset or every restart looks changed.
+    const canonicalOption = (option: any): any => ({
+      type: option.type ?? 3,
+      name: option.name,
+      description: option.description ?? "",
+      required: option.required === true,
+      autocomplete: option.autocomplete === true,
+      choices: (option.choices ?? []).map((choice: any) => ({ name: choice.name, value: choice.value })),
+      options: (option.options ?? []).map(canonicalOption),
+    });
+    const shape = (command: any) => JSON.stringify({
+      name: command.name,
+      description: command.description ?? "",
+      type: command.type ?? 1,
+      options: (command.options ?? []).map(canonicalOption),
+      contexts: [...(command.contexts ?? [])].sort(),
+      integration_types: [...(command.integration_types ?? [])].sort(),
+      default_member_permissions: command.default_member_permissions ?? null,
+    });
+    const live = current.map(shape).sort();
+    const wanted = desired.map(shape).sort();
+    if (live.length !== wanted.length) {
+      log.debug("command count differs", { live: live.length, wanted: wanted.length });
+      return true;
+    }
+    if (live.length !== wanted.length) return true;
+    const differing: string[] = [];
+    for (let index = 0; index < live.length; index++) {
+      if (live[index] !== wanted[index]) {
+        differing.push(String(JSON.parse(wanted[index]).name ?? "?"));
+      }
+    }
+    if (differing.length) {
+      log.info("command definitions differ", { commands: differing.slice(0, 10) });
+      return true;
+    }
+    return false;
+  }
 
   async function registerCommands(clientId: string, guildId?: string): Promise<void> {
     const rest = new REST().setToken(config.token);
@@ -552,6 +603,10 @@ export function setupDiscordBot(opts: {
         builder.addStringOption((o: any) =>
           o.setName(WATCH_OPTION_NAME).setDescription("Session to watch").setRequired(true).setAutocomplete(true));
       }
+      if (name === "ask") {
+        builder.addStringOption((o: any) =>
+          o.setName("question").setDescription("Question for the watched session").setRequired(true));
+      }
       if (name === "notify") builder.addStringOption((o: any) => o.setName("state").setDescription("on | off"));
       if (name === "file") builder.addStringOption((o: any) => o.setName("path").setDescription("Path relative to the session cwd").setRequired(true));
       return builder;
@@ -569,12 +624,23 @@ export function setupDiscordBot(opts: {
       .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
       .toJSON();
     const body = [...builders.map((b: any) => b.toJSON()), askAbout];
+    const scope = guildId ? `guild:${guildId}` : "global";
     try {
-      if (guildId) await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body });
-      else await rest.put(Routes.applicationCommands(clientId), { body });
-      log.info("slash commands registered", { scope: guildId ? `guild:${guildId}` : "global", count: body.length });
+      // A bulk overwrite on every start reissues command ids, and a client that
+      // cached the old ones answers "This command is outdated" when tapped
+      // (live report). Only write when the definitions actually differ.
+      const route = guildId
+        ? Routes.applicationGuildCommands(clientId, guildId)
+        : Routes.applicationCommands(clientId);
+      const current = (await rest.get(route)) as any[];
+      if (!commandPayloadChanged(current, body)) {
+        log.debug("slash commands unchanged", { scope, count: body.length });
+        return;
+      }
+      await rest.put(route, { body });
+      log.info("slash commands registered", { scope, count: body.length });
     } catch (error) {
-      log.warn("slash command registration failed", { guildId, error: String(error) });
+      log.warn("slash command registration failed", { scope, error: String(error) });
     }
   }
 
@@ -656,6 +722,15 @@ export function setupDiscordBot(opts: {
           content: `**Model** — page ${page.page}/${page.pages} of ${page.total}`,
           components: modelPickerComponents(page),
         }).catch((error: any) => log.warn("model page failed", { error: String(error) }));
+        return;
+      }
+
+      const killJob = customId.match(/^(async|cron)-kill:([^:]+):(.+)$/);
+      if (killJob) {
+        const [, kind, targetSession, targetId] = killJob;
+        const ok = command(targetSession, { command: `${kind}-kill`, target: targetId });
+        await acknowledge(interaction, ok ? `Stopped \`${truncateLine(targetId, 40)}\`.` : "Could not stop that job.");
+        log.info("job killed from discord", { kind, session: targetSession, target: targetId, ok });
         return;
       }
 
@@ -839,6 +914,7 @@ export function setupDiscordBot(opts: {
     }
 
     const value = String(interaction.options?.getString?.("value") || "");
+    const question = String(interaction.options?.getString?.("question") || "");
     if (name === "model") {
       if (!value) {
         // No id given → picker. Typing a model id on a phone is not a thing.
@@ -1218,6 +1294,35 @@ export function setupDiscordBot(opts: {
   }
 
   /** One-shot request/response, matched by EXACT event type and request id. */
+  /** Ask the session for one event and return it structured (null when absent). */
+  async function requestEvent(
+    sessionId: string,
+    spec: { command: string; eventType: string },
+    timeoutMs = 5000,
+  ): Promise<any | null> {
+    const requestId = `discord-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve) => {
+      const done = (event: any | null) => {
+        clearTimeout(timer);
+        const index = piEventHooks.indexOf(hook);
+        if (index >= 0) piEventHooks.splice(index, 1);
+        resolve(event);
+      };
+      const timer = setTimeout(() => {
+        log.debug("request timed out", { sessionId, command: spec.command });
+        done(null);
+      }, timeoutMs);
+      const hook = (eventSessionId: string, event: any) => {
+        if (eventSessionId !== sessionId) return;
+        if (event?.type !== spec.eventType) return;
+        if (event?.requestId && event.requestId !== requestId) return;
+        done(event);
+      };
+      piEventHooks.push(hook);
+      if (!command(sessionId, { command: spec.command, requestId })) done(null);
+    });
+  }
+
   async function requestOnce(
     sessionId: string,
     spec: { command: string; eventType: string; label: string },

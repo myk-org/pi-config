@@ -359,7 +359,11 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
       };
       setPending(state, sessionId, prompt);
       const body = renderPrompt(prompt, String(event.title || "The agent is asking").slice(0, 500));
-      void adapter.sendText(target, body);
+      // The host must own delivery: it attaches native controls (buttons, select
+      // menus, modals) to the SAME message. Declaring the hook and then ignoring
+      // it is how users ended up with "reply with a number" and nothing to tap.
+      if (host.renderPrompt) void host.renderPrompt(target, prompt, body);
+      else void adapter.sendText(target, body);
       log.info("prompt forwarded to chat", { platform: adapter.platform, sessionId, method });
       return prompt;
     },
