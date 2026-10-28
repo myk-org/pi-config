@@ -19,6 +19,7 @@ const log = createLogger("trail");
 const TIMEOUT_MS = 45_000;
 const MAX_BUFFER = 64 * 1024;
 const MIN_PROMPT_CHARS = 12;
+const QUERY_MAX_CHARS = 500;
 const INTERACTIVE_TIMEOUT_MS = 2_000;
 export const TRAIL_QUERY_TOOLS = ["trail_find_code", "trail_find_all", "trail_file_api", "trail_trace_calls", "trail_repo_map"] as const;
 export function withTrailTools(tools: readonly string[] | undefined, enabled: boolean): string[] | undefined {
@@ -81,6 +82,16 @@ export function formatTrailFooter({ state, nodeCount, tokenSavings, trailReads =
   return parts.join(fg("dim", " · "));
 }
 function text(value: unknown, max = 500): string | null { return typeof value === "string" && value.trim() && value.length <= max && !/[\0\r\n]/.test(value) ? value.trim() : null; }
+/**
+ * A retrieval query is clamped, never rejected for length: `text()` is a strict
+ * validator for pointers and titles, and a realistic task prompt is far longer
+ * than its cap (issue #978: every real prompt was read as "no query").
+ */
+function queryText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const query = value.replace(/\0/g, "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, QUERY_MAX_CHARS).trim();
+  return query || null;
+}
 function projectPath(root: string, value: unknown): string | null {
   const file = text(value); if (!file || isAbsolute(file)) return null;
   const absolute = resolve(root, file); if (relative(root, absolute).startsWith("..")) return null;
@@ -150,14 +161,12 @@ const ALL_TRAIL_TOOLS = [...TRAIL_QUERY_TOOLS, "trail_refresh", "trail_blast_rad
  * retrieval and gate as a user prompt (issue #978, G2).
  */
 function promptQuery(event: any): { query: string | null; querySource: "prompt" | "custom_message" | "none" } {
-  const prompt = text(event?.prompt);
+  const prompt = queryText(event?.prompt);
   if (prompt) return { query: prompt, querySource: "prompt" };
   if (event?.messageType !== "custom") return { query: null, querySource: "none" };
   const content = event?.message?.content;
   const raw = typeof content === "string" ? content : Array.isArray(content) ? content.filter((part: any) => typeof part?.text === "string").map((part: any) => part.text).join(" ") : "";
-  // A task prompt is long and multi-line: collapse whitespace and keep the
-  // first 500 chars, because `text()` rejects (rather than caps) long input.
-  return { query: text(raw.replace(/\s+/g, " ").trim().slice(0, 500)), querySource: "custom_message" };
+  return { query: queryText(raw), querySource: "custom_message" };
 }
 function substantive(query: string): boolean { return query.length >= MIN_PROMPT_CHARS && !query.startsWith("/"); }
 function pointerPath(pointer: string): string | null {

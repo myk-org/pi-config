@@ -129,6 +129,23 @@ const toolText = (text: string) => [{ type: "text", text }];
 const blocked = (result: any) => result?.block === true;
 const reasonOf = (result: any) => String(result?.reason ?? "");
 
+/** Logger stub recording the turn-level events the query-shape tests assert on. */
+function turnLog() {
+  const enters: any[] = [];
+  const exits: any[] = [];
+  const logger = {
+    debug() {},
+    info(message: string, data: any) { if (message === "prompt_retrieval_enter") enters.push(data); else if (message === "prompt_retrieval_exit") exits.push(data); },
+    warn() {}, error() {}, isDebugEnabled: () => false,
+  };
+  return { enters, exits, logger };
+}
+/** A realistic task prompt: multi-line and far longer than the 500-char query clamp. */
+function longTask(prefix = "") {
+  const task = `${prefix}locate the authentication implementation and explain how sessions are validated\n${("see the session validator and its callers\n").repeat(40)}`;
+  assert.ok(task.length > 1200, `fixture must exceed the clamp (${task.length})`);
+  return task;
+}
 const ASK_OUTPUT = JSON.stringify({ coverage: 0.9, hits: [{ title: "authenticate", pointer: "src/auth.ts:12", snippet: "validates sessions" }] });
 const NODES = [{ id: "a", name: "authenticate", path: "src/auth.ts" }, { id: "b", name: "other", path: "src/other.ts" }];
 
@@ -250,6 +267,69 @@ describe("Custom-message turns (a subagent task)", () => {
         assert.equal(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } }), undefined);
       }
       assert.deepEqual(r.calls, [], "a control prompt spawns no retrieval subprocess");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("Query clamping (a long prompt is a query, not an absence)", () => {
+  it("runs retrieval, injects pointers and arms the gate for a 1200+ char user prompt", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const log = turnLog();
+      const r = register({ logger: log.logger, results: [{ stdout: ASK_OUTPUT }] });
+      const c = await start(r, ctx(root));
+      const event = promptEvent(longTask());
+      await r.handlers.get("before_agent_start")![0](event, c);
+      assert.equal(log.enters[0].querySource, "prompt");
+      assert.ok(log.enters[0].queryLength > 450 && log.enters[0].queryLength <= 500, `the query is clamped, not dropped (${log.enters[0].queryLength})`);
+      assert.deepEqual(r.calls.map(call => call.args[0]), ["ask"], "a long prompt still runs retrieval");
+      assert.match(event.systemPromptOptions.sections.trail, /src\/auth\.ts:12/);
+      assert.equal(blocked(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } })), true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("does the same for a 1200+ char custom (subagent task) message", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const log = turnLog();
+      const r = register({ logger: log.logger, results: [{ stdout: ASK_OUTPUT }] });
+      const c = await start(r, ctx(root));
+      const event = customEvent({ content: [{ type: "text", text: longTask() }] });
+      await r.handlers.get("before_agent_start")![0](event, c);
+      assert.equal(log.enters[0].querySource, "custom_message");
+      assert.ok(log.enters[0].queryLength > 450 && log.enters[0].queryLength <= 500, `clamped (${log.enters[0].queryLength})`);
+      assert.deepEqual(r.calls.map(call => call.args[0]), ["ask"]);
+      assert.match(event.systemPromptOptions.sections.trail, /src\/auth\.ts:12/);
+      assert.equal(blocked(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } })), true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps a long slash-command prompt on the control path", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const log = turnLog();
+      const r = register({ logger: log.logger, results: [{ stdout: ASK_OUTPUT }] });
+      const c = await start(r, ctx(root));
+      const event = promptEvent(longTask("/compact "));
+      await r.handlers.get("before_agent_start")![0](event, c);
+      assert.equal(log.enters[0].querySource, "prompt");
+      assert.equal(log.exits.at(-1)!.decision, "guidance_only_control_prompt");
+      assert.deepEqual(r.calls, [], "a control prompt spawns no retrieval subprocess");
+      assert.equal(event.systemPromptOptions.sections.trail, undefined);
+      assert.equal(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } }), undefined);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("never reports a queryLength above the clamp", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const log = turnLog();
+      const r = register({ logger: log.logger, results: [{ stdout: ASK_OUTPUT }, { stdout: ASK_OUTPUT }] });
+      const c = await start(r, ctx(root));
+      await r.handlers.get("before_agent_start")![0](promptEvent(longTask()), c);
+      await r.handlers.get("before_agent_start")![0](customEvent({ content: longTask() }), c);
+      assert.ok(log.enters.length === 2);
+      for (const enter of log.enters) assert.ok(enter.queryLength > 0 && enter.queryLength <= 500, `queryLength ${enter.queryLength}`);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
