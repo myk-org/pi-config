@@ -457,6 +457,9 @@ user can add PI without an admin. No server is required for a one-handed workflo
 <p><code>/status</code> is rendered as a card (session, state, model, branch, cwd, image
 capability) with <strong>link buttons</strong> to the dashboard and the diff viewer, using the
 machine's LAN address so the links actually open from a phone.</p>
+<p><strong>React to a bot message</strong> instead of typing: ⏹ stop the session's turn, 🔁 resend
+the last prompt, 🗑 delete the message. Reactions need the <em>Message Reactions</em>
+intents enabled for the app.</p>
 <p><strong>Right-click or long-press any message → Apps → "Ask PI about this"</strong> sends that
 message to the watched session as a prompt. A stack trace or a log line in any
 channel becomes the task, without copying it.</p>
@@ -504,6 +507,10 @@ will do.</p>
 <tr>
 <td><code>/compact</code></td>
 <td>Compact the watched session's context</td>
+</tr>
+<tr>
+<td><code>/board</code></td>
+<td>Forum session board — opens a thread per session (<code>DISCORD_FORUM_CHANNEL_ID</code>)</td>
 </tr>
 <tr>
 <td><code>/disconnect</code></td>

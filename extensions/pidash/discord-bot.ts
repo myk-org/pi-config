@@ -31,6 +31,7 @@ import {
 } from "../shared/chat/chat-picker.ts";
 import { compareCommandPayloads } from "./discord-commands.ts";
 import { jobIdAt, renderJobsView } from "./discord-jobs-view.ts";
+import { reactionAction, sessionForChannel, sessionIdFromTopic } from "./discord-reactions.ts";
 import {
   buildSessionPage,
   renderSessionsPage,
@@ -139,9 +140,12 @@ export function setupDiscordBot(opts: {
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.GuildMessageReactions,
+      GatewayIntentBits.DirectMessageReactions,
       GatewayIntentBits.MessageContent,
     ],
-    partials: [Partials.Channel, Partials.Message],
+    // Reaction partials: a reaction on a message the bot did not cache still
+    // has to reach us, or shortcuts work only on recent messages.
+    partials: [Partials.Channel, Partials.Message, Partials.Reaction],
   });
 
   // ── state ────────────────────────────────────────────────────────────────
@@ -430,6 +434,116 @@ export function setupDiscordBot(opts: {
     },
   };
 
+  /**
+   * Forum session board: one thread per session.
+   *
+   * A forum channel keeps sessions from competing for a single scrolling chat.
+   * The channel comes from DISCORD_FORUM_CHANNEL_ID — the bot never creates
+   * channels on its own.
+   */
+  async function renderBoard(state: RuntimeUserState, interaction: any): Promise<any> {
+    const forumId = config.forumChannelId;
+    if (!forumId) {
+      return { content: "No board configured. Set `DISCORD_FORUM_CHANNEL_ID` to a forum channel id." };
+    }
+    let forum: any;
+    try {
+      forum = await discord.channels.fetch(forumId);
+    } catch (error) {
+      log.warn("forum channel not reachable", { forumId, error: String(error) });
+      return { content: `Cannot read forum channel ${forumId} — check the id and my permissions.` };
+    }
+    if (!forum?.threads?.create) {
+      return { content: `Channel ${forumId} is not a forum channel.` };
+    }
+
+    const sessions = getActiveSessions();
+    const active = await forum.threads.fetchActive().catch(() => ({ threads: new Map() }));
+    const existing = new Map<string, string>();
+    for (const thread of active.threads?.values?.() ?? []) {
+      const sessionId = sessionIdFromTopic(thread.topic);
+      if (sessionId) existing.set(sessionId, thread.id);
+    }
+
+    let created = 0;
+    for (const session of sessions) {
+      const sessionId = String(session.sessionId);
+      if (existing.has(sessionId)) continue;
+      try {
+        const thread = await forum.threads.create({
+          name: truncateLine(sessionName(sessionId), 90),
+          message: { content: `${sessionName(sessionId)} — \`${session.cwd ?? ""}\`` },
+          reason: `pi session ${sessionId}`,
+        });
+        existing.set(sessionId, thread.id);
+        created++;
+      } catch (error) {
+        log.warn("board thread creation failed", { sessionId, error: String(error) });
+      }
+    }
+    log.info("board rendered", { sessions: sessions.length, created, forumId });
+
+    if (!sessions.length) return { content: "No active sessions to show on the board." };
+    const options = sessions.slice(0, 25).map((session: any) => ({
+      label: truncateLine(sessionName(String(session.sessionId)), 90),
+      value: String(session.sessionId).slice(0, 100),
+      description: truncateLine(String(session.cwd ?? ""), 90),
+    }));
+    return {
+      content: `**Board** — ${sessions.length} session(s), ${created} new thread(s) in <#${forumId}>.`,
+      components: [new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder().setCustomId("boardpick").setPlaceholder("Open a session thread").addOptions(options),
+      )],
+    };
+  }
+
+  /**
+   * Reaction shortcuts on the bot's own messages: ⏹ stop, 🔁 retry the last
+   * prompt, 🗑 delete. One tap beats a keyboard on a phone.
+   */
+  discord.on("messageReactionAdd", async (reaction: any, user: any) => {
+    try {
+      if (user?.bot) return;
+      if (reaction?.partial) await reaction.fetch().catch(() => {});
+      const message = reaction?.message?.partial ? await reaction.message.fetch().catch(() => null) : reaction?.message;
+      if (!message || message.author?.id !== discord.user?.id) return;
+      const userId = String(user?.id ?? "");
+      if (!(config.allowAll || config.allowedUsers.has(userId))) return;
+      const state = runtime.get(userId);
+      if (!state) return;
+      const emoji = reaction.emoji?.name ?? "";
+      const action = reactionAction(emoji);
+      if (!action) return;
+      const channelId = String(message.channelId ?? "");
+      const sessionId = sessionForChannel(state.targets, state.watchedSessionId, state.target?.channelId, channelId);
+
+      if (action === "stop") {
+        const stopped = sessionId ? command(sessionId, { command: "abort" }) : false;
+        log.info("reaction stop", { userId, sessionId, stopped });
+        return;
+      }
+      if (action === "retry") {
+        const prompt = sessionId ? state.lastPrompts?.[sessionId] : null;
+        const client = sessionId ? piClients.get(sessionId) : null;
+        if (!prompt || !client?.ws) {
+          log.debug("reaction retry skipped", { userId, sessionId, hasPrompt: Boolean(prompt) });
+          return;
+        }
+        bridge.expectEcho(state, sessionId!, prompt);
+        client.ws.send(JSON.stringify({ type: "prompt", text: prompt }));
+        log.info("reaction retry", { userId, sessionId, chars: prompt.length });
+        return;
+      }
+      if (action === "delete") {
+        await message.delete().catch((error: any) => log.debug("reaction delete failed", { error: String(error) }));
+        log.info("reaction delete", { userId, messageId: message.id });
+        return;
+      }
+    } catch (error) {
+      log.warn("reaction handling failed", { error: String(error) });
+    }
+  });
+
   /** Native controls for a question: buttons, a select, or a modal button. */
   function promptControls(prompt: PendingPrompt): any[] {
     if (prompt.method === "confirm") {
@@ -523,6 +637,7 @@ export function setupDiscordBot(opts: {
     ["status", "Show the watched session"],
     ["stop", "Interrupt the running turn"],
     ["disconnect", "Stop watching — clears the watch, its threads and pending questions"],
+    ["board", "Forum session board — one thread per session"],
     ["compact", "Compact the watched session's context"],
     ["model", "Show or set the model"],
     ["thinking", "Show or set the thinking level"],
@@ -701,6 +816,35 @@ export function setupDiscordBot(opts: {
         const ok = command(list.sessionId, { command: `${kind}-kill`, target: targetId });
         await acknowledge(interaction, ok ? `Stopped \`${truncateLine(targetId, 40)}\`.` : "Could not stop that job.");
         log.info("job killed from discord", { kind, session: list.sessionId, target: targetId, ok });
+        return;
+      }
+
+      if (customId === "boardpick" && interaction.isStringSelectMenu?.()) {
+        const sessionId = String(interaction.values?.[0] ?? "");
+        const forumId = config.forumChannelId;
+        if (!sessionId || !forumId) {
+          await acknowledge(interaction, "That session is no longer on the board.");
+          return;
+        }
+        // The forum thread already exists for this session: reuse it as the
+        // session's target instead of creating a second thread elsewhere.
+        let threadId: string | null = null;
+        try {
+          const forum: any = await discord.channels.fetch(forumId);
+          const active = await forum.threads.fetchActive();
+          for (const thread of active.threads.values()) {
+            if (sessionIdFromTopic(thread.topic) === sessionId) { threadId = thread.id; break; }
+          }
+        } catch (error) {
+          log.warn("board thread lookup failed", { sessionId, error: String(error) });
+        }
+        if (!threadId) {
+          await acknowledge(interaction, "No board thread for that session — run `/board` again.");
+          return;
+        }
+        state.threads = { ...(state.threads ?? {}), [sessionId]: threadId };
+        await switchWatch(state, interaction, sessionId);
+        log.info("board thread opened", { sessionId, threadId });
         return;
       }
 
@@ -1516,6 +1660,8 @@ export function setupDiscordBot(opts: {
     const fullText = notes.length ? (text ? `${text}\n\n` : "") + notes.join("\n\n") : text;
     // The engine suppresses this echo per watcher using the state's marker.
     bridge.expectEcho(state, targetSessionId!, fullText);
+    // Reaction shortcut 🔁 resends this without retyping.
+    state.lastPrompts = { ...(state.lastPrompts ?? {}), [targetSessionId!]: fullText.slice(0, 4000) };
     client.ws.send(JSON.stringify({ type: "prompt", text: fullText, images: images.length ? images : undefined }));
     log.info("prompt forwarded from discord", {
       userId,

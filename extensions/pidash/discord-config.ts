@@ -15,6 +15,8 @@ export interface DiscordConfig {
   allowedUsers: Set<string>;
   allowAll: boolean;
   promptTtlMs: number;
+  /** Forum channel used as the session board; null disables `/board`. */
+  forumChannelId: string | null;
   stateFile: string;
   envFile: string;
 }
@@ -66,6 +68,8 @@ export function resolveDiscordConfig(
     token,
     allowedUsers,
     allowAll,
+    // Forum channel used as the session board (one thread per session).
+    forumChannelId: (env.DISCORD_FORUM_CHANNEL_ID || "").trim() || null,
     promptTtlMs,
     stateFile: expandHome(env.PIDASH_DISCORD_STATE_FILE || "~/.pi/discord-state.json", home),
     envFile: expandHome(env.PIDASH_DISCORD_ENV_FILE || "~/.pi/discord.env", home),

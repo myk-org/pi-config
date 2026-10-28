@@ -29,9 +29,17 @@ export interface DiscordUserState {
    * instead of creating a second one and losing the history (Qodo f649327c).
    */
   threads?: Record<string, string>;
+  /**
+   * sessionId -> the last prompt sent for it, so a 🔁 reaction can resend it
+   * without the user retyping (Discord reaction shortcut).
+   */
+  lastPrompts?: Record<string, string>;
   /** Last interaction, used for pruning. */
   updatedAt: number;
 }
+
+/** A remembered prompt is for retrying, not for storage: keep it small. */
+export const MAX_LAST_PROMPT_CHARS = 4000;
 
 /** Threads remembered per user; older ones are dropped. */
 export const MAX_THREADS_PER_USER = 20;
@@ -62,7 +70,13 @@ function coerceUser(raw: unknown): DiscordUserState | null {
   }
   // A user with no binding at all carries no information.
   if (!watched && !channel) return null;
-  return { watchedSessionId: watched, responseChannelId: channel, threadId: thread, threads, updatedAt };
+  const lastPrompts: Record<string, string> = {};
+  if (value.lastPrompts && typeof value.lastPrompts === "object") {
+    for (const [sessionId, text] of Object.entries(value.lastPrompts as Record<string, unknown>)) {
+      if (typeof text === "string" && text) lastPrompts[sessionId] = text.slice(0, MAX_LAST_PROMPT_CHARS);
+    }
+  }
+  return { watchedSessionId: watched, responseChannelId: channel, threadId: thread, threads, lastPrompts, updatedAt };
 }
 
 /**

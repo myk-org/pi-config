@@ -66,6 +66,10 @@ user can add PI without an admin. No server is required for a one-handed workflo
 capability) with **link buttons** to the dashboard and the diff viewer, using the
 machine's LAN address so the links actually open from a phone.
 
+**React to a bot message** instead of typing: ⏹ stop the session's turn, 🔁 resend
+the last prompt, 🗑 delete the message. Reactions need the *Message Reactions*
+intents enabled for the app.
+
 **Right-click or long-press any message → Apps → "Ask PI about this"** sends that
 message to the watched session as a prompt. A stack trace or a log line in any
 channel becomes the task, without copying it.
@@ -113,6 +117,7 @@ Any prompt can be dismissed with `/cancel`. A prompt that is not answered **expi
 | Command | What it does |
 |---|---|
 | `/compact` | Compact the watched session's context |
+| `/board` | Forum session board — opens a thread per session (`DISCORD_FORUM_CHANNEL_ID`) |
 | `/disconnect` | Stop watching everything — clears the watch, its threads and pending questions |
 | `/model [value]` | Open a **model picker** (your current provider first), or switch directly by id |
 | `/thinking [value]` | Show or set `off`…`max` |
