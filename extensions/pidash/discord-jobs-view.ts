@@ -15,9 +15,30 @@ export interface JobsView {
   stoppable: string[];
 }
 
+/**
+ * Job id for a button, by position.
+ *
+ * Session ids contain a colon (`123:/repo`), so embedding one in a customId and
+ * splitting on ":" resolved the wrong session — Stop silently did nothing
+ * (Qodo cb61e7ae). Buttons carry an index; the caller keeps the mapping.
+ */
+export function jobIdAt(stoppable: string[], index: number): string | null {
+  if (!Number.isInteger(index) || index < 0 || index >= stoppable.length) return null;
+  return stoppable[index] ?? null;
+}
+
 const MAX_LINES = 15;
 const MAX_CONTENT = 1900;
 const MAX_BUTTONS = 5;
+
+/** Cron snapshots carry millisecond timestamps; show a UTC clock, not an epoch. */
+export function formatNextRun(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "";
+  const ms = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(ms) || ms <= 0) return String(value);
+  const iso = new Date(ms).toISOString().replace("T", " ");
+  return `${iso.slice(0, 16)} UTC`;
+}
 
 function line(text: string): string {
   return text.length <= 100 ? text : `${text.slice(0, 99)}…`;
@@ -40,7 +61,8 @@ export function renderJobsView(kind: "async" | "cron", snapshot: any): JobsView 
     }
     const title = item?.description || item?.id || "job";
     const schedule = item?.schedule ? `\n   \`${line(String(item.schedule))}\`` : "";
-    const next = item?.nextRun ? ` · next ${line(String(item.nextRun))}` : "";
+    const nextLabel = formatNextRun(item?.nextRun);
+    const next = nextLabel ? ` · next ${line(nextLabel)}` : "";
     return `${index + 1}. **${line(String(title))}**${schedule}${next}`;
   });
   const overflow = items.length > MAX_LINES ? `\n…and ${items.length - MAX_LINES} more` : "";

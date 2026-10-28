@@ -7,7 +7,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderJobsView } from "../../../extensions/pidash/discord-jobs-view.ts";
+import { formatNextRun, jobIdAt, renderJobsView } from "../../../extensions/pidash/discord-jobs-view.ts";
 
 describe("async/cron list rendering", () => {
   it("says so when nothing is running", () => {
@@ -56,5 +56,47 @@ describe("async/cron list rendering", () => {
   it("survives a snapshot with no count", () => {
     const view = renderJobsView("cron", { tasks: [{ id: "c1", description: "job" }] });
     assert.match(view.content, /\(1\)/, "count falls back to the item list");
+  });
+});
+
+describe("cron next-run formatting", () => {
+  it("renders a millisecond timestamp as a readable UTC time", () => {
+    assert.equal(formatNextRun(1_767_000_000_000), "2025-12-29 09:20 UTC");
+  });
+
+  it("passes through an already formatted label", () => {
+    assert.equal(formatNextRun("every 24h"), "every 24h");
+  });
+
+  it("shows nothing for a missing value", () => {
+    assert.equal(formatNextRun(undefined), "");
+    assert.equal(formatNextRun(null), "");
+  });
+
+  it("puts the formatted time in the cron line", () => {
+    const view = renderJobsView("cron", {
+      count: 1,
+      tasks: [{ id: "c1", description: "nightly", schedule: "0 3 * * *", nextRun: 1_767_000_000_000 }],
+    });
+    assert.match(view.content, /next 2025-12-29 09:20 UTC/);
+    assert.doesNotMatch(view.content, /1767000000000/);
+  });
+});
+
+describe("stop button resolution", () => {
+  // The session id contains a colon, so parsing it back out of a customId picked
+  // the wrong session; buttons resolve by index instead.
+  const stoppable = ["job-a", "job-b"];
+
+  it("returns the job at an index", () => {
+    assert.equal(jobIdAt(stoppable, 0), "job-a");
+    assert.equal(jobIdAt(stoppable, 1), "job-b");
+  });
+
+  it("refuses an out-of-range or malformed index", () => {
+    assert.equal(jobIdAt(stoppable, 2), null);
+    assert.equal(jobIdAt(stoppable, -1), null);
+    assert.equal(jobIdAt(stoppable, 1.5), null);
+    assert.equal(jobIdAt(stoppable, Number.NaN), null);
   });
 });

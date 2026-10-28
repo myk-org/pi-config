@@ -164,10 +164,27 @@ export function saveInboundAttachment(
       .replace(/^\.+/, "")
       .slice(0, 120) || "attachment";
     mkdirSync(directory, { recursive: true });
-    const path = join(directory, safe);
-    writeFileSync(path, buffer, { mode: 0o600 });
-    log.debug("inbound attachment saved", { path, bytes: buffer.length });
-    return path;
+    const dot = safe.lastIndexOf(".");
+    const stem = dot > 0 ? safe.slice(0, dot) : safe;
+    const extension = dot > 0 ? safe.slice(dot) : "";
+    // Never reuse a name: a path already handed to the agent must keep meaning
+    // the same bytes (Qodo 008cdf21). `wx` also refuses to follow an existing
+    // symlink, so an upload cannot be redirected at a file outside the inbox
+    // (Qodo dd4420bd).
+    for (let attempt = 0; attempt < 1000; attempt++) {
+      const name = attempt === 0 ? `${stem}${extension}` : `${stem}-${attempt}${extension}`;
+      const path = join(directory, name);
+      try {
+        writeFileSync(path, buffer, { flag: "wx", mode: 0o600 });
+        log.debug("inbound attachment saved", { path, bytes: buffer.length, attempt });
+        return path;
+      } catch (error: any) {
+        if (error?.code === "EEXIST") continue;
+        throw error;
+      }
+    }
+    log.warn("could not find a free inbox name", { filename, directory });
+    return null;
   } catch (error) {
     log.warn("could not save inbound attachment", { filename, error: String(error) });
     return null;

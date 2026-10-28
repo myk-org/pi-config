@@ -389,7 +389,7 @@ describe("question delivery is owned by the host", () => {
   // The hook was declared and then ignored, so Discord users got question text
   // with nothing to tap and had to type numbers. This fails if the engine ever
   // bypasses the host again.
-  it("renders questions through the host instead of plain text", () => {
+  it("renders questions through the host instead of plain text", async () => {
     const mem = memoryAdapter();
     const states = new Map<string, ChatRuntimeState>();
     const state = initialChatRuntime("s1", { channelId: "chan" });
@@ -412,6 +412,7 @@ describe("question delivery is owned by the host", () => {
       options: ["alpha", "beta"],
     }, state);
 
+    await new Promise((resolve) => setTimeout(resolve, 10)); // delivery is async
     assert.ok(prompt);
     assert.equal(rendered.length, 1, "the host must receive the question");
     assert.equal(rendered[0].promptId, "ask-1");
@@ -424,5 +425,27 @@ describe("question delivery is owned by the host", () => {
     const { bridge, state, sent } = setup();
     bridge.askUser("s1", { id: "ask-2", method: "confirm", title: "Sure?" }, state);
     assert.equal(sent.length, 1, "a host without controls still gets the question");
+  });
+});
+
+describe("failed question delivery", () => {
+  it("clears the prompt instead of leaving the agent waiting on a message nobody saw", async () => {
+    const mem = memoryAdapter();
+    const states = new Map<string, ChatRuntimeState>();
+    const state = initialChatRuntime("s1", { channelId: "chan" });
+    states.set("user1", state);
+    const bridge = createChatBridge({
+      adapter: mem.adapter,
+      users: () => states.entries(),
+      sendToSession: () => true,
+      streamEditIntervalMs: 0,
+      renderPrompt: async () => {
+        throw new Error("discord is down");
+      },
+    });
+    bridge.askUser("s1", { id: "ask-3", method: "confirm", title: "Ship it?" }, state);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(state.pendingPrompts, {}, "the pending prompt is dropped");
+    assert.equal(mem.sent.length, 0, "and nothing was posted as plain text either");
   });
 });

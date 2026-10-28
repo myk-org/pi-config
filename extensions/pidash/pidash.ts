@@ -22,6 +22,7 @@ import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { firstLiveExtensionCtx, isLiveExtensionCtx, resolveSessionStartCtx } from "../shared/live-ctx.js";
 import { createLogger } from "../shared/logger.js";
+import { lastAssistantText } from "../shared/chat/chat-transcript.ts";
 import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
 import { applySetting, buildSettingsPayload, mcpList, runMcp } from "./browser-ops.js";
@@ -410,14 +411,9 @@ export function registerPidash(
         if (parsed.command === "last-message") {
           try {
             const entries = lastCtx?.sessionManager?.getEntries?.() || [];
-            const last = [...entries].reverse().find((entry: any) =>
-              entry.type === "message" && entry.message?.role === "assistant");
-            const content = last?.message?.content;
-            const text = typeof content === "string"
-              ? content
-              : Array.isArray(content)
-                ? content.filter((block: any) => block.type === "text").map((block: any) => block.text).join("\n")
-                : "";
+            // Skips tool-only turns: a message with no text is not "the last
+            // reply" (Qodo 5f62aa7c, same rule the module tests cover).
+            const text = lastAssistantText(entries);
             log.debug(`last-message from client: ${text.length} chars`);
             if (ws && connected) {
               ws.send(JSON.stringify({ type: "last-message", requestId: parsed.requestId, text: text.slice(0, 12000) }));

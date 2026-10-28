@@ -30,7 +30,7 @@ import {
   slicePickerPage,
 } from "../shared/chat/chat-picker.ts";
 import { compareCommandPayloads } from "./discord-commands.ts";
-import { renderJobsView } from "./discord-jobs-view.ts";
+import { jobIdAt, renderJobsView } from "./discord-jobs-view.ts";
 import {
   buildSessionPage,
   renderSessionsPage,
@@ -695,12 +695,18 @@ export function setupDiscordBot(opts: {
         return;
       }
 
-      const killJob = customId.match(/^(async|cron)-kill:([^:]+):(.+)$/);
+      const killJob = customId.match(/^(async|cron)-kill:(\d+)$/);
       if (killJob) {
-        const [, kind, targetSession, targetId] = killJob;
-        const ok = command(targetSession, { command: `${kind}-kill`, target: targetId });
+        const [, kind, rawIndex] = killJob;
+        const list = jobLists.get(String(interaction.message?.id ?? ""));
+        const targetId = list ? jobIdAt(list.stoppable, Number(rawIndex)) : null;
+        if (!list || !targetId) {
+          await acknowledge(interaction, "That list expired — run the command again.");
+          return;
+        }
+        const ok = command(list.sessionId, { command: `${kind}-kill`, target: targetId });
         await acknowledge(interaction, ok ? `Stopped \`${truncateLine(targetId, 40)}\`.` : "Could not stop that job.");
-        log.info("job killed from discord", { kind, session: targetSession, target: targetId, ok });
+        log.info("job killed from discord", { kind, session: list.sessionId, target: targetId, ok });
         return;
       }
 
@@ -1226,7 +1232,30 @@ export function setupDiscordBot(opts: {
   }
 
   const pickerContexts = new Map<string, PickerContext>();
+  interface JobListContext {
+    sessionId: string;
+    kind: "async" | "cron";
+    stoppable: string[];
+  }
+
+  /**
+   * Which jobs a Stop button refers to, keyed by message id.
+   *
+   * The old customId embedded the session id and split on ":", but session ids
+   * look like `123:/repo`, so Stop resolved session `123` and killed nothing.
+   */
+  const jobLists = new Map<string, JobListContext>();
+
   const PICKER_CONTEXT_LIMIT = 50;
+
+  function rememberJobList(messageId: string, context: JobListContext): void {
+    jobLists.set(messageId, context);
+    while (jobLists.size > PICKER_CONTEXT_LIMIT) {
+      const oldest = jobLists.keys().next().value;
+      if (oldest === undefined) break;
+      jobLists.delete(oldest);
+    }
+  }
 
   function rememberPicker(messageId: string, context: PickerContext): void {
     pickerContexts.set(messageId, context);

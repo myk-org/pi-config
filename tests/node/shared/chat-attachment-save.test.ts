@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, readdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { saveInboundAttachment } from "../../../extensions/shared/chat/chat-attachments.ts";
@@ -54,5 +54,29 @@ describe("saving an inbound attachment", () => {
     const dir = tempDir();
     const saved = saveInboundAttachment(dir, `${"a".repeat(400)}.png`, Buffer.from("x"));
     assert.ok(basename(saved!).length <= 120);
+  });
+});
+
+describe("saved attachments are never reused or redirected", () => {
+  it("keeps both files when the same name is sent twice", () => {
+    const dir = tempDir();
+    const first = saveInboundAttachment(dir, "photo.png", Buffer.from("one"));
+    const second = saveInboundAttachment(dir, "photo.png", Buffer.from("two"));
+    assert.notEqual(first, second, "a path handed to the agent must keep its bytes");
+    assert.equal(readFileSync(first!, "utf-8"), "one");
+    assert.equal(readFileSync(second!, "utf-8"), "two");
+    assert.deepEqual(readdirSync(dir).sort(), ["photo-1.png", "photo.png"]);
+  });
+
+  it("does not follow an existing symlink out of the inbox", () => {
+    const outside = join(tempDir(), "secret.txt");
+    writeFileSync(outside, "original");
+    const dir = tempDir();
+    symlinkSync(outside, join(dir, "photo.png"));
+    const saved = saveInboundAttachment(dir, "photo.png", Buffer.from("payload"));
+    assert.ok(saved);
+    assert.notEqual(saved, join(dir, "photo.png"));
+    assert.equal(readFileSync(outside, "utf-8"), "original", "the link target was not truncated");
+    assert.equal(readFileSync(saved!, "utf-8"), "payload");
   });
 });

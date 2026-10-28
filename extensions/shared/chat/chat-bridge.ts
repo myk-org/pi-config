@@ -362,8 +362,19 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
       // The host must own delivery: it attaches native controls (buttons, select
       // menus, modals) to the SAME message. Declaring the hook and then ignoring
       // it is how users ended up with "reply with a number" and nothing to tap.
-      if (host.renderPrompt) void host.renderPrompt(target, prompt, body);
-      else void adapter.sendText(target, body);
+      // A rejected render must never become an unhandled rejection, and the
+      // prompt must not stay pending against a message the user never saw
+      // (Qodo 8a1d4ad0).
+      if (host.renderPrompt) {
+        Promise.resolve()
+          .then(() => host.renderPrompt!(target, prompt, body))
+          .catch((error: unknown) => {
+            log.error("question delivery failed", { sessionId, promptId: prompt.id, error: String(error) });
+            setPending(state, sessionId, null);
+          });
+      } else {
+        void adapter.sendText(target, body);
+      }
       log.info("prompt forwarded to chat", { platform: adapter.platform, sessionId, method });
       return prompt;
     },
