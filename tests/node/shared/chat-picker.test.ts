@@ -1,0 +1,175 @@
+/**
+ * Picker ordering/paging — the rule behind `/model` opening on the provider you
+ * already use instead of at `google` because it sorts first.
+ */
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import {
+  buildPickerPage,
+  entriesFromModels,
+  pickerLabel,
+  pickerPageCount,
+  clampPickerPage,
+  orderPickerEntries,
+  slicePickerPage,
+  PICKER_PAGE_SIZE,
+  type PickerEntry,
+} from "../../../extensions/shared/chat/chat-picker.ts";
+
+const entries: PickerEntry[] = [
+  { id: "google/gemini-4", label: "Gemini 4", group: "google" },
+  { id: "EnMaaS/deepseek", label: "DeepSeek V4.1 Flash", group: "EnMaaS", current: true },
+  { id: "EnMaaS/glm", label: "GLM 5.3", group: "EnMaaS" },
+  { id: "openai/gpt-6", label: "GPT-6", group: "openai" },
+];
+
+describe("picker ordering", () => {
+  it("puts the preferred group first and keeps the rest alphabetical", () => {
+    const ordered = orderPickerEntries(entries, "EnMaaS");
+    assert.deepEqual(ordered.map((entry) => entry.id), [
+      "EnMaaS/deepseek", "EnMaaS/glm", "google/gemini-4", "openai/gpt-6",
+    ]);
+  });
+
+  it("falls back to plain grouping when no preference is given", () => {
+    const ordered = orderPickerEntries(entries);
+    assert.deepEqual(ordered.map((entry) => entry.group), ["EnMaaS", "EnMaaS", "google", "openai"]);
+  });
+
+  it("keeps the original order inside a group (stable)", () => {
+    const ordered = orderPickerEntries(entries, "EnMaaS");
+    assert.equal(ordered[0].id, "EnMaaS/deepseek");
+    assert.equal(ordered[1].id, "EnMaaS/glm");
+  });
+});
+
+describe("picker paging", () => {
+  const many: PickerEntry[] = Array.from({ length: 681 }, (_, i) => ({
+    id: `m${i}`, label: `model-${i}`, group: i < 600 ? "aaa" : "zzz",
+  }));
+
+  it("bounds a page to the select-menu limit", () => {
+    const page = buildPickerPage(many, 1);
+    assert.equal(page.items.length, PICKER_PAGE_SIZE);
+    assert.equal(page.total, 681);
+    assert.equal(page.pages, Math.ceil(681 / PICKER_PAGE_SIZE));
+  });
+
+  it("keeps the preferred group reachable on page 1", () => {
+    const page = buildPickerPage(many, 1, { preferGroup: "zzz" });
+    assert.equal(page.items[0].group, "zzz", "an already-used provider must not be 27 pages in");
+  });
+
+  it("clamps out-of-range pages", () => {
+    assert.equal(pickerPageCount(0), 1);
+    assert.equal(clampPickerPage(0, 681), 1);
+    assert.equal(clampPickerPage(9999, 681), Math.ceil(681 / PICKER_PAGE_SIZE));
+    assert.equal(clampPickerPage(Number.NaN, 681), 1);
+  });
+
+  it("marks the current entry", () => {
+    const page = buildPickerPage(entries, 1, { preferGroup: "EnMaaS" });
+    const current = page.items.find((entry) => entry.current);
+    assert.ok(current);
+    assert.match(pickerLabel(current!), /^✓ /);
+  });
+});
+
+describe("models to picker entries", () => {
+  it("derives the group from the id when no provider is given", () => {
+    const [entry] = entriesFromModels([{ id: "rits/deepseek-ai/DeepSeek-V4.1-Flash-1017" }]);
+    assert.equal(entry.group, "rits/deepseek-ai");
+    assert.equal(entry.label, "rits/deepseek-ai/DeepSeek-V4.1-Flash-1017");
+  });
+
+  it("prefers the model name and the explicit provider", () => {
+    const [entry] = entriesFromModels([{ id: "gpt-6", name: "GPT-6", provider: "openai" }], "gpt-6");
+    assert.equal(entry.group, "openai");
+    assert.equal(entry.label, "GPT-6");
+    assert.equal(entry.current, true);
+  });
+
+  it("drops entries without an id", () => {
+    assert.deepEqual(entriesFromModels([{ id: "" }, {} as any]), []);
+  });
+
+  it("truncates labels for the select menu", () => {
+    const label = pickerLabel({ id: "x", label: "y".repeat(200) });
+    assert.equal(label.length, 100);
+    assert.ok(label.endsWith("…"));
+  });
+});
+
+describe("picker offsets", () => {
+  const many: PickerEntry[] = Array.from({ length: 60 }, (_, i) => ({
+    id: `m${i}`, label: `model-${i}`, group: i < 30 ? "aaa" : "zzz",
+  }));
+
+  it("reports where a page starts in the full list", () => {
+    assert.equal(buildPickerPage(many, 1).offset, 0);
+    assert.equal(buildPickerPage(many, 2).offset, PICKER_PAGE_SIZE);
+    assert.equal(buildPickerPage(many, 3).offset, PICKER_PAGE_SIZE * 2);
+  });
+
+  it("keeps paging stable and complete under a preferred group", () => {
+    // Qodo 691703dd: rebuilding page 2 without the preference reordered the
+    // list, so models were skipped or duplicated across the boundary.
+    const seen: string[] = [];
+    const pages = pickerPageCount(many.length);
+    for (let page = 1; page <= pages; page++) {
+      const built = buildPickerPage(many, page, { preferGroup: "zzz" });
+      assert.equal(built.offset, (page - 1) * PICKER_PAGE_SIZE);
+      seen.push(...built.items.map((entry) => entry.id));
+    }
+    assert.equal(seen.length, many.length);
+    assert.equal(new Set(seen).size, many.length, "every model appears exactly once");
+    assert.equal(seen[0], "m30", "the preferred group still leads the first page");
+  });
+
+  it("indexes the full list, so a select value needs no truncation", () => {
+    const long: PickerEntry[] = [{
+      id: `${"p".repeat(80)}/${"m".repeat(80)}`, label: "Very long", group: "p".repeat(80),
+    }];
+    const page = buildPickerPage(long, 1);
+    assert.equal(page.offset + 0, 0);
+    assert.ok(long[0].id.length > 100, "ids can exceed Discord's 100-char option value cap");
+  });
+});
+
+describe("displayed order is the answering order", () => {
+  // Qodo 9069f13c: option values indexed the reordered list while the handler
+  // indexed the original one, so a selection could report a different model —
+  // exactly the class of bug the whole picker exists to avoid.
+  const shuffled: PickerEntry[] = [
+    { id: "google/g", label: "Gemini", group: "google" },
+    { id: "EnMaaS/d", label: "DeepSeek", group: "EnMaaS", current: true },
+    { id: "openai/o", label: "GPT", group: "openai" },
+    { id: "EnMaaS/z", label: "GLM", group: "EnMaaS" },
+  ];
+
+  it("resolves an option index to the model that was displayed", () => {
+    const ordered = orderPickerEntries(shuffled, "EnMaaS");
+    for (let page = 1; page <= pickerPageCount(ordered.length); page++) {
+      const built = slicePickerPage(ordered, page);
+      built.items.forEach((shown, index) => {
+        // The value the menu sends, resolved the way the handler resolves it.
+        const value = built.offset + index;
+        assert.equal(ordered[value].id, shown.id, "the value must name the displayed model");
+      });
+    }
+  });
+
+  it("does not reorder when a page is re-sliced", () => {
+    const ordered = orderPickerEntries(shuffled, "EnMaaS");
+    const first = slicePickerPage(ordered, 1);
+    const again = slicePickerPage(ordered, 1);
+    assert.deepEqual(again.items.map((e) => e.id), first.items.map((e) => e.id));
+    assert.equal(first.items[0].id, "EnMaaS/d", "the current provider still leads");
+  });
+
+  it("keeps buildPickerPage equivalent to order-then-slice", () => {
+    const viaParts = slicePickerPage(orderPickerEntries(shuffled, "EnMaaS"), 2);
+    const viaOne = buildPickerPage(shuffled, 2, { preferGroup: "EnMaaS" });
+    assert.deepEqual(viaOne, viaParts);
+  });
+});

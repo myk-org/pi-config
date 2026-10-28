@@ -83,6 +83,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
   if (parsed.type === "update_info" && piClient) {
     if (parsed.model !== undefined) piClient.session.model = parsed.model;
     if (typeof parsed.reasoning === "boolean") piClient.session.reasoning = parsed.reasoning;
+    if (typeof parsed.supportsImages === "boolean") piClient.session.supportsImages = parsed.supportsImages;
     if (parsed.branch !== undefined) piClient.session.branch = parsed.branch;
     if (parsed.gitDirty !== undefined) piClient.session.gitDirty = parsed.gitDirty;
     if (parsed.gitChanges !== undefined) piClient.session.gitChanges = parsed.gitChanges;

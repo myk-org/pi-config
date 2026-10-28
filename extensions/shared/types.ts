@@ -7,6 +7,11 @@ export interface SessionInfo {
   model: string;
   /** Explicit capability of the active Pi model. */
   reasoning?: boolean;
+  /**
+   * Whether the active model accepts image input. A chat client uses this to
+   * warn instead of forwarding an image the model cannot read.
+   */
+  supportsImages?: boolean;
   startedAt: string;
   lastActivity: number;
   active: boolean;

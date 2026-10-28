@@ -25,8 +25,19 @@ import { createLogger } from "../shared/logger.js";
 import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
 import { applySetting, buildSettingsPayload, mcpList, runMcp } from "./browser-ops.js";
+import { modelInfoPayload, supportsImagesFor } from "../../scripts/pidash-session-state.ts";
 
 const log = createLogger("pidash");
+
+/**
+ * Last pushed async/cron snapshots.
+ *
+ * The orchestrator emits these as events (browser gets them live); Discord asks
+ * on demand with `async-list` / `cron-list`, so the newest snapshot is kept here
+ * instead of forcing a round trip into the orchestrator.
+ */
+let lastAsyncStatus: Record<string, unknown> | null = null;
+let lastCronStatus: Record<string, unknown> | null = null;
 
 // Module-level ref — survives closure replacement on /reload.
 // raceWithBrowser captures `pi` from the closure, but after reload
@@ -351,7 +362,7 @@ export function registerPidash(
             if (model) {
               await (pi as any).setModel(model);
               log.debug(`model set to: ${model.name}`);
-              ws.send(JSON.stringify({ type: "update_info", model: model.name, contextWindow: model.contextWindow || 0, reasoning: model.reasoning === true }));
+              ws.send(JSON.stringify({ type: "update_info", ...modelInfoPayload(model) }));
             }
           } catch (e: any) { log.debug(`set-model error: ${e.message}`); }
         }
@@ -394,6 +405,18 @@ export function registerPidash(
         if (parsed.command === "async-kill" && parsed.target) {
           log.debug(`async-kill from browser: ${parsed.target}`);
           pi.events.emit("pidash:async-kill", parsed.target);
+        }
+
+        if (parsed.command === "async-list") {
+          const snapshot = lastAsyncStatus ?? { count: 0, jobs: [] };
+          log.debug(`async-list from client: ${(snapshot as any).count ?? 0} running`);
+          try { ws.send(JSON.stringify({ type: "async-list", requestId: parsed.requestId, ...snapshot })); } catch {}
+        }
+
+        if (parsed.command === "cron-list") {
+          const snapshot = lastCronStatus ?? { count: 0, tasks: [] };
+          log.debug(`cron-list from client: ${(snapshot as any).count ?? 0} tasks`);
+          try { ws.send(JSON.stringify({ type: "cron-list", requestId: parsed.requestId, ...snapshot })); } catch {}
         }
 
         if (parsed.command === "cron-kill" && parsed.target) {
@@ -707,6 +730,7 @@ export function registerPidash(
           container: isContainer(),
           model: m?.name || m?.id || "",
           reasoning: m?.reasoning === true,
+          supportsImages: supportsImagesFor(m),
           contextWindow: m?.contextWindow || 0,
           startedAt: new Date().toISOString(),
           activity,
@@ -955,8 +979,11 @@ export function registerPidash(
       }
     });
 
-    // Forward async agent status to browser
+    // Forward async agent status to browser, and keep the last snapshot: the
+    // orchestrator PUSHES these, so a client that asks later (Discord `/async`)
+    // needs something to read (request/response like every other command).
     pi.events.on("pidash:async-status", (data: unknown) => {
+      lastAsyncStatus = (data ?? {}) as Record<string, unknown>;
       if (ws && connected) {
         try { ws.send(JSON.stringify({ type: "async-status", ...(data as any) })); } catch {}
       }
@@ -964,6 +991,7 @@ export function registerPidash(
 
     // Forward cron status to browser
     pi.events.on("pidash:cron-status", (data: unknown) => {
+      lastCronStatus = (data ?? {}) as Record<string, unknown>;
       if (ws && connected) {
         try { ws.send(JSON.stringify({ type: "cron-status", ...(data as any) })); } catch {}
       }
@@ -1069,9 +1097,9 @@ export function registerPidash(
         cwd: switchCtx.cwd,
         branch: getCurrentBranch(switchCtx.cwd),
         sessionFile: switchCtx.sessionManager?.getSessionFile?.() || switchCtx.sessionFile || "",
-        model: switchCtx.model?.name || switchCtx.model?.id || "",
-        reasoning: switchCtx.model?.reasoning === true,
-        contextWindow: switchCtx.model?.contextWindow || 0,
+        // One producer for every model field, so a switch cannot omit the
+        // capability the daemon relies on (Qodo 3e547c6d / 24f50129).
+        ...modelInfoPayload(switchCtx.model),
         thinkingLevel: (pi as any).getThinkingLevel?.() || "medium",
         trailTokenSavings,
       }));

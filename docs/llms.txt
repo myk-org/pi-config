@@ -31,7 +31,7 @@
 - [External AI Agents & CLI](external-ai-agents.md)
 - [Image Generation](image-generation.md)
 - [Neovim Integration](neovim-integration.md)
-- [Discord Bot Notifications](discord-bot.md)
+- [Discord Bot](discord-bot.md)
 
 ## Providers
 
@@ -59,4 +59,5 @@
 
 ## More
 
+- [Chat Clients (Signal, Telegram, …)](chat-clients.md)
 - [Pidash TUI Parity](pidash-tui-parity.md)

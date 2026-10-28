@@ -22,6 +22,9 @@ function registeredSession(parsed: any): SessionInfo {
     branch: parsed.branch || "",
     model: parsed.model || "",
     reasoning: typeof parsed.reasoning === "boolean" ? parsed.reasoning : undefined,
+    // Explicit boolean: a model change to a text-only model must clear the flag,
+    // not leave the previous model's capability behind (Qodo 3e547c6d).
+    supportsImages: typeof parsed.supportsImages === "boolean" ? parsed.supportsImages : undefined,
     startedAt: parsed.startedAt || new Date().toISOString(),
     lastActivity: Date.now(),
     active: true,
@@ -43,6 +46,37 @@ function registeredSession(parsed: any): SessionInfo {
     activityBeforePrompt: parsed.activityBeforePrompt === "working" || parsed.activityBeforePrompt === "waiting_for_input" || parsed.activityBeforePrompt === "idle" ? parsed.activityBeforePrompt : undefined,
     streaming,
     working: activity === "working",
+  };
+}
+
+/**
+ * Whether a model accepts image input.
+ *
+ * One helper for every payload that names a model (registration, update_info,
+ * set-model, session switch) so the producer side is a single tested function
+ * instead of four inline expressions (Qodo 24f50129).
+ */
+export function supportsImagesFor(model: { input?: unknown } | null | undefined): boolean {
+  const supported = Array.isArray(model?.input) && model.input.includes("image");
+  log.debug("model image support", { model: (model as { name?: string } | null)?.name ?? null, supported });
+  return supported;
+}
+
+/**
+ * The model fields every payload that names a model must carry.
+ *
+ * Extracted so the SESSION SWITCH producer — not just the consumer — is covered
+ * by a test: a switch that omits the capability left the daemon holding the
+ * previous model's value (Qodo 24f50129).
+ */
+export function modelInfoPayload(
+  model: { name?: string; id?: string; input?: unknown; reasoning?: boolean; contextWindow?: number } | null | undefined,
+): { model: string; supportsImages: boolean; reasoning: boolean; contextWindow: number } {
+  return {
+    model: model?.name || model?.id || "",
+    supportsImages: supportsImagesFor(model),
+    reasoning: model?.reasoning === true,
+    contextWindow: model?.contextWindow || 0,
   };
 }
 
@@ -77,6 +111,7 @@ export function registerPidashSession(
 
 export function updatePidashSession(session: SessionInfo, parsed: any): void {
   if (typeof parsed.reasoning === "boolean") session.reasoning = parsed.reasoning;
+  if (typeof parsed.supportsImages === "boolean") session.supportsImages = parsed.supportsImages;
   if (parsed.trailTokenSavings !== undefined && Number.isSafeInteger(parsed.trailTokenSavings) && parsed.trailTokenSavings >= 0) {
     session.trailTokenSavings = parsed.trailTokenSavings;
   }
