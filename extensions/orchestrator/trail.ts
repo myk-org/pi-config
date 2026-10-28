@@ -1,7 +1,7 @@
 /** Local Trail-code integration: code-map tools, per-prompt retrieval, navigation gate. */
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -276,27 +276,29 @@ function searchBinary(command: unknown): string | null { return searchCommand(co
 /** `git` options whose value is the following token. */
 const GIT_VALUE_OPTIONS = new Set(["-c", "-C"]);
 /**
- * A token that names a file rather than a directory or a bare word: its basename
- * carries an extension. `src`, `src/`, `.` and `..` all stay false.
- */
-function fileLooking(token: string): boolean {
-  const name = token.split("/").pop() ?? "";
-  return name !== "." && name !== ".." && name.includes(".");
-}
-/**
  * A search that only touches files this map does not index cannot be answered by
  * Trail, so blocking it would force a pointless `trail_*` call. Every path operand
- * must be file-shaped and unindexed; one indexed file, directory or bare word
- * keeps the gate (`rg foo .`, `grep -rn foo src`).
+ * must resolve to an unindexed FILE inside this checkout. A directory (whatever its
+ * name), an absolute path that lands inside the root, an indexed file, a path that
+ * does not exist, or a bare word all keep the gate — otherwise `rg foo .`,
+ * `rg foo src/v1.2/` or `rg foo /abs/checkout/src/auth.ts` would slip through.
+ * An absolute path OUTSIDE the checkout is not project navigation at all: the map
+ * has nothing to say about it, so it is allowed.
  */
-function unindexedSearch(command: unknown, mapPaths: Set<string>): boolean {
+function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string): boolean {
   const search = searchCommand(command);
   if (!search) return false;
   const operands = search.operands.filter(token => !token.startsWith("-"));
   // `find` names a path first; every other search binary takes the pattern first.
   const paths = search.binary === "find" ? operands : operands.slice(1);
   if (!paths.length) return false;
-  return paths.every(path => fileLooking(path) && !mapPaths.has(path.replace(/^\.\//, "")));
+  return paths.every(path => {
+    const absolute = resolve(root, path);
+    const rel = relative(root, absolute);
+    if (rel.startsWith("..") || isAbsolute(rel)) return true;
+    if (mapPaths.has(rel.split(sep).join("/"))) return false;
+    try { return statSync(absolute).isFile(); } catch { return false; }
+  });
 }
 function searchTool(event: any, logger: Logger = log): boolean {
   const tool = String(event?.toolName ?? event?.name ?? "").toLowerCase();
@@ -585,7 +587,7 @@ export function createTrailIntegration(options: Options) {
         return { block: true, reason: trailGateReason() };
       }
       if (!searchTool(event, log)) return;
-      if ((tool === "bash" || tool === "powershell") && unindexedSearch(event?.input?.command, state.mapPaths)) {
+      if ((tool === "bash" || tool === "powershell") && unindexedSearch(event?.input?.command, state.mapPaths, state.root)) {
         log.debug("gate_allowed", { tool, pathClass: "unindexed_search" });
         return;
       }

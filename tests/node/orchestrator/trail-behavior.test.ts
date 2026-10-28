@@ -9,10 +9,10 @@
  */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import * as trail from "../../../extensions/orchestrator/trail.js";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 
@@ -76,6 +76,17 @@ function mapRoot(nodes: Array<{ id: string; name: string; path: string }>, nodeC
   const root = mkdtempSync(join(tmpdir(), "trail-behavior-map-"));
   mkdirSync(join(root, "graft/.graph"), { recursive: true });
   writeFileSync(join(root, "graft/.graph/wiring.json"), JSON.stringify({ meta: { nodeCount }, nodes, edges: [] }));
+  // The unindexed-search exemption stats the real filesystem, so the fixture needs
+  // real files: the mapped nodes, plus a couple of files the map never indexes and
+  // a dotted directory (a name that looks like a file but is a directory).
+  for (const node of nodes) {
+    const file = join(root, node.path);
+    mkdirSync(dirname(file), { recursive: true });
+    if (!existsSync(file)) writeFileSync(file, `// fixture ${node.path}\n`);
+  }
+  writeFileSync(join(root, "package.json"), "{}\n");
+  writeFileSync(join(root, "README.md"), "# fixture\n");
+  mkdirSync(join(root, "src/v1.2"), { recursive: true });
   return root;
 }
 /** Linked-worktree fixture: `<worktree>/.git` points at `<main>/.git/worktrees/wt`. */
@@ -647,7 +658,7 @@ describe("Shell search classification", () => {
     return { root, r, c };
   }
 
-  for (const command of ["rg authenticate src", "grep -rn authenticate src", "grep -rn foo src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "git -C src grep authenticate", "git --no-pager grep authenticate", "git -c core.pager=cat grep authenticate", "git -c x=y --no-pager grep authenticate", "env FOO=1 rg authenticate", "rg foo", "rg foo .", "rg foo src/"]) {
+  for (const command of ["rg authenticate src", "grep -rn authenticate src", "grep -rn foo src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "git -C src grep authenticate", "git --no-pager grep authenticate", "git -c core.pager=cat grep authenticate", "git -c x=y --no-pager grep authenticate", "env FOO=1 rg authenticate", "rg foo", "rg foo .", "rg foo src/", "rg foo src/v1.2/", "rg foo src/v1.2", "grep foo package.json src"]) {
     it(`blocks a first-segment search: ${command}`, async () => {
       const { root, r, c } = await armed();
       try {
@@ -658,7 +669,7 @@ describe("Shell search classification", () => {
     });
   }
 
-  for (const command of ["cat src/auth.ts | grep authenticate", "ps aux | grep pi", "git status --short", "git log --grep=authenticate", "git -C src log --oneline", "ls; grep authenticate", "echo rg", "cat src/auth.ts | /usr/bin/grep authenticate", "grep foo package.json", "rg foo README.md"]) {
+  for (const command of ["cat src/auth.ts | grep authenticate", "ps aux | grep pi", "git status --short", "git log --grep=authenticate", "git -C src log --oneline", "ls; grep authenticate", "echo rg", "cat src/auth.ts | /usr/bin/grep authenticate", "grep foo package.json", "rg foo README.md", "grep foo /etc/hosts"]) {
     it(`never blocks a shell command that does not search first: ${command}`, async () => {
       const { root, r, c } = await armed();
       try {
@@ -683,6 +694,21 @@ describe("Shell search classification", () => {
     const { root, r, c } = await armed();
     try {
       assert.equal(blocked(await toolCall(r, c, { toolName: "bash", input: { command: "grep foo package.json src" } })), true, "one directory operand keeps the gate");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("blocks an absolute search path that lands on an indexed file inside the checkout", async () => {
+    const { root, r, c } = await armed();
+    try {
+      const result = await toolCall(r, c, { toolName: "bash", input: { command: `rg authenticate ${join(root, "src/auth.ts")}` } });
+      assert.equal(blocked(result), true, "a path-qualified absolute path is the same file, so it is still navigation");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("blocks the grep tool when it targets an indexed file", async () => {
+    const { root, r, c } = await armed();
+    try {
+      assert.equal(blocked(await toolCall(r, c, { toolName: "grep", input: { pattern: "authenticate", path: "src/auth.ts" } })), true);
+      assert.equal(await toolCall(r, c, { toolName: "grep", input: { pattern: "name", path: "package.json" } }), undefined, "an unindexed file is not navigation");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
