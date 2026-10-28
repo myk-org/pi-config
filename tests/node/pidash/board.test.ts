@@ -38,10 +38,21 @@ describe("board planning", () => {
   it("offers an option for every session", () => {
     const plan = planBoard(sessions, { "1:/a": "t" });
     assert.deepEqual(plan.options, [
-      { label: "repo-a", value: "1:/a" },
-      { label: "repo-b", value: "2:/b" },
-      { label: "repo-c", value: "3:/c" },
+      { label: "repo-a", value: "0" },
+      { label: "repo-b", value: "1" },
+      { label: "repo-c", value: "2" },
     ]);
+    assert.deepEqual(plan.sessionIds, ["1:/a", "2:/b", "3:/c"], "ids travel out of band");
+  });
+
+  it("keeps a long session id out of the option value", () => {
+    // Qodo 25d79e3b: the value was truncated to Discord's 100-char limit and then
+    // compared with the full id in the thread topic, so long paths never matched.
+    const longId = `1:${"/very/long/checkout/path".repeat(8)}`;
+    assert.ok(longId.length > 100);
+    const plan = planBoard([{ sessionId: longId, label: "deep" }], {});
+    assert.equal(plan.options[0].value, "0");
+    assert.equal(plan.sessionIds[0], longId, "the full id survives intact");
   });
 
   it("caps the picker at Discord's select limit", () => {
@@ -54,7 +65,7 @@ describe("board planning", () => {
 
   it("handles an empty board", () => {
     const plan = planBoard([], {});
-    assert.deepEqual(plan, { toCreate: [], options: [], total: 0, existing: 0 });
+    assert.deepEqual(plan, { toCreate: [], options: [], sessionIds: [], total: 0, existing: 0 });
   });
 
   it("drops sessions without an id", () => {

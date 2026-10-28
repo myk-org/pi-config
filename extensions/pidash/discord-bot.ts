@@ -519,6 +519,8 @@ export function setupDiscordBot(opts: {
       components: [new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder().setCustomId("boardpick").setPlaceholder("Open a session thread").addOptions(plan.options),
       )],
+      // The menu only carries indexes; the ids ride with the message.
+      ...(plan.sessionIds.length ? { boardSessionIds: plan.sessionIds } : {}),
     };
   }
 
@@ -867,10 +869,12 @@ export function setupDiscordBot(opts: {
       }
 
       if (customId === "boardpick" && interaction.isStringSelectMenu?.()) {
-        const sessionId = String(interaction.values?.[0] ?? "");
+        const sessionIds = boardLists.get(String(interaction.message?.id ?? ""));
+        const picked = sessionIds?.[Number(interaction.values?.[0])];
+        const sessionId = picked ? String(picked) : "";
         const forumId = config.forumChannelId;
         if (!sessionId || !forumId) {
-          await acknowledge(interaction, "That session is no longer on the board.");
+          await acknowledge(interaction, "That board list expired — run `/board` again.");
           return;
         }
         // The forum thread already exists for this session: reuse it as the
@@ -1158,8 +1162,12 @@ export function setupDiscordBot(opts: {
 
     if (name === "board") {
       await interaction.deferReply({ ephemeral: true }).catch(() => {});
-      const view = await renderBoard();
-      await interaction.editReply(view).catch((error: any) => log.warn("board reply failed", { error: String(error) }));
+      const { boardSessionIds, ...view } = await renderBoard();
+      const reply: any = await interaction.editReply(view).catch((error: any) => {
+        log.warn("board reply failed", { error: String(error) });
+        return null;
+      });
+      if (reply?.id && Array.isArray(boardSessionIds)) rememberBoard(reply.id, boardSessionIds);
       return;
     }
 
@@ -1406,6 +1414,19 @@ export function setupDiscordBot(opts: {
   const jobLists = new Map<string, JobListContext>();
 
   const PICKER_CONTEXT_LIMIT = 50;
+
+  /** session ids per board message, so a picker index resolves to the full id. */
+  const boardLists = new Map<string, string[]>();
+
+  function rememberBoard(messageId: string, sessionIds: string[]): void {
+    boardLists.set(messageId, sessionIds);
+    while (boardLists.size > PICKER_CONTEXT_LIMIT) {
+      const oldest = boardLists.keys().next().value;
+      if (oldest === undefined) break;
+      boardLists.delete(oldest);
+    }
+    log.debug("board list stored", { messageId, sessions: sessionIds.length });
+  }
 
   function rememberJobList(messageId: string, context: JobListContext): void {
     jobLists.set(messageId, context);

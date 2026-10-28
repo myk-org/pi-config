@@ -18,8 +18,10 @@ export interface BoardSession {
 export interface BoardPlan {
   /** Sessions with no post yet, in input order. */
   toCreate: BoardSession[];
-  /** Picker options for every session (capped to Discord's 25). */
+  /** Picker options (capped to Discord's 25); `value` indexes `sessionIds`. */
   options: Array<{ label: string; value: string }>;
+  /** Full session ids, in option order — never truncated. */
+  sessionIds: string[];
   total: number;
   existing: number;
 }
@@ -49,11 +51,13 @@ export function planBoard(
     unique.push(session);
   }
   const toCreate = unique.filter((session) => !existingBySession[session.sessionId]);
-  const options = unique.slice(0, limit).map((session) => ({
+  const shown = unique.slice(0, limit);
+  const options = shown.map((session, index) => ({
     label: boardLabel(session.label),
-    // Discord caps option values at 100 chars; session ids are short enough, and
-    // the picker resolves them against live sessions anyway.
-    value: session.sessionId.slice(0, 100),
+    // Discord caps option values at 100 chars and session ids embed a checkout
+    // path, so the id cannot travel in the value: it is an index into
+    // `sessionIds`, resolved server-side (Qodo 25d79e3b).
+    value: String(index),
   }));
   log.debug("board planned", {
     sessions: unique.length,
@@ -61,5 +65,11 @@ export function planBoard(
     toCreate: toCreate.length,
     options: options.length,
   });
-  return { toCreate, options, total: unique.length, existing: Object.keys(existingBySession).length };
+  return {
+    toCreate,
+    options,
+    sessionIds: shown.map((session) => session.sessionId),
+    total: unique.length,
+    existing: Object.keys(existingBySession).length,
+  };
 }
