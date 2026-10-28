@@ -968,7 +968,8 @@ Control your pi sessions from your phone via Discord DMs.
    - Go to "Bot" section → click "Reset Token" → copy the token
    - Enable "Message Content Intent" under "Privileged Gateway Intents"
    - Go to "OAuth2 > URL Generator" → select scope `bot` → select permissions:
-     `Send Messages`, `Read Message History`, `Add Reactions`, `View Channels`
+     `Send Messages`, `Read Message History`, `Add Reactions`, `View Channels`,
+     and for per-session threads: `Create Public Threads`, `Send Messages in Threads`
    - Open the generated URL → add bot to your server
 
 2. **Configure:**
@@ -982,6 +983,8 @@ Control your pi sessions from your phone via Discord DMs.
    # DISCORD_ALLOW_ALL=true
    # Optional: how long a pending agent question waits (default 10m, min 30s)
    # DISCORD_PROMPT_TTL_MS=600000
+   # Optional: forum channel id for /board (one post per session)
+   # DISCORD_FORUM_CHANNEL_ID=
    EOF
    ```
 
@@ -1020,7 +1023,9 @@ reply `yes`/`no`, an option number, or the option text. In a server, watching a
 session opens a **thread** for it (DMs are used as a fallback).
 
 The bot fails closed: without `DISCORD_ALLOWED_USERS` it refuses to start unless
-you set `DISCORD_ALLOW_ALL=true`. See [docs/discord-bot.md](docs/discord-bot.md)
+you set `DISCORD_ALLOW_ALL=true`. Commands, reaction shortcuts (⏹ 🔁 🗑), the
+forum session board and every environment variable are documented in
+[docs/discord-bot.md](docs/discord-bot.md)
 for the full surface.
 
 ### How It Works

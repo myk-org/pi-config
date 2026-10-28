@@ -370,7 +370,16 @@
 <ul>
 <li>A running pidash daemon (<code>/pidash start</code>) — see <a href="using-the-web-dashboard.html">Using the Web Dashboard</a></li>
 <li>A Discord bot application with a token, and the <strong>Message Content Intent</strong> enabled</li>
-<li>The bot invited to your server with the <code>application.commands</code> scope if you want slash commands there</li>
+<li>
+<p>The invite permissions: <code>Send Messages</code>, <code>Read Message History</code>, <code>Add Reactions</code>,
+  and for threads/board <code>Create Public Threads</code> + <code>Send Messages in Threads</code>.
+  Reaction intents (<code>⏹ 🔁 🗑</code>) are <strong>not</strong> portal toggles — the bot requests them in
+  code; only <em>Message Content</em> is a privileged intent you must switch on</p>
+</li>
+<li>
+<p>The bot invited to your server with the <code>application.commands</code> scope if you want slash commands there</p>
+</li>
+<li>Optional: a <strong>forum channel</strong> for <code>/board</code> (see <a href="#forum-session-board">Forum session board</a>)</li>
 </ul>
 <h2 id="setup">Setup</h2>
 <h3 id="1-credentials">1. Credentials</h3>
@@ -414,6 +423,21 @@ DISCORD_ALLOWED_USERS=123456789012345678
 <td><code>600000</code></td>
 <td>How long a pending agent question waits before expiring (min 30s, max 24h).</td>
 </tr>
+<tr>
+<td><code>DISCORD_FORUM_CHANNEL_ID</code></td>
+<td>unset</td>
+<td>Forum channel used by <code>/board</code>. Unset leaves <code>/board</code> inactive with an instruction, nothing else changes.</td>
+</tr>
+<tr>
+<td><code>PIDASH_DISCORD_ENV_FILE</code></td>
+<td><code>~/.pi/discord.env</code></td>
+<td>Where the credentials are read from.</td>
+</tr>
+<tr>
+<td><code>PIDASH_DISCORD_STATE_FILE</code></td>
+<td><code>~/.pi/discord-state.json</code></td>
+<td>Where watches, threads and remembered prompts are kept (<code>0600</code>).</td>
+</tr>
 </tbody>
 </table></div>
 <h3 id="2-restart-the-daemon">2. Restart the daemon</h3>
@@ -455,19 +479,74 @@ DISCORD_ALLOWED_USERS=123456789012345678
 <code>BotDM</code> and <code>PrivateChannel</code> contexts, and as a user-installable app an allowed
 user can add PI without an admin. No server is required for a one-handed workflow.</p>
 <p><code>/status</code> is rendered as a card (session, state, model, branch, cwd, image
-capability) with <strong>link buttons</strong> to the dashboard and the diff viewer, using the
-machine's LAN address so the links actually open from a phone.</p>
-<p><strong>React to a bot message</strong> instead of typing: ⏹ stop the session's turn, 🔁 resend
-the last prompt, 🗑 delete the message. Reactions need the <em>Message Reactions</em>
-intents enabled for the app.</p>
+capability) with <strong>link buttons</strong>. Links point at the machine's LAN address and
+are only offered when a phone can actually reach them — the dashboard listens on
+all interfaces, while the diff viewer binds <code>127.0.0.1</code>, so its button is omitted
+rather than being a dead link.</p>
+<p><strong>React to a bot message</strong> instead of typing — one tap, no keyboard:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Reaction</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>⏹ or 🛑</td>
+<td>stop the watched session's current turn</td>
+</tr>
+<tr>
+<td>🔁</td>
+<td>resend the last prompt for that session (kept in the state file, capped at 4 000 chars)</td>
+</tr>
+<tr>
+<td>🗑</td>
+<td>delete the bot message</td>
+</tr>
+</tbody>
+</table></div>
+<p>A reaction on a message that does not belong to any watched session does nothing,
+and an unrecognised emoji is ignored. The bot already requests the reaction
+intents; the only portal toggle involved is <em>Message Content</em>.</p>
 <p><strong>Right-click or long-press any message → Apps → "Ask PI about this"</strong> sends that
 message to the watched session as a prompt. A stack trace or a log line in any
 channel becomes the task, without copying it.</p>
 <p>Files you send are also copied into <code>&lt;session cwd&gt;/.pi/tmp/discord-inbox/</code>, and the
 prompt carries the path — so the agent can open, re-read or move what your phone
 uploaded with its normal file tools instead of receiving an opaque blob.</p>
-<p>Streaming edits are sent with notifications suppressed, so a long turn does not
-buzz your phone on every delta — only the final message notifies.</p>
+<p>A reply <strong>notifies once</strong>, when it starts: the first message is sent normally and
+every later delta arrives as a silent edit, so a long turn never buzzes per chunk.</p>
+<h2 id="forum-session-board">Forum session board</h2>
+<p>A Discord <strong>forum channel</strong> turns threads into titled posts. <code>/board</code> uses one as a
+per-session home, so sessions stop competing for a single scrolling chat:</p>
+<div class="highlight"><pre><span></span><code># pi-sessions            ← forum channel
+  ├─ pi-config          (post body: the session cwd)
+  ├─ mtv-api-tests
+  └─ rootcoz
+</code></pre></div>
+
+<p>Setup:</p>
+<ol>
+<li>Create a <strong>forum</strong> channel (not a text channel) in your server, e.g. <code>pi-sessions</code></li>
+<li>Give the bot <strong>Create Public Threads</strong> and <strong>Send Messages in Threads</strong> there</li>
+<li>Enable Developer Mode → right-click the channel → <strong>Copy Channel ID</strong></li>
+<li>Add it to <code>~/.pi/discord.env</code> and restart the bot:</li>
+</ol>
+<div class="highlight"><pre><span></span><code>DISCORD_FORUM_CHANNEL_ID=123456789012345678
+</code></pre></div>
+
+<p>Then:</p>
+<div class="highlight"><pre><span></span><code>/board
+</code></pre></div>
+
+<p>It creates one post per active session that does not have one (title = session
+name, body = the cwd), and replies with a picker. Choosing a session opens its post
+and makes it your watch target, so that session's output lands there. The session
+id is stored in the post's topic, so re-running <code>/board</code> reuses posts instead of
+duplicating them.</p>
+<p>The bot <strong>never creates channels</strong>: with no <code>DISCORD_FORUM_CHANNEL_ID</code>, <code>/board</code>
+replies with that instruction and nothing else is affected.</p>
 <h2 id="sending-prompts">Sending prompts</h2>
 <p>Once you are watching a session, the bot's thread or DM behaves like the Pi prompt:</p>
 <ul>
@@ -481,11 +560,10 @@ a dropdown for a choice, and an <strong>Answer</strong> button that opens a moda
 paste-friendly) for free text. Typed replies still work — <code>yes</code>/<code>no</code>, a number,
 the option text, or <code>/cancel</code> — but you should not have to type when a button
 will do.</p>
-<p>When the agent asks something, the question arrives with controls:</p>
 <ul>
 <li><strong>confirm prompts</strong> (including dangerous-command approvals) get <strong>Approve</strong> / <strong>Deny</strong> buttons, and you can also reply <code>yes</code> / <code>no</code></li>
 <li><strong>select prompts</strong> get a dropdown, and you can also reply with <code>1</code>…<code>N</code>, the option text, or an unambiguous prefix</li>
-<li><strong>input prompts</strong> take your text</li>
+<li><strong>input prompts</strong> get an <strong>Answer</strong> button that opens a modal; typing the reply also works</li>
 </ul>
 <p>Any prompt can be dismissed with <code>/cancel</code>. A prompt that is not answered <strong>expires after 10 minutes</strong> instead of silently consuming your next message, and pending prompts are never written to disk — a restart cannot leave one waiting.</p>
 <h2 id="what-you-see-while-it-works">What you see while it works</h2>
@@ -566,11 +644,11 @@ will do.</p>
 <tbody>
 <tr>
 <td>Images ≤ 8MB</td>
-<td>forwarded to the agent as images — <strong>only if the watched session's model accepts image input</strong>; otherwise you are told they were not sent</td>
+<td>forwarded to the agent as images — <strong>only if the watched session's model accepts image input</strong>; otherwise you are told they were not sent. A copy is written to <code>&lt;session cwd&gt;/.pi/tmp/discord-inbox/</code> and the prompt names the path</td>
 </tr>
 <tr>
 <td>Text-like files ≤ 100KB</td>
-<td>inlined into the prompt</td>
+<td>inlined into the prompt, and also saved to the inbox so the agent can read or move it</td>
 </tr>
 <tr>
 <td>Larger or binary files</td>
@@ -587,6 +665,10 @@ will do.</p>
 <li><strong>"Not watching any session":</strong> run <code>/sessions</code> or <code>/watch</code> first.</li>
 <li><strong>A prompt stalls:</strong> it expires after 10 minutes; answer with the buttons or <code>/cancel</code> and retry.</li>
 <li><strong>No streaming edits:</strong> very short turns are posted once at the end rather than edited mid-flight.</li>
+<li><strong>"The application did not respond":</strong> the daemon (and the bot inside it) is not running — start it with <code>/pidash start</code>. Check <code>~/.pi/logs/pidash-discord/&lt;session&gt;/main.log</code> for <code>bot connected</code>.</li>
+<li><strong>"This command is outdated":</strong> your Discord client cached an older command definition. The bot only re-registers commands when their definitions change, so this clears after the client refreshes — restarting the Discord app forces it.</li>
+<li><strong><code>/board</code> says no board is configured:</strong> <code>DISCORD_FORUM_CHANNEL_ID</code> is not set, or the id is not a forum channel.</li>
+<li><strong>Reaction shortcuts do nothing:</strong> the bot lacked the <code>Add Reactions</code> permission in that channel, or the message is not one of the bot's own.</li>
 </ul>
 <h2 id="related-pages">Related Pages</h2>
 <ul>
@@ -626,6 +708,7 @@ will do.</p>
 </li>
 <li><a href="#picking-a-session">Picking a session</a></li>
 <li><a href="#from-a-phone">From a phone</a></li>
+<li><a href="#forum-session-board">Forum session board</a></li>
 <li><a href="#sending-prompts">Sending prompts</a></li>
 <li><a href="#answering-the-agent">Answering the agent</a></li>
 <li><a href="#what-you-see-while-it-works">What you see while it works</a></li>

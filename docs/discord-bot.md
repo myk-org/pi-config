@@ -6,7 +6,12 @@ The pidash daemon can log in to Discord and act as a remote control for your Pi 
 
 - A running pidash daemon (`/pidash start`) — see [Using the Web Dashboard](using-the-web-dashboard.html)
 - A Discord bot application with a token, and the **Message Content Intent** enabled
+- The invite permissions: `Send Messages`, `Read Message History`, `Add Reactions`,
+  and for threads/board `Create Public Threads` + `Send Messages in Threads`.
+  Reaction intents (`⏹ 🔁 🗑`) are **not** portal toggles — the bot requests them in
+  code; only *Message Content* is a privileged intent you must switch on
 - The bot invited to your server with the `application.commands` scope if you want slash commands there
+- Optional: a **forum channel** for `/board` (see [Forum session board](#forum-session-board))
 
 ## Setup
 
@@ -34,6 +39,9 @@ Both `~/.pi/discord.env` and `~/.pi/discord-state.json` are tightened to `0600` 
 | `DISCORD_ALLOWED_USERS` | empty | Comma-separated Discord user IDs allowed to control sessions. |
 | `DISCORD_ALLOW_ALL` | `false` | Open access without an allowlist. Only for a bot nobody else can reach. |
 | `DISCORD_PROMPT_TTL_MS` | `600000` | How long a pending agent question waits before expiring (min 30s, max 24h). |
+| `DISCORD_FORUM_CHANNEL_ID` | unset | Forum channel used by `/board`. Unset leaves `/board` inactive with an instruction, nothing else changes. |
+| `PIDASH_DISCORD_ENV_FILE` | `~/.pi/discord.env` | Where the credentials are read from. |
+| `PIDASH_DISCORD_STATE_FILE` | `~/.pi/discord-state.json` | Where watches, threads and remembered prompts are kept (`0600`). |
 
 ### 2. Restart the daemon
 
@@ -63,12 +71,22 @@ Commands work **in a DM** as well as in a server — the bot registers them with
 user can add PI without an admin. No server is required for a one-handed workflow.
 
 `/status` is rendered as a card (session, state, model, branch, cwd, image
-capability) with **link buttons** to the dashboard and the diff viewer, using the
-machine's LAN address so the links actually open from a phone.
+capability) with **link buttons**. Links point at the machine's LAN address and
+are only offered when a phone can actually reach them — the dashboard listens on
+all interfaces, while the diff viewer binds `127.0.0.1`, so its button is omitted
+rather than being a dead link.
 
-**React to a bot message** instead of typing: ⏹ stop the session's turn, 🔁 resend
-the last prompt, 🗑 delete the message. Reactions need the *Message Reactions*
-intents enabled for the app.
+**React to a bot message** instead of typing — one tap, no keyboard:
+
+| Reaction | Action |
+|---|---|
+| ⏹ or 🛑 | stop the watched session's current turn |
+| 🔁 | resend the last prompt for that session (kept in the state file, capped at 4 000 chars) |
+| 🗑 | delete the bot message |
+
+A reaction on a message that does not belong to any watched session does nothing,
+and an unrecognised emoji is ignored. The bot already requests the reaction
+intents; the only portal toggle involved is *Message Content*.
 
 **Right-click or long-press any message → Apps → "Ask PI about this"** sends that
 message to the watched session as a prompt. A stack trace or a log line in any
@@ -78,8 +96,46 @@ Files you send are also copied into `<session cwd>/.pi/tmp/discord-inbox/`, and 
 prompt carries the path — so the agent can open, re-read or move what your phone
 uploaded with its normal file tools instead of receiving an opaque blob.
 
-Streaming edits are sent with notifications suppressed, so a long turn does not
-buzz your phone on every delta — only the final message notifies.
+A reply **notifies once**, when it starts: the first message is sent normally and
+every later delta arrives as a silent edit, so a long turn never buzzes per chunk.
+
+## Forum session board
+
+A Discord **forum channel** turns threads into titled posts. `/board` uses one as a
+per-session home, so sessions stop competing for a single scrolling chat:
+
+```text
+# pi-sessions            ← forum channel
+  ├─ pi-config          (post body: the session cwd)
+  ├─ mtv-api-tests
+  └─ rootcoz
+```
+
+Setup:
+
+1. Create a **forum** channel (not a text channel) in your server, e.g. `pi-sessions`
+2. Give the bot **Create Public Threads** and **Send Messages in Threads** there
+3. Enable Developer Mode → right-click the channel → **Copy Channel ID**
+4. Add it to `~/.pi/discord.env` and restart the bot:
+
+```env
+DISCORD_FORUM_CHANNEL_ID=123456789012345678
+```
+
+Then:
+
+```
+/board
+```
+
+It creates one post per active session that does not have one (title = session
+name, body = the cwd), and replies with a picker. Choosing a session opens its post
+and makes it your watch target, so that session's output lands there. The session
+id is stored in the post's topic, so re-running `/board` reuses posts instead of
+duplicating them.
+
+The bot **never creates channels**: with no `DISCORD_FORUM_CHANNEL_ID`, `/board`
+replies with that instruction and nothing else is affected.
 
 ## Sending prompts
 
@@ -97,11 +153,9 @@ paste-friendly) for free text. Typed replies still work — `yes`/`no`, a number
 the option text, or `/cancel` — but you should not have to type when a button
 will do.
 
-When the agent asks something, the question arrives with controls:
-
 - **confirm prompts** (including dangerous-command approvals) get **Approve** / **Deny** buttons, and you can also reply `yes` / `no`
 - **select prompts** get a dropdown, and you can also reply with `1`…`N`, the option text, or an unambiguous prefix
-- **input prompts** take your text
+- **input prompts** get an **Answer** button that opens a modal; typing the reply also works
 
 Any prompt can be dismissed with `/cancel`. A prompt that is not answered **expires after 10 minutes** instead of silently consuming your next message, and pending prompts are never written to disk — a restart cannot leave one waiting.
 
@@ -135,8 +189,8 @@ Any prompt can be dismissed with `/cancel`. A prompt that is not answered **expi
 
 | Kind | Behaviour |
 |---|---|
-| Images ≤ 8MB | forwarded to the agent as images — **only if the watched session's model accepts image input**; otherwise you are told they were not sent |
-| Text-like files ≤ 100KB | inlined into the prompt |
+| Images ≤ 8MB | forwarded to the agent as images — **only if the watched session's model accepts image input**; otherwise you are told they were not sent. A copy is written to `<session cwd>/.pi/tmp/discord-inbox/` and the prompt names the path |
+| Text-like files ≤ 100KB | inlined into the prompt, and also saved to the inbox so the agent can read or move it |
 | Larger or binary files | named in the prompt, with the reason they were not included |
 
 The image cap matters: the previous version had no limit and base64'd any image into memory and over the websocket.
@@ -149,6 +203,10 @@ The image cap matters: the previous version had no limit and base64'd any image 
 - **"Not watching any session":** run `/sessions` or `/watch` first.
 - **A prompt stalls:** it expires after 10 minutes; answer with the buttons or `/cancel` and retry.
 - **No streaming edits:** very short turns are posted once at the end rather than edited mid-flight.
+- **"The application did not respond":** the daemon (and the bot inside it) is not running — start it with `/pidash start`. Check `~/.pi/logs/pidash-discord/<session>/main.log` for `bot connected`.
+- **"This command is outdated":** your Discord client cached an older command definition. The bot only re-registers commands when their definitions change, so this clears after the client refreshes — restarting the Discord app forces it.
+- **`/board` says no board is configured:** `DISCORD_FORUM_CHANNEL_ID` is not set, or the id is not a forum channel.
+- **Reaction shortcuts do nothing:** the bot lacked the `Add Reactions` permission in that channel, or the message is not one of the bot's own.
 
 ## Related Pages
 
