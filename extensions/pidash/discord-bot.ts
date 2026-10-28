@@ -252,22 +252,18 @@ export function setupDiscordBot(opts: {
     channelId: string,
     text: string,
     components: any[] = [],
-    options: { notify?: boolean } = {},
   ): Promise<string | null> {
     try {
       const channel = await discord.channels.fetch(channelId);
       if (!channel || !channel.isTextBased()) return null;
-      const notify = options.notify === true;
       let lastId: string | null = null;
       const chunks = chunkDiscordText(text);
       for (let i = 0; i < chunks.length; i++) {
-        const payload: any = {
-          content: chunks[i],
-          ...NO_MENTIONS,
-          // Streaming edits must not buzz a phone on every delta; the final
-          // message is the one worth a notification.
-          ...(notify ? {} : { flags: MessageFlags.SuppressNotifications }),
-        };
+        // Sends always notify. Suppressing them silenced the answer entirely:
+        // Discord edits never notify, so the ONE message that creates a reply
+        // is the only chance to buzz a phone. Streaming deltas arrive as edits
+        // (suppressed), so a long turn still rings once, not per delta.
+        const payload: any = { content: chunks[i], ...NO_MENTIONS };
         if (i === chunks.length - 1 && components.length) payload.components = components;
         const sent = await (channel as any).send(payload);
         lastId = sent?.id ?? lastId;
@@ -343,6 +339,31 @@ export function setupDiscordBot(opts: {
       }
     } catch {}
     return null;
+  }
+
+  /**
+   * Is a URL reachable from another device? The diff server binds 127.0.0.1,
+   * so a LAN link to it is a dead button on a phone. Probe before offering.
+   */
+  async function isReachable(rawUrl: string): Promise<boolean> {
+    const net = _require("node:net") as typeof import("node:net");
+    let url: URL;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      return false;
+    }
+    const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+    return new Promise((resolve) => {
+      const socket = net.connect({ host: url.hostname, port });
+      const settle = (ok: boolean) => {
+        socket.destroy();
+        resolve(ok);
+      };
+      socket.setTimeout(700, () => settle(false));
+      socket.once("connect", () => settle(true));
+      socket.once("error", () => settle(false));
+    });
   }
 
   function dashboardUrl(): string | null {
@@ -540,7 +561,11 @@ export function setupDiscordBot(opts: {
     const askAbout = new ContextMenuCommandBuilder()
       .setName("Ask PI about this")
       .setType(ApplicationCommandType.Message)
-      .setContexts(InteractionContextType.Guild, InteractionContextType.PrivateChannel)
+      .setContexts(
+        InteractionContextType.Guild,
+        InteractionContextType.BotDM,
+        InteractionContextType.PrivateChannel,
+      )
       .setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)
       .toJSON();
     const body = [...builders.map((b: any) => b.toJSON()), askAbout];
@@ -599,25 +624,34 @@ export function setupDiscordBot(opts: {
         await switchWatch(state, interaction, watch[1]);
         return;
       }
+      const picker = pickerContexts.get(String(interaction.message?.id ?? ""));
+
       const modelPick = customId.match(/^modelpick:(\d+)$/);
       if (modelPick && interaction.isStringSelectMenu?.()) {
-        const modelId = interaction.values?.[0];
-        if (!modelId) return;
-        command(state.watchedSessionId ?? "", { command: "set-model", modelId });
-        await acknowledge(interaction, `Switching model to \`${modelId}\`.`);
+        if (!picker) {
+          await acknowledge(interaction, "This model list expired — run `/model` again.");
+          return;
+        }
+        const choice = picker.entries[Number(interaction.values?.[0])];
+        if (!choice) {
+          await acknowledge(interaction, "That choice is no longer in the list — run `/model` again.");
+          return;
+        }
+        command(picker.sessionId, { command: "set-model", modelId: choice.id });
+        await acknowledge(interaction, `Switching **${sessionName(picker.sessionId)}** to \`${choice.id}\`.`);
+        log.info("model chosen from picker", { session: picker.sessionId, modelId: choice.id });
         return;
       }
 
       const modelPage = customId.match(/^modelpage:(\d+)$/);
       if (modelPage) {
-        const sessionId = state.watchedSessionId;
-        if (!sessionId) {
-          await acknowledge(interaction, "Not watching any session.");
+        if (!picker) {
+          await acknowledge(interaction, "This model list expired — run `/model` again.");
           return;
         }
-        const models = await requestModels(sessionId);
-        const entries = entriesFromModels(models);
-        const page = buildPickerPage(entries, Number(modelPage[1]));
+        // Same entries + same preference as page 1: paging never reorders, so
+        // no model is skipped or shown twice across a boundary.
+        const page = buildPickerPage(picker.entries, Number(modelPage[1]), { preferGroup: picker.preferGroup });
         await interaction.update({
           content: `**Model** — page ${page.page}/${page.pages} of ${page.total}`,
           components: modelPickerComponents(page),
@@ -791,7 +825,7 @@ export function setupDiscordBot(opts: {
     const session = client.session;
 
     if (name === "status") {
-      await interaction.reply(statusCard(session, watched)).catch((error: any) =>
+      await interaction.reply(await statusCard(session, watched)).catch((error: any) =>
         log.warn("status card failed", { error: String(error) }));
       return;
     }
@@ -819,10 +853,14 @@ export function setupDiscordBot(opts: {
           ?? entries.find((entry) => entry.label === session.model)?.group
           ?? null;
         const page = buildPickerPage(entries, 1, { preferGroup: currentGroup });
-        await interaction.editReply({
+        const reply: any = await interaction.editReply({
           content: `**Model** — current: ${session.model || "—"}\nPage ${page.page}/${page.pages} of ${page.total}`,
           components: modelPickerComponents(page),
-        }).catch((error: any) => log.warn("model picker failed", { error: String(error) }));
+        }).catch((error: any) => {
+          log.warn("model picker failed", { error: String(error) });
+          return null;
+        });
+        if (reply?.id) rememberPicker(reply.id, { sessionId: watched ?? "", preferGroup: currentGroup, entries });
         return;
       }
       command(watched, { command: "set-model", modelId: value });
@@ -868,6 +906,9 @@ export function setupDiscordBot(opts: {
    * two screens away from "stop bothering me".
    */
   function disconnectUser(state: RuntimeUserState): void {
+    // A disconnected user is not being answered, so the typing timer must die
+    // with the watch — otherwise it refreshes for up to five minutes.
+    clearTyping(state);
     state.watchedSessionId = null;
     state.threadId = null;
     state.target = null;
@@ -1013,7 +1054,7 @@ export function setupDiscordBot(opts: {
    * and link buttons. The links use the LAN address because `localhost` on a
    * phone points at the phone.
    */
-  function statusCard(session: any, sessionId: string): any {
+  async function statusCard(session: any, sessionId: string): Promise<any> {
     const state = session.active ? (session.working ? "working" : "idle") : "detached";
     const badge = session.working ? "🟢" : session.active ? "⚪" : "🔴";
     const container = new ContainerBuilder()
@@ -1035,18 +1076,54 @@ export function setupDiscordBot(opts: {
         ].filter(Boolean).join("\n")),
       );
 
+    // Only offer links a phone can actually open: the dashboard binds 0.0.0.0,
+    // the diff server binds 127.0.0.1 and would be a dead button.
     const links: any[] = [];
+    const candidates: Array<{ label: string; url: string }> = [];
     const dashboard = dashboardUrl();
-    if (dashboard) links.push(new ButtonBuilder().setLabel("Dashboard").setStyle(ButtonStyle.Link).setURL(dashboard));
-    if (session.diffPort) {
-      const host = lanHost();
-      links.push(new ButtonBuilder()
-        .setLabel("Diff")
-        .setStyle(ButtonStyle.Link)
-        .setURL(`http://${host ?? "localhost"}:${session.diffPort}`));
+    if (dashboard) candidates.push({ label: "Dashboard", url: dashboard });
+    const host = lanHost();
+    if (session.diffPort && host) {
+      candidates.push({ label: "Diff", url: `http://${host}:${session.diffPort}` });
     }
+    const reachable = await Promise.all(candidates.map((candidate) => isReachable(candidate.url)));
+    candidates.forEach((candidate, index) => {
+      if (reachable[index]) {
+        links.push(new ButtonBuilder().setLabel(candidate.label).setStyle(ButtonStyle.Link).setURL(candidate.url));
+      } else {
+        log.debug("skipping unreachable link", { label: candidate.label, url: candidate.url });
+      }
+    });
     if (links.length) container.addActionRowComponents(new ActionRowBuilder().addComponents(...links.slice(0, 5)));
     return { components: [container], flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral };
+  }
+
+  /**
+   * What a picker message is for: the session it was opened FOR, the ordering
+   * it was built with, and the items it shows.
+   *
+   * Keyed by message id so a stale picker cannot retarget the session the user
+   * switched to, paging keeps the same ordering (no duplicated/skipped models
+   * across a boundary), and select values are list indexes — Discord caps
+   * option values at 100 chars, which silently truncated long model ids.
+   */
+  interface PickerContext {
+    sessionId: string;
+    preferGroup: string | null;
+    entries: ReturnType<typeof entriesFromModels>;
+  }
+
+  const pickerContexts = new Map<string, PickerContext>();
+  const PICKER_CONTEXT_LIMIT = 50;
+
+  function rememberPicker(messageId: string, context: PickerContext): void {
+    pickerContexts.set(messageId, context);
+    while (pickerContexts.size > PICKER_CONTEXT_LIMIT) {
+      const oldest = pickerContexts.keys().next().value;
+      if (oldest === undefined) break;
+      pickerContexts.delete(oldest);
+    }
+    log.debug("picker context stored", { messageId, session: context.sessionId, entries: context.entries.length });
   }
 
   /** Select menu for one page of models, plus prev/next when paged. */
@@ -1055,9 +1132,10 @@ export function setupDiscordBot(opts: {
       new StringSelectMenuBuilder()
         .setCustomId(`modelpick:${page.page}`)
         .setPlaceholder(`Choose a model (${page.total})`)
-        .addOptions(page.items.map((entry) => ({
+        .addOptions(page.items.map((entry, index) => ({
           label: pickerLabel(entry),
-          value: entry.id.slice(0, 100),
+          // Index into the full list, resolved server-side: never truncated.
+          value: String(page.offset + index),
           default: entry.current === true,
         }))),
     )];
@@ -1315,8 +1393,11 @@ export function setupDiscordBot(opts: {
     log.info("bot connected", { tag: client.user.tag, allowAll: config.allowAll, allowed: config.allowedUsers.size });
     // Visible capability per session: proves the producer -> hub -> bot chain
     // end to end at startup, without waiting for someone to send an image.
+    const active = getActiveSessions();
     log.info("session capabilities", {
-      sessions: getActiveSessions().slice(0, 10).map((session: any) => ({
+      count: active.length,
+      unknown: active.filter((session: any) => session.supportsImages === undefined).length,
+      sessions: active.map((session: any) => ({
         session: String(session.sessionId).split(":").pop(),
         supportsImages: session.supportsImages ?? null,
       })),

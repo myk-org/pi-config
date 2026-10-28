@@ -24,6 +24,8 @@ export interface PickerEntry {
 
 export interface PickerPage {
   items: PickerEntry[];
+  /** Index of `items[0]` in the full ordered list — select values index the list. */
+  offset: number;
   page: number;
   pages: number;
   total: number;
@@ -74,7 +76,13 @@ export function buildPickerPage(
   const pages = pickerPageCount(ordered.length, pageSize);
   const current = clampPickerPage(page, ordered.length, pageSize);
   const start = (current - 1) * pageSize;
-  return { items: ordered.slice(start, start + pageSize), page: current, pages, total: ordered.length };
+  return {
+    items: ordered.slice(start, start + pageSize),
+    offset: start,
+    page: current,
+    pages,
+    total: ordered.length,
+  };
 }
 
 /** Label for one entry, marking the active choice and its group. */

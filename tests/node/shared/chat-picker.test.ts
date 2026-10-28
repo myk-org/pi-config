@@ -98,3 +98,39 @@ describe("models to picker entries", () => {
     assert.ok(label.endsWith("…"));
   });
 });
+
+describe("picker offsets", () => {
+  const many: PickerEntry[] = Array.from({ length: 60 }, (_, i) => ({
+    id: `m${i}`, label: `model-${i}`, group: i < 30 ? "aaa" : "zzz",
+  }));
+
+  it("reports where a page starts in the full list", () => {
+    assert.equal(buildPickerPage(many, 1).offset, 0);
+    assert.equal(buildPickerPage(many, 2).offset, PICKER_PAGE_SIZE);
+    assert.equal(buildPickerPage(many, 3).offset, PICKER_PAGE_SIZE * 2);
+  });
+
+  it("keeps paging stable and complete under a preferred group", () => {
+    // Qodo 691703dd: rebuilding page 2 without the preference reordered the
+    // list, so models were skipped or duplicated across the boundary.
+    const seen: string[] = [];
+    const pages = pickerPageCount(many.length);
+    for (let page = 1; page <= pages; page++) {
+      const built = buildPickerPage(many, page, { preferGroup: "zzz" });
+      assert.equal(built.offset, (page - 1) * PICKER_PAGE_SIZE);
+      seen.push(...built.items.map((entry) => entry.id));
+    }
+    assert.equal(seen.length, many.length);
+    assert.equal(new Set(seen).size, many.length, "every model appears exactly once");
+    assert.equal(seen[0], "m30", "the preferred group still leads the first page");
+  });
+
+  it("indexes the full list, so a select value needs no truncation", () => {
+    const long: PickerEntry[] = [{
+      id: `${"p".repeat(80)}/${"m".repeat(80)}`, label: "Very long", group: "p".repeat(80),
+    }];
+    const page = buildPickerPage(long, 1);
+    assert.equal(page.offset + 0, 0);
+    assert.ok(long[0].id.length > 100, "ids can exceed Discord's 100-char option value cap");
+  });
+});
