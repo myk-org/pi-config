@@ -22,7 +22,6 @@ import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { firstLiveExtensionCtx, isLiveExtensionCtx, resolveSessionStartCtx } from "../shared/live-ctx.js";
 import { createLogger } from "../shared/logger.js";
-import { lastAssistantText } from "../shared/chat/chat-transcript.ts";
 import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
 import { applySetting, buildSettingsPayload, mcpList, runMcp } from "./browser-ops.js";
@@ -406,24 +405,6 @@ export function registerPidash(
         if (parsed.command === "async-kill" && parsed.target) {
           log.debug(`async-kill from browser: ${parsed.target}`);
           pi.events.emit("pidash:async-kill", parsed.target);
-        }
-
-        if (parsed.command === "last-message") {
-          try {
-            const entries = lastCtx?.sessionManager?.getEntries?.() || [];
-            // Skips tool-only turns: a message with no text is not "the last
-            // reply" (Qodo 5f62aa7c, same rule the module tests cover).
-            const text = lastAssistantText(entries);
-            log.debug(`last-message from client: ${text.length} chars`);
-            if (ws && connected) {
-              ws.send(JSON.stringify({ type: "last-message", requestId: parsed.requestId, text: text.slice(0, 12000) }));
-            }
-          } catch (error: any) {
-            log.warn("last-message failed", { error: error?.message ?? String(error) });
-            if (ws && connected) {
-              ws.send(JSON.stringify({ type: "last-message", requestId: parsed.requestId, text: "" }));
-            }
-          }
         }
 
         if (parsed.command === "async-list") {

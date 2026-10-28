@@ -526,8 +526,6 @@ export function setupDiscordBot(opts: {
     ["compact", "Compact the watched session's context"],
     ["model", "Show or set the model"],
     ["thinking", "Show or set the thinking level"],
-    ["last", "Show the last reply from the watched session"],
-  ["ask", "Ask the watched session a question"],
   ["async", "List or kill background async agents"],
   ["cron", "List or kill scheduled cron jobs"],
   ["tasks", "List tasks in the watched session"],
@@ -570,10 +568,6 @@ export function setupDiscordBot(opts: {
       if (name === "watch") {
         builder.addStringOption((o: any) =>
           o.setName(WATCH_OPTION_NAME).setDescription("Session to watch").setRequired(true).setAutocomplete(true));
-      }
-      if (name === "ask") {
-        builder.addStringOption((o: any) =>
-          o.setName("question").setDescription("Question for the watched session").setRequired(true));
       }
       if (name === "notify") builder.addStringOption((o: any) => o.setName("state").setDescription("on | off"));
       if (name === "file") builder.addStringOption((o: any) => o.setName("path").setDescription("Path relative to the session cwd").setRequired(true));
@@ -890,7 +884,6 @@ export function setupDiscordBot(opts: {
     }
 
     const value = String(interaction.options?.getString?.("value") || "");
-    const question = String(interaction.options?.getString?.("question") || "");
     if (name === "model") {
       if (!value) {
         // No id given → picker. Typing a model id on a phone is not a thing.
@@ -941,41 +934,6 @@ export function setupDiscordBot(opts: {
 
     if (name === "file") {
       await sendWorkspaceFile(state, interaction, session.cwd, String(interaction.options?.getString?.("path", true) || ""));
-      return;
-    }
-
-    if (name === "last") {
-      const sessionId = watched ?? "";
-      await interaction.deferReply({ ephemeral: true }).catch(() => {});
-      const event = await requestEvent(sessionId, { command: "last-message", eventType: "last-message" });
-      const text = String(event?.text ?? "").trim();
-      if (!text) {
-        await interaction.editReply({ content: "No assistant reply in this session yet." }).catch(() => {});
-        return;
-      }
-      const chunks = chunkDiscordText(text);
-      await interaction.editReply({ content: chunks[0].slice(0, 1900) }).catch(() => {});
-      for (const chunk of chunks.slice(1, 3)) await sendText(interaction.channelId, chunk);
-      log.info("last reply sent", { session: sessionId, chars: text.length });
-      return;
-    }
-
-    if (name === "ask") {
-      const asked = question.trim();
-      if (!asked) {
-        await acknowledge(interaction, "Usage: `/ask <question>`");
-        return;
-      }
-      const client = piClients.get(watched ?? "");
-      if (!client?.ws) {
-        await acknowledge(interaction, "The watched session is not connected.");
-        return;
-      }
-      // Same path as a typed message so the reply streams into the thread.
-      bridge.expectEcho(state, watched ?? "", asked);
-      client.ws.send(JSON.stringify({ type: "prompt", text: asked }));
-      await acknowledge(interaction, "Asked.");
-      log.info("asked from discord", { session: watched, chars: asked.length });
       return;
     }
 

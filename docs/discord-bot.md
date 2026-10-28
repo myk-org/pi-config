@@ -116,8 +116,6 @@ Any prompt can be dismissed with `/cancel`. A prompt that is not answered **expi
 | `/disconnect` | Stop watching everything — clears the watch, its threads and pending questions |
 | `/model [value]` | Open a **model picker** (your current provider first), or switch directly by id |
 | `/thinking [value]` | Show or set `off`…`max` |
-| `/last` | Show the watched session's last reply |
-| `/ask <question>` | Ask the watched session something without leaving Discord |
 | `/async` | Background async agents, with Stop buttons |
 | `/cron` | Scheduled cron jobs, with Stop buttons |
 | `/tasks` | Task list of the watched session |
