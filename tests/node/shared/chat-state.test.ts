@@ -22,23 +22,43 @@ function stateWith(lastPrompts: unknown) {
 
 describe("remembered prompts", () => {
   it("round-trips the last prompt per session", () => {
-    assert.equal(stateWith({ "1:/repo": "fix the build" }).users.u1?.lastPrompts?.["1:/repo"], "fix the build");
+    const stored = stateWith({ "1:/repo": { text: "fix the build", hadImages: false, truncated: false } });
+    assert.equal(stored.users.u1?.lastPrompts?.["1:/repo"]?.text, "fix the build");
   });
 
   it("keeps several sessions apart", () => {
-    const prompts = { "1:/a": "first", "2:/b": "second" };
-    const stored = stateWith(prompts).users.u1?.lastPrompts;
-    assert.equal(stored?.["1:/a"], "first");
-    assert.equal(stored?.["2:/b"], "second");
+    const stored = stateWith({
+      "1:/a": { text: "first", hadImages: false, truncated: false },
+      "2:/b": { text: "second", hadImages: true, truncated: false },
+    }).users.u1?.lastPrompts;
+    assert.equal(stored?.["1:/a"]?.text, "first");
+    assert.equal(stored?.["2:/b"]?.text, "second");
+    assert.equal(stored?.["2:/b"]?.hadImages, true);
   });
 
-  it("drops non-string values", () => {
-    assert.equal(stateWith({ a: 42, b: null, c: { text: "x" } }).users.u1?.lastPrompts?.a, undefined);
+  it("accepts the older bare-string shape", () => {
+    const entry = stateWith({ "1:/repo": "legacy" }).users.u1?.lastPrompts?.["1:/repo"];
+    assert.deepEqual(entry, { text: "legacy", hadImages: false, truncated: false });
   });
 
-  it("caps an oversized prompt", () => {
+  it("drops non-object, non-string and textless values", () => {
+    const stored = stateWith({ a: 42, b: null, c: { text: 7 }, d: {} }).users.u1?.lastPrompts;
+    assert.equal(stored?.a, undefined);
+    assert.equal(stored?.b, undefined);
+    assert.equal(stored?.c, undefined);
+    assert.equal(stored?.d, undefined);
+  });
+
+  it("caps an oversized prompt and marks it truncated", () => {
     const long = "x".repeat(MAX_LAST_PROMPT_CHARS * 3);
-    assert.equal((stateWith({ "1:/repo": long }).users.u1?.lastPrompts?.["1:/repo"] ?? "").length, MAX_LAST_PROMPT_CHARS);
+    const entry = stateWith({ "1:/repo": { text: long, hadImages: false, truncated: false } }).users.u1?.lastPrompts?.["1:/repo"];
+    assert.equal(entry?.text.length, MAX_LAST_PROMPT_CHARS);
+    assert.equal(entry?.truncated, true, "a retry must know it cannot reproduce the original");
+  });
+
+  it("keeps an explicit truncated flag", () => {
+    const entry = stateWith({ "1:/repo": { text: "short", hadImages: false, truncated: true } }).users.u1?.lastPrompts?.["1:/repo"];
+    assert.equal(entry?.truncated, true);
   });
 
   it("survives a missing lastPrompts field", () => {

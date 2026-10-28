@@ -30,8 +30,9 @@ import {
   slicePickerPage,
 } from "../shared/chat/chat-picker.ts";
 import { compareCommandPayloads } from "./discord-commands.ts";
+import { MAX_LAST_PROMPT_CHARS } from "../shared/chat/chat-state.ts";
 import { jobIdAt, renderJobsView } from "./discord-jobs-view.ts";
-import { reactionAction, sessionForChannel, sessionIdFromTopic } from "./discord-reactions.ts";
+import { ownsChannel, ownsSession, reactionAction, sessionForChannel, sessionIdFromTopic } from "./discord-reactions.ts";
 import {
   buildSessionPage,
   renderSessionsPage,
@@ -215,6 +216,8 @@ export function setupDiscordBot(opts: {
         responseChannelId: state.responseChannelId,
         threadId: state.threadId ?? null,
         threads: state.threads ?? {},
+        // Without this the 🔁 shortcut forgets every prompt on restart.
+        lastPrompts: state.lastPrompts ?? {},
         updatedAt: state.updatedAt,
       };
     }
@@ -441,7 +444,7 @@ export function setupDiscordBot(opts: {
    * The channel comes from DISCORD_FORUM_CHANNEL_ID — the bot never creates
    * channels on its own.
    */
-  async function renderBoard(state: RuntimeUserState, interaction: any): Promise<any> {
+  async function renderBoard(): Promise<any> {
     const forumId = config.forumChannelId;
     if (!forumId) {
       return { content: "No board configured. Set `DISCORD_FORUM_CHANNEL_ID` to a forum channel id." };
@@ -472,9 +475,16 @@ export function setupDiscordBot(opts: {
       try {
         const thread = await forum.threads.create({
           name: truncateLine(sessionName(sessionId), 90),
-          message: { content: `${sessionName(sessionId)} — \`${session.cwd ?? ""}\`` },
+          // The starter message is readable by everyone with access to the
+          // forum, so it carries no working directory — the cwd stays in the
+          // ephemeral reply (Qodo 00e6ae39).
+          message: { content: `${sessionName(sessionId)} — pi session. Type here to prompt it.` },
           reason: `pi session ${sessionId}`,
         });
+        // The topic is the thread's identity: without it every lookup misses and
+        // re-running the command would duplicate the board (Qodo 4fa32268).
+        await thread.setTopic(`pi session:${sessionId}`).catch((error: any) =>
+          log.warn("board topic could not be set", { sessionId, error: String(error) }));
         existing.set(sessionId, thread.id);
         created++;
       } catch (error) {
@@ -518,23 +528,45 @@ export function setupDiscordBot(opts: {
       const sessionId = sessionForChannel(state.targets, state.watchedSessionId, state.target?.channelId, channelId);
 
       if (action === "stop") {
+        if (!sessionId || !ownsSession(state, sessionId)) {
+          log.info("reaction stop refused", { userId, sessionId });
+          return;
+        }
         const stopped = sessionId ? command(sessionId, { command: "abort" }) : false;
         log.info("reaction stop", { userId, sessionId, stopped });
         return;
       }
       if (action === "retry") {
-        const prompt = sessionId ? state.lastPrompts?.[sessionId] : null;
+        const remembered = sessionId ? state.lastPrompts?.[sessionId] : null;
         const client = sessionId ? piClients.get(sessionId) : null;
-        if (!prompt || !client?.ws) {
-          log.debug("reaction retry skipped", { userId, sessionId, hasPrompt: Boolean(prompt) });
+        if (!remembered || !client?.ws) {
+          log.debug("reaction retry skipped", { userId, sessionId, hasPrompt: Boolean(remembered) });
           return;
         }
-        bridge.expectEcho(state, sessionId!, prompt);
-        client.ws.send(JSON.stringify({ type: "prompt", text: prompt }));
-        log.info("reaction retry", { userId, sessionId, chars: prompt.length });
+        // A retry must send the SAME request. A truncated prompt or one that
+        // carried images cannot be reproduced, so say so instead of quietly
+        // submitting something else (Qodo bcacb8c5, 7e8820db).
+        if (remembered.truncated) {
+          await sendText(channelId, "That prompt was too long to keep in full, so 🔁 cannot resend it exactly.");
+          log.info("reaction retry refused", { userId, sessionId, reason: "truncated" });
+          return;
+        }
+        const text = remembered.hadImages
+          ? `${remembered.text}\n\n(The images from the original message are not re-sent.)`
+          : remembered.text;
+        bridge.expectEcho(state, sessionId!, text);
+        client.ws.send(JSON.stringify({ type: "prompt", text }));
+        log.info("reaction retry", { userId, sessionId, chars: text.length, hadImages: remembered.hadImages });
         return;
       }
       if (action === "delete") {
+        // Deleting a bot reply is only allowed where this user is the owner of
+        // the target: a shared guild thread must not let one allowlisted user
+        // remove another's answer (Qodo e67e18a1).
+        if (!ownsChannel(state, channelId)) {
+          log.info("reaction delete refused", { userId, channelId });
+          return;
+        }
         await message.delete().catch((error: any) => log.debug("reaction delete failed", { error: String(error) }));
         log.info("reaction delete", { userId, messageId: message.id });
         return;
@@ -1109,6 +1141,13 @@ export function setupDiscordBot(opts: {
       return;
     }
 
+    if (name === "board") {
+      await interaction.deferReply({ ephemeral: true }).catch(() => {});
+      const view = await renderBoard();
+      await interaction.editReply(view).catch((error: any) => log.warn("board reply failed", { error: String(error) }));
+      return;
+    }
+
     const passthrough = PASSTHROUGH[name];
     if (passthrough) {
       await interaction.deferReply({ ephemeral: true }).catch(() => {});
@@ -1660,8 +1699,17 @@ export function setupDiscordBot(opts: {
     const fullText = notes.length ? (text ? `${text}\n\n` : "") + notes.join("\n\n") : text;
     // The engine suppresses this echo per watcher using the state's marker.
     bridge.expectEcho(state, targetSessionId!, fullText);
-    // Reaction shortcut 🔁 resends this without retyping.
-    state.lastPrompts = { ...(state.lastPrompts ?? {}), [targetSessionId!]: fullText.slice(0, 4000) };
+    // Reaction shortcut 🔁 resends this without retyping. The flags record when
+    // a faithful replay is impossible (truncated text, images omitted).
+    state.lastPrompts = {
+      ...(state.lastPrompts ?? {}),
+      [targetSessionId!]: {
+        text: fullText.slice(0, MAX_LAST_PROMPT_CHARS),
+        hadImages: images.length > 0,
+        truncated: fullText.length > MAX_LAST_PROMPT_CHARS,
+      },
+    };
+    persist();
     client.ws.send(JSON.stringify({ type: "prompt", text: fullText, images: images.length ? images : undefined }));
     log.info("prompt forwarded from discord", {
       userId,

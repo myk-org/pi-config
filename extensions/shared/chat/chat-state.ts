@@ -32,14 +32,25 @@ export interface DiscordUserState {
   /**
    * sessionId -> the last prompt sent for it, so a 🔁 reaction can resend it
    * without the user retyping (Discord reaction shortcut).
+   *
+   * The flags matter: a truncated prompt or one that carried images cannot be
+   * replayed faithfully, and pretending otherwise sends a different request.
    */
-  lastPrompts?: Record<string, string>;
+  lastPrompts?: Record<string, LastPromptEntry>;
   /** Last interaction, used for pruning. */
   updatedAt: number;
 }
 
 /** A remembered prompt is for retrying, not for storage: keep it small. */
 export const MAX_LAST_PROMPT_CHARS = 4000;
+
+export interface LastPromptEntry {
+  text: string;
+  /** The original prompt carried images, which a retry cannot resend. */
+  hadImages: boolean;
+  /** The stored text is shorter than the original: a retry would differ. */
+  truncated: boolean;
+}
 
 /** Threads remembered per user; older ones are dropped. */
 export const MAX_THREADS_PER_USER = 20;
@@ -70,10 +81,22 @@ function coerceUser(raw: unknown): DiscordUserState | null {
   }
   // A user with no binding at all carries no information.
   if (!watched && !channel) return null;
-  const lastPrompts: Record<string, string> = {};
+  const lastPrompts: Record<string, LastPromptEntry> = {};
   if (value.lastPrompts && typeof value.lastPrompts === "object") {
-    for (const [sessionId, text] of Object.entries(value.lastPrompts as Record<string, unknown>)) {
-      if (typeof text === "string" && text) lastPrompts[sessionId] = text.slice(0, MAX_LAST_PROMPT_CHARS);
+    for (const [sessionId, raw] of Object.entries(value.lastPrompts as Record<string, unknown>)) {
+      // A bare string is the older shape: keep it working, flags default false.
+      if (typeof raw === "string" && raw) {
+        lastPrompts[sessionId] = { text: raw.slice(0, MAX_LAST_PROMPT_CHARS), hadImages: false, truncated: raw.length > MAX_LAST_PROMPT_CHARS };
+        continue;
+      }
+      if (!raw || typeof raw !== "object") continue;
+      const entry = raw as Record<string, unknown>;
+      if (typeof entry.text !== "string" || !entry.text) continue;
+      lastPrompts[sessionId] = {
+        text: entry.text.slice(0, MAX_LAST_PROMPT_CHARS),
+        hadImages: entry.hadImages === true,
+        truncated: entry.truncated === true || entry.text.length > MAX_LAST_PROMPT_CHARS,
+      };
     }
   }
   return { watchedSessionId: watched, responseChannelId: channel, threadId: thread, threads, lastPrompts, updatedAt };

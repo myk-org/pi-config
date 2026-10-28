@@ -2,12 +2,14 @@
  * Reaction shortcuts and session<->channel resolution.
  *
  * A reaction is a one-tap action on a phone, so the mapping must be exact: a
- * stray emoji has to do nothing, and a reaction on an unrelated message must not
- * stop someone else's session.
+ * stray emoji does nothing, a reaction on an unrelated message touches no
+ * session, and a user can only act on their own targets.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  ownsChannel,
+  ownsSession,
   reactionAction,
   sessionForChannel,
   sessionIdFromTopic,
@@ -19,8 +21,11 @@ describe("reaction emoji mapping", () => {
     assert.equal(reactionAction("🛑"), "stop");
   });
 
-  it("maps retry and delete", () => {
+  it("maps retry", () => {
     assert.equal(reactionAction("🔁"), "retry");
+  });
+
+  it("maps delete", () => {
     assert.equal(reactionAction("🗑"), "delete");
     assert.equal(reactionAction("🗑️"), "delete");
   });
@@ -50,8 +55,38 @@ describe("session for a reacted channel", () => {
     assert.equal(sessionForChannel({}, "3:/repo-c", "dm-channel", "dm-channel"), "3:/repo-c");
   });
 
+  it("prefers the current watch when two sessions share a DM channel", () => {
+    // Qodo 9ee29f3e: retained targets used to win, so ⏹ on the newest message
+    // aborted the session the user had already switched away from.
+    const shared = { "1:/old": { channelId: "dm", threadId: null } };
+    assert.equal(sessionForChannel(shared, "2:/new", "dm", "dm"), "2:/new");
+  });
+
   it("resolves nothing for an unrelated channel", () => {
     assert.equal(sessionForChannel(targets, "3:/repo-c", "dm-channel", "someone-elses-channel"), null);
+  });
+});
+
+describe("reaction ownership", () => {
+  const state = {
+    watchedSessionId: "1:/mine",
+    target: { channelId: "dm", threadId: null },
+    targets: { "2:/other": { channelId: "thread-b", threadId: "thread-b" } },
+  };
+
+  it("owns its current channel and its retained threads", () => {
+    assert.equal(ownsChannel(state, "dm"), true);
+    assert.equal(ownsChannel(state, "thread-b"), true);
+  });
+
+  it("does not own a channel belonging to nobody", () => {
+    assert.equal(ownsChannel(state, "someone-elses-channel"), false);
+  });
+
+  it("owns the watched session and its retained targets only", () => {
+    assert.equal(ownsSession(state, "1:/mine"), true);
+    assert.equal(ownsSession(state, "2:/other"), true);
+    assert.equal(ownsSession(state, "3:/stranger"), false);
   });
 });
 

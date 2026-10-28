@@ -36,15 +36,18 @@ export function sessionForChannel(
   fallbackChannelId: string | null | undefined,
   channelId: string,
 ): string | null {
-  for (const [sessionId, target] of Object.entries(targets ?? {})) {
-    if (target.threadId === channelId || target.channelId === channelId) {
-      log.debug("reaction session matched", { sessionId, channelId });
-      return sessionId;
-    }
-  }
+  // The CURRENT watch wins. Two sessions can share one DM channel, and checking
+  // retained targets first made a reaction on the newest message abort the
+  // earlier session (Qodo 9ee29f3e).
   if (fallbackChannelId && fallbackChannelId === channelId && watchedSessionId) {
     log.debug("reaction session matched current target", { sessionId: watchedSessionId, channelId });
     return watchedSessionId;
+  }
+  for (const [sessionId, target] of Object.entries(targets ?? {})) {
+    if (target.threadId === channelId || target.channelId === channelId) {
+      log.debug("reaction session matched retained target", { sessionId, channelId });
+      return sessionId;
+    }
   }
   return null;
 }
@@ -53,4 +56,21 @@ export function sessionForChannel(
 export function sessionIdFromTopic(topic: unknown): string | null {
   const match = String(topic ?? "").match(/session:(\S+)/);
   return match ? match[1] : null;
+}
+
+/** Does this user own the channel a reaction landed in? */
+export function ownsChannel(
+  state: { target?: { channelId: string; threadId?: string | null } | null; targets?: Record<string, { channelId: string; threadId?: string | null }> },
+  channelId: string,
+): boolean {
+  if (state.target?.channelId === channelId) return true;
+  return Object.values(state.targets ?? {}).some((target) => (target.threadId ?? target.channelId) === channelId);
+}
+
+/** Does this user watch the session, or retain a target for it? */
+export function ownsSession(
+  state: { watchedSessionId: string | null; targets?: Record<string, unknown> },
+  sessionId: string,
+): boolean {
+  return state.watchedSessionId === sessionId || Boolean(state.targets?.[sessionId]);
 }
