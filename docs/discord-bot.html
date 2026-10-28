@@ -460,6 +460,9 @@ machine's LAN address so the links actually open from a phone.</p>
 <p><strong>Right-click or long-press any message → Apps → "Ask PI about this"</strong> sends that
 message to the watched session as a prompt. A stack trace or a log line in any
 channel becomes the task, without copying it.</p>
+<p>Files you send are also copied into <code>&lt;session cwd&gt;/.pi/tmp/discord-inbox/</code>, and the
+prompt carries the path — so the agent can open, re-read or move what your phone
+uploaded with its normal file tools instead of receiving an opaque blob.</p>
 <p>Streaming edits are sent with notifications suppressed, so a long turn does not
 buzz your phone on every delta — only the final message notifies.</p>
 <h2 id="sending-prompts">Sending prompts</h2>
@@ -513,6 +516,22 @@ will do.</p>
 <tr>
 <td><code>/thinking [value]</code></td>
 <td>Show or set <code>off</code>…<code>max</code></td>
+</tr>
+<tr>
+<td><code>/last</code></td>
+<td>Show the watched session's last reply</td>
+</tr>
+<tr>
+<td><code>/ask &lt;question&gt;</code></td>
+<td>Ask the watched session something without leaving Discord</td>
+</tr>
+<tr>
+<td><code>/async</code></td>
+<td>Background async agents, with Stop buttons</td>
+</tr>
+<tr>
+<td><code>/cron</code></td>
+<td>Scheduled cron jobs, with Stop buttons</td>
 </tr>
 <tr>
 <td><code>/tasks</code></td>

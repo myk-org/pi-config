@@ -18,6 +18,7 @@ import {
   fetchAttachment,
   formatKB,
   imageSupportNote,
+  saveInboundAttachment,
   MAX_IMAGE_BYTES,
   MAX_INLINE_TEXT_BYTES,
 } from "../shared/chat/chat-attachments.ts";
@@ -28,6 +29,8 @@ import {
   pickerLabel,
   slicePickerPage,
 } from "../shared/chat/chat-picker.ts";
+import { compareCommandPayloads } from "./discord-commands.ts";
+import { renderJobsView } from "./discord-jobs-view.ts";
 import {
   buildSessionPage,
   renderSessionsPage,
@@ -372,6 +375,12 @@ export function setupDiscordBot(opts: {
     return `http://${host}:${process.env.PI_PIDASH_PORT || 19190}`;
   }
 
+  /** Where inbound files land so the agent can use normal file tools on them. */
+  function inboxDir(cwd: string | undefined): string {
+    const base = cwd && cwd.trim() ? cwd : process.cwd();
+    return `${base}/.pi/tmp/discord-inbox`;
+  }
+
   function sessionName(sessionId: string | null): string {
     if (!sessionId) return "none";
     const client = piClients.get(sessionId);
@@ -537,47 +546,6 @@ export function setupDiscordBot(opts: {
    * Compares the fields that define a command — everything else Discord fills
    * in (ids, versions, guild scope) is ignored so a restart is a no-op.
    */
-  function commandPayloadChanged(current: any[], desired: any[]): boolean {
-    // Discord echoes fields we never set (localizations, min/max length, empty
-    // choice lists). Compare a canonical subset or every restart looks changed.
-    const canonicalOption = (option: any): any => ({
-      type: option.type ?? 3,
-      name: option.name,
-      description: option.description ?? "",
-      required: option.required === true,
-      autocomplete: option.autocomplete === true,
-      choices: (option.choices ?? []).map((choice: any) => ({ name: choice.name, value: choice.value })),
-      options: (option.options ?? []).map(canonicalOption),
-    });
-    const shape = (command: any) => JSON.stringify({
-      name: command.name,
-      description: command.description ?? "",
-      type: command.type ?? 1,
-      options: (command.options ?? []).map(canonicalOption),
-      contexts: [...(command.contexts ?? [])].sort(),
-      integration_types: [...(command.integration_types ?? [])].sort(),
-      default_member_permissions: command.default_member_permissions ?? null,
-    });
-    const live = current.map(shape).sort();
-    const wanted = desired.map(shape).sort();
-    if (live.length !== wanted.length) {
-      log.debug("command count differs", { live: live.length, wanted: wanted.length });
-      return true;
-    }
-    if (live.length !== wanted.length) return true;
-    const differing: string[] = [];
-    for (let index = 0; index < live.length; index++) {
-      if (live[index] !== wanted[index]) {
-        differing.push(String(JSON.parse(wanted[index]).name ?? "?"));
-      }
-    }
-    if (differing.length) {
-      log.info("command definitions differ", { commands: differing.slice(0, 10) });
-      return true;
-    }
-    return false;
-  }
-
   async function registerCommands(clientId: string, guildId?: string): Promise<void> {
     const rest = new REST().setToken(config.token);
     const builders = COMMANDS.map(([name, description]) => {
@@ -633,10 +601,12 @@ export function setupDiscordBot(opts: {
         ? Routes.applicationGuildCommands(clientId, guildId)
         : Routes.applicationCommands(clientId);
       const current = (await rest.get(route)) as any[];
-      if (!commandPayloadChanged(current, body)) {
+      const comparison = compareCommandPayloads(current as any[], body as any[]);
+      if (!comparison.changed) {
         log.debug("slash commands unchanged", { scope, count: body.length });
         return;
       }
+      log.info("command definitions changed", { scope, commands: comparison.differing.slice(0, 10) });
       await rest.put(route, { body });
       log.info("slash commands registered", { scope, count: body.length });
     } catch (error) {
@@ -965,6 +935,69 @@ export function setupDiscordBot(opts: {
 
     if (name === "file") {
       await sendWorkspaceFile(state, interaction, session.cwd, String(interaction.options?.getString?.("path", true) || ""));
+      return;
+    }
+
+    if (name === "last") {
+      const sessionId = watched ?? "";
+      await interaction.deferReply({ ephemeral: true }).catch(() => {});
+      const event = await requestEvent(sessionId, { command: "last-message", eventType: "last-message" });
+      const text = String(event?.text ?? "").trim();
+      if (!text) {
+        await interaction.editReply({ content: "No assistant reply in this session yet." }).catch(() => {});
+        return;
+      }
+      const chunks = chunkDiscordText(text);
+      await interaction.editReply({ content: chunks[0].slice(0, 1900) }).catch(() => {});
+      for (const chunk of chunks.slice(1, 3)) await sendText(interaction.channelId, chunk);
+      log.info("last reply sent", { session: sessionId, chars: text.length });
+      return;
+    }
+
+    if (name === "ask") {
+      const asked = question.trim();
+      if (!asked) {
+        await acknowledge(interaction, "Usage: `/ask <question>`");
+        return;
+      }
+      const client = piClients.get(watched ?? "");
+      if (!client?.ws) {
+        await acknowledge(interaction, "The watched session is not connected.");
+        return;
+      }
+      // Same path as a typed message so the reply streams into the thread.
+      bridge.expectEcho(state, watched ?? "", asked);
+      client.ws.send(JSON.stringify({ type: "prompt", text: asked }));
+      await acknowledge(interaction, "Asked.");
+      log.info("asked from discord", { session: watched, chars: asked.length });
+      return;
+    }
+
+    if (name === "async" || name === "cron") {
+      const isAsync = name === "async";
+      const sessionId = watched ?? "";
+      await interaction.deferReply({ ephemeral: true }).catch(() => {});
+      const snapshot = await requestEvent(sessionId, {
+        command: isAsync ? "async-list" : "cron-list",
+        eventType: isAsync ? "async-list" : "cron-list",
+      });
+      if (!snapshot) {
+        await interaction.editReply({ content: "No data for this session yet." }).catch(() => {});
+        return;
+      }
+      const view = renderJobsView(isAsync ? "async" : "cron", snapshot);
+      const rows: any[] = [];
+      if (view.stoppable.length) {
+        rows.push(new ActionRowBuilder().addComponents(
+          ...view.stoppable.map((id, index) => new ButtonBuilder()
+            .setCustomId(`${isAsync ? "async-kill" : "cron-kill"}:${sessionId}:${id}`)
+            .setLabel(`Stop ${index + 1}`)
+            .setStyle(ButtonStyle.Danger)),
+        ));
+      }
+      await interaction.editReply({ content: view.content, components: rows })
+        .catch((error: any) => log.warn(`${name} reply failed`, { error: String(error) }));
+      log.info(`${name} listed`, { session: sessionId, stoppable: view.stoppable.length });
       return;
     }
 
@@ -1455,13 +1488,24 @@ export function setupDiscordBot(opts: {
       });
       if (plan.kind === "image") {
         const fetched = await fetchAttachment(plan.url, MAX_IMAGE_BYTES);
-        if (fetched) images.push({ data: fetched.buffer.toString("base64"), mimeType: fetched.contentType, filename: plan.filename });
-        else notes.push(`[Could not download ${plan.filename} (too large or unavailable)]`);
+        if (fetched) {
+          images.push({ data: fetched.buffer.toString("base64"), mimeType: fetched.contentType, filename: plan.filename });
+          // Also keep a copy in the workspace: base64 reaches the model, but the
+          // agent cannot open, re-read or move a blob with its own tools.
+          const saved = saveInboundAttachment(inboxDir(client?.session?.cwd), plan.filename, fetched.buffer);
+          if (saved) notes.push(`[Saved to ${saved}]`);
+        } else {
+          notes.push(`[Could not download ${plan.filename} (too large or unavailable)]`);
+        }
         continue;
       }
       if (plan.kind === "text") {
         const fetched = await fetchAttachment(plan.url, MAX_INLINE_TEXT_BYTES);
-        if (fetched) notes.push(`--- ${plan.filename} ---\n${fetched.buffer.toString("utf-8")}`);
+        if (fetched) {
+          notes.push(`--- ${plan.filename} ---\n${fetched.buffer.toString("utf-8")}`);
+          const saved = saveInboundAttachment(inboxDir(client?.session?.cwd), plan.filename, fetched.buffer);
+          if (saved) notes.push(`[Saved to ${saved}]`);
+        }
         else notes.push(`[Could not download ${plan.filename} (too large or unavailable)]`);
         continue;
       }

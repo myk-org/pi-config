@@ -4557,6 +4557,10 @@ machine's LAN address so the links actually open from a phone.
 message to the watched session as a prompt. A stack trace or a log line in any
 channel becomes the task, without copying it.
 
+Files you send are also copied into `<session cwd>/.pi/tmp/discord-inbox/`, and the
+prompt carries the path — so the agent can open, re-read or move what your phone
+uploaded with its normal file tools instead of receiving an opaque blob.
+
 Streaming edits are sent with notifications suppressed, so a long turn does not
 buzz your phone on every delta — only the final message notifies.
 
@@ -4599,6 +4603,10 @@ Any prompt can be dismissed with `/cancel`. A prompt that is not answered **expi
 | `/disconnect` | Stop watching everything — clears the watch, its threads and pending questions |
 | `/model [value]` | Open a **model picker** (your current provider first), or switch directly by id |
 | `/thinking [value]` | Show or set `off`…`max` |
+| `/last` | Show the watched session's last reply |
+| `/ask <question>` | Ask the watched session something without leaving Discord |
+| `/async` | Background async agents, with Stop buttons |
+| `/cron` | Scheduled cron jobs, with Stop buttons |
 | `/tasks` | Task list of the watched session |
 | `/coms` | Coms peers of the watched session's project |
 | `/memory` | Memory status of the watched session |

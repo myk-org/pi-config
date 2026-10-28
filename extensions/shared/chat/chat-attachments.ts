@@ -7,6 +7,8 @@
  * the limits without a Discord connection or a network fetch.
  */
 
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createLogger } from "../logger.ts";
 
 const log = createLogger("chat-attachments");
@@ -141,4 +143,33 @@ export function imageSupportNote(
   if (imageCount <= 0) return null;
   if (supportsImages !== false) return null;
   return `[${imageCount} image${imageCount === 1 ? "" : "s"} not sent — the watched session's model does not accept image input]`;
+}
+
+/**
+ * Keep a copy of an inbound attachment in the session workspace.
+ *
+ * An image sent from a phone is forwarded to the model as base64 and to nobody
+ * else — the agent cannot open it with its own tools, re-read it later, or move
+ * it into the repo. Writing a file fixes that: the prompt carries a real path.
+ */
+export function saveInboundAttachment(
+  directory: string,
+  filename: string,
+  buffer: Buffer,
+): string | null {
+  try {
+    const safe = filename
+      .replace(/[\\/]+/g, "_")
+      .replace(/[^A-Za-z0-9._-]/g, "_")
+      .replace(/^\.+/, "")
+      .slice(0, 120) || "attachment";
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, safe);
+    writeFileSync(path, buffer, { mode: 0o600 });
+    log.debug("inbound attachment saved", { path, bytes: buffer.length });
+    return path;
+  } catch (error) {
+    log.warn("could not save inbound attachment", { filename, error: String(error) });
+    return null;
+  }
 }
