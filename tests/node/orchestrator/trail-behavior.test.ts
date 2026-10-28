@@ -337,6 +337,38 @@ describe("Custom-message turns (a subagent task)", () => {
   });
 });
 
+describe("Guidance survives a forced system prompt", () => {
+  // Another extension may set `forceSystemPrompt`: Pi then replaces the whole
+  // system prompt and ignores the structured sections, so the map-first rule and
+  // this turn's pointers only reach the model through a returned string.
+  it("appends the map rule and this turn's pointers to a forced prompt", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const r = register({ results: [{ stdout: ASK_OUTPUT }] });
+      const c = await start(r, ctx(root));
+      const event = promptEvent("locate the authentication implementation", { forceSystemPrompt: "forced" });
+      const result = await r.handlers.get("before_agent_start")![0](event, c);
+      const systemPrompt = String(result?.systemPrompt ?? "");
+      assert.match(systemPrompt, /^base\n\n/, "the forced event prompt is the base, not a replacement");
+      assert.match(systemPrompt, /trail_find_code/, "the map-first rule reaches the model");
+      assert.match(systemPrompt, /src\/auth\.ts:12/, "this turn's file:line pointer reaches the model");
+      assert.equal(event.systemPromptOptions.sections.trail, undefined, "the ignored structured options are left alone");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("appends the guidance-only and retrieval-failure notes to a forced prompt", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const r = register({ results: [{ code: 1, stderr: "boom" }] });
+      const c = await start(r, ctx(root));
+      const control = await r.handlers.get("before_agent_start")![0](promptEvent("yes", { forceSystemPrompt: "forced" }), c);
+      assert.match(String(control?.systemPrompt ?? ""), /trail_find_code/);
+      const failed = await r.handlers.get("before_agent_start")![0](promptEvent("locate the authentication implementation", { forceSystemPrompt: "forced" }), c);
+      assert.match(String(failed?.systemPrompt ?? ""), /Retrieval failed: boom/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe("Query clamping (a long prompt is a query, not an absence)", () => {
   it("runs retrieval, injects pointers and arms the gate for a 2100+ char user prompt", async () => {
     const root = mapRoot(NODES);
@@ -606,8 +638,8 @@ describe("Subagent toolset and status footer", () => {
 
 describe("Shell search classification", () => {
   /** A repo with a map and one injected pointer: the gate is armed, no trail_* call yet. */
-  async function armed() {
-    const root = mapRoot(NODES);
+  async function armed(nodes = NODES) {
+    const root = mapRoot(nodes);
     const r = register({ results: [{ stdout: ASK_OUTPUT }] });
     const c = await start(r, ctx(root));
     await r.handlers.get("before_agent_start")![0](promptEvent("locate the authentication implementation"), c);
@@ -615,7 +647,7 @@ describe("Shell search classification", () => {
     return { root, r, c };
   }
 
-  for (const command of ["rg authenticate src", "grep -rn authenticate src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "git -C src grep authenticate", "git --no-pager grep authenticate", "git -c core.pager=cat grep authenticate", "git -c x=y --no-pager grep authenticate", "env FOO=1 rg authenticate"]) {
+  for (const command of ["rg authenticate src", "grep -rn authenticate src", "grep -rn foo src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "git -C src grep authenticate", "git --no-pager grep authenticate", "git -c core.pager=cat grep authenticate", "git -c x=y --no-pager grep authenticate", "env FOO=1 rg authenticate", "rg foo", "rg foo .", "rg foo src/"]) {
     it(`blocks a first-segment search: ${command}`, async () => {
       const { root, r, c } = await armed();
       try {
@@ -626,7 +658,7 @@ describe("Shell search classification", () => {
     });
   }
 
-  for (const command of ["cat src/auth.ts | grep authenticate", "ps aux | grep pi", "git status --short", "git log --grep=authenticate", "git -C src log --oneline", "ls; grep authenticate", "echo rg", "cat src/auth.ts | /usr/bin/grep authenticate"]) {
+  for (const command of ["cat src/auth.ts | grep authenticate", "ps aux | grep pi", "git status --short", "git log --grep=authenticate", "git -C src log --oneline", "ls; grep authenticate", "echo rg", "cat src/auth.ts | /usr/bin/grep authenticate", "grep foo package.json", "rg foo README.md"]) {
     it(`never blocks a shell command that does not search first: ${command}`, async () => {
       const { root, r, c } = await armed();
       try {
@@ -634,6 +666,25 @@ describe("Shell search classification", () => {
       } finally { rmSync(root, { recursive: true, force: true }); }
     });
   }
+
+  // A search scoped only to files the map does not index cannot be answered by
+  // Trail, so the gate fails open; one indexed operand keeps it closed.
+  it("blocks a search over a file the map indexes", async () => {
+    const nodes = [...NODES, { id: "c", name: "trail", path: "extensions/orchestrator/trail.ts" }];
+    const { root, r, c } = await armed(nodes);
+    try {
+      const result = await toolCall(r, c, { toolName: "bash", input: { command: "rg foo extensions/orchestrator/trail.ts" } });
+      assert.equal(blocked(result), true);
+      assert.match(reasonOf(result), /trail_find_code/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("blocks a search whose latest operand is a bare directory", async () => {
+    const { root, r, c } = await armed();
+    try {
+      assert.equal(blocked(await toolCall(r, c, { toolName: "bash", input: { command: "grep foo package.json src" } })), true, "one directory operand keeps the gate");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 });
 
 describe("Fresh checkout map build", () => {

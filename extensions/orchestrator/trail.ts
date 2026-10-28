@@ -250,7 +250,7 @@ const SEARCH_WRAPPERS = new Set(["sudo", "env", "time", "command", "nice", "exec
  * which agents do use). `git grep` counts; an argument that merely says `rg`
  * (`echo rg`) does not, because it is not the command.
  */
-function searchBinary(command: unknown): string | null {
+function searchCommand(command: unknown): { binary: string; operands: string[] } | null {
   const first = firstCommand(command);
   if (!first) return null;
   const tokens = first.trim().split(/\s+/).map(token => token.replace(/^["']|["']$/g, ""));
@@ -261,22 +261,42 @@ function searchBinary(command: unknown): string | null {
   const binary = head.split("/").pop()!.toLowerCase();
   // Git takes global options between `git` and its subcommand (`-C src`,
   // `--no-pager`, `-c k=v`), so `grep` is not necessarily the next token.
-  if (binary === "git" && gitSearch(tokens.slice(index + 1))) return "git grep";
-  return SEARCH_BINARIES.has(binary) ? binary : null;
+  if (binary === "git") {
+    for (let i = index + 1; i < tokens.length; i++) {
+      const token = tokens[i]!;
+      if (token.startsWith("-")) { if (GIT_VALUE_OPTIONS.has(token)) i++; continue; }
+      // A bare `grep` subcommand searches; `--grep=x` on another subcommand is a filter.
+      return token.toLowerCase() === "grep" ? { binary: "git grep", operands: tokens.slice(i + 1) } : null;
+    }
+    return null;
+  }
+  return SEARCH_BINARIES.has(binary) ? { binary, operands: tokens.slice(index + 1) } : null;
 }
+function searchBinary(command: unknown): string | null { return searchCommand(command)?.binary ?? null; }
 /** `git` options whose value is the following token. */
 const GIT_VALUE_OPTIONS = new Set(["-c", "-C"]);
 /**
- * Whether a `git` invocation searches: a bare `grep` subcommand before any other
- * operand. `--grep=x` on another subcommand (`git log --grep=x`) is a filter.
+ * A token that names a file rather than a directory or a bare word: its basename
+ * carries an extension. `src`, `src/`, `.` and `..` all stay false.
  */
-function gitSearch(tokens: string[]): boolean {
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i]!;
-    if (token.startsWith("-")) { if (GIT_VALUE_OPTIONS.has(token)) i++; continue; }
-    return token.toLowerCase() === "grep";
-  }
-  return false;
+function fileLooking(token: string): boolean {
+  const name = token.split("/").pop() ?? "";
+  return name !== "." && name !== ".." && name.includes(".");
+}
+/**
+ * A search that only touches files this map does not index cannot be answered by
+ * Trail, so blocking it would force a pointless `trail_*` call. Every path operand
+ * must be file-shaped and unindexed; one indexed file, directory or bare word
+ * keeps the gate (`rg foo .`, `grep -rn foo src`).
+ */
+function unindexedSearch(command: unknown, mapPaths: Set<string>): boolean {
+  const search = searchCommand(command);
+  if (!search) return false;
+  const operands = search.operands.filter(token => !token.startsWith("-"));
+  // `find` names a path first; every other search binary takes the pattern first.
+  const paths = search.binary === "find" ? operands : operands.slice(1);
+  if (!paths.length) return false;
+  return paths.every(path => fileLooking(path) && !mapPaths.has(path.replace(/^\.\//, "")));
 }
 function searchTool(event: any, logger: Logger = log): boolean {
   const tool = String(event?.toolName ?? event?.name ?? "").toLowerCase();
@@ -484,7 +504,9 @@ export function createTrailIntegration(options: Options) {
   const inject = (event: any, hits: Hit[], note?: string): { systemPrompt: string } | undefined => {
     const section = hits.length ? `Starting points for this task (from the Trail code map):\n${pointerText(hits)}` : note;
     const promptOptions = event?.systemPromptOptions;
-    if (!promptOptions) {
+    // A forced prompt replaces the whole system prompt, so the structured options
+    // are dropped by Pi: the guidance has to be appended to that string instead.
+    if (!promptOptions || promptOptions.forceSystemPrompt !== undefined) {
       const guidance = [MAP_RULE, section].filter(Boolean).join("\n\n");
       const base = typeof event?.systemPrompt === "string" ? event.systemPrompt : "";
       log.warn("injection_mode", { mode: "system_prompt", hits: hits.length, section: Boolean(section) });
@@ -563,6 +585,17 @@ export function createTrailIntegration(options: Options) {
         return { block: true, reason: trailGateReason() };
       }
       if (!searchTool(event, log)) return;
+      if ((tool === "bash" || tool === "powershell") && unindexedSearch(event?.input?.command, state.mapPaths)) {
+        log.debug("gate_allowed", { tool, pathClass: "unindexed_search" });
+        return;
+      }
+      // Same exemption for the dedicated search tools: searching a file the map
+      // never indexed (package.json, a doc) is not blind navigation.
+      const toolPath = tool === "grep" || tool === "find" ? repoRelative(state.root, event?.input?.path) : null;
+      if (toolPath && !state.mapPaths.has(toolPath)) {
+        log.debug("gate_allowed", { tool, path: toolPath, pathClass: "unindexed_search" });
+        return;
+      }
       log.info("gate_blocked", { tool, pathClass: "search" });
       return { block: true, reason: trailGateReason() };
     });

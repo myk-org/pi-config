@@ -13,8 +13,9 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createTrailIntegration } from "../../../extensions/orchestrator/trail.js";
+import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 
 type Handler = (event: any, ctx: any) => Promise<any> | any;
 type Tool = { name: string; execute: (...args: any[]) => Promise<{ content: Array<{ text: string }> }> };
@@ -197,6 +198,56 @@ describe("Real `trail` binary end-to-end", { skip: SKIP }, () => {
       assert.equal(await mock.handlers.get("tool_call")![0]({ toolName: "read", input: { path: "src/format.ts" } }, c), undefined, "reading an injected pointer releases the gate");
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Qodo round 5: every test above injects a logger, so nothing proved the REAL
+   * production log carries the events the #978 G1-G3 protocol reads. A throwaway
+   * session id pins the real logger's destination, and the turn runs the default
+   * (uninjected) logger against the real map.
+   */
+  it("emits the turn's real retrieval telemetry into the production trail log", async () => {
+    const root = fixtureRepo();
+    const sessionId = `trail-e2e-telemetry-${process.pid}-${Date.now()}`;
+    const previousSession = (globalThis as any).__piConfigSessionId;
+    const previousEnvSession = process.env.__PI_CONFIG_SESSION_ID;
+    const previousParent = process.env.__PI_PARENT_SESSION_ID;
+    const previousLevel = process.env.PI_LOG_TRAIL;
+    // A subagent env would nest the log under the parent session instead.
+    delete process.env.__PI_PARENT_SESSION_ID;
+    process.env.PI_LOG_TRAIL = "info";
+    clearLogLevelCache();
+    setGlobalSessionId(sessionId);
+    const logPath = getPiLogPath("trail")!;
+    try {
+      const wiring = assertBuild(root);
+      const mapDir = dirname(dirname(wiring));
+      const mock = mockPi();
+      // No `logger`: the real one, i.e. ~/.pi/logs/trail/<session>/main.log.
+      createTrailIntegration({ enabled: true, worktree: () => root, interactiveTimeoutMs: 30_000 }).register(mock.pi as any);
+      const c = ctx(root);
+      await mock.handlers.get("session_start")![0]({ reason: "startup" }, c);
+      await mock.handlers.get("before_agent_start")![0](promptEvent(PROMPT), c);
+
+      const body = readFileSync(logPath, "utf8");
+      const lines = body.split("\n");
+      const line = (message: string) => lines.find(entry => entry.includes(`[trail] ${message} `)) ?? "";
+      assert.match(line("prompt_retrieval_exit"), /"decision":"injected"/, "the turn decision is emitted to the production log");
+      const ask = lines.find(entry => entry.includes("[trail] subprocess_end ") && entry.includes('"command":"ask"')) ?? "";
+      assert.match(ask, /"code":0/, "the real ask subprocess is recorded with its exit code");
+      assert.ok(line("session_start_exit").includes(mapDir), `the resolved map path is logged (${mapDir})`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(logPath, { force: true });
+      if (basename(dirname(logPath)) === sessionId) rmSync(dirname(logPath), { recursive: true, force: true });
+      if (previousSession === undefined) {
+        delete (globalThis as any).__piConfigSessionId;
+        if (previousEnvSession === undefined) delete process.env.__PI_CONFIG_SESSION_ID; else process.env.__PI_CONFIG_SESSION_ID = previousEnvSession;
+      } else setGlobalSessionId(previousSession);
+      if (previousParent === undefined) delete process.env.__PI_PARENT_SESSION_ID; else process.env.__PI_PARENT_SESSION_ID = previousParent;
+      if (previousLevel === undefined) delete process.env.PI_LOG_TRAIL; else process.env.PI_LOG_TRAIL = previousLevel;
+      clearLogLevelCache();
     }
   });
 });
