@@ -4,12 +4,19 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import * as trail from "../../../extensions/orchestrator/trail.js";
+import { getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 
 type TrailRun = (args: readonly string[], opts: { cwd: string }) => Promise<{ stdout: string; stderr: string; code: number }>;
 type Handler = (event: any, ctx: any) => Promise<any> | any;
 type Tool = { name: string; execute: (...args: any[]) => Promise<{ content: Array<{ text: string }> }> };
+/**
+ * Silent logger for every integration under test: these suites drive fake ctx
+ * and session ids, so the real trail logger would write fake telemetry into
+ * ~/.pi/logs/trail — the source of the #978 G1-G3 measurements.
+ */
+const silentLogger = { debug() {}, info() {}, warn() {}, error() {}, isDebugEnabled: () => false };
 
 function mockPi() {
   const handlers = new Map<string, Handler[]>();
@@ -52,7 +59,7 @@ function register(opts: any = {}) {
   const mock = mockPi(); const command = runner(opts.results);
   // worktree defaults to a real-looking root so the fake cwd is treated as a
   // git worktree; pass worktree: () => null to exercise the non-repo path.
-  trail.createTrailIntegration({ enabled: true, executable: async () => true, worktree: () => "/repo", run: command.run, ...opts }).register(mock.pi as any);
+  trail.createTrailIntegration({ enabled: true, executable: async () => true, worktree: () => "/repo", run: command.run, logger: silentLogger, ...opts }).register(mock.pi as any);
   return { ...mock, ...command };
 }
 async function start(r: ReturnType<typeof register>, c = ctx()) { await r.handlers.get("session_start")![0]({ reason: "startup" }, c); return c; }
@@ -98,7 +105,7 @@ describe("Trail enablement, trust, and startup", () => {
   });
   it("probes the trail binary before exposing tools and stops when unavailable", async () => {
     const mock = mockPi(); const command = runner([{ code: 1 }]);
-    trail.createTrailIntegration({ enabled: true, worktree: () => "/repo", run: command.run }).register(mock.pi as any);
+    trail.createTrailIntegration({ enabled: true, worktree: () => "/repo", run: command.run, logger: silentLogger }).register(mock.pi as any);
     const c = ctx(); await mock.handlers.get("session_start")![0]({ reason: "startup" }, c);
     assert.deepEqual(command.calls.map(call => call.args), [["--version"]]);
     assert.deepEqual(c.status.at(-1), { key: "4b-trail", text: "◤ trail · 0 nodes · failed" });
@@ -122,13 +129,13 @@ describe("Trail enablement, trust, and startup", () => {
   it("resolves .trail/cache before a legacy graft map", async () => {
     const root = mapRoot([{ id: "a", name: "a", path: "src/a.ts" }], 3);
     try {
-      assert.equal(trail.trailMapDir(root), join(root, "graft"));
+      assert.equal(trail.trailMapDir(root, silentLogger), join(root, "graft"));
       mkdirSync(join(root, ".trail/cache/.graph"), { recursive: true });
       writeFileSync(join(root, ".trail/cache/.graph/wiring.json"), JSON.stringify({ meta: { nodeCount: 5 }, nodes: [] }));
-      assert.equal(trail.trailMapDir(root), join(root, ".trail/cache"));
-      assert.equal(trail.trailNodes(root), 5);
+      assert.equal(trail.trailMapDir(root, silentLogger), join(root, ".trail/cache"));
+      assert.equal(trail.trailNodes(root, silentLogger), 5);
       const empty = mkdtempSync(join(tmpdir(), "trail-empty-"));
-      assert.equal(trail.trailMapDir(empty), null);
+      assert.equal(trail.trailMapDir(empty, silentLogger), null);
       rmSync(empty, { recursive: true, force: true });
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -445,7 +452,7 @@ describe("Trail build locking", () => {
     try {
       const lock = join(root, "graft/.graph/pi-build.lock");
       writeFileSync(lock, JSON.stringify({ pid: process.pid, token: "owner" })); utimesSync(lock, 0, 0);
-      assert.equal(trail.acquireBuildLock(root), null);
+      assert.equal(trail.acquireBuildLock(root, undefined, silentLogger), null);
       assert.equal(existsSync(lock), true);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -454,7 +461,7 @@ describe("Trail build locking", () => {
     try {
       const lock = join(root, "graft/.graph/pi-build.lock");
       writeFileSync(lock, JSON.stringify({ pid: 999_999_999, token: "dead" }));
-      const release = trail.acquireBuildLock(root, () => writeFileSync(lock, JSON.stringify({ pid: process.pid, token: "replacement" }), { flag: "wx" }));
+      const release = trail.acquireBuildLock(root, () => writeFileSync(lock, JSON.stringify({ pid: process.pid, token: "replacement" }), { flag: "wx" }), silentLogger);
       assert.equal(release, null);
       assert.equal(JSON.parse(readFileSync(lock, "utf8")).token, "replacement");
     } finally { rmSync(root, { recursive: true, force: true }); }
@@ -515,7 +522,7 @@ describe("Trail paths and status", () => {
   });
   it("reports n/a, not failed, when the cwd is not a git worktree", async () => {
     const mock = mockPi(); const command = runner([]);
-    trail.createTrailIntegration({ enabled: true, worktree: () => null, run: command.run }).register(mock.pi as any);
+    trail.createTrailIntegration({ enabled: true, worktree: () => null, run: command.run, logger: silentLogger }).register(mock.pi as any);
     const c = ctx();
     await mock.handlers.get("session_start")![0]({ reason: "startup" }, c);
     // The whole point: an ordinary directory is not a broken install, so it must
@@ -533,5 +540,45 @@ describe("Trail paths and status", () => {
     assert.equal(trail.formatTrailFooter({ state: "ready", nodeCount: 12, tokenSavings: 1_098_359 }, theme), "<dim>◤ </dim><accent>trail</accent><dim> · </dim><dim>12 nodes</dim><dim> · </dim><success>✓ synced</success><dim> · </dim><success>~1.1M tok saved</success>");
     assert.equal(trail.formatTrailFooter({ state: "ready", nodeCount: 12, tokenSavings: 0, trailReads: 3, sourceReads: 9 }, theme), "<dim>◤ </dim><accent>trail</accent><dim> · </dim><dim>12 nodes</dim><dim> · </dim><success>✓ synced</success><dim> · </dim><dim>3/12 reads</dim>");
     assert.doesNotMatch(trail.formatTrailFooter({ state: "ready", nodeCount: 12, tokenSavings: 0 }, theme), /tok saved|reads/);
+  });
+});
+
+describe("Logger injection", () => {
+  it("routes the whole turn to the injected logger and never to the production log", async () => {
+    const events: Array<{ level: string; message: string }> = [];
+    const stub = {
+      debug(message: string) { events.push({ level: "debug", message }); },
+      info(message: string) { events.push({ level: "info", message }); },
+      warn(message: string) { events.push({ level: "warn", message }); },
+      error(message: string) { events.push({ level: "error", message }); },
+      isDebugEnabled: () => true,
+    };
+    // Pin a throwaway session id so the real logger's destination is known and
+    // empty: anything written there during this test came from this test.
+    const sessionId = `trail-injection-${process.pid}-${Date.now()}`;
+    const previous = (globalThis as any).__piConfigSessionId;
+    setGlobalSessionId(sessionId);
+    const logPath = getPiLogPath("trail")!;
+    rmSync(dirname(logPath), { recursive: true, force: true });
+    const root = mapRoot([{ id: "a", name: "a", path: "src/auth.ts" }]);
+    try {
+      const mock = mockPi();
+      const command = runner([{ stdout: JSON.stringify({ hits: [{ title: "authenticate", pointer: "src/auth.ts:1" }] }) }]);
+      trail.createTrailIntegration({ enabled: true, executable: async () => true, worktree: () => "/repo", run: command.run, logger: stub }).register(mock.pi as any);
+      const c = ctx(root, true, "fake-session");
+      await mock.handlers.get("session_start")![0]({ reason: "startup" }, c);
+      await mock.handlers.get("before_agent_start")![0](promptEvent("locate the authentication implementation"), c);
+      await mock.handlers.get("tool_call")![0]({ toolName: "grep", input: { pattern: "authenticate" } }, c);
+      const messages = events.map(event => event.message);
+      assert.ok(messages.includes("prompt_retrieval_exit"), "the stub receives the turn events");
+      assert.ok(messages.includes("gate_blocked"), "the stub receives gate events");
+      assert.ok(messages.includes("map_dir_resolved"), "helper logging is routed to the injected logger too");
+      assert.ok(events.some(event => event.level === "debug" && event.message === "map_loaded"), "sub-info levels stay on the injected logger");
+      assert.equal(existsSync(logPath), false, "the real trail logger is never reached");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      if (previous === undefined) { delete (globalThis as any).__piConfigSessionId; delete process.env.__PI_CONFIG_SESSION_ID; }
+      else setGlobalSessionId(previous);
+    }
   });
 });

@@ -18,6 +18,8 @@ import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/o
 type TrailRun = (args: readonly string[], opts: { cwd: string; timeoutMs?: number }) => Promise<{ stdout: string; stderr: string; code: number }>;
 type Handler = (event: any, ctx: any) => Promise<any> | any;
 type Tool = { name: string; execute: (...args: any[]) => Promise<{ content: Array<{ text: string }> }> };
+/** Silent logger: these suites drive fake ctx/session ids and must not write telemetry into ~/.pi/logs/trail. */
+const silentLogger = { debug() {}, info() {}, warn() {}, error() {}, isDebugEnabled: () => false };
 
 function mockPi() {
   const handlers = new Map<string, Handler[]>();
@@ -102,7 +104,7 @@ function register(opts: any = {}) {
   const mock = mockPi();
   const command = runner(opts.results);
   // worktree() is forced truthy: these tests model a repo root, not a plain dir.
-  trail.createTrailIntegration({ enabled: true, executable: async () => true, worktree: () => "/repo", run: command.run, ...opts }).register(mock.pi as any);
+  trail.createTrailIntegration({ enabled: true, executable: async () => true, worktree: () => "/repo", run: command.run, logger: silentLogger, ...opts }).register(mock.pi as any);
   return { ...mock, ...command };
 }
 async function start(r: ReturnType<typeof register>, c = ctx(), reason = "startup") {
@@ -276,24 +278,24 @@ describe("Repo map tool and map layout", () => {
     try {
       mkdirSync(join(root, ".trail/cache/.graph"), { recursive: true });
       writeFileSync(join(root, ".trail/cache/.graph/wiring.json"), JSON.stringify({ meta: { nodeCount: 5 }, nodes: [] }));
-      assert.equal(trail.trailMapDir(root), join(root, ".trail/cache"));
-      assert.equal(trail.trailNodes(root), 5);
+      assert.equal(trail.trailMapDir(root, silentLogger), join(root, ".trail/cache"));
+      assert.equal(trail.trailNodes(root, silentLogger), 5);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it("resolves a graft-only repo as the legacy layout", () => {
     const root = mapRoot([{ id: "g", name: "graft", path: "src/graft.ts" }]);
     try {
-      assert.equal(trail.trailMapDir(root), join(root, "graft"));
-      assert.equal(trail.trailNodes(root), 1);
+      assert.equal(trail.trailMapDir(root, silentLogger), join(root, "graft"));
+      assert.equal(trail.trailNodes(root, silentLogger), 1);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it("reports no map when neither layout exists", () => {
     const root = mkdtempSync(join(tmpdir(), "trail-behavior-nolayout-"));
     try {
-      assert.equal(trail.trailMapDir(root), null);
-      assert.equal(trail.trailNodes(root), 0);
+      assert.equal(trail.trailMapDir(root, silentLogger), null);
+      assert.equal(trail.trailNodes(root, silentLogger), 0);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -302,8 +304,8 @@ describe("Repo map tool and map layout", () => {
     try {
       mkdirSync(join(root, ".trail/cache"), { recursive: true });
       // Being "on trail" wins: the stale legacy map must not be read behind it.
-      assert.equal(trail.trailMapDir(root), join(root, ".trail/cache"));
-      assert.equal(trail.trailNodes(root), 0);
+      assert.equal(trail.trailMapDir(root, silentLogger), join(root, ".trail/cache"));
+      assert.equal(trail.trailNodes(root, silentLogger), 0);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
@@ -315,7 +317,7 @@ describe("Worktree enablement", () => {
     try {
       settings(main, { trail_enable: value });
       clearSettingsCache();
-      assert.equal(trail.trailEnabled(worktree), value);
+      assert.equal(trail.trailEnabled(worktree, silentLogger), value);
     } finally { rmSync(worktree, { recursive: true, force: true }); rmSync(main, { recursive: true, force: true }); }
   });
 
@@ -324,10 +326,10 @@ describe("Worktree enablement", () => {
     try {
       settings(root, { trail_enable: false });
       clearSettingsCache();
-      assert.equal(trail.trailEnabled(root), false);
+      assert.equal(trail.trailEnabled(root, silentLogger), false);
       settings(root, { trail_enable: true });
       clearSettingsCache();
-      assert.equal(trail.trailEnabled(root), true);
+      assert.equal(trail.trailEnabled(root, silentLogger), true);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
