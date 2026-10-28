@@ -9,7 +9,7 @@ import { Type } from "typebox";
 import { createLogger, type Logger } from "../shared/logger.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
-import { getSetting, getSettingsPath } from "./project-settings.js";
+import { findSettingsFile, getSetting, parseSettingsFile } from "./project-settings.js";
 import { clearSlot, setSlot } from "./status-bar.js";
 import { getProjectTmpDir, mainCheckoutRoot, resolveWorktreeRoot, tryResolveWorktreeRoot } from "./utils.js";
 import { formatCompactTotal } from "../shared/format-total.js";
@@ -19,9 +19,19 @@ const log = createLogger("trail");
 const TIMEOUT_MS = 45_000;
 const MAX_BUFFER = 64 * 1024;
 const MIN_PROMPT_CHARS = 12;
-const QUERY_MAX_CHARS = 500;
+const QUERY_MAX_CHARS = 2_000;
+const QUERY_FALLBACK_CHARS = 200;
 const INTERACTIVE_TIMEOUT_MS = 2_000;
 export const TRAIL_QUERY_TOOLS = ["trail_find_code", "trail_find_all", "trail_file_api", "trail_trace_calls", "trail_repo_map"] as const;
+/**
+ * The five read-only Trail query tools, added to a child's tool list when it declares one.
+ *
+ * `undefined` deliberately stays `undefined`: it means "this agent declares no list",
+ * which the spawner passes as "no --tools restriction". A child with no restriction
+ * already gets every tool registered in its own session — including these five, because
+ * registerTrail runs there too — so naming them would narrow the child instead of
+ * widening it. A declared list gets them appended.
+ */
 export function withTrailTools(tools: readonly string[] | undefined, enabled: boolean): string[] | undefined {
   if (!tools?.length || !enabled) return tools ? [...tools] : undefined;
   return [...new Set([...tools, ...TRAIL_QUERY_TOOLS])];
@@ -29,7 +39,7 @@ export function withTrailTools(tools: readonly string[] | undefined, enabled: bo
 export type TrailState = "syncing" | "ready" | "stale" | "absent" | "failed";
 export type TrailRun = (args: readonly string[], options: { cwd: string; timeoutMs?: number }) => Promise<{ stdout: string; stderr: string; code: number }>;
 type GraphStatus = "fresh" | "stale" | "absent";
-type Options = { enabled: boolean; setting?: (cwd: string) => boolean; executable?: () => Promise<boolean>; graph?: (cwd: string) => Promise<GraphStatus> | GraphStatus; retrieve?: (query: string, cwd: string) => Promise<{ pointers: string[] }>; worktree?: (cwd: string) => string | null; run?: TrailRun; interactiveTimeoutMs?: number; logger?: Logger };
+type Options = { enabled: boolean; setting?: (cwd: string, logger?: Logger) => boolean; executable?: () => Promise<boolean>; graph?: (cwd: string) => Promise<GraphStatus> | GraphStatus; retrieve?: (query: string, cwd: string) => Promise<{ pointers: string[] }>; worktree?: (cwd: string) => string | null; run?: TrailRun; interactiveTimeoutMs?: number; logger?: Logger };
 type StatusTheme = { fg: (color: string, value: string) => string };
 type Hit = { title?: string; pointer?: string; snippet?: string; code?: string };
 type Ask = { coverage?: number; coverageStrong?: number; hits?: Hit[] };
@@ -42,11 +52,13 @@ type TrailWiring = { nodes?: TrailNode[]; edges?: TrailEdge[] };
  * Upstream keeps the map in `graft/` until a repo is "on trail" and then moves
  * it to `.trail/cache/` (renaming a legacy map itself), so both layouts must be
  * readable here. Filesystem only: this must never spawn the CLI.
+ *
+ * A wiring file decides, not the directory: an empty `.trail/cache` left behind by
+ * an interrupted build must not hide a usable legacy map.
  */
 export function trailMapDir(root: string, logger: Logger = log): string | null {
   const trail = join(root, ".trail", "cache");
-  // `.trail/learnings` marks a repo on trail before its first build lands.
-  if (existsSync(trail) || existsSync(join(root, ".trail", "learnings"))) {
+  if (existsSync(join(trail, ".graph", "wiring.json"))) {
     logger.debug("map_dir_resolved", { root, layout: "trail", dir: trail });
     return trail;
   }
@@ -55,6 +67,12 @@ export function trailMapDir(root: string, logger: Logger = log): string | null {
     // Upstream owns this path name; we only read it until trail renames it.
     logger.debug("map_dir_resolved", { root, layout: "legacy", dir: graft });
     return graft;
+  }
+  // No map yet: `.trail/cache` or `.trail/learnings` marks a repo on trail before
+  // its first build lands, so that is where a map will appear.
+  if (existsSync(trail) || existsSync(join(root, ".trail", "learnings"))) {
+    logger.debug("map_dir_resolved", { root, layout: "trail_pending", dir: trail });
+    return trail;
   }
   logger.debug("map_dir_resolved", { root, layout: "none" });
   return null;
@@ -87,10 +105,19 @@ function text(value: unknown, max = 500): string | null { return typeof value ==
  * validator for pointers and titles, and a realistic task prompt is far longer
  * than its cap (issue #978: every real prompt was read as "no query").
  */
-function queryText(value: unknown): string | null {
+function queryText(value: unknown, max = QUERY_MAX_CHARS): string | null {
   if (typeof value !== "string") return null;
-  const query = value.replace(/\0/g, "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, QUERY_MAX_CHARS).trim();
+  const query = value.replace(/\0/g, "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max).trim();
   return query || null;
+}
+/**
+ * Keyword-shaped retry query for a long prompt whose clamped prefix found nothing:
+ * the first sentence, capped, so a task that buries its request below background
+ * context still lands a searchable query (issue #978).
+ */
+function fallbackQuery(query: string): string | null {
+  const sentence = query.split(/(?<=[.!?])\s+/)[0] ?? query;
+  return queryText(sentence, QUERY_FALLBACK_CHARS);
 }
 function projectPath(root: string, value: unknown): string | null {
   const file = text(value); if (!file || isAbsolute(file)) return null;
@@ -146,14 +173,27 @@ function writeSavings(file: string, delta: number, logger: Logger = log): number
   logger.warn("savings_persist_failed", { code: "LOCK_BUSY" }); return readSavings(file);
 }
 function toolText(content: unknown): string { return Array.isArray(content) ? content.map((part: any) => typeof part?.text === "string" ? part.text : "").join("\n") : ""; }
-export function classifyToolUse(name: unknown, _input: any): "trail" | "source" | null {
+/**
+ * The command that actually does the work: the first segment, skipping a leading
+ * `cd` (a location change, not the command). Anything after a pipe only filters
+ * the previous command's stdout, so `cat log | grep x` never navigates.
+ */
+function firstCommand(command: unknown): string | null {
+  const segments = String(command ?? "").split("|")[0]!.split(/&&|;|&/).map(part => part.trim()).filter(Boolean);
+  return segments.find(part => !/^cd(\s|$)/.test(part)) ?? null;
+}
+export function classifyToolUse(name: unknown, input?: any): "trail" | "source" | null {
   const tool = typeof name === "string" ? name.toLowerCase() : "";
   if (tool.startsWith("trail_")) return "trail";
   if (["read", "grep", "find", "ls"].includes(tool)) return "source";
-  return null;
+  if (tool !== "bash" && tool !== "powershell") return null;
+  // `trail ask …` typed in the shell is a Trail read, not source reading.
+  const head = (firstCommand(input?.command) ?? "").trim().split(/\s+/)[0] ?? "";
+  return head.split("/").pop()!.toLowerCase() === "trail" ? "trail" : null;
 }
 const MAP_RULE = "This project has a Trail code map. Start every code exploration with trail_find_code (describe the concept, not an identifier) before read/grep/find/glob or shell searches; it returns ranked file:line hits with source inlined.";
 const TOOL_RULE = "Search concepts, not identifiers; call before read/grep for code navigation.";
+const BUILD_NOTE = "[trail] This project has no code map yet. A bounded background `trail build` is starting now; trail_find_code (and the other trail_* tools) will return ranked file:line hits once it lands. This turn runs without the navigation gate — navigate the source directly.";
 const ALL_TRAIL_TOOLS = [...TRAIL_QUERY_TOOLS, "trail_refresh", "trail_blast_radius"] as const;
 /**
  * This turn's query, and where it came from. A subagent task starts its run as
@@ -182,11 +222,36 @@ function parseAsk(stdout: string): Ask | null {
   if (start < 0 || end <= start) return null;
   try { return JSON.parse(stdout.slice(start, end + 1)) as Ask; } catch { return null; }
 }
-function searchTool(event: any): boolean {
+const SEARCH_BINARIES = new Set(["rg", "grep", "egrep", "fgrep", "find", "fd", "ag", "ack"]);
+/** Prefixes that still name the command they wrap, so the search check must look past them. */
+const SEARCH_WRAPPERS = new Set(["sudo", "env", "time", "command", "nice", "exec"]);
+/**
+ * The search binary a command runs first, if any — the binary is the first token
+ * after env assignments and wrappers, and may be path-qualified (`/usr/bin/rg`,
+ * which agents do use). `git grep` counts; an argument that merely says `rg`
+ * (`echo rg`) does not, because it is not the command.
+ */
+function searchBinary(command: unknown): string | null {
+  const first = firstCommand(command);
+  if (!first) return null;
+  const tokens = first.trim().split(/\s+/).map(token => token.replace(/^["']|["']$/g, ""));
+  let index = 0;
+  while (index < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]!) || SEARCH_WRAPPERS.has(tokens[index]!.toLowerCase()))) index++;
+  const head = tokens[index];
+  if (!head) return null;
+  if (head.toLowerCase() === "git" && tokens[index + 1]?.toLowerCase() === "grep") return "git grep";
+  const binary = head.split("/").pop()!.toLowerCase();
+  return SEARCH_BINARIES.has(binary) ? binary : null;
+}
+function searchTool(event: any, logger: Logger = log): boolean {
   const tool = String(event?.toolName ?? event?.name ?? "").toLowerCase();
   if (["grep", "find", "glob", "search"].includes(tool)) return true;
   if (tool !== "bash" && tool !== "powershell") return false;
-  return /(^|[|;&]\s*)(?:\S+=\S+\s*)*(?:rg|grep|find|ag|ack)\b/i.test(String(event?.input?.command ?? ""));
+  const binary = searchBinary(event?.input?.command);
+  // Diagnostics, not decoration: a search that slips past here is a gate miss, and
+  // this line is the only way to tell a miss from a turn where nothing searched.
+  logger.debug("gate_search_classified", { tool, binary });
+  return binary !== null;
 }
 function trailGateReason(): string { return "[trail] Project navigation is blocked until Trail retrieval runs for this turn. Call trail_find_code (or trail_trace_calls/trail_file_api) and inspect the file:line pointers it returns. If Trail has no relevant result, retry the raw navigation."; }
 function diagnostic(stderr: string): string { return text(stderr.split(/\r?\n/, 1)[0], 240) ?? "no diagnostic output"; }
@@ -199,7 +264,11 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, logger: Lo
 type LockOwner = { pid: number; token: string };
 function lockOwner(lock: string): LockOwner | null { try { const raw = readFileSync(lock, "utf8"); const legacyPid = Number(raw); if (Number.isSafeInteger(legacyPid)) return { pid: legacyPid, token: `legacy-${legacyPid}` }; const owner = JSON.parse(raw); return Number.isSafeInteger(owner?.pid) && typeof owner?.token === "string" ? owner : null; } catch { return null; } }
 function ownerAlive(owner: LockOwner | null): boolean { if (!owner) return false; try { process.kill(owner.pid, 0); return true; } catch (error: any) { return error?.code === "EPERM"; } }
-function buildLockPath(root: string, logger: Logger = log): string { return resolve(trailMapDir(root, logger) ?? resolve(root, "graft"), ".graph/pi-build.lock"); }
+function buildLockPath(root: string, logger: Logger = log): string {
+  // No map yet: the lock goes where the new map will land, so a first build does
+  // not leave an empty `graft/` behind in a fresh checkout.
+  return resolve(trailMapDir(root, logger) ?? join(root, ".trail", "cache"), ".graph/pi-build.lock");
+}
 export function acquireBuildLock(root: string, afterClaim?: () => void, logger: Logger = log): (() => void) | null {
   const lock = buildLockPath(root, logger); const claim = `${lock}.claim`; const owner = { pid: process.pid, token: randomUUID() };
   try { mkdirSync(dirname(lock), { recursive: true }); } catch { logger.warn("build_lock_unavailable", { root }); return null; }
@@ -244,14 +313,25 @@ export function isEligibleTrailStartup(event: any, ctx: any): boolean { return e
  * Enablement for `root`, inheriting the main checkout's setting when the
  * worktree has no settings file of its own (`.pi/` is gitignored, so a fresh
  * worktree would otherwise report "disabled" while the main checkout is on).
+ *
+ * The worktree's OWN `.pi` is checked directly: getSettingsPath() resolves to the
+ * main checkout, so it cannot see a worktree-level `trail_enable: false`.
  */
 export function trailEnabled(root: string, logger: Logger = log): boolean {
   const main = mainCheckoutRoot(root);
-  if (main && resolve(main) !== resolve(root) && !existsSync(getSettingsPath(root))) {
+  if (main && resolve(main) !== resolve(root)) {
+    // The worktree's own `.pi` is invisible to getSetting(), which resolves to the
+    // main checkout, so a worktree-level kill switch has to be read directly.
+    const own = findSettingsFile(join(root, ".pi"));
+    const value = own ? parseSettingsFile(own).trail_enable : undefined;
+    if (typeof value === "boolean") {
+      logger.info("worktree_settings_source", { root, source: "worktree", path: own });
+      return value;
+    }
     logger.info("worktree_settings_source", { root, source: "main_checkout", main });
     return getSetting(main, "trail_enable");
   }
-  logger.debug("worktree_settings_source", { root, source: "own", path: getSettingsPath(root) });
+  logger.debug("worktree_settings_source", { root, source: "own", path: findSettingsFile(join(root, ".pi")) });
   return getSetting(root, "trail_enable");
 }
 
@@ -260,7 +340,7 @@ export function createTrailIntegration(options: Options) {
   // telemetry into ~/.pi/logs/trail, which is the G1-G3 measurement source for #978.
   const log = options.logger ?? createLogger("trail");
   const child = process.env.PI_SUBAGENT_CHILD === "1";
-  const state = { generation: 0, root: "", store: "", dirtySignal: "", enabled: false, toolsRegistered: false, events: undefined as ExtensionAPI["events"] | undefined, value: "stale" as TrailState, nodeCount: 0, tokenSavings: 0, trailReads: 0, sourceReads: 0, repoMapShown: false, dirty: false, refresh: undefined as Promise<boolean> | undefined, mapPaths: new Set<string>(), ctx: undefined as any, gate: { active: false, retrieved: false, pointers: new Set<string>() } };
+  const state = { generation: 0, root: "", store: "", dirtySignal: "", enabled: false, toolsRegistered: false, events: undefined as ExtensionAPI["events"] | undefined, value: "stale" as TrailState, nodeCount: 0, tokenSavings: 0, trailReads: 0, sourceReads: 0, repoMapShown: false, dirty: false, buildAttempted: false, refresh: undefined as Promise<boolean> | undefined, mapPaths: new Set<string>(), ctx: undefined as any, gate: { active: false, retrieved: false, pointers: new Set<string>() } };
   const publishSavings = () => {
     if (child || !state.events) return;
     state.events.emit("pidash:trail-savings", { tokenSavings: state.tokenSavings });
@@ -306,7 +386,9 @@ export function createTrailIntegration(options: Options) {
     const root = state.root;
     const release = acquireBuildLock(root, undefined, log);
     if (!release) {
-      log.info("refresh_locked", { root });
+      // Degraded but recoverable: another process is building, so the map stays
+      // stale for now. Warn so operators can tell it apart from a normal refresh.
+      log.warn("refresh_locked", { root });
       state.dirty = true;
       log.info("graph_dirty", { source: "refresh_locked" });
       return false;
@@ -334,10 +416,18 @@ export function createTrailIntegration(options: Options) {
   const markDirty = (source: string) => { if (state.dirty) { log.debug("graph_dirty_repeat", { source }); return; } state.dirty = true; setState(state.value === "absent" || state.value === "failed" ? state.value : "stale"); log.info("graph_dirty", { source }); };
   const consumeDirtySignals = () => {
     if (child || !state.dirtySignal) return;
-    try { const signals = readdirSync(state.dirtySignal); if (!signals.length) return; markDirty("child"); log.info("child_dirty_consumed", { count: signals.length }); } catch {}
+    try {
+      const signals = readdirSync(state.dirtySignal); if (!signals.length) return;
+      markDirty("child");
+      // A signal is a one-shot "a child edited": consume it here, otherwise every
+      // prompt re-marks the map dirty (the footer never settles) and the signal
+      // directory grows without bound.
+      for (const signal of signals) try { unlinkSync(join(state.dirtySignal, signal)); } catch {}
+      log.info("child_dirty_consumed", { count: signals.length });
+    } catch {}
   };
   const invalidate = (ctx: any, reason: string) => {
-    state.generation++; state.ctx = ctx; state.enabled = false; state.root = ""; state.store = ""; state.dirtySignal = ""; state.refresh = undefined; state.dirty = false; state.nodeCount = 0; state.tokenSavings = 0; state.mapPaths = new Set(); state.repoMapShown = false; state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
+    state.generation++; state.ctx = ctx; state.enabled = false; state.root = ""; state.store = ""; state.dirtySignal = ""; state.refresh = undefined; state.dirty = false; state.buildAttempted = false; state.nodeCount = 0; state.tokenSavings = 0; state.mapPaths = new Set(); state.repoMapShown = false; state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
     clearSlot("trail", ctx); publishSavings(); log.info("session_invalidated", { reason });
   };
   const invoke = async (args: string[]) => {
@@ -350,18 +440,28 @@ export function createTrailIntegration(options: Options) {
     loadMap(state.root); state.dirty = false; setState("ready");
     return result.stdout.slice(0, MAX_BUFFER);
   };
-  /** Inject the durable map-first rule plus this turn's hits into the structured prompt. */
-  const inject = (event: any, hits: Hit[], note?: string) => {
+  /**
+   * Inject the durable map-first rule plus this turn's hits into the structured prompt.
+   * Returns a replacement system prompt when structured options are unavailable (an
+   * extension forced the prompt), so the guidance is never silently dropped.
+   */
+  const inject = (event: any, hits: Hit[], note?: string): { systemPrompt: string } | undefined => {
+    const section = hits.length ? `Starting points for this task (from the Trail code map):\n${pointerText(hits)}` : note;
     const promptOptions = event?.systemPromptOptions;
-    if (!promptOptions) { log.warn("injection_mode", { mode: "unavailable" }); return; }
+    if (!promptOptions) {
+      const guidance = [MAP_RULE, section].filter(Boolean).join("\n\n");
+      const base = typeof event?.systemPrompt === "string" ? event.systemPrompt : "";
+      log.warn("injection_mode", { mode: "system_prompt", hits: hits.length, section: Boolean(section) });
+      return { systemPrompt: base ? `${base}\n\n${guidance}` : guidance };
+    }
     const add = (list: string[] | undefined, rule: string) => (list ?? []).includes(rule) ? [...(list ?? [])] : [...(list ?? []), rule];
     promptOptions.promptGuidelines = add(promptOptions.promptGuidelines, MAP_RULE);
     const guidelines: Record<string, string[]> = { ...(promptOptions.toolGuidelines ?? {}) };
     for (const name of ALL_TRAIL_TOOLS) guidelines[name] = add(guidelines[name], TOOL_RULE);
     promptOptions.toolGuidelines = guidelines;
-    const section = hits.length ? `Starting points for this task (from the Trail code map):\n${pointerText(hits)}` : note;
     if (section) promptOptions.sections = { ...(promptOptions.sections ?? {}), trail: section };
     log.debug("injection_mode", { mode: "structured", hits: hits.length, section: Boolean(section) });
+    return undefined;
   };
   const register = (pi: ExtensionAPI) => {
     if (!options.enabled) return;
@@ -382,7 +482,7 @@ export function createTrailIntegration(options: Options) {
     pi.on("session_start", async (event: any, ctx: any) => {
       state.ctx = ctx; log.info("session_start_enter", { reason: event?.reason, mode: ctx?.mode, trusted: trusted(ctx) });
       if (!trusted(ctx)) { invalidate(ctx, "untrusted"); log.info("session_start_exit", { decision: "untrusted" }); return; }
-      const enabled = options.setting?.(ctx.cwd) ?? options.enabled;
+      const enabled = options.setting?.(ctx.cwd, log) ?? options.enabled;
       if (!enabled) { invalidate(ctx, "disabled"); log.info("session_start_exit", { decision: "disabled" }); return; }
       // Check for a worktree BEFORE anything goes live. This has to sit above
       // registerTools() and `state.enabled = true`: with those already set, the
@@ -391,8 +491,11 @@ export function createTrailIntegration(options: Options) {
       // stayed live outside a repo -- a read flipped the footer to "synced" and
       // every prompt ran a subprocess in a plain directory.
       if (!worktree(ctx.cwd)) { invalidate(ctx, "not_a_worktree"); setState("absent"); log.info("session_start_exit", { decision: "not_a_worktree", cwd: ctx.cwd }); return; }
-      if (!child && !isEligibleTrailStartup(event, ctx) && !["new", "reload", "resume", "fork"].includes(event?.reason)) { log.info("session_start_exit", { decision: "ineligible" }); return; }
-      state.generation++; state.refresh = undefined; state.dirty = false; state.root = resolveWorktreeRoot(ctx.cwd); const root = state.root; state.repoMapShown = false; state.gate = { active: false, retrieved: false, pointers: new Set<string>() }; state.trailReads = 0; state.sourceReads = 0;
+      // Print/json/oneshot startups still get the tools and per-prompt gate below;
+      // they only skip the binary probe, which a one-shot run cannot report on.
+      // Returning here instead used to leave those sessions without any map tool.
+      const probe = !child && (isEligibleTrailStartup(event, ctx) || ["new", "reload", "resume", "fork"].includes(event?.reason));
+      state.generation++; state.refresh = undefined; state.dirty = false; state.buildAttempted = false; state.root = resolveWorktreeRoot(ctx.cwd); const root = state.root; state.repoMapShown = false; state.gate = { active: false, retrieved: false, pointers: new Set<string>() }; state.trailReads = 0; state.sourceReads = 0;
       state.enabled = true; loadMap(root); state.value = "syncing";
       try { state.store = savingsStore(ctx, root, log); state.dirtySignal = state.store ? `${state.store}.dirty` : ""; if (state.dirtySignal) { mkdirSync(state.dirtySignal, { recursive: true, mode: 0o700 }); chmodSync(state.dirtySignal, 0o700); } state.tokenSavings = readSavings(state.store); } catch (error: any) { state.store = ""; state.dirtySignal = ""; state.tokenSavings = 0; log.warn("savings_restore_failed", { code: error?.code }); }
       // Provisional state while we probe. This used to be "failed", which made
@@ -401,14 +504,14 @@ export function createTrailIntegration(options: Options) {
       setState("syncing");
       const generation = state.generation;
       // The binary is the real gate: missing → failed, no tools registered.
-      if (!child) { const executable = await available(); if (state.generation !== generation || state.root !== root) return; if (!executable) { state.enabled = false; setState("failed"); log.info("session_start_exit", { decision: "unavailable" }); return; } }
+      if (probe) { const executable = await available(); if (state.generation !== generation || state.root !== root) return; if (!executable) { state.enabled = false; setState("failed"); log.info("session_start_exit", { decision: "unavailable" }); return; } }
       registerTools();
       const status = await graph(root);
       if (state.generation !== generation || state.root !== root) return;
       // Never cold-build here: the first `trail ask` seeds a worktree from the
       // main checkout and repairs the branch diff by itself.
       setState(status === "fresh" ? "ready" : "absent");
-      log.info("session_start_exit", { decision: status, nodes: state.nodeCount, map: trailMapDir(root, log) });
+      log.info("session_start_exit", { decision: status, probe, nodes: state.nodeCount, map: trailMapDir(root, log) });
     });
     pi.on("tool_call", (event: any) => {
       if (!state.enabled || !["ready", "stale"].includes(state.value) || !state.gate.active || state.gate.retrieved) return;
@@ -423,7 +526,7 @@ export function createTrailIntegration(options: Options) {
         log.info("gate_blocked", { tool, path, pathClass: "indexed" });
         return { block: true, reason: trailGateReason() };
       }
-      if (!searchTool(event)) return;
+      if (!searchTool(event, log)) return;
       log.info("gate_blocked", { tool, pathClass: "search" });
       return { block: true, reason: trailGateReason() };
     });
@@ -466,31 +569,66 @@ export function createTrailIntegration(options: Options) {
         if (status === "fresh") setState("ready");
         else if (status === "stale") setState("stale");
         else {
-          // A fresh worktree has no map of its own, but a query seeds one from
-          // the main checkout (a copy plus branch-diff repair, never a cold
-          // build). A repo with no map anywhere is left alone — fail open.
           const main = mainCheckoutRoot(root);
-          if (!main || !trailMapDir(main, log)) { finish("graph_absent"); return; }
-          log.info("graph_seed_expected", { root, main });
+          if (main && trailMapDir(main, log)) {
+            // A worktree with no map of its own is seeded by the query from the
+            // main checkout (a copy plus branch-diff repair, never a cold build).
+            log.info("graph_seed_expected", { root, main });
+          } else if (!child && query && substantive(query) && !state.buildAttempted) {
+            // No map anywhere: build one once, in the background and under the
+            // build lock, so the next prompt has a map. The turn itself fails
+            // open — no gate, no blocking — and says the map is on its way.
+            state.buildAttempted = true;
+            void refresh().catch((error: any) => log.warn("graph_build_failed", { code: error?.code }));
+            setState("syncing");
+            log.info("graph_build_started", { root, refreshing: Boolean(state.refresh) });
+            finish("graph_building");
+            return inject(event, [], BUILD_NOTE);
+          } else {
+            finish("graph_absent");
+            return;
+          }
         }
       }
-      inject(event, []);
-      if (!query || !substantive(query)) { finish("guidance_only_control_prompt"); return; }
+      const guidance = inject(event, []);
+      if (!query || !substantive(query)) { finish("guidance_only_control_prompt"); return guidance; }
       state.gate.active = true;
+      // One shared budget: a fallback retry must not double the turn's deadline.
+      const deadline = started + (options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS);
+      const remaining = () => Math.max(1, deadline - Date.now());
+      type Attempt = { hits: Hit[]; failure?: { decision: string; note: string; diagnostic?: string } };
+      /** One bounded retrieval attempt; null means the session changed under us. */
+      const attempt = async (value: string): Promise<Attempt | null> => {
+        if (options.retrieve) {
+          const result = await withTimeout(options.retrieve(value, root), remaining(), log);
+          if (!current()) return null;
+          return { hits: result.pointers.map(pointer => ({ title: pointer, pointer })) };
+        }
+        // `--source` inlines the code, so a hit can be used without re-opening the file.
+        const result = await withTimeout(run(["ask", value, ".", "--json", "-n", "3", "--source"], { cwd: root, timeoutMs: remaining() }), remaining(), log);
+        if (!current()) return null;
+        if (result.code) { const reason = diagnostic(result.stderr); return { hits: [], failure: { decision: "ask_failed", diagnostic: reason, note: `[trail] Retrieval failed: ${reason}. Raw navigation is available.` } }; }
+        const savings = savedTokens(result.stdout); addSavings(savings); setState(state.value); loadMap(root);
+        const ask = parseAsk(result.stdout);
+        if (!ask) return { hits: [], failure: { decision: "invalid_ask_json", note: "[trail] Retrieval returned malformed output. Raw navigation is available." } };
+        return { hits: relevant(ask) };
+      };
       let hits: Hit[] = [];
       try {
-        if (options.retrieve) { const result = await withTimeout(options.retrieve(query, root), options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS, log); if (!current()) return; hits = result.pointers.map(pointer => ({ title: pointer, pointer })); }
-        else {
-          // `--source` inlines the code, so a hit can be used without re-opening the file.
-          const result = await withTimeout(run(["ask", query, ".", "--json", "-n", "3", "--source"], { cwd: root, timeoutMs: options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS }), options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS, log);
-          if (!current()) return;
-          if (result.code) { state.gate.active = false; finish("ask_failed", { diagnostic: diagnostic(result.stderr) }); inject(event, [], `[trail] Retrieval failed: ${diagnostic(result.stderr)}. Raw navigation is available.`); return; }
-          const savings = savedTokens(result.stdout); addSavings(savings); setState(state.value); loadMap(root);
-          const ask = parseAsk(result.stdout);
-          if (!ask) { state.gate.active = false; finish("invalid_ask_json"); inject(event, [], "[trail] Retrieval returned malformed output. Raw navigation is available."); return; }
-          hits = relevant(ask);
+        let result = await attempt(query);
+        // A long prompt is searched through its clamped prefix, which can miss
+        // where the actual request sits: retry once with the first sentence.
+        if (result && !result.hits.length && !result.failure && query.length > QUERY_FALLBACK_CHARS) {
+          const fallback = fallbackQuery(query);
+          if (fallback && fallback !== query) {
+            log.info("retrieval_fallback", { queryLength: query.length, fallbackLength: fallback.length });
+            result = await attempt(fallback);
+          }
         }
-      } catch (error: any) { if (!current()) return; state.gate.active = false; finish("ask_error"); inject(event, [], `[trail] Retrieval failed: ${text(error?.message, 240) ?? "unknown error"}. Raw navigation is available.`); return; }
+        if (!result) return;
+        if (result.failure) { state.gate.active = false; finish(result.failure.decision, result.failure.diagnostic ? { diagnostic: result.failure.diagnostic } : {}); return inject(event, [], result.failure.note); }
+        hits = result.hits;
+      } catch (error: any) { if (!current()) return; state.gate.active = false; finish("ask_error"); return inject(event, [], `[trail] Retrieval failed: ${text(error?.message, 240) ?? "unknown error"}. Raw navigation is available.`); }
       // Still no map on disk (the seed found nothing, or this was never a
       // worktree): fail open rather than blocking navigation on a map we lack.
       if (!state.mapPaths.size) { state.gate.active = false; log.info("gate_skipped", { reason: "no_map" }); }
@@ -498,11 +636,12 @@ export function createTrailIntegration(options: Options) {
         // Do NOT satisfy the gate here: the turn still has to reach the map
         // through a real trail_* call (issue #978: auto retrieval was satisfying
         // its own gate, so the block never fired).
-        state.dirty = false; setState(state.nodeCount ? "ready" : "absent"); finish("guidance_only_no_relevant_hits"); inject(event, []); return;
+        state.dirty = false; setState(state.nodeCount ? "ready" : "absent"); finish("guidance_only_no_relevant_hits"); return inject(event, []);
       }
       hits.forEach(hit => { const path = pointerPath(hit.pointer!); if (path) state.gate.pointers.add(path); });
       state.dirty = false; setState(state.nodeCount ? "ready" : "absent");
-      inject(event, hits); finish("injected", { hits: hits.length });
+      finish("injected", { hits: hits.length });
+      return inject(event, hits);
     });
     pi.on("session_shutdown", () => {
       log.info("session_shutdown", { state: state.value, dirty: state.dirty, trailReads: state.trailReads, sourceReads: state.sourceReads, tokenSavings: state.tokenSavings });

@@ -123,8 +123,15 @@ describe("Trail enablement, trust, and startup", () => {
     await child.handlers.get("before_agent_start")![0](event, ctx());
     assert.match(event.systemPromptOptions.sections.trail, /trail/i);
   });
-  it("skips owner work for print and json oneshots", async () => {
-    process.argv = [process.execPath, "pi", "-p", "prompt"]; const print = register(); await start(print); assert.equal(print.calls.length, 0);
+  it("registers the map tools for a print-mode oneshot without probing the binary", async () => {
+    process.argv = [process.execPath, "pi", "-p", "prompt"];
+    const print = register();
+    const c = await start(print);
+    assert.deepEqual(print.calls, [], "no probe and no build in a one-shot run");
+    assert.ok(print.tools.has("trail_find_code"), "a print-mode session still gets the map tools");
+    assert.ok(print.tools.has("trail_repo_map"));
+    // ...and per-prompt retrieval/gating still works.
+    assert.equal(await print.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "rg authentication" } }, c), undefined);
   });
   it("resolves .trail/cache before a legacy graft map", async () => {
     const root = mapRoot([{ id: "a", name: "a", path: "src/a.ts" }], 3);
@@ -227,7 +234,7 @@ describe("Trail retrieval, injection, and the gate", () => {
     try {
       const r = register(); const c = await start(r, ctx(root));
       await r.handlers.get("before_agent_start")![0](promptEvent("locate the authentication implementation"), c);
-      assert.equal(r.calls.length, 0);
+      assert.deepEqual(r.calls.map(call => call.args), [["build"]], "a mapless checkout builds once in the background, never retrieves");
       assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "rg authentication" } }, c), undefined);
       assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "read", input: { path: "src/a.ts" } }, c), undefined);
     } finally { rmSync(root, { recursive: true, force: true }); }
@@ -466,6 +473,19 @@ describe("Trail build locking", () => {
       assert.equal(JSON.parse(readFileSync(lock, "utf8")).token, "replacement");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+  it("warns when another process holds the build lock", async () => {
+    const root = mapRoot([{ id: "a", name: "a", path: "src/a.ts" }]);
+    try {
+      const warnings: string[] = [];
+      const logger = { debug() {}, info() {}, warn(message: string) { warnings.push(message); }, error() {}, isDebugEnabled: () => false };
+      writeFileSync(join(root, "graft/.graph/pi-build.lock"), JSON.stringify({ pid: process.pid, token: "owner" }));
+      const r = register({ results: [{ stdout: "built" }], logger }); const c = await start(r, ctx(root));
+      const result = await r.tools.get("trail_refresh")!.execute("id", {}, undefined, undefined, c);
+      assert.match(result.content[0].text, /skipped|failed/i);
+      assert.deepEqual(warnings, ["refresh_locked"], "a contended refresh is a degraded state, not routine");
+      assert.deepEqual(r.calls, []);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it("rebuilds only through the explicit trail_refresh tool", async () => {
     const root = mapRoot([{ id: "a", name: "a", path: "src/a.ts" }]);
     try {
@@ -486,6 +506,11 @@ describe("Trail build locking", () => {
       const child = register({ graph: async () => "fresh" }); const childCtx = await start(child, ctx(root, true, `${mode}-child`));
       child.handlers.get("tool_result")![0]({ toolName: mode === "sync" ? "write" : "edit", input: { path: "src/a.ts" }, content: [], isError: false }, childCtx);
       delete process.env.PI_SUBAGENT_CHILD; delete process.env.__PI_PARENT_SESSION_ID;
+      const signals = join(root, ".pi/tmp", readdirSync(join(root, ".pi/tmp")).find(name => name.endsWith(".dirty"))!);
+      assert.equal(readdirSync(signals).length, 1, "the child left one signal");
+      await parent.handlers.get("before_agent_start")![0](promptEvent("yes"), parentCtx);
+      assert.match(parentCtx.status.at(-1)?.text ?? "", /stale/);
+      assert.equal(readdirSync(signals).length, 0, "the consumed signal is deleted, not re-read every prompt");
       await parent.handlers.get("before_agent_start")![0](promptEvent("yes"), parentCtx);
       assert.match(parentCtx.status.at(-1)?.text ?? "", /stale/);
       assert.equal(parent.calls.length, 0);

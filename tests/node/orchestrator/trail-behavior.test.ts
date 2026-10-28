@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as trail from "../../../extensions/orchestrator/trail.js";
@@ -140,10 +141,10 @@ function turnLog() {
   };
   return { enters, exits, logger };
 }
-/** A realistic task prompt: multi-line and far longer than the 500-char query clamp. */
+/** A realistic task prompt: multi-line and far longer than the 2000-char query clamp. */
 function longTask(prefix = "") {
-  const task = `${prefix}locate the authentication implementation and explain how sessions are validated\n${("see the session validator and its callers\n").repeat(40)}`;
-  assert.ok(task.length > 1200, `fixture must exceed the clamp (${task.length})`);
+  const task = `${prefix}locate the authentication implementation and explain how sessions are validated\n${("see the session validator and its callers\n").repeat(60)}`;
+  assert.ok(task.length > 2_100, `fixture must exceed the clamp (${task.length})`);
   return task;
 }
 const ASK_OUTPUT = JSON.stringify({ coverage: 0.9, hits: [{ title: "authenticate", pointer: "src/auth.ts:12", snippet: "validates sessions" }] });
@@ -226,7 +227,7 @@ describe("Automatic retrieval never satisfies the navigation gate", () => {
 });
 
 describe("Custom-message turns (a subagent task)", () => {
-  it("injects this turn's pointers and arms the gate", async () => {
+  it("injects this turn's pointers for a task prompt", async () => {
     const root = mapRoot(NODES);
     try {
       const r = register({ results: [{ stdout: ASK_OUTPUT }] });
@@ -235,6 +236,15 @@ describe("Custom-message turns (a subagent task)", () => {
       await r.handlers.get("before_agent_start")![0](event, c);
       assert.deepEqual(r.calls.map(call => call.args[0]), ["ask"], "a task prompt runs retrieval, it is not a control prompt");
       assert.match(event.systemPromptOptions.sections.trail, /src\/auth\.ts:12/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("arms the gate for a task prompt", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const r = register({ results: [{ stdout: ASK_OUTPUT }] });
+      const c = await start(r, ctx(root));
+      await r.handlers.get("before_agent_start")![0](customEvent({ content: [{ type: "text", text: "locate the authentication implementation" }] }), c);
       const read = await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } });
       assert.equal(blocked(read), true);
       assert.match(reasonOf(read), /trail_find_code/);
@@ -242,7 +252,18 @@ describe("Custom-message turns (a subagent task)", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("accepts string content and a trail_find_code result releases the gate", async () => {
+  it("accepts string content as the task prompt", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const r = register({ results: [{ stdout: ASK_OUTPUT }] });
+      const c = await start(r, ctx(root));
+      await r.handlers.get("before_agent_start")![0](customEvent({ content: "locate the authentication implementation" }), c);
+      assert.deepEqual(r.calls.map(call => call.args[0]), ["ask"]);
+      assert.equal(blocked(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } })), true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("releases the gate after a trail_find_code result in a task turn", async () => {
     const root = mapRoot(NODES);
     try {
       const r = register({ results: [{ stdout: ASK_OUTPUT }] });
@@ -272,7 +293,7 @@ describe("Custom-message turns (a subagent task)", () => {
 });
 
 describe("Query clamping (a long prompt is a query, not an absence)", () => {
-  it("runs retrieval, injects pointers and arms the gate for a 1200+ char user prompt", async () => {
+  it("runs retrieval, injects pointers and arms the gate for a 2100+ char user prompt", async () => {
     const root = mapRoot(NODES);
     try {
       const log = turnLog();
@@ -281,14 +302,14 @@ describe("Query clamping (a long prompt is a query, not an absence)", () => {
       const event = promptEvent(longTask());
       await r.handlers.get("before_agent_start")![0](event, c);
       assert.equal(log.enters[0].querySource, "prompt");
-      assert.ok(log.enters[0].queryLength > 450 && log.enters[0].queryLength <= 500, `the query is clamped, not dropped (${log.enters[0].queryLength})`);
+      assert.ok(log.enters[0].queryLength > 1_500 && log.enters[0].queryLength <= 2_000, `the query is clamped, not dropped (${log.enters[0].queryLength})`);
       assert.deepEqual(r.calls.map(call => call.args[0]), ["ask"], "a long prompt still runs retrieval");
       assert.match(event.systemPromptOptions.sections.trail, /src\/auth\.ts:12/);
       assert.equal(blocked(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } })), true);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("does the same for a 1200+ char custom (subagent task) message", async () => {
+  it("does the same for a 2100+ char custom (subagent task) message", async () => {
     const root = mapRoot(NODES);
     try {
       const log = turnLog();
@@ -297,7 +318,7 @@ describe("Query clamping (a long prompt is a query, not an absence)", () => {
       const event = customEvent({ content: [{ type: "text", text: longTask() }] });
       await r.handlers.get("before_agent_start")![0](event, c);
       assert.equal(log.enters[0].querySource, "custom_message");
-      assert.ok(log.enters[0].queryLength > 450 && log.enters[0].queryLength <= 500, `clamped (${log.enters[0].queryLength})`);
+      assert.ok(log.enters[0].queryLength > 1_500 && log.enters[0].queryLength <= 2_000, `clamped (${log.enters[0].queryLength})`);
       assert.deepEqual(r.calls.map(call => call.args[0]), ["ask"]);
       assert.match(event.systemPromptOptions.sections.trail, /src\/auth\.ts:12/);
       assert.equal(blocked(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } })), true);
@@ -329,7 +350,7 @@ describe("Query clamping (a long prompt is a query, not an absence)", () => {
       await r.handlers.get("before_agent_start")![0](promptEvent(longTask()), c);
       await r.handlers.get("before_agent_start")![0](customEvent({ content: longTask() }), c);
       assert.ok(log.enters.length === 2);
-      for (const enter of log.enters) assert.ok(enter.queryLength > 0 && enter.queryLength <= 500, `queryLength ${enter.queryLength}`);
+      for (const enter of log.enters) assert.ok(enter.queryLength > 0 && enter.queryLength <= 2_000, `queryLength ${enter.queryLength}`);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
@@ -352,7 +373,7 @@ describe("Navigation gate fails open", () => {
       const r = register();
       const c = await start(r, ctx(root));
       await r.handlers.get("before_agent_start")![0](promptEvent("locate the authentication implementation"), c);
-      assert.deepEqual(r.calls, [], "no map means no retrieval subprocess either");
+      assert.deepEqual(r.calls.map(call => call.args[0]), ["build"], "no map starts one background build, never a retrieval");
       assert.equal(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } }), undefined);
       assert.equal(await toolCall(r, c, { toolName: "grep", input: { pattern: "authenticate" } }), undefined);
     } finally { rmSync(root, { recursive: true, force: true }); }
@@ -411,7 +432,7 @@ describe("Repo map tool and map layout", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("prefers .trail/cache over a legacy graft map", () => {
+  it("trail wiring wins over a populated graft map", () => {
     const root = mapRoot([{ id: "g", name: "graft", path: "src/graft.ts" }], 3);
     try {
       mkdirSync(join(root, ".trail/cache/.graph"), { recursive: true });
@@ -437,13 +458,13 @@ describe("Repo map tool and map layout", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("does not fall back to graft when .trail/cache exists without a wiring file", () => {
+  it("falls back to a legacy graft map when .trail/cache exists without a wiring file", () => {
     const root = mapRoot([{ id: "g", name: "graft", path: "src/graft.ts" }, { id: "h", name: "h", path: "src/h.ts" }], 2);
     try {
       mkdirSync(join(root, ".trail/cache"), { recursive: true });
-      // Being "on trail" wins: the stale legacy map must not be read behind it.
-      assert.equal(trail.trailMapDir(root, silentLogger), join(root, ".trail/cache"));
-      assert.equal(trail.trailNodes(root, silentLogger), 0);
+      // An empty cache directory is not a map: the usable legacy map must win.
+      assert.equal(trail.trailMapDir(root, silentLogger), join(root, "graft"));
+      assert.equal(trail.trailNodes(root, silentLogger), 2);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
@@ -510,6 +531,14 @@ describe("Subagent toolset and status footer", () => {
     assert.equal(trail.withTrailTools(undefined, true), undefined);
   });
 
+  it("leaves a child that declares no tool list unrestricted", () => {
+    // `undefined` reaches the spawner as "no --tools flag", i.e. every tool
+    // registered in the child session — the Trail query tools among them, since
+    // registerTrail runs there too (see the production registration test).
+    assert.equal(trail.withTrailTools(undefined, true), undefined);
+    assert.equal(trail.withTrailTools(undefined, false), undefined);
+  });
+
   it("formats the footer with the trail label and the node count", () => {
     const text = trail.formatTrailFooter({ state: "ready", nodeCount: 12, tokenSavings: 0 });
     assert.match(text, /trail/);
@@ -527,5 +556,195 @@ describe("Subagent toolset and status footer", () => {
     const c2 = await start(legacy, ctx(defaultRoot, true, "savings-graft"));
     await toolResult(legacy, c2, { toolName: "trail_repo_map", input: {}, content: toolText("[graft] tokens saved ≈ 700"), isError: false });
     assert.match(c2.status.at(-1)?.text ?? "", /~700 tok saved/);
+  });
+});
+
+describe("Shell search classification", () => {
+  /** A repo with a map and one injected pointer: the gate is armed, no trail_* call yet. */
+  async function armed() {
+    const root = mapRoot(NODES);
+    const r = register({ results: [{ stdout: ASK_OUTPUT }] });
+    const c = await start(r, ctx(root));
+    await r.handlers.get("before_agent_start")![0](promptEvent("locate the authentication implementation"), c);
+    assert.equal(blocked(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } })), true, "the gate is armed");
+    return { root, r, c };
+  }
+
+  for (const command of ["rg authenticate src", "grep -rn authenticate src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "env FOO=1 rg authenticate"]) {
+    it(`blocks a first-segment search: ${command}`, async () => {
+      const { root, r, c } = await armed();
+      try {
+        const result = await toolCall(r, c, { toolName: "bash", input: { command } });
+        assert.equal(blocked(result), true);
+        assert.match(reasonOf(result), /trail_find_code/);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+
+  for (const command of ["cat src/auth.ts | grep authenticate", "ps aux | grep pi", "git status --short", "ls; grep authenticate", "echo rg", "cat src/auth.ts | /usr/bin/grep authenticate"]) {
+    it(`never blocks a shell command that does not search first: ${command}`, async () => {
+      const { root, r, c } = await armed();
+      try {
+        assert.equal(await toolCall(r, c, { toolName: "bash", input: { command } }), undefined);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+});
+
+describe("Fresh checkout map build", () => {
+  it("starts one background build on the first substantive prompt and fails that turn open", async () => {
+    const root = mkdtempSync(join(tmpdir(), "trail-behavior-fresh-"));
+    try {
+      const log = turnLog();
+      const r = register({ logger: log.logger });
+      const c = await start(r, ctx(root));
+      const event = promptEvent("locate the authentication implementation");
+      await r.handlers.get("before_agent_start")![0](event, c);
+      assert.deepEqual(r.calls.map(call => call.args[0]), ["build"], "one bounded build, no retrieval");
+      assert.equal(log.exits.at(-1)!.decision, "graph_building");
+      assert.ok(c.status.some(status => /syncing/.test(status.text ?? "")), "the footer says the map is being built");
+      assert.match(event.systemPromptOptions.sections.trail, /trail build/);
+      assert.match(event.systemPromptOptions.sections.trail, /trail_find_code/);
+      assert.equal(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } }), undefined, "fail open while it builds");
+      // A second prompt never starts a second build.
+      await r.handlers.get("before_agent_start")![0](promptEvent("locate the authentication implementation"), c);
+      assert.equal(r.calls.filter(call => call.args[0] === "build").length, 1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps a control prompt from starting a build", async () => {
+    const root = mkdtempSync(join(tmpdir(), "trail-behavior-fresh-control-"));
+    try {
+      const r = register();
+      const c = await start(r, ctx(root));
+      await r.handlers.get("before_agent_start")![0](promptEvent("yes"), c);
+      assert.deepEqual(r.calls, []);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("Query fallback for long prompts", () => {
+  it("retries once with the first sentence when the clamped query finds nothing", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const log = turnLog();
+      const r = register({ logger: log.logger, results: [{ stdout: JSON.stringify({ hits: [] }) }, { stdout: ASK_OUTPUT }] });
+      const c = await start(r, ctx(root));
+      const event = promptEvent(longTask());
+      await r.handlers.get("before_agent_start")![0](event, c);
+      const asks = r.calls.filter(call => call.args[0] === "ask");
+      assert.equal(asks.length, 2, "one clamped attempt plus one keyword-shaped fallback");
+      const fallback = String(asks[1]!.args[1]);
+      assert.ok(fallback.length <= 200, `the fallback stays keyword-shaped (${fallback.length})`);
+      assert.ok(fallback.startsWith("locate the authentication implementation"), fallback);
+      assert.match(event.systemPromptOptions.sections.trail, /src\/auth\.ts:12/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("does not retry when the first attempt fails", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const r = register({ results: [{ code: 1, stderr: "boom" }] });
+      const c = await start(r, ctx(root));
+      await r.handlers.get("before_agent_start")![0](promptEvent(longTask()), c);
+      assert.equal(r.calls.filter(call => call.args[0] === "ask").length, 1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("Injection without structured prompt options", () => {
+  it("returns the guidance and hits as a replacement system prompt", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const r = register({ results: [{ stdout: ASK_OUTPUT }] });
+      const c = await start(r, ctx(root));
+      // No systemPromptOptions: another extension forced the prompt.
+      const event = { messageType: "user", prompt: "locate the authentication implementation", systemPrompt: "base prompt" };
+      const result = await r.handlers.get("before_agent_start")![0](event, c);
+      assert.match(result.systemPrompt, /^base prompt/);
+      assert.match(result.systemPrompt, /trail_find_code/);
+      assert.match(result.systemPrompt, /src\/auth\.ts:12/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps the guidance for a control prompt too", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const r = register();
+      const c = await start(r, ctx(root));
+      const result = await r.handlers.get("before_agent_start")![0]({ messageType: "user", prompt: "yes", systemPrompt: "base" }, c);
+      assert.match(result.systemPrompt, /trail_find_code/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("Production registration (registerTrail)", () => {
+  it("registers the tools and every handler through the real entry point", async () => {
+    const root = mkdtempSync(join(tmpdir(), "trail-behavior-register-"));
+    try {
+      execFileSync("git", ["init", "-q", root]);
+      settings(root, { trail_enable: true });
+      clearSettingsCache();
+      const mock = mockPi();
+      trail.registerTrail(mock.pi as any);
+      // print mode keeps this test off the real trail binary: it is the one
+      // startup shape that skips the probe while still registering the tools.
+      const c = { ...ctx(root), mode: "print" };
+      await mock.handlers.get("session_start")![0]({ reason: "startup" }, c);
+      assert.deepEqual([...mock.tools.keys()].sort(), ["trail_blast_radius", "trail_file_api", "trail_find_all", "trail_find_code", "trail_refresh", "trail_repo_map", "trail_trace_calls"]);
+      for (const name of ["session_start", "tool_call", "tool_result", "before_agent_start", "session_shutdown"]) assert.ok(mock.handlers.get(name)?.length, `${name} handler is wired`);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("Worktree kill switch", () => {
+  it("honours a linked worktree's own trail_enable:false over the main checkout", () => {
+    const main = mkdtempSync(join(tmpdir(), "trail-behavior-kill-main-"));
+    const worktree = linkedWorktree(main);
+    try {
+      settings(main, { trail_enable: true });
+      settings(worktree, { trail_enable: false });
+      clearSettingsCache();
+      assert.equal(trail.trailEnabled(worktree, silentLogger), false);
+      settings(worktree, { trail_enable: true });
+      clearSettingsCache();
+      assert.equal(trail.trailEnabled(worktree, silentLogger), true);
+    } finally { rmSync(worktree, { recursive: true, force: true }); rmSync(main, { recursive: true, force: true }); }
+  });
+});
+
+describe("Tool classification for read accounting", () => {
+  it("classifies trail_* tools as Trail reads", () => {
+    assert.equal(trail.classifyToolUse("trail_find_code", {}), "trail");
+    assert.equal(trail.classifyToolUse("trail_trace_calls", {}), "trail");
+  });
+
+  it("classifies source-reading tools as source reads", () => {
+    for (const tool of ["read", "grep", "find", "ls"]) assert.equal(trail.classifyToolUse(tool, {}), "source", tool);
+  });
+
+  it("classifies a shell command running the trail binary as a Trail read", () => {
+    assert.equal(trail.classifyToolUse("bash", { command: "trail ask authentication" }), "trail");
+    assert.equal(trail.classifyToolUse("bash", { command: "cd src && trail find_code auth" }), "trail");
+  });
+
+  it("classifies anything else as neither", () => {
+    assert.equal(trail.classifyToolUse("bash", { command: "rg authenticate" }), null);
+    assert.equal(trail.classifyToolUse("write", {}), null);
+    assert.equal(trail.classifyToolUse("edit", {}), null);
+    assert.equal(trail.classifyToolUse("graft_find_code", {}), null);
+  });
+});
+
+describe("Enablement callback logger", () => {
+  it("hands the integration logger to the setting callback", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const seen: unknown[] = [];
+      const stub = { debug() {}, info() {}, warn() {}, error() {}, isDebugEnabled: () => false };
+      const r = register({ logger: stub, setting: (_cwd: string, logger?: unknown) => { seen.push(logger); return true; } });
+      await start(r, ctx(root));
+      assert.deepEqual(seen, [stub], "a `setting: trailEnabled` caller inherits the injected logger");
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

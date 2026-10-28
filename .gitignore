@@ -28,8 +28,11 @@ Thumbs.db
 .claude/agents/
 .gemini/agents/
 
-# graft's local graph cache — regenerable, not committed (run `graft build`).
+# Trail's code-map cache — regenerable, never committed. Upstream keeps it in
+# `/graft/`, or in `.trail/cache/` for a repo wired for trail; `trail build`
+# recreates it. Both paths are ignored so a map can never enter version control.
 /graft/
+.trail/cache/
 
 # Qodo review session-context files — never commit them.
 .qodo/
