@@ -544,6 +544,29 @@ describe("Trail paths and status", () => {
 });
 
 describe("Logger injection", () => {
+  it("labels where each turn's query came from", async () => {
+    const exits: any[] = [];
+    const stub = {
+      debug() {},
+      info(message: string, data: any) { if (message === "prompt_retrieval_exit") exits.push(data); },
+      warn() {}, error() {}, isDebugEnabled: () => false,
+    };
+    const root = mapRoot([{ id: "a", name: "a", path: "src/auth.ts" }]);
+    try {
+      const r = register({ graph: async () => "fresh", logger: stub, results: [{ stdout: JSON.stringify({ hits: [{ title: "authenticate", pointer: "src/auth.ts:1" }] }) }, { stdout: JSON.stringify({ hits: [{ title: "authenticate", pointer: "src/auth.ts:1" }] }) }] });
+      const c = await start(r, ctx(root));
+      const custom = (message: any) => ({ messageType: "custom", message, systemPrompt: "base", systemPromptOptions: { sections: {} } });
+      await r.handlers.get("before_agent_start")![0](promptEvent("locate the authentication implementation"), c);
+      await r.handlers.get("before_agent_start")![0](custom({ content: [{ type: "text", text: "locate the authentication implementation" }] }), c);
+      await r.handlers.get("before_agent_start")![0](custom({ content: [] }), c);
+      assert.deepEqual(exits.map(exit => [exit.querySource, exit.decision]), [
+        ["prompt", "injected"],
+        ["custom_message", "injected"],
+        ["custom_message", "guidance_only_control_prompt"],
+      ]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("routes the whole turn to the injected logger and never to the production log", async () => {
     const events: Array<{ level: string; message: string }> = [];
     const stub = {

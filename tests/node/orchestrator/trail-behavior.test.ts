@@ -58,6 +58,18 @@ function promptEvent(prompt: string, options: Record<string, any> = {}) {
     },
   };
 }
+/** Custom-message event: how a subagent task starts its run — `prompt` is undefined, `message` holds the task. */
+function customEvent(message: any, options: Record<string, any> = {}) {
+  return {
+    messageType: "custom",
+    message,
+    systemPrompt: "base",
+    systemPromptOptions: {
+      selectedTools: [], hiddenTools: [], toolSnippets: {}, toolGuidelines: [], promptGuidelines: [],
+      appendSystemPrompt: "", sections: {}, contextFiles: [], skills: [], cwd: "/repo", ...options,
+    },
+  };
+}
 /** Temp repo root with an on-disk code map (map presence is a filesystem check). */
 function mapRoot(nodes: Array<{ id: string; name: string; path: string }>, nodeCount = nodes.length) {
   const root = mkdtempSync(join(tmpdir(), "trail-behavior-map-"));
@@ -192,6 +204,52 @@ describe("Automatic retrieval never satisfies the navigation gate", () => {
       assert.equal(await toolCall(r, c, { toolName: "read", input: { path: "package.json" } }), undefined);
       assert.equal(await toolCall(r, c, { toolName: "read", input: { path: "docs/README.md" } }), undefined);
       assert.equal(await toolCall(r, c, { toolName: "read", input: { path: "src/not-indexed.ts" } }), undefined);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("Custom-message turns (a subagent task)", () => {
+  it("injects this turn's pointers and arms the gate", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const r = register({ results: [{ stdout: ASK_OUTPUT }] });
+      const c = await start(r, ctx(root));
+      const event = customEvent({ content: [{ type: "text", text: "locate the authentication implementation" }] });
+      await r.handlers.get("before_agent_start")![0](event, c);
+      assert.deepEqual(r.calls.map(call => call.args[0]), ["ask"], "a task prompt runs retrieval, it is not a control prompt");
+      assert.match(event.systemPromptOptions.sections.trail, /src\/auth\.ts:12/);
+      const read = await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } });
+      assert.equal(blocked(read), true);
+      assert.match(reasonOf(read), /trail_find_code/);
+      assert.equal(blocked(await toolCall(r, c, { toolName: "grep", input: { pattern: "authenticate" } })), true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("accepts string content and a trail_find_code result releases the gate", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const r = register({ results: [{ stdout: ASK_OUTPUT }] });
+      const c = await start(r, ctx(root));
+      await r.handlers.get("before_agent_start")![0](customEvent({ content: "locate the authentication implementation" }), c);
+      assert.equal(blocked(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } })), true);
+      await toolResult(r, c, { toolName: "trail_find_code", input: {}, content: toolText("src/auth.ts:12"), isError: false });
+      assert.equal(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } }), undefined);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps empty and slash-command custom messages on the control-prompt path", async () => {
+    const root = mapRoot(NODES);
+    try {
+      const r = register({ results: [{ stdout: ASK_OUTPUT }] });
+      const c = await start(r, ctx(root));
+      for (const message of [{ content: [] }, { content: "/compact now please" }, { content: [{ type: "image", data: "" }] }]) {
+        const event = customEvent(message);
+        await r.handlers.get("before_agent_start")![0](event, c);
+        assert.match(event.systemPromptOptions.promptGuidelines.join("\n"), /trail_find_code/);
+        assert.equal(event.systemPromptOptions.sections.trail, undefined);
+        assert.equal(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } }), undefined);
+      }
+      assert.deepEqual(r.calls, [], "a control prompt spawns no retrieval subprocess");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

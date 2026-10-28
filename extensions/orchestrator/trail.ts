@@ -144,6 +144,21 @@ export function classifyToolUse(name: unknown, _input: any): "trail" | "source" 
 const MAP_RULE = "This project has a Trail code map. Start every code exploration with trail_find_code (describe the concept, not an identifier) before read/grep/find/glob or shell searches; it returns ranked file:line hits with source inlined.";
 const TOOL_RULE = "Search concepts, not identifiers; call before read/grep for code navigation.";
 const ALL_TRAIL_TOOLS = [...TRAIL_QUERY_TOOLS, "trail_refresh", "trail_blast_radius"] as const;
+/**
+ * This turn's query, and where it came from. A subagent task starts its run as
+ * a custom message (`event.prompt` is undefined), and that turn needs the same
+ * retrieval and gate as a user prompt (issue #978, G2).
+ */
+function promptQuery(event: any): { query: string | null; querySource: "prompt" | "custom_message" | "none" } {
+  const prompt = text(event?.prompt);
+  if (prompt) return { query: prompt, querySource: "prompt" };
+  if (event?.messageType !== "custom") return { query: null, querySource: "none" };
+  const content = event?.message?.content;
+  const raw = typeof content === "string" ? content : Array.isArray(content) ? content.filter((part: any) => typeof part?.text === "string").map((part: any) => part.text).join(" ") : "";
+  // A task prompt is long and multi-line: collapse whitespace and keep the
+  // first 500 chars, because `text()` rejects (rather than caps) long input.
+  return { query: text(raw.replace(/\s+/g, " ").trim().slice(0, 500)), querySource: "custom_message" };
+}
 function substantive(query: string): boolean { return query.length >= MIN_PROMPT_CHARS && !query.startsWith("/"); }
 function pointerPath(pointer: string): string | null {
   // A pointer is `path:span`, a bare file path, or a comma-joined source list.
@@ -425,15 +440,15 @@ export function createTrailIntegration(options: Options) {
       return hint ? { content: [...(event.content ?? []), { type: "text", text: hint }] } : undefined;
     });
     pi.on("before_agent_start", async (event: any, ctx: any) => {
-      const started = Date.now(); state.ctx = ctx; const query = text(event?.prompt); const generation = state.generation; const root = state.root;
+      const started = Date.now(); state.ctx = ctx; const { query, querySource } = promptQuery(event); const generation = state.generation; const root = state.root;
       state.gate = { active: false, retrieved: false, pointers: new Set<string>() }; const gate = state.gate;
       const current = () => {
         const generationMatches = state.generation === generation; const rootMatches = state.root === root; const gateMatches = state.gate === gate;
         log.debug("retrieval_current", { generationMatches, rootMatches, gateMatches });
         return generationMatches && rootMatches && gateMatches;
       };
-      const finish = (decision: string, extra = {}) => log.info("prompt_retrieval_exit", { decision, elapsedMs: Date.now() - started, ...extra });
-      log.info("prompt_retrieval_enter", { enabled: state.enabled, trusted: trusted(ctx), dirty: state.dirty, refreshing: Boolean(state.refresh), queryLength: query?.length ?? 0 });
+      const finish = (decision: string, extra = {}) => log.info("prompt_retrieval_exit", { decision, querySource, elapsedMs: Date.now() - started, ...extra });
+      log.info("prompt_retrieval_enter", { enabled: state.enabled, trusted: trusted(ctx), dirty: state.dirty, refreshing: Boolean(state.refresh), querySource, queryLength: query?.length ?? 0 });
       if (!trusted(ctx) || !state.enabled || !state.root || resolveWorktreeRoot(ctx.cwd) !== state.root) { finish("disabled_or_untrusted"); return; }
       consumeDirtySignals(); state.tokenSavings = Math.max(state.tokenSavings, readSavings(state.store)); setState(state.value);
       if (!["ready", "stale"].includes(state.value)) {
