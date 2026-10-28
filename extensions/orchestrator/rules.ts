@@ -236,19 +236,23 @@ export function registerRules(
       }
     }
 
+    // 1.4.0's BeforeAgentStartEvent is a union: `prompt` exists only on the user
+    // variant, so narrow once here and use this for every downstream lookup.
+    const prompt = event.messageType === "user" ? event.prompt : undefined;
+
     // Project memories — situation report (scored, token-budgeted) injected BEFORE rules
     // systemPrompt.length is chars; estimateMemoryBudget converts internally
     const budget = estimateMemoryBudget(event.systemPrompt?.length ?? 0, undefined, ctx.cwd);
     const queryClass =
-      !isSubagent && event.prompt && !isSocialCloser(event.prompt)
-        ? classifyQueryClass(event.prompt)
+      !isSubagent && prompt && !isSocialCloser(prompt)
+        ? classifyQueryClass(prompt)
         : "general";
     const memories = loadMemoriesWithScoring(ctx.cwd, isSubagent, budget, queryClass);
 
     // Auto-inject contextually relevant memories via vector search (~2.5ms, in-process)
     // Session-scoped/expired entries are filtered out first (Qodo #19, PR #916)
     // — a session rule must not leak into a later session's context.
-    const shouldSearch = !isSubagent && !!event.prompt && !isSocialCloser(event.prompt);
+    const shouldSearch = !isSubagent && !!prompt && !isSocialCloser(prompt);
     let contextMemories = "";
     if (shouldSearch) {
       try {
@@ -271,7 +275,7 @@ export function registerRules(
                   ...entries.filter((e) => !boostCats.has(e.category)),
                 ]
               : entries;
-          const results = await vectorSearch(ctx.cwd, event.prompt, searchPool, topK);
+          const results = await vectorSearch(ctx.cwd, prompt, searchPool, topK);
           const injectThreshold = Number(getSetting(ctx.cwd, "memory_inject_similarity")) || 0.65;
           const relevant = results.filter(r => r.similarity > injectThreshold);
           if (relevant.length > 0) {
@@ -281,7 +285,7 @@ export function registerRules(
               relevant.map(r => `- [${r.category}] ${r.text} (similarity: ${r.similarity.toFixed(3)})`).join("\n") +
               "\n\n";
             // Retrieval telemetry — track what was injected
-            logMemoryInjection(ctx.cwd, event.prompt, relevant, queryClass);
+            logMemoryInjection(ctx.cwd, prompt, relevant, queryClass);
             lastInjectedMemories = relevant;
             log.info("memory_injected", relevant.length);
           }
@@ -294,7 +298,7 @@ export function registerRules(
     if (shouldSearch) {
       try {
         const { searchSessions } = await import("./session-search.js");
-        const sessionResults = searchSessions(ctx.cwd, event.prompt, 3);
+        const sessionResults = searchSessions(ctx.cwd, prompt, 3);
         if (sessionResults.length > 0) {
           log.info("context_injected", "session_history");
           sessionContext = "\n# Relevant Past Sessions\n\n" +
@@ -307,7 +311,7 @@ export function registerRules(
           try {
             getTelemetryLog(ctx.cwd).append({
               event: "session-inject",
-              prompt: event.prompt.slice(0, 200),
+              prompt: prompt?.slice(0, 200),
               sessionCount: sessionResults.length,
             });
           } catch (e: any) { log.debug("session telemetry write failed:", e?.message?.slice(0, 100)); }
