@@ -4485,39 +4485,24 @@ See [Installation & Quickstart](quickstart.html) for basic Pi setup.
 
 Source: discord-bot.md
 
-# Discord Bot Notifications
+# Discord Bot
 
-The pidash daemon can log in to Discord and act as a remote control for your Pi sessions. Watch a session from a slash command, then send prompts and answer agent questions from a DM — including images and small text files.
-
-There is no separate Discord service. The bot runs inside the pidash daemon (`scripts/pidash-discord.ts`) and is off unless a bot token is present.
+The pidash daemon can log in to Discord and act as a remote control for your Pi sessions: pick a session, send prompts and attachments, answer the agent's questions with buttons, and watch the turn stream back. There is no separate Discord service — the bot runs inside the pidash daemon and stays off unless a bot token is present.
 
 ## Prerequisites
 
 - A running pidash daemon (`/pidash start`) — see [Using the Web Dashboard](using-the-web-dashboard.html)
 - A Discord bot application with a token, and the **Message Content Intent** enabled
-- The bot invited to your server with the `application.commands` scope, if you want slash commands in a server (DM control works without it)
+- The invite permissions: `Send Messages`, `Read Message History`, `Add Reactions`,
+  and for threads/board `Create Public Threads` + `Send Messages in Threads`.
+  Reaction intents (`⏹ 🔁 🗑`) are **not** portal toggles — the bot requests them in
+  code; only *Message Content* is a privileged intent you must switch on
+- The bot invited to your server with the `application.commands` scope if you want slash commands there
+- Optional: a **forum channel** for `/board` (see [Forum session board](#forum-session-board))
 
-## Quick Example
+## Setup
 
-Create the credentials file, then start the dashboard daemon:
-
-```env
-    # ~/.pi/discord.env
-    DISCORD_BOT_TOKEN=MTE...your.token.here...
-    DISCORD_ALLOWED_USERS=123456789012345678
-```
-
-Start the dashboard daemon from Pi:
-
-```text
-    /pidash start
-```
-
-Then, in Discord, run `/sessions`, pick a session, and continue the conversation in a DM with the bot.
-
-## Step-by-Step
-
-### 1. Create the Discord credentials file
+### 1. Credentials
 
 ```env
     # ~/.pi/discord.env
@@ -4525,130 +4510,194 @@ Then, in Discord, run `/sessions`, pick a session, and continue the conversation
     DISCORD_ALLOWED_USERS=123456789012345678
 ```
 
-`DISCORD_BOT_TOKEN` enables the bot. `DISCORD_ALLOWED_USERS` is optional, but recommended, and accepts a comma-separated list of Discord user IDs. It gates **both** DMs and slash commands — an unauthorized user gets an ephemeral `Not authorized.` reply.
+`DISCORD_ALLOWED_USERS` is a comma-separated list of Discord user IDs.
 
-> **Note:** pidash reads this file at startup only. If pidash is already running, use `/pidash restart` after any change here.
+**The bot fails closed.** If the allowlist is empty it refuses to start and says so in the log, because a token without an allowlist used to mean "anyone who can DM the bot controls your agent". If you genuinely want open access, set:
 
-### 2. Create and configure the Discord bot
-
-Set up your bot in the Discord Developer Portal, then:
-
-- copy the bot token
-- enable **Message Content Intent**
-- invite the bot to your server with the `application.commands` scope if you want slash commands there
-
-If you only want DM-based control, the bot can still work without using server chat for prompts. Commands are registered **per guild** when the bot connects, so they appear immediately in an already-joined server rather than after Discord's global propagation delay.
-
-### 3. Start or restart the pidash daemon
-
-```text
-    /pidash start
+```env
+    DISCORD_ALLOW_ALL=true
 ```
 
-If pidash is already running, restart it so it reloads the Discord credentials:
+Both `~/.pi/discord.env` and `~/.pi/discord-state.json` are tightened to `0600` on startup — they hold a token and your user IDs.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DISCORD_BOT_TOKEN` | — | Enables the bot. Without it the integration stays off. |
+| `DISCORD_ALLOWED_USERS` | empty | Comma-separated Discord user IDs allowed to control sessions. |
+| `DISCORD_ALLOW_ALL` | `false` | Open access without an allowlist. Only for a bot nobody else can reach. |
+| `DISCORD_PROMPT_TTL_MS` | `600000` | How long a pending agent question waits before expiring (min 30s, max 24h). |
+| `DISCORD_FORUM_CHANNEL_ID` | unset | Forum channel used by `/board`. Unset leaves `/board` inactive with an instruction, nothing else changes. |
+| `PIDASH_DISCORD_ENV_FILE` | `~/.pi/discord.env` | Where the credentials are read from. |
+| `PIDASH_DISCORD_STATE_FILE` | `~/.pi/discord-state.json` | Where watches, threads and remembered prompts are kept (`0600`). |
+
+### 2. Restart the daemon
 
 ```text
     /pidash restart
 ```
 
-The Discord integration is attached to the pidash daemon, so the bot logs in when pidash starts.
+Credentials are read at startup only.
 
-> **Note:** If you are already using the web dashboard, you do not need a separate Discord-specific service. The same pidash daemon handles both.
-
-### 4. Choose a session from Discord
-
-Use these slash commands in a Discord server where the bot is present:
+## Picking a session
 
 | Command | What it does |
 |---|---|
-| `/sessions` | Lists active Pi sessions and shows buttons to connect or disconnect |
-| `/status` | Shows the currently watched session, model, branch, and current state |
-| `/stop` | Sends an interrupt to the watched session |
+| `/sessions` | Paginated, ephemeral list of active sessions with buttons to watch one |
+| `/watch session:<name>` | Watch a session by name, with autocomplete |
+| `/status` | The watched session's model, branch, state and cwd |
+| `/stop` | Interrupt the running turn |
 
-A typical flow is:
+`/sessions` is **ephemeral** — session names, branches and models are yours, not the channel's. Lists paginate 20 at a time, and the buttons never exceed Discord's five-row limit (the old bot produced six rows and Discord rejected the whole message once you had more than 20 sessions).
 
-1. Run `/sessions`
-2. Click the session you want to watch
-3. Open a DM with the bot
-4. Send prompts there
+In a server, watching a session **creates a thread** named after it, so each session keeps its own history and several people can watch different sessions without sharing one stream. In DMs — or if thread creation fails — it falls back to the DM channel.
 
-### 5. Send prompts from Discord DMs
+## From a phone
 
-Once you are watching a session, send a DM to the bot just like you would type into Pi.
+Commands work **in a DM** as well as in a server — the bot registers them with the
+`BotDM` and `PrivateChannel` contexts, and as a user-installable app an allowed
+user can add PI without an admin. No server is required for a one-handed workflow.
 
-- Plain text messages are forwarded as prompts
-- If the agent asks a question, reply in the same DM
-- `/stop` also works as a DM message
+`/status` is rendered as a card (session, state, model, branch, cwd, image
+capability) with **link buttons**. Links point at the machine's LAN address and
+are only offered when a phone can actually reach them — the dashboard listens on
+all interfaces, while the diff viewer binds `127.0.0.1`, so its button is omitted
+rather than being a dead link.
 
-Use this split to stay oriented:
+**React to a bot message** instead of typing — one tap, no keyboard:
 
-| Use Discord server slash commands for | Use Discord DMs for |
+| Reaction | Action |
 |---|---|
-| picking a session | sending prompts |
-| checking status | replying to agent questions |
-| sending stop signals | uploading files or images |
+| ⏹ or 🛑 | stop the watched session's current turn |
+| 🔁 | resend the last prompt for that session (kept in the state file, capped at 4 000 chars) |
+| 🗑 | delete the bot message |
 
-### 6. Send attachments when needed
+A reaction on a message that does not belong to any watched session does nothing,
+and an unrecognised emoji is ignored. The bot already requests the reaction
+intents; the only portal toggle involved is *Message Content*.
 
-You can DM attachments to the bot along with your prompt.
+**Right-click or long-press any message → Apps → "Ask PI about this"** sends that
+message to the watched session as a prompt. A stack trace or a log line in any
+channel becomes the task, without copying it.
 
-Supported behavior:
+Files you send are also copied into `<session cwd>/.pi/tmp/discord-inbox/`, and the
+prompt carries the path — so the agent can open, re-read or move what your phone
+uploaded with its normal file tools instead of receiving an opaque blob.
 
-- text-like files under 100KB are inlined into the prompt
-- images are forwarded for the agent to inspect
-- larger or binary files are only mentioned, not embedded
+A reply **notifies once**, when it starts: the first message is sent normally and
+every later delta arrives as a silent edit, so a long turn never buzzes per chunk.
 
-This is useful for quick log review, screenshots, small configs, or error snippets.
+## Forum session board
 
-> **Tip:** If you want the agent to focus on an uploaded file, include a short instruction in the same DM, such as “Review this log and summarize the failure.”
+A Discord **forum channel** turns threads into titled posts. `/board` uses one as a
+per-session home, so sessions stop competing for a single scrolling chat:
 
-## Advanced Usage
-
-### Authorize multiple people
-
-```env
-    # ~/.pi/discord.env
-    DISCORD_ALLOWED_USERS=111111111111111111,222222222222222222,333333333333333333
+```text
+    # pi-sessions            ← forum channel
+      ├─ pi-config          (post body: the session cwd)
+      ├─ mtv-api-tests
+      └─ rootcoz
 ```
 
-Use this when a small team needs access to the same running sessions.
+Setup:
 
-> **Warning:** If `DISCORD_ALLOWED_USERS` is omitted, the bot accepts DMs from any user who can reach it. Set this variable unless you intentionally want open access.
+1. Create a **forum** channel (not a text channel) in your server, e.g. `pi-sessions`
+2. Give the bot **Create Public Threads** and **Send Messages in Threads** there
+3. Enable Developer Mode → right-click the channel → **Copy Channel ID**
+4. Add it to `~/.pi/discord.env` and restart the bot:
 
-### Understand how “watching” works
+```env
+    DISCORD_FORUM_CHANNEL_ID=123456789012345678
+```
 
-The bot only forwards prompts to the session you are currently watching. If you switch sessions in Discord, new prompts go to the newly selected one.
+Then:
 
-This makes it easy to keep one DM thread per active task without guessing where your next message will land.
+```
+    /board
+```
 
-### Use the bot with agent questions
+It creates one post per active session that does not have one (title = session
+name, body = the cwd), and replies with a picker. Choosing a session opens its post
+and makes it your watch target, so that session's output lands there. The session
+id is stored in the post's topic, so re-running `/board` reuses posts instead of
+duplicating them.
 
-If the running agent triggers an interactive choice, the bot forwards that prompt into your DM and waits for your reply. You can respond with either:
+The bot **never creates channels**: with no `DISCORD_FORUM_CHANNEL_ID`, `/board`
+replies with that instruction and nothing else is affected.
 
-- a number, when options are listed
-- free text, when the prompt expects a typed answer
+## Sending prompts
 
-### Change the pidash port if needed
+Once you are watching a session, the bot's thread or DM behaves like the Pi prompt:
 
-If port `19190` is already taken, configure pidash with either:
+- plain text is forwarded as a prompt
+- attachments are handled per type (see below)
+- `/stop` also works as a plain DM message
 
-- `PI_PIDASH_PORT`
-- `pidash_port` in project settings
+## Answering the agent
 
-Then start pidash again. See [Using the Web Dashboard](using-the-web-dashboard.html) and [Configuration & Settings](configuration.html) for details.
+Questions arrive with **attached controls**: approve/deny buttons for a confirm,
+a dropdown for a choice, and an **Answer** button that opens a modal (multi-line,
+paste-friendly) for free text. Typed replies still work — `yes`/`no`, a number,
+the option text, or `/cancel` — but you should not have to type when a button
+will do.
+
+- **confirm prompts** (including dangerous-command approvals) get **Approve** / **Deny** buttons, and you can also reply `yes` / `no`
+- **select prompts** get a dropdown, and you can also reply with `1`…`N`, the option text, or an unambiguous prefix
+- **input prompts** get an **Answer** button that opens a modal; typing the reply also works
+
+Any prompt can be dismissed with `/cancel`. A prompt that is not answered **expires after 10 minutes** instead of silently consuming your next message, and pending prompts are never written to disk — a restart cannot leave one waiting.
+
+## What you see while it works
+
+- assistant output is posted as one message **edited as it streams** (throttled), rather than only arriving when the turn ends
+- every tool call is announced (`🔧 bash — cargo test`), so a long command does not look like a hang
+- messages sent from the TUI are echoed once; prompts you sent from Discord are not echoed back to you
+- `/notify on` sends a DM when a turn finishes in a session you are *not* watching, with a Watch button — useful when Discord is your monitor rather than your remote
+
+## Other commands
+
+| Command | What it does |
+|---|---|
+| `/compact` | Compact the watched session's context |
+| `/board` | Forum session board — opens a thread per session (`DISCORD_FORUM_CHANNEL_ID`) |
+| `/disconnect` | Stop watching everything — clears the watch, its threads and pending questions |
+| `/model [value]` | Open a **model picker** (your current provider first), or switch directly by id |
+| `/thinking [value]` | Show or set `off`…`max` |
+| `/async` | Background async agents, with Stop buttons |
+| `/cron` | Scheduled cron jobs, with Stop buttons |
+| `/tasks` | Task list of the watched session |
+| `/coms` | Coms peers of the watched session's project |
+| `/memory` | Memory status of the watched session |
+| `/diff` | Link to the session's diff viewer |
+| `/file path:<rel>` | Send a file from the session's working directory |
+
+`/file` is confined to the session cwd — `..` and absolute paths are refused, since this is a chat command, not a file server. Files up to 8MB are sent as Discord attachments.
+
+## Attachments from Discord
+
+| Kind | Behaviour |
+|---|---|
+| Images ≤ 8MB | forwarded to the agent as images — **only if the watched session's model accepts image input**; otherwise you are told they were not sent. A copy is written to `<session cwd>/.pi/tmp/discord-inbox/` and the prompt names the path |
+| Text-like files ≤ 100KB | inlined into the prompt, and also saved to the inbox so the agent can read or move it |
+| Larger or binary files | named in the prompt, with the reason they were not included |
+
+The image cap matters: the previous version had no limit and base64'd any image into memory and over the websocket.
 
 ## Troubleshooting
 
-- **Bot does not come online:** Make sure `DISCORD_BOT_TOKEN` is present in `~/.pi/discord.env`, then run `/pidash restart`.
-- **Slash commands do not appear:** Confirm the bot was invited with the `application.commands` scope, then restart pidash so commands are registered again.
-- **Your DM gets “Not watching any session”:** Run `/sessions` first and click a session button before sending prompts.
-- **Another user cannot control the bot:** Add their Discord user ID to `DISCORD_ALLOWED_USERS`, comma-separated, then restart pidash.
-- **Uploaded file does not seem to reach the agent:** Keep text files under 100KB for inline forwarding. Very large or binary files are only referenced, not embedded.
-
-See [Using the Web Dashboard](using-the-web-dashboard.html) for details on starting and managing pidash. See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details on the kinds of long-running work you can monitor from Discord.
+- **Bot never comes online:** `DISCORD_BOT_TOKEN` missing, or the allowlist is empty and `DISCORD_ALLOW_ALL` is not set — the log states which. Run `/pidash restart` after editing the file.
+- **"Not authorized." in DM:** your ID is not in `DISCORD_ALLOWED_USERS`. You get exactly one reply, then silence.
+- **Slash commands missing in a server:** commands are registered globally and per guild at startup, and again whenever the bot joins a guild; if they are still missing, check the `application.commands` invite scope.
+- **"Not watching any session":** run `/sessions` or `/watch` first.
+- **A prompt stalls:** it expires after 10 minutes; answer with the buttons or `/cancel` and retry.
+- **No streaming edits:** very short turns are posted once at the end rather than edited mid-flight.
+- **"The application did not respond":** the daemon (and the bot inside it) is not running — start it with `/pidash start`. Check `~/.pi/logs/pidash-discord/<session>/main.log` for `bot connected`.
+- **"This command is outdated":** your Discord client cached an older command definition. The bot only re-registers commands when their definitions change, so this clears after the client refreshes — restarting the Discord app forces it.
+- **`/board` says no board is configured:** `DISCORD_FORUM_CHANNEL_ID` is not set, or the id is not a forum channel.
+- **Reaction shortcuts do nothing:** the bot lacked the `Add Reactions` permission in that channel, or the message is not one of the bot's own.
 
 ## Related Pages
 
+- [Chat Clients (Signal, Telegram, …)](chat-clients.html) — the shared adapter contract this bot implements
 - [Using the Web Dashboard](using-the-web-dashboard.html)
 - [Daemon & Websocket Networking](daemon-and-websockets.html)
 - [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html)
@@ -7500,6 +7549,108 @@ Files: `extensions/orchestrator/settings-tui.ts`, `settings-tui-helpers.ts`, `se
 - [Configuration & Settings](configuration.html) — the full settings key reference and resolution order.
 - [Rules and Layers](rules-and-layers.html) — how rules consume settings through conditionals and frontmatter gates.
 - [CLI Provider Internals](cli-provider.html) and [Async & Runtime Internals](async-internals.html) — extensions driven by these settings.
+
+
+---
+
+Source: chat-clients.md
+
+# Chat Clients (Signal, Telegram, …)
+
+The Discord bot is not a special case: it is one **adapter** over a
+platform-neutral chat layer. Everything that used to be Discord-only logic —
+prompt lifecycle, answer mapping, chunking, echo suppression, streaming, session
+identity — lives in `extensions/shared/chat/`, and a new client supplies only
+transport.
+
+```text
+    pi session events ──▶ chat-bridge (neutral) ──▶ ChatAdapter ──▶ Signal / Telegram / Discord
+    user message     ──▶ chat-bridge (neutral) ──▶ prompt answer or new prompt
+```
+
+## What is already shared
+
+| Module | Responsibility |
+|---|---|
+| `extensions/shared/chat/chat-types.ts` | `ChatAdapter`, `ChatCapabilities`, `ChatTarget`, `ChatInboundMessage` |
+| `extensions/shared/chat/chat-bridge.ts` | the engine: streaming edits, typing, echo suppression, prompt lifecycle, answer mapping |
+| `extensions/shared/chat/chat-prompts.ts` | pending-prompt TTL, accepted answer vocabulary, `extension_ui_response` shaping |
+| `extensions/shared/chat/chat-format.ts` | limit-aware chunking (closes and re-opens code fences), truncation |
+| `extensions/shared/chat/chat-events.ts` | pi event → message action (deltas, tool lines, echo decision) |
+| `extensions/shared/chat/chat-sessions.ts` | session identity, labelling, filtering/autocomplete, paging math |
+| `extensions/shared/chat/chat-attachments.ts` | attachment classification, size caps, bounded downloads |
+| `extensions/shared/chat/chat-state.ts` | per-user watch state: versioned, atomic, `0600`, pruned |
+
+The Discord modules (`extensions/pidash/discord-*.ts`) are thin re-exports plus
+Discord defaults (2000-character limit, mention suppression, action rows), so
+existing imports and the npm pack are unchanged.
+
+## Adding a client
+
+1. **Implement `ChatAdapter`** — four methods and the capabilities you support:
+
+```ts
+    const adapter: ChatAdapter = {
+      platform: "signal",
+      log,
+      capabilities: { ...DEFAULT_CAPABILITIES, supportsEdit: false, supportsThreads: false, maxMessageLength: 4000 },
+      async sendText(target, text) { /* send, return an id when the platform has one */ },
+      async editText(target, id, text) { return false; },  // no edit support: the engine publishes once
+      async setTyping(target, active) { /* optional */ },
+      async ensureThread(target, sessionId, label) { return null; }, // optional
+    };
+```
+
+2. **Create the bridge** and feed it pi events:
+
+```ts
+    const bridge = createChatBridge({
+      adapter,
+      users: () => runtime.entries(),                    // your per-user state map
+      sendToSession: (sessionId, payload) => sendToPi(sessionId, payload),
+      promptTtlMs, streamEditIntervalMs,
+    });
+
+    piEventHooks.push((sessionId, event) => {
+      if (event?.type === "extension_ui_request" || event?.type === "ui-dismiss") bridge.onUiEvent(sessionId, event);
+      else bridge.onPiEvent(sessionId, event);
+    });
+```
+
+3. **Route inbound text** through the engine so prompts are answered identically:
+
+```ts
+    const outcome = bridge.handleInbound(state, messageText, reply);
+    // "answered" | "cancelled" | "not-an-answer" | "expired" | "no-prompt"
+    if (outcome === "no-prompt") forwardAsPrompt(state, messageText);
+```
+
+4. **Set the echo marker** after forwarding a prompt (`state.render.expectedEcho = text`)
+so the same message coming back as a `message_start` is not echoed to the user.
+
+## What a client must decide for itself
+
+- authentication and who is allowed (the Discord adapter fails closed without an
+  allowlist)
+- where a conversation lives (DM, thread, channel) and how state is persisted
+- native controls: buttons, menus, reply keyboards — map them onto
+  `bridge.answer(state, value, reply)` and the agent sees one answer shape
+- platform quirks: mention suppression, message length, edit budget, attachment
+  caps
+
+## Capability-driven behaviour
+
+The engine reads `capabilities`, so a client that cannot edit messages or show
+typing does not need special cases: streaming degrades to a single post at the
+end of the turn, chunked to that platform's limit. This is covered by
+`tests/node/shared/chat-bridge.test.ts`, which drives the engine with an
+in-memory adapter and with one that has editing and typing disabled.
+
+## Related
+
+- [Discord Bot](discord-bot.html) — the reference adapter and its slash commands
+- [Using the Web Dashboard](using-the-web-dashboard.html) — the browser surface
+- [Daemon & Websocket Networking](daemon-and-websockets.html)
 
 
 ---
