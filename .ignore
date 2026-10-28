@@ -1,5 +1,10 @@
-# graft's cards are gitignored but should stay greppable: ripgrep reads
-# .ignore before .gitignore, so this re-admits the tree to search only.
+# The code map (graft/ on older repos, .trail/cache/ once a repo is on trail)
+# is gitignored but should stay greppable: ripgrep reads .ignore before
+# .gitignore, so both roots are re-admitted for search; only their large
+# regenerable payload directories stay excluded.
 !graft/
+!.trail/cache/
 graft/.cache/
 graft/.graph/
+.trail/cache/.cache/
+.trail/cache/.graph/

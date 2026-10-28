@@ -9,7 +9,7 @@
  *
  * Stale-ctx safety (reload crash postmortem, PR #950): ctx.ui getters call
  * assertActive() and THROW after a runtime reload/replacement — an async
- * continuation (e.g. a graft build resolving across a reload) or a
+ * continuation (e.g. a trail build resolving across a reload) or a
  * session_shutdown handler touching a captured ctx must never crash the
  * process over a footer update. Guarded with isLiveExtensionCtx + try/catch.
  */
@@ -26,7 +26,7 @@ const SLOTS = {
   crons:  "3-crons",
   dream:  "3b-dream",
   git:    "4-git",
-  graft:  "4b-graft",
+  trail:  "4b-trail",
   review: "5-review",
 } as const;
 

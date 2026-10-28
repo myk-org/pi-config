@@ -117,7 +117,7 @@ def _npm_global_prefix() -> Path:
     raw = result.stdout.strip()
     prefix = Path(raw)
     if not raw or not prefix.is_absolute():
-        log.warning("graft unsafe npm global prefix rejected value=%r", raw)
+        log.warning("trail unsafe npm global prefix rejected value=%r", raw)
         raise RuntimeError("npm prefix -g must return a safe absolute path")
     resolved = prefix.resolve()
     cwd = Path.cwd().resolve()
@@ -131,7 +131,7 @@ def _npm_global_prefix() -> Path:
         or not writable_parent.is_dir()
         or not os.access(writable_parent, os.W_OK)
     ):
-        log.warning("graft unsafe npm global prefix rejected value=%r", raw)
+        log.warning("trail unsafe npm global prefix rejected value=%r", raw)
         raise RuntimeError("npm prefix -g must return a safe absolute path")
     return resolved
 
@@ -144,7 +144,7 @@ def _publication_lock(lock_path: Path) -> Iterator[None]:
             lock.write(b"\0")
             lock.flush()
         lock.seek(0)
-        log.debug("graft publication lock event=acquire platform=%s lock_id=%s", SYSTEM, lock_id)
+        log.debug("trail publication lock event=acquire platform=%s lock_id=%s", SYSTEM, lock_id)
         try:
             if SYSTEM == "Windows":
                 import msvcrt
@@ -155,13 +155,13 @@ def _publication_lock(lock_path: Path) -> Iterator[None]:
 
                 fcntl.flock(lock, fcntl.LOCK_EX)
         except Exception:
-            log.error("graft publication lock event=failure phase=acquire platform=%s lock_id=%s", SYSTEM, lock_id)
+            log.error("trail publication lock event=failure phase=acquire platform=%s lock_id=%s", SYSTEM, lock_id)
             raise
-        log.debug("graft publication lock event=acquired platform=%s lock_id=%s", SYSTEM, lock_id)
+        log.debug("trail publication lock event=acquired platform=%s lock_id=%s", SYSTEM, lock_id)
         try:
             yield
         finally:
-            log.debug("graft publication lock event=release platform=%s lock_id=%s", SYSTEM, lock_id)
+            log.debug("trail publication lock event=release platform=%s lock_id=%s", SYSTEM, lock_id)
             try:
                 if SYSTEM == "Windows":
                     lock.seek(0)
@@ -169,30 +169,30 @@ def _publication_lock(lock_path: Path) -> Iterator[None]:
                 else:
                     fcntl.flock(lock, fcntl.LOCK_UN)
             except Exception:
-                log.error("graft publication lock event=failure phase=release platform=%s lock_id=%s", SYSTEM, lock_id)
+                log.error("trail publication lock event=failure phase=release platform=%s lock_id=%s", SYSTEM, lock_id)
                 raise
 
 
-def _publish_graft(stage: Path, graft_prefix: Path, graft_bin: Path, lock_path: Path) -> None:
+def _publish_trail(stage: Path, trail_prefix: Path, trail_bin: Path, lock_path: Path) -> None:
     backup = stage.with_name(f"{stage.name}.previous")
-    link = graft_bin.with_name(f".{stage.name}-graft")
+    link = trail_bin.with_name(f".{stage.name}-trail")
     with _publication_lock(lock_path):
-        log.debug("graft publication lock acquired")
-        had_previous = graft_prefix.exists()
+        log.debug("trail publication lock acquired")
+        had_previous = trail_prefix.exists()
         published = False
         try:
             if had_previous:
-                os.replace(graft_prefix, backup)
-            os.replace(stage, graft_prefix)
+                os.replace(trail_prefix, backup)
+            os.replace(stage, trail_prefix)
             published = True
-            link.symlink_to("../lib/graft-prefix/bin/graft")
-            os.replace(link, graft_bin)
+            link.symlink_to("../lib/trail-prefix/bin/trail")
+            os.replace(link, trail_bin)
         except Exception:
             link.unlink(missing_ok=True)
             if published:
-                shutil.rmtree(graft_prefix)
+                shutil.rmtree(trail_prefix)
             if had_previous:
-                os.replace(backup, graft_prefix)
+                os.replace(backup, trail_prefix)
             raise
         if had_previous:
             shutil.rmtree(backup)
@@ -233,45 +233,45 @@ def _install_script_packages(package_dir: Path, install_root: Path) -> list[str]
             )
             if child is None:
                 if name in optional:
-                    log.debug("graft optional dependency omitted package=%s", name)
+                    log.debug("trail optional dependency omitted package=%s", name)
                     continue
-                raise FileNotFoundError(f"required Graft dependency is not installed: {name}")
+                raise FileNotFoundError(f"required Trail dependency is not installed: {name}")
             inspect(child)
 
     inspect(package_dir)
-    log.debug("graft install-script audit packages=%s", len(allowed))
+    log.debug("trail install-script audit packages=%s", len(allowed))
     return sorted(allowed)
 
 
-def install_graft() -> None:
+def install_trail() -> None:
     missing = [tool for tool in ("npm", "node", "python3", "make", "g++") if not shutil.which(tool)]
     if missing:
-        log.warning("graft prerequisites missing=%s", ",".join(missing))
-        raise RuntimeError(f"Graft requires node-gyp prerequisites: {', '.join(missing)}")
+        log.warning("trail prerequisites missing=%s", ",".join(missing))
+        raise RuntimeError(f"Trail requires node-gyp prerequisites: {', '.join(missing)}")
     npm_major = int(_run_quiet(["npm", "--version"]).split(".", 1)[0])
     if npm_major < 12:
-        log.warning("graft secure install unsupported npm-major=%s", npm_major)
-        raise RuntimeError("Graft secure installation requires npm 12+")
+        log.warning("trail secure install unsupported npm-major=%s", npm_major)
+        raise RuntimeError("Trail secure installation requires npm 12+")
     env = os.environ | {"DO_NOT_TRACK": "1"}
     global_prefix = _npm_global_prefix()
-    graft_prefix = global_prefix / "lib/graft-prefix"
-    graft_bin = global_prefix / "bin/graft"
-    graft_prefix.parent.mkdir(parents=True, exist_ok=True)
-    graft_bin.parent.mkdir(parents=True, exist_ok=True)
+    trail_prefix = global_prefix / "lib/trail-prefix"
+    trail_bin = global_prefix / "bin/trail"
+    trail_prefix.parent.mkdir(parents=True, exist_ok=True)
+    trail_bin.parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="pi-graft-audit-") as audit_raw:
+    with tempfile.TemporaryDirectory(prefix="pi-trail-audit-") as audit_raw:
         audit = Path(audit_raw)
         subprocess.run(
-            ["npm", "install", "-g", "--prefix", str(audit), "@nanonets/graft@latest", "--ignore-scripts"],
+            ["npm", "install", "-g", "--prefix", str(audit), "@trailhq/trail-code@latest", "--ignore-scripts"],
             check=True,
             env=env,
         )
         npm_root = audit / "lib/node_modules"
-        allowed = ",".join(_install_script_packages(npm_root / "@nanonets/graft", npm_root))
+        allowed = ",".join(_install_script_packages(npm_root / "@trailhq/trail-code", npm_root))
         if not allowed:
-            raise RuntimeError("Graft dependency audit found no install scripts")
+            raise RuntimeError("Trail dependency audit found no install scripts")
 
-    with tempfile.TemporaryDirectory(prefix=".graft-prefix-", dir=graft_prefix.parent) as stage_raw:
+    with tempfile.TemporaryDirectory(prefix=".trail-prefix-", dir=trail_prefix.parent) as stage_raw:
         stage = Path(stage_raw)
         (stage / "lib").mkdir()
         subprocess.run(
@@ -281,17 +281,17 @@ def install_graft() -> None:
                 "-g",
                 "--prefix",
                 str(stage),
-                "@nanonets/graft@latest",
+                "@trailhq/trail-code@latest",
                 f"--allow-scripts={allowed}",
                 "--strict-allow-scripts",
             ],
             check=True,
             env=env,
         )
-        subprocess.run([str(stage / "bin/graft"), "--version"], check=True, env=env)
+        subprocess.run([str(stage / "bin/trail"), "--version"], check=True, env=env)
 
-        _publish_graft(stage, graft_prefix, graft_bin, global_prefix / ".graft-install.lock")
-    log.info("graft installation verified")
+        _publish_trail(stage, trail_prefix, trail_bin, global_prefix / ".trail-install.lock")
+    log.info("trail installation verified")
 
 
 # ── Prerequisites ──────────────────────────────────────────────────────────
@@ -450,12 +450,12 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
                 install_cmd="npm install -g agent-browser",
             ),
             Tool(
-                "graft",
-                "Local repository code graph for the optional Graft extension",
-                installed=bool(shutil.which("graft")),
+                "trail",
+                "Local repository code graph for the optional Trail extension",
+                installed=bool(shutil.which("trail")),
                 disabled=nd,
-                install_cmd="DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest (strict dynamic script approval)",
-                install_fn=install_graft,
+                install_cmd="DO_NOT_TRACK=1 npm install -g @trailhq/trail-code@latest (strict dynamic script approval)",
+                install_fn=install_trail,
             ),
         ],
     )

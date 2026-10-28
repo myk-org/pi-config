@@ -136,7 +136,7 @@ export function registerPidash(
   let comsIdentityName: string | undefined;
   let comsIdentityPurpose: string | undefined;
   let comsIdentityProject: string | undefined;
-  let graftTokenSavings: number | undefined;
+  let trailTokenSavings: number | undefined;
   const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
 
   // Listen for coms identity — coms ext emits this after boot
@@ -150,12 +150,12 @@ export function registerPidash(
     }
   });
 
-  pi.events.on("pidash:graft-savings", (data: any) => {
+  pi.events.on("pidash:trail-savings", (data: any) => {
     if (!Number.isSafeInteger(data?.tokenSavings) || data.tokenSavings < 0) return;
-    graftTokenSavings = data.tokenSavings;
-    log.debug("graft_savings_received", { tokenSavings: graftTokenSavings });
+    trailTokenSavings = data.tokenSavings;
+    log.debug("trail_savings_received", { tokenSavings: trailTokenSavings });
     if (ws && connected) {
-      try { ws.send(JSON.stringify({ type: "update_info", graftTokenSavings })); } catch {}
+      try { ws.send(JSON.stringify({ type: "update_info", trailTokenSavings })); } catch {}
     }
   });
 
@@ -720,7 +720,7 @@ export function registerPidash(
           comsName: comsIdentityName || (pi as any).getFlag?.("cname") || undefined,
           comsPurpose: comsIdentityPurpose || (pi as any).getFlag?.("purpose") || undefined,
           comsProject: comsIdentityProject || undefined,
-          graftTokenSavings,
+          trailTokenSavings,
         });
         log.debug(`sending register: ${reg}`);
         wsClient.send(reg);
@@ -1034,7 +1034,7 @@ export function registerPidash(
   function handleSessionStart(event: any, ctx: any): void {
     sessionNamed = false;
     log.debug("session_start", (event as any)?.reason);
-    if (["new", "fork"].includes(event?.reason)) graftTokenSavings = 0;
+    if (["new", "fork"].includes(event?.reason)) trailTokenSavings = 0;
 
     const resolved = resolveSessionStartCtx(lastCtx, ctx);
     lastCtx = resolved.lastCtx;
@@ -1073,7 +1073,7 @@ export function registerPidash(
         reasoning: switchCtx.model?.reasoning === true,
         contextWindow: switchCtx.model?.contextWindow || 0,
         thinkingLevel: (pi as any).getThinkingLevel?.() || "medium",
-        graftTokenSavings,
+        trailTokenSavings,
       }));
       log.debug(`session_switch sent: cwd=${switchCtx.cwd}`);
     }

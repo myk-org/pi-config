@@ -525,7 +525,7 @@ describe("before_agent_start injection", () => {
     assert.match(sections.review_lessons!, /<review-lessons>/);
     assert.match(sections.review_lessons!, /src\/api\.py \(1×\)/);
   });
-  it("falls back to the graft return shape when sections are unavailable", () => {
+  it("falls back to the legacy return shape when sections are unavailable", () => {
     const cwd = cwdWithDb([[{ path: "src/api.py", body: "Missing redaction on the endpoint" }]]);
     fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
     fs.writeFileSync(path.join(cwd, "src", "api.py"), "x");

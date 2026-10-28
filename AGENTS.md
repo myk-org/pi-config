@@ -261,9 +261,9 @@ progress. It does not commit, push, create a PR, or post results.
   skip register via `extensions/shared/oneshot.ts`; shutdown dream also skipped.
   See `docs/async-internals.md` (Oneshot invocations). `--mode rpc` is not oneshot.
 - Extension commands: see `docs/extension-commands.md`
-- Graft (`graft_enable=true`) applies to main agents and subagents. Every substantive prompt retrieves from Graft before raw project
-  navigation. Children only consume existing graphs; stale graphs remain usable and failures fail open. Main processes own rebuilds under
-  the cross-process lock.
+- Trail (`trail_enable`, default true when the `trail` binary exists) covers main agents and subagents: the first project navigation of a
+  substantive turn is gated on a `trail_*` query. Children get the 5 read-only query tools; stale maps stay usable and failures fail open.
+  Map lives in `graft/` or `.trail/cache/` (upstream-owned, gitignored) — resolve from the worktree root, never write the main map, no learnings.
 - coms messaging (#924): `coms_send` supports `steer: true` (mid-turn course correction on a busy peer — ack-only, 5/turn cap) and
   `priority: true` (jump the peer's queued backlog). `coms_broadcast(targets, prompt)` fans out to multiple peers (`["*"]` = project);
   `coms_history` queries the per-session JSONL trail in `~/.pi/coms/history.jsonl`. Peers emit `⚙busy` state and ~60s progress signals

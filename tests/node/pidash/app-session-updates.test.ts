@@ -38,11 +38,11 @@ describe("selected pidash session updates", () => {
     await act(async () => root.render(createElement(Probe)));
     await act(async () => handler({
       type: "session_updated",
-      session: { sessionId: "selected", reasoning: true, thinkingLevel: "high", graftTokenSavings: 321 },
+      session: { sessionId: "selected", reasoning: true, thinkingLevel: "high", trailTokenSavings: 321 },
     }));
     assert.deepEqual(
-      { reasoning: selected?.reasoning, thinkingLevel: selected?.thinkingLevel, graftTokenSavings: selected?.graftTokenSavings },
-      { reasoning: true, thinkingLevel: "high", graftTokenSavings: 321 },
+      { reasoning: selected?.reasoning, thinkingLevel: selected?.thinkingLevel, trailTokenSavings: selected?.trailTokenSavings },
+      { reasoning: true, thinkingLevel: "high", trailTokenSavings: 321 },
     );
 
     selectedId = "other";

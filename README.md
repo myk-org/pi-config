@@ -26,7 +26,7 @@ Single extension that provides:
 | **Git status**                | Live git status in status line with colored icons — updates after every tool call. Shows clickable `#N` when the branch has an open PR. Last-activity clock `⏱ HH:MM (Xm/Xh ago)` shows time since last response                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | **Desktop notifications**     | Notifies via `notify-send` on task completion, waiting for input, and action required                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | **File preview**              | Serves generated HTML/frontend files via HTTP for browser preview from container                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| **Graft integration**         | When `graft_enable=true`, main agents and subagents query the local Graft graph before raw project navigation on substantive prompts. Children only consume graphs. Stale graphs remain usable, retrieval failures fall back to raw tools, and main processes coordinate rebuilds with a cross-process lock.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Trail-code integration**    | On by default when the `trail` binary is installed. Main agents and subagents query the local code map before raw project navigation: the first project navigation per turn is gated behind a `trail_*` call, guidance is map-first (`trail_find_code` first, `trail_repo_map` once per session), and injected hits carry source. Worktrees resolve the map under `graft/` or `.trail/cache/`, inherit enablement from the main checkout, and seed from it instead of cold-building. Stale maps stay usable and failures fall open. |
 | **Pidash dashboard**          | Live web dashboard — multi-session monitoring, browser messaging, model switching, live session name updates, reasoning token display                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | **Pidiff viewer**             | Per-project diff viewer with review comments — branch diffs, file tree, inline comments, git-based ignore rules                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | **Dreaming**                  | Background memory consolidation — extracts memories from sessions, deduplicates, maintains topic-based memory                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -179,7 +179,7 @@ The installer covers:
 
 - **Pi Packages** — pi-config, pi-vertex-claude, pi-web-access, myk-pi-tools, bun
 - **Python Tools** — prek
-- **npm Packages** — acpx, agent-browser, graft
+- **npm Packages** — acpx, agent-browser, trail-code (`@trailhq/trail-code`)
 - **Browser Automation** — playwright + chromium
 - **Environment Setup** — gitignore configuration
 
@@ -425,28 +425,74 @@ Set `image_model` in `pi-config-settings.json` or use `PI_IMAGE_MODEL` env var.
 
 In containers, images are auto-served via HTTP for browser preview.
 
-### Graft repository graph (optional)
+### Trail-code code map (on by default)
 
-Set `graft_enable` to `true` in `.pi/pi-config-settings.json` (or set
-`PI_GRAFT_ENABLE=true`) to enable local Graft repository graph context:
+Trail-code is the local code map behind the `trail_*` tools. It is **on by
+default** whenever the `trail` binary is on `PATH` — no setting required. In a
+trusted git worktree, pi indexes the project and gives main agents and
+subagents a queryable map, so the first project navigation of every substantive
+turn is a `trail_*` query instead of a blind `grep`.
+
+Install or upgrade the CLI:
+
+```bash
+DO_NOT_TRACK=1 npm install -g @trailhq/trail-code@latest
+uv run scripts/install.py   # audited install used by the container
+```
+
+The installer downloads `@trailhq/trail-code@latest` with scripts disabled into a
+dedicated npm prefix, audits that isolated dependency tree for lifecycle scripts,
+and strictly rebuilds it with only those packages approved. The completed prefix
+is published under the global npm prefix and its `trail` binary linked globally,
+so unrelated global packages are never evaluated. It verifies `trail --version`;
+`DO_NOT_TRACK=1` disables Trail telemetry. Requirements: Node.js 22+, npm 12+,
+and the node-gyp prerequisites (Python 3, `make`, G++). If the binary is missing
+or the install fails, pi continues without the map and the `trail_*` tools are
+simply absent.
+
+**Kill switch.** `trail_enable` (env `PI_TRAIL_ENABLE`) defaults to `true`. Set it
+to `false` in `.pi/pi-config-settings.json`, or globally in
+`~/.pi/pi-config-settings.json`, to keep the integration fully inactive:
 
 ```json
 {
-  "graft_enable": true
+  "trail_enable": false
 }
 ```
 
-Graft requires Node.js 22+, npm 12+, node-gyp prerequisites (Python 3, `make`, and
-G++), and the `graft` CLI. The container includes them; native installs can use
-`uv run scripts/install.py`. The installer downloads `@nanonets/graft@latest` with
-scripts disabled into a dedicated npm prefix, audits that isolated dependency tree
-for lifecycle scripts, and strictly rebuilds it with only those packages approved.
-The completed prefix is then published under the global npm prefix and its `graft`
-binary linked globally, so unrelated global packages are never evaluated. The
-installer verifies `graft --version`; `DO_NOT_TRACK=1` disables Graft telemetry.
-When enabled, Graft reads the trusted project and writes a regenerable `./graft/`
-cache. Delete that directory or set `graft_enable` to `false` to disable it. If the
-native CLI is unavailable or its installation fails, pi continues without Graft.
+**Where the map lives.** Upstream owns the path: `./graft/` on older repos and
+`.trail/cache/` once a repo is on trail (upstream renames a legacy map itself).
+Both are regenerable and gitignored, and pi reads whichever is present. Never
+commit them.
+
+**Worktrees.** The map is resolved from the worktree root, and enablement is
+inherited from the main checkout when the worktree has no `.pi` settings file
+(`.pi/` is gitignored, so a fresh worktree would otherwise look disabled). A
+fresh worktree seeds its own cache from the main checkout on the first query — a
+copy plus branch-diff repair, never a cold rebuild — and never writes to the main
+checkout's map. Expect roughly 48 MB per worktree in this repo.
+
+**Layers.** This is not memory. Pi memory (`.pi/memory/`, dreaming, enforced
+entries) is what pi carries between sessions. Trail's own layer —
+`.trail/learnings/`, `trail note`, the pre-ship `trail check` — is upstream's and
+**we do not use it**. We only read the code map.
+
+### Migrating from Graft
+
+The integration was renamed from Graft to Trail-code. The break is intentional:
+
+- Only `@trailhq/trail-code` is installed and only `trail` is invoked. The `graft`
+  binary is no longer installed and there is no fallback — if you only have
+  `@nanonets/graft`, install trail to get the map tools back.
+- `graft_enable` / `PI_GRAFT_ENABLE` are gone, with no alias and no migration. An
+  existing `graft_enable: true` is a dead key, which is harmless: the feature is
+  default-on when the binary exists.
+- Tools are `trail_find_code`, `trail_find_all`, `trail_file_api`,
+  `trail_trace_calls`, `trail_repo_map`, `trail_refresh`, `trail_blast_radius`.
+- `log_graft` becomes `log_trail` (env `PI_LOG_TRAIL`); the old `~/.pi/logs/graft`
+  directory is neither read nor migrated.
+- `graft/` survives as a _path_ until upstream renames it: it is the map
+  directory, not the product.
 
 ### Cache Miss Notices
 
@@ -469,20 +515,20 @@ Run pi inside a disposable container for **filesystem isolation** — the agent 
 - **Consistent tooling** — All required tools pre-installed in a single image
 - **Disposable** — Container is destroyed after each session (`--rm`)
 
-**Graft (optional `graft_enable`):** The image installs the latest
-`@nanonets/graft` with `DO_NOT_TRACK=1`. It downloads with scripts disabled, derives
+**Trail-code (`trail_enable`, on by default):** The image installs the latest
+`@trailhq/trail-code` with `DO_NOT_TRACK=1`. It downloads with scripts disabled, derives
 an exact script allowlist by auditing the installed package's reachable dependency
 metadata in a dedicated npm prefix, then strictly rebuilds that isolated tree with
 those approvals. Only after the rebuild succeeds is the completed prefix moved under
-the global npm prefix and its `graft` binary linked globally. This prevents unrelated
+the global npm prefix and its `trail` binary linked globally. This prevents unrelated
 global packages from entering npm's strict preflight. The allowlist is command-scoped
 and changes with `@latest`; other npm commands keep npm 12's install-script
 protections. The image includes Python 3,
-`make`, and the GCC/G++ toolchain required by node-gyp for Graft and other native
+`make`, and the GCC/G++ toolchain required by node-gyp for Trail-code and other native
 npm packages; these remain available for reliable package rebuilds. The build then
-verifies `graft --version`. Enable Graft in trusted project or global pi-config
-settings; it reads the project locally and stores its regenerable graph in `./graft/`. Set
-`graft_enable` to `false` and delete that directory to disable and remove the cache.
+verifies `trail --version`. The map is written to the mounted project's `./graft/` or
+`.trail/cache/` directory; set `trail_enable` to `false` and delete that directory to
+disable and remove the cache.
 Native installations require Node.js 22+, npm 12+, Python 3, `make`, and G++; the
 installer uses the same audited strict installation and failure remains non-fatal.
 
@@ -789,7 +835,7 @@ PI_PIDIFF_ENABLE=false pi
 | `acpx`              | Agent proxy for remote models                                                                                                                                                                                                                                                                                                  |
 | `kubectl` / `oc`    | Kubernetes and OpenShift CLI                                                                                                                                                                                                                                                                                                   |
 | `agent-browser`     | Browser automation CLI (navigate, click, screenshot, forms)                                                                                                                                                                                                                                                                    |
-| `graft`             | Local repository code graph for opt-in `graft_enable`; graph cache is stored in the mounted project’s `./graft/` directory                                                                                                                                                                                                        |
+| `trail`             | Local code map for `trail_enable` (on by default); the regenerable cache lives in the mounted project's `./graft/` or `.trail/cache/` directory |
 | `procps`            | Process utilities (ps, top, pgrep, pkill)                                                                                                                                                                                                                                                                                      |
 | `passwd`            | `usermod`/`groupmod` — init remaps user `node` to `PI_HOST_UID`/`PI_HOST_GID`                                                                                                                                                                                                                                                  |
 | `docker` / `podman` | Container CLIs (used via `docker-safe` read-only wrapper)                                                                                                                                                                                                                                                                      |

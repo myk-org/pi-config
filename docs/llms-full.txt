@@ -42,7 +42,7 @@ Install the pi package (no git clone needed):
     uv tool install myk-pi-tools
 ```
 
-To get everything at once — the pi package, `myk-pi-tools`, `prek`, `acpx`, `agent-browser`, `graft`, Playwright, and the git-excludes setup — run the interactive installer instead:
+To get everything at once — the pi package, `myk-pi-tools`, `prek`, `acpx`, `agent-browser`, `trail` (`@trailhq/trail-code`), Playwright, and the git-excludes setup — run the interactive installer instead:
 
 ```bash
     uv run https://raw.githubusercontent.com/myk-org/pi-config/main/scripts/install.py
@@ -597,22 +597,22 @@ See [Using the Web Dashboard](using-the-web-dashboard.html) for details.
 
 See [Image Generation](image-generation.html) for details.
 
-## Code Graph Key
+## Code Map Keys
 
-### `graft_enable`
+### `trail_enable`
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `graft_enable` | boolean | `false` | `PI_GRAFT_ENABLE` | Enables the local Graft repository graph integration. | Adds the `graft_*` tools to every subagent's toolset, so agents can look code up in the graph before grepping. Requires the `graft` binary on `PATH`. |
+| `trail_enable` | boolean | `true` | `PI_TRAIL_ENABLE` | Enables the local Trail-code map integration. | Adds the map-first `trail_*` tools to main agents and to every subagent's toolset, so agents look code up in the map before grepping. In a worktree the setting is inherited from the main checkout when the worktree has no `.pi` settings file. Requires the `trail` binary on `PATH`; without it the tools are absent. |
 
 ```json
     {
-      "graft_enable": true
+      "trail_enable": true
     }
 ```
 
 ```bash
-    export PI_GRAFT_ENABLE=true
+    export PI_TRAIL_ENABLE=true
 ```
 
 ## Background & Async Keys
@@ -765,7 +765,7 @@ See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) 
 
 The stream is written to `~/.pi/logs/providers/<session-id>/main.log` under a `[provider-stream]` prefix, with one line per event and credential-shaped fields redacted. Capturing every event has a real cost, so the hook only registers at `debug` and costs nothing at the default level.
 
-Every other `log_<module>` key follows the same shape — `log_pidash`, `log_pidiff`, `log_coms`, `log_subagent`, `log_dreaming`, `log_enforcement`, `log_graft`, and others — with env vars `PI_LOG_<MODULE>` and default `info`. The remaining module log levels are listed in [Module File Logging](#module-file-logging) below.
+Every other `log_<module>` key follows the same shape — `log_pidash`, `log_pidiff`, `log_coms`, `log_subagent`, `log_dreaming`, `log_enforcement`, `log_trail`, and others — with env vars `PI_LOG_<MODULE>` and default `info`. The remaining module log levels are listed in [Module File Logging](#module-file-logging) below.
 
 ## Safety Enforcement Keys
 
@@ -1407,7 +1407,7 @@ Commands and tools are different things: a **command** is something you type (`/
 |---|---|---|
 | Slash commands | 17 | `registerCommand(...)` across `extensions/` |
 | Always-registered tools | 38 | `registerTool(...)` across `extensions/` |
-| Opt-in tools | 7 | `graft.ts`, only when `graft_enable` is on (default: off) |
+| Code-map tools | 7 | `trail.ts`, on by default when the `trail` binary exists (`trail_enable`) |
 
 Counts verified against source. Two names are registered in more than one place — see [Duplicate registrations](#duplicate-registrations).
 
@@ -1674,19 +1674,23 @@ The session task list behind `/tasks` and the task widget. Statuses are `pending
 
 More detail: [Managing Custom Agents](managing-custom-agents.html) for `subagent`, [Automating Code Reviews](automating-code-reviews.html) for `review_status`, [Image Generation](image-generation.html) for `generate_image`.
 
-### graft_* (7 tools, opt-in)
+### trail_* (7 tools, on by default)
 
-Registered by `extensions/orchestrator/graft.ts` only when the `graft_enable` setting is on, and only in a trusted session. The default for `graft_enable` is **false**, so these tools are absent in a default install. `graft_refresh` and `graft_blast_radius` are additionally omitted in subagent children.
+Registered by `extensions/orchestrator/trail.ts` when `trail_enable` is on, which is the default, and only in a trusted session. They are absent when the `trail` binary is not on `PATH` — that binary is the real gate. `trail_refresh` and `trail_blast_radius` are additionally omitted in subagent children; children get the five read-only query tools.
 
 | Tool | Purpose | Key parameters |
 |---|---|---|
-| `graft_find_code` | Find compact ranked code references in the local Graft graph | `query`, `limit` (1–20), `path` (project-relative) |
-| `graft_find_all` | Search indexed project files | `pattern`, `path`, `fixed` (literal, not regex) |
-| `graft_file_api` | Signatures-only API view of a file | `path` |
-| `graft_trace_calls` | Trace callers or callees of a symbol | `symbol`, `direction` (`in`/`out`), `depth` (1–10) |
-| `graft_repo_map` | Compact graph-based repository map | `max_dirs` (1–30) |
-| `graft_refresh` | Rebuild the local Graft graph | none |
-| `graft_blast_radius` | Dependencies affected by the local diff | `depth` (1–10) |
+| `trail_find_code` | Find compact ranked code references in the local Trail map | `query`, `limit` (1–20), `path` (project-relative) |
+| `trail_find_all` | Search indexed project files | `pattern`, `path`, `fixed` (literal, not regex) |
+| `trail_file_api` | Signatures-only API view of a file | `path` |
+| `trail_trace_calls` | Trace callers or callees of a symbol | `symbol`, `direction` (`in`/`out`), `depth` (1–10) |
+| `trail_repo_map` | Compact map-based repository overview | `max_dirs` (1–30) |
+| `trail_refresh` | Rebuild the local Trail map | none |
+| `trail_blast_radius` | Dependencies affected by the local diff | `depth` (1–10) |
+
+**Map-first gate.** On a substantive prompt the first project navigation of the turn is the map, not raw search: `read` of an indexed file and `grep`/`find`/`rg` are blocked until a `trail_*` call runs (or the agent reads a file:line pointer the retrieval injected). Unindexed paths — docs, lockfiles, `.pi/**` — are never blocked, and the gate fails open when there is no map.
+
+**`trail_repo_map` is capped.** The overview is a one-per-session orientation aid. A second call in the same session returns a redirect to `trail_find_code` instead of re-running the CLI, because repeated overviews replaced actual lookup in practice.
 
 ## Duplicate registrations
 
@@ -1706,7 +1710,7 @@ The lists here were produced from source, not from documentation:
     # Slash commands
     grep -rn 'registerCommand("' extensions/ --include=*.ts
 
-    # Tools — note graft.ts registers its tools through a tool() helper loop
+    # Tools — note trail.ts registers its tools through a tool() helper loop
     grep -rn 'registerTool' extensions/ --include=*.ts
 ```
 

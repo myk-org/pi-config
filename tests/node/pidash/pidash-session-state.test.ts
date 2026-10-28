@@ -71,31 +71,31 @@ describe("pidash session registration", () => {
     assert.equal(incapable.session.reasoning, true);
   });
 
-  it("preserves exact Graft savings and absent or zero semantics", () => {
+  it("preserves exact Trail savings and absent or zero semantics", () => {
     const state = createPidashSessionState(() => {});
     const absent = state.register({}, registration({ sessionId: "absent" }));
-    const zero = state.register({}, registration({ sessionId: "zero", graftTokenSavings: 0 }));
-    const exact = state.register({}, registration({ sessionId: "exact", graftTokenSavings: 1_098_359 }));
-    const invalid = state.register({}, registration({ sessionId: "invalid", graftTokenSavings: -1 }));
+    const zero = state.register({}, registration({ sessionId: "zero", trailTokenSavings: 0 }));
+    const exact = state.register({}, registration({ sessionId: "exact", trailTokenSavings: 1_098_359 }));
+    const invalid = state.register({}, registration({ sessionId: "invalid", trailTokenSavings: -1 }));
 
-    assert.equal(absent.session.graftTokenSavings, undefined);
-    assert.equal(zero.session.graftTokenSavings, 0);
-    assert.equal(exact.session.graftTokenSavings, 1_098_359);
-    assert.equal(invalid.session.graftTokenSavings, undefined);
-    updatePidashSession(exact.session, { graftTokenSavings: 2_000_001 });
-    assert.equal(exact.session.graftTokenSavings, 2_000_001);
-    updatePidashSession(exact.session, { graftTokenSavings: -1 });
-    assert.equal(exact.session.graftTokenSavings, 2_000_001);
+    assert.equal(absent.session.trailTokenSavings, undefined);
+    assert.equal(zero.session.trailTokenSavings, 0);
+    assert.equal(exact.session.trailTokenSavings, 1_098_359);
+    assert.equal(invalid.session.trailTokenSavings, undefined);
+    updatePidashSession(exact.session, { trailTokenSavings: 2_000_001 });
+    assert.equal(exact.session.trailTokenSavings, 2_000_001);
+    updatePidashSession(exact.session, { trailTokenSavings: -1 });
+    assert.equal(exact.session.trailTokenSavings, 2_000_001);
   });
 
   it("resets session-scoped model state on a session switch payload", () => {
     const state = createPidashSessionState(() => {});
-    const client = state.register({}, registration({ reasoning: true, graftTokenSavings: 700 }));
+    const client = state.register({}, registration({ reasoning: true, trailTokenSavings: 700 }));
 
-    updatePidashSession(client.session, { reasoning: false, graftTokenSavings: 0 });
+    updatePidashSession(client.session, { reasoning: false, trailTokenSavings: 0 });
 
     assert.equal(client.session.reasoning, false);
-    assert.equal(client.session.graftTokenSavings, 0);
+    assert.equal(client.session.trailTokenSavings, 0);
   });
 
   it("broadcasts an inactive update after an error cleanup", () => {

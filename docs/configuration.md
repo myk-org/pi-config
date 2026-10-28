@@ -428,22 +428,22 @@ export PI_IMAGE_MODEL=gemini-3-pro-image
 
 See [Image Generation](image-generation.html) for details.
 
-## Code Graph Key
+## Code Map Keys
 
-### `graft_enable`
+### `trail_enable`
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `graft_enable` | boolean | `false` | `PI_GRAFT_ENABLE` | Enables the local Graft repository graph integration. | Adds the `graft_*` tools to every subagent's toolset, so agents can look code up in the graph before grepping. Requires the `graft` binary on `PATH`. |
+| `trail_enable` | boolean | `true` | `PI_TRAIL_ENABLE` | Enables the local Trail-code map integration. | Adds the map-first `trail_*` tools to main agents and to every subagent's toolset, so agents look code up in the map before grepping. In a worktree the setting is inherited from the main checkout when the worktree has no `.pi` settings file. Requires the `trail` binary on `PATH`; without it the tools are absent. |
 
 ```json
 {
-  "graft_enable": true
+  "trail_enable": true
 }
 ```
 
 ```bash
-export PI_GRAFT_ENABLE=true
+export PI_TRAIL_ENABLE=true
 ```
 
 ## Background & Async Keys
@@ -596,7 +596,7 @@ export PI_LOG_PROVIDERS=debug
 
 The stream is written to `~/.pi/logs/providers/<session-id>/main.log` under a `[provider-stream]` prefix, with one line per event and credential-shaped fields redacted. Capturing every event has a real cost, so the hook only registers at `debug` and costs nothing at the default level.
 
-Every other `log_<module>` key follows the same shape — `log_pidash`, `log_pidiff`, `log_coms`, `log_subagent`, `log_dreaming`, `log_enforcement`, `log_graft`, and others — with env vars `PI_LOG_<MODULE>` and default `info`. The remaining module log levels are listed in [Module File Logging](#module-file-logging) below.
+Every other `log_<module>` key follows the same shape — `log_pidash`, `log_pidiff`, `log_coms`, `log_subagent`, `log_dreaming`, `log_enforcement`, `log_trail`, and others — with env vars `PI_LOG_<MODULE>` and default `info`. The remaining module log levels are listed in [Module File Logging](#module-file-logging) below.
 
 ## Safety Enforcement Keys
 

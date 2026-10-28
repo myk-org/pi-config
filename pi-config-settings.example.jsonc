@@ -37,9 +37,9 @@
   // Block orchestrator from using edit/write tools directly (must delegate to subagents)
   "orchestrator_edit_write_block": false,
 
-  // Enable local Graft repository graph context (requires Node.js 22+ and `npm install -g @nanonets/graft@latest`)
-  // Graft reads this project and stores its regenerable graph in ./graft/; false keeps it fully inactive.
-  "graft_enable": false,
+  // Enable the local Trail code map (requires the `trail` binary; on by default).
+  // Trail stores its regenerable map in .trail/cache/ (or ./graft/ on older repos); false keeps it fully inactive.
+  "trail_enable": true,
 
   // ── Dashboard & Diff ──────────────────────────────────────────────────────
 

@@ -381,9 +381,9 @@
 <td><code>registerTool(...)</code> across <code>extensions/</code></td>
 </tr>
 <tr>
-<td>Opt-in tools</td>
+<td>Code-map tools</td>
 <td>7</td>
-<td><code>graft.ts</code>, only when <code>graft_enable</code> is on (default: off)</td>
+<td><code>trail.ts</code>, on by default when the <code>trail</code> binary exists (<code>trail_enable</code>)</td>
 </tr>
 </tbody>
 </table></div>
@@ -778,8 +778,8 @@
 </tbody>
 </table></div>
 <p>More detail: <a href="managing-custom-agents.html">Managing Custom Agents</a> for <code>subagent</code>, <a href="automating-code-reviews.html">Automating Code Reviews</a> for <code>review_status</code>, <a href="image-generation.html">Image Generation</a> for <code>generate_image</code>.</p>
-<h3 id="graft_-7-tools-opt-in">graft_* (7 tools, opt-in)</h3>
-<p>Registered by <code>extensions/orchestrator/graft.ts</code> only when the <code>graft_enable</code> setting is on, and only in a trusted session. The default for <code>graft_enable</code> is <strong>false</strong>, so these tools are absent in a default install. <code>graft_refresh</code> and <code>graft_blast_radius</code> are additionally omitted in subagent children.</p>
+<h3 id="trail_-7-tools-on-by-default">trail_* (7 tools, on by default)</h3>
+<p>Registered by <code>extensions/orchestrator/trail.ts</code> when <code>trail_enable</code> is on, which is the default, and only in a trusted session. They are absent when the <code>trail</code> binary is not on <code>PATH</code> — that binary is the real gate. <code>trail_refresh</code> and <code>trail_blast_radius</code> are additionally omitted in subagent children; children get the five read-only query tools.</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -790,42 +790,44 @@
 </thead>
 <tbody>
 <tr>
-<td><code>graft_find_code</code></td>
-<td>Find compact ranked code references in the local Graft graph</td>
+<td><code>trail_find_code</code></td>
+<td>Find compact ranked code references in the local Trail map</td>
 <td><code>query</code>, <code>limit</code> (1–20), <code>path</code> (project-relative)</td>
 </tr>
 <tr>
-<td><code>graft_find_all</code></td>
+<td><code>trail_find_all</code></td>
 <td>Search indexed project files</td>
 <td><code>pattern</code>, <code>path</code>, <code>fixed</code> (literal, not regex)</td>
 </tr>
 <tr>
-<td><code>graft_file_api</code></td>
+<td><code>trail_file_api</code></td>
 <td>Signatures-only API view of a file</td>
 <td><code>path</code></td>
 </tr>
 <tr>
-<td><code>graft_trace_calls</code></td>
+<td><code>trail_trace_calls</code></td>
 <td>Trace callers or callees of a symbol</td>
 <td><code>symbol</code>, <code>direction</code> (<code>in</code>/<code>out</code>), <code>depth</code> (1–10)</td>
 </tr>
 <tr>
-<td><code>graft_repo_map</code></td>
-<td>Compact graph-based repository map</td>
+<td><code>trail_repo_map</code></td>
+<td>Compact map-based repository overview</td>
 <td><code>max_dirs</code> (1–30)</td>
 </tr>
 <tr>
-<td><code>graft_refresh</code></td>
-<td>Rebuild the local Graft graph</td>
+<td><code>trail_refresh</code></td>
+<td>Rebuild the local Trail map</td>
 <td>none</td>
 </tr>
 <tr>
-<td><code>graft_blast_radius</code></td>
+<td><code>trail_blast_radius</code></td>
 <td>Dependencies affected by the local diff</td>
 <td><code>depth</code> (1–10)</td>
 </tr>
 </tbody>
 </table></div>
+<p><strong>Map-first gate.</strong> On a substantive prompt the first project navigation of the turn is the map, not raw search: <code>read</code> of an indexed file and <code>grep</code>/<code>find</code>/<code>rg</code> are blocked until a <code>trail_*</code> call runs (or the agent reads a file:line pointer the retrieval injected). Unindexed paths — docs, lockfiles, <code>.pi/**</code> — are never blocked, and the gate fails open when there is no map.</p>
+<p><strong><code>trail_repo_map</code> is capped.</strong> The overview is a one-per-session orientation aid. A second call in the same session returns a redirect to <code>trail_find_code</code> instead of re-running the CLI, because repeated overviews replaced actual lookup in practice.</p>
 <h2 id="duplicate-registrations">Duplicate registrations</h2>
 <p>Three names are registered twice in source. The second registration is either a stub or is swallowed, so there is no user-visible conflict — but it is worth knowing if you grep the code.</p>
 <div class="table-wrap"><table>
@@ -859,7 +861,7 @@
 <div class="highlight"><pre><span></span><code><span class="c1"># Slash commands</span>
 grep<span class="w"> </span>-rn<span class="w"> </span><span class="s1">'registerCommand("'</span><span class="w"> </span>extensions/<span class="w"> </span>--include<span class="o">=</span>*.ts
 
-<span class="c1"># Tools — note graft.ts registers its tools through a tool() helper loop</span>
+<span class="c1"># Tools — note trail.ts registers its tools through a tool() helper loop</span>
 grep<span class="w"> </span>-rn<span class="w"> </span><span class="s1">'registerTool'</span><span class="w"> </span>extensions/<span class="w"> </span>--include<span class="o">=</span>*.ts
 </code></pre></div>
 
@@ -910,7 +912,7 @@ grep<span class="w"> </span>-rn<span class="w"> </span><span class="s1">'registe
 <li><a href="#memory_-8-tools">memory_* (8 tools)</a></li>
 <li><a href="#task-7-tools">Task* (7 tools)</a></li>
 <li><a href="#core-tools-9-tools">Core tools (9 tools)</a></li>
-<li><a href="#graft_-7-tools-opt-in">graft_* (7 tools, opt-in)</a></li>
+<li><a href="#trail_-7-tools-on-by-default">trail_* (7 tools, on by default)</a></li>
 </ul>
 </li>
 <li><a href="#duplicate-registrations">Duplicate registrations</a></li>
