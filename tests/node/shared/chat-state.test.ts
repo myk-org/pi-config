@@ -41,18 +41,31 @@ describe("remembered prompts", () => {
     assert.deepEqual(entry, { text: "legacy", hadImages: false, truncated: false });
   });
 
-  it("drops non-object, non-string and textless values", () => {
-    const stored = stateWith({ a: 42, b: null, c: { text: 7 }, d: {} }).users.u1?.lastPrompts;
-    assert.equal(stored?.a, undefined);
-    assert.equal(stored?.b, undefined);
-    assert.equal(stored?.c, undefined);
-    assert.equal(stored?.d, undefined);
+  it("drops a non-numeric value", () => {
+    assert.equal(stateWith({ a: 42 }).users.u1?.lastPrompts?.a, undefined);
   });
 
-  it("caps an oversized prompt and marks it truncated", () => {
+  it("drops a null value", () => {
+    assert.equal(stateWith({ b: null }).users.u1?.lastPrompts?.b, undefined);
+  });
+
+  it("drops an entry whose text is not a string", () => {
+    assert.equal(stateWith({ c: { text: 7 } }).users.u1?.lastPrompts?.c, undefined);
+  });
+
+  it("drops an entry without text", () => {
+    assert.equal(stateWith({ d: {} }).users.u1?.lastPrompts?.d, undefined);
+  });
+
+  it("caps an oversized prompt", () => {
     const long = "x".repeat(MAX_LAST_PROMPT_CHARS * 3);
     const entry = stateWith({ "1:/repo": { text: long, hadImages: false, truncated: false } }).users.u1?.lastPrompts?.["1:/repo"];
     assert.equal(entry?.text.length, MAX_LAST_PROMPT_CHARS);
+  });
+
+  it("marks a capped prompt as truncated", () => {
+    const long = "x".repeat(MAX_LAST_PROMPT_CHARS * 3);
+    const entry = stateWith({ "1:/repo": { text: long, hadImages: false, truncated: false } }).users.u1?.lastPrompts?.["1:/repo"];
     assert.equal(entry?.truncated, true, "a retry must know it cannot reproduce the original");
   });
 

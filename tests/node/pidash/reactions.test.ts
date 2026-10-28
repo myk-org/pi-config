@@ -74,8 +74,11 @@ describe("reaction ownership", () => {
     targets: { "2:/other": { channelId: "thread-b", threadId: "thread-b" } },
   };
 
-  it("owns its current channel and its retained threads", () => {
+  it("owns its current channel", () => {
     assert.equal(ownsChannel(state, "dm"), true);
+  });
+
+  it("owns a retained thread", () => {
     assert.equal(ownsChannel(state, "thread-b"), true);
   });
 
@@ -83,9 +86,15 @@ describe("reaction ownership", () => {
     assert.equal(ownsChannel(state, "someone-elses-channel"), false);
   });
 
-  it("owns the watched session and its retained targets only", () => {
+  it("owns the watched session", () => {
     assert.equal(ownsSession(state, "1:/mine"), true);
+  });
+
+  it("owns a retained target session", () => {
     assert.equal(ownsSession(state, "2:/other"), true);
+  });
+
+  it("does not own a session it never watched", () => {
     assert.equal(ownsSession(state, "3:/stranger"), false);
   });
 });

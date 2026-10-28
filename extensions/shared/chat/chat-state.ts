@@ -44,6 +44,9 @@ export interface DiscordUserState {
 /** A remembered prompt is for retrying, not for storage: keep it small. */
 export const MAX_LAST_PROMPT_CHARS = 4000;
 
+/** Sessions whose last prompt is remembered; older ones are dropped. */
+export const MAX_LAST_PROMPTS = 10;
+
 export interface LastPromptEntry {
   text: string;
   /** The original prompt carried images, which a retry cannot resend. */

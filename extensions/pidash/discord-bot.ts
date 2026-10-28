@@ -30,8 +30,9 @@ import {
   slicePickerPage,
 } from "../shared/chat/chat-picker.ts";
 import { compareCommandPayloads } from "./discord-commands.ts";
-import { MAX_LAST_PROMPT_CHARS } from "../shared/chat/chat-state.ts";
+import { MAX_LAST_PROMPTS, MAX_LAST_PROMPT_CHARS } from "../shared/chat/chat-state.ts";
 import { jobIdAt, renderJobsView } from "./discord-jobs-view.ts";
+import { planBoard } from "./discord-board.ts";
 import { ownsChannel, ownsSession, reactionAction, sessionForChannel, sessionIdFromTopic } from "./discord-reactions.ts";
 import {
   buildSessionPage,
@@ -209,6 +210,19 @@ export function setupDiscordBot(opts: {
     return state;
   }
 
+  /**
+   * Remembered prompts worth keeping: only sessions this user still watches or
+   * retains a thread for, newest last, at most MAX_LAST_PROMPTS entries.
+   * Otherwise every session a user ever touched leaves message text on disk
+   * (Qodo a2f90e46).
+   */
+  function prunablePrompts(state: RuntimeUserState): NonNullable<RuntimeUserState["lastPrompts"]> {
+    const keep = new Set<string>(Object.keys(state.targets ?? {}));
+    if (state.watchedSessionId) keep.add(state.watchedSessionId);
+    const entries = Object.entries(state.lastPrompts ?? {}).filter(([sessionId]) => keep.has(sessionId));
+    return Object.fromEntries(entries.slice(-MAX_LAST_PROMPTS));
+  }
+
   function persist(): void {
     for (const [userId, state] of runtime) {
       persisted.users[userId] = {
@@ -217,7 +231,7 @@ export function setupDiscordBot(opts: {
         threadId: state.threadId ?? null,
         threads: state.threads ?? {},
         // Without this the 🔁 shortcut forgets every prompt on restart.
-        lastPrompts: state.lastPrompts ?? {},
+        lastPrompts: prunablePrompts(state),
         updatedAt: state.updatedAt,
       };
     }
@@ -468,10 +482,16 @@ export function setupDiscordBot(opts: {
       if (sessionId) existing.set(sessionId, thread.id);
     }
 
+    const plan = planBoard(
+      sessions.map((session: any) => ({ sessionId: String(session.sessionId), label: sessionName(String(session.sessionId)) })),
+      Object.fromEntries(existing),
+    );
+    const byId = new Map(sessions.map((session: any) => [String(session.sessionId), session]));
+
     let created = 0;
-    for (const session of sessions) {
-      const sessionId = String(session.sessionId);
-      if (existing.has(sessionId)) continue;
+    for (const planned of plan.toCreate) {
+      const sessionId = planned.sessionId;
+      const session: any = byId.get(sessionId) ?? {};
       try {
         const thread = await forum.threads.create({
           name: truncateLine(sessionName(sessionId), 90),
@@ -493,16 +513,11 @@ export function setupDiscordBot(opts: {
     }
     log.info("board rendered", { sessions: sessions.length, created, forumId });
 
-    if (!sessions.length) return { content: "No active sessions to show on the board." };
-    const options = sessions.slice(0, 25).map((session: any) => ({
-      label: truncateLine(sessionName(String(session.sessionId)), 90),
-      value: String(session.sessionId).slice(0, 100),
-      description: truncateLine(String(session.cwd ?? ""), 90),
-    }));
+    if (!plan.options.length) return { content: "No active sessions to show on the board." };
     return {
-      content: `**Board** — ${sessions.length} session(s), ${created} new thread(s) in <#${forumId}>.`,
+      content: `**Board** — ${plan.total} session(s), ${created} new thread(s) in <#${forumId}>.`,
       components: [new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder().setCustomId("boardpick").setPlaceholder("Open a session thread").addOptions(options),
+        new StringSelectMenuBuilder().setCustomId("boardpick").setPlaceholder("Open a session thread").addOptions(plan.options),
       )],
     };
   }
@@ -1177,6 +1192,9 @@ export function setupDiscordBot(opts: {
     state.streams = {};
     state.pendingPrompts = {};
     state.pendingPrompt = null;
+    // Prompt history is message content on disk: disconnecting must forget it,
+    // not leave it behind for the next reader of the state file (Qodo 8fbf223f).
+    state.lastPrompts = {};
     persist();
   }
 
