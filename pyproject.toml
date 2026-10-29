@@ -4,7 +4,7 @@ version = "4.21.1"
 description = "CLI utilities for pi orchestrator plugins"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.14"
+requires-python = ">=3.14,<3.15"
 authors = [{ name = "myk-org" }]
 keywords = ["pi", "cli", "github", "code-review"]
 classifiers = [
