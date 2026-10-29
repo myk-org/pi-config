@@ -477,23 +477,6 @@ entries) is what pi carries between sessions. Trail's own layer —
 `.trail/learnings/`, `trail note`, the pre-ship `trail check` — is upstream's and
 **we do not use it**. We only read the code map.
 
-### Migrating from Graft
-
-The integration was renamed from Graft to Trail-code. The break is intentional:
-
-- Only `@trailhq/trail-code` is installed and only `trail` is invoked. The `graft`
-  binary is no longer installed and there is no fallback — if you only have
-  `@nanonets/graft`, install trail to get the map tools back.
-- `graft_enable` / `PI_GRAFT_ENABLE` are gone, with no alias and no migration. An
-  existing `graft_enable: true` is a dead key, which is harmless: the feature is
-  default-on when the binary exists.
-- Tools are `trail_find_code`, `trail_find_all`, `trail_file_api`,
-  `trail_trace_calls`, `trail_repo_map`, `trail_refresh`, `trail_blast_radius`.
-- `log_graft` becomes `log_trail` (env `PI_LOG_TRAIL`); the old `~/.pi/logs/graft`
-  directory is neither read nor migrated.
-- `graft/` survives as a _path_ until upstream renames it: it is the map
-  directory, not the product.
-
 ### Cache Miss Notices
 
 Enable `showCacheMissNotices` in pi settings to see transcript notices on significant prompt-cache misses — useful for investigating unexpected token costs:

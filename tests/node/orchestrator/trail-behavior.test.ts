@@ -3,7 +3,7 @@
  * worktree enablement, "never cold build" and the child toolset.
  * Run: npx tsx --test tests/node/orchestrator/trail-behavior.test.ts
  *
- * Deliberately separate from trail.test.ts (owned by the Graft->Trail rename):
+ * Deliberately separate from trail.test.ts (which owns the detail-level suite):
  * everything here asserts a user-visible handler return value (block / no
  * block, footer text, CLI invocations) rather than integration internals.
  */
@@ -522,8 +522,8 @@ describe("Repo map tool and map layout", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("trail wiring wins over a populated graft map", () => {
-    const root = mapRoot([{ id: "g", name: "graft", path: "src/graft.ts" }], 3);
+  it("trail wiring wins over a populated graft/ map", () => {
+    const root = mapRoot([{ id: "g", name: "legacy", path: "src/legacy.ts" }], 3);
     try {
       mkdirSync(join(root, ".trail/cache/.graph"), { recursive: true });
       writeFileSync(join(root, ".trail/cache/.graph/wiring.json"), JSON.stringify({ meta: { nodeCount: 5 }, nodes: [] }));
@@ -532,8 +532,8 @@ describe("Repo map tool and map layout", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("resolves a graft-only repo as the legacy layout", () => {
-    const root = mapRoot([{ id: "g", name: "graft", path: "src/graft.ts" }]);
+  it("resolves a graft/-only repo as the legacy layout", () => {
+    const root = mapRoot([{ id: "g", name: "legacy", path: "src/legacy.ts" }]);
     try {
       assert.equal(trail.trailMapDir(root, silentLogger), join(root, "graft"));
       assert.equal(trail.trailNodes(root, silentLogger), 1);
@@ -548,8 +548,8 @@ describe("Repo map tool and map layout", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("falls back to a legacy graft map when .trail/cache exists without a wiring file", () => {
-    const root = mapRoot([{ id: "g", name: "graft", path: "src/graft.ts" }, { id: "h", name: "h", path: "src/h.ts" }], 2);
+  it("falls back to a legacy graft/ map when .trail/cache exists without a wiring file", () => {
+    const root = mapRoot([{ id: "g", name: "legacy", path: "src/legacy.ts" }, { id: "h", name: "h", path: "src/h.ts" }], 2);
     try {
       mkdirSync(join(root, ".trail/cache"), { recursive: true });
       // An empty cache directory is not a map: the usable legacy map must win.
@@ -637,15 +637,11 @@ describe("Subagent toolset and status footer", () => {
     assert.match(trail.formatTrailFooter({ state: "absent", nodeCount: 0, tokenSavings: 0 }), /trail/);
   });
 
-  it("parses trail savings and still tolerates the legacy graft footer", async () => {
+  it("parses trail savings", async () => {
     const trailRun = register({ graph: async () => "fresh" });
     const c1 = await start(trailRun, ctx(defaultRoot, true, "savings-trail"));
     await toolResult(trailRun, c1, { toolName: "trail_repo_map", input: {}, content: toolText("[trail] tokens saved ≈ 700"), isError: false });
     assert.match(c1.status.at(-1)?.text ?? "", /~700 tok saved/);
-    const legacy = register({ graph: async () => "fresh" });
-    const c2 = await start(legacy, ctx(defaultRoot, true, "savings-graft"));
-    await toolResult(legacy, c2, { toolName: "trail_repo_map", input: {}, content: toolText("[graft] tokens saved ≈ 700"), isError: false });
-    assert.match(c2.status.at(-1)?.text ?? "", /~700 tok saved/);
   });
 });
 
@@ -879,7 +875,6 @@ describe("Tool classification for read accounting", () => {
     assert.equal(trail.classifyToolUse("bash", { command: "rg authenticate" }), null);
     assert.equal(trail.classifyToolUse("write", {}), null);
     assert.equal(trail.classifyToolUse("edit", {}), null);
-    assert.equal(trail.classifyToolUse("graft_find_code", {}), null);
   });
 });
 

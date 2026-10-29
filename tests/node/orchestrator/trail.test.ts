@@ -143,7 +143,7 @@ describe("Trail enablement, trust, and startup", () => {
     }
     assert.deepEqual(process.argv, argv, "the test restores process.argv");
   });
-  it("resolves .trail/cache before a legacy graft map", async () => {
+  it("resolves .trail/cache before a legacy graft/ map", async () => {
     const root = mapRoot([{ id: "a", name: "a", path: "src/a.ts" }], 3);
     try {
       assert.equal(trail.trailMapDir(root, silentLogger), join(root, "graft"));
@@ -351,9 +351,9 @@ describe("Trail savings accounting", () => {
     r.handlers.get("tool_result")![0]({ toolName: "trail_repo_map", input: {}, content: result.content, isError: false }, c);
     assert.match(c.status.at(-1)?.text ?? "", /~100 tok saved/);
   });
-  it("still accepts a legacy CLI savings footer and ignores an absent figure", async () => {
+  it("accepts the CLI savings footer and ignores an absent figure", async () => {
     const r = register({ graph: async () => "fresh" }); const c = await start(r);
-    r.handlers.get("tool_result")![0]({ toolName: "trail_repo_map", input: {}, content: savings("[graft] tokens saved ≈ 700"), isError: false }, c);
+    r.handlers.get("tool_result")![0]({ toolName: "trail_repo_map", input: {}, content: savings("[trail] tokens saved ≈ 700"), isError: false }, c);
     r.handlers.get("tool_result")![0]({ toolName: "trail_repo_map", input: {}, content: savings("no figure"), isError: false }, c);
     assert.match(c.status.at(-1)?.text ?? "", /~700 tok saved/);
   });

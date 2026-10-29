@@ -73,11 +73,11 @@ export function trailMapDir(root: string, logger: Logger = log): string | null {
     logger.debug("map_dir_resolved", { root, layout: "trail", dir: trail });
     return trail;
   }
-  const graft = join(root, "graft");
-  if (existsSync(join(graft, ".graph", "wiring.json"))) {
+  const legacy = join(root, "graft");
+  if (existsSync(join(legacy, ".graph", "wiring.json"))) {
     // Upstream owns this path name; we only read it until trail renames it.
-    logger.debug("map_dir_resolved", { root, layout: "legacy", dir: graft });
-    return graft;
+    logger.debug("map_dir_resolved", { root, layout: "legacy", dir: legacy });
+    return legacy;
   }
   // No map yet: `.trail/cache` or `.trail/learnings` marks a repo on trail before
   // its first build lands, so that is where a map will appear.
@@ -147,7 +147,7 @@ function repoRelative(root: string, value: unknown): string | null {
   return rel.startsWith("..") || isAbsolute(rel) ? null : rel.split(sep).join("/");
 }
 function samePath(left: string, right: string): boolean { return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`); }
-function savedTokens(output: string): number { return [...output.matchAll(/\[(?:trail|graft)\] tokens saved ≈ ([\d,]+)/g)].reduce((total, match) => total + (Number(match[1].replaceAll(",", "")) || 0), 0); }
+function savedTokens(output: string): number { return [...output.matchAll(/\[trail\] tokens saved ≈ ([\d,]+)/g)].reduce((total, match) => total + (Number(match[1].replaceAll(",", "")) || 0), 0); }
 function savingsStore(ctx: any, root: string, logger: Logger = log): string {
   let id: unknown = process.env.PI_SUBAGENT_CHILD === "1" ? process.env.__PI_PARENT_SESSION_ID : undefined;
   const source = id ? "parent" : "session";
