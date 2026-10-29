@@ -22,6 +22,8 @@ const MIN_PROMPT_CHARS = 12;
 const QUERY_MAX_CHARS = 2_000;
 const QUERY_FALLBACK_CHARS = 200;
 const INTERACTIVE_TIMEOUT_MS = 2_000;
+// The first retrieval of a session pays process spawn plus map load (median 1.4s, #992), so cold gets a larger ceiling than warm.
+const COLD_RETRIEVAL_TIMEOUT_MS = 10_000;
 export const TRAIL_QUERY_TOOLS = ["trail_find_code", "trail_find_all", "trail_file_api", "trail_trace_calls", "trail_repo_map"] as const;
 /**
  * The five read-only Trail query tools, added to a child's tool list when it declares one.
@@ -48,7 +50,7 @@ export function trailToolsArgs(tools: readonly string[] | undefined, cwd: string
 export type TrailState = "syncing" | "ready" | "stale" | "absent" | "failed";
 export type TrailRun = (args: readonly string[], options: { cwd: string; timeoutMs?: number }) => Promise<{ stdout: string; stderr: string; code: number }>;
 type GraphStatus = "fresh" | "stale" | "absent";
-type Options = { enabled: boolean; setting?: (cwd: string, logger?: Logger) => boolean; executable?: () => Promise<boolean>; graph?: (cwd: string) => Promise<GraphStatus> | GraphStatus; retrieve?: (query: string, cwd: string) => Promise<{ pointers: string[] }>; worktree?: (cwd: string) => string | null; run?: TrailRun; interactiveTimeoutMs?: number; logger?: Logger };
+type Options = { enabled: boolean; setting?: (cwd: string, logger?: Logger) => boolean; executable?: () => Promise<boolean>; graph?: (cwd: string) => Promise<GraphStatus> | GraphStatus; retrieve?: (query: string, cwd: string) => Promise<{ pointers: string[] }>; worktree?: (cwd: string) => string | null; run?: TrailRun; interactiveTimeoutMs?: number; coldTimeoutMs?: number; logger?: Logger };
 type StatusTheme = { fg: (color: string, value: string) => string };
 type Hit = { title?: string; pointer?: string; snippet?: string; code?: string };
 type Ask = { coverage?: number; coverageStrong?: number; hits?: Hit[] };
@@ -71,11 +73,11 @@ export function trailMapDir(root: string, logger: Logger = log): string | null {
     logger.debug("map_dir_resolved", { root, layout: "trail", dir: trail });
     return trail;
   }
-  const graft = join(root, "graft");
-  if (existsSync(join(graft, ".graph", "wiring.json"))) {
+  const legacy = join(root, "graft");
+  if (existsSync(join(legacy, ".graph", "wiring.json"))) {
     // Upstream owns this path name; we only read it until trail renames it.
-    logger.debug("map_dir_resolved", { root, layout: "legacy", dir: graft });
-    return graft;
+    logger.debug("map_dir_resolved", { root, layout: "legacy", dir: legacy });
+    return legacy;
   }
   // No map yet: `.trail/cache` or `.trail/learnings` marks a repo on trail before
   // its first build lands, so that is where a map will appear.
@@ -145,7 +147,12 @@ function repoRelative(root: string, value: unknown): string | null {
   return rel.startsWith("..") || isAbsolute(rel) ? null : rel.split(sep).join("/");
 }
 function samePath(left: string, right: string): boolean { return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`); }
-function savedTokens(output: string): number { return [...output.matchAll(/\[(?:trail|graft)\] tokens saved ≈ ([\d,]+)/g)].reduce((total, match) => total + (Number(match[1].replaceAll(",", "")) || 0), 0); }
+function savedTokens(output: string, logger: Logger = log): number {
+  const matches = [...output.matchAll(/\[trail\] tokens saved ≈ ([\d,]+)/g)];
+  const total = matches.reduce((sum, match) => sum + (Number(match[1].replaceAll(",", "")) || 0), 0);
+  logger.debug("saved_tokens", { matches: matches.length, total });
+  return total;
+}
 function savingsStore(ctx: any, root: string, logger: Logger = log): string {
   let id: unknown = process.env.PI_SUBAGENT_CHILD === "1" ? process.env.__PI_PARENT_SESSION_ID : undefined;
   const source = id ? "parent" : "session";
@@ -401,7 +408,7 @@ export function createTrailIntegration(options: Options) {
   // telemetry into ~/.pi/logs/trail, which is the G1-G3 measurement source for #978.
   const log = options.logger ?? createLogger("trail");
   const child = process.env.PI_SUBAGENT_CHILD === "1";
-  const state = { generation: 0, root: "", store: "", dirtySignal: "", enabled: false, toolsRegistered: false, events: undefined as ExtensionAPI["events"] | undefined, value: "stale" as TrailState, nodeCount: 0, tokenSavings: 0, trailReads: 0, sourceReads: 0, repoMapShown: false, dirty: false, buildAttempted: false, refresh: undefined as Promise<boolean> | undefined, mapPaths: new Set<string>(), mapDirs: new Set<string>(), ctx: undefined as any, gate: { active: false, retrieved: false, pointers: new Set<string>() } };
+  const state = { generation: 0, root: "", store: "", dirtySignal: "", enabled: false, toolsRegistered: false, events: undefined as ExtensionAPI["events"] | undefined, value: "stale" as TrailState, nodeCount: 0, tokenSavings: 0, trailReads: 0, sourceReads: 0, repoMapShown: false, dirty: false, buildAttempted: false, warmed: false, coldAttempts: 0, refresh: undefined as Promise<boolean> | undefined, mapPaths: new Set<string>(), mapDirs: new Set<string>(), ctx: undefined as any, gate: { active: false, retrieved: false, pointers: new Set<string>() } };
   const publishSavings = () => {
     if (child || !state.events) return;
     state.events.emit("pidash:trail-savings", { tokenSavings: state.tokenSavings });
@@ -498,7 +505,7 @@ export function createTrailIntegration(options: Options) {
     } catch {}
   };
   const invalidate = (ctx: any, reason: string) => {
-    state.generation++; state.ctx = ctx; state.enabled = false; state.root = ""; state.store = ""; state.dirtySignal = ""; state.refresh = undefined; state.dirty = false; state.buildAttempted = false; state.nodeCount = 0; state.tokenSavings = 0; state.mapPaths = new Set(); state.repoMapShown = false; state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
+    state.generation++; state.ctx = ctx; state.enabled = false; state.root = ""; state.store = ""; state.dirtySignal = ""; state.refresh = undefined; state.dirty = false; state.buildAttempted = false; state.warmed = false; state.coldAttempts = 0; state.nodeCount = 0; state.tokenSavings = 0; state.mapPaths = new Set(); state.repoMapShown = false; state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
     clearSlot("trail", ctx); publishSavings(); log.info("session_invalidated", { reason });
   };
   const invoke = async (args: string[]) => {
@@ -568,7 +575,7 @@ export function createTrailIntegration(options: Options) {
       // they only skip the binary probe, which a one-shot run cannot report on.
       // Returning here instead used to leave those sessions without any map tool.
       const probe = !child && (isEligibleTrailStartup(event, ctx) || ["new", "reload", "resume", "fork"].includes(event?.reason));
-      state.generation++; state.refresh = undefined; state.dirty = false; state.buildAttempted = false; state.root = resolveWorktreeRoot(ctx.cwd); const root = state.root; state.repoMapShown = false; state.gate = { active: false, retrieved: false, pointers: new Set<string>() }; state.trailReads = 0; state.sourceReads = 0;
+      state.generation++; state.refresh = undefined; state.dirty = false; state.buildAttempted = false; state.warmed = false; state.coldAttempts = 0; state.root = resolveWorktreeRoot(ctx.cwd); const root = state.root; state.repoMapShown = false; state.gate = { active: false, retrieved: false, pointers: new Set<string>() }; state.trailReads = 0; state.sourceReads = 0;
       state.enabled = true; loadMap(root); state.value = "syncing";
       try { state.store = savingsStore(ctx, root, log); state.dirtySignal = state.store ? `${state.store}.dirty` : ""; if (state.dirtySignal) { mkdirSync(state.dirtySignal, { recursive: true, mode: 0o700 }); chmodSync(state.dirtySignal, 0o700); } state.tokenSavings = readSavings(state.store); } catch (error: any) { state.store = ""; state.dirtySignal = ""; state.tokenSavings = 0; log.warn("savings_restore_failed", { code: error?.code }); }
       // Provisional state while we probe. This used to be "failed", which made
@@ -624,7 +631,7 @@ export function createTrailIntegration(options: Options) {
         log.info("gate_satisfied", { by: tool.startsWith("trail_") ? "tool" : "auto_pointer_read", tool });
       }
       const kind = !event.isError ? classifyToolUse(event.toolName, event.input) : null;
-      const savings = !event.isError ? savedTokens(toolText(event.content)) : 0;
+      const savings = !event.isError ? savedTokens(toolText(event.content), log) : 0;
       if (kind === "trail") state.trailReads++; else if (kind === "source") state.sourceReads++;
       addSavings(savings);
       if (kind || savings) { setState(state.dirty ? "stale" : state.value === "absent" || state.value === "failed" ? state.value : "ready"); log.info("session_metric", { tool: event.toolName, kind, savings, trailReads: state.trailReads, sourceReads: state.sourceReads, tokenSavings: state.tokenSavings }); }
@@ -682,7 +689,14 @@ export function createTrailIntegration(options: Options) {
       if (!query || !substantive(query)) { finish("guidance_only_control_prompt"); return guidance; }
       state.gate.active = true;
       // One shared budget: a fallback retry must not double the turn's deadline.
-      const deadline = started + (options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS);
+      // `warmed` only flips on a successful retrieval, so a cold attempt that
+      // times out or fails keeps the cold ceiling; the attempt cap stops a
+      // genuinely broken CLI from paying it forever.
+      const cold = !state.warmed && state.coldAttempts < 2;
+      if (cold) state.coldAttempts++;
+      const budget = options.interactiveTimeoutMs ?? (cold ? (options.coldTimeoutMs ?? COLD_RETRIEVAL_TIMEOUT_MS) : INTERACTIVE_TIMEOUT_MS);
+      log.debug("retrieval_budget", { cold, budgetMs: budget, attempt: state.coldAttempts });
+      const deadline = started + budget;
       const remaining = () => Math.max(1, deadline - Date.now());
       type Attempt = { hits: Hit[]; failure?: { decision: string; note: string; diagnostic?: string } };
       /** One bounded retrieval attempt; null means the session changed under us. */
@@ -690,15 +704,17 @@ export function createTrailIntegration(options: Options) {
         if (options.retrieve) {
           const result = await withTimeout(options.retrieve(value, root), remaining(), log);
           if (!current()) return null;
+          state.warmed = true;
           return { hits: result.pointers.map(pointer => ({ title: pointer, pointer })) };
         }
         // `--source` inlines the code, so a hit can be used without re-opening the file.
         const result = await withTimeout(run(["ask", value, ".", "--json", "-n", "3", "--source"], { cwd: root, timeoutMs: remaining() }), remaining(), log);
         if (!current()) return null;
-        if (result.code) { const reason = diagnostic(result.stderr); return { hits: [], failure: { decision: "ask_failed", diagnostic: reason, note: `[trail] Retrieval failed: ${reason}. Raw navigation is available.` } }; }
-        const savings = savedTokens(result.stdout); addSavings(savings); setState(state.value); loadMap(root);
+        if (result.code) { const reason = diagnostic(result.stderr); return { hits: [], failure: { decision: "ask_failed", diagnostic: reason, note: `[trail] Retrieval failed: ${reason}. Call trail_find_code (describe the concept, not an identifier) for the map answer; raw navigation is available if it returns nothing relevant.` } }; }
+        const savings = savedTokens(result.stdout, log); addSavings(savings); setState(state.value); loadMap(root);
         const ask = parseAsk(result.stdout);
-        if (!ask) return { hits: [], failure: { decision: "invalid_ask_json", note: "[trail] Retrieval returned malformed output. Raw navigation is available." } };
+        if (!ask) return { hits: [], failure: { decision: "invalid_ask_json", note: "[trail] Retrieval returned malformed output. Call trail_find_code (describe the concept, not an identifier) for the map answer; raw navigation is available if it returns nothing relevant." } };
+        state.warmed = true;
         return { hits: relevant(ask) };
       };
       let hits: Hit[] = [];
@@ -716,7 +732,7 @@ export function createTrailIntegration(options: Options) {
         if (!result) return;
         if (result.failure) { state.gate.active = false; finish(result.failure.decision, result.failure.diagnostic ? { diagnostic: result.failure.diagnostic } : {}); return inject(event, [], result.failure.note); }
         hits = result.hits;
-      } catch (error: any) { if (!current()) return; state.gate.active = false; finish("ask_error"); return inject(event, [], `[trail] Retrieval failed: ${text(error?.message, 240) ?? "unknown error"}. Raw navigation is available.`); }
+      } catch (error: any) { if (!current()) return; state.gate.active = false; finish("ask_error"); return inject(event, [], `[trail] Retrieval failed: ${text(error?.message, 240) ?? "unknown error"}. Call trail_find_code (describe the concept, not an identifier) for the map answer; raw navigation is available if it returns nothing relevant.`); }
       // Still no map on disk (the seed found nothing, or this was never a
       // worktree): fail open rather than blocking navigation on a map we lack.
       if (!state.mapPaths.size) { state.gate.active = false; log.info("gate_skipped", { reason: "no_map" }); }

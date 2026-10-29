@@ -105,7 +105,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 # Trail-code installs in two isolated passes: an --ignore-scripts audit whose tree is deleted after the
 # allowlist is derived, then a strict --allow-scripts install that is verified before it is published
 # atomically, so no unapproved dependency lifecycle script ever runs in the final image.
-# Upstream calls its code map "the graft map" and stores it under graft/ (or .trail/cache/ in a repo wired for trail).
+# Upstream's code map is written to graft/ (or .trail/cache/ in a repo wired for trail).
 COPY scripts/trail-allow-scripts.mjs /usr/local/lib/scripts/trail-allow-scripts.mjs
 COPY extensions/shared/logger-core.mjs extensions/shared/install-logger.mjs /usr/local/lib/extensions/shared/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
