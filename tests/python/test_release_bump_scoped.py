@@ -306,8 +306,9 @@ class TestBumpScoped:
     ) -> None:
         # Declare the npm workspace so packages/sidecar/package.json is a
         # DETECTED version file (bump_version_files only writes detected
-        # files). The commit touches package.json — poc's version file but
-        # not a poc source path, so it marks nothing affected.
+        # files). This commit also marks poc affected: the anchor is the commit
+        # that introduced 1.0.0, so this version-file edit is inside poc's
+        # window (issue #983).
         (scoped_repo / "package.json").write_text(
             json.dumps({"name": "poc", "version": "1.0.0", "workspaces": ["packages/*"]}),
             encoding="utf-8",
@@ -328,11 +329,16 @@ class TestBumpScoped:
         bump_scoped_run(
             scoped_repo,
             force_packages=("sidecar",),
-            set_versions={"sidecar": "1.0.1"},
+            set_versions={"sidecar": "1.0.1", "poc": "1.0.1"},
             as_json=True,
         )
         payload = json.loads(capsys.readouterr().out)
-        assert [p["name"] for p in payload["packages"]] == ["sidecar"]
+        # sidecar has no changed files of its own — only --force-package can
+        # put it here.
+        assert {p["name"]: p["version"] for p in payload["packages"]} == {
+            "sidecar": "1.0.1",
+            "poc": "1.0.1",
+        }
         assert read_version(scoped_repo, "packages/sidecar/package.json") == "1.0.1"
 
     def test_unknown_version_file_aborts_before_writes(
@@ -450,6 +456,8 @@ class TestBumpScopedSetVersions:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
+        # poc is affected too: the anchor is the commit that introduced 1.0.0,
+        # so this version-file edit is inside poc's window (issue #983).
         (scoped_repo / "package.json").write_text(
             json.dumps({"name": "poc", "version": "1.0.0", "workspaces": ["packages/*"]}),
             encoding="utf-8",
@@ -462,12 +470,18 @@ class TestBumpScopedSetVersions:
         bump_scoped_run(
             scoped_repo,
             force_packages=("sidecar",),
-            set_versions={"sidecar": "1.5.0"},
+            set_versions={"sidecar": "1.5.0", "poc": "1.0.1"},
             as_json=True,
         )
         payload = json.loads(capsys.readouterr().out)
-        assert payload["packages"][0]["version"] == "1.5.0"
+        # sidecar has no changed files of its own — only --force-package can
+        # put it here.
+        assert {p["name"]: p["version"] for p in payload["packages"]} == {
+            "sidecar": "1.5.0",
+            "poc": "1.0.1",
+        }
         assert read_version(scoped_repo, "packages/sidecar/package.json") == "1.5.0"
+        assert read_version(scoped_repo, "package.json") == "1.0.1"
 
     def test_parse_set_values(self) -> None:
         from myk_pi_tools.release.bump_scoped import _parse_set_values

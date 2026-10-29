@@ -18,6 +18,7 @@ import pytest
 from myk_pi_tools.release.plan import (
     PackagePlan,
     ReleasePlanner,
+    _find_anchor,
 )
 from myk_pi_tools.release.plan import (
     run as plan_run,
@@ -168,6 +169,12 @@ def commit(repo: Path, message: str, *files: str) -> None:
     whatever else happened to be in the fixture tree)."""
     git(repo, "add", "--", *files)
     git(repo, "commit", "-m", message)
+
+
+def head_sha(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 @pytest.fixture()
@@ -362,6 +369,68 @@ class TestPlanner:
         }
         plans = {p.name: p for p in make_planner(fixture_repo, published).plan()}
         assert plans["sidecar"].affected
+
+
+PUBLISHED_1_0_0 = {
+    ("npm", "poc"): "1.0.0",
+    ("pypi", "tools"): "1.0.0",
+    ("npm", "@org/sidecar"): "1.0.0",
+    ("pypi", "sidecar-client"): "1.0.0",
+}
+
+
+# ── Anchor = the version-introducing commit (issue #983) ───────────────
+
+
+def bump_poc(repo: Path, version: str) -> str:
+    """Commit a poc version bump and return that commit's sha."""
+    (repo / "package.json").write_text(json.dumps({"name": "poc", "version": version}), encoding="utf-8")
+    commit(repo, f"chore: bump poc to {version}", "package.json")
+    return head_sha(repo)
+
+
+def widen_poc_peers(repo: Path, version: str, message: str = "chore(poc): widen peer range") -> str:
+    """Edit poc's version file WITHOUT changing its version; return the sha."""
+    (repo / "package.json").write_text(
+        json.dumps({"name": "poc", "version": version, "peerDependencies": {"typescript": "^5"}}),
+        encoding="utf-8",
+    )
+    commit(repo, message, "package.json")
+    return head_sha(repo)
+
+
+class TestAnchorIntroducesPublishedVersion:
+    """A version-file edit that keeps the version must not move the anchor."""
+
+    def test_non_version_edit_does_not_move_anchor(self, fixture_repo: Path) -> None:
+        bump = bump_poc(fixture_repo, "2.0.0")
+        widen_poc_peers(fixture_repo, "2.0.0")
+        (fixture_repo / "extensions" / "b.ts").write_text("// new\n", encoding="utf-8")
+        commit(fixture_repo, "fix(poc): guard the gate", "extensions/b.ts")
+
+        plans = {p.name: p for p in make_planner(fixture_repo, PUBLISHED_1_0_0 | {("npm", "poc"): "2.0.0"}).plan()}
+        assert plans["poc"].affected
+        assert plans["poc"].anchor == bump
+        assert "package.json" in plans["poc"].changed_files  # the non-version edit
+        assert "extensions/b.ts" in plans["poc"].changed_files
+
+    def test_window_reaches_changes_merged_before_the_non_version_edit(self, fixture_repo: Path) -> None:
+        bump = bump_poc(fixture_repo, "2.0.0")
+        # Real changes land after the bump but before the mid-PR version-file edit.
+        (fixture_repo / "extensions" / "c.ts").write_text("// trail\n", encoding="utf-8")
+        (fixture_repo / "myk_pi_tools" / "trail.py").write_text("x = 1\n", encoding="utf-8")
+        commit(fixture_repo, "feat(poc): trail migration", "extensions/c.ts", "myk_pi_tools/trail.py")
+        widen_poc_peers(fixture_repo, "2.0.0", message="chore(poc): refresh devDependencies")
+
+        plans = {p.name: p for p in make_planner(fixture_repo, PUBLISHED_1_0_0 | {("npm", "poc"): "2.0.0"}).plan()}
+        assert plans["poc"].anchor == bump
+        assert plans["poc"].affected
+        assert "extensions/c.ts" in plans["poc"].changed_files
+        assert "myk_pi_tools/trail.py" in plans["tools"].changed_files
+
+    def test_no_commit_holds_published_raises(self, fixture_repo: Path) -> None:
+        with pytest.raises(RuntimeError, match="registry state and git history disagree"):
+            _find_anchor(fixture_repo, ("package.json",), "9.9.9")
 
 
 # ── CLI entry (run) ───────────────────────────────────────────────────────
