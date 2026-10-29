@@ -31,6 +31,7 @@ import {
   escapeForDoubleQuote,
   escapeForSingleQuote,
   commandHasTrailerByName,
+  bashWritesToPath,
   failedFileEditSkipMessage,
   fixUnexpandedCommitTrailer,
   resolveEffectiveCwd,
@@ -3790,6 +3791,9 @@ describe("git identity guard (#995)", () => {
     "git config --global user.name x",
     'git commit --author="A <a@b>" -m m',
     "git --config-env=user.email=EVIL commit -m m",
+    // A separator inside a quoted message must not end the invocation's region
+    // (Qodo, PR #996): the author after it belongs to this commit.
+    `git commit -m "message; more message" --author='Attacker <a@b>'`,
     "bash -c 'git -c user.email=x commit -m m'",
     "bash -c 'export GIT_AUTHOR_NAME=x; git commit -m m'",
     "GIT_AUTHOR_NAME=x bash -c 'git commit -m m'",
@@ -3831,11 +3835,14 @@ describe("git identity guard (#995)", () => {
   });
 
   it("recognizes git identity config paths", () => {
+    // The two home files count only under THIS user's home (Qodo, PR #996): a
+    // .gitconfig in /tmp or a docs fixture is not the identity git reads.
+    const home = homedir();
     for (const p of [
-      "/home/u/.gitconfig",
+      `${home}/.gitconfig`,
       "~/.gitconfig",
-      ".gitconfig",
-      "/home/u/.config/git/config",
+      `${home}/.config/git/config`,
+      "~/.config/git/config",
       "/repo/.git/config",
       "/repo/.git/config/", // trailing slash
     ]) {
@@ -3843,12 +3850,38 @@ describe("git identity guard (#995)", () => {
     }
     for (const p of [
       "/repo/.git/HEAD",
-      "/repo/.gitconfig.bak",
-      "/home/u/.config/git/config.old",
+      `${home}/.gitconfig.bak`,
+      `${home}/.config/git/config.old`,
       "/repo/git/config",
-      "/home/u/.gitignore",
+      `${home}/.gitignore`,
+      "/tmp/.gitconfig",
+      "/repo/docs/fixtures/.gitconfig",
+      ".gitconfig",
     ]) {
       assert.equal(isGitIdentityConfigPath(p), false, p);
+    }
+  });
+
+  it("blocks tee options and a nested shell's redirect", () => {
+    // Same tripwire the bash hook uses for identity config files.
+    const home = homedir().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const src = `(?:(?:~|\\$HOME|\\$\\{HOME\\}|${home})/\\.gitconfig|\\.git/config)(?![A-Za-z0-9._-])`;
+    const writes = [
+      "tee -a .git/config",
+      "tee --append .git/config",
+      "bash -c 'echo x >> .git/config'",
+      `echo x >> ${homedir()}/.gitconfig`,
+    ];
+    for (const c of writes) {
+      assert.equal(bashWritesToPath(c, maskQuotedRegions(c), src), true, c);
+    }
+    const quiet = [
+      "echo x >> /tmp/.gitconfig",
+      'gh pr create --body "echo x >> .git/config"',
+      "git config --get user.email",
+    ];
+    for (const c of quiet) {
+      assert.equal(bashWritesToPath(c, maskQuotedRegions(c), src), false, c);
     }
   });
 

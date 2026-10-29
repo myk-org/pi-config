@@ -6,6 +6,7 @@
 import { createLogger } from "../shared/logger.js";
 import { createHash } from "node:crypto";
 import { lstatSync, realpathSync, mkdirSync, rmdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { join } from "node:path";
@@ -327,12 +328,18 @@ const GIT_INDEX_OPTIONS = new Set(["--git-dir", "--work-tree", "--namespace"]);
 /** Command words that hand a quoted string to a shell, which then really runs it. */
 const SHELL_WORDS = new Set(["bash", "sh", "zsh", "dash", "ksh", "eval"]);
 
-/** True when this segment RUNS a shell (behind any wrapper/assignment prefix).
+/** True when this segment RUNS a shell (behind any wrapper/assignment/env prefix).
  *  A quoted argument containing shell-looking text is not a shell run: only the
  *  command word counts. */
 function runsNestedShell(tokens: string[]): boolean {
-  for (const tok of tokens) {
-    if (WRAPPER_WORDS.has(tok) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (WRAPPER_WORDS.has(tok) || tok === "env" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+    if (tok.startsWith("-")) {
+      // env's own options sit between `env` and the command it runs.
+      if (!tok.includes("=") && ENV_VALUE_OPTIONS.has(tok.split("=")[0])) i++;
+      continue;
+    }
     return SHELL_WORDS.has(tok.replace(/^[()]+/, "").replace(/.*\//, ""));
   }
   return false;
@@ -494,9 +501,24 @@ const CONFIG_UNSET_FLAGS = new Set(["--unset", "--unset-all"]);
  * invisible once masked, so those are matched on the raw command (Qodo #950 R5).
  */
 export function bashWritesToPath(command: string, maskedCommand: string, targetSrc: string): boolean {
-  const structural = new RegExp(String.raw`>+\|?\s*\S*${targetSrc}|(?:^|[\s;&|(])(?:tee|sponge)\s+\S*${targetSrc}`, "i");
-  const quoted = new RegExp(String.raw`>+\s*["'][^"']*${targetSrc}|(?:^|[\s;&|(])(?:tee|sponge)\s+["'][^"']*${targetSrc}`, "i");
-  const result = structural.test(maskedCommand) || quoted.test(command);
+  // `tee -a <path>` / `tee --append <path>`: tee's own options sit between it and
+  // the path it writes.
+  const STRUCTURAL = String.raw`>+\|?\s*\S*${targetSrc}|(?:^|[\s;&|(])(?:tee|sponge)(?:\s+-[A-Za-z-]+)*\s+\S*${targetSrc}`;
+  const QUOTED = String.raw`>+\s*["'][^"']*${targetSrc}|(?:^|[\s;&|(])(?:tee|sponge)(?:\s+-[A-Za-z-]+)*\s+["'][^"']*${targetSrc}`;
+  let result = new RegExp(STRUCTURAL, "i").test(maskedCommand) || new RegExp(QUOTED, "i").test(command);
+  if (!result) {
+    // A nested shell's script is code, not prose, so a redirect inside it
+    // (`bash -c 'echo x >> .git/config'`) still writes the file. Only segments
+    // that RUN a shell are read this way — a quoted argument merely describing
+    // a command stays prose (Qodo, PR #996).
+    for (const seg of unquotedSegments(command)) {
+      if (!runsNestedShell(tokenize(seg.text))) continue;
+      if (new RegExp(STRUCTURAL, "i").test(executableText(seg.text))) {
+        result = true;
+        break;
+      }
+    }
+  }
   enfLog.debug("bash_writes_to_path", targetSrc, result);
   return result;
 }
@@ -546,7 +568,11 @@ export function gitIdentityOverride(command: string): string | null {
 function identityWritesIn(command: string): string | null {
   // `git config user.email x` — the identity written to disk for every later commit.
   for (const region of gitSubArgRegions(command, "config")) {
-    const tokens = tokenize(stripQuotedSpans(region));
+    // Tokens come from the RAW region: tokenize() drops the quotes but keeps a
+    // quoted value as one token, so `git config user.email "a@b"` and
+    // `git config "user.email" a@b` are both seen, while a value that merely
+    // MENTIONS the key stays a single token and is never a key (Qodo, PR #996).
+    const tokens = tokenize(region);
     if (tokens.some((t) => CONFIG_READ_FLAGS.has(t))) continue;
     const at = tokens.findIndex((t) => GIT_IDENTITY_KEYS.has(t.toLowerCase()));
     if (at === -1) continue;
@@ -558,8 +584,9 @@ function identityWritesIn(command: string): string | null {
   }
   // `git commit --author` — this one commit is recorded as somebody else.
   for (const region of gitSubArgRegions(command, "commit")) {
-    // Quoted spans are masked out first: a `-m` message mentioning --author is prose.
-    const tokens = tokenize(stripQuotedSpans(region));
+    // Raw region again: `--author 'A <a@b>'` and `"--author" x` are options the
+    // shell passes to git, while a `-m` message mentioning --author is ONE token.
+    const tokens = tokenize(region);
     const at = tokens.findIndex((t) => t === "--author" || t.startsWith("--author="));
     if (at === -1) continue;
     // A bare `--author` with no value after it sets nothing.
@@ -575,14 +602,20 @@ function identityWritesIn(command: string): string | null {
  * `~/.config/git/config`, or a repository's `.git/config`. Writing one of these
  * changes the identity every later commit is recorded under, so agents are kept
  * away from them entirely.
+ * The two home files count only under THIS user's home — a `.gitconfig` in
+ * /tmp or a docs fixture is not the identity git reads (Qodo, PR #996).
  */
 export function isGitIdentityConfigPath(p: string): boolean {
   const norm = p.replace(/\\/g, "/").replace(/\/+$/, "");
   const base = norm.slice(norm.lastIndexOf("/") + 1);
+  const dir = norm.slice(0, Math.max(norm.lastIndexOf("/"), 0));
+  const home = homedir().replace(/\\/g, "/").replace(/\/+$/, "");
+  const inHome = dir === home || dir === "~";
   const result =
-    base === ".gitconfig" ||
-    /(?:^|\/)\.git\/config$/.test(norm) ||
-    /(?:^|\/)\.config\/git\/config$/.test(norm);
+    (inHome && base === ".gitconfig")
+    || norm === `${home}/.config/git/config`
+    || norm === "~/.config/git/config"
+    || /(?:^|\/)\.git\/config$/.test(norm);
   enfLog.debug("is_git_identity_config_path", p, result);
   return result;
 }
@@ -2226,8 +2259,13 @@ function subArgSpans(command: string, sub: string): Array<{ start: number; end: 
   const spans: Array<{ start: number; end: number; text: string; maskedText: string; stripped: string; masked: string }> = [];
   for (const m of masked.matchAll(re)) {
     const start = (m.index ?? 0) + m[0].length;
-    const rest = stripped.slice(start);
-    const end = rest.search(/[;&|\n]/);
+    // Boundaries are searched on the MASKED text, so a separator inside a quoted
+    // argument is prose, not the end of the invocation: in
+    // `git commit -m "message; more message" --author='A <a@b>'` the author
+    // option belongs to this commit and must stay inside its region (Qodo, PR
+    // #996). Masking is length-preserving, so the offset is valid on the
+    // original string and the region content still comes from it.
+    const end = masked.slice(start).search(/[;&|\n]/);
     const stop = end === -1 ? stripped.length : start + end;
     spans.push({
       start,
