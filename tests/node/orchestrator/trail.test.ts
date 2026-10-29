@@ -17,6 +17,13 @@ type Tool = { name: string; execute: (...args: any[]) => Promise<{ content: Arra
  * ~/.pi/logs/trail — the source of the #978 G1-G3 measurements.
  */
 const silentLogger = { debug() {}, info() {}, warn() {}, error() {}, isDebugEnabled: () => false };
+/** Records debug entries so tests can assert the retrieval budget and parsed savings. */
+function capturingLogger() {
+  const entries: Array<{ message: string; data: any }> = [];
+  const logger = { debug(message: string, data: any) { entries.push({ message, data }); }, info() {}, warn() {}, error() {}, isDebugEnabled: () => true };
+  const entriesFor = (message: string) => entries.filter(entry => entry.message === message);
+  return { logger, entriesFor };
+}
 
 function mockPi() {
   const handlers = new Map<string, Handler[]>();
@@ -261,30 +268,65 @@ describe("Trail retrieval, injection, and the gate", () => {
     assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "rg authentication" } }, c), undefined);
   });
   // No `interactiveTimeoutMs` here on purpose: it overrides every budget, so the
-  // cold ceiling and the warm 2s default are what this test exercises.
+  // cold ceiling and the warm 2s default are what these tests exercise.
   const slowRetrieve = () => async () => { await new Promise(resolve => setTimeout(resolve, 40)); return { pointers: ["src/a.ts:1"] }; };
-  it("gives the first retrieval of a session the cold budget and later ones the warm ceiling", async () => {
-    const r = register({ graph: async () => "fresh", coldTimeoutMs: 20, retrieve: slowRetrieve() }); const c = await start(r);
+  const budgets = (capture: ReturnType<typeof capturingLogger>) => capture.entriesFor("retrieval_budget").map(entry => [entry.data.cold, entry.data.budgetMs]);
+  it("gives the first retrieval of a session the cold budget", async () => {
+    const capture = capturingLogger();
+    const r = register({ graph: async () => "fresh", coldTimeoutMs: 20, retrieve: slowRetrieve(), logger: capture.logger }); const c = await start(r);
+    const event = promptEvent("locate the authentication implementation");
+    await r.handlers.get("before_agent_start")![0](event, c);
+    assert.match(event.systemPromptOptions.sections.trail, /timed out/i);
+    assert.deepEqual(budgets(capture), [[true, 20]]);
+  });
+  it("keeps the cold budget after a failed first retrieval", async () => {
+    const capture = capturingLogger();
+    const r = register({ graph: async () => "fresh", coldTimeoutMs: 20, retrieve: slowRetrieve(), logger: capture.logger }); const c = await start(r);
+    const first = promptEvent("locate the authentication implementation");
+    await r.handlers.get("before_agent_start")![0](first, c);
+    const second = promptEvent("locate the authentication implementation");
+    await r.handlers.get("before_agent_start")![0](second, c);
+    assert.match(first.systemPromptOptions.sections.trail, /timed out/i);
+    assert.match(second.systemPromptOptions.sections.trail, /timed out/i);
+    assert.deepEqual(budgets(capture), [[true, 20], [true, 20]]);
+  });
+  it("switches to the warm ceiling after a retrieval succeeds", async () => {
+    const capture = capturingLogger();
+    const r = register({ graph: async () => "fresh", coldTimeoutMs: 1_000, retrieve: async () => ({ pointers: ["src/a.ts:1"] }), logger: capture.logger }); const c = await start(r);
     const cold = promptEvent("locate the authentication implementation");
     await r.handlers.get("before_agent_start")![0](cold, c);
-    assert.match(cold.systemPromptOptions.sections.trail, /timed out/i);
-    assert.doesNotMatch(cold.systemPromptOptions.sections.trail, /src\/a\.ts:1/);
-    const warm = promptEvent("locate the authentication implementation");
-    await r.handlers.get("before_agent_start")![0](warm, c);
-    assert.match(warm.systemPromptOptions.sections.trail, /src\/a\.ts:1/);
+    assert.match(cold.systemPromptOptions.sections.trail, /src\/a\.ts:1/);
+    await r.handlers.get("before_agent_start")![0](promptEvent("locate the authentication implementation"), c);
+    assert.deepEqual(budgets(capture), [[true, 1_000], [false, 2_000]]);
   });
-  it("re-arms the cold budget for the first retrieval of a new session", async () => {
-    const r = register({ graph: async () => "fresh", coldTimeoutMs: 20, retrieve: slowRetrieve() }); const first = await start(r);
+  it("re-arms the cold budget for a new session", async () => {
+    const capture = capturingLogger();
+    const r = register({ graph: async () => "fresh", coldTimeoutMs: 20, retrieve: slowRetrieve(), logger: capture.logger }); const first = await start(r);
     const coldFirst = promptEvent("locate the authentication implementation");
     await r.handlers.get("before_agent_start")![0](coldFirst, first);
     assert.match(coldFirst.systemPromptOptions.sections.trail, /timed out/i);
     const warm = promptEvent("locate the authentication implementation");
     await r.handlers.get("before_agent_start")![0](warm, first);
-    assert.match(warm.systemPromptOptions.sections.trail, /src\/a\.ts:1/);
+    const attempts = capture.entriesFor("retrieval_budget").map(entry => entry.data.attempt);
+    assert.deepEqual(attempts, [1, 2], "a failed retrieval keeps the session on the cold path");
     const next = ctx(); await r.handlers.get("session_start")![0]({ reason: "new" }, next);
     const cold = promptEvent("locate the authentication implementation");
     await r.handlers.get("before_agent_start")![0](cold, next);
     assert.match(cold.systemPromptOptions.sections.trail, /timed out/i);
+    assert.deepEqual(capture.entriesFor("retrieval_budget").at(-1)?.data, { cold: true, budgetMs: 20, attempt: 1 }, "a new session re-arms the cold ceiling");
+  });
+  it("logs the parsed token savings figure", async () => {
+    const capture = capturingLogger();
+    const r = register({ graph: async () => "fresh", logger: capture.logger }); const c = await start(r);
+    r.handlers.get("tool_result")![0]({ toolName: "trail_repo_map", input: {}, content: [{ type: "text", text: "[trail] tokens saved ≈ 700" }], isError: false }, c);
+    assert.deepEqual(capture.entriesFor("saved_tokens").map(entry => entry.data), [{ matches: 1, total: 700 }]);
+  });
+  it("directs the model to trail_find_code when retrieval fails", async () => {
+    const r = register({ graph: async () => "fresh", results: [{ code: 1, stderr: "boom" }] }); const c = await start(r);
+    const event = promptEvent("locate the authentication implementation");
+    await r.handlers.get("before_agent_start")![0](event, c);
+    assert.match(event.systemPromptOptions.sections.trail, /trail_find_code/);
+    assert.match(event.systemPromptOptions.sections.trail, /Retrieval failed: boom/);
   });
   it("keeps low-coverage hits instead of dropping them", async () => {
     const r = register({ graph: async () => "fresh", results: [{ stdout: JSON.stringify({ coverage: 0.01, coverageStrong: 0, hits: [{ title: "noise", pointer: "src/noise.ts:1" }] }) }] }); const c = await start(r);

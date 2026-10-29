@@ -500,7 +500,8 @@ describe("Navigation gate fails open", () => {
       const event = promptEvent("locate the authentication implementation");
       await r.handlers.get("before_agent_start")![0](event, c);
       assert.match(event.systemPromptOptions.sections.trail, /Retrieval failed/);
-      assert.match(event.systemPromptOptions.sections.trail, /Raw navigation is available/);
+      assert.match(event.systemPromptOptions.sections.trail, /trail_find_code/);
+      assert.match(event.systemPromptOptions.sections.trail, /raw navigation is available/i);
       assert.equal(await toolCall(r, c, { toolName: "read", input: { path: "src/other.ts" } }), undefined);
       assert.equal(await toolCall(r, c, { toolName: "bash", input: { command: "rg authenticate" } }), undefined);
     } finally { rmSync(root, { recursive: true, force: true }); }
