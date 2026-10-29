@@ -5,10 +5,12 @@ Read-only detection engine behind ``myk-pi-tools release plan``
 
 1. Last published version from the REGISTRY (npm view / PyPI JSON API) —
    ground truth that cannot drift from tags.
-2. Anchor commit: the newest commit that touched one of the package's
-   version-files AND left it at the published version (the bump commit).
-   The diff window is therefore PER-PACKAGE — a package skipped for N
-   releases reaches back to its own last publish.
+2. Anchor commit: the commit that INTRODUCED the published version in one
+   of the package's version-files (its content held that version, its
+   parent's did not). The diff window is therefore PER-PACKAGE — a package
+   skipped for N releases reaches back to its own last publish, and a
+   later edit of the version file that keeps the version number (peer
+   ranges, devDependencies) cannot move the window forward.
 3. ``git diff --name-only anchor..HEAD`` filtered through the map's
    paths/excludes → non-empty = affected.
 4. Proposed bump from a conventional-commit scan over commits touching
@@ -206,25 +208,37 @@ def _last_release_tag(repo_root: Path) -> str:
 
 
 def _find_anchor(repo_root: Path, version_files: tuple[str, ...], published: str) -> str:
-    """Newest commit that touched a version file and left it at ``published``.
+    """Commit that introduced ``published`` in one of the version files.
 
     ``git log -- <file>`` lists only commits that touched the file, so
-    unrelated commits cannot masquerade as anchors. The first entry
-    (newest-first) whose file content equals the registry version is the
-    bump commit — the per-package diff origin.
+    unrelated commits cannot masquerade as anchors. A version can sit in
+    the file across many commits (peer-range or devDependency edits leave
+    ``version`` untouched), so the anchor is NOT the newest such commit:
+    walking newest-first, it is the OLDEST commit of the newest contiguous
+    run whose extracted version equals ``published`` — the bump commit,
+    whose parent held a different version (issue #983). A differing
+    version ends that run; versions older than ``published`` (an earlier
+    publish of a previously-shipped number) are walked past.
     """
     for version_file in version_files:
         log_shas = _git(repo_root, ["log", "--format=%H", "--", version_file]).splitlines()
+        anchor: str | None = None
         for sha in (s for s in log_shas if s):
             try:
                 content = _git(repo_root, ["show", f"{sha}:{version_file}"])
             except RuntimeError:
                 continue  # file did not exist at that commit (renamed/added later)
             try:
-                if _extract_version(content, version_file) == published:
-                    return sha
+                version = _extract_version(content, version_file)
             except RuntimeError:
                 continue
+            if version != published:
+                if anchor is not None:
+                    break  # walked past the run's oldest entry — that one introduced it
+                continue  # not the publish we look for; an older run may still match
+            anchor = sha
+        if anchor is not None:
+            return anchor
     raise RuntimeError(
         f"no commit found where {list(version_files)} held published version {published!r} "
         "— registry state and git history disagree (rewritten history or foreign publish?)"
