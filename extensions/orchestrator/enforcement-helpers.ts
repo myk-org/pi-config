@@ -324,6 +324,20 @@ const ENV_VALUE_OPTIONS = new Set([
 const GIT_INDEX_VARS = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]);
 const GIT_INDEX_OPTIONS = new Set(["--git-dir", "--work-tree", "--namespace"]);
 
+/** Command words that hand a quoted string to a shell, which then really runs it. */
+const SHELL_WORDS = new Set(["bash", "sh", "zsh", "dash", "ksh", "eval"]);
+
+/** True when this segment RUNS a shell (behind any wrapper/assignment prefix).
+ *  A quoted argument containing shell-looking text is not a shell run: only the
+ *  command word counts. */
+function runsNestedShell(tokens: string[]): boolean {
+  for (const tok of tokens) {
+    if (WRAPPER_WORDS.has(tok) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+    return SHELL_WORDS.has(tok.replace(/^[()]+/, "").replace(/.*\//, ""));
+  }
+  return false;
+}
+
 /**
  * Anything that points git at a repository other than the working directory: the
  * GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE environment variables, or the equivalent
@@ -385,10 +399,12 @@ function scanGitOverrides(command: string, targets: GitOverrideTargets): string 
     }
     // `echo GIT_INDEX_FILE=/x` only prints the name. An override is something
     // git is actually run with, so the segment has to run git for it to count —
-    // directly, or through a nested shell (`GIT_AUTHOR_EMAIL=x bash -c 'git
-    // commit'`), whose assignments live in this segment but whose git runs in
-    // the other.
-    if (!segmentRunsGit(seg.text) && !segmentRunsGit(executableText(seg.text))) continue;
+    // directly, or through a nested shell that this segment RUNS
+    // (`GIT_AUTHOR_EMAIL=x bash -c 'git commit'`), whose assignment lives here
+    // but whose git runs inside. A quoted argument merely MENTIONING a command
+    // (`gh pr create --body "…git -c user.email=x commit…"`) is prose: the
+    // segment runs `gh`, not a shell, so it is not followed.
+    if (!segmentRunsGit(seg.text) && !(runsNestedShell(tokens) && segmentRunsGit(executableText(seg.text)))) continue;
     // Leading `VAR=value` assignments, then the same again after `env`. A
     // wrapper that runs the rest — `sudo`, `command`, `exec`, `time` — sits in
     // front of both, and can be chained.

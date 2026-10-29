@@ -3804,6 +3804,11 @@ describe("git identity guard (#995)", () => {
     'git commit -m "do not use -c user.email"',
     "git commit -m --author",
     "git diff --stat",
+    // Prose in a quoted argument is not a command: a PR body may describe the
+    // very commands this guard blocks (#996 false positive).
+    'gh pr create --title t --body "agents must never run git -c user.email=x commit"',
+    'gh pr create --title t --body "GIT_AUTHOR_EMAIL=x git commit -m m"',
+    'gh issue comment 1 --body "blocked: git commit --author=someone -m m"',
   ];
 
   for (const cmd of blocked) {
