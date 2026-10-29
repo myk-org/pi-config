@@ -15,6 +15,7 @@ untouched.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,6 +30,9 @@ from myk_pi_tools.release.release_map import (
 
 log = create_logger("myk_pi_tools.release.bump_scoped")
 
+# Refreshed after the version writes so the lock never pins the old version.
+LOCKFILE = "uv.lock"
+
 
 def _validate_semver(version: str, where: str) -> tuple[int, int, int]:
     """Validate a strict x.y.z version and return its sort key.
@@ -42,6 +46,43 @@ def _validate_semver(version: str, where: str) -> tuple[int, int, int]:
     if any(len(p) > 1 and p.startswith("0") for p in parts):
         raise ValueError(f"{where}: {version!r} has a leading-zero component")
     return (int(parts[0]), int(parts[1]), int(parts[2]))
+
+
+def _run_uv_lock(repo_root: Path) -> subprocess.CompletedProcess[str]:
+    """Run ``uv lock`` in the repo root (indirection kept patchable in tests)."""
+    return subprocess.run(
+        ["uv", "lock"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+
+
+def _refresh_lockfile(repo_root: Path) -> dict[str, object] | None:
+    """Refresh ``uv.lock`` after the version writes; ``None`` when there is no lock.
+
+    A missing or failing ``uv`` never fails the release — the version files are
+    already written, so the operator (or the /release git step) can re-run
+    ``uv lock``; the payload reports the lock as NOT refreshed instead.
+    """
+    if not (repo_root / LOCKFILE).is_file():
+        return None
+    try:
+        result = _run_uv_lock(repo_root)
+    except FileNotFoundError:
+        return {"path": LOCKFILE, "refreshed": False, "error": "uv not installed"}
+    except subprocess.TimeoutExpired:
+        return {"path": LOCKFILE, "refreshed": False, "error": "uv lock timed out after 600s"}
+    if result.returncode != 0:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        return {
+            "path": LOCKFILE,
+            "refreshed": False,
+            "error": lines[-1] if lines else f"uv lock exited {result.returncode}",
+        }
+    return {"path": LOCKFILE, "refreshed": True}
 
 
 def _parse_set_values(set_values: tuple[str, ...]) -> dict[str, str]:
@@ -258,12 +299,26 @@ def run(
         })
         log.info("scoped bump: %s -> %s (%d files)", name, new_version, len(result.updated))
 
-    payload = {
+    # uv.lock pins the package's own version: leaving it stale makes every
+    # later `uv run` / `uv lock` dirty the checkout. Reported under its own
+    # `lockfile` key — `updated[]` stays version files only (documented
+    # {path, old_version, new_version} contract).
+    lock = _refresh_lockfile(repo_root)
+    if lock is not None and not lock["refreshed"]:
+        print(
+            f"warning: {LOCKFILE} was NOT refreshed ({lock['error']}) — run `uv lock` "
+            "and commit the result before releasing",
+            file=sys.stderr,
+        )
+
+    payload: dict[str, object] = {
         "status": "success",
         "packages": packages_out,
         "updated": updated_all,
         "skipped": skipped_all,
     }
+    if lock is not None:
+        payload["lockfile"] = lock
     if as_json:
         print(json.dumps(payload))
     else:
@@ -272,5 +327,8 @@ def run(
             print(f"  {pkg['name']}  ->  {pkg['version']}  (tag {pkg['tag']})")
         for u in updated_all:
             print(f"  updated: {u['path']} ({u['old_version']} -> {u['new_version']})")
+        if lock is not None:
+            state = "refreshed" if lock["refreshed"] else "NOT refreshed"
+            print(f"  lockfile: {LOCKFILE} ({state})")
         for sk in skipped_all:
             print(f"  skipped: {sk['path']} ({sk['reason']})")

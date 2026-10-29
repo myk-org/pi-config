@@ -125,7 +125,9 @@ root only).
   one `--set <name>=<version>` per affected package carrying YOUR final
   proposed versions (after any user overrides). Use `--version X.Y.Z`
   instead when the user passed an explicit version. Parse the JSON:
-  stage ONLY the files in `updated[]`; each entry in `packages[]`
+  stage ONLY the files in `updated[]` plus the refreshed lockfile
+  (`lockfile.path` when `lockfile.refreshed` is true — `refreshed: false`
+  is a warning: run `uv lock` yourself before committing); each entry in `packages[]`
   carries its per-package `tag` (`<name>@<version>`). Bump PR, merge,
   and branch sync follow the standard Phase 5 delegation (git-expert /
   github-expert), with the bump PR message `chore: bump version to
