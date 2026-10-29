@@ -17,7 +17,7 @@ const require = createRequire(import.meta.url);
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig, AgentDiscoveryResult } from "./agents.js";
 import { resolveAgentModelProvider } from "./resolve-agent-model.js";
-import { withGraftTools } from "./graft.js";
+import { trailToolsArgs } from "./trail.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
 import { addReviewerPending, recordReviewerResult, countFindings, readReviewState } from "./pi-config-review-state.js";
 import {
@@ -1097,8 +1097,7 @@ export function registerAsyncAgents(
     piArgs.push("--session-id", deterministicSessionId);
     if (effectiveModel) piArgs.push("--model", effectiveModel);
     if (effectiveProvider) piArgs.push("--provider", effectiveProvider);
-    const tools = withGraftTools(agent.tools, getSetting(cwd, "graft_enable"));
-    if (tools?.length) piArgs.push("--tools", tools.join(","));
+    piArgs.push(...trailToolsArgs(agent.tools, cwd));
 
     if (agent.systemPrompt?.trim()) {
       const promptPath = path.join(workerDir, "system-prompt.md");

@@ -9,7 +9,7 @@ const allowed = new Set();
 
 const installRoot = realpathSync(process.argv[3]);
 
-const log = createLogger("graft-install");
+const log = createLogger("trail-install");
 
 function resolveDependency(packageDir, name) {
   let attempts = 0;
@@ -37,7 +37,7 @@ function inspect(packageDir) {
     const dependency = resolveDependency(real, name);
     if (!dependency) {
       if (name in optional) continue;
-      throw new Error(`required Graft dependency is not installed: ${name}`);
+      throw new Error(`required Trail dependency is not installed: ${name}`);
     }
     inspect(dependency);
   }

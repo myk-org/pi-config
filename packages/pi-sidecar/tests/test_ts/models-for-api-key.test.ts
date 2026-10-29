@@ -115,8 +115,8 @@ describe("POST /models/for-api-key", { concurrency: false }, () => {
    */
   it("lists models for a multi-API canonical builtin on its canonical host", async () => {
     upstreamBody = { data: [
-      { id: "stealth/space-bunny-alpha", name: "Space Bunny Alpha" },
-      { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+      { id: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
+      { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6 (dash form, unknown to pi-ai)" },
       { id: "openai/gpt-4o-mini", name: "GPT-4o mini" },
     ] };
     const response = await request({ provider: "openrouter", api_key: keyA });
@@ -125,7 +125,7 @@ describe("POST /models/for-api-key", { concurrency: false }, () => {
     assert.equal(modelListingSupported, true, "a multi-API canonical builtin supports key-scoped listing");
     // An id pi-ai's runtime cannot resolve is withheld: the mixed-API catalog offers no
     // unambiguous template for it, so it could not be used in a session either.
-    assert.deepEqual(models.map((model) => model.id), ["stealth/space-bunny-alpha", "openai/gpt-4o-mini"]);
+    assert.deepEqual(models.map((model) => model.id), ["anthropic/claude-sonnet-4.6", "openai/gpt-4o-mini"]);
     assert.deepEqual(models.map((model) => model.provider), ["openrouter", "openrouter"]);
     assert.equal(received.at(-1)?.path, "/api/v1/models", "listing must use the provider's own canonical models path");
     assert.equal(received.at(-1)?.authorization, `Bearer ${keyA}`);

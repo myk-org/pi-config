@@ -123,6 +123,49 @@ export function resolveMainCheckoutRoot(cwd: string): string {
   return tryResolveMainCheckoutRoot(cwd) ?? path.resolve(cwd);
 }
 
+/**
+ * Main checkout root for a worktree, or null when `root` is not a linked
+ * worktree.
+ *
+ * Filesystem only, no git subprocess: read `<root>/.git` — a directory means
+ * this IS the main checkout (null), a `gitdir:` pointer into
+ * `<main>/.git/worktrees/<name>` means read that dir's `commondir` and return
+ * the main checkout. Submodule gitdirs (`.git/modules/*`) are rejected, and
+ * anything unreadable falls back to null.
+ */
+export function mainCheckoutRoot(root: string): string | null {
+  const dotGit = path.join(root, ".git");
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(dotGit);
+  } catch {
+    log.debug("mainCheckoutRoot", { root, reason: "no .git" });
+    return null;
+  }
+  if (stat.isDirectory()) return null;
+  let pointer: string | null = null;
+  try {
+    pointer = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, "utf-8"))?.[1]?.trim() ?? null;
+  } catch {
+    return null;
+  }
+  if (!pointer) return null;
+  const gitdir = path.resolve(root, pointer);
+  if (gitdir.split(path.sep).join("/").includes("/.git/modules/")) return null;
+  // A linked worktree's gitdir holds `commondir` (usually `../..`) pointing at
+  // `<main>/.git`; the main checkout is its parent.
+  try {
+    const common = fs.readFileSync(path.join(gitdir, "commondir"), "utf-8").trim();
+    if (!common) return null;
+    const main = path.dirname(path.resolve(gitdir, common));
+    log.debug("mainCheckoutRoot", { root, main });
+    return main;
+  } catch {
+    log.debug("mainCheckoutRoot", { root, reason: "no commondir" });
+    return null;
+  }
+}
+
 /** Resolve to the current worktree root (or repo root if not in a worktree).
  *  Uses --show-toplevel → returns THIS worktree's root, not the shared repo root.
  *  Use for per-worktree resources: pi-config-review-state.jsonl.

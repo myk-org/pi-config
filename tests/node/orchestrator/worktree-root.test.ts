@@ -3,8 +3,8 @@
  *
  * tryResolveWorktreeRoot must distinguish a real worktree from a plain
  * directory, because resolveWorktreeRoot deliberately collapses the two: it
- * returns the cwd either way. Callers that care (Graft's not-a-worktree path)
- * use the try variant, and it had no direct test — the Graft tests inject a
+ * returns the cwd either way. Callers that care (Trail's not-a-worktree path)
+ * use the try variant, and it had no direct test — the Trail tests inject a
  * replacement, so the real implementation was never exercised.
  *
  * Run with: npx tsx --test tests/node/orchestrator/worktree-root.test.ts
@@ -12,10 +12,10 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { tryResolveWorktreeRoot, resolveWorktreeRoot } from "../../../extensions/orchestrator/utils.js";
+import { tryResolveWorktreeRoot, resolveWorktreeRoot, mainCheckoutRoot } from "../../../extensions/orchestrator/utils.js";
 
 let base: string;
 
@@ -76,5 +76,27 @@ describe("resolveWorktreeRoot", () => {
     const plain = join(base, "fallback");
     mkdirSync(plain, { recursive: true });
     assert.equal(resolveWorktreeRoot(plain), plain);
+  });
+});
+
+describe("mainCheckoutRoot", () => {
+  it("returns the main checkout for a linked worktree, filesystem only", () => {
+    const main = join(base, "main");
+    mkdirSync(join(main, ".git", "worktrees", "wt"), { recursive: true });
+    writeFileSync(join(main, ".git", "worktrees", "wt", "commondir"), "../..\n");
+    const worktree = join(base, "wt");
+    mkdirSync(worktree, { recursive: true });
+    writeFileSync(join(worktree, ".git"), `gitdir: ${join(main, ".git", "worktrees", "wt")}\n`);
+    assert.equal(mainCheckoutRoot(worktree), main);
+  });
+
+  it("returns null for the main checkout itself and for submodules", () => {
+    const repo = makeRepo("plain-repo");
+    assert.equal(mainCheckoutRoot(repo), null);
+    const submodule = join(base, "sub");
+    mkdirSync(join(base, "parent", ".git", "modules", "sub"), { recursive: true });
+    mkdirSync(submodule, { recursive: true });
+    writeFileSync(join(submodule, ".git"), `gitdir: ${join(base, "parent", ".git", "modules", "sub")}\n`);
+    assert.equal(mainCheckoutRoot(submodule), null);
   });
 });

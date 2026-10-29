@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { formatCompactTotal, formatExactTotal } from "../../../extensions/pidash/pidash-ui/src/lib/format-total.ts";
 
-describe("Graft savings formatting", () => {
+describe("Trail savings formatting", () => {
   it("keeps small totals exact and rounds thousands and millions compactly", () => {
     assert.equal(formatCompactTotal(0), "0");
     assert.equal(formatCompactTotal(999), "999");

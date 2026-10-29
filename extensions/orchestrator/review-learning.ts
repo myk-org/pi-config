@@ -1391,12 +1391,12 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
       }
     });
 
-    // Surface 1 — before_agent_start injection (graft-gate pattern).
+    // Surface 1 — before_agent_start injection (trail-gate pattern).
     // Purely mechanical path extraction (prompt tokens + branch diff), sync
     // DB/git with timeouts, no model calls. Diff paths are repo-relative —
     // normalized against the worktree ROOT so nested sessions still match
     // the DB's repo-relative paths. Must be fast and never throw — other
-    // before_agent_start handlers (graft gate, rules) must not stall.
+    // before_agent_start handlers (trail gate, rules) must not stall.
     pi.on("before_agent_start", (event: any, ctx: any) => {
       try {
         const cwd = ctx?.cwd;
@@ -1415,7 +1415,7 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
         recall.fullBlockInjected = true;
         log.info("recall_injected_prompt", { paths: findings.length, chars: block.length });
         // Prefer a custom prompt section (rules.ts pattern — preserves cached
-        // prompt prefixes); fall back to the graft return shape when a prior
+        // prompt prefixes); fall back to a replacement prompt when a prior
         // handler forced the whole prompt or sections are unavailable.
         const opts = event?.systemPromptOptions;
         const sections = opts?.sections;
@@ -1430,7 +1430,7 @@ export function createReviewLearning(options: ReviewLearningOptions = {}) {
       }
     });
 
-    // Surface 2 — first-write tool_result hint (graft blastHint pattern):
+    // Surface 2 — first-write tool_result hint (trail blastHint pattern):
     // catches paths discovered mid-run that prompt extraction missed. Appends
     // once per path per session; a path is checked once per session whether
     // or not it has findings (a no-findings path must not re-query the DB on

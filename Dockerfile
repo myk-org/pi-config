@@ -101,37 +101,41 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     exit 1; \
   fi
 
-# Install acpx, agent-browser, pi-web-access, gemini-cli, and Graft (pi itself is installed at runtime in entrypoint.sh)
-COPY scripts/graft-allow-scripts.mjs /usr/local/lib/scripts/graft-allow-scripts.mjs
+# Install acpx, agent-browser, pi-web-access, gemini-cli, and Trail-code (pi itself is installed at runtime in entrypoint.sh)
+# Trail-code installs in two isolated passes: an --ignore-scripts audit whose tree is deleted after the
+# allowlist is derived, then a strict --allow-scripts install that is verified before it is published
+# atomically, so no unapproved dependency lifecycle script ever runs in the final image.
+# Upstream calls its code map "the graft map" and stores it under graft/ (or .trail/cache/ in a repo wired for trail).
+COPY scripts/trail-allow-scripts.mjs /usr/local/lib/scripts/trail-allow-scripts.mjs
 COPY extensions/shared/logger-core.mjs extensions/shared/install-logger.mjs /usr/local/lib/extensions/shared/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
   npm install -g acpx agent-browser pi-web-access @google/gemini-cli && \
-  GRAFT_AUDIT="$(mktemp -d)" && \
-  GRAFT_STAGE="" && \
-  GRAFT_LINK="" && \
-  trap 'rm -rf "$GRAFT_AUDIT" "$GRAFT_STAGE" "$GRAFT_LINK"' EXIT && \
-  GRAFT_PREFIX="$(npm prefix -g)/lib/graft-prefix" && \
-  DO_NOT_TRACK=1 npm install -g --prefix "$GRAFT_AUDIT" @nanonets/graft@latest --ignore-scripts && \
-  GRAFT_ALLOW_SCRIPTS="$(node /usr/local/lib/scripts/graft-allow-scripts.mjs "$GRAFT_AUDIT/lib/node_modules/@nanonets/graft" "$GRAFT_AUDIT/lib/node_modules")" && \
-  test -n "$GRAFT_ALLOW_SCRIPTS" && \
-  rm -rf "$GRAFT_AUDIT" && GRAFT_AUDIT="" && \
-  GRAFT_STAGE="$(mktemp -d "$(npm prefix -g)/lib/.graft-prefix.XXXXXX")" && \
-  mkdir -p "$GRAFT_STAGE/lib" && \
-  DO_NOT_TRACK=1 npm install -g --prefix "$GRAFT_STAGE" @nanonets/graft@latest --allow-scripts="$GRAFT_ALLOW_SCRIPTS" --strict-allow-scripts && \
-  chmod -R a+rX "$GRAFT_STAGE" && \
-  "$GRAFT_STAGE/bin/graft" --version && \
-  rm -rf "$GRAFT_PREFIX" && \
-  mv "$GRAFT_STAGE" "$GRAFT_PREFIX" && GRAFT_STAGE="" && \
-  GRAFT_LINK="$(npm prefix -g)/bin/.graft-link" && \
-  ln -s ../lib/graft-prefix/bin/graft "$GRAFT_LINK" && \
-  mv -Tf "$GRAFT_LINK" "$(npm prefix -g)/bin/graft" && GRAFT_LINK="" && \
+  TRAIL_AUDIT="$(mktemp -d)" && \
+  TRAIL_STAGE="" && \
+  TRAIL_LINK="" && \
+  trap 'rm -rf "$TRAIL_AUDIT" "$TRAIL_STAGE" "$TRAIL_LINK"' EXIT && \
+  TRAIL_PREFIX="$(npm prefix -g)/lib/trail-prefix" && \
+  DO_NOT_TRACK=1 npm install -g --prefix "$TRAIL_AUDIT" @trailhq/trail-code@latest --ignore-scripts && \
+  TRAIL_ALLOW_SCRIPTS="$(node /usr/local/lib/scripts/trail-allow-scripts.mjs "$TRAIL_AUDIT/lib/node_modules/@trailhq/trail-code" "$TRAIL_AUDIT/lib/node_modules")" && \
+  test -n "$TRAIL_ALLOW_SCRIPTS" && \
+  rm -rf "$TRAIL_AUDIT" && TRAIL_AUDIT="" && \
+  TRAIL_STAGE="$(mktemp -d "$(npm prefix -g)/lib/.trail-prefix.XXXXXX")" && \
+  mkdir -p "$TRAIL_STAGE/lib" && \
+  DO_NOT_TRACK=1 npm install -g --prefix "$TRAIL_STAGE" @trailhq/trail-code@latest --allow-scripts="$TRAIL_ALLOW_SCRIPTS" --strict-allow-scripts && \
+  chmod -R a+rX "$TRAIL_STAGE" && \
+  "$TRAIL_STAGE/bin/trail" --version && \
+  rm -rf "$TRAIL_PREFIX" && \
+  mv "$TRAIL_STAGE" "$TRAIL_PREFIX" && TRAIL_STAGE="" && \
+  TRAIL_LINK="$(npm prefix -g)/bin/.trail-link" && \
+  ln -s ../lib/trail-prefix/bin/trail "$TRAIL_LINK" && \
+  mv -Tf "$TRAIL_LINK" "$(npm prefix -g)/bin/trail" && TRAIL_LINK="" && \
   trap - EXIT
 
 
 # Switch to non-root user (node:22 ships with user 'node' at UID 1000)
 RUN chown -R node:node /home/node
 USER node
-RUN /usr/local/bin/graft --version
+RUN /usr/local/bin/trail --version
 RUN mkdir -p /home/node/.npm-global && npm config set prefix /home/node/.npm-global
 ENV PATH="/home/node/.npm-global/bin:/home/node/.pi/agent/bin:/home/node/.local/bin:$PATH"
 ENV TERM=xterm-256color

@@ -218,7 +218,7 @@ describe("InfoBar thinking selector", () => {
     assert.equal(gauge!.textContent.trim(), "ctx 52.4%/1.0M");
   });
 
-  it("reserves the Graft slot when savings are unknown", async () => {
+  it("reserves the Trail slot when savings are unknown", async () => {
     // The bar must not reflow when this value appears mid-turn: the slot is
     // always mounted and hidden instead of being conditionally created.
     const view = await renderInfoBar(session());
@@ -226,11 +226,11 @@ describe("InfoBar thinking selector", () => {
     const slot = elements(view.container, "span").find(
       (item: any) => /saved/.test(item.textContent || "") && /invisible/.test(String(item.getAttribute("class") || "")),
     );
-    assert.ok(slot, "graft slot is reserved (invisible) when unknown");
+    assert.ok(slot, "trail slot is reserved (invisible) when unknown");
   });
 
-  it("shows Graft savings when reported", async () => {
-    const view = await renderInfoBar(session({ graftTokenSavings: 1250 }));
+  it("shows Trail savings when reported", async () => {
+    const view = await renderInfoBar(session({ trailTokenSavings: 1250 }));
     assert.match(view.container.textContent, /1\.3k saved/);
   });
 
@@ -241,7 +241,7 @@ describe("InfoBar thinking selector", () => {
     const root = createRoot(container); mounted.push(root);
     const render = (value: SessionInfo) => root.render(createElement(InfoBar, { session: value, model: value.model, tokens: null, send: () => {}, onMessage }));
     await act(async () => render(session({ reasoning: false })));
-    await act(async () => render(session({ reasoning: true, graftTokenSavings: 1250 })));
+    await act(async () => render(session({ reasoning: true, trailTokenSavings: 1250 })));
     assert.deepEqual({ mounts, unmounts }, { mounts: 1, unmounts: 0 });
     // Capability updates must reach the same instance (the thinking control
     // appears without re-running the onMessage subscription).

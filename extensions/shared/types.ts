@@ -34,6 +34,6 @@ export interface SessionInfo {
   comsName?: string;
   comsPurpose?: string;
   comsProject?: string;
-  /** Exact authoritative Graft savings for this parent Pi session. */
-  graftTokenSavings?: number;
+  /** Exact authoritative Trail savings for this parent Pi session. */
+  trailTokenSavings?: number;
 }

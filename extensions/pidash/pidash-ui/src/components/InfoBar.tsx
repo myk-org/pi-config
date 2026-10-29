@@ -324,10 +324,10 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
 
       <span className="text-border shrink-0">|</span>
       <span
-        className={cn("tabular-nums text-green-500 shrink-0 w-[6.5rem] text-right", session.graftTokenSavings === undefined && "invisible")}
-        title={session.graftTokenSavings === undefined ? "" : `${formatExactTotal(session.graftTokenSavings)} Graft tokens saved (retrieval instead of full-file reads)`}
+        className={cn("tabular-nums text-green-500 shrink-0 w-[6.5rem] text-right", session.trailTokenSavings === undefined && "invisible")}
+        title={session.trailTokenSavings === undefined ? "" : `${formatExactTotal(session.trailTokenSavings)} Trail tokens saved (retrieval instead of full-file reads)`}
       >
-        ◤ {formatCompactTotal(session.graftTokenSavings ?? 0)} saved
+        ◤ {formatCompactTotal(session.trailTokenSavings ?? 0)} saved
       </span>
 
       {/* Git */}

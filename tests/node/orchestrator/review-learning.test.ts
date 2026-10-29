@@ -579,7 +579,7 @@ function seedLessonEntry(cwd: string, text: string, derivedFrom?: string, eviden
 const REPO = { owner: "myk-org", repo: "demo" };
 
 // This suite may itself run inside a pi subagent — clear the child marker so
-// register() wires its handler (mirrors graft.test.ts).
+// register() wires its handler (mirrors trail.test.ts).
 const originalChild = process.env.PI_SUBAGENT_CHILD;
 beforeEach(() => { delete process.env.PI_SUBAGENT_CHILD; });
 afterEach(() => {

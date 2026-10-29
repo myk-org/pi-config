@@ -120,12 +120,12 @@
     "default": true,
     "group": "Dashboard"
   },
-  "graft_enable": {
-    "description": "Enable local Graft repository graph integration",
+  "trail_enable": {
+    "description": "Enable local Trail code map integration (requires the trail binary)",
     "type": "bool",
-    "env": "PI_GRAFT_ENABLE",
-    "default": false,
-    "group": "Graft"
+    "env": "PI_TRAIL_ENABLE",
+    "default": true,
+    "group": "Trail"
   },
   "pidiff_stale_lock_timeout_ms": {
     "description": "Timeout for stale pidiff spawning lockfile (ms)",
@@ -562,10 +562,10 @@
     ],
     "group": "Logging"
   },
-  "log_graft": {
-    "description": "Log level for local Graft graph integration",
+  "log_trail": {
+    "description": "Log level for local Trail code map integration",
     "type": "string",
-    "env": "PI_LOG_GRAFT",
+    "env": "PI_LOG_TRAIL",
     "default": "info",
     "enum": [
       "off",

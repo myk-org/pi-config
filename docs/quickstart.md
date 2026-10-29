@@ -34,7 +34,7 @@ pi install npm:pi-orchestrator-config
 uv tool install myk-pi-tools
 ```
 
-To get everything at once — the pi package, `myk-pi-tools`, `prek`, `acpx`, `agent-browser`, `graft`, Playwright, and the git-excludes setup — run the interactive installer instead:
+To get everything at once — the pi package, `myk-pi-tools`, `prek`, `acpx`, `agent-browser`, `trail` (`@trailhq/trail-code`), Playwright, and the git-excludes setup — run the interactive installer instead:
 
 ```bash
 uv run https://raw.githubusercontent.com/myk-org/pi-config/main/scripts/install.py

@@ -37,7 +37,7 @@ import { registerSettingsTui } from "./settings-tui.js";
 import { buildSituationReport } from "./situation-report.js";
 import { listTopics } from "./memory-tree.js";
 import { registerMarkdownTransformer } from "./markdown-transformer.js";
-import { registerGraft } from "./graft.js";
+import { registerTrail } from "./trail.js";
 import { registerReviewLearning } from "./review-learning.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
@@ -129,7 +129,7 @@ export default function (pi: ExtensionAPI) {
   const { spawnAsyncAgent, killAsyncAgent, getAsyncJobs } = registerAsyncAgents(pi, terminalNotify);
   registerSubagentTool(pi, spawnAsyncAgent, killAsyncAgent);
   registerProjectSettings(pi);
-  registerGraft(pi);
+  registerTrail(pi);
   registerEnforcement(pi, IN_CONTAINER);
   registerReviewUI(pi);
   registerRules(pi, getAsyncJobs);

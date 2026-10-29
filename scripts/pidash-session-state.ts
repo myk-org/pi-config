@@ -39,7 +39,7 @@ function registeredSession(parsed: any): SessionInfo {
     comsName: parsed.comsName || undefined,
     comsPurpose: parsed.comsPurpose || undefined,
     comsProject: parsed.comsProject || undefined,
-    graftTokenSavings: Number.isSafeInteger(parsed.graftTokenSavings) && parsed.graftTokenSavings >= 0 ? parsed.graftTokenSavings : undefined,
+    trailTokenSavings: Number.isSafeInteger(parsed.trailTokenSavings) && parsed.trailTokenSavings >= 0 ? parsed.trailTokenSavings : undefined,
     ...initialActivityState(),
     activity,
     activitySequence: Number.isSafeInteger(parsed.activitySequence) ? parsed.activitySequence : 0,
@@ -112,8 +112,8 @@ export function registerPidashSession(
 export function updatePidashSession(session: SessionInfo, parsed: any): void {
   if (typeof parsed.reasoning === "boolean") session.reasoning = parsed.reasoning;
   if (typeof parsed.supportsImages === "boolean") session.supportsImages = parsed.supportsImages;
-  if (parsed.graftTokenSavings !== undefined && Number.isSafeInteger(parsed.graftTokenSavings) && parsed.graftTokenSavings >= 0) {
-    session.graftTokenSavings = parsed.graftTokenSavings;
+  if (parsed.trailTokenSavings !== undefined && Number.isSafeInteger(parsed.trailTokenSavings) && parsed.trailTokenSavings >= 0) {
+    session.trailTokenSavings = parsed.trailTokenSavings;
   }
   session.lastActivity = Date.now();
 }

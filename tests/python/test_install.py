@@ -53,7 +53,7 @@ from install_sources import (  # noqa: E402
 REPO = Path(__file__).resolve().parents[2]
 
 
-def _publish_graft_worker(
+def _publish_trail_worker(
     prefix_raw: str,
     marker: str,
     inside: Any,
@@ -63,13 +63,13 @@ def _publish_graft_worker(
     _stub_questionary()
     install = importlib.import_module("install")
     prefix = Path(prefix_raw)
-    graft_prefix = prefix / "lib/graft-prefix"
-    graft_bin = prefix / "bin/graft"
-    stage = graft_prefix.parent / f".graft-prefix-{marker}"
+    trail_prefix = prefix / "lib/trail-prefix"
+    trail_bin = prefix / "bin/trail"
+    stage = trail_prefix.parent / f".trail-prefix-{marker}"
     stage.mkdir()
     (stage / "marker").write_text(marker)
     (stage / "bin").mkdir()
-    (stage / "bin/graft").write_text(marker)
+    (stage / "bin/trail").write_text(marker)
     replace = install.os.replace
 
     def controlled_replace(source: Path, destination: Path) -> None:
@@ -81,7 +81,7 @@ def _publish_graft_worker(
 
     install.os.replace = controlled_replace
     try:
-        install._publish_graft(stage, graft_prefix, graft_bin, prefix / ".graft-install.lock")
+        install._publish_trail(stage, trail_prefix, trail_bin, prefix / ".trail-install.lock")
         results.put((marker, None))
     except BaseException as exc:
         results.put((marker, repr(exc)))
@@ -368,10 +368,12 @@ def _tool(
     raise AssertionError(f"{name} tool missing from build_steps")
 
 
-def test_graft_native_install_uses_audited_strict_npm12_installer(monkeypatch: pytest.MonkeyPatch) -> None:
-    tool = _tool(monkeypatch, "graft")
+def test_trail_native_install_uses_audited_strict_npm12_installer(monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = _tool(monkeypatch, "trail")
     assert tool.install_fn
-    assert tool.install_cmd == "DO_NOT_TRACK=1 npm install -g @nanonets/graft@latest (strict dynamic script approval)"
+    assert tool.install_cmd == (
+        "DO_NOT_TRACK=1 npm install -g @trailhq/trail-code@latest (strict dynamic script approval)"
+    )
 
 
 def _write_package(path: Path, manifest: dict[str, Any]) -> None:
@@ -379,11 +381,11 @@ def _write_package(path: Path, manifest: dict[str, Any]) -> None:
     (path / "package.json").write_text(json.dumps(manifest))
 
 
-def test_graft_script_audit_includes_only_reachable_lifecycle_packages(tmp_path: Path) -> None:
+def test_trail_script_audit_includes_only_reachable_lifecycle_packages(tmp_path: Path) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
-    root = tmp_path / "node_modules/@nanonets/graft"
-    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"native-dependency": "1"}})
+    root = tmp_path / "node_modules/@trailhq/trail-code"
+    _write_package(root, {"name": "@trailhq/trail-code", "dependencies": {"native-dependency": "1"}})
     _write_package(
         root / "node_modules/native-dependency",
         {"name": "native-dependency", "scripts": {"install": "build"}},
@@ -393,11 +395,11 @@ def test_graft_script_audit_includes_only_reachable_lifecycle_packages(tmp_path:
     assert install._install_script_packages(root, tmp_path / "node_modules") == ["native-dependency"]
 
 
-def test_graft_script_audit_finds_fully_hoisted_required_dependency(tmp_path: Path) -> None:
+def test_trail_script_audit_finds_fully_hoisted_required_dependency(tmp_path: Path) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
-    root = tmp_path / "node_modules/@nanonets/graft"
-    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"native-dependency": "1"}})
+    root = tmp_path / "node_modules/@trailhq/trail-code"
+    _write_package(root, {"name": "@trailhq/trail-code", "dependencies": {"native-dependency": "1"}})
     _write_package(
         tmp_path / "node_modules/native-dependency",
         {"name": "native-dependency", "scripts": {"install": "build"}},
@@ -406,119 +408,119 @@ def test_graft_script_audit_finds_fully_hoisted_required_dependency(tmp_path: Pa
     assert install._install_script_packages(root, tmp_path / "node_modules") == ["native-dependency"]
 
 
-def test_graft_script_audit_ignores_omitted_optional_dependency(tmp_path: Path) -> None:
+def test_trail_script_audit_ignores_omitted_optional_dependency(tmp_path: Path) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
-    root = tmp_path / "node_modules/@nanonets/graft"
-    _write_package(root, {"name": "@nanonets/graft", "optionalDependencies": {"other-platform": "1"}})
+    root = tmp_path / "node_modules/@trailhq/trail-code"
+    _write_package(root, {"name": "@trailhq/trail-code", "optionalDependencies": {"other-platform": "1"}})
 
     assert install._install_script_packages(root, tmp_path / "node_modules") == []
 
 
-def test_graft_script_audit_rejects_missing_required_dependency(tmp_path: Path) -> None:
+def test_trail_script_audit_rejects_missing_required_dependency(tmp_path: Path) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
-    root = tmp_path / "node_modules/@nanonets/graft"
-    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"required": "1"}})
+    root = tmp_path / "node_modules/@trailhq/trail-code"
+    _write_package(root, {"name": "@trailhq/trail-code", "dependencies": {"required": "1"}})
 
     with pytest.raises(FileNotFoundError, match="required"):
         install._install_script_packages(root, tmp_path / "node_modules")
 
 
-def _run_graft_auditor(root: Path, *, debug: bool = True) -> subprocess.CompletedProcess[str]:
+def _run_trail_auditor(root: Path, *, debug: bool = True) -> subprocess.CompletedProcess[str]:
     env = os.environ | {
         "HOME": str(root.parents[2]),
-        "PI_LOG_GRAFT_INSTALL": "debug" if debug else "off",
+        "PI_LOG_TRAIL_INSTALL": "debug" if debug else "off",
     }
     return subprocess.run(
-        ["node", str(REPO / "scripts/graft-allow-scripts.mjs"), str(root), str(root.parents[1])],
+        ["node", str(REPO / "scripts/trail-allow-scripts.mjs"), str(root), str(root.parents[1])],
         capture_output=True,
         text=True,
         env=env,
     )
 
 
-def _graft_auditor_log(root: Path) -> str:
-    return (root.parents[2] / ".pi/logs/graft-install/install.log").read_text()
+def _trail_auditor_log(root: Path) -> str:
+    return (root.parents[2] / ".pi/logs/trail-install/install.log").read_text()
 
 
-def test_docker_graft_auditor_finds_fully_hoisted_dependency(tmp_path: Path) -> None:
-    root = tmp_path / "node_modules/@nanonets/graft"
-    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"native-dependency": "1"}})
+def test_docker_trail_auditor_finds_fully_hoisted_dependency(tmp_path: Path) -> None:
+    root = tmp_path / "node_modules/@trailhq/trail-code"
+    _write_package(root, {"name": "@trailhq/trail-code", "dependencies": {"native-dependency": "1"}})
     _write_package(
         tmp_path / "node_modules/native-dependency",
         {"name": "native-dependency", "scripts": {"install": "build"}},
     )
 
-    result = _run_graft_auditor(root)
+    result = _run_trail_auditor(root)
     assert result.returncode == 0
     assert result.stdout == "native-dependency"
     assert result.stderr == ""
 
 
-def test_docker_graft_auditor_logs_resolved_dependency_when_debug_enabled(tmp_path: Path) -> None:
-    root = tmp_path / "node_modules/@nanonets/graft"
-    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"native-dependency": "1"}})
+def test_docker_trail_auditor_logs_resolved_dependency_when_debug_enabled(tmp_path: Path) -> None:
+    root = tmp_path / "node_modules/@trailhq/trail-code"
+    _write_package(root, {"name": "@trailhq/trail-code", "dependencies": {"native-dependency": "1"}})
     _write_package(
         tmp_path / "node_modules/native-dependency",
         {"name": "native-dependency", "scripts": {"install": "build"}},
     )
 
-    _run_graft_auditor(root)
-    log = _graft_auditor_log(root)
-    assert "[debug] [graft-install]" in log
+    _run_trail_auditor(root)
+    log = _trail_auditor_log(root)
+    assert "[debug] [trail-install]" in log
     assert '"event":"dependency_resolved"' in log
     assert '"dependency":"native-dependency"' in log
 
 
-def test_docker_graft_auditor_redacts_paths_from_debug_log(tmp_path: Path) -> None:
-    root = tmp_path / "node_modules/@nanonets/graft"
-    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"dependency": "1"}})
+def test_docker_trail_auditor_redacts_paths_from_debug_log(tmp_path: Path) -> None:
+    root = tmp_path / "node_modules/@trailhq/trail-code"
+    _write_package(root, {"name": "@trailhq/trail-code", "dependencies": {"dependency": "1"}})
     _write_package(root / "node_modules/dependency", {"name": "dependency"})
 
-    _run_graft_auditor(root)
-    assert str(tmp_path) not in _graft_auditor_log(root)
+    _run_trail_auditor(root)
+    assert str(tmp_path) not in _trail_auditor_log(root)
 
 
-def test_docker_graft_auditor_debug_logging_is_disabled_by_default(tmp_path: Path) -> None:
-    root = tmp_path / "node_modules/@nanonets/graft"
-    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"dependency": "1"}})
+def test_docker_trail_auditor_debug_logging_is_disabled_by_default(tmp_path: Path) -> None:
+    root = tmp_path / "node_modules/@trailhq/trail-code"
+    _write_package(root, {"name": "@trailhq/trail-code", "dependencies": {"dependency": "1"}})
     _write_package(root / "node_modules/dependency", {"name": "dependency"})
 
-    result = _run_graft_auditor(root, debug=False)
+    result = _run_trail_auditor(root, debug=False)
     assert result.returncode == 0
     assert result.stderr == ""
-    assert not (root.parents[2] / ".pi/logs/graft-install/install.log").exists()
+    assert not (root.parents[2] / ".pi/logs/trail-install/install.log").exists()
 
 
-def test_docker_graft_auditor_ignores_omitted_optional_dependency(tmp_path: Path) -> None:
-    root = tmp_path / "node_modules/@nanonets/graft"
-    _write_package(root, {"name": "@nanonets/graft", "optionalDependencies": {"other-platform": "1"}})
+def test_docker_trail_auditor_ignores_omitted_optional_dependency(tmp_path: Path) -> None:
+    root = tmp_path / "node_modules/@trailhq/trail-code"
+    _write_package(root, {"name": "@trailhq/trail-code", "optionalDependencies": {"other-platform": "1"}})
 
-    result = _run_graft_auditor(root)
+    result = _run_trail_auditor(root)
     assert result.returncode == 0
 
 
-def test_docker_graft_auditor_rejects_missing_required_dependency(tmp_path: Path) -> None:
-    root = tmp_path / "node_modules/@nanonets/graft"
-    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"required": "1"}})
+def test_docker_trail_auditor_rejects_missing_required_dependency(tmp_path: Path) -> None:
+    root = tmp_path / "node_modules/@trailhq/trail-code"
+    _write_package(root, {"name": "@trailhq/trail-code", "dependencies": {"required": "1"}})
 
-    result = _run_graft_auditor(root)
+    result = _run_trail_auditor(root)
     assert result.returncode != 0
-    assert "required Graft dependency is not installed: required" in result.stderr
+    assert "required Trail dependency is not installed: required" in result.stderr
 
 
-def test_docker_graft_auditor_logs_unresolved_dependency(tmp_path: Path) -> None:
-    root = tmp_path / "node_modules/@nanonets/graft"
-    _write_package(root, {"name": "@nanonets/graft", "dependencies": {"required": "1"}})
+def test_docker_trail_auditor_logs_unresolved_dependency(tmp_path: Path) -> None:
+    root = tmp_path / "node_modules/@trailhq/trail-code"
+    _write_package(root, {"name": "@trailhq/trail-code", "dependencies": {"required": "1"}})
 
-    _run_graft_auditor(root)
-    log = _graft_auditor_log(root)
+    _run_trail_auditor(root)
+    log = _trail_auditor_log(root)
     assert '"event":"dependency_unresolved"' in log
     assert '"dependency":"required"' in log
 
 
-def _successful_graft_install(
+def _successful_trail_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Path, list[list[str]], list[Path], set[str]]:
     _stub_questionary()
@@ -540,65 +542,65 @@ def _successful_graft_install(
                     observations.add("audit-cleaned")
                 if (stage / "lib").is_dir():
                     observations.add("stage-prepared")
-            root = stage / "lib/node_modules/@nanonets/graft"
-            _write_package(root, {"name": "@nanonets/graft", "dependencies": {"native": "1"}})
+            root = stage / "lib/node_modules/@trailhq/trail-code"
+            _write_package(root, {"name": "@trailhq/trail-code", "dependencies": {"native": "1"}})
             _write_package(stage / "lib/node_modules/native", {"name": "native", "scripts": {"install": "build"}})
             (stage / "bin").mkdir()
-            (stage / "bin/graft").write_text("#!/bin/sh\n")
-        elif cmd[-1:] == ["--version"] and not (prefix / "lib/graft-prefix").exists():
+            (stage / "bin/trail").write_text("#!/bin/sh\n")
+        elif cmd[-1:] == ["--version"] and not (prefix / "lib/trail-prefix").exists():
             observations.add("verified-before-publication")
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(install.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(install, "_run_quiet", lambda _cmd: "12.0.2")
     monkeypatch.setattr(install.subprocess, "run", run)
-    install.install_graft()
+    install.install_trail()
     return prefix, calls, stages, observations
 
 
-def test_graft_native_install_uses_two_fresh_prefixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _prefix, _calls, stages, observations = _successful_graft_install(tmp_path, monkeypatch)
+def test_trail_native_install_uses_two_fresh_prefixes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _prefix, _calls, stages, observations = _successful_trail_install(tmp_path, monkeypatch)
     assert stages[0] != stages[1]
     assert not stages[0].exists()
     assert {"audit-cleaned", "stage-prepared"} <= observations
 
 
-def test_graft_native_install_preserves_secure_npm_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _prefix, calls, stages, _observations = _successful_graft_install(tmp_path, monkeypatch)
+def test_trail_native_install_preserves_secure_npm_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _prefix, calls, stages, _observations = _successful_trail_install(tmp_path, monkeypatch)
     assert calls[0] == ["npm", "prefix", "-g"]
     audit_cmd, install_cmd = calls[1:3]
-    assert audit_cmd[5:] == ["@nanonets/graft@latest", "--ignore-scripts"]
+    assert audit_cmd[5:] == ["@trailhq/trail-code@latest", "--ignore-scripts"]
     assert install_cmd == [
         "npm",
         "install",
         "-g",
         "--prefix",
         str(stages[1]),
-        "@nanonets/graft@latest",
+        "@trailhq/trail-code@latest",
         "--allow-scripts=native",
         "--strict-allow-scripts",
     ]
 
 
-def test_graft_native_install_publishes_verified_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    prefix, calls, stages, observations = _successful_graft_install(tmp_path, monkeypatch)
-    published = prefix / "lib/graft-prefix"
-    assert (published / "lib/node_modules/@nanonets/graft/package.json").is_file()
-    assert (prefix / "bin/graft").readlink() == Path("../lib/graft-prefix/bin/graft")
-    assert calls[3] == [str(stages[1] / "bin/graft"), "--version"]
+def test_trail_native_install_publishes_verified_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    prefix, calls, stages, observations = _successful_trail_install(tmp_path, monkeypatch)
+    published = prefix / "lib/trail-prefix"
+    assert (published / "lib/node_modules/@trailhq/trail-code/package.json").is_file()
+    assert (prefix / "bin/trail").readlink() == Path("../lib/trail-prefix/bin/trail")
+    assert calls[3] == [str(stages[1] / "bin/trail"), "--version"]
     assert "verified-before-publication" in observations
 
 
-def _failed_second_graft_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path, list[Path]]:
+def _failed_second_trail_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path, list[Path]]:
     _stub_questionary()
     install = importlib.import_module("install")
     prefix = tmp_path / "global"
-    completed = prefix / "lib/graft-prefix"
+    completed = prefix / "lib/trail-prefix"
     completed.mkdir(parents=True)
     (completed / "marker").write_text("old")
-    graft_bin = prefix / "bin/graft"
-    graft_bin.parent.mkdir(parents=True)
-    graft_bin.symlink_to("../lib/graft-prefix/bin/graft")
+    trail_bin = prefix / "bin/trail"
+    trail_bin.parent.mkdir(parents=True)
+    trail_bin.symlink_to("../lib/trail-prefix/bin/trail")
     stages: list[Path] = []
 
     def run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -609,47 +611,47 @@ def _failed_second_graft_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
             stages.append(stage)
             if len(stages) == 2:
                 raise subprocess.CalledProcessError(1, cmd)
-            root = stage / "lib/node_modules/@nanonets/graft"
-            _write_package(root, {"name": "@nanonets/graft", "scripts": {"install": "build"}})
+            root = stage / "lib/node_modules/@trailhq/trail-code"
+            _write_package(root, {"name": "@trailhq/trail-code", "scripts": {"install": "build"}})
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(install.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(install, "_run_quiet", lambda _cmd: "12.0.2")
     monkeypatch.setattr(install.subprocess, "run", run)
     with pytest.raises(subprocess.CalledProcessError):
-        install.install_graft()
-    return completed, graft_bin, stages
+        install.install_trail()
+    return completed, trail_bin, stages
 
 
-def test_graft_native_install_cleans_stages_when_second_install_fails(
+def test_trail_native_install_cleans_stages_when_second_install_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _completed, _graft_bin, stages = _failed_second_graft_install(tmp_path, monkeypatch)
+    _completed, _trail_bin, stages = _failed_second_trail_install(tmp_path, monkeypatch)
     assert len(stages) == 2
     assert all(not stage.exists() for stage in stages)
 
 
-def test_graft_native_install_keeps_published_install_when_second_install_fails(
+def test_trail_native_install_keeps_published_install_when_second_install_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    completed, graft_bin, _stages = _failed_second_graft_install(tmp_path, monkeypatch)
+    completed, trail_bin, _stages = _failed_second_trail_install(tmp_path, monkeypatch)
     assert (completed / "marker").read_text() == "old"
-    assert graft_bin.readlink() == Path("../lib/graft-prefix/bin/graft")
+    assert trail_bin.readlink() == Path("../lib/trail-prefix/bin/trail")
 
 
 @pytest.mark.parametrize("prefix_output", ["", ".", "relative/prefix", "/"])
-def test_graft_native_install_rejects_unsafe_npm_prefix(
+def test_trail_native_install_rejects_unsafe_npm_prefix(
     prefix_output: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
     monkeypatch.chdir(tmp_path)
-    completed = tmp_path / "lib/graft-prefix"
+    completed = tmp_path / "lib/trail-prefix"
     completed.mkdir(parents=True)
     (completed / "marker").write_text("old")
-    graft_bin = tmp_path / "bin/graft"
-    graft_bin.parent.mkdir(parents=True)
-    graft_bin.symlink_to("../lib/graft-prefix/bin/graft")
+    trail_bin = tmp_path / "bin/trail"
+    trail_bin.parent.mkdir(parents=True)
+    trail_bin.symlink_to("../lib/trail-prefix/bin/trail")
 
     monkeypatch.setattr(install.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(install, "_run_quiet", lambda _cmd: "12.0.2")
@@ -660,10 +662,10 @@ def test_graft_native_install_rejects_unsafe_npm_prefix(
     )
 
     with pytest.raises(RuntimeError, match="safe absolute path"):
-        install.install_graft()
+        install.install_trail()
 
     assert (completed / "marker").read_text() == "old"
-    assert graft_bin.readlink() == Path("../lib/graft-prefix/bin/graft")
+    assert trail_bin.readlink() == Path("../lib/trail-prefix/bin/trail")
 
 
 def test_npm_global_prefix_rejects_empty_output_before_resolving(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -758,7 +760,7 @@ def test_npm_global_prefix_rejects_unwritable_prefix(tmp_path: Path, monkeypatch
         install._npm_global_prefix()
 
 
-def test_graft_native_install_checks_npm_prefix_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_trail_native_install_checks_npm_prefix_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
     monkeypatch.setattr(install.shutil, "which", lambda name: f"/usr/bin/{name}")
@@ -772,55 +774,55 @@ def test_graft_native_install_checks_npm_prefix_command(tmp_path: Path, monkeypa
     monkeypatch.setattr(install.subprocess, "run", run)
 
     with pytest.raises(subprocess.CalledProcessError):
-        install.install_graft()
+        install.install_trail()
 
-    assert not (tmp_path / "lib/graft-prefix").exists()
+    assert not (tmp_path / "lib/trail-prefix").exists()
 
 
-def test_graft_publication_restores_previous_install_when_link_replace_fails(
+def test_trail_publication_restores_previous_install_when_link_replace_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
     prefix = tmp_path / "global"
-    graft_prefix = prefix / "lib/graft-prefix"
-    graft_bin = prefix / "bin/graft"
-    graft_prefix.mkdir(parents=True)
-    (graft_prefix / "marker").write_text("old")
-    graft_bin.parent.mkdir(parents=True)
-    graft_bin.symlink_to("../lib/graft-prefix/bin/graft")
-    stage = Path(tempfile.mkdtemp(prefix=".graft-prefix-", dir=graft_prefix.parent))
+    trail_prefix = prefix / "lib/trail-prefix"
+    trail_bin = prefix / "bin/trail"
+    trail_prefix.mkdir(parents=True)
+    (trail_prefix / "marker").write_text("old")
+    trail_bin.parent.mkdir(parents=True)
+    trail_bin.symlink_to("../lib/trail-prefix/bin/trail")
+    stage = Path(tempfile.mkdtemp(prefix=".trail-prefix-", dir=trail_prefix.parent))
     (stage / "marker").write_text("new")
     replace = install.os.replace
 
     def fail_link_replace(source: Path, destination: Path) -> None:
-        if destination == graft_bin:
+        if destination == trail_bin:
             raise OSError("link publication failed")
         replace(source, destination)
 
     monkeypatch.setattr(install.os, "replace", fail_link_replace)
 
     with pytest.raises(OSError, match="link publication failed"):
-        install._publish_graft(stage, graft_prefix, graft_bin, prefix / ".graft-install.lock")
+        install._publish_trail(stage, trail_prefix, trail_bin, prefix / ".trail-install.lock")
 
-    assert (graft_prefix / "marker").read_text() == "old"
-    assert graft_bin.readlink() == Path("../lib/graft-prefix/bin/graft")
+    assert (trail_prefix / "marker").read_text() == "old"
+    assert trail_bin.readlink() == Path("../lib/trail-prefix/bin/trail")
     artifacts = (
         stage,
         stage.with_name(f"{stage.name}.previous"),
-        graft_bin.with_name(f".{stage.name}-graft"),
+        trail_bin.with_name(f".{stage.name}-trail"),
     )
     assert all(not artifact.exists() and not artifact.is_symlink() for artifact in artifacts)
-    assert list(graft_prefix.parent.glob(".graft-prefix-*.previous")) == []
+    assert list(trail_prefix.parent.glob(".trail-prefix-*.previous")) == []
 
 
-def test_graft_publication_serializes_overlapping_attempts(tmp_path: Path) -> None:
+def test_trail_publication_serializes_overlapping_attempts(tmp_path: Path) -> None:
     _stub_questionary()
     prefix = tmp_path / "global"
-    graft_prefix = prefix / "lib/graft-prefix"
-    graft_bin = prefix / "bin/graft"
-    graft_prefix.parent.mkdir(parents=True)
-    graft_bin.parent.mkdir(parents=True)
+    trail_prefix = prefix / "lib/trail-prefix"
+    trail_bin = prefix / "bin/trail"
+    trail_prefix.parent.mkdir(parents=True)
+    trail_bin.parent.mkdir(parents=True)
     context = multiprocessing.get_context("spawn")
     first_inside = context.Event()
     release_first = context.Event()
@@ -828,11 +830,11 @@ def test_graft_publication_serializes_overlapping_attempts(tmp_path: Path) -> No
     results = context.Queue()
 
     first = context.Process(
-        target=_publish_graft_worker,
+        target=_publish_trail_worker,
         args=(str(prefix), "first", first_inside, release_first, results),
     )
     second = context.Process(
-        target=_publish_graft_worker,
+        target=_publish_trail_worker,
         args=(str(prefix), "second", second_inside, None, results),
     )
     first.start()
@@ -846,10 +848,10 @@ def test_graft_publication_serializes_overlapping_attempts(tmp_path: Path) -> No
     assert not second_inspected_shared_state
     assert first.exitcode == second.exitcode == 0
     assert sorted(results.get(timeout=1) for _ in range(2)) == [("first", None), ("second", None)]
-    assert (graft_prefix / "marker").read_text() == "second"
-    assert graft_bin.readlink() == Path("../lib/graft-prefix/bin/graft")
-    assert graft_bin.resolve().read_text() == "second"
-    assert list(graft_prefix.parent.glob(".graft-prefix-*")) == []
+    assert (trail_prefix / "marker").read_text() == "second"
+    assert trail_bin.readlink() == Path("../lib/trail-prefix/bin/trail")
+    assert trail_bin.resolve().read_text() == "second"
+    assert list(trail_prefix.parent.glob(".trail-prefix-*")) == []
 
 
 def test_publication_lock_emits_structured_lifecycle_diagnostics(
@@ -966,17 +968,17 @@ def test_windows_lock_releases_acquired_lock(monkeypatch: pytest.MonkeyPatch, tm
     assert calls == [Msvcrt.LK_LOCK, Msvcrt.LK_UNLCK]
 
 
-def test_graft_publication_rolls_back_with_windows_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_trail_publication_rolls_back_with_windows_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
     prefix = tmp_path / "global"
-    graft_prefix = prefix / "lib/graft-prefix"
-    graft_bin = prefix / "bin/graft"
-    graft_prefix.mkdir(parents=True)
-    (graft_prefix / "marker").write_text("old")
-    graft_bin.parent.mkdir(parents=True)
+    trail_prefix = prefix / "lib/trail-prefix"
+    trail_bin = prefix / "bin/trail"
+    trail_prefix.mkdir(parents=True)
+    (trail_prefix / "marker").write_text("old")
+    trail_bin.parent.mkdir(parents=True)
     monkeypatch.setattr(Path, "symlink_to", lambda _self, _target: None)
-    stage = graft_prefix.parent / ".graft-prefix-new"
+    stage = trail_prefix.parent / ".trail-prefix-new"
     stage.mkdir()
     (stage / "marker").write_text("new")
     replace = install.os.replace
@@ -990,7 +992,7 @@ def test_graft_publication_rolls_back_with_windows_lock(tmp_path: Path, monkeypa
             pass
 
     def fail_link_replace(source: Path, destination: Path) -> None:
-        if destination == graft_bin:
+        if destination == trail_bin:
             raise OSError("link publication failed")
         replace(source, destination)
 
@@ -999,19 +1001,19 @@ def test_graft_publication_rolls_back_with_windows_lock(tmp_path: Path, monkeypa
     monkeypatch.setattr(install.os, "replace", fail_link_replace)
 
     with pytest.raises(OSError, match="link publication failed"):
-        install._publish_graft(stage, graft_prefix, graft_bin, prefix / ".graft-install.lock")
+        install._publish_trail(stage, trail_prefix, trail_bin, prefix / ".trail-install.lock")
 
-    assert (graft_prefix / "marker").read_text() == "old"
+    assert (trail_prefix / "marker").read_text() == "old"
     assert not stage.exists()
     assert not stage.with_name(f"{stage.name}.previous").exists()
 
 
-def test_graft_native_install_checks_node_gyp_prerequisites(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_trail_native_install_checks_node_gyp_prerequisites(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
     monkeypatch.setattr(install.shutil, "which", lambda name: None if name == "make" else f"/usr/bin/{name}")
     with pytest.raises(RuntimeError, match="make"):
-        install.install_graft()
+        install.install_trail()
 
 
 def test_entrypoint_does_not_install_mcpc() -> None:
