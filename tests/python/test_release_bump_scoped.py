@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -638,4 +639,106 @@ class TestBumpScopedSetVersions:
         bump_scoped_run(scoped_repo, set_versions={"poc": "1.1.0"}, as_json=True)
         payload = json.loads(capsys.readouterr().out)
         assert {p["name"]: p["version"] for p in payload["packages"]} == {"poc": "1.1.0"}
+        assert read_version(scoped_repo, "package.json") == "1.1.0"
+
+
+class _UvRecorder:
+    """Stand-in for ``_run_uv_lock`` recording the uv invocations."""
+
+    def __init__(self, *, behaviour: str = "ok") -> None:
+        self.behaviour = behaviour
+        self.calls: list[list[str]] = []
+
+    def __call__(self, repo_root: Path) -> subprocess.CompletedProcess[str]:
+        cmd = ["uv", "lock"]
+        self.calls.append(cmd)
+        if self.behaviour == "missing":
+            raise FileNotFoundError("uv")
+        if self.behaviour == "fails":
+            return subprocess.CompletedProcess(cmd, 1, "", "error: failed to resolve dependencies")
+        (repo_root / "uv.lock").write_text("refreshed\n", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+
+def _affect_poc(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mark poc affected and pin every registry at a published 1.0.0."""
+    (repo / "extensions" / "b.ts").write_text("// x\n", encoding="utf-8")
+    commit(repo, "feat: gate", "extensions/b.ts")
+
+    import myk_pi_tools.release.plan as plan_mod
+
+    monkeypatch.setattr(plan_mod, "registry_version", lambda *_args: "1.0.0")
+
+
+class TestBumpScopedLockfile:
+    """uv.lock must follow the version files — a stale lock dirties the tree."""
+
+    def test_uv_lock_refreshed_and_reported(
+        self,
+        scoped_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import myk_pi_tools.release.bump_scoped as scoped_mod
+
+        _affect_poc(scoped_repo, monkeypatch)
+        (scoped_repo / "uv.lock").write_text("stale\n", encoding="utf-8")
+        recorder = _UvRecorder()
+        monkeypatch.setattr(scoped_mod, "_run_uv_lock", recorder)
+
+        bump_scoped_run(scoped_repo, set_versions={"poc": "1.1.0"}, as_json=True)
+        payload = json.loads(capsys.readouterr().out)
+
+        assert recorder.calls == [["uv", "lock"]]
+        assert (scoped_repo / "uv.lock").read_text(encoding="utf-8") == "refreshed\n"
+        assert payload["lockfile"] == {"path": "uv.lock", "refreshed": True}
+        # `updated[]` stays version files only (documented schema).
+        assert {u["path"] for u in payload["updated"]} == {"package.json"}
+        assert read_version(scoped_repo, "package.json") == "1.1.0"
+
+    def test_no_uv_lock_means_no_uv_invocation(
+        self,
+        scoped_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import myk_pi_tools.release.bump_scoped as scoped_mod
+
+        _affect_poc(scoped_repo, monkeypatch)
+        recorder = _UvRecorder()
+        monkeypatch.setattr(scoped_mod, "_run_uv_lock", recorder)
+
+        bump_scoped_run(scoped_repo, set_versions={"poc": "1.1.0"}, as_json=True)
+        payload = json.loads(capsys.readouterr().out)
+
+        assert recorder.calls == []
+        assert "lockfile" not in payload
+        assert read_version(scoped_repo, "package.json") == "1.1.0"
+
+    @pytest.mark.parametrize("behaviour", ["missing", "fails"])
+    def test_uv_unavailable_never_fails_the_bump(
+        self,
+        scoped_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        behaviour: str,
+    ) -> None:
+        import myk_pi_tools.release.bump_scoped as scoped_mod
+
+        _affect_poc(scoped_repo, monkeypatch)
+        (scoped_repo / "uv.lock").write_text("stale\n", encoding="utf-8")
+        recorder = _UvRecorder(behaviour=behaviour)
+        monkeypatch.setattr(scoped_mod, "_run_uv_lock", recorder)
+
+        bump_scoped_run(scoped_repo, set_versions={"poc": "1.1.0"}, as_json=True)
+        captured = capsys.readouterr()
+        payload = json.loads(captured.out)
+
+        assert recorder.calls == [["uv", "lock"]]
+        assert payload["status"] == "success"
+        assert payload["lockfile"]["path"] == "uv.lock"
+        assert payload["lockfile"]["refreshed"] is False
+        assert payload["lockfile"]["error"]
+        assert "uv lock" in captured.err
+        # Version files were written anyway.
         assert read_version(scoped_repo, "package.json") == "1.1.0"
