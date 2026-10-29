@@ -22,6 +22,8 @@ const MIN_PROMPT_CHARS = 12;
 const QUERY_MAX_CHARS = 2_000;
 const QUERY_FALLBACK_CHARS = 200;
 const INTERACTIVE_TIMEOUT_MS = 2_000;
+// The first retrieval of a session pays process spawn plus map load (median 1.4s, #992), so cold gets a larger ceiling than warm.
+const COLD_RETRIEVAL_TIMEOUT_MS = 10_000;
 export const TRAIL_QUERY_TOOLS = ["trail_find_code", "trail_find_all", "trail_file_api", "trail_trace_calls", "trail_repo_map"] as const;
 /**
  * The five read-only Trail query tools, added to a child's tool list when it declares one.
@@ -48,7 +50,7 @@ export function trailToolsArgs(tools: readonly string[] | undefined, cwd: string
 export type TrailState = "syncing" | "ready" | "stale" | "absent" | "failed";
 export type TrailRun = (args: readonly string[], options: { cwd: string; timeoutMs?: number }) => Promise<{ stdout: string; stderr: string; code: number }>;
 type GraphStatus = "fresh" | "stale" | "absent";
-type Options = { enabled: boolean; setting?: (cwd: string, logger?: Logger) => boolean; executable?: () => Promise<boolean>; graph?: (cwd: string) => Promise<GraphStatus> | GraphStatus; retrieve?: (query: string, cwd: string) => Promise<{ pointers: string[] }>; worktree?: (cwd: string) => string | null; run?: TrailRun; interactiveTimeoutMs?: number; logger?: Logger };
+type Options = { enabled: boolean; setting?: (cwd: string, logger?: Logger) => boolean; executable?: () => Promise<boolean>; graph?: (cwd: string) => Promise<GraphStatus> | GraphStatus; retrieve?: (query: string, cwd: string) => Promise<{ pointers: string[] }>; worktree?: (cwd: string) => string | null; run?: TrailRun; interactiveTimeoutMs?: number; coldTimeoutMs?: number; logger?: Logger };
 type StatusTheme = { fg: (color: string, value: string) => string };
 type Hit = { title?: string; pointer?: string; snippet?: string; code?: string };
 type Ask = { coverage?: number; coverageStrong?: number; hits?: Hit[] };
@@ -401,7 +403,7 @@ export function createTrailIntegration(options: Options) {
   // telemetry into ~/.pi/logs/trail, which is the G1-G3 measurement source for #978.
   const log = options.logger ?? createLogger("trail");
   const child = process.env.PI_SUBAGENT_CHILD === "1";
-  const state = { generation: 0, root: "", store: "", dirtySignal: "", enabled: false, toolsRegistered: false, events: undefined as ExtensionAPI["events"] | undefined, value: "stale" as TrailState, nodeCount: 0, tokenSavings: 0, trailReads: 0, sourceReads: 0, repoMapShown: false, dirty: false, buildAttempted: false, refresh: undefined as Promise<boolean> | undefined, mapPaths: new Set<string>(), mapDirs: new Set<string>(), ctx: undefined as any, gate: { active: false, retrieved: false, pointers: new Set<string>() } };
+  const state = { generation: 0, root: "", store: "", dirtySignal: "", enabled: false, toolsRegistered: false, events: undefined as ExtensionAPI["events"] | undefined, value: "stale" as TrailState, nodeCount: 0, tokenSavings: 0, trailReads: 0, sourceReads: 0, repoMapShown: false, dirty: false, buildAttempted: false, warmed: false, refresh: undefined as Promise<boolean> | undefined, mapPaths: new Set<string>(), mapDirs: new Set<string>(), ctx: undefined as any, gate: { active: false, retrieved: false, pointers: new Set<string>() } };
   const publishSavings = () => {
     if (child || !state.events) return;
     state.events.emit("pidash:trail-savings", { tokenSavings: state.tokenSavings });
@@ -498,7 +500,7 @@ export function createTrailIntegration(options: Options) {
     } catch {}
   };
   const invalidate = (ctx: any, reason: string) => {
-    state.generation++; state.ctx = ctx; state.enabled = false; state.root = ""; state.store = ""; state.dirtySignal = ""; state.refresh = undefined; state.dirty = false; state.buildAttempted = false; state.nodeCount = 0; state.tokenSavings = 0; state.mapPaths = new Set(); state.repoMapShown = false; state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
+    state.generation++; state.ctx = ctx; state.enabled = false; state.root = ""; state.store = ""; state.dirtySignal = ""; state.refresh = undefined; state.dirty = false; state.buildAttempted = false; state.warmed = false; state.nodeCount = 0; state.tokenSavings = 0; state.mapPaths = new Set(); state.repoMapShown = false; state.gate = { active: false, retrieved: false, pointers: new Set<string>() };
     clearSlot("trail", ctx); publishSavings(); log.info("session_invalidated", { reason });
   };
   const invoke = async (args: string[]) => {
@@ -568,7 +570,7 @@ export function createTrailIntegration(options: Options) {
       // they only skip the binary probe, which a one-shot run cannot report on.
       // Returning here instead used to leave those sessions without any map tool.
       const probe = !child && (isEligibleTrailStartup(event, ctx) || ["new", "reload", "resume", "fork"].includes(event?.reason));
-      state.generation++; state.refresh = undefined; state.dirty = false; state.buildAttempted = false; state.root = resolveWorktreeRoot(ctx.cwd); const root = state.root; state.repoMapShown = false; state.gate = { active: false, retrieved: false, pointers: new Set<string>() }; state.trailReads = 0; state.sourceReads = 0;
+      state.generation++; state.refresh = undefined; state.dirty = false; state.buildAttempted = false; state.warmed = false; state.root = resolveWorktreeRoot(ctx.cwd); const root = state.root; state.repoMapShown = false; state.gate = { active: false, retrieved: false, pointers: new Set<string>() }; state.trailReads = 0; state.sourceReads = 0;
       state.enabled = true; loadMap(root); state.value = "syncing";
       try { state.store = savingsStore(ctx, root, log); state.dirtySignal = state.store ? `${state.store}.dirty` : ""; if (state.dirtySignal) { mkdirSync(state.dirtySignal, { recursive: true, mode: 0o700 }); chmodSync(state.dirtySignal, 0o700); } state.tokenSavings = readSavings(state.store); } catch (error: any) { state.store = ""; state.dirtySignal = ""; state.tokenSavings = 0; log.warn("savings_restore_failed", { code: error?.code }); }
       // Provisional state while we probe. This used to be "failed", which made
@@ -682,7 +684,10 @@ export function createTrailIntegration(options: Options) {
       if (!query || !substantive(query)) { finish("guidance_only_control_prompt"); return guidance; }
       state.gate.active = true;
       // One shared budget: a fallback retry must not double the turn's deadline.
-      const deadline = started + (options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS);
+      const cold = !state.warmed; state.warmed = true;
+      const budget = options.interactiveTimeoutMs ?? (cold ? (options.coldTimeoutMs ?? COLD_RETRIEVAL_TIMEOUT_MS) : INTERACTIVE_TIMEOUT_MS);
+      log.debug("retrieval_budget", { cold, budgetMs: budget });
+      const deadline = started + budget;
       const remaining = () => Math.max(1, deadline - Date.now());
       type Attempt = { hits: Hit[]; failure?: { decision: string; note: string; diagnostic?: string } };
       /** One bounded retrieval attempt; null means the session changed under us. */

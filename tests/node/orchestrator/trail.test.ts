@@ -260,6 +260,32 @@ describe("Trail retrieval, injection, and the gate", () => {
     assert.match(event.systemPromptOptions.sections.trail, /timed out/i);
     assert.equal(await r.handlers.get("tool_call")![0]({ toolName: "bash", input: { command: "rg authentication" } }, c), undefined);
   });
+  // No `interactiveTimeoutMs` here on purpose: it overrides every budget, so the
+  // cold ceiling and the warm 2s default are what this test exercises.
+  const slowRetrieve = () => async () => { await new Promise(resolve => setTimeout(resolve, 40)); return { pointers: ["src/a.ts:1"] }; };
+  it("gives the first retrieval of a session the cold budget and later ones the warm ceiling", async () => {
+    const r = register({ graph: async () => "fresh", coldTimeoutMs: 20, retrieve: slowRetrieve() }); const c = await start(r);
+    const cold = promptEvent("locate the authentication implementation");
+    await r.handlers.get("before_agent_start")![0](cold, c);
+    assert.match(cold.systemPromptOptions.sections.trail, /timed out/i);
+    assert.doesNotMatch(cold.systemPromptOptions.sections.trail, /src\/a\.ts:1/);
+    const warm = promptEvent("locate the authentication implementation");
+    await r.handlers.get("before_agent_start")![0](warm, c);
+    assert.match(warm.systemPromptOptions.sections.trail, /src\/a\.ts:1/);
+  });
+  it("re-arms the cold budget for the first retrieval of a new session", async () => {
+    const r = register({ graph: async () => "fresh", coldTimeoutMs: 20, retrieve: slowRetrieve() }); const first = await start(r);
+    const coldFirst = promptEvent("locate the authentication implementation");
+    await r.handlers.get("before_agent_start")![0](coldFirst, first);
+    assert.match(coldFirst.systemPromptOptions.sections.trail, /timed out/i);
+    const warm = promptEvent("locate the authentication implementation");
+    await r.handlers.get("before_agent_start")![0](warm, first);
+    assert.match(warm.systemPromptOptions.sections.trail, /src\/a\.ts:1/);
+    const next = ctx(); await r.handlers.get("session_start")![0]({ reason: "new" }, next);
+    const cold = promptEvent("locate the authentication implementation");
+    await r.handlers.get("before_agent_start")![0](cold, next);
+    assert.match(cold.systemPromptOptions.sections.trail, /timed out/i);
+  });
   it("keeps low-coverage hits instead of dropping them", async () => {
     const r = register({ graph: async () => "fresh", results: [{ stdout: JSON.stringify({ coverage: 0.01, coverageStrong: 0, hits: [{ title: "noise", pointer: "src/noise.ts:1" }] }) }] }); const c = await start(r);
     const event = promptEvent("please locate the authentication implementation");
