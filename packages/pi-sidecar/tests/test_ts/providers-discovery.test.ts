@@ -94,9 +94,9 @@ describe("SessionStore provider discovery", () => {
     extension.provider.auth = { apiKey: { name: "secret-sentinel", resolve: async () => undefined } } as never; // pragma: allowlist secret — synthetic auth label
     runtime.registerNativeProvider(extension.provider);
     const authless = fauxProvider({ provider: "extension-authless", models: [] });
-    // `pi-coding-agent` >= 0.99.2 reads `provider.auth.oauth` unguarded when a
-    // native provider is registered, so `auth: undefined` crashes the SDK. An
-    // empty object is still "no usable auth" — the assertion below is unchanged.
+    // `pi-coding-agent` 0.99.2 and 1.4.0 both read `provider.auth.oauth` unguarded
+    // when a native provider is registered, so `auth: undefined` crashes the SDK.
+    // An empty object is still "no usable auth" — the assertion below is unchanged.
     (authless.provider as { auth?: unknown }).auth = {};
     runtime.registerNativeProvider(authless.provider);
     const ambient = fauxProvider({ provider: "cli-ambient", models: [] });

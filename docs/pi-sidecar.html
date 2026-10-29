@@ -384,12 +384,12 @@
 </tr>
 <tr>
 <td><code>@earendil-works/pi-coding-agent</code></td>
-<td><code>&gt;=0.99.0</code></td>
+<td><code>&gt;=1.4.0</code></td>
 <td><code>MIN_PI_VERSION</code> in <code>packages/pi-sidecar/src/pi-version.ts</code></td>
 </tr>
 <tr>
 <td><code>@earendil-works/pi-ai</code></td>
-<td><code>&gt;=0.99.0</code></td>
+<td><code>&gt;=1.4.0</code></td>
 <td>peer dependency in <code>packages/pi-sidecar/package.json</code></td>
 </tr>
 <tr>
@@ -399,7 +399,7 @@
 </tr>
 </tbody>
 </table></div>
-<p>The sidecar enforces the Pi SDK floor at startup and <strong>exits</strong> if the installed <code>@earendil-works/pi-coding-agent</code> is older than <code>0.99.0</code> or cannot be resolved. A stale global <code>pi</code> on <code>PATH</code> only produces a warning, but subagent calls spawn that binary and may still fail.</p>
+<p>The sidecar enforces the Pi SDK floor at startup and <strong>exits</strong> if the installed <code>@earendil-works/pi-coding-agent</code> is older than <code>1.4.0</code> or cannot be resolved. A stale global <code>pi</code> on <code>PATH</code> only produces a warning, but subagent calls spawn that binary and may still fail.</p>
 <h2 id="getting-started">Getting Started</h2>
 <h3 id="1-install">1. Install</h3>
 <p>The npm package and the Python client share one version number and are released together. Bump both, and use a range rather than an exact pin so upstream fixes can reach you.</p>
@@ -890,7 +890,7 @@ npx<span class="w"> </span>pi-sidecar
 </table></div>
 <p>Startup lifecycle:</p>
 <ol>
-<li>Assert Pi SDK version ≥ 0.99.0 (<code>MIN_PI_VERSION</code>).</li>
+<li>Assert Pi SDK version ≥ 1.4.0 (<code>MIN_PI_VERSION</code>).</li>
 <li>Listen on host/port.</li>
 <li>Optionally start watchdog.</li>
 <li>Async model discovery — <code>/health</code> is <code>starting</code> until ready.</li>
@@ -939,7 +939,7 @@ npx<span class="w"> </span>pi-sidecar
 </tr>
 <tr>
 <td>Pi version error at startup</td>
-<td>Upgrade <code>@earendil-works/pi-coding-agent</code> (and <code>pi-ai</code>) to ≥ 0.99.0.</td>
+<td>Upgrade <code>@earendil-works/pi-coding-agent</code> (and <code>pi-ai</code>) to ≥ 1.4.0.</td>
 </tr>
 </tbody>
 </table></div>

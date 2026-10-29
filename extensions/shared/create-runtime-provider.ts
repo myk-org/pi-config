@@ -3,7 +3,7 @@
  *
  * Prefer this over legacy `pi.registerProvider(name, { streamSimple })` bags so
  * providers get /login auth, fetchModels refresh, filterModels, and native
- * ProviderStreams (requires pi >= 0.99.0).
+ * ProviderStreams (requires pi >= 1.4.0).
  */
 
 import { createLogger } from "./logger.js";
