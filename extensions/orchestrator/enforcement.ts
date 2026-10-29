@@ -46,12 +46,15 @@ import {
   checkPythonPipBlock,
   checkRemoteExecBlock,
   checkTempFileEnforcement,
+  bashWritesToPath,
   gitAddPathspecs,
+  gitIdentityOverride,
   gitSubArgRegions,
   hasGitAddBulk,
   hasGitAddForce,
   injectSignoff,
   injectGhBodySignature,
+  isGitIdentityConfigPath,
   isReadOnlyStatement,
   isRealGitCommitOrPush,
   isRmInProjectTmp,
@@ -755,6 +758,17 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
               "\u26d4 Direct modification of pi-config-settings blocked — it carries the dangerous-command allowlist. Change settings via the /pi-config-settings command or your own editor, never agent tools.",
           };
         }
+        // Git identity config is off-limits to agents too (issue #995): the
+        // identity a commit is recorded under belongs to the human, so no agent
+        // writes it by hand — same alias-proof resolution as the settings guard.
+        if (isGitIdentityConfigPath(resolved) || isGitIdentityConfigPath(toReal(resolved))) {
+          return {
+            block: true,
+            reason:
+              "\u26d4 Git identity config is off-limits to agents. The git identity belongs to the human — " +
+              "if it is wrong, tell the user to fix their own git config.",
+          };
+        }
       }
     }
 
@@ -788,17 +802,25 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     const maskedCmd = maskQuotedRegions(command);
     if (
       cmdLower.includes("pi-config-settings") &&
-      (/>+\|?\s*\S*pi-config-settings/i.test(maskedCmd) ||
-        /(?:^|[\s;&|(])(?:tee|sponge)\s+\S*pi-config-settings/i.test(maskedCmd) ||
-        // Quoted redirect/tee TARGETS are invisible in the masked text —
-        // catch them on the raw command (Qodo PR #950 R5).
-        />+\s*["'][^"']*pi-config-settings/i.test(command) ||
-        /(?:^|[\s;&|(])(?:tee|sponge)\s+["'][^"']*pi-config-settings/i.test(command))
+      bashWritesToPath(command, maskedCmd, "pi-config-settings")
     ) {
       return {
         block: true,
         reason:
           "\u26d4 Bash command writing pi-config-settings blocked — it carries the dangerous-command allowlist. Change settings via the /pi-config-settings command or your own editor.",
+      };
+    }
+
+    // Block bash WRITES targeting a git identity config file (issue #995) —
+    // same narrow tripwire shape as the settings one above.
+    const IDENTITY_CONFIG_SRC = String.raw`(?:\.gitconfig|git[\\/]config)(?![A-Za-z0-9._-])`;
+    if (bashWritesToPath(command, maskedCmd, IDENTITY_CONFIG_SRC)) {
+      log.error("git_identity_config_write_blocked");
+      return {
+        block: true,
+        reason:
+          "\u26d4 Bash command writing a git identity config (~/.gitconfig, ~/.config/git/config, .git/config) blocked. " +
+          "The git identity belongs to the human — if it is wrong, tell the user to fix their own git config.",
       };
     }
 
@@ -894,6 +916,23 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         log.info("comment_signature injected into gh body command", signature);
         event.input.command = injected;
       }
+    }
+
+    // The git identity belongs to the human (issue #995): an agent that can set
+    // user.name/user.email can forge a commit in someone else's name. Checked
+    // before the git-expert split below so it holds for EVERY agent, and before
+    // any git-repo lookup so it holds outside a repo too.
+    const identityOverride = gitIdentityOverride(command);
+    if (identityOverride) {
+      // error, not warn: the command was refused, not recovered from.
+      log.error("git_identity_override_blocked", "source", identityOverride);
+      return {
+        block: true,
+        reason:
+          `\u26d4 Git identity override blocked (${identityOverride}). The git identity belongs to the human: ` +
+          "never set user.name/user.email, GIT_AUTHOR_*/GIT_COMMITTER_*, --author, or `git config user.*`. " +
+          "If the identity is wrong, tell the user to fix their own git config.",
+      };
     }
 
     // Enforce git commit/push only via git-expert agent.

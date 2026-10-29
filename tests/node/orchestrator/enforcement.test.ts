@@ -42,6 +42,7 @@ import {
   hasGitAddBulk,
   hasGitAddForce,
   gitAddPathspecs,
+  gitIdentityOverride,
   gitSubArgRegions,
   stripQuotedSpans,
   realGitSub,
@@ -55,6 +56,7 @@ import {
   seedBranchCacheForTests,
   injectGhBodySignature,
   isRealGhBodyCommand,
+  isGitIdentityConfigPath,
   pushTargetsProtectedBranch,
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
 
@@ -3771,5 +3773,134 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
         assert.match(res?.reason ?? "", /pi-config-settings/);
       }
     }
+  });
+});
+
+// Issue #995: an agent forged a commit with `git -c user.email=... -c user.name=...`
+// — identity theft. The identity a commit is recorded under belongs to the human.
+describe("git identity guard (#995)", () => {
+  const blocked = [
+    "git -c user.email=x@y commit -m m",
+    'git -c "user.name=x" commit',
+    "git -cuser.email=x commit",
+    "GIT_AUTHOR_EMAIL=x git commit -m m",
+    "env GIT_COMMITTER_NAME=x git commit",
+    "export GIT_AUTHOR_NAME=x",
+    "git config user.email x",
+    "git config --global user.name x",
+    'git commit --author="A <a@b>" -m m',
+    "git --config-env=user.email=EVIL commit -m m",
+    "bash -c 'git -c user.email=x commit -m m'",
+    "bash -c 'export GIT_AUTHOR_NAME=x; git commit -m m'",
+    "GIT_AUTHOR_NAME=x bash -c 'git commit -m m'",
+    "sudo GIT_AUTHOR_NAME=x git commit",
+    "git config --unset user.email",
+  ];
+  const allowed = [
+    "git log --author=x",
+    "git config --get user.email",
+    "git config --get-all user.name",
+    "echo 'git -c user.email=x commit'",
+    'git commit -m "do not use -c user.email"',
+    "git commit -m --author",
+    "git diff --stat",
+  ];
+
+  for (const cmd of blocked) {
+    it(`blocks ${cmd}`, () => {
+      assert.notEqual(gitIdentityOverride(cmd), null, cmd);
+    });
+  }
+  for (const cmd of allowed) {
+    it(`leaves ${cmd} alone`, () => {
+      assert.equal(gitIdentityOverride(cmd), null, cmd);
+    });
+  }
+
+  it("names what it found", () => {
+    assert.equal(gitIdentityOverride("git -c user.email=x commit -m m"), "-c user.email");
+    assert.equal(gitIdentityOverride("GIT_COMMITTER_EMAIL=x git commit"), "GIT_COMMITTER_EMAIL");
+    assert.equal(gitIdentityOverride("git config --global user.name x"), "git config user.name");
+    assert.equal(gitIdentityOverride("git commit --author=x -m m"), "--author");
+    assert.equal(gitIdentityOverride("git --config-env=user.email=E commit"), "--config-env user.email");
+  });
+
+  it("recognizes git identity config paths", () => {
+    for (const p of [
+      "/home/u/.gitconfig",
+      "~/.gitconfig",
+      ".gitconfig",
+      "/home/u/.config/git/config",
+      "/repo/.git/config",
+      "/repo/.git/config/", // trailing slash
+    ]) {
+      assert.equal(isGitIdentityConfigPath(p), true, p);
+    }
+    for (const p of [
+      "/repo/.git/HEAD",
+      "/repo/.gitconfig.bak",
+      "/home/u/.config/git/config.old",
+      "/repo/git/config",
+      "/home/u/.gitignore",
+    ]) {
+      assert.equal(isGitIdentityConfigPath(p), false, p);
+    }
+  });
+
+  // Through the hook, not just the helper: a forged identity is refused, and a
+  // plain commit message that merely mentions the flag is not.
+  describe("through the tool_call hook", () => {
+    let hooks: Map<string, Function>;
+    let cwd: string;
+    const mkCtx = () => ({ cwd, model: { id: "t", provider: "openai" }, hasUI: true });
+    const runBash = (command: string) =>
+      hooks.get("tool_call")!({ type: "tool_call", toolName: "bash", input: { command } }, mkCtx());
+
+    before(() => {
+      hooks = new Map();
+      registerEnforcement({
+        on: (name: string, handler: Function) => hooks.set(name, handler),
+        registerTool: () => {},
+        registerCommand: () => {},
+      } as any);
+    });
+    beforeEach(() => {
+      cwd = mkdtempSync(join(tmpdir(), "rl-identity-"));
+    });
+
+    it("blocks a forged identity", async () => {
+      const res = await runBash("git -c user.email=evil@x commit -m x");
+      assert.equal(res?.block, true);
+      assert.match(res?.reason ?? "", /Git identity override blocked \(-c user\.email\)/);
+    });
+
+    it("blocks an env-var identity", async () => {
+      const res = await runBash("GIT_AUTHOR_NAME=x git commit -m m");
+      assert.equal(res?.block, true);
+    });
+
+    it("blocks a redirect into a repo .git/config", async () => {
+      const res = await runBash(`echo x >> ${join(cwd, ".git/config")}`);
+      assert.equal(res?.block, true);
+      assert.match(res?.reason ?? "", /identity config/);
+    });
+
+    it("blocks a write/edit of ~/.gitconfig", async () => {
+      for (const toolName of ["write", "edit"]) {
+        const res = await hooks.get("tool_call")!(
+          { type: "tool_call", toolName, input: { path: join(homedir(), ".gitconfig"), content: "" } },
+          mkCtx(),
+        );
+        assert.equal(res?.block, true, toolName);
+        assert.match(res?.reason ?? "", /off-limits to agents/);
+      }
+    });
+
+    it("leaves a commit message mentioning -c user.email alone", async () => {
+      // The git-expert-only guard still refuses a commit from this agent; what
+      // must NOT happen is the identity guard firing on message prose.
+      const res = await runBash('git commit -m "do not use -c user.email"');
+      assert.doesNotMatch(res?.reason ?? "", /identity override/i);
+    });
   });
 });
