@@ -32,6 +32,7 @@ import {
   escapeForSingleQuote,
   commandHasTrailerByName,
   bashWritesToPath,
+  gitIdentityConfigSrc,
   failedFileEditSkipMessage,
   fixUnexpandedCommitTrailer,
   resolveEffectiveCwd,
@@ -3863,14 +3864,16 @@ describe("git identity guard (#995)", () => {
   });
 
   it("blocks tee options and a nested shell's redirect", () => {
-    // Same tripwire the bash hook uses for identity config files.
-    const home = homedir().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const src = `(?:(?:~|\\$HOME|\\$\\{HOME\\}|${home})/\\.gitconfig|\\.git/config)(?![A-Za-z0-9._-])`;
+    // Same tripwire the bash hook uses for identity config files — the pattern
+    // itself comes from the helper, so a path added there is covered here too.
+    const src = gitIdentityConfigSrc();
     const writes = [
       "tee -a .git/config",
       "tee --append .git/config",
       "bash -c 'echo x >> .git/config'",
       `echo x >> ${homedir()}/.gitconfig`,
+      "echo x >> ~/.config/git/config",
+      `tee ${homedir()}/.config/git/config`,
     ];
     for (const c of writes) {
       assert.equal(bashWritesToPath(c, maskQuotedRegions(c), src), true, c);

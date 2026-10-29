@@ -13,7 +13,6 @@ import { Type } from "typebox";
 import { loadEnforcedEntries, matchToolCall, matchBashCommand, executeAction } from "./enforcement-rules.js";
 import { readFileSync, writeFileSync, realpathSync } from "node:fs";
 import path, { basename, join, resolve, dirname } from "node:path";
-import { homedir } from "node:os";
 import { supportsAsyncLlm } from "./async-capability.js";
 import { getGlobalSettingsPath, getSetting, getSettingsPath } from "./project-settings.js";
 import { SETTINGS_FILENAMES } from "./settings-source.js";
@@ -49,6 +48,7 @@ import {
   checkTempFileEnforcement,
   bashWritesToPath,
   gitAddPathspecs,
+  gitIdentityConfigSrc,
   gitIdentityOverride,
   gitSubArgRegions,
   hasGitAddBulk,
@@ -813,11 +813,10 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
 
     // Block bash WRITES targeting a git identity config file (issue #995) —
-    // same narrow tripwire shape as the settings one above. The two home files
+    // same narrow tripwire shape as the settings one above. The home files
     // count only under THIS user's home: a `.gitconfig` in /tmp is not the
-    // identity git reads (Qodo, PR #996).
-    const homeSrc = homedir().replace(/\\/g, "/").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const IDENTITY_CONFIG_SRC = String.raw`(?:(?:~|\$HOME|\$\{HOME\}|${homeSrc})/\.gitconfig|\.git/config)(?![A-Za-z0-9._-])`;
+    // identity git reads (Qodo, PR #996). One pattern, shared with the tests.
+    const IDENTITY_CONFIG_SRC = gitIdentityConfigSrc();
     if (bashWritesToPath(command, maskedCmd, IDENTITY_CONFIG_SRC)) {
       log.error("git_identity_config_write_blocked");
       return {

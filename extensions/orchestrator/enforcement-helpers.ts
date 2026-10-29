@@ -605,6 +605,16 @@ function identityWritesIn(command: string): string | null {
  * The two home files count only under THIS user's home — a `.gitconfig` in
  * /tmp or a docs fixture is not the identity git reads (Qodo, PR #996).
  */
+/**
+ * Regex source matching a git identity config path as WRITTEN in a shell
+ * command — `$HOME`/`~`/absolute home forms and repo-local `.git/config`.
+ * One source of truth for the tripwire and its tests (Qodo, PR #996).
+ */
+export function gitIdentityConfigSrc(): string {
+  const homeSrc = homedir().replace(/\\/g, "/").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return String.raw`(?:(?:~|\$HOME|\$\{HOME\}|${homeSrc})/(?:\.gitconfig|\.config/git/config)|\.git/config)(?![A-Za-z0-9._-])`;
+}
+
 export function isGitIdentityConfigPath(p: string): boolean {
   const norm = p.replace(/\\/g, "/").replace(/\/+$/, "");
   const base = norm.slice(norm.lastIndexOf("/") + 1);
