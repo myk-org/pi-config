@@ -263,7 +263,7 @@ export function tryGetSystemPromptOptions(ctx: any): { contextFiles?: any[]; ski
  * read from ~/.pi/agent/mcp.json by pi itself), and the built-in MCP/codemode/
  * tool-search extensions become the ones we must not collide with.
  */
-export const MIN_PI_VERSION = "0.99.0";
+export const MIN_PI_VERSION = "1.4.0";
 
 /** Get the installed pi version from its package.json. */
 export function getPiVersion(): string | null {

@@ -370,11 +370,11 @@
 <ul>
 <li>Node.js (&gt;= 22)</li>
 <li>Git installed and configured</li>
-<li><code>pi</code> &gt;= 0.99.0 (install with <code>npm install -g @earendil-works/pi-coding-agent</code>)</li>
+<li><code>pi</code> &gt;= 1.4.0 (install with <code>npm install -g @earendil-works/pi-coding-agent</code>)</li>
 <li><code>uv</code> (Python package manager)</li>
 </ul>
 <blockquote>
-<p><strong>Note:</strong> pi-config requires pi <strong>0.99.0 or newer</strong>. On an older version, CLI/ACPX providers stay unregistered and pi warns on session start.</p>
+<p><strong>Note:</strong> pi-config requires pi <strong>1.4.0 or newer</strong>. On an older version, CLI/ACPX providers stay unregistered and pi warns on session start.</p>
 </blockquote>
 <h2 id="quick-example">Quick Example</h2>
 <div class="highlight"><pre><span></span><code><span class="c1"># Install everything non-interactively</span>
@@ -513,7 +513,7 @@ uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
 <li><strong>"Cannot continue without pi":</strong> Install the coding agent globally (<code>npm install -g @earendil-works/pi-coding-agent</code>), confirm <code>pi</code> is on your <code>PATH</code>, then re-run the installer.</li>
-<li><strong>"pi X is below minimum required version 0.99.0":</strong> Update pi with <code>npm install -g @earendil-works/pi-coding-agent</code>, then <code>/reload</code> or restart the session.</li>
+<li><strong>"pi X is below minimum required version 1.4.0":</strong> Update pi with <code>npm install -g @earendil-works/pi-coding-agent</code>, then <code>/reload</code> or restart the session.</li>
 <li><strong>Daemon fails to start:</strong> Confirm <code>pidash_enable</code> / <code>pidiff_enable</code> are not set to <code>false</code>. Run <code>/pidash status</code> or <code>/pidiff status</code>. For pidash failures, check <code>~/.pi/pidash-server.log</code>.</li>
 <li><strong>pidash says TUI-only:</strong> Start daemons from an interactive <code>pi</code> session, not a headless/CLI-only mode.</li>
 <li><strong>Pre-commit / formatting failures:</strong> Run <code>prek run --all-files</code> to apply fixes, then retry the commit.</li>

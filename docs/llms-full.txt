@@ -14,10 +14,10 @@ Get pi-config installed, configure your project, start the local daemons, and ru
 
 - Node.js (>= 22)
 - Git installed and configured
-- `pi` >= 0.99.0 (install with `npm install -g @earendil-works/pi-coding-agent`)
+- `pi` >= 1.4.0 (install with `npm install -g @earendil-works/pi-coding-agent`)
 - `uv` (Python package manager)
 
-> **Note:** pi-config requires pi **0.99.0 or newer**. On an older version, CLI/ACPX providers stay unregistered and pi warns on session start.
+> **Note:** pi-config requires pi **1.4.0 or newer**. On an older version, CLI/ACPX providers stay unregistered and pi warns on session start.
 
 ## Quick Example
 
@@ -149,7 +149,7 @@ See [Configuration & Settings](configuration.html) for keys and env var names. F
 ## Troubleshooting
 
 - **"Cannot continue without pi":** Install the coding agent globally (`npm install -g @earendil-works/pi-coding-agent`), confirm `pi` is on your `PATH`, then re-run the installer.
-- **"pi X is below minimum required version 0.99.0":** Update pi with `npm install -g @earendil-works/pi-coding-agent`, then `/reload` or restart the session.
+- **"pi X is below minimum required version 1.4.0":** Update pi with `npm install -g @earendil-works/pi-coding-agent`, then `/reload` or restart the session.
 - **Daemon fails to start:** Confirm `pidash_enable` / `pidiff_enable` are not set to `false`. Run `/pidash status` or `/pidiff status`. For pidash failures, check `~/.pi/pidash-server.log`.
 - **pidash says TUI-only:** Start daemons from an interactive `pi` session, not a headless/CLI-only mode.
 - **Pre-commit / formatting failures:** Run `prek run --all-files` to apply fixes, then retry the commit.
@@ -5259,11 +5259,11 @@ Use it when you want model calls from a non-Pi process — a backend service, a 
 | Requirement | Value | Source |
 | :--- | :--- | :--- |
 | Node.js | `>=22.19.0` | `packages/pi-sidecar/package.json` `engines.node` |
-| `@earendil-works/pi-coding-agent` | `>=0.99.0` | `MIN_PI_VERSION` in `packages/pi-sidecar/src/pi-version.ts` |
-| `@earendil-works/pi-ai` | `>=0.99.0` | peer dependency in `packages/pi-sidecar/package.json` |
+| `@earendil-works/pi-coding-agent` | `>=1.4.0` | `MIN_PI_VERSION` in `packages/pi-sidecar/src/pi-version.ts` |
+| `@earendil-works/pi-ai` | `>=1.4.0` | peer dependency in `packages/pi-sidecar/package.json` |
 | Python (client only) | `>=3.10` | `requires-python` in `packages/pi-sidecar/pyproject.toml` |
 
-The sidecar enforces the Pi SDK floor at startup and **exits** if the installed `@earendil-works/pi-coding-agent` is older than `0.99.0` or cannot be resolved. A stale global `pi` on `PATH` only produces a warning, but subagent calls spawn that binary and may still fail.
+The sidecar enforces the Pi SDK floor at startup and **exits** if the installed `@earendil-works/pi-coding-agent` is older than `1.4.0` or cannot be resolved. A stale global `pi` on `PATH` only produces a warning, but subagent calls spawn that binary and may still fail.
 
 ## Getting Started
 
@@ -5631,7 +5631,7 @@ Start the sidecar, wait for `/health`, then start your app and trap cleanup — 
 
 Startup lifecycle:
 
-1. Assert Pi SDK version ≥ 0.99.0 (`MIN_PI_VERSION`).
+1. Assert Pi SDK version ≥ 1.4.0 (`MIN_PI_VERSION`).
 2. Listen on host/port.
 3. Optionally start watchdog.
 4. Async model discovery — `/health` is `starting` until ready.
@@ -5658,7 +5658,7 @@ Startup lifecycle:
 | Session create rejects model | Use an id from `GET /models`; interactive OAuth-only providers are blocked in this headless service. |
 | `409` / session busy | Wait for the current prompt or `POST .../abort`. |
 | `agent_dir` rejected | Bind on loopback, or use `DEV_MODE=true` (value discarded). |
-| Pi version error at startup | Upgrade `@earendil-works/pi-coding-agent` (and `pi-ai`) to ≥ 0.99.0. |
+| Pi version error at startup | Upgrade `@earendil-works/pi-coding-agent` (and `pi-ai`) to ≥ 1.4.0. |
 
 > **Warning:** Default bind is loopback-only. Binding to `0.0.0.0` exposes an unauthenticated AI API on the network — use only behind a trusted boundary.
 
