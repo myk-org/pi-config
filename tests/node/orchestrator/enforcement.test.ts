@@ -3800,6 +3800,12 @@ describe("git identity guard (#995)", () => {
     "GIT_AUTHOR_NAME=x bash -c 'git commit -m m'",
     "sudo GIT_AUTHOR_NAME=x git commit",
     "git config --unset user.email",
+    // The bash tool prefixes every command with rtk, so these are the forms the
+    // hook actually receives — the unprefixed ones above are not what ships.
+    "rtk git -c user.email=x@y commit -m m",
+    "rtk git config user.email x",
+    `rtk git commit -m "a; b" --author='A <a@b>'`,
+    "rtk GIT_AUTHOR_EMAIL=x git commit -m m",
   ];
   const allowed = [
     "git log --author=x",
@@ -3809,6 +3815,8 @@ describe("git identity guard (#995)", () => {
     'git commit -m "do not use -c user.email"',
     "git commit -m --author",
     "git diff --stat",
+    "rtk git log --author=x",
+    "rtk git config --get user.email",
     // Prose in a quoted argument is not a command: a PR body may describe the
     // very commands this guard blocks (#996 false positive).
     'gh pr create --title t --body "agents must never run git -c user.email=x commit"',

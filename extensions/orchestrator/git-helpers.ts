@@ -764,6 +764,10 @@ const SEGMENT_SKIP = new Set(["if", "then", "else", "elif", "fi", "do", "done", 
 const GIT_EXECUTORS = new Set([
   "xargs", "find", "-exec", "-execdir", "env", "sudo", "time", "nohup", "nice",
   "ionice", "stdbuf", "setsid", "command", "exec", "timeout",
+  // rtk wraps the real command and runs it (`rtk git -c user.email=x commit`
+  // arrives as the literal command text), so its own options are stepped over
+  // exactly like any other wrapper's.
+  "rtk",
   // These run their argument as commands. A shell is deliberately absent: its
   // script argument is emitted as a segment of its own, and treating `bash` as a
   // wrapper instead made `bash -c 'echo git add'` look like a staging command.

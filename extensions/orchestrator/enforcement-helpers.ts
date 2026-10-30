@@ -314,7 +314,7 @@ function gitCsIn(segment: string): string[] {
 }
 
 /** Words that run whatever follows them, so an assignment behind one still counts. */
-const WRAPPER_WORDS = new Set(["sudo", "command", "exec", "time", "nohup", "nice", "stdbuf", "setsid", "timeout"]);
+const WRAPPER_WORDS = new Set(["sudo", "command", "exec", "time", "nohup", "nice", "stdbuf", "setsid", "timeout", "rtk"]);
 
 /** env options whose value is a separate word. */
 const ENV_VALUE_OPTIONS = new Set([
