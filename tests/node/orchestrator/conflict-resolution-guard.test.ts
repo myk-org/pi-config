@@ -150,6 +150,15 @@ describe("conflict-resolution guard", () => {
     }
   });
 
+  it("sees a resolution command behind the rtk prefix", () => {
+    // Every bash call arrives as `rtk <cmd>`; the conflict handoff must still
+    // see the staging it forbids git-expert from doing (Qodo, PR #996).
+    assert.equal(isConflictResolutionCommand("rtk git add conflicted.txt"), true);
+    assert.equal(isConflictResolutionCommand("rtk -v git restore --ours f"), true);
+    // A git argument to another program is still not a command.
+    assert.equal(isConflictResolutionCommand("rtk grep git add README.md"), false);
+  });
+
   it("ignores resolution commands inside quoted text", () => {
     assert.equal(isConflictResolutionCommand("echo 'git add a.txt'"), false);
     assert.equal(isConflictResolutionCommand('echo "run git checkout --theirs a.txt"'), false);
