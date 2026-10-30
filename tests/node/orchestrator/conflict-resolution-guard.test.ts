@@ -150,6 +150,15 @@ describe("conflict-resolution guard", () => {
     }
   });
 
+  it("sees a resolution command behind the rtk prefix", () => {
+    // Every bash call arrives as `rtk <cmd>`; the conflict handoff must still
+    // see the staging it forbids git-expert from doing (Qodo, PR #996).
+    assert.equal(isConflictResolutionCommand("rtk git add conflicted.txt"), true);
+    assert.equal(isConflictResolutionCommand("rtk -v git restore --ours f"), true);
+    // A git argument to another program is still not a command.
+    assert.equal(isConflictResolutionCommand("rtk grep git add README.md"), false);
+  });
+
   it("ignores resolution commands inside quoted text", () => {
     assert.equal(isConflictResolutionCommand("echo 'git add a.txt'"), false);
     assert.equal(isConflictResolutionCommand('echo "run git checkout --theirs a.txt"'), false);
@@ -373,6 +382,10 @@ describe("conflict-resolution guard", () => {
     assert.equal(detect("echo GIT_INDEX_FILE=/x"), null);
     // A wrapper in front of the assignment still selects it.
     assert.equal(detect("sudo GIT_DIR=/x/.git git add a.txt"), "GIT_DIR");
+    // rtk is a transparent prefix on every bash call, so the wrapped assignment
+    // must still be reached (Qodo, PR #996).
+    assert.equal(detect("rtk GIT_DIR=/x/.git git add a.txt"), "GIT_DIR");
+    assert.equal(detect("rtk -v GIT_INDEX_FILE=/x git add a.txt"), "GIT_INDEX_FILE");
   });
 
   it("reads an index override behind a wrapper and env together", () => {

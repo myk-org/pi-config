@@ -10,7 +10,7 @@ import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { DANGEROUS } from "../../../extensions/orchestrator/git-helpers.js";
+import { DANGEROUS, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import {
@@ -31,6 +31,8 @@ import {
   escapeForDoubleQuote,
   escapeForSingleQuote,
   commandHasTrailerByName,
+  bashWritesToPath,
+  gitIdentityConfigSrc,
   failedFileEditSkipMessage,
   fixUnexpandedCommitTrailer,
   resolveEffectiveCwd,
@@ -42,6 +44,7 @@ import {
   hasGitAddBulk,
   hasGitAddForce,
   gitAddPathspecs,
+  gitIdentityOverride,
   gitSubArgRegions,
   stripQuotedSpans,
   realGitSub,
@@ -55,6 +58,7 @@ import {
   seedBranchCacheForTests,
   injectGhBodySignature,
   isRealGhBodyCommand,
+  isGitIdentityConfigPath,
   pushTargetsProtectedBranch,
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
 
@@ -3771,5 +3775,209 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
         assert.match(res?.reason ?? "", /pi-config-settings/);
       }
     }
+  });
+});
+
+// Issue #995: an agent forged a commit with `git -c user.email=... -c user.name=...`
+// — identity theft. The identity a commit is recorded under belongs to the human.
+describe("git identity guard (#995)", () => {
+  const blocked = [
+    "git -c user.email=x@y commit -m m",
+    'git -c "user.name=x" commit',
+    "git -cuser.email=x commit",
+    "GIT_AUTHOR_EMAIL=x git commit -m m",
+    "env GIT_COMMITTER_NAME=x git commit",
+    "export GIT_AUTHOR_NAME=x",
+    "git config user.email x",
+    "git config --global user.name x",
+    'git commit --author="A <a@b>" -m m',
+    "git --config-env=user.email=EVIL commit -m m",
+    // A separator inside a quoted message must not end the invocation's region
+    // (Qodo, PR #996): the author after it belongs to this commit.
+    `git commit -m "message; more message" --author='Attacker <a@b>'`,
+    "bash -c 'git -c user.email=x commit -m m'",
+    "bash -c 'export GIT_AUTHOR_NAME=x; git commit -m m'",
+    "GIT_AUTHOR_NAME=x bash -c 'git commit -m m'",
+    "sudo GIT_AUTHOR_NAME=x git commit",
+    "git config --unset user.email",
+    // The bash tool prefixes every command with rtk, so these are the forms the
+    // hook actually receives — the unprefixed ones above are not what ships.
+    "rtk git -c user.email=x@y commit -m m",
+    "rtk git config user.email x",
+    `rtk git commit -m "a; b" --author='A <a@b>'`,
+    "rtk GIT_AUTHOR_EMAIL=x git commit -m m",
+  ];
+  const allowed = [
+    "git log --author=x",
+    "git config --get user.email",
+    "git config --get-all user.name",
+    "echo 'git -c user.email=x commit'",
+    'git commit -m "do not use -c user.email"',
+    "git commit -m --author",
+    "git diff --stat",
+    "rtk git log --author=x",
+    "rtk git config --get user.email",
+    // Prose in a quoted argument is not a command: a PR body may describe the
+    // very commands this guard blocks (#996 false positive).
+    'gh pr create --title t --body "agents must never run git -c user.email=x commit"',
+    'gh pr create --title t --body "GIT_AUTHOR_EMAIL=x git commit -m m"',
+    'gh issue comment 1 --body "blocked: git commit --author=someone -m m"',
+  ];
+
+  for (const cmd of blocked) {
+    it(`blocks ${cmd}`, () => {
+      assert.notEqual(gitIdentityOverride(cmd), null, cmd);
+    });
+  }
+  for (const cmd of allowed) {
+    it(`leaves ${cmd} alone`, () => {
+      assert.equal(gitIdentityOverride(cmd), null, cmd);
+    });
+  }
+
+  it("names what it found", () => {
+    assert.equal(gitIdentityOverride("git -c user.email=x commit -m m"), "-c user.email");
+    assert.equal(gitIdentityOverride("GIT_COMMITTER_EMAIL=x git commit"), "GIT_COMMITTER_EMAIL");
+    assert.equal(gitIdentityOverride("git config --global user.name x"), "git config user.name");
+    assert.equal(gitIdentityOverride("git commit --author=x -m m"), "--author");
+    assert.equal(gitIdentityOverride("git --config-env=user.email=E commit"), "--config-env user.email");
+  });
+
+  it("recognizes git identity config paths", () => {
+    // The two home files count only under THIS user's home (Qodo, PR #996): a
+    // .gitconfig in /tmp or a docs fixture is not the identity git reads.
+    const home = homedir();
+    for (const p of [
+      `${home}/.gitconfig`,
+      "~/.gitconfig",
+      `${home}/.config/git/config`,
+      "~/.config/git/config",
+      "/repo/.git/config",
+      "/repo/.git/config/", // trailing slash
+    ]) {
+      assert.equal(isGitIdentityConfigPath(p), true, p);
+    }
+    for (const p of [
+      "/repo/.git/HEAD",
+      `${home}/.gitconfig.bak`,
+      `${home}/.config/git/config.old`,
+      "/repo/git/config",
+      `${home}/.gitignore`,
+      "/tmp/.gitconfig",
+      "/repo/docs/fixtures/.gitconfig",
+      ".gitconfig",
+    ]) {
+      assert.equal(isGitIdentityConfigPath(p), false, p);
+    }
+  });
+
+  it("blocks tee options and a nested shell's redirect", () => {
+    // Same tripwire the bash hook uses for identity config files — the pattern
+    // itself comes from the helper, so a path added there is covered here too.
+    const src = gitIdentityConfigSrc();
+    const writes = [
+      "tee -a .git/config",
+      "tee --append .git/config",
+      "bash -c 'echo x >> .git/config'",
+      `echo x >> ${homedir()}/.gitconfig`,
+      "echo x >> ~/.config/git/config",
+      `tee ${homedir()}/.config/git/config`,
+    ];
+    for (const c of writes) {
+      assert.equal(bashWritesToPath(c, maskQuotedRegions(c), src), true, c);
+    }
+    const quiet = [
+      "echo x >> /tmp/.gitconfig",
+      'gh pr create --body "echo x >> .git/config"',
+      "git config --get user.email",
+    ];
+    for (const c of quiet) {
+      assert.equal(bashWritesToPath(c, maskQuotedRegions(c), src), false, c);
+    }
+  });
+
+  // Through the hook, not just the helper: a forged identity is refused, and a
+  // plain commit message that merely mentions the flag is not.
+  describe("through the tool_call hook", () => {
+    let hooks: Map<string, Function>;
+    let cwd: string;
+    const mkCtx = () => ({ cwd, model: { id: "t", provider: "openai" }, hasUI: true });
+    const runBash = (command: string) =>
+      hooks.get("tool_call")!({ type: "tool_call", toolName: "bash", input: { command } }, mkCtx());
+
+    before(() => {
+      hooks = new Map();
+      registerEnforcement({
+        on: (name: string, handler: Function) => hooks.set(name, handler),
+        registerTool: () => {},
+        registerCommand: () => {},
+      } as any);
+    });
+    beforeEach(() => {
+      cwd = mkdtempSync(join(tmpdir(), "rl-identity-"));
+    });
+
+    it("blocks a forged identity", async () => {
+      const res = await runBash("git -c user.email=evil@x commit -m x");
+      assert.equal(res?.block, true);
+      assert.match(res?.reason ?? "", /Git identity override blocked \(-c user\.email\)/);
+    });
+
+    it("blocks an env-var identity", async () => {
+      const res = await runBash("GIT_AUTHOR_NAME=x git commit -m m");
+      assert.equal(res?.block, true);
+    });
+
+    it("blocks a redirect into a repo .git/config", async () => {
+      const res = await runBash(`echo x >> ${join(cwd, ".git/config")}`);
+      assert.equal(res?.block, true);
+      assert.match(res?.reason ?? "", /identity config/);
+    });
+
+    it("blocks a write/edit of ~/.gitconfig", async () => {
+      for (const toolName of ["write", "edit"]) {
+        const res = await hooks.get("tool_call")!(
+          { type: "tool_call", toolName, input: { path: join(homedir(), ".gitconfig"), content: "" } },
+          mkCtx(),
+        );
+        assert.equal(res?.block, true, toolName);
+        assert.match(res?.reason ?? "", /off-limits to agents/);
+      }
+    });
+
+    it("leaves a commit message mentioning -c user.email alone", async () => {
+      // The git-expert-only guard still refuses a commit from this agent; what
+      // must NOT happen is the identity guard firing on message prose.
+      const res = await runBash('git commit -m "do not use -c user.email"');
+      assert.doesNotMatch(res?.reason ?? "", /identity override/i);
+    });
+  });
+});
+
+// The bash tool prefixes every command with `rtk` (the real command text the
+// hook receives is `rtk git …`). rtk is a TRANSPARENT prefix: it runs exactly
+// the command after it, so those forms — not the bare ones — are what ships.
+describe("rtk prefix (#996)", () => {
+  it("reaches the git word behind the prefix", () => {
+    for (const cmd of [
+      "rtk git add x",
+      "rtk -v git status",
+      "rtk git log --author=x",
+      "rtk GIT_DIR=/x git add a.txt",
+    ]) {
+      assert.equal(segmentRunsGit(cmd), true, cmd);
+    }
+  });
+
+  it("does not mistake a git argument for a git command", () => {
+    // `rtk grep git add f` runs grep; nothing is staged (Qodo, PR #996).
+    for (const cmd of ["rtk grep git add README.md", "rtk grep -n git README.md"]) {
+      assert.equal(segmentRunsGit(cmd), false, cmd);
+    }
+  });
+
+  it("sees an identity assignment behind a wrapper option", () => {
+    assert.equal(gitIdentityOverride("rtk -v GIT_AUTHOR_EMAIL=x git commit -m m"), "GIT_AUTHOR_EMAIL");
+    assert.equal(gitIdentityOverride("sudo -u root GIT_AUTHOR_EMAIL=x git commit"), "GIT_AUTHOR_EMAIL");
   });
 });

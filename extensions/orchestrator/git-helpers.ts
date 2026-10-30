@@ -771,7 +771,7 @@ const GIT_EXECUTORS = new Set([
 ]);
 
 /** Wrapper options whose operand names something other than the command. */
-const WRAPPER_VALUE_OPTIONS = new Set([
+export const WRAPPER_VALUE_OPTIONS = new Set([
   "-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt", "-r", "--role",
   "-t", "--type", "-U", "--other-user", "-C", "--chdir", "--preserve-env",
 ]);
@@ -811,15 +811,36 @@ export function segmentRunsGit(segment: string): boolean {
   return verdict;
 }
 
-function classifySegment(segment: string): boolean {
-  const words = tokenize(segment.trim());
+/**
+ * The index of the word that runs the segment's command: skips control keywords,
+ * inline assignments, and TRANSPARENT prefixes whose own options sit before the
+ * command they run (`rtk -v git add`). Every consumer that needs "what does this
+ * segment actually run" goes through here, so a prefix is never handled in one
+ * parser and forgotten in another (Qodo, PR #996).
+ */
+function skipToCommandWord(words: string[]): number {
   let k = 0;
   while (k < words.length) {
     // `function NAME { ... }` puts the name between the keyword and the body.
     if (words[k] === "function") { k += 2; continue; }
     if (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) { k += 1; continue; }
+    // rtk runs exactly the command after it, so the next word decides. It is not
+    // an executor: `rtk grep git add f` runs grep, it does not stage.
+    if (words[k] === "rtk") {
+      k += 1;
+      while (k < words.length && words[k].startsWith("-") && words[k] !== "-") {
+        k += WRAPPER_VALUE_OPTIONS.has(words[k]) ? 2 : 1;
+      }
+      continue;
+    }
     break;
   }
+  return k;
+}
+
+function classifySegment(segment: string): boolean {
+  const words = tokenize(segment.trim());
+  const k = skipToCommandWord(words);
   if (k < words.length) {
     // A segment can start mid-subshell, so `(git` is still the git command.
     const head = words[k].replace(/^[()]+|[()]+$/g, "");
@@ -847,13 +868,7 @@ function executedGitCommands(cmd: string): string[][] {
   const kept: string[][] = [];
   for (const raw of cmd.split(/[\n;&|()]+/)) {
     const words = tokenize(raw.trim());
-    let k = 0;
-    while (k < words.length) {
-      // `function NAME { ... }` puts the name between the keyword and the body.
-      if (words[k] === "function") { k += 2; continue; }
-      if (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) { k += 1; continue; }
-      break;
-    }
+    const k = skipToCommandWord(words);
     if (k >= words.length) continue;
     // A segment can start mid-subshell, so `(git` is still the git command.
     const head = words[k].replace(/^[()]+|[()]+$/g, "");
@@ -893,10 +908,8 @@ const GLOBAL_LONG_VALUE_OPTIONS = new Set(["--git-dir", "--work-tree", "--namesp
  */
 /** The index of the word that runs git, or -1. */
 function gitWordIndex(words: string[]): number {
-  let k = 0;
-  while (k < words.length) {
-    if (words[k] === "function") { k += 2; continue; }
-    if (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) { k += 1; continue; }
+  const k = skipToCommandWord(words);
+  if (k < words.length) {
     const head = words[k].replace(/^[()]+|[()]+$/g, "");
     if (isGitWord(head)) return k;
     // A wrapper runs whatever follows it. `command -v git` prints the path

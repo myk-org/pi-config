@@ -6,13 +6,14 @@
 import { createLogger } from "../shared/logger.js";
 import { createHash } from "node:crypto";
 import { lstatSync, realpathSync, mkdirSync, rmdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { join } from "node:path";
 import { getProjectDataDir } from "./utils.js";
 import { getGlobalSettingsPath, getSettingsPath, loadGlobalSettings, loadProjectSettings } from "./project-settings.js";
 import { readSettingsFile, writeSettingsFile } from "./settings-tui-helpers.js";
-import { DANGEROUS, executableText, getCurrentBranch, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
+import { DANGEROUS, WRAPPER_VALUE_OPTIONS, executableText, getCurrentBranch, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
 enfLog.debug("enforcement-helpers module loaded");
@@ -313,7 +314,7 @@ function gitCsIn(segment: string): string[] {
 }
 
 /** Words that run whatever follows them, so an assignment behind one still counts. */
-const WRAPPER_WORDS = new Set(["sudo", "command", "exec", "time", "nohup", "nice", "stdbuf", "setsid", "timeout"]);
+const WRAPPER_WORDS = new Set(["sudo", "command", "exec", "time", "nohup", "nice", "stdbuf", "setsid", "timeout", "rtk"]);
 
 /** env options whose value is a separate word. */
 const ENV_VALUE_OPTIONS = new Set([
@@ -323,6 +324,26 @@ const ENV_VALUE_OPTIONS = new Set([
 
 const GIT_INDEX_VARS = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]);
 const GIT_INDEX_OPTIONS = new Set(["--git-dir", "--work-tree", "--namespace"]);
+
+/** Command words that hand a quoted string to a shell, which then really runs it. */
+const SHELL_WORDS = new Set(["bash", "sh", "zsh", "dash", "ksh", "eval"]);
+
+/** True when this segment RUNS a shell (behind any wrapper/assignment/env prefix).
+ *  A quoted argument containing shell-looking text is not a shell run: only the
+ *  command word counts. */
+function runsNestedShell(tokens: string[]): boolean {
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (WRAPPER_WORDS.has(tok) || tok === "env" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) continue;
+    if (tok.startsWith("-")) {
+      // env's own options sit between `env` and the command it runs.
+      if (!tok.includes("=") && ENV_VALUE_OPTIONS.has(tok.split("=")[0])) i++;
+      continue;
+    }
+    return SHELL_WORDS.has(tok.replace(/^[()]+/, "").replace(/.*\//, ""));
+  }
+  return false;
+}
 
 /**
  * Anything that points git at a repository other than the working directory: the
@@ -336,21 +357,47 @@ const GIT_INDEX_OPTIONS = new Set(["--git-dir", "--work-tree", "--namespace"]);
  * only count in git's global option region, before the subcommand, so
  * `git add -- --work-tree=x` is a filename too.
  */
-function gitIndexOverride(command: string): string | null {
+/** What a scan looks for: the environment variables, git global options, and
+ *  `-c` config keys that select the repository or identity git runs with. */
+interface GitOverrideTargets {
+  /** Variables that count in assignment position. */
+  env: Set<string>;
+  /** Long options in git's global region, before the subcommand. */
+  flags: Set<string>;
+  /** Keys of `-c <key>=<value>` / `--config-env=<key>=<VAR>`. */
+  configKeys: Set<string>;
+}
+
+const NO_KEYS: Set<string> = new Set();
+
+/**
+ * The one assignment/option walk behind both git override guards
+ * (gitIndexOverride and gitIdentityOverride). Returns a label for what it found,
+ * or null.
+ *
+ * Position matters. An environment variable only counts in *assignment
+ * position* — `GIT_DIR=/x git add a.txt`, optionally through `env` — so
+ * `git add GIT_INDEX_FILE=notes` stages a file with that name. Options only
+ * count in git's global region before the subcommand, so
+ * `git add -- --work-tree=x` is a filename too.
+ */
+function scanGitOverrides(command: string, targets: GitOverrideTargets): string | null {
   const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/;
+  const nameOf = (tok: string) => tok.split("=")[0];
   for (const seg of unquotedSegments(command)) {
     const tokens = tokenize(seg.text);
-    const nameOf = (tok: string) => tok.split("=")[0];
     let i = 0;
     // `export GIT_INDEX_FILE=/x` sets it for later commands in the same shell,
     // so it points git at another index just as an inline assignment does. This
     // segment does not run git itself, so it is checked before that requirement.
-    if (tokens[i] === "export") {
+    // The executable view of a nested shell wraps a segment in `(`, so `(export`
+    // is the same word.
+    if (tokens[i]?.replace(/^\(+/, "") === "export") {
       i++;
       while (i < tokens.length) {
         const name = nameOf(tokens[i]);
-        if (GIT_INDEX_VARS.has(name)) {
-          enfLog.warn("git_index_override", "source", name, "via", "export");
+        if (targets.env.has(name)) {
+          enfLog.warn("git_override", "source", name, "via", "export");
           return name;
         }
         i++;
@@ -358,17 +405,30 @@ function gitIndexOverride(command: string): string | null {
       continue;
     }
     // `echo GIT_INDEX_FILE=/x` only prints the name. An override is something
-    // git is actually run with, so the segment has to run git for it to count.
-    if (!segmentRunsGit(seg.text)) continue;
+    // git is actually run with, so the segment has to run git for it to count —
+    // directly, or through a nested shell that this segment RUNS
+    // (`GIT_AUTHOR_EMAIL=x bash -c 'git commit'`), whose assignment lives here
+    // but whose git runs inside. A quoted argument merely MENTIONING a command
+    // (`gh pr create --body "…git -c user.email=x commit…"`) is prose: the
+    // segment runs `gh`, not a shell, so it is not followed.
+    if (!segmentRunsGit(seg.text) && !(runsNestedShell(tokens) && segmentRunsGit(executableText(seg.text)))) continue;
     // Leading `VAR=value` assignments, then the same again after `env`. A
     // wrapper that runs the rest — `sudo`, `command`, `exec`, `time` — sits in
     // front of both, and can be chained.
     for (let round = 0; round < 4; round++) {
-      while (i < tokens.length && WRAPPER_WORDS.has(tokens[i])) i++;
+      // A wrapper runs the rest, and its OWN options sit in between: in
+      // `rtk -v GIT_AUTHOR_EMAIL=x git commit` the assignment follows rtk's
+      // option, so stepping only over the wrapper word hid it (Qodo, PR #996).
+      while (i < tokens.length && WRAPPER_WORDS.has(tokens[i])) {
+        i++;
+        while (i < tokens.length && tokens[i].startsWith("-") && tokens[i] !== "-") {
+          i += WRAPPER_VALUE_OPTIONS.has(tokens[i]) ? 2 : 1;
+        }
+      }
       while (i < tokens.length && assignment.test(tokens[i])) {
         const name = nameOf(tokens[i]);
-        if (GIT_INDEX_VARS.has(name)) {
-          enfLog.warn("git_index_override", "source", name);
+        if (targets.env.has(name)) {
+          enfLog.warn("git_override", "source", name);
           return name;
         }
         i++;
@@ -384,20 +444,198 @@ function gitIndexOverride(command: string): string | null {
         i++;
       }
     }
-    const g = tokens.indexOf("git");
+    // A segment can start mid-subshell, so `(git` is the git word too.
+    const g = tokens.findIndex((t) => t.replace(/^[()]+|[()]+$/g, "") === "git");
     if (g === -1) continue;
     for (let k = g + 1; k < tokens.length; k++) {
       const tok = tokens[k];
       if (!tok.startsWith("-") || tok === "-") break;
+      // `-c <key>=<value>`, `-c<key>=<value>`, `--config-env=<key>=<VAR>` apply to
+      // this one command only — no config file is written, the effect is the same.
+      let setting: string | undefined;
+      if (tok === "-c") setting = tokens[++k];
+      else if (tok.startsWith("-c")) setting = tok.slice(2);
+      else if (tok.startsWith("--config-env=")) setting = tok.slice("--config-env=".length);
+      if (setting !== undefined) {
+        const key = (setting.split("=")[0] ?? "").toLowerCase();
+        if (targets.configKeys.has(key)) {
+          const label = tok.startsWith("--config-env") ? `--config-env ${key}` : `-c ${key}`;
+          enfLog.warn("git_override", "source", label);
+          return label;
+        }
+        continue;
+      }
       const name = nameOf(tok);
-      if (GIT_INDEX_OPTIONS.has(name)) {
-        enfLog.warn("git_index_override", "source", name);
+      if (targets.flags.has(name)) {
+        enfLog.warn("git_override", "source", name);
         return name;
       }
       if (!tok.includes("=") && tokens[k + 1] && !tokens[k + 1].startsWith("-")) k++;
     }
   }
   return null;
+}
+
+function gitIndexOverride(command: string): string | null {
+  const found = scanGitOverrides(command, { env: GIT_INDEX_VARS, flags: GIT_INDEX_OPTIONS, configKeys: NO_KEYS });
+  if (found) enfLog.warn("git_index_override", "source", found);
+  return found;
+}
+
+/** Environment variables that set who a commit is recorded as. */
+const GIT_IDENTITY_VARS = new Set([
+  "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+]);
+
+/** Git config keys that set who a commit is recorded as. */
+const GIT_IDENTITY_KEYS = new Set([
+  "user.name", "user.email", "author.name", "author.email", "committer.name", "committer.email",
+]);
+
+/** `git config` flags that only READ: `git config --get user.email` changes nothing. */
+const CONFIG_READ_FLAGS = new Set(["--get", "--get-all", "--get-regexp", "--list", "-l"]);
+
+/** `git config` flags that remove a key: no value follows, yet the identity moves. */
+const CONFIG_UNSET_FLAGS = new Set(["--unset", "--unset-all"]);
+
+/**
+ * True when a bash command WRITES into a path matching `targetSrc` (a regex
+ * source): a redirect (`>`, `>>`, `>|`) or `tee`/`sponge` taking it as an
+ * argument. Deliberately NARROW (user decision on issue #949 R3): broad
+ * write-verb co-occurrence taxed legitimate work and any text guard is
+ * bypassable anyway — this catches the lazy one-liner.
+ *
+ * Redirect STRUCTURE is read from the prose-masked command; quoted targets are
+ * invisible once masked, so those are matched on the raw command (Qodo #950 R5).
+ */
+export function bashWritesToPath(command: string, maskedCommand: string, targetSrc: string): boolean {
+  // `tee -a <path>` / `tee --append <path>`: tee's own options sit between it and
+  // the path it writes.
+  const STRUCTURAL = String.raw`>+\|?\s*\S*${targetSrc}|(?:^|[\s;&|(])(?:tee|sponge)(?:\s+-[A-Za-z-]+)*\s+\S*${targetSrc}`;
+  const QUOTED = String.raw`>+\s*["'][^"']*${targetSrc}|(?:^|[\s;&|(])(?:tee|sponge)(?:\s+-[A-Za-z-]+)*\s+["'][^"']*${targetSrc}`;
+  let result = new RegExp(STRUCTURAL, "i").test(maskedCommand) || new RegExp(QUOTED, "i").test(command);
+  if (!result) {
+    // A nested shell's script is code, not prose, so a redirect inside it
+    // (`bash -c 'echo x >> .git/config'`) still writes the file. Only segments
+    // that RUN a shell are read this way — a quoted argument merely describing
+    // a command stays prose (Qodo, PR #996).
+    for (const seg of unquotedSegments(command)) {
+      if (!runsNestedShell(tokenize(seg.text))) continue;
+      if (new RegExp(STRUCTURAL, "i").test(executableText(seg.text))) {
+        result = true;
+        break;
+      }
+    }
+  }
+  enfLog.debug("bash_writes_to_path", targetSrc, result);
+  return result;
+}
+
+
+const IDENTITY_TARGETS: GitOverrideTargets = {
+  env: GIT_IDENTITY_VARS,
+  flags: NO_KEYS,
+  configKeys: GIT_IDENTITY_KEYS,
+};
+
+/**
+ * Anything that sets the identity a commit is recorded under (issue #995): the
+ * `GIT_AUTHOR_*` / `GIT_COMMITTER_*` environment variables in assignment
+ * position, a
+ * per-command `git -c user.name=...`, a `git config` WRITE of an identity key,
+ * or `git commit --author`. The identity belongs to the human — an agent that
+ * can change it forges commits in someone else's name.
+ *
+ * Returns a label of what was found, or null.
+ *
+ * shortcut: a `-c` key held in a shell variable (`-c "$VAR=x"`) does not match,
+ * and a quoted value nested two shells deep is seen only if the outer view keeps
+ * it parseable — upgrade if either shows up in the wild.
+ */
+export function gitIdentityOverride(command: string): string | null {
+  // A nested shell string (`bash -c '...'`, `eval`) really runs, so both views
+  // are checked: the raw text keeps quoted option VALUES parseable
+  // (`-c "user.name=x"`), the executable view exposes what a nested shell runs.
+  const executable = executableText(command);
+  for (const text of executable && executable !== command ? [command, executable] : [command]) {
+    const found = scanGitOverrides(text, IDENTITY_TARGETS) ?? identityWritesIn(text);
+    if (found) {
+      enfLog.warn("git_identity_override", "source", found);
+      return found;
+    }
+  }
+  enfLog.debug("git_identity_override", "none", command.length);
+  return null;
+}
+
+/**
+ * The two identity writes the prefix scan cannot see: `git config <identity key>
+ * <value>` (written to disk for every later commit) and `git commit --author`
+ * (this one commit recorded as somebody else).
+ */
+function identityWritesIn(command: string): string | null {
+  // `git config user.email x` — the identity written to disk for every later commit.
+  for (const region of gitSubArgRegions(command, "config")) {
+    // Tokens come from the RAW region: tokenize() drops the quotes but keeps a
+    // quoted value as one token, so `git config user.email "a@b"` and
+    // `git config "user.email" a@b` are both seen, while a value that merely
+    // MENTIONS the key stays a single token and is never a key (Qodo, PR #996).
+    const tokens = tokenize(region);
+    if (tokens.some((t) => CONFIG_READ_FLAGS.has(t))) continue;
+    const at = tokens.findIndex((t) => GIT_IDENTITY_KEYS.has(t.toLowerCase()));
+    if (at === -1) continue;
+    // A key alone is a READ (`git config user.email` prints it): only a value
+    // after it, or an unset, changes the identity.
+    const writes = tokens.some((t) => CONFIG_UNSET_FLAGS.has(t))
+      || tokens.slice(at + 1).some((t) => !t.startsWith("-"));
+    if (writes) return `git config ${tokens[at].toLowerCase()}`;
+  }
+  // `git commit --author` — this one commit is recorded as somebody else.
+  for (const region of gitSubArgRegions(command, "commit")) {
+    // Raw region again: `--author 'A <a@b>'` and `"--author" x` are options the
+    // shell passes to git, while a `-m` message mentioning --author is ONE token.
+    const tokens = tokenize(region);
+    const at = tokens.findIndex((t) => t === "--author" || t.startsWith("--author="));
+    if (at === -1) continue;
+    // A bare `--author` with no value after it sets nothing.
+    if (tokens[at].includes("=") || (tokens[at + 1] !== undefined && !tokens[at + 1].startsWith("-"))) {
+      return "--author";
+    }
+  }
+  return null;
+}
+
+/**
+ * A path that IS git's identity configuration: `~/.gitconfig`, the XDG
+ * `~/.config/git/config`, or a repository's `.git/config`. Writing one of these
+ * changes the identity every later commit is recorded under, so agents are kept
+ * away from them entirely.
+ * The two home files count only under THIS user's home — a `.gitconfig` in
+ * /tmp or a docs fixture is not the identity git reads (Qodo, PR #996).
+ */
+/**
+ * Regex source matching a git identity config path as WRITTEN in a shell
+ * command — `$HOME`/`~`/absolute home forms and repo-local `.git/config`.
+ * One source of truth for the tripwire and its tests (Qodo, PR #996).
+ */
+export function gitIdentityConfigSrc(): string {
+  const homeSrc = homedir().replace(/\\/g, "/").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return String.raw`(?:(?:~|\$HOME|\$\{HOME\}|${homeSrc})/(?:\.gitconfig|\.config/git/config)|\.git/config)(?![A-Za-z0-9._-])`;
+}
+
+export function isGitIdentityConfigPath(p: string): boolean {
+  const norm = p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const base = norm.slice(norm.lastIndexOf("/") + 1);
+  const dir = norm.slice(0, Math.max(norm.lastIndexOf("/"), 0));
+  const home = homedir().replace(/\\/g, "/").replace(/\/+$/, "");
+  const inHome = dir === home || dir === "~";
+  const result =
+    (inHome && base === ".gitconfig")
+    || norm === `${home}/.config/git/config`
+    || norm === "~/.config/git/config"
+    || /(?:^|\/)\.git\/config$/.test(norm);
+  enfLog.debug("is_git_identity_config_path", p, result);
+  return result;
 }
 
 /**
@@ -2039,8 +2277,13 @@ function subArgSpans(command: string, sub: string): Array<{ start: number; end: 
   const spans: Array<{ start: number; end: number; text: string; maskedText: string; stripped: string; masked: string }> = [];
   for (const m of masked.matchAll(re)) {
     const start = (m.index ?? 0) + m[0].length;
-    const rest = stripped.slice(start);
-    const end = rest.search(/[;&|\n]/);
+    // Boundaries are searched on the MASKED text, so a separator inside a quoted
+    // argument is prose, not the end of the invocation: in
+    // `git commit -m "message; more message" --author='A <a@b>'` the author
+    // option belongs to this commit and must stay inside its region (Qodo, PR
+    // #996). Masking is length-preserving, so the offset is valid on the
+    // original string and the region content still comes from it.
+    const end = masked.slice(start).search(/[;&|\n]/);
     const stop = end === -1 ? stripped.length : start + end;
     spans.push({
       start,
