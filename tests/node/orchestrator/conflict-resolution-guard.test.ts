@@ -373,6 +373,10 @@ describe("conflict-resolution guard", () => {
     assert.equal(detect("echo GIT_INDEX_FILE=/x"), null);
     // A wrapper in front of the assignment still selects it.
     assert.equal(detect("sudo GIT_DIR=/x/.git git add a.txt"), "GIT_DIR");
+    // rtk is a transparent prefix on every bash call, so the wrapped assignment
+    // must still be reached (Qodo, PR #996).
+    assert.equal(detect("rtk GIT_DIR=/x/.git git add a.txt"), "GIT_DIR");
+    assert.equal(detect("rtk -v GIT_INDEX_FILE=/x git add a.txt"), "GIT_INDEX_FILE");
   });
 
   it("reads an index override behind a wrapper and env together", () => {
