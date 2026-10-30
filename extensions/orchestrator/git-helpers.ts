@@ -764,10 +764,6 @@ const SEGMENT_SKIP = new Set(["if", "then", "else", "elif", "fi", "do", "done", 
 const GIT_EXECUTORS = new Set([
   "xargs", "find", "-exec", "-execdir", "env", "sudo", "time", "nohup", "nice",
   "ionice", "stdbuf", "setsid", "command", "exec", "timeout",
-  // rtk wraps the real command and runs it (`rtk git -c user.email=x commit`
-  // arrives as the literal command text), so its own options are stepped over
-  // exactly like any other wrapper's.
-  "rtk",
   // These run their argument as commands. A shell is deliberately absent: its
   // script argument is emitted as a segment of its own, and treating `bash` as a
   // wrapper instead made `bash -c 'echo git add'` look like a staging command.
@@ -775,7 +771,7 @@ const GIT_EXECUTORS = new Set([
 ]);
 
 /** Wrapper options whose operand names something other than the command. */
-const WRAPPER_VALUE_OPTIONS = new Set([
+export const WRAPPER_VALUE_OPTIONS = new Set([
   "-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt", "-r", "--role",
   "-t", "--type", "-U", "--other-user", "-C", "--chdir", "--preserve-env",
 ]);
@@ -822,6 +818,16 @@ function classifySegment(segment: string): boolean {
     // `function NAME { ... }` puts the name between the keyword and the body.
     if (words[k] === "function") { k += 2; continue; }
     if (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) { k += 1; continue; }
+    // rtk is a TRANSPARENT prefix, not an executor: every command arrives as
+    // `rtk <cmd>` and rtk runs exactly that command, so the next word decides
+    // (`rtk grep git add f` runs grep, it does not stage — Qodo, PR #996).
+    if (words[k] === "rtk") {
+      k += 1;
+      while (k < words.length && words[k].startsWith("-") && words[k] !== "-") {
+        k += WRAPPER_VALUE_OPTIONS.has(words[k]) ? 2 : 1;
+      }
+      continue;
+    }
     break;
   }
   if (k < words.length) {
@@ -902,6 +908,17 @@ function gitWordIndex(words: string[]): number {
     if (words[k] === "function") { k += 2; continue; }
     if (SEGMENT_SKIP.has(words[k]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) { k += 1; continue; }
     const head = words[k].replace(/^[()]+|[()]+$/g, "");
+    // rtk is a TRANSPARENT prefix: every command in this harness arrives as
+    // `rtk <cmd>` and rtk runs exactly that command, so the next word decides.
+    // As a generic executor its `words.slice(k + 1).some(isGitWord)` scan made
+    // `rtk grep git add f` look like a staging command (Qodo, PR #996).
+    if (head === "rtk") {
+      k += 1;
+      while (k < words.length && words[k].startsWith("-") && words[k] !== "-") {
+        k += WRAPPER_VALUE_OPTIONS.has(words[k]) ? 2 : 1;
+      }
+      continue;
+    }
     if (isGitWord(head)) return k;
     // A wrapper runs whatever follows it. `command -v git` prints the path
     // instead of running anything, and `sudo -u git` names a user, not a

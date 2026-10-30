@@ -10,7 +10,7 @@ import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { DANGEROUS } from "../../../extensions/orchestrator/git-helpers.js";
+import { DANGEROUS, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import {
@@ -3951,5 +3951,33 @@ describe("git identity guard (#995)", () => {
       const res = await runBash('git commit -m "do not use -c user.email"');
       assert.doesNotMatch(res?.reason ?? "", /identity override/i);
     });
+  });
+});
+
+// The bash tool prefixes every command with `rtk` (the real command text the
+// hook receives is `rtk git …`). rtk is a TRANSPARENT prefix: it runs exactly
+// the command after it, so those forms — not the bare ones — are what ships.
+describe("rtk prefix (#996)", () => {
+  it("reaches the git word behind the prefix", () => {
+    for (const cmd of [
+      "rtk git add x",
+      "rtk -v git status",
+      "rtk git log --author=x",
+      "rtk GIT_DIR=/x git add a.txt",
+    ]) {
+      assert.equal(segmentRunsGit(cmd), true, cmd);
+    }
+  });
+
+  it("does not mistake a git argument for a git command", () => {
+    // `rtk grep git add f` runs grep; nothing is staged (Qodo, PR #996).
+    for (const cmd of ["rtk grep git add README.md", "rtk grep -n git README.md"]) {
+      assert.equal(segmentRunsGit(cmd), false, cmd);
+    }
+  });
+
+  it("sees an identity assignment behind a wrapper option", () => {
+    assert.equal(gitIdentityOverride("rtk -v GIT_AUTHOR_EMAIL=x git commit -m m"), "GIT_AUTHOR_EMAIL");
+    assert.equal(gitIdentityOverride("sudo -u root GIT_AUTHOR_EMAIL=x git commit"), "GIT_AUTHOR_EMAIL");
   });
 });

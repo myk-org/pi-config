@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { getProjectDataDir } from "./utils.js";
 import { getGlobalSettingsPath, getSettingsPath, loadGlobalSettings, loadProjectSettings } from "./project-settings.js";
 import { readSettingsFile, writeSettingsFile } from "./settings-tui-helpers.js";
-import { DANGEROUS, executableText, getCurrentBranch, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
+import { DANGEROUS, WRAPPER_VALUE_OPTIONS, executableText, getCurrentBranch, isConflictResolutionCommand, segmentRunsGit, tokenize } from "./git-helpers.js";
 
 const enfLog = createLogger("enforcement");
 enfLog.debug("enforcement-helpers module loaded");
@@ -416,7 +416,15 @@ function scanGitOverrides(command: string, targets: GitOverrideTargets): string 
     // wrapper that runs the rest — `sudo`, `command`, `exec`, `time` — sits in
     // front of both, and can be chained.
     for (let round = 0; round < 4; round++) {
-      while (i < tokens.length && WRAPPER_WORDS.has(tokens[i])) i++;
+      // A wrapper runs the rest, and its OWN options sit in between: in
+      // `rtk -v GIT_AUTHOR_EMAIL=x git commit` the assignment follows rtk's
+      // option, so stepping only over the wrapper word hid it (Qodo, PR #996).
+      while (i < tokens.length && WRAPPER_WORDS.has(tokens[i])) {
+        i++;
+        while (i < tokens.length && tokens[i].startsWith("-") && tokens[i] !== "-") {
+          i += WRAPPER_VALUE_OPTIONS.has(tokens[i]) ? 2 : 1;
+        }
+      }
       while (i < tokens.length && assignment.test(tokens[i])) {
         const name = nameOf(tokens[i]);
         if (targets.env.has(name)) {
