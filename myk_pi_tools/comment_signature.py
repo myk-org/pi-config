@@ -15,7 +15,30 @@ from myk_pi_tools.logger import create_logger
 
 _FOOTER = re.compile(r"(?:\r?\n\r?\n---\r?\n|\r?\n|^)\*Assisted-by: PI \(([^\r\n]*?)\)\*(?=\r?\n|$)")
 _VALID_MODEL = re.compile(r"[\w:./+@-]+(?: [\w:./+@-]+)*", re.ASCII)
+_SIGNATURE_MODEL = re.compile(r"Assisted-by: PI \(([^()\r\n]*)\)")
 log = create_logger(__name__)
+
+
+def review_model() -> str:
+    """The model that produced a review, for the one-line summary (issue #991).
+
+    Prefers the operation's PI_MODEL, then the model carried by the session-start
+    PI_COMMENT_SIGNATURE. Returns "unknown" rather than an empty string: the
+    summary line names the model inline and never has a separate footer.
+
+    Returns:
+        A valid model id, or "unknown".
+    """
+    model = os.environ.get("PI_MODEL")
+    if model and _VALID_MODEL.fullmatch(model):
+        log.debug("Review model from PI_MODEL")
+        return model
+    match = _SIGNATURE_MODEL.search(os.environ.get("PI_COMMENT_SIGNATURE") or "")
+    if match and _VALID_MODEL.fullmatch(match.group(1)):
+        log.debug("Review model from PI_COMMENT_SIGNATURE")
+        return match.group(1)
+    log.debug("Review model unknown", extra={"pi_model_present": bool(model)})
+    return "unknown"
 
 
 def append_signature(body: str) -> str:
