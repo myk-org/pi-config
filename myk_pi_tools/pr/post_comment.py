@@ -265,6 +265,16 @@ def post_review(
     # The summary line already names the model, so the review body gets no
     # separate Assisted-by footer (issue #991). Inline comments stay signed.
     review_body = generate_review_body(comments)
+    log.info(
+        "Posting PR review",
+        extra={
+            "repo": repo_full_name,
+            "pr": pr_number,
+            "commit": commit_sha,
+            "comments": len(comments),
+            "body": review_body,
+        },
+    )
 
     # Build review payload
     payload = {
@@ -308,6 +318,10 @@ def post_review(
         )
 
     except subprocess.CalledProcessError as e:
+        log.error(
+            "PR review post failed",
+            extra={"repo": repo_full_name, "pr": pr_number, "error": (e.stderr or "")[:500]},
+        )
         return ReviewResult(
             status="failed",
             comment_count=len(comments),
@@ -315,6 +329,10 @@ def post_review(
             error=e.stderr,
         )
     except subprocess.TimeoutExpired:
+        log.warning(
+            "PR review post timed out",
+            extra={"repo": repo_full_name, "pr": pr_number, "comments": len(comments)},
+        )
         return ReviewResult(
             status="failed",
             comment_count=len(comments),

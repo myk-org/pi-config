@@ -87,14 +87,17 @@ def test_invalid_operation_model_falls_through(monkeypatch: pytest.MonkeyPatch) 
 
 def test_unknown_when_nothing_is_set() -> None:
     assert review_model() == "unknown"
+
+
+def test_body_names_unknown_when_no_model_is_configured() -> None:
     assert generate_review_body([_comment("x")]) == (
         "Reviewed by PI (unknown) — found 1 issue(s): 0 critical, 0 warnings, 1 suggestions."
     )
 
 
-def test_posted_payload_carries_the_line_and_keeps_inline_signatures(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.fixture
+def posted_payload(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Capture the JSON `post_review` hands to `gh api`."""
     monkeypatch.setenv("PI_MODEL", "zai-org/glm-5-3")
     monkeypatch.setenv("PI_COMMENT_SIGNATURE", "Assisted-by: PI (zai-org/glm-5-3)")
     captured: dict[str, str] = {}
@@ -112,14 +115,25 @@ def test_posted_payload_carries_the_line_and_keeps_inline_signatures(
         "deadbeef",
         [_comment("### [CRITICAL] injection", "src/a.py", 12)],
     )
-
-    payload = json.loads(captured["payload"])
     assert result.status == "success"
-    assert payload["event"] == "COMMENT"
-    assert payload["body"] == (
+    return json.loads(captured["payload"])
+
+
+def test_posted_event_is_a_comment_review(posted_payload: dict[str, Any]) -> None:
+    assert posted_payload["event"] == "COMMENT"
+
+
+def test_posted_body_is_the_one_line(posted_payload: dict[str, Any]) -> None:
+    assert posted_payload["body"] == (
         "Reviewed by PI (zai-org/glm-5-3) — found 1 issue(s): 1 critical, 0 warnings, 0 suggestions."
     )
-    # The summary names the model, so it carries no separate Assisted-by footer.
-    assert "Assisted-by" not in payload["body"]
-    # Inline comments stay signed: /pr-review dedup relies on it.
-    assert payload["comments"][0]["body"].endswith("*Assisted-by: PI (zai-org/glm-5-3)*")
+
+
+def test_posted_body_has_no_signature_footer(posted_payload: dict[str, Any]) -> None:
+    # The summary names the model, so the review body carries no second footer.
+    assert "Assisted-by" not in posted_payload["body"]
+
+
+def test_posted_inline_comment_keeps_its_signature(posted_payload: dict[str, Any]) -> None:
+    # /pr-review dedup relies on the inline comment signature.
+    assert posted_payload["comments"][0]["body"].endswith("*Assisted-by: PI (zai-org/glm-5-3)*")
