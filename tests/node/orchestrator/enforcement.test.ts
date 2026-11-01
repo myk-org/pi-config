@@ -2523,6 +2523,17 @@ describe("injectCommitTrailer", () => {
     assert.ok(out.indexOf("Assisted-by") < out.lastIndexOf("EOF"));
   });
 
+  it("ignores a heredoc example inside the message body", () => {
+    // A commit message that quotes this shape must not be rewritten, and the
+    // trailer belongs to the real message end, not the quoted example.
+    const cmd = `git commit -F - <<'EOF'\nfix: x\n\nIt was made with \`git commit -F - <<'EOF'\` in prose.\n\nRefs #1004\nEOF`;
+    const out = injectCommitTrailer(cmd, "Assisted-by", "model-x");
+    assert.ok(out !== null);
+    assert.ok(out.includes("in prose."), "prose survives");
+    assert.ok(out.endsWith("Refs #1004\n\nAssisted-by: PI (model-x)\nEOF"), out.split("\n").slice(-3).join("|"));
+    assert.equal(out.match(/Assisted-by/g)?.length, 1);
+  });
+
   it("skips a heredoc whose message already carries the trailer", () => {
     const cmd = `git commit -F - <<'EOF'\nfix: x\n\nAssisted-by: PI (model-x)\nEOF`;
     assert.equal(injectCommitTrailer(cmd, "Assisted-by", "model-x"), null);

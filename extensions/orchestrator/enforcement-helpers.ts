@@ -2700,19 +2700,24 @@ export function injectCommitTrailer(command: string, trailerName: string, modelI
 	// Pattern C: heredoc-fed stdin — `git commit -F - <<'EOF' … EOF`. Agents write commit
 	// messages this way constantly (our own prompts do), and it is not a pipe, so
 	// Pattern A misses it; the trailer goes before the closing delimiter (Qodo, PR #1004).
-	const heredoc = command.match(/git\s+commit\b[^\n]*?-F\s*-\s*<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/);
+	// The opener must be a REAL command (line start or after ; & | ( ), never a
+	// mention inside quoted text — a commit message that quotes this very shape
+	// must not be rewritten (Qodo, PR #1004).
+	const heredoc = command.match(/(^|[;&|(]|\n)[ \t]*git\s+commit\b[^\n]*?-F\s*-\s*<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/);
 	if (heredoc) {
-		const delimiter = heredoc[2] ?? "";
-		const closers = [...command.matchAll(new RegExp(`(^|\\n)[ \\t]*${delimiter}[ \\t]*(?=\\n|$)`, "g"))];
-		const last = closers.pop();
-		if (last && last.index !== undefined) {
-			const body = command.slice(0, last.index);
+		const delimiter = heredoc[3] ?? "";
+		const openerEnd = (heredoc.index ?? 0) + heredoc[0].length;
+		// The message ends at the FIRST line that is exactly the delimiter.
+		const closer = command.slice(openerEnd).match(new RegExp(`(^|\\n)[ \\t]*${delimiter}[ \\t]*(?=\\n|$)`));
+		const closeAt = closer?.index === undefined ? undefined : openerEnd + closer.index;
+		if (closeAt !== undefined) {
+			const body = command.slice(0, closeAt);
 			if (commandHasTrailerByName(body, trailerName)) {
 				enfLog.debug("inject_commit_trailer", "already present", trailerName);
 				return null;
 			}
 			enfLog.info("inject_commit_trailer", "heredoc", trailerName);
-			return `${body}\n${escapedTrailer(trailerName, identity, "")}${command.slice(last.index)}`;
+			return `${body}\n\n${escapedTrailer(trailerName, identity, "")}${command.slice(closeAt)}`;
 		}
 		return null;
 	}
