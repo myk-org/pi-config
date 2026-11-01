@@ -2653,7 +2653,9 @@ export function messageFileTrailerState(
 		enfLog.debug("message_file_trailer", filePath, state);
 		return state;
 	} catch (error: any) {
-		enfLog.debug("message_file_trailer unreadable", filePath, String(error?.message ?? error));
+		// warn, not debug: trailer verification could not inspect the message, which is a
+		// degraded guarantee an operator needs to see (Qodo, PR #1004).
+		enfLog.warn("message_file_trailer unreadable", filePath, String(error?.message ?? error));
 		return "unreadable";
 	}
 }

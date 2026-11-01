@@ -211,6 +211,19 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
   // flow the git-expert instruction describes (Qodo, PR #1004).
   const fileMessage = command.match(/git\s+commit\b[^\n]*?-F\s+(?!-)(["']?)([^\s"']+)\1/);
   if (fileMessage && fileMessage[2]) {
+    // The read happens BEFORE the command runs, so a command that writes the same file
+    // would be verified against its OLD contents while git commits the new ones. Refuse
+    // that shape instead of trusting the stale read (Qodo, PR #1004).
+    const filePathSrc = fileMessage[2].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (bashWritesToPath(command, maskQuotedRegions(command), filePathSrc)) {
+      log.warn("commit_trailer: message file is written by the same command", fileMessage[2]);
+      return {
+        block: true,
+        reason:
+          `⛔ Commit refused: this command writes ${fileMessage[2]} and commits it in the same call, ` +
+          "so the message cannot be verified before it is read. Write the message (with the trailer) in one call and commit in the next.",
+      };
+    }
     const candidate = path.isAbsolute(fileMessage[2]) ? fileMessage[2] : join(gitCwd, fileMessage[2]);
     const state = messageFileTrailerState(candidate, trailerName, (p) => readFileSync(p, "utf8"));
     if (state === "has") {
