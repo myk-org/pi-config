@@ -35,6 +35,7 @@ import {
   gitIdentityConfigSrc,
   failedFileEditSkipMessage,
   fixUnexpandedCommitTrailer,
+  injectCommitTrailer,
   resolveEffectiveCwd,
   checkPythonPipBlock,
   setUvAvailable,
@@ -2476,6 +2477,40 @@ describe("quoted parens inside substitution content (Qodo round 8, PR #916)", ()
   });
   it("parses a quoted pathspec with paren inside a substitution", () => {
     assert.deepEqual(gitAddPathspecs('echo "$(git add \'a)b\')"'), ["a)b"]);
+  });
+});
+
+// ── injectCommitTrailer: the trailer actually appended to a commit command ──
+describe("injectCommitTrailer", () => {
+  it("appends the trailer without an address for Assisted-by", () => {
+    const out = injectCommitTrailer('git commit -m "fix: x"', "Assisted-by", "model-x");
+    assert.ok(out !== null);
+    assert.ok(out.includes("Assisted-by: PI (model-x)"));
+    assert.ok(!out.includes("@"), "Assisted-by carries no address");
+  });
+
+  it("keeps an address for Co-authored-by so the co-author is credited", () => {
+    const out = injectCommitTrailer('git commit -m "fix: x"', "Co-authored-by", "model-x");
+    assert.ok(out !== null);
+    assert.ok(out.includes("Co-authored-by: PI (model-x) <noreply@pi.dev>"));
+  });
+
+  it("injects into the echo side of a piped -F - commit", () => {
+    const out = injectCommitTrailer(`echo "fix: x" | git commit -F -`, "Assisted-by", "model-x");
+    assert.ok(out !== null);
+    assert.ok(out.includes("Assisted-by: PI (model-x)"));
+    assert.ok(out.includes("| git commit -F -"));
+  });
+
+  it("skips a command that already carries the trailer", () => {
+    assert.equal(
+      injectCommitTrailer('git commit -m "fix: x\n\nAssisted-by: PI (model-x)"', "Assisted-by", "model-x"),
+      null,
+    );
+  });
+
+  it("returns null for shapes whose message it cannot see", () => {
+    assert.equal(injectCommitTrailer("git commit -F /tmp/msg", "Assisted-by", "model-x"), null);
   });
 });
 

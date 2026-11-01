@@ -2646,6 +2646,61 @@ export function fixUnexpandedCommitTrailer(command: string, modelId: string): st
 	return fixed;
 }
 
+/** Trailers where git itself needs an address: `Co-authored-by` credits a person. */
+const TRAILERS_REQUIRING_EMAIL = new Set(["co-authored-by"]);
+
+/** The value appended after `<Trailer>:`. `Assisted-by` needs no address, `Co-authored-by` does —
+ *  hosting integrations only credit a co-author through `Name <email>` (Qodo, PR #1004). */
+export function commitTrailerIdentity(trailerName: string, modelId: string): string {
+	const needsEmail = TRAILERS_REQUIRING_EMAIL.has(trailerName.trim().toLowerCase());
+	const identity = needsEmail ? `PI (${modelId}) <noreply@pi.dev>` : `PI (${modelId})`;
+	enfLog.debug("commit_trailer_identity", trailerName, needsEmail);
+	return identity;
+}
+
+/** Append `<Trailer>: PI (<model>)` to the message of a real commit invocation.
+ *  Covers the two shapes whose message the hook can see — `echo … | git commit -F -`
+ *  and `git commit -m "…"` — and returns null when the trailer is already there or
+ *  the shape is not covered. Pure so the injection path is testable without a hook. */
+export function injectCommitTrailer(command: string, trailerName: string, modelId: string): string | null {
+	const identity = commitTrailerIdentity(trailerName, modelId);
+	// Pattern A: echo "..." | git commit -F -
+	const pipeIdx = command.lastIndexOf("|");
+	if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
+		const echoPart = command.slice(0, pipeIdx);
+		const gitPart = command.slice(pipeIdx);
+		const lastQuoteIdx = Math.max(echoPart.lastIndexOf('"'), echoPart.lastIndexOf("'"));
+		if (lastQuoteIdx > 0) {
+			if (commandHasTrailerByName(echoPart, trailerName)) {
+				enfLog.debug("inject_commit_trailer", "already present", trailerName);
+				return null;
+			}
+			const quoteChar = echoPart[lastQuoteIdx];
+			const escaped = quoteChar === "'"
+				? `${escapeForSingleQuote(trailerName)}: ${identity}`
+				: `${escapeForDoubleQuote(trailerName)}: ${identity}`;
+			enfLog.info("inject_commit_trailer", "piped", trailerName);
+			return echoPart.slice(0, lastQuoteIdx) + `\\n\\n${escaped.replace(/\n/g, "\\n")}` + echoPart.slice(lastQuoteIdx) + gitPart;
+		}
+		return null;
+	}
+	// Pattern B: git commit -m "..." or git commit -m '...'
+	const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
+	if (!mFlagMatch) return null;
+	if (commandHasTrailerByName(mFlagMatch[2] ?? "", trailerName)) {
+		enfLog.debug("inject_commit_trailer", "already present", trailerName);
+		return null;
+	}
+	const quoteChar = mFlagMatch[1];
+	const escaped = quoteChar === "'"
+		? `${escapeForSingleQuote(trailerName)}: ${identity}`
+		: `${escapeForDoubleQuote(trailerName)}: ${identity}`;
+	const fullMatch = mFlagMatch[0];
+	const insertPos = command.indexOf(fullMatch) + fullMatch.length - 1;
+	enfLog.info("inject_commit_trailer", "inline", trailerName);
+	return command.slice(0, insertPos) + `\n\n${escaped}` + command.slice(insertPos);
+}
+
 /** Keep the first standalone valid footer, but use the current operation's model. */
 function normalizeGhBodyFooters(payload: string, signature: string): string {
   let signed = false;
