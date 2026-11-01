@@ -26,15 +26,28 @@ describe("task rule contract (#1003)", () => {
   });
 
   it("states the multi-action trigger", () => {
-    assert.match(taskRule, /2\+ distinct actions/);
-    assert.match(taskRule, /more than one file to change/);
-    assert.match(taskRule, /05-issue-first-workflow\.md/);
-    assert.match(taskRule, /20-code-review-loop\.md/);
+    // Literal phrases: `includes` has no escaping traps, unlike a regex.
+    for (const phrase of [
+      "2+ distinct actions",
+      "more than one file to change",
+      "05-issue-first-workflow.md",
+      "20-code-review-loop.md",
+    ]) {
+      assert.ok(taskRule.includes(phrase), phrase);
+    }
   });
 
   it("keeps single-step work exempt", () => {
-    assert.match(taskRule, /one-file\/one-line change/);
-    assert.match(taskRule, /read-only investigation/);
+    assert.ok(taskRule.includes("one-file/one-line change"));
+    assert.ok(taskRule.includes("read-only investigation"));
+  });
+
+  it("resolves the tool-description conflict in the rule's favour", () => {
+    assert.ok(taskRule.includes("this rule wins"), "the rule must claim precedence");
+    assert.ok(
+      taskRule.includes("one bulk call for the whole job"),
+      "the override must still name the bulk call",
+    );
   });
 
   it("keeps the taskId enforcement section, which really is code-enforced", () => {

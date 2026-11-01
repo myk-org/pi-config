@@ -22,6 +22,8 @@ The request needs **2+ distinct actions** — then tasks are required:
 
 Plan the whole job in **one `TaskBulkCreate` call** listing every step — not one `TaskCreate` per step, and not after the first edit. `TaskCreate` is for a single step added later.
 
+When `TaskCreate`'s own tool description suggests per-step calls, **this rule wins**: one bulk call for the whole job.
+
 ## Granularity
 
 One concrete action per task: which file, which change.
