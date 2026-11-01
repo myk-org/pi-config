@@ -118,9 +118,18 @@ function writeRepeatState(state: { lastCmd: string; count: number }): void {
 
 
 
+/** Placeholder strings that are never a real model id — printing one in a trailer ships a bug. */
+const PLACEHOLDER_MODEL_IDS = new Set(["model", "pi_model", "$pi_model", "${pi_model}", "unknown"]);
+
 /** Resolve the model id used in commit/PR trailers (env first, then ctx). */
-function commitTrailerModelId(ctx: any): string {
-  return (process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || (ctx as any).model?.id || "unknown").replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() || "unknown";
+export function commitTrailerModelId(ctx: any): string {
+  for (const raw of [process.env.PI_PRIMARY_MODEL, process.env.PI_MODEL, (ctx as any).model?.id]) {
+    const trimmed = (raw ?? "").trim();
+    if (!trimmed || PLACEHOLDER_MODEL_IDS.has(trimmed.toLowerCase())) continue;
+    const clean = trimmed.replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim();
+    if (clean) return clean;
+  }
+  return "unknown";
 }
 
 /** Inject commit trailer into command (Assisted-by, Co-authored-by, etc.) */

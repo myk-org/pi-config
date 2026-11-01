@@ -11,7 +11,7 @@ import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { DANGEROUS, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
-import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
+import { commitTrailerModelId, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import {
   READ_ONLY_COMMANDS,
@@ -2479,6 +2479,35 @@ describe("quoted parens inside substitution content (Qodo round 8, PR #916)", ()
   });
 });
 
+// ── commitTrailerModelId: a placeholder from the environment is not a model ──
+describe("commitTrailerModelId", () => {
+  const saved = { primary: process.env.PI_PRIMARY_MODEL, model: process.env.PI_MODEL };
+  afterEach(() => {
+    for (const [key, value] of [["PI_PRIMARY_MODEL", saved.primary], ["PI_MODEL", saved.model]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it("falls back to the context model when the environment holds a placeholder", () => {
+    process.env.PI_MODEL = "MODEL";
+    delete process.env.PI_PRIMARY_MODEL;
+    assert.equal(commitTrailerModelId({ model: { id: "real/model-1" } }), "real/model-1");
+  });
+
+  it("skips an unknown placeholder from the primary model variable", () => {
+    process.env.PI_PRIMARY_MODEL = "unknown";
+    process.env.PI_MODEL = "real/model-2";
+    assert.equal(commitTrailerModelId({}), "real/model-2");
+  });
+
+  it("returns unknown when every candidate is a placeholder", () => {
+    process.env.PI_MODEL = "MODEL";
+    process.env.PI_PRIMARY_MODEL = "${PI_MODEL}";
+    assert.equal(commitTrailerModelId({ model: { id: "MODEL" } }), "unknown");
+  });
+});
+
 // ── fixUnexpandedCommitTrailer (#932: literal $PI_MODEL in commit trailers) ──
 
 describe("fixUnexpandedCommitTrailer", () => {
@@ -2508,6 +2537,35 @@ git commit -F /tmp/msg`;
     const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
     assert.ok(fixed !== null);
     assert.ok(fixed.includes("PI (model-x)"));
+  });
+
+  // The agent template used to say "Format: TRAILER: PI (MODEL) <noreply@pi.dev> —
+  // replace MODEL", and a model that skipped the substitution shipped a literal
+  // `MODEL` trailer (commit 023b6bd). The heredoc/-F file path is the one the
+  // injection hook does not cover, so the guard has to rewrite it.
+  it("fixes a literal MODEL placeholder written to a message file", () => {
+    const cmd = `cat <<'EOF' > /tmp/msg
+fix(rules): x
+
+Assisted-by: PI (MODEL) <noreply@pi.dev>
+EOF
+git commit -F /tmp/msg`;
+    const fixed = fixUnexpandedCommitTrailer(cmd, "rits/zai-org/glm-5-3");
+    assert.ok(fixed !== null);
+    assert.ok(fixed.includes("Assisted-by: PI (rits/zai-org/glm-5-3) <noreply@pi.dev>"));
+    assert.ok(!fixed.includes("(MODEL)"));
+  });
+
+  it("fixes a literal MODEL placeholder in a -m message", () => {
+    const cmd = "git commit -m 'fix: x\n\nAssisted-by: PI (MODEL) <noreply@pi.dev>'";
+    const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
+    assert.ok(fixed !== null);
+    assert.ok(fixed.includes("PI (model-x)"));
+    assert.ok(!fixed.includes("(MODEL)"));
+  });
+
+  it("leaves a MODEL mention outside a trailer line untouched", () => {
+    assert.equal(fixUnexpandedCommitTrailer("git commit -m 'docs: MODEL is a placeholder'", "model-x"), null);
   });
 
   it("returns null when there is nothing to fix", () => {

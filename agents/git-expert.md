@@ -44,11 +44,13 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
 {{SETTINGS:dco,commit_trailer,use_worktrees,allow_push_to_protected_branches}}
 
 - If `dco` is `true`: add `--signoff` to `git commit`. Skip if already present.
-- If `commit_trailer` is a string (e.g. `"Assisted-by"`): append trailer to the commit message.
-  Format: `TRAILER: PI (MODEL) <noreply@pi.dev>` — replace MODEL with your actual model id
-  (e.g. `litellm/claude-opus-4-6`). NEVER write the literal string `$PI_MODEL`; quoted heredocs
-  and single-quoted messages do not expand it and the trailer lands broken. Skip if already present.
-  If the value contains commas, use the first name.
+- If `commit_trailer` is a string (e.g. `"Assisted-by"`): the enforcement hook appends
+  `TRAILER: PI (<your model id>) <noreply@pi.dev>` to `git commit -m "…"` and `echo … | git commit -F -`
+  commits — do NOT write it yourself for those. For a message written to a file and passed as
+  `git commit -F <file>`, write the trailer line as `TRAILER: PI ($PI_MODEL) <noreply@pi.dev>`
+  inside the file; the hook rewrites the unresolved `$PI_MODEL` to the real model id before the
+  commit runs. NEVER write a bare `MODEL` placeholder or an unresolved `$PI_MODEL` in a `-m`
+  message. Skip if the message already carries that trailer.
 - If `use_worktrees` is `true`: BLOCK `git checkout` (except `git checkout -- <file>`) and `git switch`.
   Use `git worktree add .worktrees/NAME -b BRANCH DEFAULT_BRANCH` instead
   (detect default branch via `git symbolic-ref refs/remotes/origin/HEAD`, fallback to `main`).

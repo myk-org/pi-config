@@ -2610,7 +2610,7 @@ function bodyAlreadySigned(text: string): boolean {
 // escape, or command start), then the PI trailer identity. Anchoring to the
 // line start keeps mid-sentence prose and unrelated compound-command parts
 // untouched (Qodo 988d3a68) — only an actual trailer line is rewritten.
-const unexpandedTrailerLine = /(^|\n|\\n|-m\s+['"])([ \t]*[A-Za-z][A-Za-z0-9-]*:[ \t]*)PI \(\$PI_MODEL\)/g;
+const unexpandedTrailerLine = /(^|\n|\\n|-m\s+['"])([ \t]*[A-Za-z][A-Za-z0-9-]*:[ \t]*)PI \((?:\$?\{?PI_MODEL\}?|MODEL)\)/g;
 
 /** #932: an agent may write the commit trailer with the literal `$PI_MODEL`
  *  (typically inside a quoted heredoc, where the shell cannot expand it).
@@ -2620,7 +2620,7 @@ const unexpandedTrailerLine = /(^|\n|\\n|-m\s+['"])([ \t]*[A-Za-z][A-Za-z0-9-]*:
  *  commit-message prose that legitimately mentions `$PI_MODEL` — bare or
  *  mid-sentence — and unrelated parts of compound commands are untouched. */
 export function fixUnexpandedCommitTrailer(command: string, modelId: string): string | null {
-	if (!command.includes("$PI_MODEL")) return null;
+	if (!/(?:PI_MODEL|\bMODEL\b)/.test(command)) return null;
 	if (!/\bgit\s+commit\b/.test(command)) return null;
 	const fixed = command.replace(unexpandedTrailerLine, `$1$2PI (${modelId})`);
 	return fixed === command ? null : fixed;
