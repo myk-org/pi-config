@@ -2664,6 +2664,13 @@ export function commitTrailerIdentity(trailerName: string, modelId: string): str
 	return identity;
 }
 
+/** One `Trailer: identity` paragraph, quoted for the shape being injected into. */
+function escapedTrailer(trailerName: string, identity: string, quoteChar: string): string {
+	if (quoteChar === "'") return `${escapeForSingleQuote(trailerName)}: ${identity}`;
+	if (quoteChar === '"') return `${escapeForDoubleQuote(trailerName)}: ${identity}`;
+	return `${trailerName}: ${identity}`;
+}
+
 /** Append `<Trailer>: PI (<model>)` to the message of a real commit invocation.
  *  Covers the two shapes whose message the hook can see — `echo … | git commit -F -`
  *  and `git commit -m "…"` — and returns null when the trailer is already there or
@@ -2687,6 +2694,25 @@ export function injectCommitTrailer(command: string, trailerName: string, modelI
 				: `${escapeForDoubleQuote(trailerName)}: ${identity}`;
 			enfLog.info("inject_commit_trailer", "piped", trailerName);
 			return echoPart.slice(0, lastQuoteIdx) + `\\n\\n${escaped.replace(/\n/g, "\\n")}` + echoPart.slice(lastQuoteIdx) + gitPart;
+		}
+		return null;
+	}
+	// Pattern C: heredoc-fed stdin — `git commit -F - <<'EOF' … EOF`. Agents write commit
+	// messages this way constantly (our own prompts do), and it is not a pipe, so
+	// Pattern A misses it; the trailer goes before the closing delimiter (Qodo, PR #1004).
+	const heredoc = command.match(/git\s+commit\b[^\n]*?-F\s*-\s*<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/);
+	if (heredoc) {
+		const delimiter = heredoc[2] ?? "";
+		const closers = [...command.matchAll(new RegExp(`(^|\\n)[ \\t]*${delimiter}[ \\t]*(?=\\n|$)`, "g"))];
+		const last = closers.pop();
+		if (last && last.index !== undefined) {
+			const body = command.slice(0, last.index);
+			if (commandHasTrailerByName(body, trailerName)) {
+				enfLog.debug("inject_commit_trailer", "already present", trailerName);
+				return null;
+			}
+			enfLog.info("inject_commit_trailer", "heredoc", trailerName);
+			return `${body}\n${escapedTrailer(trailerName, identity, "")}${command.slice(last.index)}`;
 		}
 		return null;
 	}

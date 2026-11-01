@@ -2514,6 +2514,20 @@ describe("injectCommitTrailer", () => {
     );
   });
 
+  it("injects before the closing delimiter of a heredoc-fed -F - commit", () => {
+    const cmd = `git commit -F - <<'EOF'\nfix: x\nEOF`;
+    const out = injectCommitTrailer(cmd, "Assisted-by", "model-x");
+    assert.ok(out !== null);
+    assert.ok(out.includes("Assisted-by: PI (model-x)"));
+    // the trailer must sit inside the message, before the delimiter line
+    assert.ok(out.indexOf("Assisted-by") < out.lastIndexOf("EOF"));
+  });
+
+  it("skips a heredoc whose message already carries the trailer", () => {
+    const cmd = `git commit -F - <<'EOF'\nfix: x\n\nAssisted-by: PI (model-x)\nEOF`;
+    assert.equal(injectCommitTrailer(cmd, "Assisted-by", "model-x"), null);
+  });
+
   it("returns null for shapes whose message it cannot see", () => {
     assert.equal(injectCommitTrailer("git commit -F /tmp/msg", "Assisted-by", "model-x"), null);
   });
