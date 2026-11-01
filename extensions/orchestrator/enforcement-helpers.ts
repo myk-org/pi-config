@@ -2606,24 +2606,103 @@ function bodyAlreadySigned(text: string): boolean {
   return false;
 }
 
-// Trailer-shaped line: `Token:` at line start (real newline, literal \n
-// escape, or command start), then the PI trailer identity. Anchoring to the
-// line start keeps mid-sentence prose and unrelated compound-command parts
-// untouched (Qodo 988d3a68) — only an actual trailer line is rewritten.
-const unexpandedTrailerLine = /(^|\n|\\n|-m\s+['"])([ \t]*[A-Za-z][A-Za-z0-9-]*:[ \t]*)PI \(\$PI_MODEL\)/g;
+// Trailer-shaped line: `Token:` at line start (real newline, literal \n escape, or
+// command start), then a PI trailer identity that is a PLACEHOLDER rather than a model
+// id. Detection only — the hook refuses such a commit instead of rewriting text it may
+// have misparsed (Qodo, PR #1004).
+const placeholderTrailerLine = /(^|\n|\\n|-m\s+['"])([ \t]*[A-Za-z][A-Za-z0-9-]*:[ \t]*)PI \(\$?\{?PI_MODEL\}?|MODEL\)/g;
 
-/** #932: an agent may write the commit trailer with the literal `$PI_MODEL`
- *  (typically inside a quoted heredoc, where the shell cannot expand it).
- *  Rewrite the trailer identity to the resolved model id before the commit
- *  runs. Returns the fixed command, or null when nothing needed fixing.
- *  Scoped to `git commit` commands and to trailer-shaped lines only, so
- *  commit-message prose that legitimately mentions `$PI_MODEL` — bare or
- *  mid-sentence — and unrelated parts of compound commands are untouched. */
-export function fixUnexpandedCommitTrailer(command: string, modelId: string): string | null {
-	if (!command.includes("$PI_MODEL")) return null;
+/** The trailer line carrying an unresolved placeholder, or null when the command has none.
+ *  A `Token:` anchor keeps prose that merely mentions the placeholder out of the result. */
+export function findPlaceholderTrailer(command: string): string | null {
+	if (!/(?:PI_MODEL|\bMODEL\b)/.test(command)) return null;
 	if (!/\bgit\s+commit\b/.test(command)) return null;
-	const fixed = command.replace(unexpandedTrailerLine, `$1$2PI (${modelId})`);
-	return fixed === command ? null : fixed;
+	const matches = [...command.matchAll(placeholderTrailerLine)];
+	const found = matches.at(-1);
+	if (!found) {
+		enfLog.debug("placeholder trailer none");
+		return null;
+	}
+	const line = `${(found[2] ?? "").trim()} PI (placeholder)`;
+	enfLog.warn("placeholder trailer found", line);
+	return line;
+}
+
+/** Trailers where git itself needs an address: `Co-authored-by` credits a person. */
+const TRAILERS_REQUIRING_EMAIL = new Set(["co-authored-by"]);
+
+/** The value appended after `<Trailer>:`. `Assisted-by` needs no address, `Co-authored-by`
+ *  does — hosting integrations only credit a co-author through `Name <email>`. */
+export function commitTrailerIdentity(trailerName: string, modelId: string): string {
+	const needsEmail = TRAILERS_REQUIRING_EMAIL.has(trailerName.trim().toLowerCase());
+	const identity = needsEmail ? `PI (${modelId}) <noreply@pi.dev>` : `PI (${modelId})`;
+	enfLog.debug("commit_trailer_identity", trailerName, needsEmail);
+	return identity;
+}
+
+/** Does a `-F <file>` commit message already carry the trailer?
+ *  The caller injects the reader so the decision is testable without touching disk —
+ *  the hook reads the file, it does not guess from the command text (Qodo, PR #1004). */
+export function messageFileTrailerState(
+	filePath: string,
+	trailerName: string,
+	read: (path: string) => string,
+): "has" | "missing" | "unreadable" {
+	try {
+		const state = commandHasTrailerByName(read(filePath).slice(0, 64_000), trailerName) ? "has" : "missing";
+		enfLog.debug("message_file_trailer", filePath, state);
+		return state;
+	} catch (error: any) {
+		// warn, not debug: trailer verification could not inspect the message, which is a
+		// degraded guarantee an operator needs to see (Qodo, PR #1004).
+		enfLog.warn("message_file_trailer unreadable", filePath, String(error?.message ?? error));
+		return "unreadable";
+	}
+}
+
+/** Append `<Trailer>: PI (<model>)` to the message of a real commit invocation.
+ *  Covers the two shapes whose message the hook can see — `echo … | git commit -F -`
+ *  and `git commit -m "…"` — and returns null when the trailer is already there or
+ *  the shape is not covered. Pure so the injection path is testable without a hook. */
+export function injectCommitTrailer(command: string, trailerName: string, modelId: string): string | null {
+	const identity = commitTrailerIdentity(trailerName, modelId);
+	// Pattern A: echo "..." | git commit -F -
+	const pipeIdx = command.lastIndexOf("|");
+	if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
+		const echoPart = command.slice(0, pipeIdx);
+		const gitPart = command.slice(pipeIdx);
+		const lastQuoteIdx = Math.max(echoPart.lastIndexOf('"'), echoPart.lastIndexOf("'"));
+		if (lastQuoteIdx > 0) {
+			if (commandHasTrailerByName(echoPart, trailerName)) {
+				enfLog.debug("inject_commit_trailer", "already present", trailerName);
+				return null;
+			}
+			const quoteChar = echoPart[lastQuoteIdx];
+			const escaped = quoteChar === "'"
+				? `${escapeForSingleQuote(trailerName)}: ${identity}`
+				: `${escapeForDoubleQuote(trailerName)}: ${identity}`;
+			enfLog.info("inject_commit_trailer", "piped", trailerName);
+			return echoPart.slice(0, lastQuoteIdx) + `\\n\\n${escaped.replace(/\n/g, "\\n")}` + echoPart.slice(lastQuoteIdx) + gitPart;
+		}
+		return null;
+	}
+	// Pattern B: git commit -m "..." or git commit -m '...'
+	const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
+	if (!mFlagMatch) return null;
+	// Every `-m` is a message paragraph, so an existing trailer in ANY of them wins.
+	const allPayloads = [...command.matchAll(/-m\s+(["'])([\s\S]*?)\1/g)].map((m) => m[2] ?? "").join("\n");
+	if (commandHasTrailerByName(allPayloads, trailerName)) {
+		enfLog.debug("inject_commit_trailer", "already present", trailerName);
+		return null;
+	}
+	const quoteChar = mFlagMatch[1];
+	const escaped = quoteChar === "'"
+		? `${escapeForSingleQuote(trailerName)}: ${identity}`
+		: `${escapeForDoubleQuote(trailerName)}: ${identity}`;
+	const fullMatch = mFlagMatch[0];
+	const insertPos = command.indexOf(fullMatch) + fullMatch.length - 1;
+	enfLog.info("inject_commit_trailer", "inline", trailerName);
+	return command.slice(0, insertPos) + `\n\n${escaped}` + command.slice(insertPos);
 }
 
 /** Keep the first standalone valid footer, but use the current operation's model. */

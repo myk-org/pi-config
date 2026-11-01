@@ -11,7 +11,7 @@ import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { DANGEROUS, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
-import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
+import { commitTrailerModelId, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import {
   READ_ONLY_COMMANDS,
@@ -34,7 +34,9 @@ import {
   bashWritesToPath,
   gitIdentityConfigSrc,
   failedFileEditSkipMessage,
-  fixUnexpandedCommitTrailer,
+  findPlaceholderTrailer,
+  messageFileTrailerState,
+  injectCommitTrailer,
   resolveEffectiveCwd,
   checkPythonPipBlock,
   setUvAvailable,
@@ -1736,22 +1738,22 @@ describe("getCachedBranch", () => {
 
 describe("commandHasTrailerByName", () => {
   it("detects trailer with DIFFERENT model in git commit -m (real newlines)", () => {
-    const cmd = 'git commit -m "fix: something\n\nAssisted-by: PI (some-other-model) <noreply@pi.dev>"';
+    const cmd = 'git commit -m "fix: something\n\nAssisted-by: PI (some-other-model)"';
     assert.equal(commandHasTrailerByName(cmd, "Assisted-by"), true);
   });
 
   it("detects trailer with unexpanded $PI_MODEL", () => {
-    const cmd = 'git commit -m "fix: something\n\nAssisted-by: PI ($PI_MODEL) <noreply@pi.dev>"';
+    const cmd = 'git commit -m "fix: something\n\nAssisted-by: PI ($PI_MODEL)"';
     assert.equal(commandHasTrailerByName(cmd, "Assisted-by"), true);
   });
 
   it("detects trailer written with escaped \\n (echo -e / printf style)", () => {
-    const cmd = 'echo -e "fix: something\\n\\nAssisted-by: PI (other-model) <noreply@pi.dev>" | git commit -F -';
+    const cmd = 'echo -e "fix: something\\n\\nAssisted-by: PI (other-model)" | git commit -F -';
     assert.equal(commandHasTrailerByName(cmd, "Assisted-by"), true);
   });
 
   it("detects trailer right after opening quote", () => {
-    const cmd = "git commit -m 'Assisted-by: PI (x) <noreply@pi.dev>'";
+    const cmd = "git commit -m 'Assisted-by: PI (x)'";
     assert.equal(commandHasTrailerByName(cmd, "Assisted-by"), true);
   });
 
@@ -1794,7 +1796,7 @@ describe("commandHasTrailerByName", () => {
   // Scoping dedup to the whole echoPart (before the pipe) avoids the misparse.
   it("detects trailer in Pattern A echo payload with an escaped quote before the trailer", () => {
     const cmd =
-      'echo -e "fix: something with a \\"quote\\" in it\\n\\nAssisted-by: PI (other-model) <noreply@pi.dev>" | git commit -F -';
+      'echo -e "fix: something with a \\"quote\\" in it\\n\\nAssisted-by: PI (other-model)" | git commit -F -';
     const pipeIdx = cmd.lastIndexOf("|");
     const echoPart = cmd.slice(0, pipeIdx);
     assert.equal(commandHasTrailerByName(echoPart, "Assisted-by"), true);
@@ -2479,69 +2481,109 @@ describe("quoted parens inside substitution content (Qodo round 8, PR #916)", ()
   });
 });
 
-// ── fixUnexpandedCommitTrailer (#932: literal $PI_MODEL in commit trailers) ──
-
-describe("fixUnexpandedCommitTrailer", () => {
-  it("fixes the literal in a quoted-heredoc commit (the #932 shape)", () => {
-    const cmd = `cat <<'EOF' > /tmp/msg
-fix(coms): something
-
-Assisted-by: PI ($PI_MODEL) <noreply@pi.dev>
-EOF
-git commit -F /tmp/msg`;
-    const fixed = fixUnexpandedCommitTrailer(cmd, "rits/zai-org/glm-5-3");
-    assert.ok(fixed !== null);
-    assert.ok(fixed.includes("Assisted-by: PI (rits/zai-org/glm-5-3) <noreply@pi.dev>"));
-    assert.ok(!fixed.includes("$PI_MODEL"));
+// ── injectCommitTrailer: the trailer actually appended to a commit command ──
+describe("injectCommitTrailer", () => {
+  it("appends the trailer without an address for Assisted-by", () => {
+    const out = injectCommitTrailer('git commit -m "fix: x"', "Assisted-by", "model-x");
+    assert.ok(out !== null);
+    assert.ok(out.includes("Assisted-by: PI (model-x)"));
+    assert.ok(!out.includes("@"), "Assisted-by carries no address");
   });
 
-  it("fixes the literal in a single-quoted -m message", () => {
-    const cmd = "git commit -m 'fix: x\n\nAssisted-by: PI ($PI_MODEL) <noreply@pi.dev>'";
-    const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
-    assert.ok(fixed !== null);
-    assert.ok(fixed.includes("PI (model-x)"));
-    assert.ok(!fixed.includes("$PI_MODEL"));
+  it("keeps an address for Co-authored-by so the co-author is credited", () => {
+    const out = injectCommitTrailer('git commit -m "fix: x"', "Co-authored-by", "model-x");
+    assert.ok(out !== null);
+    assert.ok(out.includes("Co-authored-by: PI (model-x) <noreply@pi.dev>"));
   });
 
-  it("fixes the short identity form without the email too", () => {
-    const cmd = "git commit -F file -m 'Assisted-by: PI ($PI_MODEL)'";
-    const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
-    assert.ok(fixed !== null);
-    assert.ok(fixed.includes("PI (model-x)"));
+  it("injects into the echo side of a piped -F - commit", () => {
+    const out = injectCommitTrailer(`echo "fix: x" | git commit -F -`, "Assisted-by", "model-x");
+    assert.ok(out !== null);
+    assert.ok(out.includes("Assisted-by: PI (model-x)"));
+    assert.ok(out.includes("| git commit -F -"));
   });
 
-  it("returns null when there is nothing to fix", () => {
-    assert.equal(fixUnexpandedCommitTrailer("git commit -m 'fix: x'", "model-x"), null);
-    assert.equal(fixUnexpandedCommitTrailer("git commit -m 'Assisted-by: PI (model-x) <noreply@pi.dev>'", "model-x"), null);
+  it("does not duplicate a trailer that lives in a later -m paragraph", () => {
+    const cmd = `git commit -m 'fix: x' -m 'Assisted-by: PI (model-x)'`;
+    assert.equal(injectCommitTrailer(cmd, "Assisted-by", "model-x"), null);
   });
 
-  it("ignores non-commit commands even when they contain the literal", () => {
-    assert.equal(fixUnexpandedCommitTrailer("echo 'PI ($PI_MODEL)' > file", "model-x"), null);
+  it("skips a command that already carries the trailer", () => {
+    assert.equal(
+      injectCommitTrailer('git commit -m "fix: x\n\nAssisted-by: PI (model-x)"', "Assisted-by", "model-x"),
+      null,
+    );
   });
 
-  it("leaves a bare $PI_MODEL mention outside the trailer identity untouched", () => {
-    const cmd = 'git commit -m "docs: explain the PI_MODEL variable"';
-    assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
+  it("does not inject into a heredoc-fed commit — the hook refuses that shape instead", () => {
+    const cmd = `git commit -F - <<'EOF'\nfix: x\nEOF`;
+    assert.equal(injectCommitTrailer(cmd, "Assisted-by", "model-x"), null);
   });
 
-  // Qodo 988d3a68: only trailer-SHAPED lines are rewritten — mid-sentence
-  // prose and unrelated compound-command parts stay untouched.
-  it("leaves mid-sentence prose mentioning the identity untouched", () => {
-    const cmd = 'git commit -m "docs: we no longer write PI ($PI_MODEL) in trailers"';
-    assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
+  it("returns null for shapes whose message it cannot see", () => {
+    assert.equal(injectCommitTrailer("git commit -F /tmp/msg", "Assisted-by", "model-x"), null);
+  });
+});
+
+// ── messageFileTrailerState: `-F <file>` messages are read, not guessed ──
+describe("messageFileTrailerState", () => {
+  const readWith = (text: string) => () => text;
+
+  it("reports a message file that already carries the trailer", () => {
+    assert.equal(messageFileTrailerState("/tmp/msg", "Assisted-by", readWith("fix: x\n\nAssisted-by: PI (m)")), "has");
   });
 
-  it("leaves an unrelated echo in a compound command untouched", () => {
-    const cmd = 'git commit -m "fix: x" && echo "saw PI ($PI_MODEL) once"';
-    assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
+  it("reports a message file without the trailer", () => {
+    assert.equal(messageFileTrailerState("/tmp/msg", "Assisted-by", readWith("fix: x")), "missing");
   });
 
-  it("fixes the trailer right after the -m opening quote (single-line shape)", () => {
-    const cmd = "git commit -m 'Assisted-by: PI ($PI_MODEL) <noreply@pi.dev>'";
-    const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
-    assert.ok(fixed !== null);
-    assert.ok(fixed.includes("PI (model-x)"));
-    assert.ok(!fixed.includes("$PI_MODEL"));
+  it("reports an unreadable message file instead of refusing on a guess", () => {
+    const boom = () => { throw new Error("ENOENT"); };
+    assert.equal(messageFileTrailerState("/tmp/msg", "Assisted-by", boom), "unreadable");
+  });
+});
+
+// ── commitTrailerModelId: a placeholder from the environment is not a model ──
+describe("commitTrailerModelId", () => {
+  const saved = { primary: process.env.PI_PRIMARY_MODEL, model: process.env.PI_MODEL };
+  afterEach(() => {
+    for (const [key, value] of [["PI_PRIMARY_MODEL", saved.primary], ["PI_MODEL", saved.model]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it("falls back to the context model when the environment holds a placeholder", () => {
+    process.env.PI_MODEL = "MODEL";
+    delete process.env.PI_PRIMARY_MODEL;
+    assert.equal(commitTrailerModelId({ model: { id: "real/model-1" } }), "real/model-1");
+  });
+
+  it("skips an unknown placeholder from the primary model variable", () => {
+    process.env.PI_PRIMARY_MODEL = "unknown";
+    process.env.PI_MODEL = "real/model-2";
+    assert.equal(commitTrailerModelId({}), "real/model-2");
+  });
+
+  it("returns unknown when every candidate is a placeholder", () => {
+    process.env.PI_MODEL = "MODEL";
+    process.env.PI_PRIMARY_MODEL = "${PI_MODEL}";
+    assert.equal(commitTrailerModelId({ model: { id: "MODEL" } }), "unknown");
+  });
+});
+
+// ── findPlaceholderTrailer: detection only, the hook refuses what it finds ──
+describe("findPlaceholderTrailer", () => {
+  it("finds a MODEL placeholder in a commit trailer", () => {
+    assert.ok(findPlaceholderTrailer("git commit -m 'fix: x\n\nAssisted-by: PI (MODEL)'"));
+  });
+
+  it("finds an unexpanded $PI_MODEL placeholder", () => {
+    assert.ok(findPlaceholderTrailer(`git commit -F - <<'EOF'\nfix: x\n\nAssisted-by: PI ($PI_MODEL)\nEOF`));
+  });
+
+  it("ignores commands that are not commits", () => {
+    assert.equal(findPlaceholderTrailer('echo "Assisted-by: PI (MODEL)" > /tmp/x'), null);
   });
 });
 

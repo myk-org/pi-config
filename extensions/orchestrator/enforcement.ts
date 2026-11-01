@@ -20,7 +20,8 @@ import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 import {
   conflictCandidateDirs,
   pushTargetsProtectedBranch,
-  fixUnexpandedCommitTrailer,
+  findPlaceholderTrailer,
+  messageFileTrailerState,
   maskQuotedRegions,
   isStdinFedShellStatement,
 } from "./enforcement-helpers.js";
@@ -53,6 +54,7 @@ import {
   gitSubArgRegions,
   hasGitAddBulk,
   hasGitAddForce,
+  injectCommitTrailer,
   injectSignoff,
   injectGhBodySignature,
   isGitIdentityConfigPath,
@@ -118,9 +120,23 @@ function writeRepeatState(state: { lastCmd: string; count: number }): void {
 
 
 
+/** Placeholder strings that are never a real model id — printing one in a trailer ships a bug. */
+const PLACEHOLDER_MODEL_IDS = new Set(["model", "pi_model", "$pi_model", "${pi_model}", "unknown"]);
+
 /** Resolve the model id used in commit/PR trailers (env first, then ctx). */
-function commitTrailerModelId(ctx: any): string {
-  return (process.env.PI_PRIMARY_MODEL || process.env.PI_MODEL || (ctx as any).model?.id || "unknown").replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim() || "unknown";
+export function commitTrailerModelId(ctx: any): string {
+  for (const raw of [process.env.PI_PRIMARY_MODEL, process.env.PI_MODEL, (ctx as any).model?.id]) {
+    const trimmed = (raw ?? "").trim();
+    if (!trimmed) continue;
+    if (PLACEHOLDER_MODEL_IDS.has(trimmed.toLowerCase())) {
+      log.debug("commit_trailer: skipped placeholder model id", trimmed);
+      continue;
+    }
+    const clean = trimmed.replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim();
+    if (clean) return clean;
+  }
+  log.warn("commit_trailer: no model id resolved — trailer identity is unknown");
+  return "unknown";
 }
 
 /** Inject commit trailer into command (Assisted-by, Co-authored-by, etc.) */
@@ -128,18 +144,20 @@ function commitTrailerModelId(ctx: any): string {
 let bridgedUi: ReturnType<typeof createBridgedUi> | null = null;
 
 async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd: string): Promise<EnforcementResult> {
-  // #932: rewrite a literal `$PI_MODEL` in the trailer identity — an agent
-  // following the git-expert trailer instruction may write the placeholder
-  // verbatim (quoted heredocs and single-quoted -m strings never expand it).
-  // This runs BEFORE the setting check and pattern matching so heredoc/-F
-  // commits — which the injection patterns below do not cover — still get a
-  // correct trailer, and the dedup check below sees the already-fixed name.
-  const literalModelId = commitTrailerModelId(ctx);
-  const fixedCommand = fixUnexpandedCommitTrailer(command, literalModelId);
-  if (fixedCommand !== null) {
-    log.info("commit_trailer: replaced unexpanded $PI_MODEL literal with model id", literalModelId);
-    command = fixedCommand;
-    event.input.command = fixedCommand;
+  // A placeholder trailer is REFUSED, never rewritten: the hook cannot safely tell
+  // command text from message prose (a commit message quoting the very shape it
+  // parses, a `;` inside quotes, indented examples), and rewriting the wrong span
+  // corrupts a message or edits an unrelated command. The agent has the text, so it
+  // fixes it and retries (Qodo, PR #1004).
+  const placeholder = findPlaceholderTrailer(command);
+  if (placeholder) {
+    return {
+      block: true,
+      reason:
+        `⛔ Commit refused: the trailer carries an unresolved placeholder (${placeholder}). ` +
+        `Write \`TRAILER: PI (${commitTrailerModelId(ctx)})\` instead of a MODEL/$PI_MODEL placeholder ` +
+        "and re-run the commit.",
+    };
   }
 
   const trailerSetting = getSetting(gitCwd, "commit_trailer");
@@ -147,7 +165,6 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
 
   const modelId = commitTrailerModelId(ctx);
 
-  const piIdentity = `PI (${modelId}) <noreply@pi.dev>`;
   let trailerName: string;
 
   if (trailerSetting.includes(",")) {
@@ -184,55 +201,54 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
     trailerName = trailerSetting;
   }
 
-  // Pattern A: echo "..." | git commit -F -
-  const pipeIdx = command.lastIndexOf("|");
-  if (pipeIdx !== -1 && /git\s+commit\s+.*-F\s*-/.test(command.slice(pipeIdx))) {
-    const echoPart = command.slice(0, pipeIdx);
-    const gitPart = command.slice(pipeIdx);
-    const lastDoubleQuote = echoPart.lastIndexOf('"');
-    const lastSingleQuote = echoPart.lastIndexOf("'");
-    const lastQuoteIdx = Math.max(lastDoubleQuote, lastSingleQuote);
-    if (lastQuoteIdx > 0) {
-      // Determine quote context for correct escaping
-      const quoteChar = echoPart[lastQuoteIdx];
-      // Scope dedup to the echo/message-construction portion (before the pipe), which
-      // excludes the git args. Do NOT attempt to slice out the exact quoted substring
-      // by backward-scanning for a quote — escaped quotes (\") inside the message would
-      // misparse the boundary and cause a missed trailer -> duplicate injection.
-      if (commandHasTrailerByName(echoPart, trailerName)) {
-        log.debug("commit_trailer already present in echo message (by name) — skipping injection", trailerName);
-        return undefined;
-      }
-      const escaped = quoteChar === "'"
-        ? `${escapeForSingleQuote(trailerName)}: ${piIdentity}`
-        : `${escapeForDoubleQuote(trailerName)}: ${piIdentity}`;
-      event.input.command =
-        echoPart.slice(0, lastQuoteIdx) + `\\n\\n${escaped.replace(/\n/g, "\\n")}` + echoPart.slice(lastQuoteIdx) + gitPart;
+  const injected = injectCommitTrailer(command, trailerName, modelId);
+  if (injected !== null) {
+    event.input.command = injected;
+    return undefined;
+  }
+  // `git commit -F <file>`: the message is a file we CAN read, so check it instead of
+  // guessing. Refusing a message that already carries the trailer would block the very
+  // flow the git-expert instruction describes (Qodo, PR #1004).
+  const fileMessage = command.match(/git\s+commit\b[^\n]*?-F\s+(?!-)(["']?)([^\s"']+)\1/);
+  if (fileMessage && fileMessage[2]) {
+    // The read happens BEFORE the command runs, so a command that writes the same file
+    // would be verified against its OLD contents while git commits the new ones. Refuse
+    // that shape instead of trusting the stale read (Qodo, PR #1004).
+    const filePathSrc = fileMessage[2].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (bashWritesToPath(command, maskQuotedRegions(command), filePathSrc)) {
+      log.warn("commit_trailer: message file is written by the same command", fileMessage[2]);
+      return {
+        block: true,
+        reason:
+          `⛔ Commit refused: this command writes ${fileMessage[2]} and commits it in the same call, ` +
+          "so the message cannot be verified before it is read. Write the message (with the trailer) in one call and commit in the next.",
+      };
+    }
+    const candidate = path.isAbsolute(fileMessage[2]) ? fileMessage[2] : join(gitCwd, fileMessage[2]);
+    const state = messageFileTrailerState(candidate, trailerName, (p) => readFileSync(p, "utf8"));
+    if (state === "has") {
+      log.debug("commit_trailer: message file already carries the trailer", candidate);
+      return undefined;
+    }
+    if (state === "missing") {
+      return {
+        block: true,
+        reason:
+          `⛔ Commit refused: the message file ${fileMessage[2]} has no \`${trailerName}\` trailer. ` +
+          `Append it with the real id — \`printf '\\n\\n" + trailerName + ": PI (%s)\\n' \"$PI_MODEL\" >> " + fileMessage[2] + "\` — then re-run the commit.`,
+      };
     }
   }
-  // Pattern B: git commit -m "..." or git commit -m '...'
-  else {
-    const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
-    if (mFlagMatch) {
-      const quoteChar = mFlagMatch[1];
-      // Scope duplicate-by-name detection to the -m message payload only
-      // (mFlagMatch[2]) — not the whole command — so an unrelated arg/env var
-      // containing the trailer token does not wrongly skip injection.
-      const payload = mFlagMatch[2];
-      if (commandHasTrailerByName(payload, trailerName)) {
-        log.debug("commit_trailer already present in message (by name) — skipping injection", trailerName);
-        return undefined;
-      }
-      const escaped = quoteChar === "'"
-        ? `${escapeForSingleQuote(trailerName)}: ${piIdentity}`
-        : `${escapeForDoubleQuote(trailerName)}: ${piIdentity}`;
-      const fullMatch = mFlagMatch[0];
-      const insertPos = command.indexOf(fullMatch) + fullMatch.length - 1;
-      event.input.command =
-        command.slice(0, insertPos) + `\n\n${escaped}` + command.slice(insertPos);
-    }
+  // Other opaque shapes must carry the trailer already; refusing beats guessing.
+  if (!commandHasTrailerByName(command, trailerName)) {
+    return {
+      block: true,
+      reason:
+        `⛔ Commit refused: no \`${trailerName}\` trailer found and this commit shape is opaque to the hook ` +
+        `(the message is built in a way it cannot inspect). Add \`${trailerName}: PI (${modelId})\` to the message ` +
+        "yourself — e.g. `printf '\\n\\n" + trailerName + ": PI (%s)\\n' \"$PI_MODEL\" >> <file>` for `-F <file>` — then re-run the commit.",
+    };
   }
-
   return undefined;
 }
 

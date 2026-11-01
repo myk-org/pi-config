@@ -44,11 +44,20 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
 {{SETTINGS:dco,commit_trailer,use_worktrees,allow_push_to_protected_branches}}
 
 - If `dco` is `true`: add `--signoff` to `git commit`. Skip if already present.
-- If `commit_trailer` is a string (e.g. `"Assisted-by"`): append trailer to the commit message.
-  Format: `TRAILER: PI (MODEL) <noreply@pi.dev>` — replace MODEL with your actual model id
-  (e.g. `litellm/claude-opus-4-6`). NEVER write the literal string `$PI_MODEL`; quoted heredocs
-  and single-quoted messages do not expand it and the trailer lands broken. Skip if already present.
-  If the value contains commas, use the first name.
+- If `commit_trailer` is a string (e.g. `"Assisted-by"`): every commit you make MUST carry that
+  trailer, and who writes it depends on the commit shape:
+  - `git commit -m "…"` → the enforcement hook appends `TRAILER: PI (<model>)`.
+    Do not write it yourself.
+  - `echo … | git commit -F -` → the hook appends it. Do not write it yourself.
+  - `git commit -F <file>` (message written to a file, including heredoc-to-file) → the hook never
+    sees the file's contents, so append the trailer yourself with the already-resolved id:
+    `printf '\n\nTRAILER: PI (%s)\n' "$PI_MODEL" >> <file>` and then commit. The shell expands
+    `$PI_MODEL` while writing the file, so no placeholder can reach the message.
+  Never write a bare `MODEL` placeholder and never leave an unexpanded `$PI_MODEL` in a `-m` message:
+  the enforcement hook **refuses** such a commit (it reports the placeholder line back), and it also
+  refuses a commit shape it cannot inspect when the message shows no trailer. The fix is always to
+  write the trailer yourself with the real id, then commit again.
+  Skip only when the message already carries that trailer.
 - If `use_worktrees` is `true`: BLOCK `git checkout` (except `git checkout -- <file>`) and `git switch`.
   Use `git worktree add .worktrees/NAME -b BRANCH DEFAULT_BRANCH` instead
   (detect default branch via `git symbolic-ref refs/remotes/origin/HEAD`, fallback to `main`).
