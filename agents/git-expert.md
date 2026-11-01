@@ -49,9 +49,10 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
   - `git commit -m "…"` → the enforcement hook appends `TRAILER: PI (<model>)`.
     Do not write it yourself.
   - `echo … | git commit -F -` → the hook appends it. Do not write it yourself.
-  - `git commit -F <file>` (message written to a file, including heredoc-to-file) → the hook cannot
-    see the file contents, so YOU write the last line of the file as
-    `TRAILER: PI ($PI_MODEL)`; the hook rewrites `$PI_MODEL` to the real model id.
+  - `git commit -F <file>` (message written to a file, including heredoc-to-file) → the hook never
+    sees the file's contents, so append the trailer yourself with the already-resolved id:
+    `printf '\n\nTRAILER: PI (%s)\n' "$PI_MODEL" >> <file>` and then commit. The shell expands
+    `$PI_MODEL` while writing the file, so no placeholder can reach the message.
   Never write a bare `MODEL` placeholder; never leave an unexpanded `$PI_MODEL` in a `-m` message.
   Skip only when the message already carries that trailer.
 - If `use_worktrees` is `true`: BLOCK `git checkout` (except `git checkout -- <file>`) and `git switch`.

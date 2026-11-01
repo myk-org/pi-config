@@ -2622,8 +2622,28 @@ const unexpandedTrailerLine = /(^|\n|\\n|-m\s+['"])([ \t]*[A-Za-z][A-Za-z0-9-]*:
 export function fixUnexpandedCommitTrailer(command: string, modelId: string): string | null {
 	if (!/(?:PI_MODEL|\bMODEL\b)/.test(command)) return null;
 	if (!/\bgit\s+commit\b/.test(command)) return null;
-	const fixed = command.replace(unexpandedTrailerLine, `$1$2PI (${modelId})`);
-	return fixed === command ? null : fixed;
+	const rewrite = (text: string) => text.replace(unexpandedTrailerLine, `$1$2PI (${modelId})`);
+	// A `-m` payload IS the commit message, so only that slice is rewritten: a
+	// trailer-shaped line belonging to ANOTHER command in the same string (a file
+	// write, say) is unrelated and must not be altered (Qodo, PR #1004). Without
+	// `-m` the message comes from a file the hook cannot see, so trailer lines
+	// anywhere in the command are the message being prepared.
+	const inline = command.match(/-m\s+(["'])([\s\S]*?)\1/);
+	let fixed: string;
+	if (inline) {
+		const payload = inline[2] ?? "";
+		const rewritten = rewrite(payload);
+		const start = (inline.index ?? 0) + inline[0].indexOf(payload);
+		fixed = rewritten === payload ? command : command.slice(0, start) + rewritten + command.slice(start + payload.length);
+	} else {
+		fixed = rewrite(command);
+	}
+	if (fixed === command) {
+		enfLog.debug("unexpanded trailer nothing to rewrite", modelId);
+		return null;
+	}
+	enfLog.info("unexpanded trailer rewritten", modelId);
+	return fixed;
 }
 
 /** Keep the first standalone valid footer, but use the current operation's model. */

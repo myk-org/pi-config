@@ -2564,6 +2564,20 @@ git commit -F /tmp/msg`;
     assert.ok(!fixed.includes("(MODEL)"));
   });
 
+  // Qodo #1004: only the `-m` payload is the commit message; a trailer-shaped
+  // line written by another command in the same string must not be altered.
+  it("leaves a trailer-shaped file write alone when -m carries the message", () => {
+    const cmd = `printf 'Assisted-by: PI (MODEL)\n' > /tmp/other && git commit -m 'fix: x'`;
+    assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
+  });
+
+  it("accepts the file-based recipe without needing a rewrite", () => {
+    // The instruction tells the agent to expand $PI_MODEL with printf, so there
+    // is no placeholder left for the guard (Qodo #1004).
+    const cmd = `printf '\n\nAssisted-by: PI (%s)\n' "$PI_MODEL" >> /tmp/msg && git commit -F /tmp/msg`;
+    assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
+  });
+
   it("leaves a MODEL mention outside a trailer line untouched", () => {
     assert.equal(fixUnexpandedCommitTrailer("git commit -m 'docs: MODEL is a placeholder'", "model-x"), null);
   });

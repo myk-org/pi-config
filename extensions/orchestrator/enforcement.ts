@@ -125,10 +125,15 @@ const PLACEHOLDER_MODEL_IDS = new Set(["model", "pi_model", "$pi_model", "${pi_m
 export function commitTrailerModelId(ctx: any): string {
   for (const raw of [process.env.PI_PRIMARY_MODEL, process.env.PI_MODEL, (ctx as any).model?.id]) {
     const trimmed = (raw ?? "").trim();
-    if (!trimmed || PLACEHOLDER_MODEL_IDS.has(trimmed.toLowerCase())) continue;
+    if (!trimmed) continue;
+    if (PLACEHOLDER_MODEL_IDS.has(trimmed.toLowerCase())) {
+      log.debug("commit_trailer: skipped placeholder model id", trimmed);
+      continue;
+    }
     const clean = trimmed.replace(/[^a-zA-Z0-9._:@/ -]/g, "").trim();
     if (clean) return clean;
   }
+  log.warn("commit_trailer: no model id resolved — trailer identity is unknown");
   return "unknown";
 }
 
