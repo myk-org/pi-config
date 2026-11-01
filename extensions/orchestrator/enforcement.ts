@@ -156,7 +156,7 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
 
   const modelId = commitTrailerModelId(ctx);
 
-  const piIdentity = `PI (${modelId}) <noreply@pi.dev>`;
+  const piIdentity = `PI (${modelId})`;
   let trailerName: string;
 
   if (trailerSetting.includes(",")) {

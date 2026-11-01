@@ -44,13 +44,16 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
 {{SETTINGS:dco,commit_trailer,use_worktrees,allow_push_to_protected_branches}}
 
 - If `dco` is `true`: add `--signoff` to `git commit`. Skip if already present.
-- If `commit_trailer` is a string (e.g. `"Assisted-by"`): the enforcement hook appends
-  `TRAILER: PI (<your model id>) <noreply@pi.dev>` to `git commit -m "…"` and `echo … | git commit -F -`
-  commits — do NOT write it yourself for those. For a message written to a file and passed as
-  `git commit -F <file>`, write the trailer line as `TRAILER: PI ($PI_MODEL) <noreply@pi.dev>`
-  inside the file; the hook rewrites the unresolved `$PI_MODEL` to the real model id before the
-  commit runs. NEVER write a bare `MODEL` placeholder or an unresolved `$PI_MODEL` in a `-m`
-  message. Skip if the message already carries that trailer.
+- If `commit_trailer` is a string (e.g. `"Assisted-by"`): every commit you make MUST carry that
+  trailer, and who writes it depends on the commit shape:
+  - `git commit -m "…"` → the enforcement hook appends `TRAILER: PI (<model>)`.
+    Do not write it yourself.
+  - `echo … | git commit -F -` → the hook appends it. Do not write it yourself.
+  - `git commit -F <file>` (message written to a file, including heredoc-to-file) → the hook cannot
+    see the file contents, so YOU write the last line of the file as
+    `TRAILER: PI ($PI_MODEL)`; the hook rewrites `$PI_MODEL` to the real model id.
+  Never write a bare `MODEL` placeholder; never leave an unexpanded `$PI_MODEL` in a `-m` message.
+  Skip only when the message already carries that trailer.
 - If `use_worktrees` is `true`: BLOCK `git checkout` (except `git checkout -- <file>`) and `git switch`.
   Use `git worktree add .worktrees/NAME -b BRANCH DEFAULT_BRANCH` instead
   (detect default branch via `git symbolic-ref refs/remotes/origin/HEAD`, fallback to `main`).
