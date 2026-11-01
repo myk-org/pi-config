@@ -34,7 +34,7 @@ import {
   bashWritesToPath,
   gitIdentityConfigSrc,
   failedFileEditSkipMessage,
-  fixUnexpandedCommitTrailer,
+  findPlaceholderTrailer,
   injectCommitTrailer,
   resolveEffectiveCwd,
   checkPythonPipBlock,
@@ -2514,28 +2514,8 @@ describe("injectCommitTrailer", () => {
     );
   });
 
-  it("injects before the closing delimiter of a heredoc-fed -F - commit", () => {
+  it("does not inject into a heredoc-fed commit — the hook refuses that shape instead", () => {
     const cmd = `git commit -F - <<'EOF'\nfix: x\nEOF`;
-    const out = injectCommitTrailer(cmd, "Assisted-by", "model-x");
-    assert.ok(out !== null);
-    assert.ok(out.includes("Assisted-by: PI (model-x)"));
-    // the trailer must sit inside the message, before the delimiter line
-    assert.ok(out.indexOf("Assisted-by") < out.lastIndexOf("EOF"));
-  });
-
-  it("ignores a heredoc example inside the message body", () => {
-    // A commit message that quotes this shape must not be rewritten, and the
-    // trailer belongs to the real message end, not the quoted example.
-    const cmd = `git commit -F - <<'EOF'\nfix: x\n\nIt was made with \`git commit -F - <<'EOF'\` in prose.\n\nRefs #1004\nEOF`;
-    const out = injectCommitTrailer(cmd, "Assisted-by", "model-x");
-    assert.ok(out !== null);
-    assert.ok(out.includes("in prose."), "prose survives");
-    assert.ok(out.endsWith("Refs #1004\n\nAssisted-by: PI (model-x)\nEOF"), out.split("\n").slice(-3).join("|"));
-    assert.equal(out.match(/Assisted-by/g)?.length, 1);
-  });
-
-  it("skips a heredoc whose message already carries the trailer", () => {
-    const cmd = `git commit -F - <<'EOF'\nfix: x\n\nAssisted-by: PI (model-x)\nEOF`;
     assert.equal(injectCommitTrailer(cmd, "Assisted-by", "model-x"), null);
   });
 
@@ -2573,123 +2553,18 @@ describe("commitTrailerModelId", () => {
   });
 });
 
-// ── fixUnexpandedCommitTrailer (#932: literal $PI_MODEL in commit trailers) ──
-
-describe("fixUnexpandedCommitTrailer", () => {
-  it("fixes the literal in a quoted-heredoc commit (the #932 shape)", () => {
-    const cmd = `cat <<'EOF' > /tmp/msg
-fix(coms): something
-
-Assisted-by: PI ($PI_MODEL)
-EOF
-git commit -F /tmp/msg`;
-    const fixed = fixUnexpandedCommitTrailer(cmd, "rits/zai-org/glm-5-3");
-    assert.ok(fixed !== null);
-    assert.ok(fixed.includes("Assisted-by: PI (rits/zai-org/glm-5-3)"));
-    assert.ok(!fixed.includes("$PI_MODEL"));
+// ── findPlaceholderTrailer: detection only, the hook refuses what it finds ──
+describe("findPlaceholderTrailer", () => {
+  it("finds a MODEL placeholder in a commit trailer", () => {
+    assert.ok(findPlaceholderTrailer("git commit -m 'fix: x\n\nAssisted-by: PI (MODEL)'"));
   });
 
-  it("fixes the literal in a single-quoted -m message", () => {
-    const cmd = "git commit -m 'fix: x\n\nAssisted-by: PI ($PI_MODEL)'";
-    const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
-    assert.ok(fixed !== null);
-    assert.ok(fixed.includes("PI (model-x)"));
-    assert.ok(!fixed.includes("$PI_MODEL"));
+  it("finds an unexpanded $PI_MODEL placeholder", () => {
+    assert.ok(findPlaceholderTrailer(`git commit -F - <<'EOF'\nfix: x\n\nAssisted-by: PI ($PI_MODEL)\nEOF`));
   });
 
-  it("fixes the short identity form without the email too", () => {
-    const cmd = "git commit -F file -m 'Assisted-by: PI ($PI_MODEL)'";
-    const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
-    assert.ok(fixed !== null);
-    assert.ok(fixed.includes("PI (model-x)"));
-  });
-
-  // The agent template used to say "Format: TRAILER: PI (MODEL) —
-  // replace MODEL", and a model that skipped the substitution shipped a literal
-  // `MODEL` trailer (commit 023b6bd). The heredoc/-F file path is the one the
-  // injection hook does not cover, so the guard has to rewrite it.
-  it("fixes a literal MODEL placeholder written to a message file", () => {
-    const cmd = `cat <<'EOF' > /tmp/msg
-fix(rules): x
-
-Assisted-by: PI (MODEL)
-EOF
-git commit -F /tmp/msg`;
-    const fixed = fixUnexpandedCommitTrailer(cmd, "rits/zai-org/glm-5-3");
-    assert.ok(fixed !== null);
-    assert.ok(fixed.includes("Assisted-by: PI (rits/zai-org/glm-5-3)"));
-    assert.ok(!fixed.includes("(MODEL)"));
-  });
-
-  it("fixes a literal MODEL placeholder in a -m message", () => {
-    const cmd = "git commit -m 'fix: x\n\nAssisted-by: PI (MODEL)'";
-    const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
-    assert.ok(fixed !== null);
-    assert.ok(fixed.includes("PI (model-x)"));
-    assert.ok(!fixed.includes("(MODEL)"));
-  });
-
-  // Qodo #1004: only the `-m` payload is the commit message; a trailer-shaped
-  // line written by another command in the same string must not be altered.
-  it("leaves a trailer-shaped file write alone when -m carries the message", () => {
-    const cmd = `printf 'Assisted-by: PI (MODEL)\n' > /tmp/other && git commit -m 'fix: x'`;
-    assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
-  });
-
-  // Git treats each -m as a separate paragraph, so a placeholder in any of them
-  // must be rewritten (Qodo #1004, round 6).
-  it("rewrites a placeholder in a second -m paragraph", () => {
-    const cmd = `git commit -m 'fix: subject' -m 'Assisted-by: PI (MODEL)'`;
-    const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
-    assert.ok(fixed !== null);
-    assert.ok(fixed.includes("Assisted-by: PI (model-x)"));
-    assert.ok(!fixed.includes("(MODEL)"));
-    assert.ok(fixed.includes("fix: subject"), "the subject paragraph is untouched");
-  });
-
-  it("accepts the file-based recipe without needing a rewrite", () => {
-    // The instruction tells the agent to expand $PI_MODEL with printf, so there
-    // is no placeholder left for the guard (Qodo #1004).
-    const cmd = `printf '\n\nAssisted-by: PI (%s)\n' "$PI_MODEL" >> /tmp/msg && git commit -F /tmp/msg`;
-    assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
-  });
-
-  it("leaves a MODEL mention outside a trailer line untouched", () => {
-    assert.equal(fixUnexpandedCommitTrailer("git commit -m 'docs: MODEL is a placeholder'", "model-x"), null);
-  });
-
-  it("returns null when there is nothing to fix", () => {
-    assert.equal(fixUnexpandedCommitTrailer("git commit -m 'fix: x'", "model-x"), null);
-    assert.equal(fixUnexpandedCommitTrailer("git commit -m 'Assisted-by: PI (model-x)'", "model-x"), null);
-  });
-
-  it("ignores non-commit commands even when they contain the literal", () => {
-    assert.equal(fixUnexpandedCommitTrailer("echo 'PI ($PI_MODEL)' > file", "model-x"), null);
-  });
-
-  it("leaves a bare $PI_MODEL mention outside the trailer identity untouched", () => {
-    const cmd = 'git commit -m "docs: explain the PI_MODEL variable"';
-    assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
-  });
-
-  // Qodo 988d3a68: only trailer-SHAPED lines are rewritten — mid-sentence
-  // prose and unrelated compound-command parts stay untouched.
-  it("leaves mid-sentence prose mentioning the identity untouched", () => {
-    const cmd = 'git commit -m "docs: we no longer write PI ($PI_MODEL) in trailers"';
-    assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
-  });
-
-  it("leaves an unrelated echo in a compound command untouched", () => {
-    const cmd = 'git commit -m "fix: x" && echo "saw PI ($PI_MODEL) once"';
-    assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
-  });
-
-  it("fixes the trailer right after the -m opening quote (single-line shape)", () => {
-    const cmd = "git commit -m 'Assisted-by: PI ($PI_MODEL)'";
-    const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
-    assert.ok(fixed !== null);
-    assert.ok(fixed.includes("PI (model-x)"));
-    assert.ok(!fixed.includes("$PI_MODEL"));
+  it("ignores commands that are not commits", () => {
+    assert.equal(findPlaceholderTrailer('echo "Assisted-by: PI (MODEL)" > /tmp/x'), null);
   });
 });
 

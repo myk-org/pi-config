@@ -2606,69 +2606,38 @@ function bodyAlreadySigned(text: string): boolean {
   return false;
 }
 
-// Trailer-shaped line: `Token:` at line start (real newline, literal \n
-// escape, or command start), then the PI trailer identity. Anchoring to the
-// line start keeps mid-sentence prose and unrelated compound-command parts
-// untouched (Qodo 988d3a68) — only an actual trailer line is rewritten.
-const unexpandedTrailerLine = /(^|\n|\\n|-m\s+['"])([ \t]*[A-Za-z][A-Za-z0-9-]*:[ \t]*)PI \((?:\$?\{?PI_MODEL\}?|MODEL)\)/g;
+// Trailer-shaped line: `Token:` at line start (real newline, literal \n escape, or
+// command start), then a PI trailer identity that is a PLACEHOLDER rather than a model
+// id. Detection only — the hook refuses such a commit instead of rewriting text it may
+// have misparsed (Qodo, PR #1004).
+const placeholderTrailerLine = /(^|\n|\\n|-m\s+['"])([ \t]*[A-Za-z][A-Za-z0-9-]*:[ \t]*)PI \(\$?\{?PI_MODEL\}?|MODEL\)/g;
 
-/** #932: an agent may write the commit trailer with the literal `$PI_MODEL`
- *  (typically inside a quoted heredoc, where the shell cannot expand it).
- *  Rewrite the trailer identity to the resolved model id before the commit
- *  runs. Returns the fixed command, or null when nothing needed fixing.
- *  Scoped to `git commit` commands and to trailer-shaped lines only, so
- *  commit-message prose that legitimately mentions `$PI_MODEL` — bare or
- *  mid-sentence — and unrelated parts of compound commands are untouched. */
-export function fixUnexpandedCommitTrailer(command: string, modelId: string): string | null {
+/** The trailer line carrying an unresolved placeholder, or null when the command has none.
+ *  A `Token:` anchor keeps prose that merely mentions the placeholder out of the result. */
+export function findPlaceholderTrailer(command: string): string | null {
 	if (!/(?:PI_MODEL|\bMODEL\b)/.test(command)) return null;
 	if (!/\bgit\s+commit\b/.test(command)) return null;
-	const rewrite = (text: string) => text.replace(unexpandedTrailerLine, `$1$2PI (${modelId})`);
-	// A `-m` payload IS the commit message, so only that slice is rewritten: a
-	// trailer-shaped line belonging to ANOTHER command in the same string (a file
-	// write, say) is unrelated and must not be altered (Qodo, PR #1004). Without
-	// `-m` the message comes from a file the hook cannot see, so trailer lines
-	// anywhere in the command are the message being prepared.
-	let fixed: string;
-	if (/-m\s+["']/.test(command)) {
-		// Git treats every `-m` as a separate message paragraph, so all payloads are
-		// rewritten — `git commit -m 'subject' -m 'Assisted-by: PI (MODEL)'` must not
-		// keep a broken placeholder in the second one (Qodo, PR #1004).
-		let changed = false;
-		fixed = command.replace(/-m\s+(["'])([\s\S]*?)\1/g, (full: string, _quote: string, payload: string) => {
-			const rewritten = rewrite(payload);
-			if (rewritten === payload) return full;
-			changed = true;
-			return full.replace(payload, rewritten);
-		});
-		if (!changed) fixed = command;
-	} else {
-		fixed = rewrite(command);
-	}
-	if (fixed === command) {
-		enfLog.debug("unexpanded trailer nothing to rewrite", modelId);
+	const matches = [...command.matchAll(placeholderTrailerLine)];
+	const found = matches.at(-1);
+	if (!found) {
+		enfLog.debug("placeholder trailer none");
 		return null;
 	}
-	enfLog.info("unexpanded trailer rewritten", modelId);
-	return fixed;
+	const line = `${(found[2] ?? "").trim()} PI (placeholder)`;
+	enfLog.warn("placeholder trailer found", line);
+	return line;
 }
 
 /** Trailers where git itself needs an address: `Co-authored-by` credits a person. */
 const TRAILERS_REQUIRING_EMAIL = new Set(["co-authored-by"]);
 
-/** The value appended after `<Trailer>:`. `Assisted-by` needs no address, `Co-authored-by` does —
- *  hosting integrations only credit a co-author through `Name <email>` (Qodo, PR #1004). */
+/** The value appended after `<Trailer>:`. `Assisted-by` needs no address, `Co-authored-by`
+ *  does — hosting integrations only credit a co-author through `Name <email>`. */
 export function commitTrailerIdentity(trailerName: string, modelId: string): string {
 	const needsEmail = TRAILERS_REQUIRING_EMAIL.has(trailerName.trim().toLowerCase());
 	const identity = needsEmail ? `PI (${modelId}) <noreply@pi.dev>` : `PI (${modelId})`;
 	enfLog.debug("commit_trailer_identity", trailerName, needsEmail);
 	return identity;
-}
-
-/** One `Trailer: identity` paragraph, quoted for the shape being injected into. */
-function escapedTrailer(trailerName: string, identity: string, quoteChar: string): string {
-	if (quoteChar === "'") return `${escapeForSingleQuote(trailerName)}: ${identity}`;
-	if (quoteChar === '"') return `${escapeForDoubleQuote(trailerName)}: ${identity}`;
-	return `${trailerName}: ${identity}`;
 }
 
 /** Append `<Trailer>: PI (<model>)` to the message of a real commit invocation.
@@ -2694,30 +2663,6 @@ export function injectCommitTrailer(command: string, trailerName: string, modelI
 				: `${escapeForDoubleQuote(trailerName)}: ${identity}`;
 			enfLog.info("inject_commit_trailer", "piped", trailerName);
 			return echoPart.slice(0, lastQuoteIdx) + `\\n\\n${escaped.replace(/\n/g, "\\n")}` + echoPart.slice(lastQuoteIdx) + gitPart;
-		}
-		return null;
-	}
-	// Pattern C: heredoc-fed stdin — `git commit -F - <<'EOF' … EOF`. Agents write commit
-	// messages this way constantly (our own prompts do), and it is not a pipe, so
-	// Pattern A misses it; the trailer goes before the closing delimiter (Qodo, PR #1004).
-	// The opener must be a REAL command (line start or after ; & | ( ), never a
-	// mention inside quoted text — a commit message that quotes this very shape
-	// must not be rewritten (Qodo, PR #1004).
-	const heredoc = command.match(/(^|[;&|(]|\n)[ \t]*git\s+commit\b[^\n]*?-F\s*-\s*<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/);
-	if (heredoc) {
-		const delimiter = heredoc[3] ?? "";
-		const openerEnd = (heredoc.index ?? 0) + heredoc[0].length;
-		// The message ends at the FIRST line that is exactly the delimiter.
-		const closer = command.slice(openerEnd).match(new RegExp(`(^|\\n)[ \\t]*${delimiter}[ \\t]*(?=\\n|$)`));
-		const closeAt = closer?.index === undefined ? undefined : openerEnd + closer.index;
-		if (closeAt !== undefined) {
-			const body = command.slice(0, closeAt);
-			if (commandHasTrailerByName(body, trailerName)) {
-				enfLog.debug("inject_commit_trailer", "already present", trailerName);
-				return null;
-			}
-			enfLog.info("inject_commit_trailer", "heredoc", trailerName);
-			return `${body}\n\n${escapedTrailer(trailerName, identity, "")}${command.slice(closeAt)}`;
 		}
 		return null;
 	}

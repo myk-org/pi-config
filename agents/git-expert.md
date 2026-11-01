@@ -53,7 +53,10 @@ Before ANY `git commit`, if `review_loop_enforcement` is `true`:
     sees the file's contents, so append the trailer yourself with the already-resolved id:
     `printf '\n\nTRAILER: PI (%s)\n' "$PI_MODEL" >> <file>` and then commit. The shell expands
     `$PI_MODEL` while writing the file, so no placeholder can reach the message.
-  Never write a bare `MODEL` placeholder; never leave an unexpanded `$PI_MODEL` in a `-m` message.
+  Never write a bare `MODEL` placeholder and never leave an unexpanded `$PI_MODEL` in a `-m` message:
+  the enforcement hook **refuses** such a commit (it reports the placeholder line back), and it also
+  refuses a commit shape it cannot inspect when the message shows no trailer. The fix is always to
+  write the trailer yourself with the real id, then commit again.
   Skip only when the message already carries that trailer.
 - If `use_worktrees` is `true`: BLOCK `git checkout` (except `git checkout -- <file>`) and `git switch`.
   Use `git worktree add .worktrees/NAME -b BRANCH DEFAULT_BRANCH` instead

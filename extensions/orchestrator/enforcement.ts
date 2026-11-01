@@ -20,7 +20,7 @@ import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 import {
   conflictCandidateDirs,
   pushTargetsProtectedBranch,
-  fixUnexpandedCommitTrailer,
+  findPlaceholderTrailer,
   maskQuotedRegions,
   isStdinFedShellStatement,
 } from "./enforcement-helpers.js";
@@ -143,18 +143,20 @@ export function commitTrailerModelId(ctx: any): string {
 let bridgedUi: ReturnType<typeof createBridgedUi> | null = null;
 
 async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd: string): Promise<EnforcementResult> {
-  // #932: rewrite a literal `$PI_MODEL` in the trailer identity — an agent
-  // following the git-expert trailer instruction may write the placeholder
-  // verbatim (quoted heredocs and single-quoted -m strings never expand it).
-  // This runs BEFORE the setting check and pattern matching so heredoc/-F
-  // commits — which the injection patterns below do not cover — still get a
-  // correct trailer, and the dedup check below sees the already-fixed name.
-  const literalModelId = commitTrailerModelId(ctx);
-  const fixedCommand = fixUnexpandedCommitTrailer(command, literalModelId);
-  if (fixedCommand !== null) {
-    log.info("commit_trailer: replaced unexpanded $PI_MODEL literal with model id", literalModelId);
-    command = fixedCommand;
-    event.input.command = fixedCommand;
+  // A placeholder trailer is REFUSED, never rewritten: the hook cannot safely tell
+  // command text from message prose (a commit message quoting the very shape it
+  // parses, a `;` inside quotes, indented examples), and rewriting the wrong span
+  // corrupts a message or edits an unrelated command. The agent has the text, so it
+  // fixes it and retries (Qodo, PR #1004).
+  const placeholder = findPlaceholderTrailer(command);
+  if (placeholder) {
+    return {
+      block: true,
+      reason:
+        `⛔ Commit refused: the trailer carries an unresolved placeholder (${placeholder}). ` +
+        `Write \`TRAILER: PI (${commitTrailerModelId(ctx)})\` instead of a MODEL/$PI_MODEL placeholder ` +
+        "and re-run the commit.",
+    };
   }
 
   const trailerSetting = getSetting(gitCwd, "commit_trailer");
@@ -199,8 +201,21 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
   }
 
   const injected = injectCommitTrailer(command, trailerName, modelId);
-  if (injected !== null) event.input.command = injected;
-
+  if (injected !== null) {
+    event.input.command = injected;
+    return undefined;
+  }
+  // Shapes the hook cannot see (a message file, an exotic heredoc) must carry the
+  // trailer already; refusing is cheaper than guessing, and the message says how.
+  if (!commandHasTrailerByName(command, trailerName)) {
+    return {
+      block: true,
+      reason:
+        `⛔ Commit refused: no \`${trailerName}\` trailer found and this commit shape is opaque to the hook ` +
+        `(the message is built in a way it cannot inspect). Add \`${trailerName}: PI (${modelId})\` to the message ` +
+        "yourself — e.g. `printf '\\n\\n" + trailerName + ": PI (%s)\\n' \"$PI_MODEL\" >> <file>` for `-F <file>` — then re-run the commit.",
+    };
+  }
   return undefined;
 }
 
