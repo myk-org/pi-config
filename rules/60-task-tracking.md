@@ -7,58 +7,35 @@
 
 ---
 
-## When to Create Tasks
+## When Tasks Are Required
 
-**BEFORE starting any multi-step workflow (3+ steps)**, use `TaskCreate` to list ALL steps first.
+The request needs **2+ distinct actions** — then tasks are required:
 
-**Use tasks for:** feature implementation, bug fixes with multiple files,
-workflows from `rules/05-issue-first-workflow.md` or `rules/20-code-review-loop.md`,
-multi-file refactoring, or any work involving more than 2 actions.
+- more than one file to change, or code plus tests plus docs
+- any workflow from `05-issue-first-workflow.md` or `20-code-review-loop.md`
+- the user lists several things to do ("do X, then Y", numbered items)
+- work conditioned on a future event ("after Qodo approves, deploy and test") — create the tasks now, put the trigger in the description, and block the dependents on it
 
-**Deferred missions count as multi-step work.** When the user assigns work
-conditional on a future event ("after X", "once Y", "when Z"), create the
-tasks IMMEDIATELY in that same turn — the trigger condition goes in the task
-description, and dependent tasks block on the trigger task. Never carry a
-deferred mission only in conversation memory: compaction or a session
-restart loses it silently.
+**No tasks:** a single-step action, a one-file/one-line change, a question, an explanation, read-only investigation.
 
-- ❌ BAD: "after Qodo approves, deploy and test" → acknowledged, no task
-- ✅ GOOD: `TaskCreate("Deploy X locally — trigger: Qodo R6 clean")` + blocked follow-ups
+## First Action
 
-**Skip tasks for:** single-step actions, questions/explanations, or trivial fixes.
+Plan the whole job in **one `TaskBulkCreate` call** listing every step — not one `TaskCreate` per step, and not after the first edit. `TaskCreate` is for a single step added later.
 
----
+## Granularity
 
-## Task Granularity
+One concrete action per task: which file, which change.
 
-Tasks MUST be **detailed and specific** — not high-level summaries.
+- ❌ `Implement the fix` / `Create PR`
+- ✅ `Edit extensions/orchestrator/utils.ts — add timeout parameter to fetchData()` / `Create PR with the test plan`
 
-- ❌ BAD: `Implement the fix` / `Review code` / `Create PR`
-- ✅ GOOD: `Edit extensions/orchestrator/utils.ts — add timeout parameter to fetchData()` / `Run code review loop (3 async reviewers)` / `Create PR with description`
+## Lifecycle
 
----
-
-## Task Lifecycle (MANDATORY)
-
-Create all tasks BEFORE starting work via `TaskCreate`.
-Mark each `in_progress` before starting and `completed` immediately after finishing via `TaskUpdate`.
-Work through tasks in order — do not skip tasks or start new work while unchecked tasks exist (unless user explicitly pivots).
-
----
+`in_progress` before starting a task, `completed` immediately after. Work in order. Never abandon a task — drop a stale one with `TaskUpdate status: "deleted"`.
 
 ## Side Questions
 
-Answer the question, then resume the next unchecked task immediately — the persistent task list tells you exactly where you left off.
-
----
-
-## Integration & Key Rules
-
-Task tracking works alongside existing workflow rules — include issue-first, code review, and documentation steps as individual tasks.
-{{IF:task_reminder_enabled}}
-Tasks are code-enforced (reminders after 4+ ignored turns).
-{{/IF}}
-Never abandon tasks — if scope changes, use `TaskUpdate` with `status: "deleted"` to remove obsolete tasks; the task list is your contract.
+Answer the question, then resume the next unchecked task — the task list says where you left off.
 
 ---
 
