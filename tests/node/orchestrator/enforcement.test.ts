@@ -2502,6 +2502,11 @@ describe("injectCommitTrailer", () => {
     assert.ok(out.includes("| git commit -F -"));
   });
 
+  it("does not duplicate a trailer that lives in a later -m paragraph", () => {
+    const cmd = `git commit -m 'fix: x' -m 'Assisted-by: PI (model-x)'`;
+    assert.equal(injectCommitTrailer(cmd, "Assisted-by", "model-x"), null);
+  });
+
   it("skips a command that already carries the trailer", () => {
     assert.equal(
       injectCommitTrailer('git commit -m "fix: x\n\nAssisted-by: PI (model-x)"', "Assisted-by", "model-x"),
@@ -2604,6 +2609,17 @@ git commit -F /tmp/msg`;
   it("leaves a trailer-shaped file write alone when -m carries the message", () => {
     const cmd = `printf 'Assisted-by: PI (MODEL)\n' > /tmp/other && git commit -m 'fix: x'`;
     assert.equal(fixUnexpandedCommitTrailer(cmd, "model-x"), null);
+  });
+
+  // Git treats each -m as a separate paragraph, so a placeholder in any of them
+  // must be rewritten (Qodo #1004, round 6).
+  it("rewrites a placeholder in a second -m paragraph", () => {
+    const cmd = `git commit -m 'fix: subject' -m 'Assisted-by: PI (MODEL)'`;
+    const fixed = fixUnexpandedCommitTrailer(cmd, "model-x");
+    assert.ok(fixed !== null);
+    assert.ok(fixed.includes("Assisted-by: PI (model-x)"));
+    assert.ok(!fixed.includes("(MODEL)"));
+    assert.ok(fixed.includes("fix: subject"), "the subject paragraph is untouched");
   });
 
   it("accepts the file-based recipe without needing a rewrite", () => {

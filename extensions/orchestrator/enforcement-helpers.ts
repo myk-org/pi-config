@@ -2628,13 +2628,19 @@ export function fixUnexpandedCommitTrailer(command: string, modelId: string): st
 	// write, say) is unrelated and must not be altered (Qodo, PR #1004). Without
 	// `-m` the message comes from a file the hook cannot see, so trailer lines
 	// anywhere in the command are the message being prepared.
-	const inline = command.match(/-m\s+(["'])([\s\S]*?)\1/);
 	let fixed: string;
-	if (inline) {
-		const payload = inline[2] ?? "";
-		const rewritten = rewrite(payload);
-		const start = (inline.index ?? 0) + inline[0].indexOf(payload);
-		fixed = rewritten === payload ? command : command.slice(0, start) + rewritten + command.slice(start + payload.length);
+	if (/-m\s+["']/.test(command)) {
+		// Git treats every `-m` as a separate message paragraph, so all payloads are
+		// rewritten — `git commit -m 'subject' -m 'Assisted-by: PI (MODEL)'` must not
+		// keep a broken placeholder in the second one (Qodo, PR #1004).
+		let changed = false;
+		fixed = command.replace(/-m\s+(["'])([\s\S]*?)\1/g, (full: string, _quote: string, payload: string) => {
+			const rewritten = rewrite(payload);
+			if (rewritten === payload) return full;
+			changed = true;
+			return full.replace(payload, rewritten);
+		});
+		if (!changed) fixed = command;
 	} else {
 		fixed = rewrite(command);
 	}
@@ -2687,7 +2693,9 @@ export function injectCommitTrailer(command: string, trailerName: string, modelI
 	// Pattern B: git commit -m "..." or git commit -m '...'
 	const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
 	if (!mFlagMatch) return null;
-	if (commandHasTrailerByName(mFlagMatch[2] ?? "", trailerName)) {
+	// Every `-m` is a message paragraph, so an existing trailer in ANY of them wins.
+	const allPayloads = [...command.matchAll(/-m\s+(["'])([\s\S]*?)\1/g)].map((m) => m[2] ?? "").join("\n");
+	if (commandHasTrailerByName(allPayloads, trailerName)) {
 		enfLog.debug("inject_commit_trailer", "already present", trailerName);
 		return null;
 	}
