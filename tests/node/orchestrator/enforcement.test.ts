@@ -35,6 +35,7 @@ import {
   gitIdentityConfigSrc,
   failedFileEditSkipMessage,
   findPlaceholderTrailer,
+  messageFileTrailerState,
   injectCommitTrailer,
   resolveEffectiveCwd,
   checkPythonPipBlock,
@@ -2521,6 +2522,24 @@ describe("injectCommitTrailer", () => {
 
   it("returns null for shapes whose message it cannot see", () => {
     assert.equal(injectCommitTrailer("git commit -F /tmp/msg", "Assisted-by", "model-x"), null);
+  });
+});
+
+// ── messageFileTrailerState: `-F <file>` messages are read, not guessed ──
+describe("messageFileTrailerState", () => {
+  const readWith = (text: string) => () => text;
+
+  it("reports a message file that already carries the trailer", () => {
+    assert.equal(messageFileTrailerState("/tmp/msg", "Assisted-by", readWith("fix: x\n\nAssisted-by: PI (m)")), "has");
+  });
+
+  it("reports a message file without the trailer", () => {
+    assert.equal(messageFileTrailerState("/tmp/msg", "Assisted-by", readWith("fix: x")), "missing");
+  });
+
+  it("reports an unreadable message file instead of refusing on a guess", () => {
+    const boom = () => { throw new Error("ENOENT"); };
+    assert.equal(messageFileTrailerState("/tmp/msg", "Assisted-by", boom), "unreadable");
   });
 });
 

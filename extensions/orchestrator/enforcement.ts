@@ -21,6 +21,7 @@ import {
   conflictCandidateDirs,
   pushTargetsProtectedBranch,
   findPlaceholderTrailer,
+  messageFileTrailerState,
   maskQuotedRegions,
   isStdinFedShellStatement,
 } from "./enforcement-helpers.js";
@@ -205,8 +206,27 @@ async function handleCommitTrailer(command: string, event: any, ctx: any, gitCwd
     event.input.command = injected;
     return undefined;
   }
-  // Shapes the hook cannot see (a message file, an exotic heredoc) must carry the
-  // trailer already; refusing is cheaper than guessing, and the message says how.
+  // `git commit -F <file>`: the message is a file we CAN read, so check it instead of
+  // guessing. Refusing a message that already carries the trailer would block the very
+  // flow the git-expert instruction describes (Qodo, PR #1004).
+  const fileMessage = command.match(/git\s+commit\b[^\n]*?-F\s+(?!-)(["']?)([^\s"']+)\1/);
+  if (fileMessage && fileMessage[2]) {
+    const candidate = path.isAbsolute(fileMessage[2]) ? fileMessage[2] : join(gitCwd, fileMessage[2]);
+    const state = messageFileTrailerState(candidate, trailerName, (p) => readFileSync(p, "utf8"));
+    if (state === "has") {
+      log.debug("commit_trailer: message file already carries the trailer", candidate);
+      return undefined;
+    }
+    if (state === "missing") {
+      return {
+        block: true,
+        reason:
+          `⛔ Commit refused: the message file ${fileMessage[2]} has no \`${trailerName}\` trailer. ` +
+          `Append it with the real id — \`printf '\\n\\n" + trailerName + ": PI (%s)\\n' \"$PI_MODEL\" >> " + fileMessage[2] + "\` — then re-run the commit.`,
+      };
+    }
+  }
+  // Other opaque shapes must carry the trailer already; refusing beats guessing.
   if (!commandHasTrailerByName(command, trailerName)) {
     return {
       block: true,

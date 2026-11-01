@@ -2640,6 +2640,24 @@ export function commitTrailerIdentity(trailerName: string, modelId: string): str
 	return identity;
 }
 
+/** Does a `-F <file>` commit message already carry the trailer?
+ *  The caller injects the reader so the decision is testable without touching disk —
+ *  the hook reads the file, it does not guess from the command text (Qodo, PR #1004). */
+export function messageFileTrailerState(
+	filePath: string,
+	trailerName: string,
+	read: (path: string) => string,
+): "has" | "missing" | "unreadable" {
+	try {
+		const state = commandHasTrailerByName(read(filePath).slice(0, 64_000), trailerName) ? "has" : "missing";
+		enfLog.debug("message_file_trailer", filePath, state);
+		return state;
+	} catch (error: any) {
+		enfLog.debug("message_file_trailer unreadable", filePath, String(error?.message ?? error));
+		return "unreadable";
+	}
+}
+
 /** Append `<Trailer>: PI (<model>)` to the message of a real commit invocation.
  *  Covers the two shapes whose message the hook can see — `echo … | git commit -F -`
  *  and `git commit -m "…"` — and returns null when the trailer is already there or
