@@ -481,7 +481,7 @@ exit 0
    * Drives prompt() over a fixture session that reports `reportedTotal` as the
    * turn cost, so cost and token assertions can live in separate tests.
    */
-  const promptWithReportedCost = async (pricingKnown: boolean, reportedTotal: number | null) => {
+  const promptWithReportedCost = async (pricingKnown: boolean, reportedTotal: number | null, totalFromProvider?: boolean) => {
     const store = new SessionStore();
     let emit: (event: unknown) => void = () => {};
     const id = `s-pricing-${pricingKnown}-${reportedTotal}`;
@@ -499,7 +499,7 @@ exit 0
             messages: [{
               role: "assistant",
               content: [{ type: "text", text: "done" }],
-              usage: { input: 10, output: 4, cacheRead: 3, cacheWrite: 2, cost: reportedTotal == null ? undefined : { total: reportedTotal } },
+              usage: { input: 10, output: 4, cacheRead: 3, cacheWrite: 2, cost: reportedTotal == null ? undefined : { total: reportedTotal, totalFromProvider } },
             }],
           });
         },
@@ -540,6 +540,26 @@ exit 0
       1.75,
       "a driver-reported positive cost must survive even when catalog pricing is unknown",
     );
+  });
+
+  /**
+   * pi 1.5.0 tags a provider-billed total with `cost.totalFromProvider`. A
+   * billing driver knows what it charged, so a billed zero is genuinely free
+   * spend even when the model's catalog price is unknown — withholding it would
+   * report free spend as unknown, the mirror of the bug the case above guards.
+   */
+  it("prompt() trusts a provider-billed total even when catalog pricing is unknown", async () => {
+    const billedFree = await promptWithReportedCost(false, 0, true);
+    assert.equal(billedFree.usage.cost_usd, 0, "a provider-billed zero is free spend, not unknown spend");
+    assert.equal(billedFree.usage.cost_partial, false, "nothing was withheld, so the total is complete");
+
+    const billedReal = await promptWithReportedCost(false, 1.25, true);
+    assert.equal(billedReal.usage.cost_usd, 1.25, "a provider-billed amount is kept as sent");
+    assert.equal(billedReal.usage.cost_partial, false, "a billed total is complete");
+
+    const estimateFree = await promptWithReportedCost(false, 0, false);
+    assert.equal(estimateFree.usage.cost_usd, null, "an unmarked zero stays unknown, not free");
+    assert.equal(estimateFree.usage.cost_partial, true, "and the total stays a lower bound");
   });
 
   /**

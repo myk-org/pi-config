@@ -5,9 +5,10 @@ Best practices for integrating `@myk-org/pi-sidecar` into your project.
 ## Prerequisites
 
 `@myk-org/pi-sidecar` package metadata requires `@earendil-works/pi-coding-agent`
-and `@earendil-works/pi-ai` version `>=1.4.0`. At startup, the sidecar checks
+and `@earendil-works/pi-ai` version `>=1.5.0`. At startup, the sidecar checks
 only the `pi-coding-agent` floor. Upgrade both dependencies before starting the
-service if either is older.
+service if either is older — the floor moved up because the sidecar and the
+orchestrator now use APIs added in 1.5.0.
 
 ## Installation
 
@@ -436,6 +437,15 @@ So the four cases are:
    cost zero, so `cost_partial` marks the total as incomplete rather than
    asserting missing spend.
 
+Pi 1.5.0 adds `Usage.cost.totalFromProvider`: true when the driver's `cost.total` is
+the provider's billed amount, false or absent when it is a catalog estimate. A
+provider-billed total is authoritative exactly as sent — including a billed `0` —
+and is kept even when the model's catalog pricing is unknown. The `null` and
+partial cases above still describe unreported or catalog-estimated cost only: a
+catalog estimate on an unknown-pricing model yields `cost_usd: null` or a
+`cost_partial: true` lower bound, and unknown spend and free spend are told apart
+by provenance, not by the number.
+
 Token counts (`input_tokens`, `output_tokens`, `cache_read_tokens`,
 `cache_write_tokens`) are always populated regardless of pricing.
 
@@ -491,6 +501,7 @@ Sidecar depends on `pi-orchestrator-config` and `@myk-org/pi-vertex-claude` at
 sidecar pulls the full set.
 
 `@myk-org/pi-vertex-claude` is standalone: it does not depend on
-`pi-orchestrator-config`. Its peer deps require
-`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` `>=1.4.0` — same
-floor as sidecar.
+`pi-orchestrator-config`. Its `@earendil-works/pi-coding-agent` / `pi-ai` peer
+deps are `"*"` — host-provided, so npm enforces no floor there; the
+orchestrator warns and the sidecar refuses to start below the floor described
+above.

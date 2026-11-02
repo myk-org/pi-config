@@ -432,6 +432,56 @@ is in there and you can copy the file by hand.</p>
 </tbody>
 </table></div>
 <p>Outside the TUI, <code>/mcp</code> prints status.</p>
+<h2 id="oauth-sign-in">OAuth sign-in</h2>
+<p>A server that answers <code>401</code> and advertises OAuth signs in with <code>pi mcp login &lt;server&gt;</code> or
+<code>/mcp login</code>. Tokens are stored in <code>~/.pi/agent/mcp-auth.json</code> and refreshed when they expire
+or the server rejects them; signing out deletes them.</p>
+<p>pi identifies itself to the authorization server in one of two ways. When the server
+advertises Client ID Metadata Documents (CIMD) for public clients, pi uses its document —
+client ID <code>https://pi.dev/oauth/client.json</code>, redirect URI <code>http://127.0.0.1:&lt;port&gt;/callback</code>
+— and skips registration. Otherwise pi registers a client dynamically (DCR). A client
+registered earlier stays in use while its redirect URI matches, until you sign out.</p>
+<p><code>oauth.clientRegistration</code> on the server chooses the method:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auto</code> (default)</td>
+<td>The document when the server supports it; registers instead when <code>clientName</code> or a non-default <code>callbackUrl</code> is set</td>
+</tr>
+<tr>
+<td><code>dcr</code></td>
+<td>Always registers a client</td>
+</tr>
+<tr>
+<td><code>cimd</code></td>
+<td>Always uses the document; sign-in fails if the server does not support CIMD for public clients</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"mcpServers"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"example"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://mcp.example.com/mcp"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"oauth"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">"clientRegistration"</span><span class="p">:</span><span class="w"> </span><span class="s2">"dcr"</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><code>pi mcp add --oauth-client-registration &lt;mode&gt;</code> sets the mode when adding a server. <code>cimd</code>
+cannot be combined with <code>clientId</code> or <code>clientName</code>.</p>
+<p><code>pi mcp login &lt;server&gt; -l</code> and <code>pi mcp logout &lt;server&gt; -l</code> accept <code>-l</code> for a server defined in
+the project's <code>.pi/mcp.json</code>, the same scoping <code>-l</code> gives <code>pi mcp add</code> and <code>pi mcp remove</code>:</p>
+<div class="highlight"><pre><span></span><code>pi<span class="w"> </span>mcp<span class="w"> </span>login<span class="w"> </span>example<span class="w"> </span>-l
+pi<span class="w"> </span>mcp<span class="w"> </span><span class="nb">logout</span><span class="w"> </span>example<span class="w"> </span>-l
+</code></pre></div>
+
 <h2 id="how-tools-reach-the-model">How tools reach the model</h2>
 <p>An MCP server can expose dozens of tools. Declaring all of them on every request would
 bloat the context window, so each server has an <strong>exposure</strong> that decides when its tools
@@ -539,6 +589,7 @@ not <code>hidden</code>, and take the widest exposure among them.</p>
 </ul>
 </li>
 <li><a href="#managing-servers">Managing servers</a></li>
+<li><a href="#oauth-sign-in">OAuth sign-in</a></li>
 <li><a href="#how-tools-reach-the-model">How tools reach the model</a></li>
 <li><a href="#calling-a-tool">Calling a tool</a></li>
 <li><a href="#resources">Resources</a></li>

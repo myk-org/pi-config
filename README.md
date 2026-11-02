@@ -210,6 +210,22 @@ After updating, run `/reload` in pi or restart pi to pick up changes.
 Refresh the global agent package after acpx-provider / cli-provider / settings
 changes so `~/.pi` is not a mixed checkout (see issue #651).
 
+### Custom update command
+
+`pi update` installs a new release with a global npm install. When a wrapper or another
+package manager provides pi — mise, pnpm, nix — point it at that manager's command instead:
+
+```bash
+export PI_SELF_UPDATE_COMMAND="mise use -g npm:{packageName}@{version}"
+```
+
+`pi update` runs the command only when pi.dev reports a newer release, replacing
+`{packageName}`, `{version}`, and `{installSpec}` (`{packageName}@{version}`) with that
+release. The value is split on spaces; for an argument that contains spaces, set the global
+`selfUpdateCommand` setting in `~/.pi/agent/settings.json` as an argv array such as
+`["nix", "profile", "upgrade", "pi"]`. It can only be set in the agent-directory settings,
+and `PI_SELF_UPDATE_COMMAND` takes precedence over it.
+
 ## Usage
 
 ### Automatic delegation
@@ -1076,7 +1092,7 @@ it also runs as a pre-commit hook when TypeScript files change.
 
 ## Prerequisites
 
-- [pi](https://github.com/badlogic/pi-mono) (minimum version: **1.4.0**). Pidash uses Pi's `ui_prompt_start` and `ui_prompt_end` events to show prompt wait separately from agent work.
+- [pi](https://github.com/badlogic/pi-mono) (minimum version: **1.5.0**). Pidash uses Pi's `ui_prompt_start` and `ui_prompt_end` events to show prompt wait separately from agent work.
 - `gh` CLI (for GitHub operations)
 - `uv` (for Python execution)
 - `myk-pi-tools` (optional, for `/pr-review` and `/release`)

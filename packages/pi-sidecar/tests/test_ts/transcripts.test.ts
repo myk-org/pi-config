@@ -754,6 +754,11 @@ describe("runtime recording override (#935)", () => {
     await store.prompt(id, "hi");
     assert.equal(readdirSyncSafe(dir).length, 0, "disabled: zero I/O");
 
+    // Force the header's creation time into an earlier millisecond than the
+    // turn's timestamp: on a fast machine both land in the same ms, which made
+    // the ordering assertion below fail at random. Transactions still record
+    // the real creation time; the assertion just needs a resolvable gap.
+    await new Promise((resolve) => setTimeout(resolve, 5));
     store.setRecordingOverride(true);
     await store.prompt(id, "again");
     const file = join(dir, "s-mid-toggle.jsonl");

@@ -14,7 +14,6 @@ const require = createRequire(import.meta.url);
 
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
@@ -107,7 +106,12 @@ const ChainItem = Type.Object({
   cwd: Type.String({ description: "Working directory" }),
   estimatedSeconds: Type.Number({ description: "Estimated step duration in seconds" }),
 });
-const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
+// pi 1.5.0's StringEnum returns a pi-schema Schema, which TypeBox's Static cannot
+// read — params.agentScope degraded to `unknown`. Unsafe keeps the JSON-Schema
+// shape providers need while carrying the literal union in the static type.
+const AgentScopeSchema = Type.Unsafe<AgentScope>({
+  type: "string",
+  enum: ["user", "project", "both"],
   description: 'Agent directories to use. Default: "both".',
   default: "both",
 });

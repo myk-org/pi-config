@@ -41,6 +41,7 @@ paths = [
   "settings-keys.json",
   "package.json", # deps and npm scripts are artifact content
   "README.md",    # npm auto-includes it in the tarball
+  "CHANGELOG.md", # packaged + read by pi (pi.changelogPath) for update notes
 ]
 # docs_render belongs to the pi-docsite generator, not the orchestrator.
 exclude-paths = ["scripts/docs_render/"]
