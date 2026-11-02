@@ -9,7 +9,9 @@ tell apart from a hand edit by looking at the patch.
 
 This test settles it mechanically: regenerate from the same sources into a
 throwaway directory and require the committed tree to carry exactly that output,
-byte for byte.
+byte for byte — pages, ``llms*.txt``, ``search-index.json`` and everything under
+``docs/assets/``, which the generator owns just as much and which downstream
+sites serve directly.
 
 Ownership comes from the generator, never from a glob over the repository:
 ``pi-docsite`` deliberately preserves HTML it did not write (a hand-written
@@ -33,7 +35,6 @@ from pathlib import Path
 import pytest
 
 TAGLINE = "Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar."
-AGGREGATE_ARTIFACTS = ("llms.txt", "llms-full.txt", "search-index.json")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCS = REPO_ROOT / "docs"
 
@@ -57,23 +58,26 @@ def test_committed_docs_match_generator_output() -> None:
 
         assert generate.main(["--docs-dir", str(staged), "--tagline", TAGLINE]) == 0
 
-        generated = sorted(staged.glob("*.html")) + [staged / name for name in AGGREGATE_ARTIFACTS]
+        generated = sorted(
+            path for path in staged.rglob("*") if path.is_file() and path.suffix != ".md" and path.name != "nav.json"
+        )
         produced = [path for path in generated if path.exists()]
         assert produced, "the generator produced no artifacts -- nothing to compare"
 
         missing: list[str] = []
         drifted: list[str] = []
         for path in produced:
-            committed = DOCS / path.name
+            relative = path.relative_to(staged)
+            committed = DOCS / relative
             if not committed.exists():
-                missing.append(path.name)
+                missing.append(str(relative))
             elif committed.read_bytes() != path.read_bytes():
-                drifted.append(path.name)
-        released = {path.name for path in produced}
+                drifted.append(str(relative))
+        released = {path.relative_to(staged) for path in produced}
         stale = [
             page.name
             for page in sorted(DOCS.glob("*.html"))
-            if page.name not in released and marker in page.read_text(encoding="utf-8")
+            if Path(page.name) not in released and marker in page.read_text(encoding="utf-8")
         ]
 
         problems = [
