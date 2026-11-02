@@ -43,6 +43,13 @@ catalog all-zero cost is authoritative: that model is free and reports `cost_usd
 special-cased. Read `cost_usd` together with `cost_partial`; consumers must not coalesce `null` to `0` nor
 present a partial total as complete — see `packages/pi-sidecar/CONSUMER-GUIDE.md`.
 
+Pi 1.5.0 adds `Usage.cost.totalFromProvider`: true when `cost.total` is the provider's billed
+amount, false or absent when it is a catalog estimate. A provider-billed total is authoritative
+exactly as sent — including a billed `0` — and is kept even when the model's catalog pricing is
+unknown, so unknown spend and free spend are told apart by provenance, not by the number. A
+catalog estimate on an unknown-pricing model still yields `cost_usd: null`, or a lower bound
+with `cost_partial: true`; the consumer rule above covers both kinds of total.
+
 `GET /providers` lists all provider IDs registered in the initialized runtime,
 including built-ins and extensions, regardless of ambient auth or whether
 `GET /models` includes their models. It returns `{ "providers": [...] }` with

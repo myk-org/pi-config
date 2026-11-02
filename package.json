@@ -15,6 +15,7 @@
     "extensions/pidiff/pidiff-ui"
   ],
   "files": [
+    "CHANGELOG.md",
     "extensions/acpx-provider/",
     "extensions/cli-provider/",
     "extensions/providers/",
@@ -76,10 +77,10 @@
     "ws": "^8.0.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^1.4.0",
-    "@earendil-works/pi-ai": "^1.4.0",
-    "@earendil-works/pi-coding-agent": "^1.4.0",
-    "@earendil-works/pi-tui": "^1.4.0",
+    "@earendil-works/pi-agent-core": "^1.5.0",
+    "@earendil-works/pi-ai": "^1.5.0",
+    "@earendil-works/pi-coding-agent": "^1.5.0",
+    "@earendil-works/pi-tui": "^1.5.0",
     "@types/node": "^22.20.1",
     "jsdom": "^30.1.1",
     "tsx": "^4.0.0"
@@ -100,6 +101,7 @@
     "protobufjs": "7.6.5"
   },
   "pi": {
+    "changelogPath": "./CHANGELOG.md",
     "extensions": [
       "./extensions"
     ],

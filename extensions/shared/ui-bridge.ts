@@ -110,6 +110,10 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
       externalDone(resp.value);
     });
 
+    // Report "blocked on user input" (OSC 7501) while the dialog is visible.
+    const blocked = { kind: "question" as const, message: message ? `${title} — ${message}` : title };
+    log.debug("bridged prompt opened with blocked status", { id, method, kind: blocked.kind });
+
     try {
       const result = (await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (v: any) => void) => {
         let resolved = false;
@@ -215,7 +219,7 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
             tui.requestRender();
           },
         };
-      })) as T | undefined;
+      }, { blocked })) as T | undefined;
       return result;
     } finally {
       unsubscribe?.();

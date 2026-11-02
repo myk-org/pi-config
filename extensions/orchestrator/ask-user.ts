@@ -14,6 +14,9 @@ import {
 } from "@earendil-works/pi-tui";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("ask-user");
 
 export function registerAskUser(
   pi: ExtensionAPI,
@@ -78,6 +81,7 @@ export function registerAskUser(
         }
       });
 
+      log.debug("ask_user prompt opened with blocked status", { askId, mode: params.options?.length ? "select" : "input" });
       const result = await ctx.ui.custom<string | null>(
         (tui, theme, _kb, done) => {
           // Allow browser to resolve this dialog
@@ -260,7 +264,7 @@ export function registerAskUser(
             },
           };
         },
-
+        { blocked: { kind: "question", message: params.question } },
       );
 
       unsubscribe();

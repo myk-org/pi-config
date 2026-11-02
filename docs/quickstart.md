@@ -6,10 +6,10 @@ Get pi-config installed, configure your project, start the local daemons, and ru
 
 - Node.js (>= 22)
 - Git installed and configured
-- `pi` >= 1.4.0 (install with `npm install -g @earendil-works/pi-coding-agent`)
+- `pi` >= 1.5.0 (install with `npm install -g @earendil-works/pi-coding-agent`)
 - `uv` (Python package manager)
 
-> **Note:** pi-config requires pi **1.4.0 or newer**. On an older version, CLI/ACPX providers stay unregistered and pi warns on session start.
+> **Note:** pi-config requires pi **1.5.0 or newer**, because the orchestrator and sidecar call APIs added in that release. On an older version, CLI/ACPX providers stay unregistered and pi warns on session start.
 
 ## Quick Example
 
@@ -129,6 +129,16 @@ Skip the settings file when you prefer env vars. Resolution order:
 
 See [Configuration & Settings](configuration.html) for keys and env var names. For CLI utilities used by review and memory workflows, see [myk_pi_tools CLI Reference](cli-reference.html).
 
+### Update pi through your own package manager
+
+`pi update` installs a new release with a global npm install. Wrapper installs (mise, pnpm, nix) need their own command instead:
+
+```bash
+export PI_SELF_UPDATE_COMMAND="mise use -g npm:{packageName}@{version}"
+```
+
+`pi update` runs the command only when pi.dev reports a newer release, substituting `{packageName}`, `{version}`, and `{installSpec}`. The value is split on spaces, so use the `selfUpdateCommand` setting in `~/.pi/agent/settings.json` when an argument contains spaces — it takes an argv array and the environment variable wins over it.
+
 ### Keep project data out of git
 
 | Method | Command |
@@ -141,7 +151,7 @@ See [Configuration & Settings](configuration.html) for keys and env var names. F
 ## Troubleshooting
 
 - **"Cannot continue without pi":** Install the coding agent globally (`npm install -g @earendil-works/pi-coding-agent`), confirm `pi` is on your `PATH`, then re-run the installer.
-- **"pi X is below minimum required version 1.4.0":** Update pi with `npm install -g @earendil-works/pi-coding-agent`, then `/reload` or restart the session.
+- **"pi X is below minimum required version 1.5.0":** Update pi with `npm install -g @earendil-works/pi-coding-agent`, then `/reload` or restart the session.
 - **Daemon fails to start:** Confirm `pidash_enable` / `pidiff_enable` are not set to `false`. Run `/pidash status` or `/pidiff status`. For pidash failures, check `~/.pi/pidash-server.log`.
 - **pidash says TUI-only:** Start daemons from an interactive `pi` session, not a headless/CLI-only mode.
 - **Pre-commit / formatting failures:** Run `prek run --all-files` to apply fixes, then retry the commit.

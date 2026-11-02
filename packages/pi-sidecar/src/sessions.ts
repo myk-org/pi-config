@@ -2166,18 +2166,27 @@ export class SessionStore {
             usage.cache_read_tokens += msg.usage.cacheRead || 0;
             usage.cache_write_tokens += msg.usage.cacheWrite || 0;
             const reported = msg.usage.cost?.total;
+            // pi 1.5.0 marks a provider-billed total: the driver knows what it
+            // charged, so even a billed zero is authoritative and an unknown
+            // catalog price cannot turn it into unknown spend.
+            const billed = msg.usage.cost?.totalFromProvider === true;
             // A model with unknown pricing reports zeros, but a driver can still
             // know the real turn cost (ACPX models without catalog prices do).
             // Only discard a reported *zero*; never discard a positive total.
-            if (reported != null && (entry.pricingKnown || reported > 0)) {
+            if (reported != null && (billed || entry.pricingKnown || reported > 0)) {
               usage.cost_usd = (usage.cost_usd ?? 0) + reported;
+              if (billed && !entry.pricingKnown) {
+                logger.debug(
+                  `[sidecar] COST_BILLED: session=${id}, reportedTotal=${reported}, pricingKnown=false`,
+                );
+              }
             } else {
               // Either the turn reported a zero we cannot price, or it reported no
               // cost at all. Both leave this turn's spend unknown, so any total
               // accumulated from the other turns is a lower bound, not a sum.
               usage.cost_partial = true;
               logger.debug(
-                `[sidecar] COST_UNKNOWN: session=${id}, reportedTotal=${reported}, pricingKnown=${entry.pricingKnown}`,
+                `[sidecar] COST_UNKNOWN: session=${id}, reportedTotal=${reported}, fromProvider=${billed}, pricingKnown=${entry.pricingKnown}`,
               );
             }
           }

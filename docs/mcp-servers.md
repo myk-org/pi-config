@@ -57,6 +57,48 @@ is in there and you can copy the file by hand.
 
 Outside the TUI, `/mcp` prints status.
 
+## OAuth sign-in
+
+A server that answers `401` and advertises OAuth signs in with `pi mcp login <server>` or
+`/mcp login`. Tokens are stored in `~/.pi/agent/mcp-auth.json` and refreshed when they expire
+or the server rejects them; signing out deletes them.
+
+pi identifies itself to the authorization server in one of two ways. When the server
+advertises Client ID Metadata Documents (CIMD) for public clients, pi uses its document —
+client ID `https://pi.dev/oauth/client.json`, redirect URI `http://127.0.0.1:<port>/callback`
+— and skips registration. Otherwise pi registers a client dynamically (DCR). A client
+registered earlier stays in use while its redirect URI matches, until you sign out.
+
+`oauth.clientRegistration` on the server chooses the method:
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | The document when the server supports it; registers instead when `clientName` or a non-default `callbackUrl` is set |
+| `dcr` | Always registers a client |
+| `cimd` | Always uses the document; sign-in fails if the server does not support CIMD for public clients |
+
+```json
+{
+  "mcpServers": {
+    "example": {
+      "url": "https://mcp.example.com/mcp",
+      "oauth": { "clientRegistration": "dcr" }
+    }
+  }
+}
+```
+
+`pi mcp add --oauth-client-registration <mode>` sets the mode when adding a server. `cimd`
+cannot be combined with `clientId` or `clientName`.
+
+`pi mcp login <server> -l` and `pi mcp logout <server> -l` accept `-l` for a server defined in
+the project's `.pi/mcp.json`, the same scoping `-l` gives `pi mcp add` and `pi mcp remove`:
+
+```bash
+pi mcp login example -l
+pi mcp logout example -l
+```
+
 ## How tools reach the model
 
 An MCP server can expose dozens of tools. Declaring all of them on every request would
