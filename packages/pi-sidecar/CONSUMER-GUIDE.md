@@ -501,6 +501,7 @@ Sidecar depends on `pi-orchestrator-config` and `@myk-org/pi-vertex-claude` at
 sidecar pulls the full set.
 
 `@myk-org/pi-vertex-claude` is standalone: it does not depend on
-`pi-orchestrator-config`. Its peer deps require
-`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` `>=1.5.0` — same
-floor as sidecar.
+`pi-orchestrator-config`. Its `@earendil-works/pi-coding-agent` / `pi-ai` peer
+deps are `"*"` — host-provided, so npm enforces no floor there; the
+orchestrator warns and the sidecar refuses to start below the floor described
+above.

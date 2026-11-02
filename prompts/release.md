@@ -128,7 +128,12 @@ root only).
   stage ONLY the files in `updated[]` plus the refreshed lockfile
   (`lockfile.path` when `lockfile.refreshed` is true — `refreshed: false`
   is a warning: run `uv lock` yourself before committing); each entry in `packages[]`
-  carries its per-package `tag` (`<name>@<version>`). Bump PR, merge,
+  carries its per-package `tag` (`<name>@<version>`). When
+  `pi-orchestrator-config` is among the bumped packages, also prepend its entry
+  to `CHANGELOG.md` — `## [<its new version>] - <YYYY-MM-DD>` plus its S3
+  changelog entries, newest first — and stage `CHANGELOG.md` with the bump
+  files, so the npm tarball carries the notes pi shows under Extension
+  Updates. Bump PR, merge,
   and branch sync follow the standard Phase 5 delegation (git-expert /
   github-expert), with the bump PR message `chore: bump version to
   <name1>@<v1>[, <name2>@<v2>...]` (keep the `chore: bump version`
@@ -274,6 +279,14 @@ Where `<VERSION>` is the version number without `v` prefix (e.g., `1.2.0`, not `
 Parse the JSON output from bump-version. Only stage the files listed in the
 `updated[]` array. If `skipped[]` is non-empty, inform the user which files were
 skipped and why before proceeding.
+
+When `pi-orchestrator-config` (the root `package.json`) was bumped, also write
+its notes into `CHANGELOG.md`: prepend `## [<VERSION>] - <YYYY-MM-DD>` followed
+by that package's changelog entries from Phase 3 (newest first, same bullet
+style as the entries already there), and stage `CHANGELOG.md` with the version
+files. The npm tarball ships the file and pi shows it under Extension Updates on
+the next launch — leave it alone and users keep seeing the previous version's
+notes.
 
 **Delegate git and GitHub operations to specialist agents:**
 
