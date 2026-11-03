@@ -1188,7 +1188,7 @@ Reviews a GitHub pull request, presents findings, posts selected inline comments
 
 **Prerequisites:** `uv`, `myk-pi-tools`, and `gh`.
 
-**Return value / effect:** Clones the PR, runs review passes for quality, guidelines, security, docs, and spec, then posts selected findings and stores them for later review-cycle tracking.
+**Return value / effect:** Clones the PR, runs review passes for quality, guidelines, security, docs, and spec, then posts selected findings and stores them for later review-cycle tracking. After the findings table, one question decides the mode: `Post all`, `Skip all`, or `Decide one by one` (a decision per finding — roughly one turn per finding, plus one per discussion round and one more when you skip with a reason or stop early).
 
 ```text
     /pr-review
@@ -1678,7 +1678,7 @@ The session task list behind `/tasks` and the task widget. Statuses are `pending
 | `subagent` | Delegate to a subagent with isolated context; modes are single (`agent`+`task`), parallel (`tasks[]`), and chain (`chain[]` with a `{previous}` placeholder) | `agent`, `task`, `tasks[]`, `chain[]`, `agentScope`, `confirmProjectAgents`, `cwd`, `estimatedSeconds` (required for sync; `>= 30` forces async), `async`, `fireAndForget`, `name`, `taskId` (`-1` if unlinked), `asyncKill`, `persistSession`, `model` (`provider/model-id`) |
 | `session_search` | Search past conversation summaries by keyword — zero LLM cost | `query`, `limit` (default 10) |
 | `review_status` | Read the review-loop enforcement state before committing | `worktree_path` (optional) |
-| `ask_user` | Ask the user a question with selectable options; returns the choice or free text. Its prompt guidelines require it instead of plain-text questions | `question`, `options[]` (optional) |
+| `ask_user` | Ask the user a question with selectable options; returns the choice or free text. Its prompt guidelines require it instead of plain-text questions. A `💬 Discuss with AI first` row (on by default, `allowDiscuss: false` removes it) returns the `__discuss__` sentinel — that is **not** an answer: discuss in chat, then re-ask the same question | `question`, `options[]` (optional), `allowDiscuss` (optional, default `true`) |
 | `list_models` | List available provider/model pairs for `subagent(model=...)`; filters out `acpx-*` providers, which cannot run in subagent children | `provider` (optional filter) |
 | `generate_image` | Generate an image from a structured description via Gemini; returns the file path. Needs `image_model` in `pi-config-settings.json` (or `PI_IMAGE_MODEL`) plus `GEMINI_API_KEY`/`GOOGLE_API_KEY` | `subject` (required), `action`, `scene`, `composition`, `lighting`, `style`, `text`, `aspect_ratio` (`1:1`, `3:4`, `4:3`, `9:16`, `16:9`) |
 

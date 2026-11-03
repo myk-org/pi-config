@@ -769,8 +769,8 @@
 </tr>
 <tr>
 <td><code>ask_user</code></td>
-<td>Ask the user a question with selectable options; returns the choice or free text. Its prompt guidelines require it instead of plain-text questions</td>
-<td><code>question</code>, <code>options[]</code> (optional)</td>
+<td>Ask the user a question with selectable options; returns the choice or free text. Its prompt guidelines require it instead of plain-text questions. A <code>💬 Discuss with AI first</code> row (on by default, <code>allowDiscuss: false</code> removes it) returns the <code>__discuss__</code> sentinel — that is <strong>not</strong> an answer: discuss in chat, then re-ask the same question</td>
+<td><code>question</code>, <code>options[]</code> (optional), <code>allowDiscuss</code> (optional, default <code>true</code>)</td>
 </tr>
 <tr>
 <td><code>list_models</code></td>

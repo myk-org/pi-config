@@ -80,7 +80,7 @@ Reviews a GitHub pull request, presents findings, posts selected inline comments
 
 **Prerequisites:** `uv`, `myk-pi-tools`, and `gh`.
 
-**Return value / effect:** Clones the PR, runs review passes for quality, guidelines, security, docs, and spec, then posts selected findings and stores them for later review-cycle tracking.
+**Return value / effect:** Clones the PR, runs review passes for quality, guidelines, security, docs, and spec, then posts selected findings and stores them for later review-cycle tracking. After the findings table, one question decides the mode: `Post all`, `Skip all`, or `Decide one by one` (a decision per finding — roughly one turn per finding, plus one per discussion round and one more when you skip with a reason or stop early).
 
 ```text
 /pr-review

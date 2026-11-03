@@ -18,6 +18,71 @@ import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("ask-user");
 
+/** Sentinel value returned when the user asks to discuss in plain chat first. */
+export const DISCUSS_VALUE = "__discuss__";
+export const DISCUSS_LABEL = "💬 Discuss with AI first";
+const FREE_INPUT_VALUE = "__free_input__";
+
+/** Emoji/punctuation-free, lowercased form so a caller's plain label still matches. */
+const normalizeOption = (s: string): string =>
+  s.replace(/[^\p{L}\p{N}]+/gu, " ").trim().toLowerCase();
+
+/** A caller option that already is the discuss row: its plain label or the bare sentinel. */
+const isDiscussRow = (option: string): boolean =>
+  option.trim().toLowerCase() === DISCUSS_VALUE ||
+  normalizeOption(option) === normalizeOption(DISCUSS_LABEL);
+
+export function buildAskOptions(
+  options: string[] | undefined,
+  allowDiscuss: boolean,
+): SelectItem[] {
+  // Free-input-only mode: no list, no discuss item.
+  if (!options || options.length === 0) return [];
+
+  let callerSuppliedDiscuss = false;
+  const items: SelectItem[] = [];
+  for (const opt of options) {
+    if (!isDiscussRow(opt)) {
+      items.push({ value: opt, label: opt });
+      continue;
+    }
+    // Opted out: a caller's discuss row must disappear, not merely go unappended.
+    if (!allowDiscuss) continue;
+    // Caller's label stays for display; the sentinel makes selecting it pause.
+    callerSuppliedDiscuss = true;
+    items.push({ value: DISCUSS_VALUE, label: opt, description: "chat first" });
+  }
+  if (!allowDiscuss) {
+    log.debug("ask_user discuss option suppressed", { optionCount: options.length });
+  } else if (callerSuppliedDiscuss) {
+    log.debug("ask_user discuss option deduped", { optionCount: options.length });
+  } else {
+    items.push({ value: DISCUSS_VALUE, label: DISCUSS_LABEL, description: "chat first" });
+    log.debug("ask_user discuss option offered", { optionCount: options.length });
+  }
+  items.push({
+    value: FREE_INPUT_VALUE,
+    label: "✎  Other (type custom answer)",
+    description: "free-text",
+  });
+  return items;
+}
+
+/**
+ * Browser/discord renders options as buttons labelled with the raw string, so the
+ * discuss row travels as its label and comes back mapped to the sentinel. The
+ * free-input row is a TUI control, not an answer — it is never offered remotely.
+ */
+export function browserAskOptions(items: SelectItem[]): string[] {
+  return items
+    .filter((item) => item.value !== FREE_INPUT_VALUE)
+    .map((item) => (item.value === DISCUSS_VALUE ? DISCUSS_LABEL : item.value));
+}
+
+export function answerToValue(answer: string): string {
+  return answer === DISCUSS_LABEL ? DISCUSS_VALUE : answer;
+}
+
 export function registerAskUser(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
@@ -32,6 +97,7 @@ export function registerAskUser(
       "Use ask_user when you need user input during a workflow (approvals, selections, confirmations).",
       "Do NOT ask users questions via plain text — always use this tool for structured choices.",
       "Provide clear, concise options. Include a 'no' or 'cancel' option when appropriate.",
+      `If ask_user returns exactly "${DISCUSS_VALUE}", the user has NOT answered — they want to talk about this decision first. Open by addressing the decision itself: the trade-offs, the information you are missing, or the alternatives. Never answer with a status report about what you built or verified. Re-call ask_user with the SAME question and options only once the discussion resolves.`,
     ],
     parameters: Type.Object({
       question: Type.String({
@@ -41,6 +107,12 @@ export function registerAskUser(
         Type.Array(Type.String(), {
           description:
             "List of selectable options. If omitted, only free-text input is shown.",
+        }),
+      ),
+      allowDiscuss: Type.Optional(
+        Type.Boolean({
+          description:
+            "Offer a 'Discuss with AI first' option that returns the __discuss__ sentinel without answering (default true).",
         }),
       ),
     }),
@@ -58,14 +130,16 @@ export function registerAskUser(
 
       terminalNotify("pi", "Action required");
 
+      const assembled = buildAskOptions(params.options, params.allowDiscuss !== false);
+
       // Emit ask request for pidash browser clients
       const askId = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       pi.events.emit("pidash:ui-request", {
         id: askId,
         type: "extension_ui_request",
-        method: params.options?.length ? "select" : "input",
+        method: assembled.length ? "select" : "input",
         title: params.question,
-        options: params.options,
+        options: assembled.length ? browserAskOptions(assembled) : undefined,
       });
 
       // Track if resolved (from TUI or browser)
@@ -76,20 +150,21 @@ export function registerAskUser(
         const resp = data as any;
         if (resp.id === askId && externalDone) {
           if (resp.cancelled) externalDone(null);
-          else if (resp.value) externalDone(resp.value);
-          else if (resp.confirmed !== undefined) externalDone(resp.confirmed ? "Yes" : "No");
+          else if (resp.value) {
+            const value = answerToValue(resp.value);
+            log.debug("ask_user browser answer received", { askId, isDiscuss: value === DISCUSS_VALUE });
+            externalDone(value);
+          } else if (resp.confirmed !== undefined) externalDone(resp.confirmed ? "Yes" : "No");
         }
       });
 
-      log.debug("ask_user prompt opened with blocked status", { askId, mode: params.options?.length ? "select" : "input" });
+      log.debug("ask_user prompt opened with blocked status", { askId, mode: assembled.length ? "select" : "input" });
       const result = await ctx.ui.custom<string | null>(
         (tui, theme, _kb, done) => {
           // Allow browser to resolve this dialog
           externalDone = done;
 
-          let mode: "select" | "input" = params.options?.length
-            ? "select"
-            : "input";
+          let mode: "select" | "input" = assembled.length ? "select" : "input";
           let resolved = false;
 
           const resolve = (value: string | null) => {
@@ -141,7 +216,7 @@ export function registerAskUser(
             sl.onSelect = (item: SelectItem) => {
               if (item.value === "__no_match__") {
                 // Ignore — not a real option
-              } else if (item.value === "__free_input__") {
+              } else if (item.value === FREE_INPUT_VALUE) {
                 mode = "input";
                 searchInput.setValue("");
                 tui.requestRender();
@@ -153,18 +228,8 @@ export function registerAskUser(
             return sl;
           };
 
-          if (params.options && params.options.length > 0) {
-            allItems = [
-              ...params.options.map((opt: string) => ({
-                value: opt,
-                label: opt,
-              })),
-              {
-                value: "__free_input__",
-                label: "✎  Other (type custom answer)",
-                description: "free-text",
-              },
-            ];
+          if (assembled.length > 0) {
+            allItems = assembled;
             selectList = makeSelectList(allItems);
           }
 
@@ -176,7 +241,7 @@ export function registerAskUser(
               if (selected) {
                 if (selected.value === "__no_match__") {
                   // Ignore
-                } else if (selected.value === "__free_input__") {
+                } else if (selected.value === FREE_INPUT_VALUE) {
                   mode = "input";
                   searchInput.setValue("");
                 } else {
@@ -288,6 +353,9 @@ export function registerAskUser(
     renderResult(result, _options, theme) {
       const text = result.content[0];
       const value = text?.type === "text" ? text.text : "(no response)";
+      if (value === DISCUSS_VALUE) {
+        return new Text(theme.fg("dim", "💬 Discussion requested"), 0, 0);
+      }
       const icon =
         value === "User cancelled"
           ? theme.fg("warning", "✗")

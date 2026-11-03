@@ -526,7 +526,7 @@
 </tbody>
 </table></div>
 <p><strong>Prerequisites:</strong> <code>uv</code>, <code>myk-pi-tools</code>, and <code>gh</code>.</p>
-<p><strong>Return value / effect:</strong> Clones the PR, runs review passes for quality, guidelines, security, docs, and spec, then posts selected findings and stores them for later review-cycle tracking.</p>
+<p><strong>Return value / effect:</strong> Clones the PR, runs review passes for quality, guidelines, security, docs, and spec, then posts selected findings and stores them for later review-cycle tracking. After the findings table, one question decides the mode: <code>Post all</code>, <code>Skip all</code>, or <code>Decide one by one</code> (a decision per finding — roughly one turn per finding, plus one per discussion round and one more when you skip with a reason or stop early).</p>
 <div class="highlight"><pre><span></span><code>/pr-review
 /pr-review 123
 /pr-review https://github.com/owner/repo/pull/123
