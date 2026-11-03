@@ -8,11 +8,14 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { distilledLessonTextList } from "../../../extensions/orchestrator/review-learning.js";
+import {
+  distilledLessonTextList,
+  recordReviewLessons,
+} from "../../../extensions/orchestrator/review-learning.js";
 
 const STATE = "review-learning-state.json";
 
@@ -77,6 +80,35 @@ describe("distilledLessonTextList", () => {
     const { dir, cleanup } = dataDir({ reviewLessons: "not-an-object", protectedLessonTexts: [1, null] });
     try {
       assert.deepEqual(distilledLessonTextList(dir), []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("persists the protection list when lessons are recorded", () => {
+    const { dir, cleanup } = dataDir({ distilledReviews: [], reviewLessons: {} });
+    try {
+      recordReviewLessons(dir, 42, ["persisted.ts: written through the state writer"]);
+      const state = JSON.parse(readFileSync(join(dir, STATE), "utf-8"));
+      assert.deepEqual(state.protectedLessonTexts, ["persisted.ts: written through the state writer"]);
+      assert.ok(distilledLessonTextList(dir).includes("persisted.ts: written through the state writer"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("keeps an old lesson protected after the per-review window rotates it out", () => {
+    const { dir, cleanup } = dataDir({ distilledReviews: [], reviewLessons: {} });
+    try {
+      recordReviewLessons(dir, 1, ["oldest.ts: the first lesson ever written"]);
+      for (let id = 2; id <= 260; id += 1) recordReviewLessons(dir, id, [`review-${id}.ts: lesson ${id}`]);
+      const state = JSON.parse(readFileSync(join(dir, STATE), "utf-8"));
+      assert.equal(Object.keys(state.reviewLessons).length, 200, "the per-review map is bounded");
+      assert.ok(
+        state.protectedLessonTexts.includes("oldest.ts: the first lesson ever written"),
+        "the long-lived list outlives the rotation",
+      );
+      assert.ok(distilledLessonTextList(dir).includes("oldest.ts: the first lesson ever written"));
     } finally {
       cleanup();
     }

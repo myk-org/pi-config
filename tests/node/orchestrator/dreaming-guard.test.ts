@@ -93,6 +93,20 @@ describe("restoreProtectedTopicLines", () => {
     }
   });
 
+  it("keeps a rewritten protected entry without duplicating it", () => {
+    const { dir, cleanup } = topics([DISTILLED_LINE]);
+    try {
+      const before = snapshotTopicLines(dir);
+      // The dream shortens the entry but keeps its identity (same canonical text).
+      writeFileSync(join(dir, "lessons.md"), `# Lessons\n\n- [lesson] ${DISTILLED}\n`, "utf-8");
+      const report = restoreProtectedTopicLines(dir, before, [DISTILLED]);
+      assert.equal(report.restored, 0, "the entry is still there, so nothing is re-inserted");
+      assert.equal(read(dir).split("\n").filter((l) => l.includes(DISTILLED)).length, 1);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("does not resurrect re-derivable history", () => {
     const { dir, cleanup } = topics([PINNED, HISTORY]);
     try {
@@ -136,6 +150,20 @@ describe("restoreProtectedTopicLines", () => {
     }
   });
 
+  it("restores a pinned entry even when no score row exists", () => {
+    const { dir, cleanup } = topics([PINNED]);
+    try {
+      const before = snapshotTopicLines(dir);
+      writeFileSync(join(dir, "lessons.md"), "# Lessons\n", "utf-8");
+      // A pinned line whose score write failed must still be protected by its marker.
+      const report = restoreProtectedTopicLines(dir, before, [], () => false);
+      assert.equal(report.restored, 1);
+      assert.ok(read(dir).includes(PINNED));
+    } finally {
+      cleanup();
+    }
+  });
+
   it("does not restore an entry the user removed while the dream ran", () => {
     const { dir, cleanup } = topics([PINNED, DISTILLED_LINE]);
     try {
@@ -150,19 +178,27 @@ describe("restoreProtectedTopicLines", () => {
     }
   });
 
-  it("keeps completions inside its 6000-char cap by dropping unprotected additions", () => {
+  it("trims only the dream's additions when a topic exceeds its cap", () => {
     const filler = `- [lesson] ${"x".repeat(120)}`;
     const { dir, cleanup } = topics([PINNED], "completions");
     try {
+      const preexisting = `- [done] measurement kept from before the dream ${"z".repeat(40)}`;
+      writeFileSync(join(dir, "completions.md"), `# Completions\n\n${filler}\n${PINNED}\n${preexisting}\n`, "utf-8");
       const before = snapshotTopicLines(dir);
       const dreamAdded = Array.from({ length: 60 }, (_, i) => `- [done] dream entry ${i} ${"y".repeat(100)}`);
-      writeFileSync(join(dir, "completions.md"), `# Completions\n\n${filler}\n${dreamAdded.join("\n")}\n`, "utf-8");
+      writeFileSync(
+        join(dir, "completions.md"),
+        `# Completions\n\n${filler}\n${preexisting}\n${dreamAdded.join("\n")}\n`,
+        "utf-8",
+      );
 
       const report = restoreProtectedTopicLines(dir, before, []);
       const after = read(dir, "completions");
       assert.ok(after.includes(PINNED), "the protected entry is restored");
+      assert.ok(after.includes(preexisting), "a memory that predates the dream is never trimmed away");
       assert.ok(after.length <= 6000, `kept inside the cap, got ${after.length}`);
-      assert.ok(report.droppedForCap > 0, "unprotected additions were dropped to fit");
+      assert.ok(report.droppedForCap > 0, "the dream's additions were dropped to fit");
+      assert.deepEqual(report.droppedTopics, ["completions.md"], "the trimmed topic is named");
     } finally {
       cleanup();
     }
@@ -192,7 +228,7 @@ describe("restoreProtectedTopicLines", () => {
       const before = snapshotTopicLines(dir);
       const original = read(dir);
       const report = restoreProtectedTopicLines(dir, before, []);
-      assert.deepEqual(report, { restored: 0, failed: 0, droppedForCap: 0 });
+      assert.deepEqual(report, { restored: 0, failed: 0, droppedForCap: 0, droppedTopics: [] });
       assert.equal(read(dir), original);
     } finally {
       cleanup();

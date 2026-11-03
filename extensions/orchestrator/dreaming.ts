@@ -92,7 +92,13 @@ function stillTracked(cwd: string): (line: string) => boolean {
   return (line: string) => entryHash(topicLineCanonical(line)) in entries;
 }
 
-export type TopicRestoreReport = { restored: number; failed: number; droppedForCap: number };
+export type TopicRestoreReport = {
+  restored: number;
+  failed: number;
+  droppedForCap: number;
+  /** Topic files whose dream additions were trimmed to satisfy a cap. */
+  droppedTopics: string[];
+};
 
 /**
  * Restore protected entries a dream removed, at their original index, then keep the
@@ -106,7 +112,7 @@ export function restoreProtectedTopicLines(
   reviewLessons: readonly string[],
   tracked: (line: string) => boolean = () => true,
 ): TopicRestoreReport {
-  const report: TopicRestoreReport = { restored: 0, failed: 0, droppedForCap: 0 };
+  const report: TopicRestoreReport = { restored: 0, failed: 0, droppedForCap: 0, droppedTopics: [] };
   for (const [file, beforeLines] of Object.entries(before)) {
     const filePath = path.join(topicsDir, file);
     let current: string[] | null = null;
@@ -116,15 +122,23 @@ export function restoreProtectedTopicLines(
       current = null; // Deleted outright — rebuilt below from the snapshot.
     }
     const base = current ?? beforeLines.filter((line) => !line.startsWith("- ["));
+    // A dream that *rewrites* a protected entry keeps it: compare canonical text, not the
+    // raw line, or the original returns beside the rewrite as a duplicate.
+    const surviving = new Set((current ?? []).map(topicLineCanonical));
+    const beforeEntries = new Set(
+      beforeLines.filter((line) => line.startsWith("- [")).map(topicLineCanonical),
+    );
     const missing = beforeLines
       .map((line, index) => ({ line, index }))
-      .filter(
-        ({ line }) =>
-          line.startsWith("- [") &&
-          !(current ?? []).includes(line) &&
-          isProtectedTopicLine(line, reviewLessons) &&
-          tracked(line),
-      );
+      .filter(({ line }) => {
+        if (!line.startsWith("- [") || !isProtectedTopicLine(line, reviewLessons)) return false;
+        if (surviving.has(topicLineCanonical(line))) return false;
+        // The score gate only guards review-distilled lines: their score row is written
+        // after the topic line, so a missing score can mean "the user removed it". A
+        // pinned or enforced entry is protected by its marker, never by a score row.
+        const byMarker = line.includes("*(pinned)*") || line.includes("*(enforced)*");
+        return byMarker || tracked(line);
+      });
     if (missing.length === 0 && current !== null) continue;
 
     const merged = [...base];
@@ -138,14 +152,17 @@ export function restoreProtectedTopicLines(
       let dropIndex = -1;
       for (let i = merged.length - 1; i >= 0; i -= 1) {
         const line = merged[i];
-        if (line.startsWith("- [") && !isProtectedTopicLine(line, reviewLessons)) {
+        // Only the dream's own additions may be trimmed: removing a memory that existed
+        // before the dream would trade user knowledge for a size budget.
+        if (line.startsWith("- [") && !beforeEntries.has(topicLineCanonical(line))) {
           dropIndex = i;
           break;
         }
       }
-      if (dropIndex === -1) break; // Protected entries alone exceed the cap: keep them.
+      if (dropIndex === -1) break; // Nothing the dream added is left: keep the file over cap.
       merged.splice(dropIndex, 1);
       report.droppedForCap += 1;
+      if (!report.droppedTopics.includes(file)) report.droppedTopics.push(file);
     }
 
     try {
@@ -374,7 +391,10 @@ export function registerDreaming(
               log.warn("dream_restored_protected_entries", { restored: report.restored });
             }
             if (report.droppedForCap > 0) {
-              log.debug("dream_restore_respected_topic_cap", { dropped: report.droppedForCap });
+              log.debug("dream_restore_respected_topic_cap", {
+                dropped: report.droppedForCap,
+                topics: report.droppedTopics,
+              });
             }
             if (report.failed > 0) {
               log.error("dream_restore_write_failed", { failedTopics: report.failed });
@@ -384,7 +404,7 @@ export function registerDreaming(
                 "dreaming",
                 report.failed > 0 ? "error" : "warn",
                 "dreaming",
-                `protected-memory reconcile: restored=${report.restored} dropped_for_cap=${report.droppedForCap} failed=${report.failed}`,
+                `protected-memory reconcile: restored=${report.restored} dropped_for_cap=${report.droppedForCap} topics=${report.droppedTopics.join(",") || "-"} failed=${report.failed}`,
               );
             }
           } catch (err) {
