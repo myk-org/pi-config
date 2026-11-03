@@ -1,6 +1,6 @@
 ---
 description: Review a GitHub PR and post inline comments on selected findings
-argument-hint: "[PR number or URL]"
+argument-hint: "[PR number or URL] [--one-by-one]"
 ---
 
 ## Raw Arguments
@@ -43,6 +43,11 @@ If not found, prompt user: "myk-pi-tools is required. Install with: `uv tool ins
 - `/pr-review` - Review PR from current branch (auto-detect)
 - `/pr-review 123` - Review PR #123 in current repo
 - `/pr-review https://github.com/owner/repo/pull/123` - Review from URL
+- `/pr-review 123 --one-by-one` - Same review, but each finding is presented on its own with its own decision
+
+`--one-by-one` costs roughly one turn per finding (plus one per discussion round), so use it
+when findings need individual judgment — not on a 20-finding wall. Without the flag, Phase 4
+behaves exactly as it always has: one table, one bulk decision.
 
 ## Task Plan
 
@@ -522,6 +527,39 @@ This avoids ambiguity — user selections for new findings always refer to the `
 - 'none' = Skip posting new findings (previous findings are still auto-posted)
 - Specific numbers = Post only those new findings (numbers refer to the `[NEW]` list)
 
+**`--one-by-one` mode (opt-in — only when the raw arguments contain `--one-by-one`):**
+
+Skip the table-and-bulk-decision flow above and collect one decision per finding instead.
+Everything after this phase — the JSON, the post step, the replies — is unchanged.
+
+1. Print the auto-post header block ONCE: `N prior finding(s) will be re-raised (auto-post).`
+   `[PREV-*]` findings are never part of the loop.
+2. For each `[AUTHOR-QUESTION]` (Q1..) and then each `[NEW]` finding (1..N), in the stable
+   merged order:
+   a. Print `Finding i/N — <severity> — <file>:<line>`, the source tag, the full description,
+      the suggestion block, and which reviewer(s) raised it after dedup.
+   b. Call `ask_user` with question `Finding i/N — <one-line summary>` and exactly these options:
+      `Post`, `Skip`, `Skip + reason`, `Show more context`, `Discuss with AI first`, `Stop here`.
+   c. Act on the answer:
+      - `Post` → finding is selected for posting.
+      - `Skip` → finding is skipped, no reason.
+      - `Skip + reason` → print `Reason for finding i/N:` as plain chat text and STOP the turn;
+        the user's next message is the reason (multiline allowed). Continue the loop with the
+        next finding.
+      - `Show more context` → print the surrounding diff hunk and the affected call sites, then
+        re-ask the SAME finding (same index, same options).
+      - `Discuss with AI first` → `ask_user` returns exactly `__discuss__`. That is NOT an answer:
+        answer the user's questions in plain chat, then re-ask the SAME finding. `__discuss__` is
+        a control value — never post it, never store it, never write it to
+        `.pi/data/review-guidelines.md`.
+      - `Stop here` → every remaining finding is skipped; ask once, as plain chat text, for a
+        blanket reason covering the remainder.
+3. The reasons collected here feed the SAME refine → classify → `review-guidelines.md` steps
+   below. Only the timing differs: the reason is captured while the user is looking at that
+   finding instead of in a later bulk round.
+
+If the raw arguments do NOT contain `--one-by-one`, ignore this entire mode.
+
 If there are ZERO `[NEW]` findings AND zero `[AUTHOR-QUESTION]` findings, skip user
 selection entirely — auto-post the previous findings and proceed directly to Phase 5
 (the auto-post path still generates the comments JSON and posts them — see Phase 5).
@@ -532,10 +570,13 @@ user approval/edit/skip.
 
 🚨 **Skip reason collection (MANDATORY — NEVER SKIP THIS STEP):**
 
-**HARD RULE: If the user skipped ANY finding (said 'no', selected specific numbers
-that exclude some findings, or said 'none'), you MUST ask for skip reasons
-BEFORE proceeding to Phase 5. Do NOT continue the workflow without collecting
-skip reasons. Skipping this step is a HARD VIOLATION.**
+In `--one-by-one` mode the reasons were already captured inside the loop — go straight to
+step 2 (AI refines each reason) and do not prompt again.
+
+**Bulk mode only — HARD RULE: If the user skipped ANY finding (said 'no', selected specific
+numbers that exclude some findings, or said 'none'), you MUST ask for skip reasons
+BEFORE proceeding to Phase 5.** Do NOT continue the workflow without collecting
+skip reasons. Skipping this step is a HARD VIOLATION.
 
 After the user selects which findings to post, compute the skipped set (total `[NEW]`
 findings minus user-selected findings). If the skipped set is non-empty:

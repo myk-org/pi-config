@@ -9,7 +9,7 @@
  *
  * Completions:
  *   /external-ai <Tab>           → ai-cli provider names + --fix, --peer, --cli-flags
- *   /pr-review <Tab>             → open PR numbers
+ *   /pr-review <Tab>             → open PR numbers + --one-by-one
  *   /coderabbit-rate-limit <Tab> → open PR numbers
  *   /review-local <Tab>          → git branch names
  *   /release <Tab>               → recent git tags + --dry-run, --prerelease, --draft, --target <branch>, --tag-match <pattern>
@@ -76,6 +76,22 @@ function filter(items: AutocompleteItem[], prefix: string): AutocompleteItem[] |
   const filtered = fuzzyFilter(items, prefix, (item) => `${item.label} ${item.description || ""}`)
     .slice(0, MAX_SUGGESTIONS);
   return filtered.length > 0 ? filtered : null;
+}
+
+const PR_REVIEW_FLAGS: AutocompleteItem[] = [
+  { value: "--one-by-one", label: "--one-by-one", description: "Present findings one at a time with per-finding decisions" },
+];
+
+/**
+ * Flag completions for /pr-review arguments.
+ * Returns null when not in flag position so the caller keeps PR-number completion.
+ */
+export function prReviewArgumentCompletions(prefix: string): AutocompleteItem[] | null {
+  const parts = prefix.split(/\s+/);
+  const lastPart = parts[parts.length - 1] || "";
+  if (!lastPart.startsWith("-")) return null;
+  const usedFlags = new Set(parts.filter((p) => p.startsWith("--")));
+  return filter(PR_REVIEW_FLAGS.filter((f) => !usedFlags.has(f.value.trim())), lastPart) ?? [];
 }
 
 export function qodoReviewArgumentCompletions(prefix: string): AutocompleteItem[] | null {
@@ -190,6 +206,8 @@ function registerCompletions(
     },
 
     "pr-review": (prefix: string) => {
+      const flags = prReviewArgumentCompletions(prefix);
+      if (flags) return flags;
       void ctx.fetchOpenPRs(ctx.lastCwd);
       if (!ctx.prCache.data) return null;
       const filtered = filter(ctx.prCache.data, prefix.replace(/^#/, ""));
