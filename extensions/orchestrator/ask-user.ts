@@ -40,12 +40,18 @@ export function buildAskOptions(
   if (!options || options.length === 0) return [];
 
   let callerSuppliedDiscuss = false;
-  const items: SelectItem[] = options.map((opt) => {
-    if (!isDiscussRow(opt)) return { value: opt, label: opt };
+  const items: SelectItem[] = [];
+  for (const opt of options) {
+    if (!isDiscussRow(opt)) {
+      items.push({ value: opt, label: opt });
+      continue;
+    }
+    // Opted out: a caller's discuss row must disappear, not merely go unappended.
+    if (!allowDiscuss) continue;
     // Caller's label stays for display; the sentinel makes selecting it pause.
     callerSuppliedDiscuss = true;
-    return { value: DISCUSS_VALUE, label: opt, description: "chat first" };
-  });
+    items.push({ value: DISCUSS_VALUE, label: opt, description: "chat first" });
+  }
   if (!allowDiscuss) {
     log.debug("ask_user discuss option suppressed", { optionCount: options.length });
   } else if (callerSuppliedDiscuss) {

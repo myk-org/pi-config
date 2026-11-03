@@ -529,6 +529,8 @@ This avoids ambiguity — user selections for new findings always refer to the `
 
 **One ask decides the mode.** After printing the table, call `ask_user` once with question
 `{N} findings — how do you want to decide?` and options `Post all`, `Skip all`, `Decide one by one`.
+Skip this question entirely when there are ZERO `[NEW]` and ZERO `[AUTHOR-QUESTION]` items —
+go straight to Phase 5 with the auto-posted prior findings (see the zero-item rule below).
 Typed answers (`all`, `none`, `3,7,12`) keep working as free text. `ask_user` appends the
 `💬 Discuss with AI first` row itself — never pass it as one of your own options, or the user
 sees it twice.
@@ -547,7 +549,22 @@ Everything after this phase — the JSON, the post step, the replies — is unch
 1. Print the auto-post header block ONCE: `N prior finding(s) will be re-raised (auto-post).`
    `[PREV-*]` findings are never part of the loop.
 2. For each `[AUTHOR-QUESTION]` (Q1..) and then each `[NEW]` finding (1..N), in the stable
-   merged order:
+   merged order.
+
+   **`[AUTHOR-QUESTION]` items keep their own flow** — never use the finding template or the
+   finding actions for them:
+   - Print the original comment (who asked, where, full text) and the AI-generated suggested
+     answer from Phase 1c.
+   - `ask_user` with question `Question i/N — <one-line summary>` and options `Approve`, `Edit`,
+     `Skip`. No `Show more context` (the question body is the context) and no `Skip + reason`
+     (the stored reason is `Author question — user chose not to respond`).
+   - `Approve` → the suggested answer is posted as-is in Phase 5.
+   - `Edit` → print `Answer for Q{i}:` as plain chat text and STOP the turn; the user's next
+     message is the revised answer, which Phase 5 posts instead of the suggestion.
+   - `Skip` → the question is not answered; it is stored with `skip_reason`
+     `Author question — user chose not to respond`.
+
+   **`[NEW]` findings:**
    a. Print `Finding i/N — <severity> — <file>:<line>`, the source tag, the full description,
       the suggestion block, and which reviewer(s) raised it after dedup.
    b. Call `ask_user` with question `Finding i/N — <one-line summary>` and exactly these options:
@@ -555,7 +572,8 @@ Everything after this phase — the JSON, the post step, the replies — is unch
       `Discuss with AI first` — `ask_user` appends that row itself.
    c. Act on the answer:
       - `Post` → finding is selected for posting.
-      - `Skip` → finding is skipped, no reason.
+      - `Skip` → finding is skipped. Phase 5b still requires a reason, so store the fixed
+        `skip_reason` `Skipped — no reason given`; do not ask the user for one.
       - `Skip + reason` → re-call `ask_user` with question `Reason for finding i/N:` and no
         options, so the answer is free text; use it as the reason and continue with the next
         finding. If the user asks for a multi-line reason, print `Reason for finding i/N:` as
@@ -567,9 +585,10 @@ Everything after this phase — the JSON, the post step, the replies — is unch
         what you would need to know to judge it, the alternatives — and do not report on your own
         workflow. Re-ask the SAME finding once the discussion resolves. `__discuss__` is a control
         value — never post it, never store it, never write it to `.pi/data/review-guidelines.md`.
-      - `Stop here` → every remaining finding is skipped; ask once for a blanket reason: use
+      - `Stop here` → every remaining finding is skipped. Ask once for a blanket reason: use
         `ask_user` with no options when one line is enough, otherwise print the prompt as plain
-        chat text and STOP the turn.
+        chat text and STOP the turn. If the user gives no reason, store the fixed
+        `skip_reason` `Skipped — no reason given` (Phase 5b rejects an empty one).
 3. The reasons collected here feed the SAME refine → classify → `review-guidelines.md` steps
    below. Only the timing differs: the reason is captured while the user is looking at that
    finding instead of in a later bulk round.
@@ -591,6 +610,9 @@ step 2 (AI refines each reason) and do not prompt again.
 (said 'no' or 'Skip all', selected specific numbers that exclude some findings), you MUST ask
 for skip reasons BEFORE proceeding to Phase 5.** Do NOT continue the workflow without collecting
 skip reasons. Skipping this step is a HARD VIOLATION.
+
+If the user declines to give any reason, still store one — Phase 5b rejects an empty
+`skip_reason` — using the fixed text `Skipped — no reason given`.
 
 After the user selects which findings to post, compute the skipped set (total `[NEW]`
 findings minus user-selected findings). If the skipped set is non-empty:

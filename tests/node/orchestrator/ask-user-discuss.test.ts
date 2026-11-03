@@ -27,6 +27,13 @@ describe("buildAskOptions", () => {
     assert.ok(!items.some((i) => i.value === DISCUSS_VALUE));
   });
 
+  it("drops a caller-supplied discuss row when allowDiscuss is false", () => {
+    const items = buildAskOptions(["Yes", DISCUSS_LABEL, "No"], false);
+    assert.deepStrictEqual(items.map((i) => i.value), ["Yes", "No", FREE_INPUT]);
+    assert.ok(!items.some((i) => i.value === DISCUSS_VALUE), "the caller's row must not survive the opt-out");
+    assert.ok(!items.some((i) => i.label === DISCUSS_LABEL));
+  });
+
   it("keeps the discuss item last-of-choices for any option count", () => {
     for (const opts of [["a"], ["a", "b", "c"]]) {
       const values = buildAskOptions(opts, true).map((i) => i.value);
