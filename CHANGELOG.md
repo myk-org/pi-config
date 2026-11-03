@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.24.1] - 2026-11-03
+
+- Dreaming no longer stores re-derivable changelog: `[done]` takes non-derivable outcomes only (conclusions, measurements, root causes) and reorganizing prunes PR/version/ticket
+  history, so `completions` shrinks instead of rotating changelog for changelog. A live run took this project's topic from 18 entries to 2, keeping the cost baseline and the
+  self-reload finding.
+- Learned memory now survives maintenance: anything a dream deletes that is pinned, enforced, or review-distilled is restored when it finishes, and a topic file it deleted is
+  rebuilt. A deliberate removal is respected because removals are recorded as tombstones rather than inferred from score state — the inference inverted whenever the scheduled
+  rebuild ran mid-dream.
+- `completions` is capped at 6,000 characters through per-topic caps, applied by both write paths. The cap is never satisfied by deleting memory: an over-cap topic is reported and
+  left intact.
+
 ## [4.24.0] - 2026-11-03
 
 - `/pr-review` asks how to decide after the findings table — `Post all`, `Skip all`, or
