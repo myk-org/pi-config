@@ -77,17 +77,15 @@ Reviews a GitHub pull request, presents findings, posts selected inline comments
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `[PR number or URL]` | string | current branch PR | Pull request number, full GitHub PR URL, or empty to auto-detect from the current branch. |
-| `--one-by-one` | flag | off | Present each finding on its own with its own decision (post, skip, skip with reason, more context, discuss, or stop) instead of one table and one bulk answer. Costs roughly one turn per finding. |
 
 **Prerequisites:** `uv`, `myk-pi-tools`, and `gh`.
 
-**Return value / effect:** Clones the PR, runs review passes for quality, guidelines, security, docs, and spec, then posts selected findings and stores them for later review-cycle tracking. Without `--one-by-one` the findings arrive as one table with a single bulk decision — unchanged behavior.
+**Return value / effect:** Clones the PR, runs review passes for quality, guidelines, security, docs, and spec, then posts selected findings and stores them for later review-cycle tracking. After the findings table, one question decides the mode: `Post all`, `Skip all`, or `Decide one by one` (a decision per finding — roughly one turn per finding, plus one per discussion round and one more when you skip with a reason or stop early).
 
 ```text
 /pr-review
 /pr-review 123
 /pr-review https://github.com/owner/repo/pull/123
-/pr-review 123 --one-by-one
 ```
 
 ### `/review-local`

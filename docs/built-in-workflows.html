@@ -523,20 +523,13 @@
 <td>current branch PR</td>
 <td>Pull request number, full GitHub PR URL, or empty to auto-detect from the current branch.</td>
 </tr>
-<tr>
-<td><code>--one-by-one</code></td>
-<td>flag</td>
-<td>off</td>
-<td>Present each finding on its own with its own decision (post, skip, skip with reason, more context, discuss, or stop) instead of one table and one bulk answer. Costs roughly one turn per finding.</td>
-</tr>
 </tbody>
 </table></div>
 <p><strong>Prerequisites:</strong> <code>uv</code>, <code>myk-pi-tools</code>, and <code>gh</code>.</p>
-<p><strong>Return value / effect:</strong> Clones the PR, runs review passes for quality, guidelines, security, docs, and spec, then posts selected findings and stores them for later review-cycle tracking. Without <code>--one-by-one</code> the findings arrive as one table with a single bulk decision — unchanged behavior.</p>
+<p><strong>Return value / effect:</strong> Clones the PR, runs review passes for quality, guidelines, security, docs, and spec, then posts selected findings and stores them for later review-cycle tracking. After the findings table, one question decides the mode: <code>Post all</code>, <code>Skip all</code>, or <code>Decide one by one</code> (a decision per finding — roughly one turn per finding, plus one per discussion round and one more when you skip with a reason or stop early).</p>
 <div class="highlight"><pre><span></span><code>/pr-review
 /pr-review 123
 /pr-review https://github.com/owner/repo/pull/123
-/pr-review 123 --one-by-one
 </code></pre></div>
 
 <h3 id="review-local"><code>/review-local</code></h3>

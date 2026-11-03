@@ -1,6 +1,6 @@
 ---
 description: Review a GitHub PR and post inline comments on selected findings
-argument-hint: "[PR number or URL] [--one-by-one]"
+argument-hint: "[PR number or URL]"
 ---
 
 ## Raw Arguments
@@ -43,11 +43,11 @@ If not found, prompt user: "myk-pi-tools is required. Install with: `uv tool ins
 - `/pr-review` - Review PR from current branch (auto-detect)
 - `/pr-review 123` - Review PR #123 in current repo
 - `/pr-review https://github.com/owner/repo/pull/123` - Review from URL
-- `/pr-review 123 --one-by-one` - Same review, but each finding is presented on its own with its own decision
 
-`--one-by-one` costs roughly one turn per finding (plus one per discussion round), so use it
-when findings need individual judgment — not on a 20-finding wall. Without the flag, Phase 4
-behaves exactly as it always has: one table, one bulk decision.
+Phase 4 asks how you want to decide: `Post all`, `Skip all`, or `Decide one by one`.
+Deciding one by one costs roughly one turn per finding (plus one per discussion round, and one
+more when you skip with a reason or stop early) — choose it when findings need individual
+judgment, not on a 20-finding wall.
 
 ## Task Plan
 
@@ -527,9 +527,21 @@ This avoids ambiguity — user selections for new findings always refer to the `
 - 'none' = Skip posting new findings (previous findings are still auto-posted)
 - Specific numbers = Post only those new findings (numbers refer to the `[NEW]` list)
 
-**`--one-by-one` mode (opt-in — only when the raw arguments contain `--one-by-one`):**
+**One ask decides the mode.** After printing the table, call `ask_user` once with question
+`{N} findings — how do you want to decide?` and options `Post all`, `Skip all`, `Decide one by one`.
+Typed answers (`all`, `none`, `3,7,12`) keep working as free text. `ask_user` appends the
+`💬 Discuss with AI first` row itself — never pass it as one of your own options, or the user
+sees it twice.
 
-Skip the table-and-bulk-decision flow above and collect one decision per finding instead.
+- `Post all` → every `[NEW]` finding is selected. Continue to the refine step in bulk mode.
+- `Skip all` → every `[NEW]` finding is skipped. Collect one blanket reason in bulk mode below.
+- `Decide one by one` → run the per-finding loop below.
+- `💬 Discuss with AI first` (`__discuss__`) → not an answer. Talk about the decision itself —
+  trade-offs, what is missing, the alternatives — never a status report on what you just checked —
+  then re-ask the same question with the same options once it resolves.
+
+**Per-finding loop (chosen by `Decide one by one`):**
+
 Everything after this phase — the JSON, the post step, the replies — is unchanged.
 
 1. Print the auto-post header block ONCE: `N prior finding(s) will be re-raised (auto-post).`
@@ -539,26 +551,28 @@ Everything after this phase — the JSON, the post step, the replies — is unch
    a. Print `Finding i/N — <severity> — <file>:<line>`, the source tag, the full description,
       the suggestion block, and which reviewer(s) raised it after dedup.
    b. Call `ask_user` with question `Finding i/N — <one-line summary>` and exactly these options:
-      `Post`, `Skip`, `Skip + reason`, `Show more context`, `Discuss with AI first`, `Stop here`.
+      `Post`, `Skip`, `Skip + reason`, `Show more context`, `Stop here`. Do NOT pass
+      `Discuss with AI first` — `ask_user` appends that row itself.
    c. Act on the answer:
       - `Post` → finding is selected for posting.
       - `Skip` → finding is skipped, no reason.
-      - `Skip + reason` → print `Reason for finding i/N:` as plain chat text and STOP the turn;
-        the user's next message is the reason (multiline allowed). Continue the loop with the
-        next finding.
+      - `Skip + reason` → re-call `ask_user` with question `Reason for finding i/N:` and no
+        options, so the answer is free text; use it as the reason and continue with the next
+        finding. If the user asks for a multi-line reason, print `Reason for finding i/N:` as
+        plain chat text and STOP the turn instead — their next message is the reason.
       - `Show more context` → print the surrounding diff hunk and the affected call sites, then
         re-ask the SAME finding (same index, same options).
       - `Discuss with AI first` → `ask_user` returns exactly `__discuss__`. That is NOT an answer:
-        answer the user's questions in plain chat, then re-ask the SAME finding. `__discuss__` is
-        a control value — never post it, never store it, never write it to
-        `.pi/data/review-guidelines.md`.
-      - `Stop here` → every remaining finding is skipped; ask once, as plain chat text, for a
-        blanket reason covering the remainder.
+        the user wants to talk about this finding. Discuss the finding itself — its trade-offs,
+        what you would need to know to judge it, the alternatives — and do not report on your own
+        workflow. Re-ask the SAME finding once the discussion resolves. `__discuss__` is a control
+        value — never post it, never store it, never write it to `.pi/data/review-guidelines.md`.
+      - `Stop here` → every remaining finding is skipped; ask once for a blanket reason: use
+        `ask_user` with no options when one line is enough, otherwise print the prompt as plain
+        chat text and STOP the turn.
 3. The reasons collected here feed the SAME refine → classify → `review-guidelines.md` steps
    below. Only the timing differs: the reason is captured while the user is looking at that
    finding instead of in a later bulk round.
-
-If the raw arguments do NOT contain `--one-by-one`, ignore this entire mode.
 
 If there are ZERO `[NEW]` findings AND zero `[AUTHOR-QUESTION]` findings, skip user
 selection entirely — auto-post the previous findings and proceed directly to Phase 5
@@ -570,12 +584,12 @@ user approval/edit/skip.
 
 🚨 **Skip reason collection (MANDATORY — NEVER SKIP THIS STEP):**
 
-In `--one-by-one` mode the reasons were already captured inside the loop — go straight to
+In the per-finding loop the reasons were already captured as you went — go straight to
 step 2 (AI refines each reason) and do not prompt again.
 
-**Bulk mode only — HARD RULE: If the user skipped ANY finding (said 'no', selected specific
-numbers that exclude some findings, or said 'none'), you MUST ask for skip reasons
-BEFORE proceeding to Phase 5.** Do NOT continue the workflow without collecting
+**Bulk mode only (Post all / Skip all / numbers) — HARD RULE: If the user skipped ANY finding
+(said 'no' or 'Skip all', selected specific numbers that exclude some findings), you MUST ask
+for skip reasons BEFORE proceeding to Phase 5.** Do NOT continue the workflow without collecting
 skip reasons. Skipping this step is a HARD VIOLATION.
 
 After the user selects which findings to post, compute the skipped set (total `[NEW]`

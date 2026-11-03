@@ -7,7 +7,7 @@ import {
   browserAskOptions,
   buildAskOptions,
   registerAskUser,
-} from "../../../extensions/orchestrator/ask-user.ts";
+} from "../../../extensions/orchestrator/ask-user.js";
 
 const FREE_INPUT = "__free_input__";
 
@@ -38,12 +38,31 @@ describe("buildAskOptions", () => {
     assert.deepStrictEqual(buildAskOptions(undefined, true), []);
     assert.deepStrictEqual(buildAskOptions([], true), []);
   });
+
+  // Regression: a caller passing the discuss row produced a second, inert literal row.
+  for (const supplied of ["Discuss with AI first", "  discuss with ai first  ", "__discuss__"]) {
+    it(`dedupes a caller-supplied discuss row: ${JSON.stringify(supplied)}`, () => {
+      const items = buildAskOptions(["Yes", supplied, "No"], true);
+      const discussRows = items.filter((i) => i.value === DISCUSS_VALUE);
+      assert.equal(discussRows.length, 1, "exactly one discuss row");
+      assert.equal(discussRows[0].label, supplied, "caller label kept for display");
+      assert.deepStrictEqual(items.map((i) => i.value), [
+        "Yes",
+        DISCUSS_VALUE,
+        "No",
+        FREE_INPUT,
+      ]);
+    });
+  }
 });
 
 describe("browserAskOptions", () => {
   it("carries the discuss choice as its label, never the TUI-only Other row", () => {
     const emitted = browserAskOptions(buildAskOptions(["Yes", "No"], true));
     assert.deepStrictEqual(emitted, ["Yes", "No", DISCUSS_LABEL]);
+    assert.ok(emitted.includes(DISCUSS_LABEL));
+    assert.ok(!emitted.includes(FREE_INPUT));
+    assert.ok(!emitted.some((o) => o.toLowerCase().includes("other")));
   });
 
   it("drops the discuss choice when suppressed", () => {
@@ -63,14 +82,21 @@ describe("answerToValue", () => {
 });
 
 describe("ask_user result", () => {
-  /** Drives registerAskUser's tool with a fake pi/ctx whose dialog answers `answer`. */
+  /**
+   * Drives registerAskUser's tool with a fake pi (capturing emitted events) and a
+   * fake dialog that answers `answer`.
+   */
   async function runAsk(params: any, answer: string | null) {
     let tool: any;
+    const events: Array<{ name: string; payload: any }> = [];
     const pi = {
       registerTool: (t: any) => {
         tool = t;
       },
-      events: { emit: () => {}, on: () => () => {} },
+      events: {
+        emit: (name: string, payload: any) => events.push({ name, payload }),
+        on: () => () => {},
+      },
     };
     registerAskUser(pi as any, () => {});
     const ctx = {
@@ -84,17 +110,47 @@ describe("ask_user result", () => {
         },
       },
     };
-    return tool.execute("id", params, undefined, undefined, ctx);
+    const result = await tool.execute("id", params, undefined, undefined, ctx);
+    return { result, events };
   }
 
   it("returns the bare sentinel and does not terminate", async () => {
-    const result = await runAsk({ question: "Ship it?", options: ["Yes", "No"] }, DISCUSS_VALUE);
+    const { result } = await runAsk(
+      { question: "Ship it?", options: ["Yes", "No"] },
+      DISCUSS_VALUE,
+    );
     assert.deepStrictEqual(result.content, [{ type: "text", text: DISCUSS_VALUE }]);
     assert.equal(result.terminate, undefined);
   });
 
   it("still terminates on cancel", async () => {
-    const result = await runAsk({ question: "Ship it?", options: ["Yes", "No"] }, null);
+    const { result } = await runAsk({ question: "Ship it?", options: ["Yes", "No"] }, null);
     assert.equal(result.terminate, true);
+  });
+
+  it("emits a pidash payload matching the assembled options", async () => {
+    const options = ["Yes", "No"];
+    const { events } = await runAsk({ question: "Ship it?", options }, DISCUSS_VALUE);
+    const request = events.find((e) => e.name === "pidash:ui-request")?.payload;
+    assert.ok(request, "pidash:ui-request emitted");
+    assert.equal(request.method, "select");
+    assert.deepStrictEqual(request.options, browserAskOptions(buildAskOptions(options, true)));
+    assert.deepStrictEqual(request.options, ["Yes", "No", DISCUSS_LABEL]);
+  });
+
+  it("emits input mode with no options for free-input-only prompts", async () => {
+    const { events } = await runAsk({ question: "Name?", options: [] }, "custom");
+    const request = events.find((e) => e.name === "pidash:ui-request")?.payload;
+    assert.equal(request.method, "input");
+    assert.equal(request.options, undefined);
+  });
+
+  it("emits the deduped discuss label once", async () => {
+    const { events } = await runAsk(
+      { question: "Ship it?", options: ["Yes", "Discuss with AI first"] },
+      DISCUSS_VALUE,
+    );
+    const request = events.find((e) => e.name === "pidash:ui-request")?.payload;
+    assert.deepStrictEqual(request.options, ["Yes", DISCUSS_LABEL]);
   });
 });

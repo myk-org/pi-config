@@ -4,7 +4,6 @@
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { prReviewArgumentCompletions } from "../../../extensions/orchestrator/extended-autocomplete.js";
 
 // Since fetchOpenIssues is internal to registerExtendedAutocomplete,
 // we test the same logic pattern standalone.
@@ -49,23 +48,6 @@ async function fetchOpenIssues(
   } catch { /* ignore */ }
   cache.loading = false;
 }
-
-describe("prReviewArgumentCompletions", () => {
-  it("offers --one-by-one when typing a flag", () => {
-    assert.deepEqual(prReviewArgumentCompletions("--one")?.map(({ label }) => label), ["--one-by-one"]);
-    assert.deepEqual(prReviewArgumentCompletions("--")?.map(({ label }) => label), ["--one-by-one"]);
-  });
-
-  it("skips an already used flag", () => {
-    assert.deepEqual(prReviewArgumentCompletions("--one-by-one --"), []);
-  });
-
-  it("keeps PR-number completion when not typing a flag", () => {
-    assert.equal(prReviewArgumentCompletions(""), null);
-    assert.equal(prReviewArgumentCompletions("12"), null);
-    assert.equal(prReviewArgumentCompletions("--one-by-one "), null);
-  });
-});
 
 describe("fetchOpenIssues", () => {
   let cache: IssueCache;

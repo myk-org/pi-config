@@ -23,6 +23,15 @@ export const DISCUSS_VALUE = "__discuss__";
 export const DISCUSS_LABEL = "💬 Discuss with AI first";
 const FREE_INPUT_VALUE = "__free_input__";
 
+/** Emoji/punctuation-free, lowercased form so a caller's plain label still matches. */
+const normalizeOption = (s: string): string =>
+  s.replace(/[^\p{L}\p{N}]+/gu, " ").trim().toLowerCase();
+
+/** A caller option that already is the discuss row: its plain label or the bare sentinel. */
+const isDiscussRow = (option: string): boolean =>
+  option.trim().toLowerCase() === DISCUSS_VALUE ||
+  normalizeOption(option) === normalizeOption(DISCUSS_LABEL);
+
 export function buildAskOptions(
   options: string[] | undefined,
   allowDiscuss: boolean,
@@ -30,12 +39,20 @@ export function buildAskOptions(
   // Free-input-only mode: no list, no discuss item.
   if (!options || options.length === 0) return [];
 
-  const items: SelectItem[] = options.map((opt) => ({ value: opt, label: opt }));
-  if (allowDiscuss) {
+  let callerSuppliedDiscuss = false;
+  const items: SelectItem[] = options.map((opt) => {
+    if (!isDiscussRow(opt)) return { value: opt, label: opt };
+    // Caller's label stays for display; the sentinel makes selecting it pause.
+    callerSuppliedDiscuss = true;
+    return { value: DISCUSS_VALUE, label: opt, description: "chat first" };
+  });
+  if (!allowDiscuss) {
+    log.debug("ask_user discuss option suppressed", { optionCount: options.length });
+  } else if (callerSuppliedDiscuss) {
+    log.debug("ask_user discuss option deduped", { optionCount: options.length });
+  } else {
     items.push({ value: DISCUSS_VALUE, label: DISCUSS_LABEL, description: "chat first" });
     log.debug("ask_user discuss option offered", { optionCount: options.length });
-  } else {
-    log.debug("ask_user discuss option suppressed", { optionCount: options.length });
   }
   items.push({
     value: FREE_INPUT_VALUE,
@@ -74,7 +91,7 @@ export function registerAskUser(
       "Use ask_user when you need user input during a workflow (approvals, selections, confirmations).",
       "Do NOT ask users questions via plain text — always use this tool for structured choices.",
       "Provide clear, concise options. Include a 'no' or 'cancel' option when appropriate.",
-      'If ask_user returns exactly "__discuss__", the user has NOT answered — do not proceed. Discuss in plain chat, then re-call ask_user with the SAME question and options.',
+      `If ask_user returns exactly "${DISCUSS_VALUE}", the user has NOT answered — they want to talk about this decision first. Open by addressing the decision itself: the trade-offs, the information you are missing, or the alternatives. Never answer with a status report about what you built or verified. Re-call ask_user with the SAME question and options only once the discussion resolves.`,
     ],
     parameters: Type.Object({
       question: Type.String({
@@ -127,20 +144,21 @@ export function registerAskUser(
         const resp = data as any;
         if (resp.id === askId && externalDone) {
           if (resp.cancelled) externalDone(null);
-          else if (resp.value) externalDone(answerToValue(resp.value));
-          else if (resp.confirmed !== undefined) externalDone(resp.confirmed ? "Yes" : "No");
+          else if (resp.value) {
+            const value = answerToValue(resp.value);
+            log.debug("ask_user browser answer received", { askId, isDiscuss: value === DISCUSS_VALUE });
+            externalDone(value);
+          } else if (resp.confirmed !== undefined) externalDone(resp.confirmed ? "Yes" : "No");
         }
       });
 
-      log.debug("ask_user prompt opened with blocked status", { askId, mode: params.options?.length ? "select" : "input" });
+      log.debug("ask_user prompt opened with blocked status", { askId, mode: assembled.length ? "select" : "input" });
       const result = await ctx.ui.custom<string | null>(
         (tui, theme, _kb, done) => {
           // Allow browser to resolve this dialog
           externalDone = done;
 
-          let mode: "select" | "input" = params.options?.length
-            ? "select"
-            : "input";
+          let mode: "select" | "input" = assembled.length ? "select" : "input";
           let resolved = false;
 
           const resolve = (value: string | null) => {
