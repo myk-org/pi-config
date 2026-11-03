@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.24.0] - 2026-11-03
+
+- `/pr-review` now asks how to decide after the findings table — `Post all`, `Skip all`, or `Decide one by one` — instead of one bulk answer for everything.
+- Deciding one by one gives each finding its own dialog (post, skip, skip with reason, more context, stop), captures the skip reason at decision time, keeps author questions on
+their Approve / Edit / Skip path, and stores a reason even for a bare skip.
+- Every `ask_user` prompt now offers "💬 Discuss with AI first", which returns a sentinel meaning "talk about this decision first" rather than an answer; a caller that passes that
+row itself gets one row, and `allowDiscuss: false` removes it.
+- Docs: the `ask_user` reference covers `allowDiscuss` and the sentinel; the workflow page documents the mode choice and the real turn cost.
+
 ## [4.23.0] - 2026-11-02
 
 - Minimum pi version raised to 1.5.0 — the extension floor, the sidecar floor, and every manifest move together.
