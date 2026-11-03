@@ -269,11 +269,14 @@ describe("Trail retrieval, injection, and the gate", () => {
   });
   // No `interactiveTimeoutMs` here on purpose: it overrides every budget, so the
   // cold ceiling and the warm 2s default are what these tests exercise.
-  const slowRetrieve = () => async () => { await new Promise(resolve => setTimeout(resolve, 40)); return { pointers: ["src/a.ts:1"] }; };
+  // A retrieval that never settles: the timeout is then the only possible outcome, so
+  // these budget assertions cannot race a 40 ms sleep against a 20 ms ceiling (which
+  // flaked under full-suite load — the second event sometimes came back warm).
+  const stalledRetrieve = () => async () => new Promise<{ pointers: string[] }>(() => {});
   const budgets = (capture: ReturnType<typeof capturingLogger>) => capture.entriesFor("retrieval_budget").map(entry => [entry.data.cold, entry.data.budgetMs]);
   it("gives the first retrieval of a session the cold budget", async () => {
     const capture = capturingLogger();
-    const r = register({ graph: async () => "fresh", coldTimeoutMs: 20, retrieve: slowRetrieve(), logger: capture.logger }); const c = await start(r);
+    const r = register({ graph: async () => "fresh", coldTimeoutMs: 20, retrieve: stalledRetrieve(), logger: capture.logger }); const c = await start(r);
     const event = promptEvent("locate the authentication implementation");
     await r.handlers.get("before_agent_start")![0](event, c);
     assert.match(event.systemPromptOptions.sections.trail, /timed out/i);
@@ -281,7 +284,7 @@ describe("Trail retrieval, injection, and the gate", () => {
   });
   it("keeps the cold budget after a failed first retrieval", async () => {
     const capture = capturingLogger();
-    const r = register({ graph: async () => "fresh", coldTimeoutMs: 20, retrieve: slowRetrieve(), logger: capture.logger }); const c = await start(r);
+    const r = register({ graph: async () => "fresh", coldTimeoutMs: 20, retrieve: stalledRetrieve(), logger: capture.logger }); const c = await start(r);
     const first = promptEvent("locate the authentication implementation");
     await r.handlers.get("before_agent_start")![0](first, c);
     const second = promptEvent("locate the authentication implementation");
@@ -301,7 +304,7 @@ describe("Trail retrieval, injection, and the gate", () => {
   });
   it("re-arms the cold budget for a new session", async () => {
     const capture = capturingLogger();
-    const r = register({ graph: async () => "fresh", coldTimeoutMs: 20, retrieve: slowRetrieve(), logger: capture.logger }); const first = await start(r);
+    const r = register({ graph: async () => "fresh", coldTimeoutMs: 20, retrieve: stalledRetrieve(), logger: capture.logger }); const first = await start(r);
     const coldFirst = promptEvent("locate the authentication implementation");
     await r.handlers.get("before_agent_start")![0](coldFirst, first);
     assert.match(coldFirst.systemPromptOptions.sections.trail, /timed out/i);
