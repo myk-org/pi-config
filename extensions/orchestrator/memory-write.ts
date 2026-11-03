@@ -39,7 +39,7 @@ import {
   isTaskScopedText,
   hasDurabilityMarker,
 } from "./memory-scoring.js";
-import { CATEGORY_TO_TOPIC, topicCharCap, readAllTopicEntries, formatTopicLine, findTopicLine, invalidateTopicFileCache } from "./memory-tree.js";
+import { CATEGORY_TO_TOPIC, topicCharCap, readAllTopicEntries, formatTopicLine, findTopicLine, invalidateTopicFileCache, recordRemoval } from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch } from "./memory-embeddings.js";
 import { getSetting } from "./project-settings.js";
 
@@ -2165,6 +2165,8 @@ function supersedeEntry(cwd: string, category: string, text: string): void {
     removeEmbedding(cwd, text, category);
 
     const canonicalLine = `- [${category}] ${text}`;
+    // The old text is gone on purpose: tombstone it so the dream guard does not undo an edit.
+    recordRemoval(cwd, canonicalLine);
     const removedId = match.id;
     mutateScores(cwd, (scores) => {
       delete scores.entries[entryHash(canonicalLine)];

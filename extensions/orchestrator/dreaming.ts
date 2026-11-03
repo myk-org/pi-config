@@ -24,8 +24,8 @@ import { discoverAgents } from "./agents.js";
 import { ICON_DREAM } from "./icons.js";
 import { setSlot } from "./status-bar.js";
 import { distilledLessonTextList } from "./review-learning.js";
-import { invalidateTopicFileCache, topicCharCap } from "./memory-tree.js";
-import { entryHash, loadScores } from "./memory-scoring.js";
+import { invalidateTopicFileCache, removalsSince, topicCharCap } from "./memory-tree.js";
+import { entryHash } from "./memory-scoring.js";
 
 /** Topic files memory maintenance rewrites. */
 const MEMORY_TOPIC_FILES = ["lessons", "preferences", "patterns", "decisions", "completions", "mistakes"];
@@ -79,19 +79,6 @@ export function topicLineCanonical(line: string): string {
   return `- [${category}] ${topicLineText(line)}`;
 }
 
-/** Whether the memory system still tracks this line. A user `memory_remove` drops the
- *  score entry; a dream deletion does not — so this tells a deliberate removal from a
- *  dream's pruning and keeps restores from resurrecting what the user just deleted. */
-function stillTracked(cwd: string): (line: string) => boolean {
-  let entries: Record<string, unknown> = {};
-  try {
-    entries = loadScores(cwd).entries as unknown as Record<string, unknown>;
-  } catch {
-    return () => true; // Unreadable scores must not block restoration.
-  }
-  return (line: string) => entryHash(topicLineCanonical(line)) in entries;
-}
-
 export type TopicRestoreReport = {
   restored: number;
   failed: number;
@@ -109,10 +96,7 @@ export function restoreProtectedTopicLines(
   topicsDir: string,
   before: Record<string, string[]>,
   reviewLessons: readonly string[],
-  scores: { before: (line: string) => boolean; now: (line: string) => boolean } = {
-    before: () => true,
-    now: () => true,
-  },
+  removedByUser: (line: string) => boolean = () => false,
 ): TopicRestoreReport {
   const report: TopicRestoreReport = { restored: 0, failed: 0, overCapTopics: [] };
   for (const [file, beforeLines] of Object.entries(before)) {
@@ -135,11 +119,10 @@ export function restoreProtectedTopicLines(
       .filter(({ line }) => {
         if (!line.startsWith("- [") || !isProtectedTopicLine(line, reviewLessons)) return false;
         if (surviving.has(topicLineCanonical(line))) return false;
-        // A user removal happens while the dream runs: `memory_remove` drops the line and
-        // its score row. So a line that WAS scored before the dream and is not scored now
-        // was removed deliberately and must stay removed. A line that was never scored
-        // (score write failed, or written after the snapshot) is a dream casualty.
-        return !(scores.before(line) && !scores.now(line));
+        // Only an explicit tombstone proves a removal. Score absence does not: the
+        // scheduled rebuild prunes scores for lines a dream deleted, which would look
+        // exactly like a user removal and strand the entry (issue #1010).
+        return !removedByUser(line);
       });
     if (missing.length === 0 && current !== null) continue;
 
@@ -355,7 +338,7 @@ export function registerDreaming(
     // Snapshot before the dream touches anything: whatever it removes that is learned
     // knowledge rather than re-derivable history is put back below (issue #1010).
     const topicsBeforeDream = snapshotTopicLines(topicsDir);
-    const trackedAtDreamStart = stillTracked(cwd);
+    const dreamStartedAt = Date.now();
     const { id } = spawnAsyncAgent(
       "worker",
       buildDreamPrompt(lastSessionFile, topicsDir),
@@ -373,10 +356,10 @@ export function registerDreaming(
           // Undo any deletion of learned knowledge before anything reads the topics.
           try {
             const reviewLessons = distilledLessonTextList(getProjectDataDir(cwd));
-            const report = restoreProtectedTopicLines(topicsDir, topicsBeforeDream, reviewLessons, {
-              before: trackedAtDreamStart,
-              now: stillTracked(cwd),
-            });
+            const removed = removalsSince(cwd, dreamStartedAt);
+            const report = restoreProtectedTopicLines(topicsDir, topicsBeforeDream, reviewLessons, (line) =>
+              removed.has(entryHash(topicLineCanonical(line))),
+            );
             if (report.restored > 0) {
               log.warn("dream_restored_protected_entries", { restored: report.restored });
             }

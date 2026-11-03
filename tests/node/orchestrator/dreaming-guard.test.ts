@@ -26,7 +26,7 @@ const PINNED = "- [preference] Ask before paying for a model *(pinned)*";
 const DISTILLED_LINE = `- [lesson] ${DISTILLED} {#dc8d8500}`;
 const HISTORY = "- [done] #936 merged via PR #937 in v4.14.0";
 
-const SCORED = { before: () => true, now: () => true };
+const NOT_REMOVED = () => false;
 
 function topics(lines: string[], name = "lessons"): { dir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "dream-guard-"));
@@ -74,7 +74,7 @@ describe("restoreProtectedTopicLines", () => {
     try {
       const before = snapshotTopicLines(dir);
       writeFileSync(join(dir, "lessons.md"), `# Lessons\n\n${HISTORY}\n`, "utf-8");
-      const report = restoreProtectedTopicLines(dir, before, [], SCORED);
+      const report = restoreProtectedTopicLines(dir, before, [], NOT_REMOVED);
       assert.equal(report.restored, 1);
       assert.ok(read(dir).includes(PINNED));
     } finally {
@@ -87,7 +87,7 @@ describe("restoreProtectedTopicLines", () => {
     try {
       const before = snapshotTopicLines(dir);
       writeFileSync(join(dir, "lessons.md"), "# Lessons\n", "utf-8");
-      const report = restoreProtectedTopicLines(dir, before, [DISTILLED], SCORED);
+      const report = restoreProtectedTopicLines(dir, before, [DISTILLED], NOT_REMOVED);
       assert.equal(report.restored, 1);
       assert.ok(read(dir).includes(DISTILLED_LINE));
     } finally {
@@ -101,7 +101,7 @@ describe("restoreProtectedTopicLines", () => {
       const before = snapshotTopicLines(dir);
       // The dream shortens the entry but keeps its identity (same canonical text).
       writeFileSync(join(dir, "lessons.md"), `# Lessons\n\n- [lesson] ${DISTILLED}\n`, "utf-8");
-      const report = restoreProtectedTopicLines(dir, before, [DISTILLED], SCORED);
+      const report = restoreProtectedTopicLines(dir, before, [DISTILLED], NOT_REMOVED);
       assert.equal(report.restored, 0, "the entry is still there, so nothing is re-inserted");
       assert.equal(read(dir).split("\n").filter((l) => l.includes(DISTILLED)).length, 1);
     } finally {
@@ -114,7 +114,7 @@ describe("restoreProtectedTopicLines", () => {
     try {
       const before = snapshotTopicLines(dir);
       writeFileSync(join(dir, "lessons.md"), `# Lessons\n\n${PINNED}\n`, "utf-8");
-      restoreProtectedTopicLines(dir, before, [], SCORED);
+      restoreProtectedTopicLines(dir, before, [], NOT_REMOVED);
       assert.ok(!read(dir).includes(HISTORY));
     } finally {
       cleanup();
@@ -130,7 +130,7 @@ describe("restoreProtectedTopicLines", () => {
         `# Lessons\n\n${PINNED}\n- [lesson] Something new the dream learned\n`,
         "utf-8",
       );
-      restoreProtectedTopicLines(dir, before, [], SCORED);
+      restoreProtectedTopicLines(dir, before, [], NOT_REMOVED);
       assert.ok(read(dir).includes("Something new the dream learned"));
     } finally {
       cleanup();
@@ -142,7 +142,7 @@ describe("restoreProtectedTopicLines", () => {
     try {
       const before = snapshotTopicLines(dir);
       rmSync(join(dir, "lessons.md"));
-      const report = restoreProtectedTopicLines(dir, before, [DISTILLED], SCORED);
+      const report = restoreProtectedTopicLines(dir, before, [DISTILLED], NOT_REMOVED);
       assert.equal(report.restored, 2, "a deleted topic is rebuilt from its protected entries");
       assert.equal(report.failed, 0);
       assert.ok(read(dir).includes(PINNED));
@@ -152,13 +152,13 @@ describe("restoreProtectedTopicLines", () => {
     }
   });
 
-  it("restores a pinned entry that was never scored", () => {
+  it("restores a pinned entry when nothing tombstoned its removal", () => {
     const { dir, cleanup } = topics([PINNED]);
     try {
       const before = snapshotTopicLines(dir);
       writeFileSync(join(dir, "lessons.md"), "# Lessons\n", "utf-8");
-      // Never scored before or after (the score write failed) → a dream casualty.
-      const report = restoreProtectedTopicLines(dir, before, [], { before: () => false, now: () => false });
+      // No tombstone → a dream casualty, restored.
+      const report = restoreProtectedTopicLines(dir, before, [], () => false);
       assert.equal(report.restored, 1);
       assert.ok(read(dir).includes(PINNED));
     } finally {
@@ -166,16 +166,13 @@ describe("restoreProtectedTopicLines", () => {
     }
   });
 
-  it("does not restore an entry the user removed while the dream ran", () => {
+  it("does not restore an entry a tombstone marks as user-removed", () => {
     const { dir, cleanup } = topics([PINNED, DISTILLED_LINE]);
     try {
       const before = snapshotTopicLines(dir);
       writeFileSync(join(dir, "lessons.md"), `# Lessons\n\n${PINNED}\n`, "utf-8");
-      // Scored before the dream, unscored now: memory_remove deleted it deliberately.
-      const report = restoreProtectedTopicLines(dir, before, [DISTILLED], {
-        before: () => true,
-        now: () => false,
-      });
+      // A tombstone says the user removed it on purpose: it stays removed.
+      const report = restoreProtectedTopicLines(dir, before, [DISTILLED], () => true);
       assert.equal(report.restored, 0);
       assert.ok(!read(dir).includes(DISTILLED_LINE));
     } finally {
@@ -198,7 +195,7 @@ describe("restoreProtectedTopicLines", () => {
         "utf-8",
       );
 
-      const report = restoreProtectedTopicLines(dir, before, [], SCORED);
+      const report = restoreProtectedTopicLines(dir, before, [], NOT_REMOVED);
       const after = read(dir, "completions");
       assert.ok(after.includes(PINNED), "the protected entry is restored");
       assert.ok(after.includes(preexisting), "a memory that predates the dream is never trimmed");
@@ -218,7 +215,7 @@ describe("restoreProtectedTopicLines", () => {
       const before = snapshotTopicLines(dir);
       writeFileSync(join(dir, "lessons.md"), "# Lessons\n", "utf-8");
       chmodSync(join(dir, "lessons.md"), 0o444);
-      const report = restoreProtectedTopicLines(dir, before, [], SCORED);
+      const report = restoreProtectedTopicLines(dir, before, [], NOT_REMOVED);
       assert.equal(report.failed, 1, "the caller must be able to log a failed restore");
       assert.equal(report.restored, 0);
     } finally {
@@ -232,7 +229,7 @@ describe("restoreProtectedTopicLines", () => {
     try {
       const before = snapshotTopicLines(dir);
       const original = read(dir);
-      const report = restoreProtectedTopicLines(dir, before, [], SCORED);
+      const report = restoreProtectedTopicLines(dir, before, [], NOT_REMOVED);
       assert.deepEqual(report, { restored: 0, failed: 0, overCapTopics: [] });
       assert.equal(read(dir), original);
     } finally {

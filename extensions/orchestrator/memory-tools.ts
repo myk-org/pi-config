@@ -34,6 +34,7 @@ import {
   topicCharCap,
   findTopicLine,
   invalidateTopicFileCache,
+  recordRemoval,
   type TopicInfo,
 } from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memory-embeddings.js";
@@ -405,6 +406,9 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
           }
         }
       });
+
+      // Tombstone the removal: the dream guard must be able to tell this from its own damage.
+      recordRemoval(cwd, canonicalLine);
 
       log.info("memory_remove", category, text.slice(0, 60));
       return {
