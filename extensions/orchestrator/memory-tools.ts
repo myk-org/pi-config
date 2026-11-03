@@ -31,7 +31,7 @@ import {
   listTopics,
   readAllTopicEntries,
   CATEGORY_TO_TOPIC,
-  MAX_TOPIC_CHARS,
+  topicCharCap,
   findTopicLine,
   invalidateTopicFileCache,
   type TopicInfo,
@@ -551,8 +551,9 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         const markers = `${wasPinned ? " *(pinned)*" : ""}${wasEnforced ? " *(enforced)*" : ""}${wasId ? ` {#${wasId}}` : ""}`;
         const replacement = `- [${category}] ${newText}${markers}`;
         const newContent = content.replace(lines[matchIndex]!, replacement);
-        if (newContent.length > MAX_TOPIC_CHARS) {
-          return { content: [{ type: "text", text: `Update would exceed topic size limit (${newContent.length}/${MAX_TOPIC_CHARS} chars).` }], details: undefined };
+        const cap = topicCharCap(topicName);
+        if (newContent.length > cap) {
+          return { content: [{ type: "text", text: `Update would exceed topic size limit (${newContent.length}/${cap} chars).` }], details: undefined };
         }
         // Replace the line
         lines[matchIndex] = replacement;

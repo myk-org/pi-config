@@ -350,6 +350,18 @@ export function loadReviewLessons(dataDir: string): Map<number, Set<string>> {
   return byReview;
 }
 
+/** Every distilled review-lesson text recorded in the state file, flattened.
+ *  Memory maintenance must treat these as learned knowledge, not history: the source
+ *  (the reviews DB) keeps the finding, but nothing re-materializes the topic line
+ *  once it is gone, so a dream that deletes one loses it for good (issue #1010). */
+export function distilledLessonTextList(dataDir: string): string[] {
+  const texts = new Set<string>();
+  for (const lessons of loadReviewLessons(dataDir).values()) {
+    for (const lesson of lessons) if (lesson.trim()) texts.add(lesson.trim());
+  }
+  return [...texts];
+}
+
 function writeStateFile(dataDir: string, distilledReviews: number[], reviewLessons: Map<number, Set<string>>): void {
   const lessons: Record<string, string[]> = {};
   const ids = [...reviewLessons.keys()];

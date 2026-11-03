@@ -39,7 +39,7 @@ import {
   isTaskScopedText,
   hasDurabilityMarker,
 } from "./memory-scoring.js";
-import { CATEGORY_TO_TOPIC, MAX_TOPIC_CHARS, readAllTopicEntries, formatTopicLine, findTopicLine, invalidateTopicFileCache } from "./memory-tree.js";
+import { CATEGORY_TO_TOPIC, topicCharCap, readAllTopicEntries, formatTopicLine, findTopicLine, invalidateTopicFileCache } from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch } from "./memory-embeddings.js";
 import { getSetting } from "./project-settings.js";
 
@@ -2197,11 +2197,12 @@ function topicCapRejection(cwd: string, category: string, entryLine: string): Ad
     content = `# ${title}\n`;
   }
   const newContent = content.trimEnd() + "\n" + entryLine + "\n";
-  if (newContent.length > MAX_TOPIC_CHARS) {
+  const cap = topicCharCap(topicName);
+  if (newContent.length > cap) {
     return {
       status: "rejected",
       message:
-        `Topic "${topicName}" would exceed size limit (${newContent.length}/${MAX_TOPIC_CHARS} chars). ` +
+        `Topic "${topicName}" would exceed size limit (${newContent.length}/${cap} chars). ` +
         `Consolidate or remove entries first using memory_remove.`,
     };
   }

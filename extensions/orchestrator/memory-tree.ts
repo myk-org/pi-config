@@ -27,6 +27,15 @@ const log = createLogger("memory");
 /** Max chars per topic file (~3000 tokens × 4 chars/token) */
 export const MAX_TOPIC_CHARS = 12000;
 
+/** Per-topic override of MAX_TOPIC_CHARS. `completions` accretes by default, so it gets
+ *  a tighter budget: completed-work entries crowd out the knowledge worth keeping. */
+export const TOPIC_CHAR_CAP: Record<string, number> = { completions: 6000 };
+
+/** Char cap for a topic file name (without `.md`), falling back to MAX_TOPIC_CHARS. */
+export function topicCharCap(topic: string): number {
+  return TOPIC_CHAR_CAP[topic] ?? MAX_TOPIC_CHARS;
+}
+
 /** Topic mapping: which categories go into which topic files */
 export const CATEGORY_TO_TOPIC: Record<MemoryCategory, string> = {
   preference: "preferences",
