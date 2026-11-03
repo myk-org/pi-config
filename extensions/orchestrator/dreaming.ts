@@ -24,6 +24,8 @@ import { discoverAgents } from "./agents.js";
 import { ICON_DREAM } from "./icons.js";
 import { setSlot } from "./status-bar.js";
 import { distilledLessonTextList } from "./review-learning.js";
+import { invalidateTopicFileCache, topicCharCap } from "./memory-tree.js";
+import { entryHash, loadScores } from "./memory-scoring.js";
 
 /** Topic files memory maintenance rewrites. */
 const MEMORY_TOPIC_FILES = ["lessons", "preferences", "patterns", "decisions", "completions", "mistakes"];
@@ -71,43 +73,90 @@ export function snapshotTopicLines(topicsDir: string): Record<string, string[]> 
  * many lines were put back; zero means the dream stayed inside its mandate.
  * Any failure is the caller's to log — this never throws.
  */
+/** Canonical `- [category] text` form used as the memory score key. */
+export function topicLineCanonical(line: string): string {
+  const category = /^- \[([a-z]+)\] /.exec(line)?.[1] ?? "";
+  return `- [${category}] ${topicLineText(line)}`;
+}
+
+/** Whether the memory system still tracks this line. A user `memory_remove` drops the
+ *  score entry; a dream deletion does not — so this tells a deliberate removal from a
+ *  dream's pruning and keeps restores from resurrecting what the user just deleted. */
+function stillTracked(cwd: string): (line: string) => boolean {
+  let entries: Record<string, unknown> = {};
+  try {
+    entries = loadScores(cwd).entries as unknown as Record<string, unknown>;
+  } catch {
+    return () => true; // Unreadable scores must not block restoration.
+  }
+  return (line: string) => entryHash(topicLineCanonical(line)) in entries;
+}
+
+export type TopicRestoreReport = { restored: number; failed: number; droppedForCap: number };
+
+/**
+ * Restore protected entries a dream removed, at their original index, then keep the
+ * file inside its per-topic cap by dropping unprotected additions — never protected
+ * ones. Recreates a topic the dream deleted outright. Returns what it did; logging is
+ * the caller's, this never throws.
+ */
 export function restoreProtectedTopicLines(
   topicsDir: string,
   before: Record<string, string[]>,
   reviewLessons: readonly string[],
-): number {
-  let restored = 0;
+  tracked: (line: string) => boolean = () => true,
+): TopicRestoreReport {
+  const report: TopicRestoreReport = { restored: 0, failed: 0, droppedForCap: 0 };
   for (const [file, beforeLines] of Object.entries(before)) {
     const filePath = path.join(topicsDir, file);
-    let current: string[];
+    let current: string[] | null = null;
     try {
       current = fs.readFileSync(filePath, "utf-8").split("\n");
     } catch {
-      continue; // Topic deleted outright — rebuilding it is not this guard's call.
+      current = null; // Deleted outright — rebuilt below from the snapshot.
     }
+    const base = current ?? beforeLines.filter((line) => !line.startsWith("- ["));
     const missing = beforeLines
       .map((line, index) => ({ line, index }))
       .filter(
         ({ line }) =>
           line.startsWith("- [") &&
-          !current.includes(line) &&
-          isProtectedTopicLine(line, reviewLessons),
+          !(current ?? []).includes(line) &&
+          isProtectedTopicLine(line, reviewLessons) &&
+          tracked(line),
       );
-    if (missing.length === 0) continue;
+    if (missing.length === 0 && current !== null) continue;
 
-    const merged = [...current];
+    const merged = [...base];
     for (const { line, index } of missing) {
       merged.splice(Math.min(index, merged.length), 0, line);
-      restored += 1;
+      report.restored += 1;
     }
+
+    const cap = topicCharCap(file.replace(/\.md$/, ""));
+    for (let size = merged.join("\n").length; size > cap; size = merged.join("\n").length) {
+      let dropIndex = -1;
+      for (let i = merged.length - 1; i >= 0; i -= 1) {
+        const line = merged[i];
+        if (line.startsWith("- [") && !isProtectedTopicLine(line, reviewLessons)) {
+          dropIndex = i;
+          break;
+        }
+      }
+      if (dropIndex === -1) break; // Protected entries alone exceed the cap: keep them.
+      merged.splice(dropIndex, 1);
+      report.droppedForCap += 1;
+    }
+
     try {
       fs.writeFileSync(filePath, merged.join("\n"), "utf-8");
+      invalidateTopicFileCache(filePath);
     } catch {
-      // Unwritable topic — count nothing; the caller logs the failure downstream.
-      restored -= missing.length;
+      report.failed += 1;
+      report.restored -= missing.length;
     }
   }
-  return restored;
+  return report;
 }
 
 import { rebuildAndOrganize } from "./situation-report.js";
@@ -315,16 +364,31 @@ export function registerDreaming(
           // Undo any deletion of learned knowledge before anything reads the topics.
           try {
             const reviewLessons = distilledLessonTextList(getProjectDataDir(cwd));
-            const restored = restoreProtectedTopicLines(topicsDir, topicsBeforeDream, reviewLessons);
-            if (restored > 0) {
+            const report = restoreProtectedTopicLines(
+              topicsDir,
+              topicsBeforeDream,
+              reviewLessons,
+              stillTracked(cwd),
+            );
+            if (report.restored > 0) {
+              log.warn("dream_restored_protected_entries", { restored: report.restored });
+            }
+            if (report.droppedForCap > 0) {
+              log.debug("dream_restore_respected_topic_cap", { dropped: report.droppedForCap });
+            }
+            if (report.failed > 0) {
+              log.error("dream_restore_write_failed", { failedTopics: report.failed });
+            }
+            if (report.restored > 0 || report.failed > 0 || report.droppedForCap > 0) {
               fileLog(
                 "dreaming",
-                "warn",
+                report.failed > 0 ? "error" : "warn",
                 "dreaming",
-                `restored ${restored} protected memory entr${restored === 1 ? "y" : "ies"} the dream removed`,
+                `protected-memory reconcile: restored=${report.restored} dropped_for_cap=${report.droppedForCap} failed=${report.failed}`,
               );
             }
           } catch (err) {
+            log.error("dream_restore_failed", { reason: String((err as Error)?.message ?? err).slice(0, 200) });
             fileLog("dreaming", "error", "dreaming", "protected-memory restore failed", err);
           }
           // File log only — console.* leaks into the chat text box.

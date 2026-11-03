@@ -553,6 +553,7 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         const newContent = content.replace(lines[matchIndex]!, replacement);
         const cap = topicCharCap(topicName);
         if (newContent.length > cap) {
+          log.warn("memory_edit_topic_cap_rejected", { topic: topicName, chars: newContent.length, cap });
           return { content: [{ type: "text", text: `Update would exceed topic size limit (${newContent.length}/${cap} chars).` }], details: undefined };
         }
         // Replace the line

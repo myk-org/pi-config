@@ -33,7 +33,9 @@ export const TOPIC_CHAR_CAP: Record<string, number> = { completions: 6000 };
 
 /** Char cap for a topic file name (without `.md`), falling back to MAX_TOPIC_CHARS. */
 export function topicCharCap(topic: string): number {
-  return TOPIC_CHAR_CAP[topic] ?? MAX_TOPIC_CHARS;
+  const cap = TOPIC_CHAR_CAP[topic] ?? MAX_TOPIC_CHARS;
+  log.debug("topic_char_cap_resolved", { topic, cap, overridden: topic in TOPIC_CHAR_CAP });
+  return cap;
 }
 
 /** Topic mapping: which categories go into which topic files */

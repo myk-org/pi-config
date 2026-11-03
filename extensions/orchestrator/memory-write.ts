@@ -2199,6 +2199,7 @@ function topicCapRejection(cwd: string, category: string, entryLine: string): Ad
   const newContent = content.trimEnd() + "\n" + entryLine + "\n";
   const cap = topicCharCap(topicName);
   if (newContent.length > cap) {
+    log.warn("memory_topic_cap_rejected", { topic: topicName, chars: newContent.length, cap });
     return {
       status: "rejected",
       message:
