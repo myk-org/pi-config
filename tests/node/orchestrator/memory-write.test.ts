@@ -22,7 +22,7 @@ import {
   isEntryActiveForSession,
   type ScoredEntry,
 } from "../../../extensions/orchestrator/memory-scoring.js";
-import { readAllTopicEntries } from "../../../extensions/orchestrator/memory-tree.js";
+import { readAllTopicEntries, topicCharCap } from "../../../extensions/orchestrator/memory-tree.js";
 import { loadEnforcedEntries } from "../../../extensions/orchestrator/enforcement-rules.js";
 
 function makeCwd(): string {
@@ -3517,6 +3517,57 @@ describe("conflict gate — hyphenated compound discount (issue #955)", () => {
       });
       assert.equal(result.status, "rejected");
       assert.match(result.message, /contradicts existing memory/i);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+/** Fill a topic file with repeated filler entries until it reaches `target` chars. */
+function seedFiller(cwd: string, topicFile: string, category: string, target: number): void {
+  const topicsDir = path.join(cwd, ".pi", "memory", "topics");
+  fs.mkdirSync(topicsDir, { recursive: true });
+  const lines: string[] = [];
+  let total = 0;
+  for (let i = 0; total < target; i++) {
+    const line = `- [${category}] archived filler record ${i} about unrelated historical plumbing work\n`;
+    lines.push(line);
+    total += line.length;
+  }
+  fs.writeFileSync(path.join(topicsDir, topicFile), lines.join(""));
+}
+
+describe("topic size caps (issue #1010)", () => {
+  it("topicCharCap tightens completions only", () => {
+    assert.equal(topicCharCap("completions"), 6000);
+    assert.equal(topicCharCap("lessons"), 12000);
+    assert.equal(topicCharCap("unknown-topic"), 12000);
+  });
+
+  it("rejects a completions write that would exceed 6000 chars", async () => {
+    const cwd = makeCwd();
+    try {
+      seedFiller(cwd, "completions.md", "done", 6000);
+      const result = await addMemoryEntry(cwd, {
+        text: "Refactored the dreaming oneshot exit path and verified it live",
+        category: "done",
+      });
+      assert.equal(result.status, "rejected");
+      assert.match(result.message, /\/6000 chars/);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a lessons write of the same size (still capped at 12000)", async () => {
+    const cwd = makeCwd();
+    try {
+      seedFiller(cwd, "lessons.md", "lesson", 6000);
+      const result = await addMemoryEntry(cwd, {
+        text: "Live-verify cron and dream changes against a real job before claiming they work",
+        category: "lesson",
+      });
+      assert.equal(result.status, "added");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

@@ -87,6 +87,8 @@ const MAX_LESSON_CHARS = 100;
 const STATE_FILE_NAME = "review-learning-state.json";
 /** Cap on tracked review ids — old reviews never re-distill in practice. */
 const MAX_TRACKED_REVIEWS = 200;
+/** Cap on the long-lived protection list that outlives MAX_TRACKED_REVIEWS. */
+const MAX_PROTECTED_LESSON_TEXTS = 5000;
 
 // ── Command matching ───────────────────────────────────────────────────────
 
@@ -350,15 +352,56 @@ export function loadReviewLessons(dataDir: string): Map<number, Set<string>> {
   return byReview;
 }
 
+/** Every distilled review-lesson text recorded in the state file, flattened.
+ *  Memory maintenance must treat these as learned knowledge, not history: the source
+ *  (the reviews DB) keeps the finding, but nothing re-materializes the topic line
+ *  once it is gone, so a dream that deletes one loses it for good (issue #1010).
+ *  Unions the bounded per-review map with the long-lived protection list so lessons
+ *  from reviews older than the tracking window stay protected. */
+export function distilledLessonTextList(dataDir: string): string[] {
+  const texts = new Set<string>();
+  for (const lessons of loadReviewLessons(dataDir).values()) {
+    for (const lesson of lessons) if (lesson.trim()) texts.add(lesson.trim());
+  }
+  for (const lesson of loadProtectedLessonTexts(dataDir)) if (lesson.trim()) texts.add(lesson.trim());
+  log.debug("distilled_lesson_texts_loaded", { count: texts.size });
+  return [...texts];
+}
+
 function writeStateFile(dataDir: string, distilledReviews: number[], reviewLessons: Map<number, Set<string>>): void {
   const lessons: Record<string, string[]> = {};
   const ids = [...reviewLessons.keys()];
   for (const id of ids.slice(-MAX_TRACKED_REVIEWS)) lessons[String(id)] = [...reviewLessons.get(id)!];
+  // Protection set for older reviews: `lessons` is bounded by MAX_TRACKED_REVIEWS, so
+  // without this union a lesson from review #1 stops being recognizable as reviewed
+  // knowledge once 200 newer reviews land, and memory maintenance may delete it (#1010).
+  const protectedTexts = new Set(loadProtectedLessonTexts(dataDir));
+  for (const set of reviewLessons.values()) for (const text of set) if (text.trim()) protectedTexts.add(text.trim());
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(
     stateFilePath(dataDir),
-    `${JSON.stringify({ distilledReviews: distilledReviews.slice(-MAX_TRACKED_REVIEWS), reviewLessons: lessons }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        distilledReviews: distilledReviews.slice(-MAX_TRACKED_REVIEWS),
+        reviewLessons: lessons,
+        protectedLessonTexts: [...protectedTexts].slice(-MAX_PROTECTED_LESSON_TEXTS),
+      },
+      null,
+      2,
+    )}\n`,
   );
+}
+
+/** Lesson texts that must stay recognizable as reviewed knowledge, independent of
+ *  the bounded per-review map. Empty on a fresh or unreadable state file. */
+export function loadProtectedLessonTexts(dataDir: string): string[] {
+  try {
+    const raw = JSON.parse(readFileSync(stateFilePath(dataDir), "utf-8"));
+    const texts = Array.isArray(raw?.protectedLessonTexts) ? raw.protectedLessonTexts : [];
+    return texts.filter((text: unknown): text is string => typeof text === "string" && text.trim().length > 0);
+  } catch {
+    return [];
+  }
 }
 
 /** Record a review id as distilled (bounded — oldest entries drop off). Fail-soft. */

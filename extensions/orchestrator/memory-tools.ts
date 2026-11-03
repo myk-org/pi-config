@@ -31,9 +31,10 @@ import {
   listTopics,
   readAllTopicEntries,
   CATEGORY_TO_TOPIC,
-  MAX_TOPIC_CHARS,
+  topicCharCap,
   findTopicLine,
   invalidateTopicFileCache,
+  recordRemoval,
   type TopicInfo,
 } from "./memory-tree.js";
 import { embedEntry, removeEmbedding, vectorSearch, embedMissing } from "./memory-embeddings.js";
@@ -406,6 +407,9 @@ function registerMemoryRemove(pi: ExtensionAPI): void {
         }
       });
 
+      // Tombstone the removal: the dream guard must be able to tell this from its own damage.
+      recordRemoval(cwd, canonicalLine);
+
       log.info("memory_remove", category, text.slice(0, 60));
       return {
         content: [{ type: "text", text: `Removed: [${category}] ${text}` }],
@@ -551,8 +555,10 @@ function registerMemoryEdit(pi: ExtensionAPI): void {
         const markers = `${wasPinned ? " *(pinned)*" : ""}${wasEnforced ? " *(enforced)*" : ""}${wasId ? ` {#${wasId}}` : ""}`;
         const replacement = `- [${category}] ${newText}${markers}`;
         const newContent = content.replace(lines[matchIndex]!, replacement);
-        if (newContent.length > MAX_TOPIC_CHARS) {
-          return { content: [{ type: "text", text: `Update would exceed topic size limit (${newContent.length}/${MAX_TOPIC_CHARS} chars).` }], details: undefined };
+        const cap = topicCharCap(topicName);
+        if (newContent.length > cap) {
+          log.warn("memory_edit_topic_cap_rejected", { topic: topicName, chars: newContent.length, cap });
+          return { content: [{ type: "text", text: `Update would exceed topic size limit (${newContent.length}/${cap} chars).` }], details: undefined };
         }
         // Replace the line
         lines[matchIndex] = replacement;

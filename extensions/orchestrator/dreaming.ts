@@ -23,14 +23,247 @@ import { getSetting } from "./project-settings.js";
 import { discoverAgents } from "./agents.js";
 import { ICON_DREAM } from "./icons.js";
 import { setSlot } from "./status-bar.js";
+import { distilledLessonTextList } from "./review-learning.js";
+import { invalidateTopicFileCache, removalsSince, topicCharCap } from "./memory-tree.js";
+import { entryHash } from "./memory-scoring.js";
+
+/** Topic files memory maintenance rewrites. */
+const MEMORY_TOPIC_FILES = ["lessons", "preferences", "patterns", "decisions", "completions", "mistakes"];
+
+/** Line text without its `- [category] ` prefix, lock markers, or `{#id}` suffix. */
+function topicLineText(line: string): string {
+  return line
+    .replace(/^- \[[a-z]+\] /, "")
+    .replace(/\s*\*\((?:pinned|enforced)\)\*/g, "")
+    .replace(/\s*\{#[0-9a-f]+\}\s*$/, "")
+    .trim();
+}
+
+/**
+ * Entries memory maintenance must never delete, whatever the prompt says:
+ * pinned/enforced entries (user-locked, or keyed by text hash for enforcement) and
+ * lessons distilled from reviews — their source is the reviews DB, but nothing
+ * re-materializes the topic line once a dream removes it (issue #1010).
+ */
+export function isProtectedTopicLine(line: string, reviewLessons: readonly string[]): boolean {
+  if (!line.startsWith("- [")) return false;
+  if (line.includes("*(pinned)*") || line.includes("*(enforced)*")) return true;
+  const text = topicLineText(line);
+  return reviewLessons.some((lesson) => {
+    const candidate = lesson.trim();
+    return candidate.length > 0 && text === candidate;
+  });
+}
+
+/** Snapshot every memory topic file's lines, so a dream's deletions can be audited. */
+export function snapshotTopicLines(topicsDir: string): Record<string, string[]> {
+  const before: Record<string, string[]> = {};
+  for (const name of MEMORY_TOPIC_FILES) {
+    try {
+      before[`${name}.md`] = fs.readFileSync(path.join(topicsDir, `${name}.md`), "utf-8").split("\n");
+    } catch {
+      // Topic absent — nothing to protect.
+    }
+  }
+  return before;
+}
+
+/**
+ * Restore protected entries a dream removed, at their original index. Returns how
+ * many lines were put back; zero means the dream stayed inside its mandate.
+ * Any failure is the caller's to log — this never throws.
+ */
+/** Canonical `- [category] text` form used as the memory score key. */
+export function topicLineCanonical(line: string): string {
+  const category = /^- \[([a-z]+)\] /.exec(line)?.[1] ?? "";
+  return `- [${category}] ${topicLineText(line)}`;
+}
+
+export type TopicRestoreReport = {
+  restored: number;
+  failed: number;
+  /** Topics still over their cap after reconcile. Never trimmed here: see below. */
+  overCapTopics: string[];
+};
+
+/**
+ * Restore protected entries a dream removed, at their original index, then keep the
+ * file inside its per-topic cap by dropping unprotected additions — never protected
+ * ones. Recreates a topic the dream deleted outright. Returns what it did; logging is
+ * the caller's, this never throws.
+ */
+export function restoreProtectedTopicLines(
+  topicsDir: string,
+  before: Record<string, string[]>,
+  reviewLessons: readonly string[],
+  removedByUser: (line: string) => boolean = () => false,
+): TopicRestoreReport {
+  const report: TopicRestoreReport = { restored: 0, failed: 0, overCapTopics: [] };
+  for (const [file, beforeLines] of Object.entries(before)) {
+    const filePath = path.join(topicsDir, file);
+    let current: string[] | null = null;
+    try {
+      current = fs.readFileSync(filePath, "utf-8").split("\n");
+    } catch {
+      current = null; // Deleted outright — rebuilt below from the snapshot.
+    }
+    const base = current ?? beforeLines.filter((line) => !line.startsWith("- ["));
+    // A dream that *rewrites* a protected entry keeps it: compare canonical text, not the
+    // raw line, or the original returns beside the rewrite as a duplicate.
+    const surviving = new Set((current ?? []).map(topicLineCanonical));
+    const beforeEntries = new Set(
+      beforeLines.filter((line) => line.startsWith("- [")).map(topicLineCanonical),
+    );
+    const missing = beforeLines
+      .map((line, index) => ({ line, index }))
+      .filter(({ line }) => {
+        if (!line.startsWith("- [") || !isProtectedTopicLine(line, reviewLessons)) return false;
+        if (surviving.has(topicLineCanonical(line))) return false;
+        // Only an explicit tombstone proves a removal. Score absence does not: the
+        // scheduled rebuild prunes scores for lines a dream deleted, which would look
+        // exactly like a user removal and strand the entry (issue #1010).
+        return !removedByUser(line);
+      });
+    if (missing.length === 0 && current !== null) continue;
+
+    const merged = [...base];
+    for (const { line, index } of missing) {
+      merged.splice(Math.min(index, merged.length), 0, line);
+      report.restored += 1;
+    }
+
+    const cap = topicCharCap(file.replace(/\.md$/, ""));
+    // Never trim here. Text cannot distinguish a dream's addition from its rewrite of an
+    // existing memory, and deleting the wrong one loses knowledge that the score rebuild
+    // cannot recover. The write paths still enforce the cap for normal additions; an
+    // over-cap file is reported so the next prune can shrink it with judgment.
+    if (merged.join("\n").length > cap) report.overCapTopics.push(file);
+
+    try {
+      fs.writeFileSync(filePath, merged.join("\n"), "utf-8");
+      invalidateTopicFileCache(filePath);
+    } catch {
+      report.failed += 1;
+      report.restored -= missing.length;
+    }
+  }
+  return report;
+}
+
 import { rebuildAndOrganize } from "./situation-report.js";
 import { runPromotionPass } from "./memory-promotion.js";
 import { mergeProvenancePending } from "./memory-provenance.js";
-import { getProjectTmpDir, getProjectMemoryDir, shouldSkipOneshotShutdownDream } from "./utils.js";
+import { getProjectTmpDir, getProjectMemoryDir, getProjectDataDir, shouldSkipOneshotShutdownDream } from "./utils.js";
 import { fileLog } from "../shared/file-logger.js";
 
 // Scoring rebuild runs every 30 minutes (cheap, no LLM — just rescores and reorganizes)
 const REBUILD_INTERVAL_MS = 30 * 60 * 1000;
+
+export function buildDreamPrompt(
+  lastSessionFile: string | undefined,
+  topicsDir: string,
+): string {
+  return (
+    `Memory dreaming — analyze session and maintain topic files.\n` +
+    `Session file: ${lastSessionFile || "none"}\n` +
+    `Topics directory: ${topicsDir}\n\n` +
+    `Topic files are the source of truth for project memory. Each file holds entries for one category.\n\n` +
+    `Steps:\n` +
+    `1. Read all existing topic files in ${topicsDir}/ (lessons.md, preferences.md, patterns.md, decisions.md, completions.md, mistakes.md).\n` +
+    `   If the directory doesn't exist, create it.\n` +
+    `2. QUALITY GATE: Before extracting from any session, assess its quality:\n` +
+    `   - Score depth (substantive exchanges > 100 chars? decisions made? corrections?)\n` +
+    `   - Skip sessions that are only greetings, trivial Q&A, or < 3 exchanges\n` +
+    `   - Only extract from sessions with real decisions, corrections, or completed work\n` +
+    `3. If a session file is provided, read it and extract things worth remembering:\n` +
+    `   - User corrections → [lesson] → lessons.md\n` +
+    `   - User preferences → [preference] → preferences.md\n` +
+    `   - Mistakes or repeated fix attempts → [mistake] → mistakes.md\n` +
+    `   - Completed work → [done] → completions.md — ONLY non-derivable outcome knowledge:\n` +
+    `     a conclusion, a measurement, a root cause, "X was fixed by Y because Z".\n` +
+    `     NEVER store a PR/issue number list, merge or release history, version changelogs,\n` +
+    `     or closed-ticket roundups — git log, gh, and the tracker already hold them, and a\n` +
+    `     stored "Open: #772" answers "is it fixed?" wrongly once it ships.\n` +
+    `   - Patterns or conventions → [pattern] → patterns.md\n` +
+    `   - Architectural/design decisions → [decision] → decisions.md\n` +
+    `   QUALITY GATE for extraction: one-off permissions granted in a single session\n` +
+    `   ("you can merge this PR", "skip tests just this once") AND task-scoped instructions\n` +
+    `   ("when done, I want an html report", "when bumping to 1.4.0, drop the vendor dir",\n` +
+    `   config-change notes like "every 30min (changed from 1h)") are session/task\n` +
+    `   instructions, NOT memories — never extract them. Apply the standing test: would\n` +
+    `   this apply to a future, unrelated task? No → discard. Only standing, repeated\n` +
+    `   rules are durable.\n` +
+    `   Do NOT add duplicates of existing entries.\n` +
+    `3b. Review the preference candidate queue: if ${topicsDir}/../preference-candidates.jsonl\n` +
+    `   exists and has entries, each holds a VERBATIM sentence the regex extractor queued\n` +
+    `   from user input (issue #961). For each candidate:\n` +
+    `   - Durable standing preference → DISTILL it into a clean one-line [preference]\n` +
+    `     (≤100 chars, actionable, no verbatim chatter) and add to preferences.md\n` +
+    `   - Task-scoped instruction, one-off ask, question, or already covered → discard\n` +
+    `   After processing: RE-READ preference-candidates.jsonl and rewrite it keeping ONLY\n` +
+    `   the entries that appeared after your first read — the extractor appends\n` +
+    `   concurrently, so do NOT truncate the whole file (an entry queued between your\n` +
+    `   read and your rewrite would be erased before any dream cycle reviewed it).\n` +
+    `   Keep the file bounded: if it exceeds 200 lines, also drop the oldest entries\n` +
+    `   beyond that cap.\n` +
+    `4. Scan past session files for unprocessed knowledge. Check if ${topicsDir}/../.dream-watermark exists.\n` +
+    `   If it does, read the timestamp — only process sessions newer than that.\n` +
+    `   Session directory: find .jsonl files under the pi sessions directory.\n` +
+    `   For each unprocessed session, extract durable knowledge (same categories as step 3).\n` +
+    `   Limit: process at most 5 sessions per dream cycle to avoid overload.\n` +
+    `5. Reorganize each topic file:\n` +
+    `   - Remove duplicate or near-duplicate entries\n` +
+    `   - Remove stale/useless entries\n` +
+    `   - Remove session-scoped or expired entries — they are transient by design\n` +
+    `   - Remove task-scoped instruction entries (issue #961): verbatim user utterances\n` +
+    `     (colloquial chat captured raw), mid-sentence cutoffs, one-off deliverable asks\n` +
+    `     ("when done I want a report"), version-pinned migration checklists, config-change\n` +
+    `     notes — these are task/session artifacts, not durable rules. NEVER remove\n` +
+    `     pinned or enforced entries even when they match these shapes.\n` +
+    `   - Remove entries that restate git/GitHub/Jira history — merged-PR lists, release and\n` +
+    `     version notes, closed-ticket roundups. Recoverable by query, therefore not memory.\n` +
+    `     When an entry mixes history with a non-derivable finding, keep only the finding.\n` +
+    `   - Keep each file at a reasonable size (aim for under 20 entries per topic)\n` +
+    `   - NEVER remove or modify entries marked with *(pinned)*\n` +
+    `   - NEVER remove or modify entries marked with *(enforced)* — these have code-enforced triggers/actions that are keyed by text hash. ANY text change destroys the enforcement binding.\n` +
+    `6. Write each updated topic file with this format:\n` +
+    `   # TopicName\n` +
+    `   \n` +
+    `   - [category] summary *(pinned)*              (if pinned)\n` +
+    `   - [category] summary *(enforced)*            (if enforced)\n` +
+    `   - [category] summary *(pinned)* *(enforced)* (if both)\n` +
+    `   - [category] summary                         (if neither)\n` +
+    `7. Auto-generate skills: if you notice a multi-step workflow pattern across entries,\n` +
+    `   create a skill file at .pi/skills/<name>/SKILL.md (project-level, NOT global ~/.agents/).\n` +
+    `   The SKILL.md MUST start with YAML frontmatter:\n` +
+    `   ---\n` +
+    `   name: <name>\n` +
+    `   description: "What this skill does and when to use it"\n` +
+    `   ---\n` +
+    `   Only create skills for workflows with 3+ steps that are likely to recur.\n` +
+    `8. Write the current timestamp to ${topicsDir}/../.dream-watermark to track progress.\n` +
+    `9. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.\n` +
+    `10. Promotion destinations: append candidates to ${topicsDir}/../promotions.md using this block format:\n` +
+    `   ### <12-char-id>\n` +
+    `   - destination: memory|skill|enforcement|project_rule|discard\n` +
+    `   - status: proposed\n` +
+    `   - category: <category>\n` +
+    `   - text: <exact topic entry text>\n` +
+    `   - reason: <why this should graduate>\n` +
+    `   - created: <ISO timestamp>\n` +
+    `   Optional fields: evidence_count, trigger, action, verifier, skill_name, skill_created.\n` +
+    `   Rules:\n` +
+    `   - skill: create .pi/skills/ when confident; set skill_created: true\n` +
+    `   - enforcement: propose trigger/action when mechanical (never/always + command); do NOT invent run_after\n` +
+    `   - project_rule: propose only — NEVER write rules/ or .pi/rules/\n` +
+    `   - discard: stale or superseded noise\n` +
+    `   - Do not reopen entries already marked applied or rejected in promotions.md\n` +
+    `11. Provenance sidecar (optional): for newly extracted entries, write\n` +
+    `   ${topicsDir}/../provenance-pending.jsonl as a single line of JSON (preferred):\n` +
+    `   {"entries":[{"category":"lesson","text":"<exact topic text>","sourceSession":"<session basename>","derivedFrom":"<optional>","informs":["optional"]}]}\n` +
+    `   Do NOT edit memory-scores.jsonl yourself — onComplete merges the sidecar.`
+  );
+}
 
 export function registerDreaming(
   pi: ExtensionAPI,
@@ -102,99 +335,13 @@ export function registerDreaming(
     currentDreamId = "";  // Reset until we get the ID from spawnAsyncAgent
     const { agents } = discoverAgents(cwd, "user");
     const topicsDir = path.join(getProjectMemoryDir(cwd), "topics");
+    // Snapshot before the dream touches anything: whatever it removes that is learned
+    // knowledge rather than re-derivable history is put back below (issue #1010).
+    const topicsBeforeDream = snapshotTopicLines(topicsDir);
+    const dreamStartedAt = Date.now();
     const { id } = spawnAsyncAgent(
       "worker",
-      `Memory dreaming — analyze session and maintain topic files.\n` +
-      `Session file: ${lastSessionFile || "none"}\n` +
-      `Topics directory: ${topicsDir}\n\n` +
-      `Topic files are the source of truth for project memory. Each file holds entries for one category.\n\n` +
-      `Steps:\n` +
-      `1. Read all existing topic files in ${topicsDir}/ (lessons.md, preferences.md, patterns.md, decisions.md, completions.md, mistakes.md).\n` +
-      `   If the directory doesn't exist, create it.\n` +
-      `2. QUALITY GATE: Before extracting from any session, assess its quality:\n` +
-      `   - Score depth (substantive exchanges > 100 chars? decisions made? corrections?)\n` +
-      `   - Skip sessions that are only greetings, trivial Q&A, or < 3 exchanges\n` +
-      `   - Only extract from sessions with real decisions, corrections, or completed work\n` +
-      `3. If a session file is provided, read it and extract things worth remembering:\n` +
-      `   - User corrections → [lesson] → lessons.md\n` +
-      `   - User preferences → [preference] → preferences.md\n` +
-      `   - Mistakes or repeated fix attempts → [mistake] → mistakes.md\n` +
-      `   - Completed features/PRs merged → [done] → completions.md\n` +
-      `   - Patterns or conventions → [pattern] → patterns.md\n` +
-      `   - Architectural/design decisions → [decision] → decisions.md\n` +
-      `   QUALITY GATE for extraction: one-off permissions granted in a single session\n` +
-      `   ("you can merge this PR", "skip tests just this once") AND task-scoped instructions\n` +
-      `   ("when done, I want an html report", "when bumping to 1.4.0, drop the vendor dir",\n` +
-      `   config-change notes like "every 30min (changed from 1h)") are session/task\n` +
-      `   instructions, NOT memories — never extract them. Apply the standing test: would\n` +
-      `   this apply to a future, unrelated task? No → discard. Only standing, repeated\n` +
-      `   rules are durable.\n` +
-      `   Do NOT add duplicates of existing entries.\n` +
-      `3b. Review the preference candidate queue: if ${topicsDir}/../preference-candidates.jsonl\n` +
-      `   exists and has entries, each holds a VERBATIM sentence the regex extractor queued\n` +
-      `   from user input (issue #961). For each candidate:\n` +
-      `   - Durable standing preference → DISTILL it into a clean one-line [preference]\n` +
-      `     (≤100 chars, actionable, no verbatim chatter) and add to preferences.md\n` +
-      `   - Task-scoped instruction, one-off ask, question, or already covered → discard\n` +
-      `   After processing: RE-READ preference-candidates.jsonl and rewrite it keeping ONLY\n` +
-      `   the entries that appeared after your first read — the extractor appends\n` +
-      `   concurrently, so do NOT truncate the whole file (an entry queued between your\n` +
-      `   read and your rewrite would be erased before any dream cycle reviewed it).\n` +
-      `   Keep the file bounded: if it exceeds 200 lines, also drop the oldest entries\n` +
-      `   beyond that cap.\n` +
-      `4. Scan past session files for unprocessed knowledge. Check if ${topicsDir}/../.dream-watermark exists.\n` +
-      `   If it does, read the timestamp — only process sessions newer than that.\n` +
-      `   Session directory: find .jsonl files under the pi sessions directory.\n` +
-      `   For each unprocessed session, extract durable knowledge (same categories as step 3).\n` +
-      `   Limit: process at most 5 sessions per dream cycle to avoid overload.\n` +
-      `5. Reorganize each topic file:\n` +
-      `   - Remove duplicate or near-duplicate entries\n` +
-      `   - Remove stale/useless entries\n` +
-      `   - Remove session-scoped or expired entries — they are transient by design\n` +
-      `   - Remove task-scoped instruction entries (issue #961): verbatim user utterances\n` +
-      `     (colloquial chat captured raw), mid-sentence cutoffs, one-off deliverable asks\n` +
-      `     ("when done I want a report"), version-pinned migration checklists, config-change\n` +
-      `     notes — these are task/session artifacts, not durable rules. NEVER remove\n` +
-      `     pinned or enforced entries even when they match these shapes.\n` +
-      `   - Keep each file at a reasonable size (aim for under 20 entries per topic)\n` +
-      `   - NEVER remove or modify entries marked with *(pinned)*\n` +
-      `   - NEVER remove or modify entries marked with *(enforced)* — these have code-enforced triggers/actions that are keyed by text hash. ANY text change destroys the enforcement binding.\n` +
-      `6. Write each updated topic file with this format:\n` +
-      `   # TopicName\n` +
-      `   \n` +
-      `   - [category] summary *(pinned)*              (if pinned)\n` +
-      `   - [category] summary *(enforced)*            (if enforced)\n` +
-      `   - [category] summary *(pinned)* *(enforced)* (if both)\n` +
-      `   - [category] summary                         (if neither)\n` +
-      `7. Auto-generate skills: if you notice a multi-step workflow pattern across entries,\n` +
-      `   create a skill file at .pi/skills/<name>/SKILL.md (project-level, NOT global ~/.agents/).\n` +
-      `   The SKILL.md MUST start with YAML frontmatter:\n` +
-      `   ---\n` +
-      `   name: <name>\n` +
-      `   description: "What this skill does and when to use it"\n` +
-      `   ---\n` +
-      `   Only create skills for workflows with 3+ steps that are likely to recur.\n` +
-      `8. Write the current timestamp to ${topicsDir}/../.dream-watermark to track progress.\n` +
-      `9. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.\n` +
-      `10. Promotion destinations: append candidates to ${topicsDir}/../promotions.md using this block format:\n` +
-      `   ### <12-char-id>\n` +
-      `   - destination: memory|skill|enforcement|project_rule|discard\n` +
-      `   - status: proposed\n` +
-      `   - category: <category>\n` +
-      `   - text: <exact topic entry text>\n` +
-      `   - reason: <why this should graduate>\n` +
-      `   - created: <ISO timestamp>\n` +
-      `   Optional fields: evidence_count, trigger, action, verifier, skill_name, skill_created.\n` +
-      `   Rules:\n` +
-      `   - skill: create .pi/skills/ when confident; set skill_created: true\n` +
-      `   - enforcement: propose trigger/action when mechanical (never/always + command); do NOT invent run_after\n` +
-      `   - project_rule: propose only — NEVER write rules/ or .pi/rules/\n` +
-      `   - discard: stale or superseded noise\n` +
-      `   - Do not reopen entries already marked applied or rejected in promotions.md\n` +
-      `11. Provenance sidecar (optional): for newly extracted entries, write\n` +
-      `   ${topicsDir}/../provenance-pending.jsonl as a single line of JSON (preferred):\n` +
-      `   {"entries":[{"category":"lesson","text":"<exact topic text>","sourceSession":"<session basename>","derivedFrom":"<optional>","informs":["optional"]}]}\n` +
-      `   Do NOT edit memory-scores.jsonl yourself — onComplete merges the sidecar.`,
+      buildDreamPrompt(lastSessionFile, topicsDir),
       cwd,
       agents,
       {
@@ -206,6 +353,34 @@ export function registerDreaming(
           dreamInFlight = false;
           log.info("dream complete", cwd);
           updateDreamStatus();
+          // Undo any deletion of learned knowledge before anything reads the topics.
+          try {
+            const reviewLessons = distilledLessonTextList(getProjectDataDir(cwd));
+            const removed = removalsSince(cwd, dreamStartedAt);
+            const report = restoreProtectedTopicLines(topicsDir, topicsBeforeDream, reviewLessons, (line) =>
+              removed.has(entryHash(topicLineCanonical(line))),
+            );
+            if (report.restored > 0) {
+              log.warn("dream_restored_protected_entries", { restored: report.restored });
+            }
+            if (report.overCapTopics.length > 0) {
+              log.warn("dream_restore_left_topic_over_cap", { topics: report.overCapTopics });
+            }
+            if (report.failed > 0) {
+              log.error("dream_restore_write_failed", { failedTopics: report.failed });
+            }
+            if (report.restored > 0 || report.failed > 0 || report.overCapTopics.length > 0) {
+              fileLog(
+                "dreaming",
+                report.failed > 0 ? "error" : "warn",
+                "dreaming",
+                `protected-memory reconcile: restored=${report.restored} over_cap=${report.overCapTopics.join(",") || "-"} failed=${report.failed}`,
+              );
+            }
+          } catch (err) {
+            log.error("dream_restore_failed", { reason: String((err as Error)?.message ?? err).slice(0, 200) });
+            fileLog("dreaming", "error", "dreaming", "protected-memory restore failed", err);
+          }
           // File log only — console.* leaks into the chat text box.
           try {
             rebuildAndOrganize(cwd);
