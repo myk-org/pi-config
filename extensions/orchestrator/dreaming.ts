@@ -95,9 +95,8 @@ function stillTracked(cwd: string): (line: string) => boolean {
 export type TopicRestoreReport = {
   restored: number;
   failed: number;
-  droppedForCap: number;
-  /** Topic files whose dream additions were trimmed to satisfy a cap. */
-  droppedTopics: string[];
+  /** Topics still over their cap after reconcile. Never trimmed here: see below. */
+  overCapTopics: string[];
 };
 
 /**
@@ -110,9 +109,12 @@ export function restoreProtectedTopicLines(
   topicsDir: string,
   before: Record<string, string[]>,
   reviewLessons: readonly string[],
-  tracked: (line: string) => boolean = () => true,
+  scores: { before: (line: string) => boolean; now: (line: string) => boolean } = {
+    before: () => true,
+    now: () => true,
+  },
 ): TopicRestoreReport {
-  const report: TopicRestoreReport = { restored: 0, failed: 0, droppedForCap: 0, droppedTopics: [] };
+  const report: TopicRestoreReport = { restored: 0, failed: 0, overCapTopics: [] };
   for (const [file, beforeLines] of Object.entries(before)) {
     const filePath = path.join(topicsDir, file);
     let current: string[] | null = null;
@@ -133,11 +135,11 @@ export function restoreProtectedTopicLines(
       .filter(({ line }) => {
         if (!line.startsWith("- [") || !isProtectedTopicLine(line, reviewLessons)) return false;
         if (surviving.has(topicLineCanonical(line))) return false;
-        // The score gate only guards review-distilled lines: their score row is written
-        // after the topic line, so a missing score can mean "the user removed it". A
-        // pinned or enforced entry is protected by its marker, never by a score row.
-        const byMarker = line.includes("*(pinned)*") || line.includes("*(enforced)*");
-        return byMarker || tracked(line);
+        // A user removal happens while the dream runs: `memory_remove` drops the line and
+        // its score row. So a line that WAS scored before the dream and is not scored now
+        // was removed deliberately and must stay removed. A line that was never scored
+        // (score write failed, or written after the snapshot) is a dream casualty.
+        return !(scores.before(line) && !scores.now(line));
       });
     if (missing.length === 0 && current !== null) continue;
 
@@ -148,22 +150,11 @@ export function restoreProtectedTopicLines(
     }
 
     const cap = topicCharCap(file.replace(/\.md$/, ""));
-    for (let size = merged.join("\n").length; size > cap; size = merged.join("\n").length) {
-      let dropIndex = -1;
-      for (let i = merged.length - 1; i >= 0; i -= 1) {
-        const line = merged[i];
-        // Only the dream's own additions may be trimmed: removing a memory that existed
-        // before the dream would trade user knowledge for a size budget.
-        if (line.startsWith("- [") && !beforeEntries.has(topicLineCanonical(line))) {
-          dropIndex = i;
-          break;
-        }
-      }
-      if (dropIndex === -1) break; // Nothing the dream added is left: keep the file over cap.
-      merged.splice(dropIndex, 1);
-      report.droppedForCap += 1;
-      if (!report.droppedTopics.includes(file)) report.droppedTopics.push(file);
-    }
+    // Never trim here. Text cannot distinguish a dream's addition from its rewrite of an
+    // existing memory, and deleting the wrong one loses knowledge that the score rebuild
+    // cannot recover. The write paths still enforce the cap for normal additions; an
+    // over-cap file is reported so the next prune can shrink it with judgment.
+    if (merged.join("\n").length > cap) report.overCapTopics.push(file);
 
     try {
       fs.writeFileSync(filePath, merged.join("\n"), "utf-8");
@@ -364,6 +355,7 @@ export function registerDreaming(
     // Snapshot before the dream touches anything: whatever it removes that is learned
     // knowledge rather than re-derivable history is put back below (issue #1010).
     const topicsBeforeDream = snapshotTopicLines(topicsDir);
+    const trackedAtDreamStart = stillTracked(cwd);
     const { id } = spawnAsyncAgent(
       "worker",
       buildDreamPrompt(lastSessionFile, topicsDir),
@@ -381,30 +373,25 @@ export function registerDreaming(
           // Undo any deletion of learned knowledge before anything reads the topics.
           try {
             const reviewLessons = distilledLessonTextList(getProjectDataDir(cwd));
-            const report = restoreProtectedTopicLines(
-              topicsDir,
-              topicsBeforeDream,
-              reviewLessons,
-              stillTracked(cwd),
-            );
+            const report = restoreProtectedTopicLines(topicsDir, topicsBeforeDream, reviewLessons, {
+              before: trackedAtDreamStart,
+              now: stillTracked(cwd),
+            });
             if (report.restored > 0) {
               log.warn("dream_restored_protected_entries", { restored: report.restored });
             }
-            if (report.droppedForCap > 0) {
-              log.debug("dream_restore_respected_topic_cap", {
-                dropped: report.droppedForCap,
-                topics: report.droppedTopics,
-              });
+            if (report.overCapTopics.length > 0) {
+              log.warn("dream_restore_left_topic_over_cap", { topics: report.overCapTopics });
             }
             if (report.failed > 0) {
               log.error("dream_restore_write_failed", { failedTopics: report.failed });
             }
-            if (report.restored > 0 || report.failed > 0 || report.droppedForCap > 0) {
+            if (report.restored > 0 || report.failed > 0 || report.overCapTopics.length > 0) {
               fileLog(
                 "dreaming",
                 report.failed > 0 ? "error" : "warn",
                 "dreaming",
-                `protected-memory reconcile: restored=${report.restored} dropped_for_cap=${report.droppedForCap} topics=${report.droppedTopics.join(",") || "-"} failed=${report.failed}`,
+                `protected-memory reconcile: restored=${report.restored} over_cap=${report.overCapTopics.join(",") || "-"} failed=${report.failed}`,
               );
             }
           } catch (err) {
