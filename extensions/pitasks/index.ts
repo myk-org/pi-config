@@ -227,8 +227,8 @@ export default function (pi: ExtensionAPI) {
 			store.close();
 			store = new TaskStore(path);
 			taskStore = store;
-					publishTaskStore();
-					currentStore = store;
+			publishTaskStore();
+			currentStore = store;
 			widget.setStore(store);
 			store.setOnChange(() => { widget.update(); broadcastTasks(); });
 			log.debug("store upgraded", path);
