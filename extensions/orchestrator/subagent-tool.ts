@@ -65,7 +65,10 @@ async function getTaskStore(): Promise<any> {
   // Fall back to the module binding for in-process loads that share this instance.
   const mod = await pitasksModule();
   const store = mod?.taskStore ?? null;
-  if (!store) log.debug("task_store_unavailable", { note: "pitasks store not initialized — validation skipped" });
+  if (!store) {
+    // Validation is about to be skipped: that is a degraded state, not routine flow.
+    log.warn("task_store_unavailable", { note: "pitasks store not initialized — taskId validation skipped" });
+  }
   return store;
 }
 import {
@@ -624,7 +627,9 @@ async function validateTaskId(taskId: string, _cwd: string, _sessionId?: string)
   if (!store) return null; // pitasks genuinely unavailable — warned in getTaskStore
   try {
     return taskIdError(taskId, (id) => Boolean(store.get(id)));
-  } catch {
+  } catch (err) {
+    // Same fail-open as before, but a broken store must not look like a valid id.
+    log.warn("task_id_validation_failed", { reason: String((err as Error)?.message ?? err).slice(0, 120) });
     return null;
   }
 }
