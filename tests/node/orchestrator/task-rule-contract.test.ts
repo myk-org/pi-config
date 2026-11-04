@@ -61,4 +61,37 @@ describe("task rule contract (#1003)", () => {
     assert.doesNotMatch(taskRule, /code-enforced \(reminders/i);
     assert.doesNotMatch(taskRule, /ignored turns/i);
   });
+
+  it("requires tasks for work an async result sets in motion (#1016)", () => {
+    assert.ok(taskRule.includes("or work any step sets in motion"), "the trigger cannot be request-shaped only");
+    assert.ok(taskRule.includes("an async result comes back with follow-up work"));
+    assert.ok(coreRule.includes("set in motion by an async result"), "the injected summary must agree");
+  });
+
+  it("restricts taskId -1 to read-only one-offs (#1016)", () => {
+    assert.match(taskRule, /`"-1"` is only for a single read-only\s+check/, "the exception must be narrow");
+    assert.match(taskRule, /must carry a real\s+task id/);
+    assert.doesNotMatch(taskRule, /"-1" when not/, "the blanket exception is the loophole this closes");
+  });
+
+  it("documents multi-issue stage granularity (#1016)", () => {
+    assert.ok(taskRule.includes("one task per **stage** per issue"));
+    assert.ok(taskRule.includes("`#<n>: <stage>`"));
+    assert.ok(taskRule.includes("addBlockedBy"));
+  });
+
+  it("requires a result-to-board step and TaskList-derived status (#1016)", () => {
+    assert.ok(taskRule.includes("When an async result arrives, update the board in that same turn"));
+    assert.ok(taskRule.includes("Status reports come from `TaskList`, not recollection"));
+  });
+
+  it("scopes auto-complete so a narrow agent task cannot close a stage (#1016)", () => {
+    assert.ok(taskRule.includes("Stage tasks are yours to close"));
+    assert.ok(taskRule.includes("**NEVER** let a narrow agent task stand in for a stage"));
+    assert.doesNotMatch(taskRule, /Linked tasks auto-complete on agent success/, "that sentence let a poll close a stage");
+  });
+
+  it("requires board reconciliation before new dispatch (#1016)", () => {
+    assert.ok(taskRule.includes("Before dispatching new work, reconcile the board"));
+  });
 });

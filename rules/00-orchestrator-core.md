@@ -34,7 +34,8 @@ Outside slash commands, never use edit, write, or bash directly (except `codemod
 
 ## Before Implementation (MANDATORY)
 
-**For 2+ distinct actions, your first action is one `TaskBulkCreate` listing every step** — before the first edit or the first agent call (see `60-task-tracking.md`).
+**For 2+ distinct actions — requested, or set in motion by an async result — your first action is one `TaskBulkCreate` listing every step**
+— before the first edit or the first agent call (see `60-task-tracking.md`).
 
 Before ANY code changes, run the pre-implementation checklist:
 

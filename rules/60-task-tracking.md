@@ -9,18 +9,21 @@
 
 ## When Tasks Are Required
 
-The request needs **2+ distinct actions** — then tasks are required:
+The request — **or work any step sets in motion** — needs **2+ distinct actions** — then tasks are required:
 
 - more than one file to change, or code plus tests plus docs
 - any workflow from `05-issue-first-workflow.md` or `20-code-review-loop.md`
 - the user lists several things to do ("do X, then Y", numbered items)
 - work conditioned on a future event ("after Qodo approves, deploy and test") — create the tasks now, put the trigger in the description, and block the dependents on it
+- an async result comes back with follow-up work (round two of review, a poll returned findings) — reacting only to finished agents still needs a board
 
 **No tasks:** a single-step action, a one-file/one-line change, a question, an explanation, read-only investigation.
 
 ## First Action
 
 Plan the whole job in **one `TaskBulkCreate` call** listing every step — not one `TaskCreate` per step, and not after the first edit. `TaskCreate` is for a single step added later.
+
+Before dispatching new work, reconcile the board: complete, re-scope, or delete stale tasks. A task still `in_progress` for work that changed is a lie the next turn will read.
 
 When `TaskCreate`'s own tool description suggests per-step calls, **this rule wins**: one bulk call for the whole job.
 
@@ -31,9 +34,20 @@ One concrete action per task: which file, which change.
 - ❌ `Implement the fix` / `Create PR`
 - ✅ `Edit extensions/orchestrator/utils.ts — add timeout parameter to fetchData()` / `Create PR with the test plan`
 
+**Multi-issue work:** one task per **stage** per issue, named `#<n>: <stage>` (e.g.
+`#1016: contract test`), later stages carry `addBlockedBy` on earlier ones. File-level detail
+lives in the description, not the subject — four PRs at six stages each is a stage board, not
+hundreds of file tasks.
+
 ## Lifecycle
 
 `in_progress` before starting a task, `completed` immediately after. Work in order. Never abandon a task — drop a stale one with `TaskUpdate status: "deleted"`.
+
+**When an async result arrives, update the board in that same turn:** complete the owning
+task, then create or activate the next stage if it is not already there. The result is the
+trigger; the board is the response or the tracking decays.
+
+Status reports come from `TaskList`, not recollection: a prose table is not state a resumed session can read.
 
 ## Side Questions
 
@@ -44,14 +58,20 @@ Answer the question, then resume the next unchecked task — the task list says 
 ## Async Agent taskId (MANDATORY — code-enforced)
 
 **Every async agent call MUST include `taskId`.** Enforced — calls without it are rejected.
-Pass the task ID (e.g., `"5"`) when linked to a task, or `"-1"` when not.
-Linked tasks auto-complete on agent success — no manual `TaskUpdate` needed.
+Pass the id of the task the agent performs (e.g. `"5"`). `"-1"` is only for a single read-only
+check that changes nothing: an agent that edits code, pushes, or drives a PR must carry a real
+task id, because an unlinked poll is work that never appears on the board.
 
 ```text
 subagent(agent="code-reviewer-quality", task="...", cwd="...", async=true, name="Review", taskId="5")
-subagent(agent="worker", task="...", cwd="...", async=true, name="Qodo Poll", taskId="-1")
+subagent(agent="worker", task="...", cwd="...", async=true, name="Read one file", taskId="-1")
 ```
 
-- ✅ **ALWAYS** pass `taskId` — auto-completes on success, stays `in_progress` on failure
-- ❌ **NEVER** manually `TaskUpdate` a task to `completed` if it has an async agent
+**Stage tasks are yours to close.** An agent links to the narrow task it performs; the stage
+completes when the stage's acceptance holds. Binding a stage to a poll marks the stage done
+when only the poll finished — which is how a "Qodo loop" task closed while findings were still
+open.
+
+- ✅ **ALWAYS** pass `taskId` — the call is rejected without it
+- ❌ **NEVER** let a narrow agent task stand in for a stage — auto-complete ends the task the agent was linked to
 - ❌ **NEVER** omit `taskId` — the call will fail
