@@ -16,6 +16,8 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
+import { sendSystemNote } from "../shared/system-note.js";
+import { publishedTaskStore } from "../shared/task-store-bridge.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
 import {
   getMarkdownTheme,
@@ -30,12 +32,44 @@ import {
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
 
-// Task store access via shared instance from extensions/pitasks
-let _taskStore: any = null;
+// Task store access via the pitasks module.
+// `taskStore` is `export let` — a live binding the pitasks extension assigns when it
+// initializes. Copying the value at import time captured `undefined` and disabled
+// task-id validation for the whole session (issue #1016), so the binding is read fresh.
+let _pitasksModule: any = null;
+let _pitasksLoad: Promise<any> | null = null;
+async function pitasksModule(): Promise<any> {
+  if (_pitasksModule) return _pitasksModule;
+  if (!_pitasksLoad) {
+    _pitasksLoad = (async () => {
+      try {
+        _pitasksModule = await import("../pitasks/index.js");
+        return _pitasksModule;
+      } catch (err) {
+        log.warn(`[subagent] pitasks module unavailable: ${String((err as Error)?.message ?? err).slice(0, 120)}`);
+        _pitasksLoad = null; // retry on the next call
+        return null;
+      }
+    })();
+  }
+  return _pitasksLoad;
+}
+
+/** The live task store, or null while pitasks has not initialized it yet.
+ *  Read from the global symbol registry: this tool's module instance cannot see the
+ *  pitasks extension's `export let taskStore` binding (it snapshots `undefined`), which
+ *  is why task-id validation silently failed open (issue #1016). */
 async function getTaskStore(): Promise<any> {
-  if (_taskStore) return _taskStore;
-  try { const mod = await import("../pitasks/index.js"); _taskStore = mod.taskStore; } catch { /* ignore */ }
-  return _taskStore;
+  const published = publishedTaskStore();
+  if (published) return published;
+  // Fall back to the module binding for in-process loads that share this instance.
+  const mod = await pitasksModule();
+  const store = mod?.taskStore ?? null;
+  if (!store) {
+    // Validation is about to be skipped: that is a degraded state, not routine flow.
+    log.warn("task_store_unavailable", { note: "pitasks store not initialized — taskId validation skipped" });
+  }
+  return store;
 }
 import {
   decideAsyncLlmDispatch,
@@ -153,7 +187,7 @@ const SubagentParams = Type.Object({
     Type.String({ description: "Display name for async agents in status line and notifications (e.g., 'Dream', 'Code Review'). Defaults to agent name." }),
   ),
   taskId: Type.Optional(
-    Type.String({ description: "Task ID to auto-complete when this async agent finishes. Required for async agents — pass \"-1\" if not linked to any task." }),
+    Type.String({ description: "Task ID to auto-complete when this async agent finishes. Required for async agents — pass \"-1\" only for a single read-only check; an agent that edits, pushes, or drives a PR needs a real task id." }),
   ),
   asyncKill: Type.Optional(
     Type.String({ description: "Kill async agent(s) by name, id prefix, or 'all'. Returns which agents were killed." }),
@@ -577,22 +611,27 @@ export async function runSingleAgent(
   }
 }
 
-/** Validate that a taskId references an existing task in the pitasks store. */
-function validateTaskId(taskId: string, _cwd: string, _sessionId?: string): string | null {
+/** The message for a task id the store does not know; null when it is valid or exempt. */
+export function taskIdError(taskId: string, lookup: (id: string) => boolean): string | null {
   if (taskId === "-1") return null;
+  return lookup(taskId)
+    ? null
+    : `Task #${taskId} not found. Verify the task ID exists (use TaskList to check), or pass taskId: "-1" for a read-only check (editing or PR work needs a real task id).`;
+}
+
+/** Validate that a taskId references an existing task. Awaits the store load, so the
+ *  first async call of a session validates too instead of failing open (issue #1016). */
+async function validateTaskId(taskId: string, _cwd: string, _sessionId?: string): Promise<string | null> {
+  if (taskId === "-1") return null;
+  const store = await getTaskStore();
+  if (!store) return null; // pitasks genuinely unavailable — warned in getTaskStore
   try {
-    // Ensure store is loaded (async init may not have completed)
-    if (!_taskStore) {
-      getTaskStore().catch(() => {});
-    }
-    const store = _taskStore;
-    if (!store) {
-      // Store not loaded yet (async init) — fail open, skip validation
-      return null;
-    }
-    if (store.get(taskId)) return null;
-  } catch { return null; }
-  return `Task #${taskId} not found. Verify the task ID exists (use TaskList to check), or pass taskId: "-1" if not linked to a task.`;
+    return taskIdError(taskId, (id) => Boolean(store.get(id)));
+  } catch (err) {
+    // Same fail-open as before, but a broken store must not look like a valid id.
+    log.warn("task_id_validation_failed", { reason: String((err as Error)?.message ?? err).slice(0, 120) });
+    return null;
+  }
 }
 
 // ── Registration ─────────────────────────────────────────────────────────
@@ -629,7 +668,7 @@ export function registerSubagentTool(
     };
   }
 
-  function executeAsync(
+  async function executeAsync(
     params: any,
     agents: AgentConfig[],
     mkd: (mode: "single" | "parallel" | "chain") => (results: SingleResult[]) => SubagentDetails,
@@ -659,13 +698,13 @@ export function registerSubagentTool(
       }
       const noTaskId = params.tasks.filter((t: any) => (t as any).taskId == null);
       if (noTaskId.length > 0) {
-        const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nMissing taskId for: ${noTaskId.map((t: any) => t.agent).join(", ")}\n\nIf an agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf an agent is NOT linked to any task: pass taskId: "-1"`;
+        const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nMissing taskId for: ${noTaskId.map((t: any) => t.agent).join(", ")}\n\nIf an agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf an agent is only doing a single read-only check: pass taskId: "-1" (editing or PR work needs a real task id)`;
         // Force a follow-up turn so the AI MUST deal with this error
-        pi.sendMessage({
-          customType: "subagent-taskid-error",
-          content: `🚨 CRITICAL: Async subagent call was REJECTED — missing taskId for: ${noTaskId.map((t: any) => t.agent).join(", ")}. NO agents were spawned. You MUST retry with taskId for each agent. Use TaskList to find task IDs, or pass taskId: "-1" if not linked.`,
-          display: true,
-        }, { triggerTurn: true, deliverAs: "followUp" });
+        await sendSystemNote(
+          pi,
+          `🚨 CRITICAL: Async subagent call was REJECTED — missing taskId for: ${noTaskId.map((t: any) => t.agent).join(", ")}. NO agents were spawned. You MUST retry with taskId for each agent. Use TaskList to find task IDs; "-1" is only for a single read-only check.`,
+          { customType: "subagent-taskid-error", triggerTurn: true, deliverAs: "followUp" },
+        );
         return {
           content: [{ type: "text" as const, text: errorMsg }],
           details: mkd("single")([]),
@@ -674,13 +713,13 @@ export function registerSubagentTool(
       }
       for (const t of params.tasks) {
         const tid = (t as any).taskId as string;
-        const taskErr = validateTaskId(tid, ctx.cwd, ctx.sessionManager?.getSessionId?.());
+        const taskErr = await validateTaskId(tid, ctx.cwd, ctx.sessionManager?.getSessionId?.());
         if (taskErr) {
-          pi.sendMessage({
-            customType: "subagent-taskid-error",
-            content: `🚨 CRITICAL: ${taskErr} (agent: ${t.agent}). NO agents were spawned. Fix the taskId and retry.`,
-            display: true,
-          }, { triggerTurn: true, deliverAs: "followUp" });
+          await sendSystemNote(
+            pi,
+            `🚨 CRITICAL: ${taskErr} (agent: ${t.agent}). NO agents were spawned. Fix the taskId and retry.`,
+            { customType: "subagent-taskid-error", triggerTurn: true, deliverAs: "followUp" },
+          );
           return {
             content: [{ type: "text" as const, text: `${taskErr} (agent: ${t.agent})` }],
             details: mkd("single")([]),
@@ -747,13 +786,13 @@ export function registerSubagentTool(
       };
     }
     if (params.taskId == null) {
-      const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nIf this agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf this agent is NOT linked to any task: pass taskId: "-1"\n\nExample: subagent(agent="${params.agent}", task="...", async=true, name="${params.name}", taskId="-1")`;
+      const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nIf this agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf this agent is only doing a single read-only check: pass taskId: "-1" (editing or PR work needs a real task id)\n\nExample: subagent(agent="${params.agent}", task="...", async=true, name="${params.name}", taskId="-1")`;
       // Force a follow-up turn so the AI MUST deal with this error
-      pi.sendMessage({
-        customType: "subagent-taskid-error",
-        content: `🚨 CRITICAL: Async subagent call for "${params.agent}" was REJECTED — missing taskId. The agent was NOT spawned. You MUST retry the subagent call with taskId. Use TaskList to find the task ID, or pass taskId: "-1" if not linked to any task. Do NOT proceed without fixing this.`,
-        display: true,
-      }, { triggerTurn: true, deliverAs: "followUp" });
+      await sendSystemNote(
+        pi,
+        `🚨 CRITICAL: Async subagent call for "${params.agent}" was REJECTED — missing taskId. The agent was NOT spawned. You MUST retry the subagent call with taskId. Use TaskList to find the task ID; "-1" is only for a single read-only check. Do NOT proceed without fixing this.`,
+        { customType: "subagent-taskid-error", triggerTurn: true, deliverAs: "followUp" },
+      );
       return {
         content: [{ type: "text" as const, text: errorMsg }],
         details: mkd("single")([]),
@@ -761,13 +800,13 @@ export function registerSubagentTool(
       };
     }
     {
-      const taskErr = validateTaskId(params.taskId, ctx.cwd, ctx.sessionManager?.getSessionId?.());
+      const taskErr = await validateTaskId(params.taskId, ctx.cwd, ctx.sessionManager?.getSessionId?.());
       if (taskErr) {
-        pi.sendMessage({
-          customType: "subagent-taskid-error",
-          content: `🚨 CRITICAL: ${taskErr} The agent was NOT spawned. Fix the taskId and retry.`,
-          display: true,
-        }, { triggerTurn: true, deliverAs: "followUp" });
+        await sendSystemNote(
+          pi,
+          `🚨 CRITICAL: ${taskErr} The agent was NOT spawned. Fix the taskId and retry.`,
+          { customType: "subagent-taskid-error", triggerTurn: true, deliverAs: "followUp" },
+        );
         return {
           content: [{ type: "text" as const, text: taskErr }],
           details: mkd("single")([]),
@@ -1689,7 +1728,7 @@ export function registerSubagentTool(
 
       // Async mode — spawn in background and return immediately
       if (params.async === true) {
-        const result = executeAsync(params, agents, mkd, parentModelId, parentProvider, ctx, explicit);
+        const result = await executeAsync(params, agents, mkd, parentModelId, parentProvider, ctx, explicit);
         if (capabilityNote && result.content?.[0]?.type === "text") {
           result.content[0].text = `${capabilityNote}\n\n${result.content[0].text}`;
         }

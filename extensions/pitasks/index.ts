@@ -11,6 +11,7 @@ import { TaskStore } from "./task-store.js";
 import { TaskWidget } from "./task-widget.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
+import { publishTaskStore } from "../shared/task-store-bridge.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
@@ -42,6 +43,11 @@ export function setTaskTelemetryActive(taskId: string, active = true): void {
 
 /** Exported store instance — set during extension init. */
 export let taskStore: TaskStore;
+
+// The store is published to other extension modules through the shared bridge: they
+// cannot read this `export let` binding (they would snapshot `undefined`), which silently
+// disabled task-id validation (issue #1016). Published once, from registration only —
+// the bridge's getter follows later store swaps, so the upgrade path needs no republish.
 
 /** Create a task directly — for use by other extensions (e.g., coms auto-create). */
 export function createTask(subject: string, description: string, createdBy?: any, metadata?: Record<string, any>): any {
@@ -189,6 +195,8 @@ export default function (pi: ExtensionAPI) {
 	currentWidget?.dispose();
 	let store = new TaskStore(resolveStorePath());
 	taskStore = store;
+	// Registration is the only publish site: the getter follows store swaps.
+	publishTaskStore(() => taskStore);
 	currentStore = store;
 	const widget = new TaskWidget(store);
 	store.setOnChange(() => { widget.update(); broadcastTasks(); });

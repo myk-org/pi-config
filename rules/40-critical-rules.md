@@ -34,7 +34,7 @@ its output. Use it ONLY for work whose result nobody consumes — in pi-config, 
 dreaming and nothing else. Every watcher, poll, and review agent exists to report
 something back, so leave `fireAndForget` unset for them. If you are about to set it,
 ask whether you will ever read the result; if yes, do not set it.
-**`taskId` is required on every async call** (use `-1` when unlinked) — a call without
+**`taskId` is required on every async call** (`-1` only for a single read-only check; anything that edits, pushes, or drives a PR needs a real task id) — a call without
 it is rejected, and the agent does not run.
 
 Do NOT write bash loops, sleep commands, or poll for results after spawning async agents.
