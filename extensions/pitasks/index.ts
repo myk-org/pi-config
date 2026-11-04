@@ -57,8 +57,6 @@ function publishTaskStore(): void {
 		},
 	};
 }
-// Published at module load: the getter resolves whenever pitasks initializes the store.
-publishTaskStore();
 
 /** Create a task directly — for use by other extensions (e.g., coms auto-create). */
 export function createTask(subject: string, description: string, createdBy?: any, metadata?: Record<string, any>): any {
@@ -206,6 +204,9 @@ export default function (pi: ExtensionAPI) {
 	currentWidget?.dispose();
 	let store = new TaskStore(resolveStorePath());
 	taskStore = store;
+	// Publish from the registering instance only: a duplicate import would clobber the
+	// real getter with one bound to a store that was never created.
+	publishTaskStore();
 	currentStore = store;
 	const widget = new TaskWidget(store);
 	store.setOnChange(() => { widget.update(); broadcastTasks(); });
@@ -226,6 +227,7 @@ export default function (pi: ExtensionAPI) {
 			store.close();
 			store = new TaskStore(path);
 			taskStore = store;
+					publishTaskStore();
 					currentStore = store;
 			widget.setStore(store);
 			store.setOnChange(() => { widget.update(); broadcastTasks(); });
