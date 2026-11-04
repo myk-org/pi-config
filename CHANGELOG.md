@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.24.2] - 2026-11-04
+
+- Async work is tracked even when an agent starts it: the task trigger now covers work set in
+  motion by an async result, and `taskId: "-1"` is restricted to a single read-only check in
+  every place that taught the old habit.
+- Task-id validation actually runs. `pitasks` exports the store as a live binding that the
+  subagent tool used to snapshot before it was assigned, so an unknown id was accepted; the
+  store is now published on a symbol bridge and read at access time. Verified live: unknown
+  ids rejected, a real id and the read-only sentinel accepted.
+- Machine-generated notices declare their provenance: follow-ups are prefixed
+  "[system message — not written by the user]", so a guard rail cannot be read as user input.
+- Board updates are success-gated — a failed agent keeps its task open — and reconciling the
+  board before new dispatch is mandatory. Status reports derive from `TaskList`.
+
 ## [4.24.1] - 2026-11-03
 
 - Dreaming no longer stores re-derivable changelog: `[done]` takes non-derivable outcomes only (conclusions, measurements, root causes) and reorganizing prunes PR/version/ticket
