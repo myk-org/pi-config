@@ -43,6 +43,23 @@ export function setTaskTelemetryActive(taskId: string, active = true): void {
 /** Exported store instance — set during extension init. */
 export let taskStore: TaskStore;
 
+/** Cross-module bridge: extensions loaded as separate module instances cannot read this
+ *  `export let` binding (they would snapshot `undefined`), so a live getter is published
+ *  on the global symbol registry. The getter follows store creation and the session-scope
+ *  upgrade, so a reader never sees a stale instance. Same pattern as the pricing
+ *  provenance and session-cwd markers. */
+export const TASK_STORE_SYMBOL = Symbol.for("pi-config.taskStore");
+
+function publishTaskStore(): void {
+	(globalThis as any)[TASK_STORE_SYMBOL] = {
+		get current(): TaskStore | undefined {
+			return taskStore;
+		},
+	};
+}
+// Published at module load: the getter resolves whenever pitasks initializes the store.
+publishTaskStore();
+
 /** Create a task directly — for use by other extensions (e.g., coms auto-create). */
 export function createTask(subject: string, description: string, createdBy?: any, metadata?: Record<string, any>): any {
 	return taskStore.create(subject, description, createdBy || { type: "local", origin: "system", session: "", project: "" }, undefined, metadata);
@@ -209,7 +226,7 @@ export default function (pi: ExtensionAPI) {
 			store.close();
 			store = new TaskStore(path);
 			taskStore = store;
-			currentStore = store;
+					currentStore = store;
 			widget.setStore(store);
 			store.setOnChange(() => { widget.update(); broadcastTasks(); });
 			log.debug("store upgraded", path);

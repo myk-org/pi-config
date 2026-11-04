@@ -31,6 +31,7 @@ import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { evaluateSpawnLock } from "./spawn-lock.js";
+import { sendSystemNote } from "../shared/system-note.js";
 
 /** Re-export for callers/tests that import from pidiff. */
 export { evaluateSpawnLock } from "./spawn-lock.js";
@@ -279,7 +280,13 @@ export function registerPidiff(pi: ExtensionAPI): void {
               ...(parsed.summary ? { summary: parsed.summary } : {}),
             };
             const message = `## pidiff: Code Review Comments\n\n\`\`\`json\n${JSON.stringify(review, null, 2)}\n\`\`\`\n\nPlease address these review comments.`;
-            pi.sendUserMessage(message, { deliverAs: "followUp" });
+            // Fire-and-forget inside a sync socket handler; a rejection must be logged,
+            // never left unhandled.
+            void sendSystemNote(pi, message, {
+              customType: "pidiff-review-comments",
+              deliverAs: "followUp",
+              triggerTurn: true,
+            }).catch((e: unknown) => log.warn("pidiff: review injection failed", String(e)));
           }
         } catch (e: any) { log.debug(`message handler error: ${e.message}`); }
       });
