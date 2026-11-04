@@ -80,9 +80,25 @@ describe("task rule contract (#1003)", () => {
     assert.ok(taskRule.includes("addBlockedBy"));
   });
 
-  it("requires a result-to-board step and TaskList-derived status (#1016)", () => {
+  it("requires a result-to-board step (#1016)", () => {
     assert.ok(taskRule.includes("When an async result arrives, update the board in that same turn"));
+  });
+
+  it("keeps a failed agent from completing its task (#1016)", () => {
+    assert.match(taskRule, /A\s+failed agent keeps its task open/);
+    assert.match(taskRule, /on success complete the\s+owning task/, "completion must be success-gated");
+  });
+
+  it("requires TaskList-derived status (#1016)", () => {
     assert.ok(taskRule.includes("Status reports come from `TaskList`, not recollection"));
+  });
+
+  it("marks reconciliation mandatory (#1016)", () => {
+    assert.match(taskRule, /Before dispatching new work, reconcile the board \(MANDATORY\)/);
+  });
+
+  it("names blockedBy for bulk-created stages (#1016)", () => {
+    assert.ok(taskRule.includes("Later stages carry `blockedBy` in the bulk create"));
   });
 
   it("scopes auto-complete so a narrow agent task cannot close a stage (#1016)", () => {

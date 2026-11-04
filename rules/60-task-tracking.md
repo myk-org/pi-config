@@ -23,7 +23,9 @@ The request — **or work any step sets in motion** — needs **2+ distinct acti
 
 Plan the whole job in **one `TaskBulkCreate` call** listing every step — not one `TaskCreate` per step, and not after the first edit. `TaskCreate` is for a single step added later.
 
-Before dispatching new work, reconcile the board: complete, re-scope, or delete stale tasks.
+**Before dispatching new work, reconcile the board (MANDATORY):** complete, re-scope, or
+delete stale tasks. Dispatching over a task that is `in_progress` for work that already changed
+is a violation.
 
 When `TaskCreate`'s own tool description suggests per-step calls, **this rule wins**: one bulk call for the whole job.
 
@@ -35,15 +37,18 @@ One concrete action per task: which file, which change.
 - ✅ `Edit extensions/orchestrator/utils.ts — add timeout parameter to fetchData()` / `Create PR with the test plan`
 
 **Multi-issue work:** one task per **stage** per issue, named `#<n>: <stage>` (e.g.
-`#1016: contract test`), later stages carry `addBlockedBy` on earlier ones. File-level detail
-lives in the description, not the subject.
+`#1016: contract test`). Later stages carry `blockedBy` in the bulk create — `addBlockedBy` is an
+update field, and stage ids only exist after the call returns, so wire them with `TaskUpdate` if
+the order was not set at creation. File-level detail lives in the description, not the subject.
 
 ## Lifecycle
 
 `in_progress` before starting a task, `completed` immediately after. Work in order. Never abandon a task — drop a stale one with `TaskUpdate status: "deleted"`.
 
-**When an async result arrives, update the board in that same turn:** complete the owning
-task, then create or activate the next stage if it is not already there.
+**When an async result arrives, update the board in that same turn:** on success complete the
+owning task, then plan any follow-up in one `TaskBulkCreate` and activate its first stage. A
+failed agent keeps its task open — the runtime never auto-completes a failure, and closing it
+would activate a stage whose input never arrived.
 
 Status reports come from `TaskList`, not recollection.
 

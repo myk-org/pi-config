@@ -153,7 +153,7 @@ const SubagentParams = Type.Object({
     Type.String({ description: "Display name for async agents in status line and notifications (e.g., 'Dream', 'Code Review'). Defaults to agent name." }),
   ),
   taskId: Type.Optional(
-    Type.String({ description: "Task ID to auto-complete when this async agent finishes. Required for async agents — pass \"-1\" if not linked to any task." }),
+    Type.String({ description: "Task ID to auto-complete when this async agent finishes. Required for async agents — pass \"-1\" only for a single read-only check; an agent that edits, pushes, or drives a PR needs a real task id." }),
   ),
   asyncKill: Type.Optional(
     Type.String({ description: "Kill async agent(s) by name, id prefix, or 'all'. Returns which agents were killed." }),
@@ -592,7 +592,7 @@ function validateTaskId(taskId: string, _cwd: string, _sessionId?: string): stri
     }
     if (store.get(taskId)) return null;
   } catch { return null; }
-  return `Task #${taskId} not found. Verify the task ID exists (use TaskList to check), or pass taskId: "-1" if not linked to a task.`;
+  return `Task #${taskId} not found. Verify the task ID exists (use TaskList to check), or pass taskId: "-1" for a read-only check (editing or PR work needs a real task id).`;
 }
 
 // ── Registration ─────────────────────────────────────────────────────────
@@ -659,11 +659,11 @@ export function registerSubagentTool(
       }
       const noTaskId = params.tasks.filter((t: any) => (t as any).taskId == null);
       if (noTaskId.length > 0) {
-        const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nMissing taskId for: ${noTaskId.map((t: any) => t.agent).join(", ")}\n\nIf an agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf an agent is NOT linked to any task: pass taskId: "-1"`;
+        const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nMissing taskId for: ${noTaskId.map((t: any) => t.agent).join(", ")}\n\nIf an agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf an agent is only doing a single read-only check: pass taskId: "-1" (editing or PR work needs a real task id)`;
         // Force a follow-up turn so the AI MUST deal with this error
         pi.sendMessage({
           customType: "subagent-taskid-error",
-          content: `🚨 CRITICAL: Async subagent call was REJECTED — missing taskId for: ${noTaskId.map((t: any) => t.agent).join(", ")}. NO agents were spawned. You MUST retry with taskId for each agent. Use TaskList to find task IDs, or pass taskId: "-1" if not linked.`,
+          content: `🚨 CRITICAL: Async subagent call was REJECTED — missing taskId for: ${noTaskId.map((t: any) => t.agent).join(", ")}. NO agents were spawned. You MUST retry with taskId for each agent. Use TaskList to find task IDs; "-1" is only for a single read-only check.`,
           display: true,
         }, { triggerTurn: true, deliverAs: "followUp" });
         return {
@@ -747,11 +747,11 @@ export function registerSubagentTool(
       };
     }
     if (params.taskId == null) {
-      const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nIf this agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf this agent is NOT linked to any task: pass taskId: "-1"\n\nExample: subagent(agent="${params.agent}", task="...", async=true, name="${params.name}", taskId="-1")`;
+      const errorMsg = `Missing required parameter: taskId. Every async agent MUST have a taskId.\n\nIf this agent is working on a task: pass the task ID (e.g., taskId: "5")\nIf this agent is only doing a single read-only check: pass taskId: "-1" (editing or PR work needs a real task id)\n\nExample: subagent(agent="${params.agent}", task="...", async=true, name="${params.name}", taskId="-1")`;
       // Force a follow-up turn so the AI MUST deal with this error
       pi.sendMessage({
         customType: "subagent-taskid-error",
-        content: `🚨 CRITICAL: Async subagent call for "${params.agent}" was REJECTED — missing taskId. The agent was NOT spawned. You MUST retry the subagent call with taskId. Use TaskList to find the task ID, or pass taskId: "-1" if not linked to any task. Do NOT proceed without fixing this.`,
+        content: `🚨 CRITICAL: Async subagent call for "${params.agent}" was REJECTED — missing taskId. The agent was NOT spawned. You MUST retry the subagent call with taskId. Use TaskList to find the task ID; "-1" is only for a single read-only check. Do NOT proceed without fixing this.`,
         display: true,
       }, { triggerTurn: true, deliverAs: "followUp" });
       return {
