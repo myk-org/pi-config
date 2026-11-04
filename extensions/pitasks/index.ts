@@ -11,6 +11,7 @@ import { TaskStore } from "./task-store.js";
 import { TaskWidget } from "./task-widget.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
+import { publishTaskStore } from "../shared/task-store-bridge.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
@@ -43,20 +44,10 @@ export function setTaskTelemetryActive(taskId: string, active = true): void {
 /** Exported store instance — set during extension init. */
 export let taskStore: TaskStore;
 
-/** Cross-module bridge: extensions loaded as separate module instances cannot read this
- *  `export let` binding (they would snapshot `undefined`), so a live getter is published
- *  on the global symbol registry. The getter follows store creation and the session-scope
- *  upgrade, so a reader never sees a stale instance. Same pattern as the pricing
- *  provenance and session-cwd markers. */
-export const TASK_STORE_SYMBOL = Symbol.for("pi-config.taskStore");
-
-function publishTaskStore(): void {
-	(globalThis as any)[TASK_STORE_SYMBOL] = {
-		get current(): TaskStore | undefined {
-			return taskStore;
-		},
-	};
-}
+// The store is published to other extension modules through the shared bridge: they
+// cannot read this `export let` binding (they would snapshot `undefined`), which silently
+// disabled task-id validation (issue #1016). Published once, from registration only —
+// the bridge's getter follows later store swaps, so the upgrade path needs no republish.
 
 /** Create a task directly — for use by other extensions (e.g., coms auto-create). */
 export function createTask(subject: string, description: string, createdBy?: any, metadata?: Record<string, any>): any {
@@ -204,9 +195,8 @@ export default function (pi: ExtensionAPI) {
 	currentWidget?.dispose();
 	let store = new TaskStore(resolveStorePath());
 	taskStore = store;
-	// Publish from the registering instance only: a duplicate import would clobber the
-	// real getter with one bound to a store that was never created.
-	publishTaskStore();
+	// Registration is the only publish site: the getter follows store swaps.
+	publishTaskStore(() => taskStore);
 	currentStore = store;
 	const widget = new TaskWidget(store);
 	store.setOnChange(() => { widget.update(); broadcastTasks(); });
@@ -227,7 +217,6 @@ export default function (pi: ExtensionAPI) {
 			store.close();
 			store = new TaskStore(path);
 			taskStore = store;
-			publishTaskStore();
 			currentStore = store;
 			widget.setStore(store);
 			store.setOnChange(() => { widget.update(); broadcastTasks(); });

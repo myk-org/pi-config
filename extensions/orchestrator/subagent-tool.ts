@@ -17,6 +17,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { sendSystemNote } from "../shared/system-note.js";
+import { publishedTaskStore } from "../shared/task-store-bridge.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
 import {
   getMarkdownTheme,
@@ -58,9 +59,8 @@ async function pitasksModule(): Promise<any> {
  *  Read from the global symbol registry: this tool's module instance cannot see the
  *  pitasks extension's `export let taskStore` binding (it snapshots `undefined`), which
  *  is why task-id validation silently failed open (issue #1016). */
-const TASK_STORE_SYMBOL = Symbol.for("pi-config.taskStore");
 async function getTaskStore(): Promise<any> {
-  const published = (globalThis as any)[TASK_STORE_SYMBOL]?.current;
+  const published = publishedTaskStore();
   if (published) return published;
   // Fall back to the module binding for in-process loads that share this instance.
   const mod = await pitasksModule();
