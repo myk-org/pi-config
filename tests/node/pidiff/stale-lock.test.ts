@@ -135,6 +135,20 @@ describe("spawn lock across .pi/run and legacy .pi/tmp (#1020)", () => {
     assert.ok(!existsSync(join(run, "pidiff.spawning")), "no new-dir lock is taken while waiting");
   });
 
+  it("skips a legacy dir that does not exist instead of reporting contention", async () => {
+    const { acquireSpawnLocks, releaseSpawnLocks } = await import(
+      `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 13}`
+    );
+    // Fresh project: `.pi/tmp` was never created (only `.pi/run` is).
+    const [run] = mkDirs(1);
+    const legacy = join(run, "missing-legacy");
+    const { held, contended } = acquireSpawnLocks([legacy, run]);
+    assert.equal(contended, null, "a missing legacy dir is not lock contention");
+    assert.deepEqual(held, [join(run, "pidiff.spawning")]);
+    assert.ok(!existsSync(legacy), "the legacy dir is not created just to take the lock");
+    releaseSpawnLocks(held);
+  });
+
   it("releases a lock it already took when a later dir is contended", async () => {
     const { acquireSpawnLocks } = await import(
       `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 12}`

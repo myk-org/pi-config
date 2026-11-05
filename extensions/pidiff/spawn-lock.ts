@@ -12,7 +12,10 @@ const log = createLogger("pidiff");
  *  A session running pre-#1020 code only checks `.pi/tmp`, so a lock it never
  *  looks at cannot exclude it: if each side locked its own dir, both would
  *  spawn a server for the same project (#1020). Order matters — the legacy dir
- *  comes first so an old spawner already holding it is waited on. */
+ *  comes first so an old spawner already holding it is waited on.
+ *  A missing dir means no lockfile can be there — not contention: on a fresh
+ *  project `.pi/tmp` does not exist and creating it just to take the lock would
+ *  defeat the migration, so such dirs are skipped (#1020). */
 export function acquireSpawnLocks(dirs: string[]): { held: string[]; contended: string | null } {
   const held: string[] = [];
   for (const dir of dirs) {
@@ -21,7 +24,9 @@ export function acquireSpawnLocks(dirs: string[]): { held: string[]; contended: 
     try {
       fs.writeFileSync(file, String(process.pid), { flag: "wx" });
       held.push(file);
-    } catch {
+    } catch (e: any) {
+      // ENOENT: dir missing (or removed under us) — nobody can hold a lock there.
+      if (e?.code === "ENOENT") continue;
       releaseSpawnLocks(held);
       return { held: [], contended: file };
     }
