@@ -75,6 +75,17 @@ function controlFile(cwd: string, name: string): string {
   return path.join(reloadRunDir(cwd), name);
 }
 
+/**
+ * MIGRATION LIMITATION (one-time, #1020/#1021): `.pi/run` owns the handshake;
+ * `.pi/tmp` is throwaway. A session started BEFORE this migration polls only
+ * the legacy `.pi/tmp/reload.flag`, and extension code is swapped only by
+ * `ctx.reload()` — so a deploy run while such a session is live is never seen
+ * by it. The migration release therefore needs exactly ONE manual `/reload`;
+ * every later deploy is unaffected. The reverse direction is already handled:
+ * legacy flags are read by `findControlFile` and `reload.done` is mirrored back
+ * to the legacy path by `writeLegacyControlFile`.
+ */
+
 /** Flag paths for a session cwd (public for tests). */
 export function reloadFlagPath(cwd: string): string {
   return controlFile(cwd, RELOAD_FLAG_FILENAME);
