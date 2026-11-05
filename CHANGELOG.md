@@ -1,5 +1,27 @@
 # Changelog
 
+## [4.25.0] - 2026-11-06
+
+- `.pi/tmp` is cleaned at session start: above `project_tmp_max_size` (default `2G`), entries older than
+  `project_tmp_retention_days` (default 7 days) are deleted oldest-first until the tree fits, and `0`
+  disables it entirely. The sweep lock lives in `.pi/run` rather than in the directory being swept, a run
+  that cannot take the lock deletes nothing, an entry replaced mid-scan is skipped, and oneshot sessions
+  skip the whole thing. A bad size value deletes nothing rather than falling back to a deleting default.
+- Daemon control files moved to `.pi/run` — `pidiff.pid`, `pidiff.port`, and the `reload.flag` /
+  `reload.done` / `reload.pending` handshake. Readers fall back to `.pi/tmp` and `reload.done` is mirrored
+  back, so a daemon started before the upgrade is still found instead of a second one spawning on its
+  port. **The migration release needs exactly one manual `/reload`**: a session whose watcher was loaded
+  before the move cannot observe the new flag path. The old temp-dir reload files stay protected until no
+  pre-upgrade daemon remains.
+- The pending-task reminder keys on how long a task has actually been pending rather than on the first
+  60-second tick, so it no longer fires about a minute after creation. It measures the oldest active task,
+  treats an undated task as old so a fresh sibling cannot mask it, and covers `agentBusy` in tests.
+- `reviews fetch` approves on a clean findings catalog at the PR head instead of requiring a `completed`
+  Qodo session, so a legitimately skipped auto-run can approve. A run that is still in progress never does.
+  `reason` reports `no_findings`, `open_findings`, `not_at_head`, or `all_resolved` instead of always
+  claiming `all_resolved`, and the review-loop exit names which reviewer actually approved — a CodeRabbit
+  approval is no longer reported as Qodo's.
+
 ## [4.24.2] - 2026-11-04
 
 - Async work is tracked even when an agent starts it: the task trigger now covers work set in
