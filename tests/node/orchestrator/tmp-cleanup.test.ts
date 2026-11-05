@@ -5,9 +5,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   DEFAULT_MAX_SIZE,
+  DEFAULT_RETENTION_DAYS,
   TMP_PROTECTED_NAMES,
   TMP_SWEEP_LOCK,
   parseSize,
+  registerTmpCleanup,
   runProjectTmpSweep,
   sweepProjectTmp,
 } from "../../../extensions/orchestrator/tmp-cleanup.js";
@@ -39,8 +41,10 @@ function makeEntry(name: string, size: number, ageDays: number): string {
 function makeDirEntry(name: string, size: number, ageDays: number): string {
   const dir = path.join(tmpDir, name);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "payload.bin"), Buffer.alloc(size));
+  const payload = path.join(dir, "payload.bin");
+  fs.writeFileSync(payload, Buffer.alloc(size));
   const when = new Date(Date.now() - ageDays * DAY);
+  fs.utimesSync(payload, when, when);
   fs.utimesSync(dir, when, when);
   return dir;
 }
@@ -64,61 +68,86 @@ describe("parseSize", () => {
     }
   });
 
-  it("default is 2G", () => {
+  it("defaults come from settings-keys.json", () => {
     assert.equal(parseSize(DEFAULT_MAX_SIZE), 2 * G);
+    assert.equal(DEFAULT_RETENTION_DAYS, 7);
   });
 });
 
 describe("sweepProjectTmp", () => {
-  it("deletes nothing under the cap, even for 90-day-old entries", () => {
+  it("deletes nothing under the cap, even for 90-day-old entries", async () => {
     makeEntry("old-a.bin", MB, 90);
     makeEntry("old-b.bin", MB, 90);
-    const result = sweepProjectTmp({ tmpDir, maxBytes: 2 * G, retentionDays: 7 });
+    const result = await sweepProjectTmp({ tmpDir, maxBytes: 2 * G, retentionDays: 7 });
     assert.equal(result.deleted, 0);
     assert.equal(fs.readdirSync(tmpDir).length, 2);
   });
 
-  it("deletes nothing when every entry is younger than the retention floor", () => {
+  it("deletes nothing when every entry is younger than the retention floor", async () => {
     makeEntry("young-a.bin", 2 * MB, 1);
     makeEntry("young-b.bin", 2 * MB, 2);
-    const result = sweepProjectTmp({ tmpDir, maxBytes: MB, retentionDays: 7 });
+    const result = await sweepProjectTmp({ tmpDir, maxBytes: MB, retentionDays: 7 });
     assert.equal(result.deleted, 0);
     assert.equal(result.skippedYoung, 2);
     assert.equal(result.beforeMb, result.afterMb);
     assert.equal(fs.readdirSync(tmpDir).length, 2);
   });
 
-  it("deletes oldest-first and stops at the cap, young entries survive", () => {
+  it("deletes the oldest entry first", async () => {
     makeEntry("oldest.bin", 2 * MB, 30);
     makeEntry("older.bin", 2 * MB, 20);
     makeEntry("young.bin", 2 * MB, 1);
-    const result = sweepProjectTmp({ tmpDir, maxBytes: 4 * MB, retentionDays: 7 });
+    const result = await sweepProjectTmp({ tmpDir, maxBytes: 4 * MB, retentionDays: 7 });
     assert.equal(result.deleted, 1);
     assert.equal(fs.existsSync(path.join(tmpDir, "oldest.bin")), false);
+  });
+
+  it("stops deleting once the total fits under the cap", async () => {
+    makeEntry("oldest.bin", 2 * MB, 30);
+    makeEntry("older.bin", 2 * MB, 20);
+    makeEntry("old.bin", 2 * MB, 10);
+    const result = await sweepProjectTmp({ tmpDir, maxBytes: 4 * MB, retentionDays: 7 });
+    assert.equal(result.deleted, 1);
     assert.equal(fs.existsSync(path.join(tmpDir, "older.bin")), true);
-    assert.equal(fs.existsSync(path.join(tmpDir, "young.bin")), true);
     assert.ok(result.afterMb <= 4);
   });
 
-  it("removes a whole directory entry as one unit", () => {
+  it("keeps young entries while deleting old ones", async () => {
+    makeEntry("oldest.bin", 2 * MB, 30);
+    makeEntry("young.bin", 2 * MB, 1);
+    const result = await sweepProjectTmp({ tmpDir, maxBytes: MB, retentionDays: 7 });
+    assert.equal(result.deleted, 1);
+    assert.equal(fs.existsSync(path.join(tmpDir, "young.bin")), true);
+  });
+
+  it("removes a whole directory entry as one unit", async () => {
     makeDirEntry("cloned-repo", 3 * MB, 30);
     makeDirEntry("keep-me", 3 * MB, 30);
-    const result = sweepProjectTmp({ tmpDir, maxBytes: 3 * MB, retentionDays: 7 });
+    const result = await sweepProjectTmp({ tmpDir, maxBytes: 3 * MB, retentionDays: 7 });
     assert.equal(result.deleted, 1);
     assert.equal(fs.existsSync(path.join(tmpDir, "cloned-repo")), false);
     assert.equal(fs.existsSync(path.join(tmpDir, "keep-me")), true);
   });
 
-  it("never deletes a protected control file or the tmp root", () => {
+  it("ages a directory by its newest nested file, not its own mtime", async () => {
+    const dir = makeDirEntry("active-task", 2 * MB, 90);
+    const fresh = path.join(dir, "written-today.bin");
+    fs.writeFileSync(fresh, Buffer.alloc(MB));
+    const result = await sweepProjectTmp({ tmpDir, maxBytes: 1, retentionDays: 7 });
+    assert.equal(result.deleted, 0);
+    assert.equal(fs.existsSync(fresh), true);
+  });
+
+  it("never deletes a protected control file or the tmp root", async () => {
     for (const name of TMP_PROTECTED_NAMES) {
       if (name === TMP_SWEEP_LOCK) continue;
       makeEntry(name, 2 * MB, 90);
     }
     // Condition 1: over the cap, everything old enough.
-    sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
+    await sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
     // Condition 2: under the cap.
     makeEntry("filler.bin", 2 * MB, 90);
-    sweepProjectTmp({ tmpDir, maxBytes: 100 * MB, retentionDays: 7 });
+    await sweepProjectTmp({ tmpDir, maxBytes: 100 * MB, retentionDays: 7 });
     for (const name of TMP_PROTECTED_NAMES) {
       if (name === TMP_SWEEP_LOCK) continue;
       assert.equal(fs.existsSync(path.join(tmpDir, name)), true, `${name} must survive`);
@@ -126,7 +155,7 @@ describe("sweepProjectTmp", () => {
     assert.equal(fs.existsSync(tmpDir), true, "tmp root must survive");
   });
 
-  it("unlinks a symlink without touching its target", () => {
+  it("unlinks a symlink without touching its target", async () => {
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-target-"));
     try {
       const target = path.join(outside, "precious.bin");
@@ -135,7 +164,7 @@ describe("sweepProjectTmp", () => {
       fs.symlinkSync(target, link);
       const when = new Date(Date.now() - 90 * DAY);
       fs.lutimesSync(link, when, when);
-      const result = sweepProjectTmp({ tmpDir, maxBytes: 1, retentionDays: 7 });
+      const result = await sweepProjectTmp({ tmpDir, maxBytes: 1, retentionDays: 7 });
       assert.equal(result.deleted, 1);
       assert.equal(fs.existsSync(link), false);
       assert.equal(fs.existsSync(target), true);
@@ -144,13 +173,13 @@ describe("sweepProjectTmp", () => {
     }
   });
 
-  it("cannot reach a path outside the tmp root", () => {
+  it("cannot reach a path outside the tmp root", async () => {
     const sibling = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-sibling-"));
     try {
       const victim = path.join(sibling, "keep.bin");
       fs.writeFileSync(victim, Buffer.alloc(2 * MB));
       makeEntry("filler.bin", 2 * MB, 90);
-      sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
+      await sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
       assert.equal(fs.existsSync(victim), true);
       assert.equal(fs.existsSync(tmpDir), true);
     } finally {
@@ -172,36 +201,88 @@ describe("runProjectTmpSweep", () => {
     delete process.env.PI_PROJECT_TMP_RETENTION_DAYS;
   });
 
-  it('"0" disables the sweep — no deletion', () => {
+  it('"0" disables the sweep — no deletion', async () => {
     process.env.PI_PROJECT_TMP_MAX_SIZE = "0";
     makeEntry("old.bin", 4 * MB, 90);
-    const result = runProjectTmpSweep(cwd(), { tmpDir });
+    const result = await runProjectTmpSweep(cwd(), { tmpDir });
     assert.equal(result.skipped, "disabled");
     assert.equal(fs.existsSync(path.join(tmpDir, "old.bin")), true);
   });
 
-  it("an invalid size falls back conservatively and deletes nothing", () => {
+  it("a numeric 0 in the settings file also disables it", async () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-project-"));
+    try {
+      fs.mkdirSync(path.join(project, ".pi", "tmp"), { recursive: true });
+      fs.writeFileSync(path.join(project, ".pi", "pi-config-settings.json"), JSON.stringify({ project_tmp_max_size: 0 }));
+      const result = await runProjectTmpSweep(project);
+      assert.equal(result.skipped, "disabled");
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  it("an invalid size deletes nothing", async () => {
     process.env.PI_PROJECT_TMP_MAX_SIZE = "2Q";
     makeEntry("old.bin", 4 * MB, 90);
-    const result = runProjectTmpSweep(cwd(), { tmpDir });
+    const result = await runProjectTmpSweep(cwd(), { tmpDir });
     assert.equal(result.skipped, "invalid_max_size");
     assert.equal(fs.existsSync(path.join(tmpDir, "old.bin")), true);
   });
 
-  it("skips cleanly when another process holds the lock", () => {
+  it("refuses a tmp dir that resolves outside the checkout", async () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-project-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-outside-"));
+    try {
+      fs.mkdirSync(path.join(outside, "tmp"), { recursive: true });
+      fs.symlinkSync(path.join(outside, "tmp"), path.join(project, ".pi"), "dir");
+      const result = await runProjectTmpSweep(project);
+      assert.equal(result.skipped, "outside_checkout");
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("skips cleanly when another process holds the lock", async () => {
     makeEntry(TMP_SWEEP_LOCK, 8, 0);
     makeEntry("old.bin", 4 * MB, 90);
-    const result = runProjectTmpSweep(cwd(), { tmpDir });
+    const result = await runProjectTmpSweep(cwd(), { tmpDir });
     assert.equal(result.skipped, "locked");
     assert.equal(fs.existsSync(path.join(tmpDir, "old.bin")), true);
     assert.equal(fs.existsSync(path.join(tmpDir, TMP_SWEEP_LOCK)), true, "the holder keeps its lock");
   });
 
-  it("releases the lock after a sweep", () => {
+  it("releases the lock after a sweep", async () => {
     process.env.PI_PROJECT_TMP_MAX_SIZE = "1M";
     makeEntry("old.bin", 4 * MB, 90);
-    const result = runProjectTmpSweep(cwd(), { tmpDir });
+    const result = await runProjectTmpSweep(cwd(), { tmpDir });
     assert.equal(result.deleted, 1);
     assert.equal(fs.existsSync(path.join(tmpDir, TMP_SWEEP_LOCK)), false);
+  });
+});
+
+describe("registerTmpCleanup", () => {
+  function handlerFor(): (event: unknown, ctx: unknown) => void {
+    let handler: ((event: unknown, ctx: unknown) => void) | undefined;
+    const pi = { on: (name: string, fn: any) => { if (name === "session_start") handler = fn; } } as any;
+    registerTmpCleanup(pi);
+    assert.ok(handler, "session_start must be registered");
+    return handler!;
+  }
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+  it("skips print and json sessions", async () => {
+    const handler = handlerFor();
+    for (const mode of ["print", "json"]) handler({}, { cwd: tmpDir, mode });
+    await settle();
+    assert.equal(fs.existsSync(path.join(tmpDir, ".pi", "tmp")), false);
+  });
+
+  it("sweeps a normal session start in the session cwd", async () => {
+    const handler = handlerFor();
+    handler({}, { cwd: tmpDir, mode: "tui" });
+    await settle();
+    assert.equal(fs.existsSync(path.join(tmpDir, ".pi", "tmp")), true);
   });
 });

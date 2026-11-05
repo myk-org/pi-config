@@ -2132,6 +2132,75 @@ All defaults match the pre-setting hardcoded values.</p>
 </code></pre></div>
 
 <p>See <a href="managing-custom-agents.html">Managing Custom Agents</a> for details.</p>
+<h2 id="project-temp-cleanup-keys">Project Temp Cleanup Keys</h2>
+<p><code>.pi/tmp</code> is swept at session start when it grows past the size cap. Size is the only trigger and age is the
+safety floor, so a project under the cap is never touched however old its entries are. Daemon control files
+(<code>pidiff.pid</code>, <code>pidiff.port</code>, <code>reload.flag</code>, <code>reload.done</code>, <code>reload.pending</code>, <code>.tmp-sweep.lock</code>) are never
+deleted, a symlink is unlinked without following it, a sweep whose <code>.pi/tmp</code> resolves outside the checkout is
+refused, and the sweep is skipped in one-shot sessions (<code>pi -p</code>, <code>--mode json</code>, piped print sessions).</p>
+<h3 id="project_tmp_max_size"><code>project_tmp_max_size</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>project_tmp_max_size</code></td>
+<td>string</td>
+<td><code>"2G"</code></td>
+<td><code>PI_PROJECT_TMP_MAX_SIZE</code></td>
+<td>Size cap for <code>.pi/tmp</code>. Accepted forms: <code>2G</code>, <code>2GB</code>, <code>2GiB</code>, <code>2048M</code>, <code>100M</code>, <code>1.5G</code>, or a bare number in MB (<code>2048</code> = 2G). <code>"0"</code> disables the sweep.</td>
+<td>Above the cap, the sweep deletes top-level entries oldest-first until the directory fits again.</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>Warning:</strong> An unparsable value (<code>2Q</code>, <code>2gig</code>, empty) logs a warning and deletes nothing on that run — a bad
+value may only ever clean less, never more.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"project_tmp_max_size"</span><span class="p">:</span><span class="w"> </span><span class="s2">"4G"</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">PI_PROJECT_TMP_MAX_SIZE</span><span class="o">=</span>4G
+</code></pre></div>
+
+<h3 id="project_tmp_retention_days"><code>project_tmp_retention_days</code></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Default</th>
+<th>Environment variable</th>
+<th>Description</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>project_tmp_retention_days</code></td>
+<td>integer <code>1</code>-<code>365</code></td>
+<td><code>7</code></td>
+<td><code>PI_PROJECT_TMP_RETENTION_DAYS</code></td>
+<td>Safety floor: size pressure may only delete entries older than this many days.</td>
+<td>Never a trigger — an over-cap directory whose entries are all younger deletes nothing. A directory is aged by its newest nested file, so an actively used task dir is not swept for being created long ago.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"project_tmp_retention_days"</span><span class="p">:</span><span class="w"> </span><span class="mi">14</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <h2 id="environment-only-process-flag">Environment-only Process Flag</h2>
 <h3 id="pi_subagent_child"><code>PI_SUBAGENT_CHILD</code></h3>
 <div class="table-wrap"><table>
@@ -2272,6 +2341,11 @@ All defaults match the pre-setting hardcoded values.</p>
 <li><a href="#task_reminder_interval_minutes">task_reminder_interval_minutes</a></li>
 <li><a href="#task_stale_in_progress_enabled">task_stale_in_progress_enabled</a></li>
 <li><a href="#task_stale_in_progress_minutes">task_stale_in_progress_minutes</a></li>
+</ul>
+</li>
+<li><a href="#project-temp-cleanup-keys">Project Temp Cleanup Keys</a><ul>
+<li><a href="#project_tmp_max_size">project_tmp_max_size</a></li>
+<li><a href="#project_tmp_retention_days">project_tmp_retention_days</a></li>
 </ul>
 </li>
 <li><a href="#environment-only-process-flag">Environment-only Process Flag</a><ul>

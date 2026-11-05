@@ -1079,6 +1079,45 @@ A module resolves its level in this order: the `log_<module>` setting → the `P
 
 See [Managing Custom Agents](managing-custom-agents.html) for details.
 
+## Project Temp Cleanup Keys
+
+`.pi/tmp` is swept at session start when it grows past the size cap. Size is the only trigger and age is the
+safety floor, so a project under the cap is never touched however old its entries are. Daemon control files
+(`pidiff.pid`, `pidiff.port`, `reload.flag`, `reload.done`, `reload.pending`, `.tmp-sweep.lock`) are never
+deleted, a symlink is unlinked without following it, a sweep whose `.pi/tmp` resolves outside the checkout is
+refused, and the sweep is skipped in one-shot sessions (`pi -p`, `--mode json`, piped print sessions).
+
+### `project_tmp_max_size`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `project_tmp_max_size` | string | `"2G"` | `PI_PROJECT_TMP_MAX_SIZE` | Size cap for `.pi/tmp`. Accepted forms: `2G`, `2GB`, `2GiB`, `2048M`, `100M`, `1.5G`, or a bare number in MB (`2048` = 2G). `"0"` disables the sweep. | Above the cap, the sweep deletes top-level entries oldest-first until the directory fits again. |
+
+> **Warning:** An unparsable value (`2Q`, `2gig`, empty) logs a warning and deletes nothing on that run — a bad
+> value may only ever clean less, never more.
+
+```json
+    {
+      "project_tmp_max_size": "4G"
+    }
+```
+
+```bash
+    export PI_PROJECT_TMP_MAX_SIZE=4G
+```
+
+### `project_tmp_retention_days`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `project_tmp_retention_days` | integer `1`-`365` | `7` | `PI_PROJECT_TMP_RETENTION_DAYS` | Safety floor: size pressure may only delete entries older than this many days. | Never a trigger — an over-cap directory whose entries are all younger deletes nothing. A directory is aged by its newest nested file, so an actively used task dir is not swept for being created long ago. |
+
+```json
+    {
+      "project_tmp_retention_days": 14
+    }
+```
+
 ## Environment-only Process Flag
 
 ### `PI_SUBAGENT_CHILD`

@@ -6,14 +6,19 @@
  * until the directory is back under the cap. A project under the cap is never
  * touched, no matter how old its entries are. Creator-side cleanup cannot be the
  * mechanism — whatever crashes before its own cleanup lives forever.
+ *
+ * Every fs call in the traversal and the deletions is async: the sweep runs on Pi's
+ * event loop, so a multi-GB tree must yield between entries instead of freezing input.
  */
 
 import * as fs from "node:fs";
+import { promises as fsp } from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
-import { getSettingDynamic } from "./project-settings.js";
+import { getGlobalSettingsPath, getSettingDynamic, getSettingsPath, SETTINGS_KEYS } from "./project-settings.js";
+import { readSettingsObject } from "./settings-source.js";
 import { getProjectTmpDir } from "./utils.js";
 
 const log = createLogger("tmp_cleanup");
@@ -21,8 +26,9 @@ const log = createLogger("tmp_cleanup");
 const MB = 1024 * 1024;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export const DEFAULT_MAX_SIZE = "2G";
-export const DEFAULT_RETENTION_DAYS = 7;
+/** Defaults live in `settings-keys.json` only — never restated here. */
+export const DEFAULT_MAX_SIZE = String(SETTINGS_KEYS.project_tmp_max_size.default);
+export const DEFAULT_RETENTION_DAYS = Number(SETTINGS_KEYS.project_tmp_retention_days.default);
 /** Daemon-owned control files in `.pi/tmp` — never deleted, whatever their age. */
 export const TMP_PROTECTED_NAMES = new Set([
   "pidiff.pid",
@@ -74,8 +80,8 @@ export interface TmpSweepResult {
   deleted: number;
   skippedYoung: number;
   elapsedMs: number;
-  /** Set when the run did nothing: cap disabled, unparsable value, or another process holds the lock. */
-  skipped?: "disabled" | "invalid_max_size" | "locked";
+  /** Set when the run did nothing: cap disabled, unparsable value, another process holds the lock, or the tmp dir resolves outside the checkout. */
+  skipped?: "disabled" | "invalid_max_size" | "locked" | "outside_checkout";
 }
 
 export interface TmpSweepOptions {
@@ -89,24 +95,33 @@ function toMb(bytes: number): number {
   return Math.round((bytes / MB) * 10) / 10;
 }
 
-/** Byte size of a path, never following a symlink (the link's own size stands in). */
-function entryBytes(target: string): number {
+/**
+ * Byte size and newest mtime of a path, never following a symlink (the link's own
+ * size stands in). The newest nested mtime is what decides the age floor — a
+ * top-level directory's own mtime does not move when a nested file is rewritten.
+ */
+async function entryStats(target: string): Promise<{ bytes: number; newestMs: number }> {
   let stat: fs.Stats;
   try {
-    stat = fs.lstatSync(target);
+    stat = await fsp.lstat(target);
   } catch {
-    return 0;
+    return { bytes: 0, newestMs: 0 };
   }
-  if (!stat.isDirectory()) return stat.size;
+  if (!stat.isDirectory()) return { bytes: stat.size, newestMs: stat.mtimeMs };
   let total = 0;
+  let newestMs = stat.mtimeMs;
   let names: string[];
   try {
-    names = fs.readdirSync(target);
+    names = await fsp.readdir(target);
   } catch {
-    return 0;
+    return { bytes: total, newestMs };
   }
-  for (const name of names) total += entryBytes(path.join(target, name));
-  return total;
+  for (const name of names) {
+    const child = await entryStats(path.join(target, name));
+    total += child.bytes;
+    newestMs = Math.max(newestMs, child.newestMs);
+  }
+  return { bytes: total, newestMs };
 }
 
 /** True when `target` resolves strictly inside `base` — refuses any path escape. */
@@ -119,7 +134,7 @@ function isInside(base: string, target: string): boolean {
  * entries older than `retentionDays`. Deletion units are the top-level entries, so
  * a cloned repo or task dir goes as a whole instead of file by file.
  */
-export function sweepProjectTmp(opts: TmpSweepOptions): TmpSweepResult {
+export async function sweepProjectTmp(opts: TmpSweepOptions): Promise<TmpSweepResult> {
   const started = Date.now();
   const now = opts.now ?? started;
   const result: TmpSweepResult = { beforeMb: 0, afterMb: 0, deleted: 0, skippedYoung: 0, elapsedMs: 0 };
@@ -127,26 +142,28 @@ export function sweepProjectTmp(opts: TmpSweepOptions): TmpSweepResult {
 
   let names: string[];
   try {
-    names = fs.readdirSync(base);
+    names = await fsp.readdir(base);
   } catch (error: any) {
     if (error?.code !== "ENOENT") log.warn("tmp_sweep_scan_failed", { tmpDir: base, error: error?.message });
     return result;
   }
 
-  const rows: Array<{ target: string; bytes: number; mtimeMs: number; symlink: boolean }> = [];
+  const rows: Array<{ target: string; bytes: number; newestMs: number; symlink: boolean }> = [];
   let total = 0;
   for (const name of names) {
     const target = path.join(base, name);
     if (!isInside(base, target) || TMP_PROTECTED_NAMES.has(name)) continue;
     let stat: fs.Stats;
     try {
-      stat = fs.lstatSync(target);
+      stat = await fsp.lstat(target);
     } catch {
       continue;
     }
-    const bytes = stat.isDirectory() ? entryBytes(target) : stat.size;
+    const { bytes, newestMs } = stat.isDirectory()
+      ? await entryStats(target)
+      : { bytes: stat.size, newestMs: stat.mtimeMs };
     total += bytes;
-    rows.push({ target, bytes, mtimeMs: stat.mtimeMs, symlink: stat.isSymbolicLink() });
+    rows.push({ target, bytes, newestMs, symlink: stat.isSymbolicLink() });
   }
 
   result.beforeMb = result.afterMb = toMb(total);
@@ -158,15 +175,15 @@ export function sweepProjectTmp(opts: TmpSweepOptions): TmpSweepResult {
 
   const cutoff = now - opts.retentionDays * DAY_MS;
   let remaining = total;
-  for (const row of rows.sort((left, right) => left.mtimeMs - right.mtimeMs)) {
+  for (const row of rows.sort((left, right) => left.newestMs - right.newestMs)) {
     if (remaining <= opts.maxBytes) break;
-    if (row.mtimeMs >= cutoff) {
+    if (row.newestMs >= cutoff) {
       result.skippedYoung++;
       continue;
     }
     try {
-      if (row.symlink) fs.unlinkSync(row.target);
-      else fs.rmSync(row.target, { recursive: true, force: true });
+      if (row.symlink) await fsp.unlink(row.target);
+      else await fsp.rm(row.target, { recursive: true, force: true });
     } catch (error: any) {
       log.warn("tmp_sweep_delete_failed", { target: row.target, error: error?.message });
       continue;
@@ -189,47 +206,98 @@ export function sweepProjectTmp(opts: TmpSweepOptions): TmpSweepResult {
 
 /** O_EXCL lock; returns the release callback, or null when another session holds it. */
 function acquireLock(lockPath: string): (() => void) | null {
+  const pid = String(process.pid);
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const fd = fs.openSync(lockPath, "wx", 0o600);
-      fs.writeSync(fd, String(process.pid));
+      fs.writeSync(fd, pid);
       fs.closeSync(fd);
       return () => {
         try {
+          // Unlink only our own lock: a stale reclaim may have handed it to another session.
+          if (fs.readFileSync(lockPath, "utf8") !== pid) return;
           fs.unlinkSync(lockPath);
         } catch {
           /* already gone */
         }
       };
     } catch (error: any) {
+      // No `.pi/tmp` yet — a normal state, and nothing to sweep.
+      if (error?.code === "ENOENT") return () => {};
       if (error?.code !== "EEXIST") {
         log.warn("tmp_sweep_lock_failed", { lockPath, error: error?.message });
         return null;
       }
-      let stale = false;
+      let held: fs.Stats;
       try {
-        stale = Date.now() - fs.statSync(lockPath).mtimeMs > LOCK_STALE_MS;
+        held = fs.statSync(lockPath);
       } catch {
-        stale = false;
+        continue; // holder released — retry the create
       }
-      if (!stale) return null;
+      if (Date.now() - held.mtimeMs <= LOCK_STALE_MS) return null;
+      // Reclaim by rename: exactly one of N racing sessions wins, and the inode check
+      // rejects a lock another session created between our stat and the rename.
+      const reclaimPath = `${lockPath}.${process.pid}.reclaim`;
       try {
-        fs.unlinkSync(lockPath);
+        fs.renameSync(lockPath, reclaimPath);
       } catch {
+        continue;
+      }
+      let moved: fs.Stats | undefined;
+      try {
+        moved = fs.statSync(reclaimPath);
+      } catch {
+        moved = undefined;
+      }
+      if (!moved || moved.ino !== held.ino) {
+        try {
+          fs.renameSync(reclaimPath, lockPath);
+        } catch {
+          /* best effort */
+        }
         return null;
+      }
+      try {
+        fs.unlinkSync(reclaimPath);
+      } catch {
+        /* already gone */
       }
     }
   }
   return null;
 }
 
+/**
+ * The settings getter skips a wrong-typed value and returns the default, which here
+ * would re-enable deletion — so read the raw file value too. A numeric `0` meant as
+ * "off" then means off, and any other type is unparsable (deletes nothing).
+ */
+function rawSizeSetting(cwd: string): unknown {
+  for (const file of [getSettingsPath(cwd), getGlobalSettingsPath()]) {
+    const value = readSettingsObject(file, "project_tmp_max_size").project_tmp_max_size;
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
 /** Resolve the settings, take the lock, sweep. Never throws. */
-export function runProjectTmpSweep(cwd: string, opts: { tmpDir?: string; now?: number } = {}): TmpSweepResult {
+export async function runProjectTmpSweep(
+  cwd: string,
+  opts: { tmpDir?: string; now?: number } = {},
+): Promise<TmpSweepResult> {
   const empty: TmpSweepResult = { beforeMb: 0, afterMb: 0, deleted: 0, skippedYoung: 0, elapsedMs: 0 };
-  const raw = String(getSettingDynamic(cwd, "project_tmp_max_size") ?? DEFAULT_MAX_SIZE);
-  const maxBytes = parseSize(raw);
+  const configured = rawSizeSetting(cwd) ?? getSettingDynamic(cwd, "project_tmp_max_size");
+  const raw = String(configured ?? DEFAULT_MAX_SIZE);
+  const maxBytes = parseSize(configured as string | number | null | undefined);
   if (maxBytes === undefined) {
-    log.warn("tmp_sweep_invalid_max_size", { value: raw, fallback: DEFAULT_MAX_SIZE, deleted: 0 });
+    // Spec says "fall back to the default AND clean nothing" — the two cannot both
+    // hold in one run, and "a bad value must never delete more, only less" decides it.
+    log.warn("tmp_sweep_invalid_max_size", {
+      value: raw,
+      default_max_size: DEFAULT_MAX_SIZE,
+      default_used: false,
+      deleted: 0,
+    });
     return { ...empty, skipped: "invalid_max_size" };
   }
   if (maxBytes === 0) {
@@ -240,34 +308,50 @@ export function runProjectTmpSweep(cwd: string, opts: { tmpDir?: string; now?: n
   const retention = Number(getSettingDynamic(cwd, "project_tmp_retention_days"));
   const retentionDays = Number.isFinite(retention) && retention >= 1 ? Math.min(Math.floor(retention), 365) : DEFAULT_RETENTION_DAYS;
 
-  const tmpDir = opts.tmpDir ?? getProjectTmpDir(cwd);
-  const lockPath = path.join(tmpDir, TMP_SWEEP_LOCK);
+  const tmpDir = path.resolve(opts.tmpDir ?? getProjectTmpDir(cwd));
+  let checkout: string;
+  let base: string;
+  try {
+    [checkout, base] = await Promise.all([fsp.realpath(cwd), fsp.realpath(tmpDir)]);
+  } catch {
+    return empty; // no `.pi/tmp` yet
+  }
+  // A symlinked `.pi` would otherwise let a sweep in this checkout delete old files
+  // in whatever directory the link points at.
+  if (!isInside(checkout, base)) {
+    log.warn("tmp_sweep_outside_checkout", { tmpDir: base, cwd: checkout });
+    return { ...empty, skipped: "outside_checkout" };
+  }
+
+  const lockPath = path.join(base, TMP_SWEEP_LOCK);
   const release = acquireLock(lockPath);
   if (!release) {
-    log.info("tmp_sweep_skipped_locked", { tmpDir });
+    log.info("tmp_sweep_skipped_locked", { tmpDir: base });
     return { ...empty, skipped: "locked" };
   }
   try {
-    return sweepProjectTmp({ tmpDir, maxBytes, retentionDays, now: opts.now });
+    return await sweepProjectTmp({ tmpDir: base, maxBytes, retentionDays, now: opts.now });
   } finally {
     release();
   }
 }
 
 /**
- * Wire the sweep to session start: deferred past startup so a multi-GB unlink cannot
- * delay the first prompt, and never a timer — only the cwd string is captured, so no
- * stale `ctx` is touched after `/reload`. Oneshot invocations (`pi -p`, `--mode json`)
- * skip it: they must exit without extra work.
+ * Wire the sweep to session start: deferred past startup, and every fs call inside it
+ * is async, so a multi-GB unlink cannot delay or freeze the first prompt. Never a
+ * timer — only the cwd string is captured, so no stale `ctx` is touched after
+ * `/reload`. Oneshot invocations (`pi -p`, `--mode json`, piped print sessions) skip
+ * it: they must exit without extra work.
  */
 export function registerTmpCleanup(pi: ExtensionAPI): void {
   pi.on("session_start", (_event: any, ctx: any) => {
-    if (isPiOneshotInvocation()) return;
+    // argv alone cannot see `echo | pi` / `pi | cat`, so the session mode decides too.
+    if (ctx?.mode === "print" || ctx?.mode === "json" || isPiOneshotInvocation()) return;
     const cwd = ctx?.cwd;
     if (typeof cwd !== "string" || !cwd) return;
-    setImmediate(() => {
+    setImmediate(async () => {
       try {
-        runProjectTmpSweep(cwd);
+        await runProjectTmpSweep(cwd);
       } catch (error: any) {
         log.warn("tmp_sweep_failed", { error: error?.message });
       }
