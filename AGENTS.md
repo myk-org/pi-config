@@ -339,9 +339,11 @@ progress. It does not commit, push, create a PR, or post results.
   `qodo_cli_state`). Missing/unauthenticated bin, a failed read, or an unknown PR head falls back to the GitHub sticky scrape (fail
   open). Read-only: replies are always GitHub comments via `reviews address` — never mark-implemented/dismiss. In CLI mode GitHub
   review threads duplicating CLI findings (same thread id) are deduped. `qodo_cli_state.approved` = review `commit_sha` equals the PR
-  head AND zero open findings (a `skipped` auto-run at head with a clean catalog counts as approved); `review_complete` is surfaced so
-  a skipped/incomplete run is visible without blocking approval; `reason` is `no_findings`, `open_findings`, `not_at_head`, or
-  `all_resolved`.
+  head AND zero open findings AND `reviewing` is false (a `skipped` auto-run at head with a clean catalog counts as approved).
+  `reviewing` is true until a settled run (`completed`/`skipped`) covers the head, so an in-progress run, a missing or unrecognized
+  status, or any session behind head never approves — and stays on the poller's stuck-review retrigger path. `review_complete` is
+  surfaced so a skipped/incomplete run is visible without blocking approval; `reason` describes the findings catalog (`no_findings`,
+  `open_findings`, `not_at_head`, or `all_resolved`) and can be `all_resolved` while `approved` is false.
 - Reviews store-session CLI: `uv run myk-pi-tools reviews store-session <json>` — store a Qodo pr-review-session findings JSON (the
   `qodo-<pr>-<sha>.json` a session-loop poll saves) into the reviews DB after every completed round; idempotent per finding UUID, and the
   input JSON is kept. See README `myk-pi-tools` subcommands.

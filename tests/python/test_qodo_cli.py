@@ -344,7 +344,9 @@ def test_review_state_stale_commit_not_approved() -> None:
     data = _load("pr-956-compact.json")
     state = cli_review_state(data, "ffffffffffffffffffffffffffffffffffffffff")
     assert state["approved"] is False
-    assert state["reviewing"] is False  # completed run is not in progress
+    # Behind head, a review of the new commit is still owed — the poller's
+    # stuck-review retrigger keys off this, so it must stay true.
+    assert state["reviewing"] is True
     assert state["reason"] == "not_at_head"
 
 
@@ -426,17 +428,18 @@ def test_review_state_missing_review_complete_defaults_false() -> None:
     assert cli_review_state(data, HEAD_SHA)["review_complete"] is False
 
 
-def test_review_state_unknown_status_not_reviewing() -> None:
+def test_review_state_unknown_status_blocks_approval() -> None:
+    """An unreported run must not approve on its empty catalog."""
     data = _load("pr-956-compact.json")
     data["review_session"]["status"] = "something-new"
     state = cli_review_state(data, HEAD_SHA)
-    assert state["reviewing"] is False
-    assert state["approved"] is True
-    assert state["reason"] == "all_resolved"
+    assert state["reviewing"] is True
+    assert state["approved"] is False
+    assert state["reason"] == "all_resolved"  # the catalog is what reason describes
 
 
-def test_review_state_degenerate_shapes_do_not_raise() -> None:
-    """Missing keys / non-dict session / bad findings never abort the read."""
+def test_review_state_missing_or_non_dict_session_does_not_raise() -> None:
+    """Missing keys / non-dict session never abort the read."""
     shapes: list[dict[str, Any]] = [
         {},
         {"review_session": None, "findings": None},
@@ -449,7 +452,10 @@ def test_review_state_degenerate_shapes_do_not_raise() -> None:
         assert state["reason"] == "no_findings"
         assert state["review_complete"] is False
         assert state["total_findings"] == 0
-    # Non-object entries inside findings are ignored, not fatal.
+
+
+def test_review_state_non_dict_findings_entries_ignored() -> None:
+    """Non-object entries inside findings are ignored, not fatal."""
     mixed: dict[str, Any] = {
         "review_session": {"status": "completed", "commit_sha": "x"},
         "findings": ["junk", None, {"attribution_status": "pending"}],
@@ -458,9 +464,12 @@ def test_review_state_degenerate_shapes_do_not_raise() -> None:
     assert state["total_findings"] == 1
     assert state["unresolved_count"] == 1
     assert state["reason"] == "open_findings"
-    # An unhashable status must not raise.
+
+
+def test_review_state_unhashable_status_does_not_raise() -> None:
     state = cli_review_state({"review_session": {"status": ["weird"], "commit_sha": "x"}, "findings": []}, "x")
-    assert state["reviewing"] is False
+    assert state["reviewing"] is True
+    assert state["approved"] is False
 
 
 # --- high-level fetch_qodo_cli_threads ---

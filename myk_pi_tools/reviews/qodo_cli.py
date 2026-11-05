@@ -36,9 +36,11 @@ QODO_CLI_MIN_VERSION = (1, 0, 0)
 # detected_after_merge, outdated.
 OPEN_ATTRIBUTION_STATUSES = frozenset({"pending", "partial_implementation", "not_implemented", "focus_areas_edited"})
 
-# Session statuses that mean a run is genuinely still in progress. Any other
-# value (`completed`, `skipped`, unknown) is not reviewing — issue #1027.
-IN_PROGRESS_STATUSES = frozenset({"started", "running", "queued"})
+# Session statuses that mean a run has reported its findings. Anything else —
+# started/running/queued, a missing status, or a status this tool does not know —
+# is still pending: an unreported run has not raised its findings yet, and
+# approving on its empty catalog would merge unreviewed code (issue #1027).
+TERMINAL_STATUSES = frozenset({"completed", "skipped"})
 
 # action_level is severity, not open-vs-closed.
 ACTION_LEVEL_PRIORITY = {
@@ -269,10 +271,12 @@ def map_cli_findings_to_threads(data: dict[str, Any]) -> list[dict[str, Any]]:
 def cli_review_state(data: dict[str, Any], head_sha: str | None) -> dict[str, Any]:
     """Derive reviewing/approval state from a CLI read (issues #958, #1027).
 
-    - reviewing: a genuinely in-progress run, or an unverifiable commit_sha
+    - reviewing: no settled run (`completed`/`skipped`) covers the head — that
+      spans in-progress runs, unknown/missing statuses, and any session whose
+      commit_sha is behind the head (a review of the new commit is still owed)
     - approved: at head AND zero OPEN findings AND not reviewing — a clean
       catalog at head IS the approval, even when the run was auto-skipped
-      (#1027); an in-progress run has not reported yet, so zero open there
+      (#1027); an unfinished run has not reported yet, so zero open there
       means "nothing raised so far", never "clean"
 
     Returned dict doubles as an `is_qodo_approved`-compatible approval summary
@@ -297,8 +301,10 @@ def cli_review_state(data: dict[str, Any], head_sha: str | None) -> dict[str, An
     closed_count = len(findings) - open_count
 
     at_head = bool(head_sha) and bool(commit_sha) and commit_sha == head_sha
-    # `skipped`/`completed`/unknown statuses are not in progress.
-    reviewing = (isinstance(status, str) and status in IN_PROGRESS_STATUSES) or not commit_sha
+    # Only a settled run at head stops the wait; a stale session is reviewing
+    # because the poller must retrigger it (poll.py stuck-review path).
+    settled = isinstance(status, str) and status in TERMINAL_STATUSES
+    reviewing = not settled or not at_head
 
     approved = at_head and open_count == 0 and not reviewing
 
