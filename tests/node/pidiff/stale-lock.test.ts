@@ -93,3 +93,57 @@ describe("pidiff stale lock detection", () => {
     assert.match(result.reason, /alive but lock age/);
   });
 });
+
+describe("spawn lock across .pi/run and legacy .pi/tmp (#1020)", () => {
+  let dirs: string[] = [];
+
+  afterEach(() => {
+    for (const d of dirs) {
+      try { rmSync(d, { recursive: true, force: true }); } catch {}
+    }
+    dirs = [];
+  });
+
+  const mkDirs = (n: number): string[] => {
+    dirs = Array.from({ length: n }, () => mkdtempSync(join(tmpdir(), "pidiff-spawn-")));
+    return dirs;
+  };
+
+  it("takes the lock in every dir", async () => {
+    const { acquireSpawnLocks, releaseSpawnLocks } = await import(
+      `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 10}`
+    );
+    const [legacy, run] = mkDirs(2);
+    const { held, contended } = acquireSpawnLocks([legacy, run]);
+    assert.equal(contended, null);
+    assert.deepEqual(held, [join(legacy, "pidiff.spawning"), join(run, "pidiff.spawning")]);
+    assert.equal(readFileSync(join(run, "pidiff.spawning"), "utf-8"), String(process.pid));
+    releaseSpawnLocks(held);
+    assert.ok(!existsSync(join(legacy, "pidiff.spawning")), "release clears the legacy lock");
+    assert.ok(!existsSync(join(run, "pidiff.spawning")), "release clears the new lock");
+  });
+
+  it("reports the legacy lock as contended when a pre-#1020 session holds it", async () => {
+    const { acquireSpawnLocks } = await import(
+      `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 11}`
+    );
+    const [legacy, run] = mkDirs(2);
+    writeFileSync(join(legacy, "pidiff.spawning"), String(process.pid)); // old-code session
+    const { held, contended } = acquireSpawnLocks([legacy, run]);
+    assert.equal(contended, join(legacy, "pidiff.spawning"));
+    assert.deepEqual(held, []);
+    assert.ok(!existsSync(join(run, "pidiff.spawning")), "no new-dir lock is taken while waiting");
+  });
+
+  it("releases a lock it already took when a later dir is contended", async () => {
+    const { acquireSpawnLocks } = await import(
+      `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 12}`
+    );
+    const [legacy, run] = mkDirs(2);
+    writeFileSync(join(run, "pidiff.spawning"), String(process.pid)); // a concurrent new-code session
+    const { held, contended } = acquireSpawnLocks([legacy, run]);
+    assert.equal(contended, join(run, "pidiff.spawning"));
+    assert.deepEqual(held, []);
+    assert.ok(!existsSync(join(legacy, "pidiff.spawning")), "the legacy lock is not left behind");
+  });
+});

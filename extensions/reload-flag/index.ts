@@ -114,6 +114,14 @@ function writeControlFile(cwd: string, name: string, content: string): void {
   writeFileSync(path.join(dir, name), content, "utf-8");
 }
 
+/** Mirror a control file into the legacy dir for a requester that wrote its
+ *  flag under `.pi/tmp` before the move and polls the completion marker there —
+ *  without it that requester waits for its nonce forever (#1020). Best effort:
+ *  never creates `.pi/tmp`. */
+function writeLegacyControlFile(cwd: string, name: string, content: string): void {
+  try { writeFileSync(path.join(reloadLegacyDir(cwd), name), content, "utf-8"); } catch {}
+}
+
 function readNonce(file: string): string | null {
   try {
     return readFileSync(file, "utf-8").trim() || null;
@@ -354,6 +362,7 @@ export default function (pi: ExtensionAPI) {
         const nonce = pendingRecord.nonce;
         removeControlFile(cwd, RELOAD_PENDING_FILENAME);
         writeControlFile(cwd, RELOAD_DONE_FILENAME, nonce);
+        writeLegacyControlFile(cwd, RELOAD_DONE_FILENAME, nonce);
         log.info("reload_done", { nonce });
         // Seamless continuation (user request): the deploy that requested
         // this reload was mid-task — wake the agent with the new code so it

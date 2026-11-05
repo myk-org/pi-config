@@ -96,12 +96,12 @@ pi-config/
 │   │       └── dist/               # Built output (generated, gitignored)
 │   ├── pidiff/                      # Diff viewer extension (standalone)
 │   │   ├── index.ts                 # Entry point
-│   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to per-project pidiff server via .pi/tmp/ lockfiles)
+│   │   ├── pidiff.ts                # Diff viewer logic (spawns/connects to per-project pidiff server via .pi/run/ lockfiles)
 │   │   └── pidiff-ui/               # React diff viewer UI (@pierre/diffs + @pierre/trees)
 │   ├── openai-compatible-discovery/ # Config-gated /v1/models discovery on configured providers
 │   │   └── index.ts                 # Augments the source provider in Pi's ordinary model picker
 │   ├── reload-flag/                 # Agent-triggered extension reload (deploy → flag → ctx.reload → done marker)
-│   │   └── index.ts                 # Watches .pi/tmp/reload.flag; nonce handshake via reload.pending/reload.done
+│   │   └── index.ts                 # Watches .pi/run/reload.flag; nonce handshake via reload.pending/reload.done
 │   ├── shared/                      # Shared extension utilities
 │   │   ├── oneshot.ts               # Argv oneshot helpers (`pi -p` / `--mode json` skip register)
 │   │   ├── provider-stream-log.ts   # Shared provider_stream_event hook (#848; gated on log_providers=debug)

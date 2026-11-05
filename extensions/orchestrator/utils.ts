@@ -227,8 +227,11 @@ export function getProjectRunDir(cwd: string): string {
   return dir;
 }
 
-/** Pre-`.pi/run` location of the same control files. Read-only fallback for a
- *  daemon or session that started before the upgrade (#1020) — never written. */
+/** Pre-`.pi/run` location of the same control files — the read-only fallback
+ *  for a daemon or session that started before the upgrade (#1020). New code
+ *  writes here only for the two migration shims: the spawn lock a pre-#1020
+ *  session is serialised on, and the `reload.done` mirror a pre-#1020
+ *  requester polls. */
 export function getProjectLegacyRunDir(cwd: string): string {
   return path.join(cwd, ".pi", "tmp");
 }

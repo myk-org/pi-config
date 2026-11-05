@@ -2,12 +2,55 @@
  * Tests for daemon-manager lockfile and port helpers.
  * Run with: npx tsx --test tests/node/shared/daemon-manager.test.ts
  */
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeLockfile, readLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon } from "../../../extensions/shared/daemon-manager.js";
+import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon } from "../../../extensions/shared/daemon-manager.js";
+import { createServer, type Server } from "node:http";
+
+describe("findLiveLockfile (#1020)", () => {
+  let server: Server | undefined;
+
+  const listenHealthy = async (): Promise<number> => {
+    server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: "ok" }));
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    return (server!.address() as { port: number }).port;
+  };
+
+  afterEach(async () => {
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = undefined;
+  });
+
+  it("finds the live daemon in the legacy dir when the new-dir record is stale", async () => {
+    const livePort = await listenHealthy();
+    const runDir = mkdtempSync(join(tmpdir(), "dm-live-"));
+    const legacyDir = mkdtempSync(join(tmpdir(), "dm-live-legacy-"));
+    try {
+      const deadPort = await findFreePort();
+      writeLockfile(runDir, deadPort, null, () => {}); // stale record shadows nothing yet
+      writeLockfile(legacyDir, livePort, null, () => {});
+      assert.strictEqual(readLockfile(runDir, legacyDir)!.port, deadPort, "plain read returns the stale record");
+      assert.strictEqual(await findLiveLockfile([runDir, legacyDir]), livePort);
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when no recorded port is healthy", async () => {
+    const runDir = mkdtempSync(join(tmpdir(), "dm-live-"));
+    try {
+      writeLockfile(runDir, await findFreePort(), null, () => {});
+      assert.strictEqual(await findLiveLockfile([runDir, ""]), null);
+    } finally { rmSync(runDir, { recursive: true, force: true }); }
+  });
+});
 
 describe("lockfile operations", () => {
   it("stores port and pid via writeLockfile, retrieves via readLockfile", () => {
@@ -79,13 +122,25 @@ describe("legacy .pi/tmp lockfiles (#1020)", () => {
     }
   });
 
-  it("the new dir wins when both exist, and writes never touch the legacy dir", () => {
+  it("the new dir wins when both exist", () => {
     const runDir = mk();
     const legacyDir = mk();
     try {
       writeLockfile(legacyDir, 1000, null, () => {});
       writeLockfile(runDir, 2000, null, () => {});
       assert.strictEqual(readLockfile(runDir, legacyDir)!.port, 2000);
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writing the lockfile never touches the legacy dir", () => {
+    const runDir = mk();
+    const legacyDir = mk();
+    try {
+      writeLockfile(legacyDir, 1000, null, () => {});
+      writeLockfile(runDir, 2000, null, () => {});
       assert.strictEqual(readFileSync(join(legacyDir, "pidiff.port"), "utf-8"), "1000");
     } finally {
       rmSync(runDir, { recursive: true, force: true });

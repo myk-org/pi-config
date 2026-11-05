@@ -3,9 +3,38 @@
  * No pi-tui / ExtensionAPI deps — unit tests can import directly.
  */
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("pidiff");
+
+/** Take the spawn lock in EVERY dir, or none of them.
+ *  A session running pre-#1020 code only checks `.pi/tmp`, so a lock it never
+ *  looks at cannot exclude it: if each side locked its own dir, both would
+ *  spawn a server for the same project (#1020). Order matters — the legacy dir
+ *  comes first so an old spawner already holding it is waited on. */
+export function acquireSpawnLocks(dirs: string[]): { held: string[]; contended: string | null } {
+  const held: string[] = [];
+  for (const dir of dirs) {
+    if (!dir) continue;
+    const file = path.join(dir, "pidiff.spawning");
+    try {
+      fs.writeFileSync(file, String(process.pid), { flag: "wx" });
+      held.push(file);
+    } catch {
+      releaseSpawnLocks(held);
+      return { held: [], contended: file };
+    }
+  }
+  return { held, contended: null };
+}
+
+/** Release every lock `acquireSpawnLocks` took. Best effort. */
+export function releaseSpawnLocks(held: string[]): void {
+  for (const file of held) {
+    try { fs.unlinkSync(file); } catch {}
+  }
+}
 
 /**
  * Evaluate a stale spawn lockfile and decide the recovery action.

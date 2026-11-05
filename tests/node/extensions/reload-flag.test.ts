@@ -414,7 +414,7 @@ describe("reload-flag", () => {
     assert.equal(reloadDonePath("/proj"), path.join("/proj", ".pi", "run", "reload.done"));
   });
 
-  test("legacy .pi/tmp flag is consumed and the handshake continues under .pi/run (#1020)", () => {
+  test("legacy .pi/tmp flag is consumed (#1020)", () => {
     const cwd = makeCwd();
     try {
       const legacyFlag = legacyPath(cwd, "reload.flag");
@@ -422,7 +422,39 @@ describe("reload-flag", () => {
       const nonce = parkReloadNonce(cwd, `${process.pid}:session-A`);
       assert.equal(nonce, "nonce-legacy", "a pre-upgrade deploy script's flag is still consumed");
       assert.ok(!existsSync(legacyFlag), "legacy flag removed");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("a consumed legacy flag parks pending in .pi/run (#1020)", () => {
+    const cwd = makeCwd();
+    try {
+      writeFileSync(legacyPath(cwd, "reload.flag"), "nonce-legacy");
+      parkReloadNonce(cwd, `${process.pid}:session-A`);
       assert.ok(existsSync(reloadPendingPath(cwd)), "pending parked in the new dir");
+      assert.ok(!existsSync(legacyPath(cwd, "reload.pending")), "never written to the legacy dir");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("the done marker is mirrored to .pi/tmp for a pre-#1020 requester (#1020)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      writeFileSync(legacyPath(cwd, "reload.flag"), "nonce-legacy");
+      parkReloadNonce(cwd, `${process.pid}:session-A`);
+      await reg.handlers.get("session_start")!(
+        { reason: "reload" },
+        makeCtx(cwd, { count: 0 }, `session-A`),
+      );
+      assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "nonce-legacy");
+      assert.equal(
+        readFileSync(legacyPath(cwd, "reload.done"), "utf-8"),
+        "nonce-legacy",
+        "a requester polling the old location still sees its nonce",
+      );
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

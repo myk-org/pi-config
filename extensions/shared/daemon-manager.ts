@@ -215,6 +215,17 @@ export function readLockfile(lockDir: string, legacyDir?: string): { port: numbe
   return read(lockDir) ?? (legacyDir ? read(legacyDir) : null);
 }
 
+/** First lockfile port (in `dirs` order) whose daemon answers /api/health, or
+ *  null. Exported for testing. */
+export async function findLiveLockfile(dirs: string[]): Promise<number | null> {
+  for (const dir of dirs) {
+    if (!dir) continue;
+    const lock = readLockfile(dir);
+    if (lock && await checkHealth(lock.port)) return lock.port;
+  }
+  return null;
+}
+
 /** Clean up lockfiles (new dir plus the legacy `.pi/tmp` copies). */
 export function removeLockfile(lockDir: string, log: (msg: string) => void, legacyDir?: string): void {
   try {

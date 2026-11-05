@@ -24,6 +24,7 @@ import {
   findFreePort,
   writeLockfile,
   readLockfile,
+  findLiveLockfile,
   removeLockfile,
 } from "../shared/daemon-manager.js";
 import { createLogger } from "../shared/logger.js";
@@ -32,7 +33,7 @@ import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { getProjectLegacyRunDir, getProjectRunDir } from "../orchestrator/utils.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
-import { evaluateSpawnLock } from "./spawn-lock.js";
+import { evaluateSpawnLock, acquireSpawnLocks, releaseSpawnLocks } from "./spawn-lock.js";
 
 /** Re-export for callers/tests that import from pidiff. */
 export { evaluateSpawnLock } from "./spawn-lock.js";
@@ -166,6 +167,17 @@ export function registerPidiff(pi: ExtensionAPI): void {
       log.debug(`lockfile port=${port}, healthy=${running}`);
     }
 
+    // A stale `.pi/run` record must not shadow a healthy pre-#1020 daemon:
+    // checking only its port would spawn a second server next to the live one.
+    if (!running) {
+      const livePort = await findLiveLockfile([lockDir, legacyLockDir]);
+      if (livePort !== null) {
+        port = livePort;
+        running = true;
+        log.debug(`healthy lockfile port=${port} (stale record was shadowing it)`);
+      }
+    }
+
     if (!running) {
       if (spawning) {
         log.debug("daemon already spawning, waiting...");
@@ -173,19 +185,16 @@ export function registerPidiff(pi: ExtensionAPI): void {
         return;
       }
 
-      // Atomic spawn guard — prevent two sessions from racing to spawn
-      // A session that started before the .pi/run move holds its spawn lock in
-      // .pi/tmp (#1020): reuse that path so its owner is waited on, not raced.
-      const legacySpawnLock = path.join(legacyLockDir, "pidiff.spawning");
-      const spawnLock = fs.existsSync(legacySpawnLock) ? legacySpawnLock : path.join(lockDir, "pidiff.spawning");
-      try {
-        fs.writeFileSync(spawnLock, String(process.pid), { flag: "wx" });
-      } catch {
+      // Atomic spawn guard — prevent two sessions from racing to spawn. A
+      // pre-#1020 session only checks .pi/tmp, so hold BOTH locks: one it never
+      // looks at cannot exclude it, and both would spawn (#1020).
+      const { held, contended } = acquireSpawnLocks([legacyLockDir, lockDir]);
+      if (contended !== null) {
         // Another session is already spawning — check if spawner is still alive
-        const lockDecision = evaluateSpawnLock(spawnLock, getSetting(ctx.cwd, "pidiff_stale_lock_timeout_ms"));
+        const lockDecision = evaluateSpawnLock(contended, getSetting(ctx.cwd, "pidiff_stale_lock_timeout_ms"));
         if (lockDecision.action === "recover" || lockDecision.action === "recover_pid_reuse") {
           log.info("stale_spawn_lock", lockDecision.reason);
-          try { fs.unlinkSync(spawnLock); } catch {}
+          try { fs.unlinkSync(contended); } catch {}
           connecting = false;
           setTimeout(() => connect(ctx), 500);
           return;
@@ -217,7 +226,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         if (!ready) { connecting = false; return; }
       } finally {
         spawning = false;
-        try { fs.unlinkSync(spawnLock); } catch {}
+        releaseSpawnLocks(held);
       }
     }
 
@@ -328,6 +337,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         const pidFile = path.join(lockDir, "pidiff.pid");
         const legacyPidFile = path.join(legacyLockDir, "pidiff.pid");
         killDaemonByPid(pidFile, debugLog, legacyPidFile);
+        killDaemonByPid(legacyPidFile, debugLog); // a pre-#1020 daemon is a second server — stop it too
         removeLockfile(lockDir, debugLog, legacyLockDir);
         activePort = 0;
         if (ctx.hasUI) { ctx.ui.setStatus("8-diff", undefined); ctx.ui.notify("pidiff server stopped", "info"); }
@@ -366,6 +376,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         const lock = readLockfile(lockDir, legacyLockDir);
         const preferredPort = activePort || lock?.port || 0;
         killDaemonByPid(pidFile, debugLog, legacyPidFile);
+        killDaemonByPid(legacyPidFile, debugLog); // a pre-#1020 daemon is a second server — stop it too
         removeLockfile(lockDir, debugLog, legacyLockDir);
         await new Promise(r => setTimeout(r, 1000));
         // Verify preferred port is free after kill — fall back if taken by another process

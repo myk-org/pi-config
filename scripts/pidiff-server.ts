@@ -666,7 +666,7 @@ function removeLegacyPidFile(): void {
   try {
     const pid = parseInt(fs.readFileSync(legacy, "utf-8").trim(), 10);
     if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
-      try { process.kill(pid, 0); return; } catch {}
+      try { process.kill(pid, 0); return; } catch (e: any) { if (e?.code === "EPERM") return; }
     }
     fs.unlinkSync(legacy);
     log(`legacy PID file removed: ${legacy}`);
