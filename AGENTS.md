@@ -248,7 +248,9 @@ progress. It does not commit, push, create a PR, or post results.
 ## When Modifying Extensions
 
 - **pidiff** runs as a per-project server (one per cwd, not shared).
-  Random free port, tracked via `.pi/tmp/pidiff.port` and `.pi/tmp/pidiff.pid`.
+  Random free port, tracked via `.pi/run/pidiff.port` and `.pi/run/pidiff.pid`
+  (runtime state, so it survives a `.pi/tmp` sweep; the pre-#1020 `.pi/tmp`
+  copies are still read for a daemon started before the move).
   Header and stale-banner **Refresh** reload the current diff in place (tree and
   panes stay mounted). Refresh is disabled while the WebSocket is down.
   Nested gitignores do not skip whole top-level dirs
@@ -281,10 +283,12 @@ progress. It does not commit, push, create a PR, or post results.
   `clearQueueIfSnapshot(snapshot)` operation; clients never call an unconditional clear after validating a preview.
 - Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `docs/async-internals.md`
 - CLI providers (`cli-*`): see `docs/cli-provider.md`
-- **Self-reload after deploy**: `.dev/deploy-all.sh` (and standalone `deploy-extensions.sh`) writes a nonce to `.pi/tmp/reload.flag`.
+- **Self-reload after deploy**: `.dev/deploy-all.sh` (and standalone `deploy-extensions.sh`) writes a nonce to `.pi/run/reload.flag`.
   The `extensions/reload-flag/` extension consumes it and calls `ctx.reload()` — the same public API `/reload` uses,
-  nothing in pi is patched — within ~0.5s, then the new runtime publishes the nonce to `.pi/tmp/reload.done`.
-  To confirm a reload landed: read `reload.done` and compare with the flag nonce.
+  nothing in pi is patched — within ~0.5s, then the new runtime publishes the nonce to `.pi/run/reload.done`
+  (mirrored into `.pi/tmp/reload.done` so a pre-#1020 requester polling the old path still sees it).
+  To confirm a reload landed: read `.pi/run/reload.done` and compare with the flag nonce.
+  A flag parked in `.pi/tmp/reload.flag` by a pre-#1020 requester is still consumed.
   Fresh session starts clear stale flag/pending/done state (latest code is already loaded).
   Worktree sessions do NOT auto-reload (deploy writes the flag to the main checkout).
 - **MCP:** built into pi as `builtin:mcp` (#848). Servers in `mcp.json` —

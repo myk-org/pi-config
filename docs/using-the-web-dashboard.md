@@ -73,7 +73,7 @@ The pidash extension detects whether a session is running inside a container (it
 
 - **Dashboard fails to start:** Check if another application is using port `19190`. You can change the port by setting the `PI_PIDASH_PORT` environment variable (or `pidash_port` in `pi-config-settings.json`) before starting your session.
 - **Session not showing in UI:** Ensure your terminal is running in TUI mode. The web interface relies on the TUI's event hooks to synchronize state.
-- **Cannot connect to diff viewer:** The `pidiff` server uses local lockfiles in your project's `.pi/tmp/` directory (`pidiff.port`, `pidiff.pid`) to track the active port. If the server becomes unresponsive or port conflicts occur, run `/pidiff stop` to clear the lockfiles before starting it again. If a crashed run left a `pidiff.spawning` guard behind, it is cleared automatically after `pidiff_stale_lock_timeout_ms` (default 60s).
+- **Cannot connect to diff viewer:** The `pidiff` server uses local lockfiles in your project's `.pi/run/` directory (`pidiff.port`, `pidiff.pid`) to track the active port. If the server becomes unresponsive or port conflicts occur, run `/pidiff stop` to clear the lockfiles before starting it again. If a crashed run left a `pidiff.spawning` guard behind, it is cleared automatically after `pidiff_stale_lock_timeout_ms` (default 60s).
 - **Session controls greyed out:** a session that is not active is shown dimmed, and the info-bar controls are disabled. Start or activate the session in Pi first.
 
 See [Installation & Quickstart](quickstart.html) to learn more about basic chat commands, or read [Managing Custom Agents](managing-custom-agents.html) to understand how background async tasks operate.

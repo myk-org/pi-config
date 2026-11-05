@@ -50,8 +50,15 @@ function register(): Registered {
 
 function makeCwd(): string {
   const dir = mkdtempSync(path.join(tmpdir(), "reload-flag-"));
+  mkdirSync(path.join(dir, ".pi", "run"), { recursive: true });
+  // Legacy location — kept only for the pre-#1020 read-fallback tests.
   mkdirSync(path.join(dir, ".pi", "tmp"), { recursive: true });
   return dir;
+}
+
+/** Pre-#1020 control-file path (`.pi/tmp`). */
+function legacyPath(cwd: string, name: string): string {
+  return path.join(cwd, ".pi", "tmp", name);
 }
 
 /** Mock ctx whose `mode` getter stays live (isLiveExtensionCtx compatible). */
@@ -401,9 +408,72 @@ describe("reload-flag", () => {
     }
   });
 
-  test("flag paths are scoped to the session cwd tmp dir", () => {
-    assert.equal(reloadFlagPath("/proj"), path.join("/proj", ".pi", "tmp", "reload.flag"));
-    assert.equal(reloadPendingPath("/proj"), path.join("/proj", ".pi", "tmp", "reload.pending"));
-    assert.equal(reloadDonePath("/proj"), path.join("/proj", ".pi", "tmp", "reload.done"));
+  test("flag paths live in the session cwd's .pi/run (not throwaway .pi/tmp)", () => {
+    assert.equal(reloadFlagPath("/proj"), path.join("/proj", ".pi", "run", "reload.flag"));
+    assert.equal(reloadPendingPath("/proj"), path.join("/proj", ".pi", "run", "reload.pending"));
+    assert.equal(reloadDonePath("/proj"), path.join("/proj", ".pi", "run", "reload.done"));
+  });
+
+  test("legacy .pi/tmp flag is consumed (#1020)", () => {
+    const cwd = makeCwd();
+    try {
+      const legacyFlag = legacyPath(cwd, "reload.flag");
+      writeFileSync(legacyFlag, "nonce-legacy");
+      const nonce = parkReloadNonce(cwd, `${process.pid}:session-A`);
+      assert.equal(nonce, "nonce-legacy", "a pre-upgrade deploy script's flag is still consumed");
+      assert.ok(!existsSync(legacyFlag), "legacy flag removed");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("a consumed legacy flag parks pending in .pi/run (#1020)", () => {
+    const cwd = makeCwd();
+    try {
+      writeFileSync(legacyPath(cwd, "reload.flag"), "nonce-legacy");
+      parkReloadNonce(cwd, `${process.pid}:session-A`);
+      assert.ok(existsSync(reloadPendingPath(cwd)), "pending parked in the new dir");
+      assert.ok(!existsSync(legacyPath(cwd, "reload.pending")), "never written to the legacy dir");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("the done marker is mirrored to .pi/tmp for a pre-#1020 requester (#1020)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      writeFileSync(legacyPath(cwd, "reload.flag"), "nonce-legacy");
+      parkReloadNonce(cwd, `${process.pid}:session-A`);
+      await reg.handlers.get("session_start")!(
+        { reason: "reload" },
+        makeCtx(cwd, { count: 0 }, `session-A`),
+      );
+      assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "nonce-legacy");
+      assert.equal(
+        readFileSync(legacyPath(cwd, "reload.done"), "utf-8"),
+        "nonce-legacy",
+        "a requester polling the old location still sees its nonce",
+      );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("legacy .pi/tmp pending is still seen by the watcher (#1020)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      const ctx = makeCtx(cwd, reloads);
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      // A pre-upgrade runtime parked this one in the old location.
+      writeFileSync(legacyPath(cwd, "reload.pending"), JSON.stringify({ nonce: "n-legacy", owner: "999999:gone" }));
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.deepEqual(reg.sent.map((s) => s.text), [RELOAD_COMMAND]);
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });

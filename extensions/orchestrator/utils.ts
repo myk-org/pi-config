@@ -207,13 +207,33 @@ export function resolveWorktreeRoot(cwd: string): string {
 }
 
 /** Get project-scoped temp dir under <cwd>/.pi/tmp/
- *  Deliberately NOT worktree-aware: pidiff runs one server per cwd and tracks
- *  its port in .pi/tmp/pidiff.port — sharing that across worktrees would
- *  collide (issue #918 decided to leave tmp per-cwd on purpose). */
+ *  Pure throwaway — everything in it is deletable by construction. Runtime
+ *  state that a live daemon owns belongs in getProjectRunDir (issue #1020).
+ *  Deliberately NOT worktree-aware: pidiff runs one server per cwd — sharing
+ *  that across worktrees would collide (issue #918: tmp stays per-cwd). */
 export function getProjectTmpDir(cwd: string): string {
   const dir = path.join(cwd, ".pi", "tmp");
   fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/** Get project-scoped runtime-state dir under <cwd>/.pi/run/ — pids, ports,
+ *  spawn locks and the reload handshake live here because they outlive the
+ *  process that wrote them and must never be swept with .pi/tmp (#1020).
+ *  Per-cwd for the same reason as getProjectTmpDir (issue #918). */
+export function getProjectRunDir(cwd: string): string {
+  const dir = path.join(cwd, ".pi", "run");
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
+/** Pre-`.pi/run` location of the same control files — the read-only fallback
+ *  for a daemon or session that started before the upgrade (#1020). New code
+ *  writes here only for the two migration shims: the spawn lock a pre-#1020
+ *  session is serialised on, and the `reload.done` mirror a pre-#1020
+ *  requester polls. */
+export function getProjectLegacyRunDir(cwd: string): string {
+  return path.join(cwd, ".pi", "tmp");
 }
 
 /** Get the shared project data dir under <main-checkout>/.pi/data/.
