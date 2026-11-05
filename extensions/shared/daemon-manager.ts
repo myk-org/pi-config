@@ -126,9 +126,12 @@ export function killDaemon(pattern: string, log: (msg: string) => void): void {
 
 // ── Kill daemon by PID ──────────────────────────────────────────────
 
-/** Kill a daemon by its stored PID. Returns true if killed. */
-export function killDaemonByPid(pidFile: string, log: (msg: string) => void): boolean {
+/** Kill a daemon by its stored PID. Returns true if killed.
+ *  `legacyPidFile` is the pre-`.pi/run` location: a daemon started before the
+ *  move wrote its PID there, so it must still be found (#1020). */
+export function killDaemonByPid(pidFile: string, log: (msg: string) => void, legacyPidFile?: string): boolean {
   try {
+    if (!fs.existsSync(pidFile) && legacyPidFile && fs.existsSync(legacyPidFile)) pidFile = legacyPidFile;
     if (!fs.existsSync(pidFile)) return false;
     const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
     if (isNaN(pid)) { log(`invalid PID in ${pidFile}`); return false; }
@@ -190,30 +193,37 @@ export function writeLockfile(lockDir: string, port: number, pid: number | null,
   } catch (e: any) { log(`writeLockfile error: ${e.message}`); }
 }
 
-/** Read port from lockfile. Returns port number or null. */
-export function readLockfile(lockDir: string): { port: number; pid: number | null } | null {
-  try {
-    const portFile = path.join(lockDir, "pidiff.port");
-    if (!fs.existsSync(portFile)) return null;
-    const port = parseInt(fs.readFileSync(portFile, "utf-8").trim(), 10);
-    if (isNaN(port)) return null;
-    let pid: number | null = null;
-    const pidFile = path.join(lockDir, "pidiff.pid");
-    if (fs.existsSync(pidFile)) {
-      pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
-      if (isNaN(pid)) pid = null;
-    }
-    return { port, pid };
-  } catch (e: any) { log.debug("readLockfile error: %s", e?.message); return null; }
+/** Read port from lockfile. Returns port number or null.
+ *  `legacyDir` (`.pi/tmp`) is consulted only when the new dir has no lockfile:
+ *  a daemon already running at upgrade time wrote its lockfile there (#1020). */
+export function readLockfile(lockDir: string, legacyDir?: string): { port: number; pid: number | null } | null {
+  const read = (dir: string): { port: number; pid: number | null } | null => {
+    try {
+      const portFile = path.join(dir, "pidiff.port");
+      if (!fs.existsSync(portFile)) return null;
+      const port = parseInt(fs.readFileSync(portFile, "utf-8").trim(), 10);
+      if (isNaN(port)) return null;
+      let pid: number | null = null;
+      const pidFile = path.join(dir, "pidiff.pid");
+      if (fs.existsSync(pidFile)) {
+        pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+        if (isNaN(pid)) pid = null;
+      }
+      return { port, pid };
+    } catch (e: any) { log.debug("readLockfile error: %s", e?.message); return null; }
+  };
+  return read(lockDir) ?? (legacyDir ? read(legacyDir) : null);
 }
 
-/** Clean up lockfiles. */
-export function removeLockfile(lockDir: string, log: (msg: string) => void): void {
+/** Clean up lockfiles (new dir plus the legacy `.pi/tmp` copies). */
+export function removeLockfile(lockDir: string, log: (msg: string) => void, legacyDir?: string): void {
   try {
-    const portFile = path.join(lockDir, "pidiff.port");
-    const pidFile = path.join(lockDir, "pidiff.pid");
-    if (fs.existsSync(portFile)) fs.unlinkSync(portFile);
-    if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
+    for (const dir of legacyDir ? [lockDir, legacyDir] : [lockDir]) {
+      const portFile = path.join(dir, "pidiff.port");
+      const pidFile = path.join(dir, "pidiff.pid");
+      if (fs.existsSync(portFile)) fs.unlinkSync(portFile);
+      if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
+    }
     log("lockfiles removed");
   } catch (e: any) { log(`removeLockfile error: ${e.message}`); }
 }
