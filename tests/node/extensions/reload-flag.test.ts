@@ -409,9 +409,21 @@ describe("reload-flag", () => {
   });
 
   test("flag paths live in the session cwd's .pi/run (not throwaway .pi/tmp)", () => {
-    assert.equal(reloadFlagPath("/proj"), path.join("/proj", ".pi", "run", "reload.flag"));
-    assert.equal(reloadPendingPath("/proj"), path.join("/proj", ".pi", "run", "reload.pending"));
-    assert.equal(reloadDonePath("/proj"), path.join("/proj", ".pi", "run", "reload.done"));
+    const legacyDir = path.join("/proj", ".pi", "tmp");
+    const cases: [string, string][] = [
+      [reloadFlagPath("/proj"), "reload.flag"],
+      [reloadPendingPath("/proj"), "reload.pending"],
+      [reloadDonePath("/proj"), "reload.done"],
+    ];
+    for (const [resolved, name] of cases) {
+      assert.equal(resolved, path.join("/proj", ".pi", "run", name));
+      // Explicit: the home is `.pi/run`, OUTSIDE the dir the sweep deletes (#1020).
+      assert.equal(
+        resolved.startsWith(legacyDir + path.sep),
+        false,
+        `${name} must not resolve into the swept .pi/tmp dir`,
+      );
+    }
   });
 
   test("legacy .pi/tmp flag is consumed (#1020)", () => {

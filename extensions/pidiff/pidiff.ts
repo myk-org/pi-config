@@ -83,6 +83,20 @@ async function resolveSpawnPort(preferred: number | null | undefined): Promise<n
   return port;
 }
 
+/** Port of a pidiff daemon that answers /api/health, or null. `preferred` (this
+ *  session's known port) is probed first; otherwise the lockfile records are
+ *  tried `.pi/run` → legacy `.pi/tmp`. Reading only the FIRST record would let a
+ *  stale `.pi/run` port hide a live pre-#1020 daemon, and the caller would then
+ *  spawn a duplicate on top of it (#1020). Shared by connect() and `/pidiff start`. */
+export async function findRunningPidiffPort(
+  lockDir: string,
+  legacyLockDir: string,
+  preferred = 0,
+): Promise<number | null> {
+  if (preferred && await checkHealth(preferred)) return preferred;
+  return findLiveLockfile([lockDir, legacyLockDir]);
+}
+
 export function registerPidiff(pi: ExtensionAPI): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
   if (shouldSkipOneshotRegister(log)) return;
@@ -153,29 +167,17 @@ export function registerPidiff(pi: ExtensionAPI): void {
     lastCtx = ctx;
     if (!lockDir) { log.debug("connect: lockDir not set (session_start not fired yet)"); connecting = false; return; }
 
-    // Try to discover port from lockfile
-    let port = activePort;
-    if (!port) {
-      const lock = readLockfile(lockDir, legacyLockDir);
-      if (lock) port = lock.port;
-    }
-
-    // Check if existing port is healthy
-    let running = false;
-    if (port) {
-      running = await checkHealth(port);
-      log.debug(`lockfile port=${port}, healthy=${running}`);
-    }
-
-    // A stale `.pi/run` record must not shadow a healthy pre-#1020 daemon:
-    // checking only its port would spawn a second server next to the live one.
-    if (!running) {
-      const livePort = await findLiveLockfile([lockDir, legacyLockDir]);
-      if (livePort !== null) {
-        port = livePort;
-        running = true;
-        log.debug(`healthy lockfile port=${port} (stale record was shadowing it)`);
-      }
+    // `port` is the preferred spawn port below (the URL stays stable across
+    // reloads); liveness is decided by the healthy-lockfile probe, which also
+    // looks past a stale `.pi/run` record at a live pre-#1020 daemon.
+    let port = activePort || readLockfile(lockDir, legacyLockDir)?.port || 0;
+    const livePort = await findRunningPidiffPort(lockDir, legacyLockDir, port);
+    const running = livePort !== null;
+    if (running) {
+      port = livePort;
+      log.debug(`healthy lockfile port=${port}`);
+    } else {
+      log.debug(`lockfile port=${port || "(none)"}, unhealthy — no daemon to reuse`);
     }
 
     if (!running) {
@@ -345,15 +347,18 @@ export function registerPidiff(pi: ExtensionAPI): void {
       }
 
       if (cmd === "start") {
-        const lock = readLockfile(lockDir, legacyLockDir);
-        if (lock && await checkHealth(lock.port)) {
-          activePort = lock.port;
+        // Same healthy-lockfile selection as connect(): probing only the first
+        // record would let a stale `.pi/run` port hide the live pre-#1020 daemon
+        // in `.pi/tmp` and start a duplicate next to it (#1020).
+        const livePort = await findRunningPidiffPort(lockDir, legacyLockDir);
+        if (livePort !== null) {
+          activePort = livePort;
           if (ctx.hasUI) ctx.ui.notify(`pidiff already running at http://localhost:${activePort}`, "info");
           if (!connected) connect(ctx);
           return;
         }
         // Reuse lockfile port to keep URL stable — fall back if taken
-        const port = await resolveSpawnPort(lock?.port);
+        const port = await resolveSpawnPort(readLockfile(lockDir, legacyLockDir)?.port);
         doSpawn(port, ctx.cwd);
         writeLockfile(lockDir, port, null, debugLog);
         if (ctx.hasUI) ctx.ui.notify("Starting pidiff server...", "info");
