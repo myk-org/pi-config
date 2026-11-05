@@ -36,6 +36,10 @@ QODO_CLI_MIN_VERSION = (1, 0, 0)
 # detected_after_merge, outdated.
 OPEN_ATTRIBUTION_STATUSES = frozenset({"pending", "partial_implementation", "not_implemented", "focus_areas_edited"})
 
+# Session statuses that mean a run is genuinely still in progress. Any other
+# value (`completed`, `skipped`, unknown) is not reviewing — issue #1027.
+IN_PROGRESS_STATUSES = frozenset({"started", "running", "queued"})
+
 # action_level is severity, not open-vs-closed.
 ACTION_LEVEL_PRIORITY = {
     "action_required": "HIGH",
@@ -263,30 +267,47 @@ def map_cli_findings_to_threads(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def cli_review_state(data: dict[str, Any], head_sha: str | None) -> dict[str, Any]:
-    """Derive reviewing/approval state from a CLI read (issue #958).
+    """Derive reviewing/approval state from a CLI read (issues #958, #1027).
 
-    Mirrors the GitHub heuristics with authoritative data:
-    - reviewing: session not completed, or its commit_sha is behind the PR head
-    - approved: session completed at head AND zero OPEN findings
+    - reviewing: a genuinely in-progress run, or an unverifiable commit_sha
+    - approved: at head AND zero OPEN findings AND not reviewing — a clean
+      catalog at head IS the approval, even when the run was auto-skipped
+      (#1027); an in-progress run has not reported yet, so zero open there
+      means "nothing raised so far", never "clean"
 
     Returned dict doubles as an `is_qodo_approved`-compatible approval summary
     (approved/reason/total_findings/resolved_count/unresolved_count) plus the
     CLI-specific transport fields.
     """
-    session = data.get("review_session") or {}
-    findings = data.get("findings") or []
+    # Valid CLI JSON can still carry unexpected shapes — degrade, never raise.
+    session = data.get("review_session") if isinstance(data, dict) else None
+    if not isinstance(session, dict):
+        session = {}
+    raw_findings = data.get("findings") if isinstance(data, dict) else None
+    findings = [f for f in raw_findings if isinstance(f, dict)] if isinstance(raw_findings, list) else []
+
     status = session.get("status")
     commit_sha = session.get("commit_sha") or ""
+    # Qodo's own completion flag; surfaced, never required for approval.
+    review_complete = session.get("review_complete")
+    if not isinstance(review_complete, bool):
+        review_complete = False
+
     open_count = sum(1 for f in findings if _finding_is_open(f))
     closed_count = len(findings) - open_count
 
     at_head = bool(head_sha) and bool(commit_sha) and commit_sha == head_sha
-    completed = status == "completed"
-    reviewing = not completed or not at_head
+    # `skipped`/`completed`/unknown statuses are not in progress.
+    reviewing = (isinstance(status, str) and status in IN_PROGRESS_STATUSES) or not commit_sha
 
-    approved = completed and at_head and open_count == 0
+    approved = at_head and open_count == 0 and not reviewing
+
     if not findings:
         reason = "no_findings"
+    elif not at_head:
+        reason = "not_at_head"
+    elif open_count > 0:
+        reason = "open_findings"
     else:
         reason = "all_resolved"
 
@@ -297,6 +318,7 @@ def cli_review_state(data: dict[str, Any], head_sha: str | None) -> dict[str, An
         "head_sha": head_sha,
         "reviewing": reviewing,
         "approved": approved,
+        "review_complete": review_complete,
         "reason": reason,
         "total_findings": len(findings),
         "resolved_count": closed_count,

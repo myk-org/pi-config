@@ -622,6 +622,11 @@ Check the poll JSON output — it always contains an `approved` key:
   The JSON contains both the approval status AND the reviews data
   (metadata, human, qodo, coderabbit) — no separate fetch needed.
 
+  The JSON also carries `qodo_cli_state.review_complete`. When it is `false`, the approval
+  came from a clean findings catalog at the PR head rather than from a completed review run —
+  the exit summary must say so in one clear sentence (e.g. "Approved on a clean findings
+  catalog at head; Qodo's review run was skipped/incomplete."), stated plainly, without alarm.
+
   **On exit, display the Remaining Findings Summary (MANDATORY):**
 
   The approval JSON includes the reviews data directly — use it for the summary.

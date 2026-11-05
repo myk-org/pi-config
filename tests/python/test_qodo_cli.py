@@ -316,8 +316,9 @@ def test_thread_id_from_inline() -> None:
 # --- review state ---
 
 
-def test_review_state_approved_at_head() -> None:
+def test_review_state_completed_at_head_approved() -> None:
     data = _load("pr-956-compact.json")
+    assert data["review_session"]["status"] == "completed"
     state = cli_review_state(data, HEAD_SHA)
     assert state["approved"] is True
     assert state["reviewing"] is False
@@ -327,11 +328,33 @@ def test_review_state_approved_at_head() -> None:
     assert state["unresolved_count"] == 0
 
 
+def test_review_state_skipped_at_head_approved() -> None:
+    """A skipped auto-run with a clean catalog at head is the approval (#1027)."""
+    data = _load("pr-956-compact.json")
+    data["review_session"]["status"] = "skipped"
+    data["review_session"]["review_complete"] = False
+    state = cli_review_state(data, HEAD_SHA)
+    assert state["approved"] is True
+    assert state["reason"] == "all_resolved"
+    assert state["reviewing"] is False
+    assert state["review_complete"] is False
+
+
 def test_review_state_stale_commit_not_approved() -> None:
     data = _load("pr-956-compact.json")
     state = cli_review_state(data, "ffffffffffffffffffffffffffffffffffffffff")
     assert state["approved"] is False
-    assert state["reviewing"] is True
+    assert state["reviewing"] is False  # completed run is not in progress
+    assert state["reason"] == "not_at_head"
+
+
+def test_review_state_missing_commit_sha_not_approved() -> None:
+    data = _load("pr-956-compact.json")
+    del data["review_session"]["commit_sha"]
+    state = cli_review_state(data, HEAD_SHA)
+    assert state["approved"] is False
+    assert state["reviewing"] is True  # freshness unverifiable
+    assert state["reason"] == "not_at_head"
 
 
 def test_review_state_session_in_progress() -> None:
@@ -339,7 +362,28 @@ def test_review_state_session_in_progress() -> None:
     data["review_session"]["status"] = "started"
     state = cli_review_state(data, HEAD_SHA)
     assert state["reviewing"] is True
+    # An in-progress run is never an approval, even when nothing is open yet.
     assert state["approved"] is False
+
+
+def test_review_state_running_is_reviewing() -> None:
+    data = _load("pr-956-compact.json")
+    for status in ("running", "queued"):
+        data["review_session"]["status"] = status
+        state = cli_review_state(data, HEAD_SHA)
+        assert state["reviewing"] is True
+        assert state["approved"] is False
+
+
+def test_review_state_started_at_head_blocked_by_gate() -> None:
+    """A started run at head with 0 open is still blocked; reason describes the catalog."""
+    data = _load("pr-956-compact.json")
+    data["review_session"]["status"] = "started"
+    state = cli_review_state(data, HEAD_SHA)
+    assert state["reviewing"] is True
+    assert state["approved"] is False
+    assert state["unresolved_count"] == 0
+    assert state["reason"] == "all_resolved"
 
 
 def test_review_state_open_findings_not_approved() -> None:
@@ -348,12 +392,75 @@ def test_review_state_open_findings_not_approved() -> None:
     state = cli_review_state(data, HEAD_SHA)
     assert state["approved"] is False
     assert state["unresolved_count"] == 1
+    assert state["reason"] == "open_findings"
+
+
+def test_review_state_completed_with_open_findings_not_approved() -> None:
+    data = _load("pr-956-compact.json")
+    data["review_session"]["status"] = "completed"
+    data["findings"][1]["attribution_status"] = "not_implemented"
+    state = cli_review_state(data, HEAD_SHA)
+    assert state["approved"] is False
+    assert state["reviewing"] is False
+    assert state["reason"] == "open_findings"
+    assert state["unresolved_count"] == 1
 
 
 def test_review_state_no_findings() -> None:
     state = cli_review_state({"review_session": {"status": "completed", "commit_sha": "x"}, "findings": []}, "x")
     assert state["approved"] is True
     assert state["reason"] == "no_findings"
+
+
+# --- review state: defensive parsing (valid JSON, unexpected shapes) ---
+
+
+def test_review_state_missing_review_complete_defaults_false() -> None:
+    data = _load("pr-956-compact.json")
+    assert "review_complete" not in data["review_session"]
+    state = cli_review_state(data, HEAD_SHA)
+    assert state["review_complete"] is False
+    assert state["approved"] is True
+    # A non-boolean value degrades to False instead of leaking through.
+    data["review_session"]["review_complete"] = "yes"
+    assert cli_review_state(data, HEAD_SHA)["review_complete"] is False
+
+
+def test_review_state_unknown_status_not_reviewing() -> None:
+    data = _load("pr-956-compact.json")
+    data["review_session"]["status"] = "something-new"
+    state = cli_review_state(data, HEAD_SHA)
+    assert state["reviewing"] is False
+    assert state["approved"] is True
+    assert state["reason"] == "all_resolved"
+
+
+def test_review_state_degenerate_shapes_do_not_raise() -> None:
+    """Missing keys / non-dict session / bad findings never abort the read."""
+    shapes: list[dict[str, Any]] = [
+        {},
+        {"review_session": None, "findings": None},
+        {"review_session": [], "findings": "x"},
+    ]
+    for shape in shapes:
+        state = cli_review_state(shape, HEAD_SHA)
+        assert state["approved"] is False
+        assert state["reviewing"] is True  # commit_sha missing
+        assert state["reason"] == "no_findings"
+        assert state["review_complete"] is False
+        assert state["total_findings"] == 0
+    # Non-object entries inside findings are ignored, not fatal.
+    mixed: dict[str, Any] = {
+        "review_session": {"status": "completed", "commit_sha": "x"},
+        "findings": ["junk", None, {"attribution_status": "pending"}],
+    }
+    state = cli_review_state(mixed, "x")
+    assert state["total_findings"] == 1
+    assert state["unresolved_count"] == 1
+    assert state["reason"] == "open_findings"
+    # An unhashable status must not raise.
+    state = cli_review_state({"review_session": {"status": ["weird"], "commit_sha": "x"}, "findings": []}, "x")
+    assert state["reviewing"] is False
 
 
 # --- high-level fetch_qodo_cli_threads ---
