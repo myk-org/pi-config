@@ -36,6 +36,12 @@ QODO_CLI_MIN_VERSION = (1, 0, 0)
 # detected_after_merge, outdated.
 OPEN_ATTRIBUTION_STATUSES = frozenset({"pending", "partial_implementation", "not_implemented", "focus_areas_edited"})
 
+# Session statuses that mean a run has reported its findings. Anything else —
+# started/running/queued, a missing status, or a status this tool does not know —
+# is still pending: an unreported run has not raised its findings yet, and
+# approving on its empty catalog would merge unreviewed code (issue #1027).
+TERMINAL_STATUSES = frozenset({"completed", "skipped"})
+
 # action_level is severity, not open-vs-closed.
 ACTION_LEVEL_PRIORITY = {
     "action_required": "HIGH",
@@ -263,30 +269,51 @@ def map_cli_findings_to_threads(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def cli_review_state(data: dict[str, Any], head_sha: str | None) -> dict[str, Any]:
-    """Derive reviewing/approval state from a CLI read (issue #958).
+    """Derive reviewing/approval state from a CLI read (issues #958, #1027).
 
-    Mirrors the GitHub heuristics with authoritative data:
-    - reviewing: session not completed, or its commit_sha is behind the PR head
-    - approved: session completed at head AND zero OPEN findings
+    - reviewing: no settled run (`completed`/`skipped`) covers the head — that
+      spans in-progress runs, unknown/missing statuses, and any session whose
+      commit_sha is behind the head (a review of the new commit is still owed)
+    - approved: at head AND zero OPEN findings AND not reviewing — a clean
+      catalog at head IS the approval, even when the run was auto-skipped
+      (#1027); an unfinished run has not reported yet, so zero open there
+      means "nothing raised so far", never "clean"
 
     Returned dict doubles as an `is_qodo_approved`-compatible approval summary
     (approved/reason/total_findings/resolved_count/unresolved_count) plus the
     CLI-specific transport fields.
     """
-    session = data.get("review_session") or {}
-    findings = data.get("findings") or []
+    # Valid CLI JSON can still carry unexpected shapes — degrade, never raise.
+    session = data.get("review_session") if isinstance(data, dict) else None
+    if not isinstance(session, dict):
+        session = {}
+    raw_findings = data.get("findings") if isinstance(data, dict) else None
+    findings = [f for f in raw_findings if isinstance(f, dict)] if isinstance(raw_findings, list) else []
+
     status = session.get("status")
     commit_sha = session.get("commit_sha") or ""
+    # Qodo's own completion flag; surfaced, never required for approval.
+    review_complete = session.get("review_complete")
+    if not isinstance(review_complete, bool):
+        review_complete = False
+
     open_count = sum(1 for f in findings if _finding_is_open(f))
     closed_count = len(findings) - open_count
 
     at_head = bool(head_sha) and bool(commit_sha) and commit_sha == head_sha
-    completed = status == "completed"
-    reviewing = not completed or not at_head
+    # Only a settled run at head stops the wait; a stale session is reviewing
+    # because the poller must retrigger it (poll.py stuck-review path).
+    settled = isinstance(status, str) and status in TERMINAL_STATUSES
+    reviewing = not settled or not at_head
 
-    approved = completed and at_head and open_count == 0
+    approved = at_head and open_count == 0 and not reviewing
+
     if not findings:
         reason = "no_findings"
+    elif not at_head:
+        reason = "not_at_head"
+    elif open_count > 0:
+        reason = "open_findings"
     else:
         reason = "all_resolved"
 
@@ -297,6 +324,7 @@ def cli_review_state(data: dict[str, Any], head_sha: str | None) -> dict[str, An
         "head_sha": head_sha,
         "reviewing": reviewing,
         "approved": approved,
+        "review_complete": review_complete,
         "reason": reason,
         "total_findings": len(findings),
         "resolved_count": closed_count,
