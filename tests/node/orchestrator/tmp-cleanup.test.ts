@@ -139,18 +139,14 @@ describe("sweepProjectTmp", () => {
     assert.equal(fs.existsSync(fresh), true);
   });
 
-  it("never deletes a protected control file or the tmp root", async () => {
-    for (const name of TMP_PROTECTED_NAMES) {
-      if (name === TMP_SWEEP_LOCK) continue;
-      makeEntry(name, 2 * MB, 90);
-    }
+  it("survives the sweep: legacy .pi/tmp stragglers are kept for a pre-#1020 daemon", async () => {
+    for (const name of TMP_PROTECTED_NAMES) makeEntry(name, 2 * MB, 90);
     // Condition 1: over the cap, everything old enough.
     await sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
     // Condition 2: under the cap.
     makeEntry("filler.bin", 2 * MB, 90);
     await sweepProjectTmp({ tmpDir, maxBytes: 100 * MB, retentionDays: 7 });
     for (const name of TMP_PROTECTED_NAMES) {
-      if (name === TMP_SWEEP_LOCK) continue;
       assert.equal(fs.existsSync(path.join(tmpDir, name)), true, `${name} must survive`);
     }
     assert.equal(fs.existsSync(tmpDir), true, "tmp root must survive");
@@ -242,14 +238,21 @@ describe("sweepProjectTmp", () => {
 });
 
 describe("runProjectTmpSweep", () => {
-  const cwd = () => path.dirname(tmpDir);
+  // Real layout: cwd is the checkout, `.pi/tmp` is the swept dir, `.pi/run` holds the lock.
+  let project: string;
+  const runDir = () => path.join(project, ".pi", "run");
+  const lockPath = () => path.join(runDir(), TMP_SWEEP_LOCK);
 
   beforeEach(() => {
+    project = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-project-"));
+    tmpDir = path.join(project, ".pi", "tmp");
+    fs.mkdirSync(tmpDir, { recursive: true });
     process.env.PI_PROJECT_TMP_MAX_SIZE = "";
     process.env.PI_PROJECT_TMP_RETENTION_DAYS = "";
   });
 
   afterEach(() => {
+    fs.rmSync(project, { recursive: true, force: true });
     delete process.env.PI_PROJECT_TMP_MAX_SIZE;
     delete process.env.PI_PROJECT_TMP_RETENTION_DAYS;
   });
@@ -257,7 +260,7 @@ describe("runProjectTmpSweep", () => {
   it('"0" disables the sweep — no deletion', async () => {
     process.env.PI_PROJECT_TMP_MAX_SIZE = "0";
     makeEntry("old.bin", 4 * MB, 90);
-    const result = await runProjectTmpSweep(cwd(), { tmpDir });
+    const result = await runProjectTmpSweep(project, { tmpDir });
     assert.equal(result.skipped, "disabled");
     assert.equal(fs.existsSync(path.join(tmpDir, "old.bin")), true);
   });
@@ -277,7 +280,7 @@ describe("runProjectTmpSweep", () => {
   it("an invalid size deletes nothing", async () => {
     process.env.PI_PROJECT_TMP_MAX_SIZE = "2Q";
     makeEntry("old.bin", 4 * MB, 90);
-    const result = await runProjectTmpSweep(cwd(), { tmpDir });
+    const result = await runProjectTmpSweep(project, { tmpDir });
     assert.equal(result.skipped, "invalid_max_size");
     assert.equal(fs.existsSync(path.join(tmpDir, "old.bin")), true);
   });
@@ -297,33 +300,65 @@ describe("runProjectTmpSweep", () => {
   });
 
   it("skips cleanly when another process holds the lock", async () => {
-    makeEntry(TMP_SWEEP_LOCK, 8, 0);
+    process.env.PI_PROJECT_TMP_MAX_SIZE = "1M";
+    fs.mkdirSync(runDir(), { recursive: true });
+    fs.writeFileSync(lockPath(), String(process.pid));
     makeEntry("old.bin", 4 * MB, 90);
-    const result = await runProjectTmpSweep(cwd(), { tmpDir });
+    const result = await runProjectTmpSweep(project, { tmpDir });
     assert.equal(result.skipped, "locked");
-    assert.equal(fs.existsSync(path.join(tmpDir, "old.bin")), true);
-    assert.equal(fs.existsSync(path.join(tmpDir, TMP_SWEEP_LOCK)), true, "the holder keeps its lock");
+    assert.equal(fs.existsSync(path.join(tmpDir, "old.bin")), true, "nothing may be deleted without the lock");
+    assert.equal(fs.existsSync(lockPath()), true, "the holder keeps its lock");
   });
 
   it("reclaims a stale lock and sweeps", async () => {
     process.env.PI_PROJECT_TMP_MAX_SIZE = "1M";
-    const lock = path.join(tmpDir, TMP_SWEEP_LOCK);
-    fs.writeFileSync(lock, "0");
+    fs.mkdirSync(runDir(), { recursive: true });
+    fs.writeFileSync(lockPath(), "0");
     const stale = new Date(Date.now() - 2 * 60 * 60 * 1000);
-    fs.utimesSync(lock, stale, stale);
+    fs.utimesSync(lockPath(), stale, stale);
     makeEntry("old.bin", 4 * MB, 90);
-    const result = await runProjectTmpSweep(cwd(), { tmpDir });
+    const result = await runProjectTmpSweep(project, { tmpDir });
     assert.equal(result.skipped, undefined);
     assert.equal(result.deleted, 1);
-    assert.equal(fs.existsSync(lock), false);
+    assert.equal(fs.existsSync(lockPath()), false);
   });
 
-  it("releases the lock after a sweep", async () => {
+  it("puts the lock in .pi/run and releases it after a sweep", async () => {
     process.env.PI_PROJECT_TMP_MAX_SIZE = "1M";
     makeEntry("old.bin", 4 * MB, 90);
-    const result = await runProjectTmpSweep(cwd(), { tmpDir });
-    assert.equal(result.deleted, 1);
+    let heldDuringSweep: boolean | undefined;
+    const realLstat = fsp.lstat;
+    fsp.lstat = (async (target: any, ...rest: any[]) => {
+      if (heldDuringSweep === undefined) heldDuringSweep = fs.existsSync(lockPath());
+      return (realLstat as any)(target, ...rest);
+    }) as any;
+    try {
+      const result = await runProjectTmpSweep(project, { tmpDir });
+      assert.equal(result.deleted, 1);
+    } finally {
+      fsp.lstat = realLstat;
+    }
+    assert.equal(heldDuringSweep, true, "the sweep must run holding the lock");
+    assert.equal(fs.existsSync(lockPath()), false, "released in finally");
+  });
+
+  it("never creates the lock inside the swept dir", async () => {
+    process.env.PI_PROJECT_TMP_MAX_SIZE = "1M";
+    makeEntry("old.bin", 4 * MB, 90);
+    await runProjectTmpSweep(project, { tmpDir });
     assert.equal(fs.existsSync(path.join(tmpDir, TMP_SWEEP_LOCK)), false);
+    assert.equal(fs.existsSync(runDir()), true);
+  });
+
+  it("skips and deletes nothing when `.pi/run` cannot be created", async () => {
+    process.env.PI_PROJECT_TMP_MAX_SIZE = "1M";
+    makeEntry("old.bin", 4 * MB, 90);
+    // A file where the run dir belongs: mkdir fails with ENOTDIR, like a read-only fs.
+    fs.writeFileSync(path.join(project, ".pi", "run"), "");
+    const result = await runProjectTmpSweep(project, { tmpDir });
+    assert.equal(result.skipped, "locked");
+    assert.equal(result.deleted, 0);
+    assert.equal(fs.existsSync(path.join(tmpDir, "old.bin")), true, "an unusable run dir must not become an unlocked sweep");
   });
 });
 

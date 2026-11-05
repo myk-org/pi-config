@@ -19,7 +19,7 @@ import { createLogger } from "../shared/logger.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
 import { getGlobalSettingsPath, getSettingDynamic, getSettingsPath, SETTINGS_KEYS } from "./project-settings.js";
 import { readSettingsObject } from "./settings-source.js";
-import { getProjectTmpDir } from "./utils.js";
+import { getProjectRunDir, getProjectTmpDir } from "./utils.js";
 
 const log = createLogger("tmp_cleanup");
 
@@ -29,15 +29,22 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Defaults live in `settings-keys.json` only — never restated here. */
 export const DEFAULT_MAX_SIZE = String(SETTINGS_KEYS.project_tmp_max_size.default);
 export const DEFAULT_RETENTION_DAYS = Number(SETTINGS_KEYS.project_tmp_retention_days.default);
-/** Daemon-owned control files in `.pi/tmp` — never deleted, whatever their age. */
+/**
+ * Transitional debris from pre-#1020 daemons: `.pi/tmp` was the control-file home
+ * before `.pi/run`, so a daemon started before the upgrade still holds its pid/port and
+ * reload handshake here, and the read-both fallback (#1025) needs these files to find it.
+ * Sweeping them would make the next connect() miss the live daemon and spawn a duplicate
+ * on the same port. Never deleted, whatever their age; the set disappears once no
+ * pre-upgrade daemon remains.
+ */
 export const TMP_PROTECTED_NAMES = new Set([
   "pidiff.pid",
   "pidiff.port",
   "reload.flag",
   "reload.done",
   "reload.pending",
-  ".tmp-sweep.lock",
 ]);
+/** Lives in `.pi/run`, never in the swept dir. */
 export const TMP_SWEEP_LOCK = ".tmp-sweep.lock";
 /** A crashed sweep would otherwise block every later session forever. */
 const LOCK_STALE_MS = 60 * 60 * 1000;
@@ -80,7 +87,7 @@ export interface TmpSweepResult {
   deleted: number;
   skippedYoung: number;
   elapsedMs: number;
-  /** Set when the run did nothing: cap disabled, unparsable value, another process holds the lock, or the tmp dir resolves outside the checkout. */
+  /** Set when the run did nothing: cap disabled, unparsable value, another process holds the lock (or the run dir is unusable), or the tmp dir resolves outside the checkout. */
   skipped?: "disabled" | "invalid_max_size" | "locked" | "outside_checkout";
 }
 
@@ -255,8 +262,12 @@ function acquireLock(lockPath: string): (() => void) | null {
         }
       };
     } catch (error: any) {
-      // No `.pi/tmp` yet — a normal state, and nothing to sweep.
-      if (error?.code === "ENOENT") return () => {};
+      // The run dir vanished after it was created: sweeping without the lock is the one
+      // thing this function must never do, so treat it as contended.
+      if (error?.code === "ENOENT") {
+        log.warn("tmp_sweep_lock_failed", { lockPath, error: error?.message });
+        return null;
+      }
       if (error?.code !== "EEXIST") {
         log.warn("tmp_sweep_lock_failed", { lockPath, error: error?.message });
         return null;
@@ -365,7 +376,16 @@ export async function runProjectTmpSweep(
     return { ...empty, skipped: "outside_checkout" };
   }
 
-  const lockPath = path.join(base, TMP_SWEEP_LOCK);
+  // The lock lives in `.pi/run`, outside the directory being swept: a lock file inside
+  // the swept dir is itself sweepable data. No run dir, no lock, no sweep — an unwritable
+  // or full disk must never degrade into an unlocked sweep.
+  let lockPath: string;
+  try {
+    lockPath = path.join(getProjectRunDir(cwd), TMP_SWEEP_LOCK);
+  } catch (error: any) {
+    log.warn("tmp_sweep_run_dir_failed", { cwd, error: error?.message });
+    return { ...empty, skipped: "locked" };
+  }
   // Nothing slow between the checks above and this write, and the same check runs again
   // before the deletions — every use of the pathname is validated at the point of use.
   if (!(await isUnswapped(base))) {
@@ -374,7 +394,7 @@ export async function runProjectTmpSweep(
   }
   const release = acquireLock(lockPath);
   if (!release) {
-    log.info("tmp_sweep_skipped_locked", { tmpDir: base });
+    log.info("tmp_sweep_skipped_locked", { tmpDir: base, lockPath });
     return { ...empty, skipped: "locked" };
   }
   try {
