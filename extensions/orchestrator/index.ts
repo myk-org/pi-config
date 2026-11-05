@@ -22,6 +22,7 @@ import { registerEnforcement } from "./enforcement.js";
 import { registerProjectSettings } from "./project-settings.js";
 import { registerRules } from "./rules.js";
 import { registerSessionValidation } from "./session-validation.js";
+import { registerTmpCleanup } from "./tmp-cleanup.js";
 import { registerStatusLine } from "./status-line.js";
 import { registerSubagentTool } from "./subagent-tool.js";
 import { registerGithubAutocomplete } from "./github-autocomplete.js";
@@ -144,6 +145,7 @@ export default function (pi: ExtensionAPI) {
   registerPreferenceExtractor(pi);
   registerMemoryTools(pi);
   registerReviewLearning(pi);
+  registerTmpCleanup(pi);
   registerSessionSearch(pi);
   registerSettingsTui(pi);
   registerMarkdownTransformer(pi);
