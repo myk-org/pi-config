@@ -1,16 +1,19 @@
 /**
  * #1022 — pending-task reminder must respect task age.
  * Imports the REAL production decision helper from extensions/pitasks/reminders.ts
- * (no mirrored logic here) so regressions in the timer wiring are caught.
+ * (no mirrored logic here), and boots the extension with a captured setInterval so
+ * the timer wiring is exercised behaviourally instead of grepped out of the source.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { decidePendingReminder, oldestPendingAt } from "../../../extensions/pitasks/reminders.ts";
 import * as indexModule from "../../../extensions/pitasks/index.ts";
 import * as reminders from "../../../extensions/pitasks/reminders.ts";
+import registerPitasks from "../../../extensions/pitasks/index.ts";
 
 const MIN = 60_000;
 const THRESHOLD = 10 * MIN;
@@ -51,7 +54,7 @@ describe("#1022 pending reminder age gate", () => {
 		assert.equal(result.activeCount, 2);
 	});
 
-	it("treats a missing timestamp as old (fires) and logs it", () => {
+	it("treats a missing timestamp as old", () => {
 		const result = decide([{ status: "pending" }]);
 		assert.equal(result.fire, true);
 		assert.ok(Number.isNaN(result.oldestPendingAt));
@@ -85,8 +88,9 @@ describe("#1022 pending reminder age gate", () => {
 		assert.equal(decide(tasks, { lastReminderAt: NOW, now: NOW + THRESHOLD }).fire, true);
 	});
 
-	it("oldestPendingAt ignores unusable timestamps when a usable one exists", () => {
-		assert.equal(oldestPendingAt([{ status: "pending" }, pending(30 * MIN)]), NOW - 30 * MIN);
+	it("a fresh task must not mask an undated task", () => {
+		assert.ok(Number.isNaN(oldestPendingAt([{ status: "pending" }, pending(1 * MIN)])));
+		assert.equal(decide([pending(1 * MIN), { status: "pending" }]).fire, true);
 	});
 });
 
@@ -102,16 +106,119 @@ describe("#1022 agentBusy gating (regression: previously untested)", () => {
 		assert.equal(decide(tasks, { agentBusy: false, now: NOW }).fire, true);
 	});
 
-	it("the timer passes agentBusy into the decision (wiring)", () => {
-		const source = readFileSync(
-			join(dirname(fileURLToPath(import.meta.url)), "../../../extensions/pitasks/index.ts"),
-			"utf8",
-		);
-		const start = source.indexOf("decidePendingReminder({");
-		assert.notEqual(start, -1, "pending branch must use decidePendingReminder");
-		const call = source.slice(start, source.indexOf("})", start));
-		assert.match(call, /agentBusy/);
-		assert.match(call, /lastReminderAt/);
+	it("re-exports the same decision helper from index", () => {
 		assert.equal(indexModule.decidePendingReminder, reminders.decidePendingReminder);
+	});
+});
+
+/** A task store entry whose pending_at sits `agoMs` before now. */
+function task(agoMs: number, status: string = "pending") {
+	const at = Date.now() - agoMs;
+	return {
+		id: "1",
+		subject: "reminder",
+		description: "",
+		status,
+		createdAt: at,
+		statusHistory: { pending_at: new Date(at).toISOString() },
+	};
+}
+
+/** Boot the extension with a captured setInterval and a temp task store. */
+function boot(tasks: any[]) {
+	const cwd = mkdtempSync(join(tmpdir(), "pitasks-reminder-"));
+	const storePath = join(cwd, "tasks.json");
+	writeFileSync(storePath, JSON.stringify({ nextId: tasks.length + 1, tasks }));
+	mkdirSync(join(cwd, ".pi"), { recursive: true });
+	writeFileSync(
+		join(cwd, ".pi", "pi-config-settings.json"),
+		JSON.stringify({
+			task_reminder_enabled: true,
+			task_reminder_interval_minutes: 10,
+			task_stale_in_progress_enabled: false,
+		}),
+	);
+
+	const ticks: Array<() => void> = [];
+	const prevSetInterval = global.setInterval;
+	const prevCwd = process.cwd();
+	const prevTasks = process.env.PI_TASKS;
+	const prevSubagent = process.env.PI_SUBAGENT_CHILD;
+	global.setInterval = ((fn: () => void) => {
+		ticks.push(fn);
+		return { unref() {} } as any;
+	}) as typeof setInterval;
+	process.env.PI_TASKS = storePath;
+	delete process.env.PI_SUBAGENT_CHILD; // the extension skips register inside subagents
+	process.chdir(cwd);
+
+	const sent: any[] = [];
+	const handlers = new Map<string, Array<(event: any, ctx: any) => Promise<void>>>();
+	const pi = {
+		on(name: string, handler: any) {
+			(handlers.get(name) ?? handlers.set(name, []).get(name)!).push(handler);
+		},
+		registerTool() {},
+		registerCommand() {},
+		sendMessage(message: any) {
+			sent.push(message);
+		},
+		events: new EventEmitter(),
+	};
+	registerPitasks(pi as any);
+
+	const emit = async (name: string, event: any = {}) => {
+		for (const handler of handlers.get(name) ?? []) await handler(event, {});
+	};
+	return {
+		sent,
+		emit,
+		tick: () => { for (const fn of ticks) fn(); },
+		reminders: () => sent.filter(m => m.customType === "task-focus-reminder"),
+		restore: async () => {
+			await emit("session_shutdown");
+			global.setInterval = prevSetInterval;
+			process.chdir(prevCwd);
+			if (prevTasks === undefined) delete process.env.PI_TASKS;
+			else process.env.PI_TASKS = prevTasks;
+			if (prevSubagent !== undefined) process.env.PI_SUBAGENT_CHILD = prevSubagent;
+			rmSync(cwd, { recursive: true, force: true });
+		},
+	};
+}
+
+describe("#1022 reminder timer wiring", () => {
+	it("a freshly created task does not trigger the reminder", async () => {
+		const h = boot([task(1 * MIN)]);
+		try {
+			h.tick();
+			assert.equal(h.reminders().length, 0);
+		} finally {
+			await h.restore();
+		}
+	});
+
+	it("a task pending past the interval triggers the reminder", async () => {
+		const h = boot([task(60 * MIN)]);
+		try {
+			h.tick();
+			assert.equal(h.reminders().length, 1);
+		} finally {
+			await h.restore();
+		}
+	});
+
+	it("does not fire while the agent is busy, then fires on turn_end", async () => {
+		const h = boot([task(60 * MIN)]);
+		try {
+			await h.emit("turn_start");
+			h.tick();
+			assert.equal(h.reminders().length, 0, "busy agent must suppress the reminder");
+			await h.emit("turn_end", { message: { role: "assistant" } });
+			h.tick();
+			assert.equal(h.reminders().length, 1);
+		} finally {
+			await h.restore();
+		}
 	});
 });

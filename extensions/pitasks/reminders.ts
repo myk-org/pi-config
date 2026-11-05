@@ -38,6 +38,7 @@ export function selectActiveTasks(tasks: Array<{ status: string }>): { active: a
 
 /** Minimal task shape the pending-age gate needs. */
 export interface ReminderTask {
+	id?: string;
 	status: string;
 	createdAt?: number;
 	statusHistory?: { pending_at?: string | null } | null;
@@ -53,16 +54,21 @@ function pendingSinceMs(task: ReminderTask): number {
 	const parsed = raw ? Date.parse(raw) : NaN;
 	if (Number.isFinite(parsed)) return parsed;
 	if (typeof task.createdAt === "number" && Number.isFinite(task.createdAt)) return task.createdAt;
-	log.debug("pending_since_unknown", task.status);
+	log.debug("pending_since_unknown", { id: task.id, status: task.status });
 	return NaN;
 }
 
-/** Oldest pending timestamp among active tasks in ms; NaN when none is usable. */
+/**
+ * Oldest pending timestamp among active tasks in ms. NaN when it cannot be
+ * determined: no active task, or ANY active task without a usable timestamp.
+ * NaN means "treat as old", so a fresh sibling never masks an undated task.
+ */
 export function oldestPendingAt(active: ReminderTask[]): number {
 	let oldest = Number.POSITIVE_INFINITY;
 	for (const task of active) {
 		const ms = pendingSinceMs(task);
-		if (Number.isFinite(ms) && ms < oldest) oldest = ms;
+		if (!Number.isFinite(ms)) return NaN;
+		if (ms < oldest) oldest = ms;
 	}
 	return Number.isFinite(oldest) ? oldest : NaN;
 }

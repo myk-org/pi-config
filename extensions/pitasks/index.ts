@@ -335,24 +335,27 @@ export default function (pi: ExtensionAPI) {
 					const minutes = getSetting(process.cwd(), "task_reminder_interval_minutes");
 					const threshold = minutes * 60000;
 					const now = Date.now();
-					// Same interval gates both the age of the oldest pending task and repeats.
-					const { fire, activeCount } = decidePendingReminder({
-						tasks: store.list(),
-						agentBusy,
-						lastReminderAt,
-						now,
-						threshold,
-					});
-					if (fire) {
-						lastReminderAt = now;
-						try {
-							pi.sendMessage({
-								customType: "task-focus-reminder",
-								content: pendingReminderContent(activeCount),
-								display: true,
-							}, { triggerTurn: true });
-							log.info("reminder_fired", "active", activeCount);
-						} catch {}
+					// Interval gate first: never reload the task list while cooling down.
+					if (now - lastReminderAt >= threshold) {
+						// Same interval gates both the age of the oldest pending task and repeats.
+						const { fire, activeCount } = decidePendingReminder({
+							tasks: store.list(),
+							agentBusy,
+							lastReminderAt,
+							now,
+							threshold,
+						});
+						if (fire) {
+							lastReminderAt = now;
+							try {
+								pi.sendMessage({
+									customType: "task-focus-reminder",
+									content: pendingReminderContent(activeCount),
+									display: true,
+								}, { triggerTurn: true });
+								log.info("reminder_fired", "active", activeCount);
+							} catch {}
+						}
 					}
 				}
 			} catch {}
