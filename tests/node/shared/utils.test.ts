@@ -1,6 +1,36 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { djb2Hash, isPiMetaInvocation, isPiOneshotInvocation, shouldSkipOneshotShutdownDream, shouldSkipOneshotRegister } from "../../../extensions/orchestrator/utils.js";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { djb2Hash, getProjectLegacyRunDir, getProjectRunDir, isPiMetaInvocation, isPiOneshotInvocation, shouldSkipOneshotShutdownDream, shouldSkipOneshotRegister } from "../../../extensions/orchestrator/utils.js";
+
+describe("project run dir (#1020)", () => {
+	it("getProjectRunDir returns <cwd>/.pi/run and creates it", () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "run-dir-"));
+		try {
+			const dir = getProjectRunDir(cwd);
+			assert.equal(dir, path.join(cwd, ".pi", "run"));
+			assert.ok(statSync(dir).isDirectory());
+		} finally { rmSync(cwd, { recursive: true, force: true }); }
+	});
+
+	it("getProjectRunDir creates the dir owner-only (0700)", () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "run-dir-"));
+		try {
+			const mode = statSync(getProjectRunDir(cwd)).mode & 0o777;
+			assert.equal(mode & 0o077, 0, `group/other must have no access, got ${mode.toString(8)}`);
+		} finally { rmSync(cwd, { recursive: true, force: true }); }
+	});
+
+	it("getProjectLegacyRunDir points at .pi/tmp without creating it", () => {
+		const cwd = mkdtempSync(path.join(tmpdir(), "run-dir-"));
+		try {
+			assert.equal(getProjectLegacyRunDir(cwd), path.join(cwd, ".pi", "tmp"));
+			assert.ok(!existsSync(path.join(cwd, ".pi", "tmp")), "legacy dir is read-only — never created");
+		} finally { rmSync(cwd, { recursive: true, force: true }); }
+	});
+});
 
 describe("djb2Hash", () => {
 	it("returns same value for same input (deterministic)", () => {

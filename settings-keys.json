@@ -629,5 +629,21 @@
     "type": "string_list",
     "default": [],
     "group": "Enforcement"
+  },
+  "project_tmp_max_size": {
+    "description": "Sweep .pi/tmp at session start when it grows above this size. Accepts 2G, 2GB, 2GiB, 2048M, 100M, 1.5G; a bare number is MB (2048 = 2G). '0' disables the sweep. An unparsable value logs a warning and deletes nothing.",
+    "type": "string",
+    "env": "PI_PROJECT_TMP_MAX_SIZE",
+    "default": "2G",
+    "group": "Cleanup"
+  },
+  "project_tmp_retention_days": {
+    "description": "Size pressure in .pi/tmp may only delete entries older than this many days (safety floor, never a trigger)",
+    "type": "int",
+    "env": "PI_PROJECT_TMP_RETENTION_DAYS",
+    "default": 7,
+    "min": 1,
+    "max": 365,
+    "group": "Cleanup"
   }
 }

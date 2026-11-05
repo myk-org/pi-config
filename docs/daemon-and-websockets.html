@@ -432,7 +432,7 @@
 <h2 id="key-concepts">Key Concepts</h2>
 <h3 id="shared-dashboard-vs-per-project-diff-server">Shared dashboard vs per-project diff server</h3>
 <p><strong>pidash</strong> listens on a configured port (<code>pidash_port</code>, default <code>19190</code>, env <code>PI_PIDASH_PORT</code>). Every project session can attach to the same daemon, so one browser window can switch across terminals. Logs for spawn failures live under <code>~/.pi/pidash-server.log</code>.</p>
-<p><strong>pidiff</strong> binds a free local port for the current project and records that port (and PID when known) under the project’s <code>.pi/tmp/</code> directory as <code>pidiff.port</code> / <code>pidiff.pid</code>. That avoids collisions when several projects run diffs at once. A concurrent-spawn guard uses a separate <code>pidiff.spawning</code> lock, cleared after <code>pidiff_stale_lock_timeout_ms</code> (default <code>60000</code>).</p>
+<p><strong>pidiff</strong> binds a free local port for the current project and records that port (and PID when known) under the project’s <code>.pi/run/</code> directory as <code>pidiff.port</code> / <code>pidiff.pid</code>. That avoids collisions when several projects run diffs at once. A concurrent-spawn guard uses a separate <code>pidiff.spawning</code> lock, cleared after <code>pidiff_stale_lock_timeout_ms</code> (default <code>60000</code>).</p>
 <blockquote>
 <p><strong>Note:</strong> Toggle either server with <code>pidash_enable</code> / <code>pidiff_enable</code> (or their env vars). See <a href="configuration.html">Configuration &amp; Settings</a>.</p>
 </blockquote>
@@ -448,7 +448,7 @@
 <ul>
 <li><strong>Refresh without losing context:</strong> Closing the laptop or reloading the dashboard usually reconnects to the same pidash daemon and replays buffered activity.</li>
 <li><strong>Multiple terminals, one dashboard:</strong> Several <code>pi</code> sessions can share pidash; the UI lists them so you can jump between projects.</li>
-<li><strong>Project-local diffs:</strong> Opening pidiff in repo A does not collide with repo B, because each project owns its lockfiles and port under <code>.pi/tmp/</code>.</li>
+<li><strong>Project-local diffs:</strong> Opening pidiff in repo A does not collide with repo B, because each project owns its lockfiles and port under <code>.pi/run/</code>.</li>
 <li><strong>Files appear under <code>.pi/tmp/</code>:</strong> Expect job folders, result JSON, debug logs, and pidiff lockfiles. They are project-scoped working state, not source code — keep <code>.pi/</code> out of git (the installer can configure this; see <a href="quickstart.html">Installation &amp; Quickstart</a>).</li>
 <li><strong>Graceful degradation:</strong> If a daemon cannot start (port busy, slow first compile, firewall), the terminal session keeps working; real-time dashboard features simply stay disconnected until <code>/pidash start</code> or <code>/pidiff start</code> succeeds.</li>
 </ul>
