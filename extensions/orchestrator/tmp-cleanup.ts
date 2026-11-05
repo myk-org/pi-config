@@ -130,6 +130,18 @@ function isInside(base: string, target: string): boolean {
 }
 
 /**
+ * True while `target` still resolves to itself. `target` is always a realpath here, so a
+ * false answer means it was swapped for a symlink (or is gone) after it was validated.
+ */
+async function isUnswapped(target: string): Promise<boolean> {
+  try {
+    return (await fsp.realpath(target)) === target;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Delete oldest-first from `.pi/tmp` until it fits under `maxBytes`, only touching
  * entries older than `retentionDays`. Deletion units are the top-level entries, so
  * a cloned repo or task dir goes as a whole instead of file by file.
@@ -148,7 +160,7 @@ export async function sweepProjectTmp(opts: TmpSweepOptions): Promise<TmpSweepRe
     return result;
   }
 
-  const rows: Array<{ target: string; bytes: number; newestMs: number; symlink: boolean }> = [];
+  const rows: Array<{ target: string; bytes: number; newestMs: number; symlink: boolean; dev: number; ino: number }> = [];
   let total = 0;
   for (const name of names) {
     const target = path.join(base, name);
@@ -163,7 +175,7 @@ export async function sweepProjectTmp(opts: TmpSweepOptions): Promise<TmpSweepRe
       ? await entryStats(target)
       : { bytes: stat.size, newestMs: stat.mtimeMs };
     total += bytes;
-    rows.push({ target, bytes, newestMs, symlink: stat.isSymbolicLink() });
+    rows.push({ target, bytes, newestMs, symlink: stat.isSymbolicLink(), dev: stat.dev, ino: stat.ino });
   }
 
   result.beforeMb = result.afterMb = toMb(total);
@@ -173,12 +185,33 @@ export async function sweepProjectTmp(opts: TmpSweepOptions): Promise<TmpSweepRe
     return result;
   }
 
+  // The scan is async: `.pi/tmp` itself may have been swapped for an outside-pointing
+  // symlink since it was validated. Destructive phase, so resolve it again — a swapped
+  // base does not resolve to itself.
+  if (!(await isUnswapped(base))) {
+    log.warn("tmp_sweep_outside_checkout", { tmpDir: base, phase: "delete" });
+    result.elapsedMs = Date.now() - started;
+    return { ...result, skipped: "outside_checkout" };
+  }
+
   const cutoff = now - opts.retentionDays * DAY_MS;
   let remaining = total;
   for (const row of rows.sort((left, right) => left.newestMs - right.newestMs)) {
     if (remaining <= opts.maxBytes) break;
     if (row.newestMs >= cutoff) {
       result.skippedYoung++;
+      continue;
+    }
+    // A task may have replaced this entry since we sized it; delete only the inode the
+    // age and size decisions were made for, never whatever now sits at the pathname.
+    let live: fs.Stats;
+    try {
+      live = await fsp.lstat(row.target);
+    } catch {
+      continue; // already gone
+    }
+    if (live.dev !== row.dev || live.ino !== row.ino) {
+      log.warn("tmp_sweep_entry_replaced", { target: row.target });
       continue;
     }
     try {
@@ -249,12 +282,21 @@ function acquireLock(lockPath: string): (() => void) | null {
       } catch {
         moved = undefined;
       }
-      if (!moved || moved.ino !== held.ino) {
+      if (!moved || moved.dev !== held.dev || moved.ino !== held.ino) {
+        // We moved a lock that is not the stale one we stat'ed — it belongs to a session
+        // that took the pathname in between. Restore it without ever overwriting a third
+        // session's lock (`link` refuses an existing path), then treat the lock as held.
         try {
-          fs.renameSync(reclaimPath, lockPath);
+          fs.linkSync(reclaimPath, lockPath);
         } catch {
-          /* best effort */
+          /* a third session holds the pathname; its lock wins */
         }
+        try {
+          fs.unlinkSync(reclaimPath);
+        } catch {
+          /* already gone */
+        }
+        log.warn("tmp_sweep_lock_reclaim_raced", { lockPath });
         return null;
       }
       try {
@@ -324,6 +366,12 @@ export async function runProjectTmpSweep(
   }
 
   const lockPath = path.join(base, TMP_SWEEP_LOCK);
+  // Nothing slow between the checks above and this write, and the same check runs again
+  // before the deletions — every use of the pathname is validated at the point of use.
+  if (!(await isUnswapped(base))) {
+    log.warn("tmp_sweep_outside_checkout", { tmpDir: base, phase: "lock" });
+    return { ...empty, skipped: "outside_checkout" };
+  }
   const release = acquireLock(lockPath);
   if (!release) {
     log.info("tmp_sweep_skipped_locked", { tmpDir: base });

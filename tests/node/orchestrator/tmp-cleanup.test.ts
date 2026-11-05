@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import { promises as fsp } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -173,6 +174,58 @@ describe("sweepProjectTmp", () => {
     }
   });
 
+  it("skips an entry replaced between the scan and the delete", async () => {
+    const victim = makeEntry("old.bin", 4 * MB, 90);
+    const realLstat = fsp.lstat;
+    let calls = 0;
+    // Second look at the victim is the pre-delete identity check: swap the contents first.
+    fsp.lstat = ((target: any, ...rest: any[]) => {
+      if (target === victim && ++calls === 2) {
+        fs.rmSync(victim);
+        fs.writeFileSync(victim, Buffer.alloc(MB));
+      }
+      return (realLstat as any)(target, ...rest);
+    }) as any;
+    try {
+      const result = await sweepProjectTmp({ tmpDir, maxBytes: 1, retentionDays: 7 });
+      assert.equal(result.deleted, 0);
+      assert.equal(fs.statSync(victim).size, MB, "the replacement must survive");
+    } finally {
+      fsp.lstat = realLstat;
+    }
+  });
+
+  it("refuses a tmp root swapped for a symlink once the scan started", async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-outside-"));
+    const moved = `${tmpDir}-moved`;
+    try {
+      makeEntry("old.bin", 4 * MB, 90);
+      const realRealpath = fsp.realpath;
+      let swapped = false;
+      // The scan is done when the destructive phase re-resolves the root: swap it there.
+      fsp.realpath = (async (target: any, ...rest: any[]) => {
+        if (!swapped) {
+          swapped = true;
+          fs.renameSync(tmpDir, moved);
+          fs.symlinkSync(outside, tmpDir, "dir");
+        }
+        return (realRealpath as any)(target, ...rest);
+      }) as any;
+      try {
+        const result = await sweepProjectTmp({ tmpDir, maxBytes: 1, retentionDays: 7 });
+        assert.equal(result.skipped, "outside_checkout");
+        assert.equal(result.deleted, 0);
+        assert.equal(fs.existsSync(path.join(moved, "old.bin")), true);
+      } finally {
+        fsp.realpath = realRealpath;
+        fs.rmSync(tmpDir, { force: true });
+        fs.renameSync(moved, tmpDir);
+      }
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it("cannot reach a path outside the tmp root", async () => {
     const sibling = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-sibling-"));
     try {
@@ -252,6 +305,19 @@ describe("runProjectTmpSweep", () => {
     assert.equal(fs.existsSync(path.join(tmpDir, TMP_SWEEP_LOCK)), true, "the holder keeps its lock");
   });
 
+  it("reclaims a stale lock and sweeps", async () => {
+    process.env.PI_PROJECT_TMP_MAX_SIZE = "1M";
+    const lock = path.join(tmpDir, TMP_SWEEP_LOCK);
+    fs.writeFileSync(lock, "0");
+    const stale = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    fs.utimesSync(lock, stale, stale);
+    makeEntry("old.bin", 4 * MB, 90);
+    const result = await runProjectTmpSweep(cwd(), { tmpDir });
+    assert.equal(result.skipped, undefined);
+    assert.equal(result.deleted, 1);
+    assert.equal(fs.existsSync(lock), false);
+  });
+
   it("releases the lock after a sweep", async () => {
     process.env.PI_PROJECT_TMP_MAX_SIZE = "1M";
     makeEntry("old.bin", 4 * MB, 90);
@@ -272,9 +338,16 @@ describe("registerTmpCleanup", () => {
 
   const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
-  it("skips print and json sessions", async () => {
+  it("skips print sessions", async () => {
     const handler = handlerFor();
-    for (const mode of ["print", "json"]) handler({}, { cwd: tmpDir, mode });
+    handler({}, { cwd: tmpDir, mode: "print" });
+    await settle();
+    assert.equal(fs.existsSync(path.join(tmpDir, ".pi", "tmp")), false);
+  });
+
+  it("skips json sessions", async () => {
+    const handler = handlerFor();
+    handler({}, { cwd: tmpDir, mode: "json" });
     await settle();
     assert.equal(fs.existsSync(path.join(tmpDir, ".pi", "tmp")), false);
   });
