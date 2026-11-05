@@ -16,6 +16,8 @@ import { createBridgedUi } from "../shared/ui-bridge.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import {
+	decidePendingReminder,
+	oldestPendingAt,
 	pendingReminderContent,
 	staleReminderContent,
 	shouldFireReminder,
@@ -24,6 +26,8 @@ import {
 
 // Re-export reminder pure helpers so consumers (and tests) can import from index.
 export {
+	decidePendingReminder,
+	oldestPendingAt,
 	pendingReminderContent,
 	staleReminderContent,
 	shouldFireReminder,
@@ -331,23 +335,26 @@ export default function (pi: ExtensionAPI) {
 					const minutes = getSetting(process.cwd(), "task_reminder_interval_minutes");
 					const threshold = minutes * 60000;
 					const now = Date.now();
+					// Interval gate first: never reload the task list while cooling down.
 					if (now - lastReminderAt >= threshold) {
-						const tasks = store.list();
-						const { active, anyInProgress } = selectActiveTasks(tasks);
-						if (active.length > 0 && !anyInProgress) {
-							if (!shouldFireReminder(agentBusy, active.length)) {
-								log.debug("reminder_skipped", "busy");
-							} else {
-								lastReminderAt = now;
-								try {
-									pi.sendMessage({
-										customType: "task-focus-reminder",
-										content: pendingReminderContent(active.length),
-										display: true,
-									}, { triggerTurn: true });
-									log.info("reminder_fired", "active", active.length);
-								} catch {}
-							}
+						// Same interval gates both the age of the oldest pending task and repeats.
+						const { fire, activeCount } = decidePendingReminder({
+							tasks: store.list(),
+							agentBusy,
+							lastReminderAt,
+							now,
+							threshold,
+						});
+						if (fire) {
+							lastReminderAt = now;
+							try {
+								pi.sendMessage({
+									customType: "task-focus-reminder",
+									content: pendingReminderContent(activeCount),
+									display: true,
+								}, { triggerTurn: true });
+								log.info("reminder_fired", "active", activeCount);
+							} catch {}
 						}
 					}
 				}

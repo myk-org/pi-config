@@ -35,3 +35,73 @@ export function selectActiveTasks(tasks: Array<{ status: string }>): { active: a
 	log.debug("selectActiveTasks", tasks.length, active.length);
 	return { active, anyInProgress: active.some(t => t.status === "in_progress") };
 }
+
+/** Minimal task shape the pending-age gate needs. */
+export interface ReminderTask {
+	id?: string;
+	status: string;
+	createdAt?: number;
+	statusHistory?: { pending_at?: string | null } | null;
+}
+
+/**
+ * When a task became pending, in ms. `statusHistory.pending_at` is refreshed on
+ * every transition back to pending; `createdAt` is the fallback. Returns NaN
+ * when neither is usable — callers treat that as "old" (legacy behaviour).
+ */
+function pendingSinceMs(task: ReminderTask): number {
+	const raw = task.statusHistory?.pending_at;
+	const parsed = raw ? Date.parse(raw) : NaN;
+	if (Number.isFinite(parsed)) return parsed;
+	if (typeof task.createdAt === "number" && Number.isFinite(task.createdAt)) return task.createdAt;
+	log.debug("pending_since_unknown", { id: task.id, status: task.status });
+	return NaN;
+}
+
+/**
+ * Oldest pending timestamp among active tasks in ms. NaN when it cannot be
+ * determined: no active task, or ANY active task without a usable timestamp.
+ * NaN means "treat as old", so a fresh sibling never masks an undated task.
+ */
+export function oldestPendingAt(active: ReminderTask[]): number {
+	let oldest = Number.POSITIVE_INFINITY;
+	for (const task of active) {
+		const ms = pendingSinceMs(task);
+		if (!Number.isFinite(ms)) return NaN;
+		if (ms < oldest) oldest = ms;
+	}
+	return Number.isFinite(oldest) ? oldest : NaN;
+}
+
+/**
+ * Full decision for the pending-only reminder: no active tasks, any in_progress,
+ * agent busy, repeat interval, or the oldest active task being younger than the
+ * interval all suppress it. `lastReminderAt = 0` means "never reminded yet".
+ */
+export function decidePendingReminder(params: {
+	tasks: ReminderTask[];
+	agentBusy: boolean;
+	lastReminderAt: number;
+	now: number;
+	threshold: number;
+}): { fire: boolean; activeCount: number; oldestPendingAt: number } {
+	const { tasks, agentBusy, lastReminderAt, now, threshold } = params;
+	const { active, anyInProgress } = selectActiveTasks(tasks);
+	const oldest = oldestPendingAt(active);
+	const decision = { fire: false, activeCount: active.length, oldestPendingAt: oldest };
+
+	if (active.length === 0) {
+		log.debug("pending_reminder_skipped", "no-active-tasks");
+	} else if (anyInProgress) {
+		log.debug("pending_reminder_skipped", "in-progress");
+	} else if (agentBusy) {
+		log.debug("pending_reminder_skipped", "busy");
+	} else if (now - lastReminderAt < threshold) {
+		log.debug("pending_reminder_skipped", "interval");
+	} else if (Number.isFinite(oldest) && now - oldest < threshold) {
+		log.debug("pending_reminder_skipped", "too-young", now - oldest);
+	} else {
+		decision.fire = true;
+	}
+	return decision;
+}
