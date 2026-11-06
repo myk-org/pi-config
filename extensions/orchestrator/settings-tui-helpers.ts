@@ -10,6 +10,7 @@ import stripJsonComments from "strip-json-comments";
 import {
   type SettingsKeyDef,
   SETTINGS_KEYS,
+  getSetting,
   getSettingsPath,
   getGlobalSettingsPath,
 } from "./project-settings.js";
@@ -219,9 +220,26 @@ export class SettingsFileCorruptError extends Error {
   }
 }
 
-/** Path of the previous-version copy kept next to every settings file we write. */
-export function settingsBackupPath(filePath: string): string {
-  return `${filePath}.bak`;
+/** Path of the newest previous-version copy kept next to a settings file. */
+export function settingsBackupPath(filePath: string, slot = 1): string {
+  return `${filePath}.bak.${slot}`;
+}
+
+/** Keep `count` previous versions: shift `.bak.N-1` → `.bak.N`, then current → `.bak.1`.
+ *  A count of 0 disables backups. Failures never block the write — they only log. */
+function rotateSettingsBackups(filePath: string, count: number): void {
+  if (count <= 0) return;
+  try {
+    const oldest = settingsBackupPath(filePath, count);
+    if (existsSync(oldest)) unlinkSync(oldest);
+    for (let slot = count - 1; slot >= 1; slot--) {
+      const from = settingsBackupPath(filePath, slot);
+      if (existsSync(from)) renameSync(from, settingsBackupPath(filePath, slot + 1));
+    }
+    copyFileSync(filePath, settingsBackupPath(filePath, 1));
+  } catch (e: any) {
+    logWarn(`settings_backup_failed ${filePath}: ${e?.message}`);
+  }
 }
 
 export function writeSettingsFile(filePath: string, data: Record<string, unknown>): void {
@@ -244,12 +262,9 @@ export function writeSettingsFile(filePath: string, data: Record<string, unknown
     // A corrupt file is recoverable by hand; a cleared one is not. Refuse rather than
     // overwrite — this is exactly how a project's settings were once emptied.
     if (readSettingsFile(filePath) === null) throw new SettingsFileCorruptError(filePath);
-    // Every touch keeps the previous bytes, so a wrong write is always recoverable.
-    try {
-      copyFileSync(filePath, settingsBackupPath(filePath));
-    } catch (e: any) {
-      logWarn(`settings_backup_failed ${filePath}: ${e?.message}`);
-    }
+    // Every touch keeps the previous bytes — `settings_backup_count` of them, newest at
+    // `.bak.1` — so a wrong write is always recoverable.
+    rotateSettingsBackups(filePath, Number(getSetting(process.cwd(), "settings_backup_count")) || 0);
   }
   const content = JSON.stringify(data, null, 2) + "\n";
   const tmpPath = `${filePath}.${process.pid}.${Date.now().toString(36)}`;

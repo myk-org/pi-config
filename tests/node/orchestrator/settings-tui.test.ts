@@ -435,13 +435,31 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.ok(content.endsWith("\n"), "should end with newline");
   });
 
-  it("keeps the previous content in a .bak before every write", () => {
+  it("keeps the previous content in .bak.1 before every write", () => {
     const filePath = join(tempDir, "backed-up.json");
     writeSettingsFile(filePath, { dco: true });
-    assert.equal(existsSync(`${filePath}.bak`), false, "no backup for a first-ever write");
+    assert.equal(existsSync(`${filePath}.bak.1`), false, "no backup for a first-ever write");
     writeSettingsFile(filePath, { dco: false, pidash_port: 8081 });
-    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak`, "utf-8")), { dco: true }, "previous version kept");
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { dco: true }, "previous version kept");
     assert.deepEqual(JSON.parse(readFileSync(filePath, "utf-8")), { dco: false, pidash_port: 8081 });
+  });
+
+  it("rotates up to settings_backup_count versions, newest at .bak.1", () => {
+    const filePath = join(tempDir, "rotated.json");
+    for (const port of [1, 2, 3, 4, 5, 6]) {
+      if (existsSync(filePath)) writeSettingsFile(filePath, { pidash_port: port });
+      else {
+        mkdirSync(tempDir, { recursive: true });
+        writeFileSync(filePath, JSON.stringify({ pidash_port: 0 }));
+        writeSettingsFile(filePath, { pidash_port: port });
+      }
+    }
+    // default count is 5: .bak.1..bak.5 exist, .bak.6 does not, newest is the previous write
+    for (const slot of [1, 2, 3, 4, 5]) {
+      assert.ok(existsSync(`${filePath}.bak.${slot}`), `.bak.${slot} must exist`);
+    }
+    assert.equal(existsSync(`${filePath}.bak.6`), false, "oldest beyond the count is dropped");
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 5 });
   });
 
   it("refuses to overwrite an unparseable settings file and leaves it untouched", () => {

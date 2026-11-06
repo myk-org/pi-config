@@ -645,5 +645,14 @@
     "min": 1,
     "max": 365,
     "group": "Cleanup"
+  },
+  "settings_backup_count": {
+    "description": "Previous versions of a settings file kept next to it before each write (0 disables backups)",
+    "type": "int",
+    "env": "PI_SETTINGS_BACKUP_COUNT",
+    "default": 5,
+    "min": 0,
+    "max": 20,
+    "group": "Settings"
   }
 }
