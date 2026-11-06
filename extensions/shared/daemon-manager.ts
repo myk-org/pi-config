@@ -196,9 +196,8 @@ export function writeLockfile(lockDir: string, port: number, pid: number | null,
 /** Read port from lockfile. Returns port number or null.
  *  `legacyDir` (`.pi/tmp`) is consulted only when the new dir has no lockfile:
  *  a daemon already running at upgrade time wrote its lockfile there (#1020).
- *  A legacy lockfile found this way is MOVED into `lockDir`, so `.pi/tmp` stops
- *  holding state a sweep would have to protect — the daemon stays found because the
- *  next read hits the new path. */
+ *  Reading never moves or deletes anything — moving a live daemon's record is what the
+ *  sweep's liveness check exists to avoid. */
 export function readLockfile(lockDir: string, legacyDir?: string): { port: number; pid: number | null } | null {
   const read = (dir: string): { port: number; pid: number | null } | null => {
     try {
@@ -215,28 +214,27 @@ export function readLockfile(lockDir: string, legacyDir?: string): { port: numbe
       return { port, pid };
     } catch (e: any) { log.debug("readLockfile error: %s", e?.message); return null; }
   };
-  return read(lockDir) ?? (legacyDir ? migrateLegacyLockfile(read(legacyDir), lockDir, legacyDir) : null);
+  return read(lockDir) ?? (legacyDir ? read(legacyDir) : null);
 }
 
-/** Move a legacy `.pi/tmp` lockfile into the run dir. Returns the lock unchanged, so a
- *  pre-upgrade daemon stays reachable; a failure to migrate only logs (the legacy copy
- *  is still readable next time). */
-function migrateLegacyLockfile(
-  lock: { port: number; pid: number | null } | null,
-  lockDir: string,
-  legacyDir: string,
-): { port: number; pid: number | null } | null {
-  if (!lock) return null;
+/** Lockfile names a pre-`.pi/run` pidiff daemon owns inside the legacy dir. The sweep asks
+ *  this constant instead of keeping its own copy of the names (#1020). */
+export const LEGACY_LOCKFILE_NAMES = ["pidiff.pid", "pidiff.port"] as const;
+
+/** True when the legacy `.pi/tmp` lockfile belongs to a LIVE pidiff process.
+ *  The sweep keeps those files and deletes a dead daemon's leftovers like any other entry —
+ *  no name list, no liveness guess from the name alone. */
+export function legacyLockfileOwnerAlive(legacyDir: string): boolean {
   try {
-    writeLockfile(lockDir, lock.port, lock.pid, (msg) => log.debug("lockfile_migrated", { legacyDir, message: msg }));
-    for (const name of ["pidiff.port", "pidiff.pid"]) {
-      const legacyPath = path.join(legacyDir, name);
-      if (fs.existsSync(legacyPath)) fs.unlinkSync(legacyPath);
-    }
-  } catch (e: any) {
-    log.debug("lockfile_migration_failed", { legacyDir, error: e?.message });
+    const pidFile = path.join(legacyDir, "pidiff.pid");
+    if (!fs.existsSync(pidFile)) return false;
+    const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+    if (isNaN(pid) || pid <= 0) return false;
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
-  return lock;
 }
 
 /** First lockfile port (in `dirs` order) whose daemon answers /api/health, or

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon } from "../../../extensions/shared/daemon-manager.js";
+import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive } from "../../../extensions/shared/daemon-manager.js";
 import { createServer, type Server } from "node:http";
 
 describe("findLiveLockfile (#1020)", () => {
@@ -122,23 +122,35 @@ describe("legacy .pi/tmp lockfiles (#1020)", () => {
     }
   });
 
-  it("moves a legacy lockfile into the run dir on read, leaving .pi/tmp nothing to protect", () => {
+  it("reading a legacy lockfile never moves or deletes it", () => {
     const runDir = mk();
     const legacyDir = mk();
     try {
       writeLockfile(legacyDir, 41234, 4321, () => {});
       assert.deepEqual(readLockfile(runDir, legacyDir), { port: 41234, pid: 4321 });
-      // Migrated on read: the run dir owns it now, so a later sweep of `.pi/tmp`
-      // deletes nothing a live daemon needs.
-      assert.strictEqual(readFileSync(join(runDir, "pidiff.port"), "utf-8"), "41234");
-      assert.strictEqual(readFileSync(join(runDir, "pidiff.pid"), "utf-8"), "4321");
-      assert.equal(existsSync(join(legacyDir, "pidiff.port")), false, "legacy port file is gone");
-      assert.equal(existsSync(join(legacyDir, "pidiff.pid")), false, "legacy pid file is gone");
-      // The daemon stays found without the legacy dir being consulted at all.
-      assert.deepEqual(readLockfile(runDir), { port: 41234, pid: 4321 });
+      // The legacy owner may be live: moving its record would let the sweep (or a crashed
+      // read) take it away and a later connect() would spawn a duplicate on that port.
+      assert.strictEqual(readFileSync(join(legacyDir, "pidiff.port"), "utf-8"), "41234");
+      assert.strictEqual(readFileSync(join(legacyDir, "pidiff.pid"), "utf-8"), "4321");
+      assert.equal(existsSync(join(runDir, "pidiff.port")), false, "no copy written into the run dir");
     } finally {
       rmSync(runDir, { recursive: true, force: true });
       rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive reports a live pid, a dead pid and a missing file", () => {
+    const dir = mk();
+    try {
+      assert.equal(legacyLockfileOwnerAlive(dir), false, "no pid file");
+      writeFileSync(join(dir, "pidiff.pid"), String(process.pid));
+      assert.equal(legacyLockfileOwnerAlive(dir), true, "own pid is alive");
+      writeFileSync(join(dir, "pidiff.pid"), "0");
+      assert.equal(legacyLockfileOwnerAlive(dir), false, "pid 0 is not a daemon");
+      writeFileSync(join(dir, "pidiff.pid"), "not-a-pid");
+      assert.equal(legacyLockfileOwnerAlive(dir), false, "unparseable pid");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
