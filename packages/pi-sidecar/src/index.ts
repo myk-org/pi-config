@@ -4,6 +4,7 @@ export { createHttpToolExecutor, normalizeHttpToolConfig, interpolate, type Http
 export { createLogger } from "./logger.js";
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -130,7 +131,8 @@ export function isLoopbackBindHost(host: string): boolean {
  * same-origin and could read the stream; `/prompt` keeps its current
  * behaviour because validating it would change existing clients (separate
  * issue). Fail-closed: an unparsable Origin, an unparsable Host, or a Host that
- * is neither the bound address nor loopback is rejected.
+ * is neither the bound address, nor (on a wildcard bind) loopback or an IP
+ * literal, is rejected.
  */
 export function isAllowedStreamRequest(origin: string | undefined, host: string | undefined, boundHost: string): boolean {
   if (origin !== undefined) {
@@ -147,10 +149,12 @@ export function isAllowedStreamRequest(origin: string | undefined, host: string 
   if (!hostName) return false;
   if (hostName === boundHost.trim().toLowerCase()) return true;
   // A wildcard bind (DEV_MODE's 0.0.0.0, or ::) has no single Host name to
-  // match — its clients address loopback, a LAN IP and the service hostname
-  // alike, so the Host check would 403 every one of them. The loopback Origin
-  // rule above is what still rejects a rebound browser page.
-  if (isWildcardBindHost(boundHost)) return true;
+  // match, so the check has to admit whatever address the client dialed. It
+  // admits loopback names and IP literals only: a rebound page sends no Origin
+  // header and carries its own domain in Host, so a hostname here is the whole
+  // attack. Consequence: reaching the feed under a service hostname requires
+  // binding that address explicitly — the safe direction.
+  if (isWildcardBindHost(boundHost)) return isLoopbackBindHost(hostName) || isIP(hostName) !== 0;
   return isLoopbackBindHost(boundHost) && isLoopbackBindHost(hostName);
 }
 

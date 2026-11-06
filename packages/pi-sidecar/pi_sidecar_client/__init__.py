@@ -220,6 +220,9 @@ class AIResult:
     usage: AITokenUsage | None = None
     session_id: str | None = None
     error: str | None = None
+    # HTTP status of the sidecar call that produced this result, when it has one.
+    # `stream_prompt` needs it: only a non-200 prompt means no turn of ours ran.
+    status_code: int | None = None
 
     async def record_usage(
         self,
@@ -596,7 +599,7 @@ class SidecarClient:
             except ValueError:
                 error = resp.text or f"HTTP {resp.status_code}"
             logger.error("Prompt failed: session=%s, status=%d", session_id, resp.status_code)
-            return AIResult(success=False, text=error, error=error)
+            return AIResult(success=False, text=error, error=error, status_code=resp.status_code)
 
         data = resp.json()
         usage_data = data.get("usage", {})
@@ -618,7 +621,13 @@ class SidecarClient:
                 session_id,
                 len(data.get("text", "")),
             )
-            return AIResult(success=False, text=data.get("text") or error, usage=usage, error=error)
+            return AIResult(
+                success=False,
+                text=data.get("text") or error,
+                usage=usage,
+                error=error,
+                status_code=resp.status_code,
+            )
 
         text = data.get("text", "")
         if not text:
@@ -636,6 +645,7 @@ class SidecarClient:
             success=True,
             text=text,
             usage=usage,
+            status_code=resp.status_code,
         )
 
     async def stream_prompt(
@@ -666,8 +676,9 @@ class SidecarClient:
         Raises:
             httpx.HTTPStatusError: if the feed is rejected (403 origin/host,
                 404 unknown session, 429 too many streams).
-            RuntimeError: if the prompt fails or the feed ends without a
-                terminal event.
+            RuntimeError: if the feed ends without a terminal event. A frame is
+                authoritative even for a failed turn: an `error` prompt verdict
+                with the server's terminal `error` frame still yields that frame.
         """
         logger.debug("Streaming prompt: session=%s, message_length=%d", session_id, len(message))
         request_timeout = timeout or self._client.timeout
@@ -682,11 +693,17 @@ class SidecarClient:
             prompt_ok = False
 
             def check_prompt() -> None:
-                """Raise unless our prompt was accepted: it decides whose turn this is."""
+                """Raise unless our prompt ran: only then is the feed our turn's.
+
+                A 200 answer carrying `error` is a turn that did run and fail, and
+                the feed's own terminal `error` frame reports exactly that — so it
+                stays authoritative and is yielded instead of a raise. A non-200
+                answer started no turn: the frames belong to another client.
+                """
                 if (failure := prompt_task.exception()) is not None:
                     raise failure
                 result = prompt_task.result()
-                if not result.success:
+                if not result.success and result.status_code != 200:
                     raise RuntimeError(f"Sidecar prompt failed: {result.error}")
 
             try:
@@ -716,12 +733,19 @@ class SidecarClient:
                             # bounded by the prompt request's own timeout.
                             await asyncio.wait({prompt_task})
                             check_prompt()
+                            prompt_ok = True
                         yield payload
                         if terminal:
                             return
                         next_event = asyncio.ensure_future(anext(events))
                         continue
-                    # Prompt accepted first: keep reading for its terminal frame.
+                    # Prompt accepted first — or it ran and answered with an error
+                    # (200 + `error`): keep reading for its terminal frame, which is
+                    # the authoritative report of that failure. The server emits it
+                    # before answering, so the wait is for bytes already written.
+                    # shortcut: a server that errors the prompt without emitting a
+                    # terminal frame leaves us waiting on keepalives; raise early
+                    # again if that is ever observed.
                     continue
                 # Feed closed with no terminal frame (idle reap, slow-subscriber
                 # eviction, session deleted, shutdown): never report success.

@@ -539,12 +539,14 @@ next `turn_start` starts the following one.
 **`turn_end.text` is authoritative and is not `concat(deltas)`.** Deltas are
 per-message, redacted through a bounded holdback, and are emitted before
 boundary separators are spliced, so joining them does not reproduce the final
-text. The holdback keeps the tail of a turn's text pending until
-`api_key.length - 1` further characters have arrived, so a secret the model
-echoes *split across two deltas* is replaced as a whole instead of leaking as
-fragments; deltas therefore lag the model by up to that many characters (0 when
-the session carries no `api_key`), and the withheld tail is flushed as the last
-`text_delta`(s) immediately before the terminal event, so nothing is lost.
+text. The holdback keeps the tail of a turn's text pending until one character
+less than the **longest form of the `api_key` the server redacts** has arrived —
+the key itself, or its percent/JSON-escaped spellings, which are longer — so a
+secret the model echoes *split across two deltas*, plain or escaped, is replaced
+as a whole instead of leaking as fragments; deltas therefore lag the model by up
+to that many characters (0 when the session carries no `api_key`), and the
+withheld tail is flushed as the last `text_delta`(s) immediately before the
+terminal event, so nothing is lost.
 Never join or persist deltas as if they were the answer — a client that needs
 the text uses `turn_end.text`, which is the final post-boundary, post-redacted
 text.
@@ -566,8 +568,12 @@ events only — `: keepalive` comments do not reset the timer, so a subscribe-on
 client is still reaped.
 
 `Origin` and `Host` are validated for this endpoint only (mismatch → `403`), so
-a DNS-rebinding page cannot read the feed. The rest of the HTTP surface,
-including `/prompt`, is unchanged.
+a DNS-rebinding page cannot read the feed. A request's `Origin`, when it is
+present, must be loopback; `Host` must be the address the sidecar is bound to
+or — when it is bound to a wildcard address (`0.0.0.0`, `DEV_MODE`) — a loopback
+name or an IP literal, never a hostname. Reaching the feed under a service
+hostname therefore requires binding that address explicitly. The rest of the
+HTTP surface, including `/prompt`, is unchanged.
 
 ```js
 const { session_id } = await (

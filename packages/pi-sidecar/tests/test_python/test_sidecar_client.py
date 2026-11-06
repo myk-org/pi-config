@@ -1542,12 +1542,14 @@ class _SseTransport(httpx.AsyncBaseTransport):
         hang: bool,
         prompt_hangs: bool,
         prompt_status: int = 200,
+        prompt_error: str | None = None,
         prompt_gate: asyncio.Event | None = None,
         frame_delay: float = 0.0,
     ) -> None:
         self.stream = _SseBody(chunks, hang=hang, delay=frame_delay)
         self._prompt_hangs = prompt_hangs
         self._prompt_status = prompt_status
+        self._prompt_error = prompt_error
         self._prompt_gate = prompt_gate
         self.prompt_cancelled = False
 
@@ -1558,6 +1560,9 @@ class _SseTransport(httpx.AsyncBaseTransport):
             await self._prompt_gate.wait()  # the test decides when the prompt answers
         if self._prompt_status != 200:
             return httpx.Response(self._prompt_status, json={"error": "session busy: a turn is running"})
+        if self._prompt_error is not None:
+            # A turn that ran and failed: 200 with `error`, as the server answers.
+            return httpx.Response(200, json={"text": "", "error": self._prompt_error})
         if not self._prompt_hangs:
             return httpx.Response(200, json={"text": "hi"})
         try:
@@ -1591,6 +1596,15 @@ def _stream_client(transport: _SseTransport) -> SidecarClient:
     return client
 
 
+async def _closed_mid_turn() -> _SseTransport:
+    """Advance to the first frame of a live turn, then close the stream."""
+    transport = _SseTransport(STREAM_FRAMES[:2], hang=True, prompt_hangs=True)
+    stream = _stream_client(transport).stream_prompt("s1", "hello")
+    assert (await anext(stream))["type"] == "session"
+    await stream.aclose()
+    return transport
+
+
 @pytest.mark.asyncio
 async def test_stream_prompt_parses_sse_frames() -> None:
     """Split chunks, keepalives, multi-line data, a malformed frame and CRLF."""
@@ -1602,14 +1616,37 @@ async def test_stream_prompt_parses_sse_frames() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_prompt_close_cancels_feed_and_prompt() -> None:
-    """Closing mid-turn closes the response and cancels the in-flight prompt."""
-    transport = _SseTransport(STREAM_FRAMES[:2], hang=True, prompt_hangs=True)
-    stream = _stream_client(transport).stream_prompt("s1", "hello")
-    assert (await anext(stream))["type"] == "session"
-    await stream.aclose()
-    assert transport.stream.closed
-    assert transport.prompt_cancelled
+async def test_stream_prompt_close_closes_feed() -> None:
+    """Closing mid-turn closes the SSE response, so the server detaches us."""
+    assert (await _closed_mid_turn()).stream.closed
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_close_cancels_pending_prompt() -> None:
+    """Closing mid-turn cancels the in-flight prompt request."""
+    assert (await _closed_mid_turn()).prompt_cancelled
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_yields_error_frame_of_failed_turn() -> None:
+    """A turn that failed still reports itself through its terminal `error` frame."""
+    transport = _SseTransport(
+        [STREAM_FRAMES[0], b'data: {"type":"error","turnId":1,"message":"boom"}\n\n'],
+        hang=False,
+        prompt_hangs=False,
+        prompt_error="boom",
+    )
+    events = [event async for event in _stream_client(transport).stream_prompt("s1", "hello")]
+    assert [event["type"] for event in events] == ["session", "error"]
+    assert events[1]["message"] == "boom"
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_raises_when_failed_prompt_has_no_terminal_frame() -> None:
+    """No terminal frame means nothing to report: raise, with the prompt's error."""
+    transport = _SseTransport(STREAM_FRAMES[:1], hang=False, prompt_hangs=False, prompt_error="boom")
+    with pytest.raises(RuntimeError, match="ended before turn_end/error: boom"):
+        [event async for event in _stream_client(transport).stream_prompt("s1", "hello")]
 
 
 @pytest.mark.asyncio

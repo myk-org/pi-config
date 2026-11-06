@@ -379,6 +379,71 @@ describe("session event stream: abort (#1019)", () => {
     assert.equal(terminal[0].aborted, false, "a rejected abort must not report the turn as cancelled");
   });
 
+  it("a successful abort wins over a concurrent rejection, whichever settles first", async () => {
+    /** One controllable settle per abort call, so the test picks the order. */
+    const deferred = () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    };
+    // failIndex 0: the first abort rejects and the second cancels (the ordering
+    // that used to clear the flag). failIndex 1: the same race, other way round.
+    for (const failIndex of [0, 1]) {
+      const store = new SessionStore();
+      const sink = new FakeSink();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const calls = [deferred(), deferred()];
+      let call = 0;
+      store.putSessionFixture(
+        "s",
+        fixtureSession(
+          async (emit) => {
+            emit(delta("partial"));
+            await gate; // the turn keeps running until the test ends it
+            emit(agentEnd("partial"));
+          },
+          {
+            abort: async () => {
+              const index = call++;
+              await calls[index].promise;
+              if (index === failIndex) throw new Error("abort exploded");
+            },
+          },
+        ),
+        "/tmp",
+      );
+      store.openStream("s", sink);
+
+      const pending = store.prompt("s", "hi");
+      while (events(sink).filter((event) => event.type === "text_delta").length < 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      const aborts = [store.abort("s"), store.abort("s")];
+
+      const outcomes: string[] = [];
+      for (const index of [0, 1]) {
+        calls[index].resolve();
+        await aborts[index].then(() => outcomes.push("ok"), () => outcomes.push("rejected"));
+      }
+
+      assert.equal(outcomes[failIndex], "rejected", `failIndex ${failIndex}: the failing abort rejects its caller`);
+      assert.equal(outcomes[1 - failIndex], "ok", `failIndex ${failIndex}: the other abort succeeds`);
+
+      release();
+      await pending;
+
+      const terminal = terminals(sink);
+      assert.equal(terminal.length, 1, `failIndex ${failIndex}: still exactly one terminal event`);
+      assert.equal(terminal[0].type, "turn_end");
+      assert.equal(terminal[0].aborted, true, `failIndex ${failIndex}: a rejection must not hide the abort that landed`);
+    }
+  });
+
   it("a second concurrent prompt is still rejected and the attached feed stays coherent", async () => {
     const store = new SessionStore();
     const sink = new FakeSink();
@@ -640,6 +705,43 @@ describe("session event stream: split-key redaction (#1019 holdback)", () => {
       assert.equal(result.text, `${before}[REDACTED] done`, `cut ${cut}: POST /prompt is unaffected`);
       assert.equal(terminal.text, `${before}[REDACTED] done`);
       assert.equal(terminals(sink).length, 1, `cut ${cut}: still exactly one terminal event`);
+    }
+  });
+
+  it("an escaped echo of the key is held back too, at every split point", async () => {
+    // The redactor decodes percent and JSON escapes, so both escaped spellings
+    // of the key are LONGER than the key itself — a holdback of key.length - 1
+    // misses a boundary inside them.
+    const percent = [...Buffer.from(KEY, "utf8")].map((byte) => `%${byte.toString(16).padStart(2, "0")}`).join("");
+    const jsonEscapedPercent = percent.replaceAll("%", "\\u0025");
+    // A leak in the raw bytes is JSON-escaped by the frame itself, so look for
+    // the escaped spelling of each form there.
+    const asFramePayload = (needle: string) => JSON.stringify(needle).slice(1, -1);
+    for (const form of [percent, jsonEscapedPercent]) {
+      for (let cut = 1; cut < form.length; cut++) {
+        const store = new SessionStore();
+        const sink = new FakeSink();
+        store.putSessionFixture(
+          "s",
+          splitSession([`echo ${form.slice(0, cut)}`, `${form.slice(cut)} done`]),
+          "/tmp",
+        );
+        (store as any).sessions.get("s").redact = createApiKeyRedactor(KEY);
+        store.openStream("s", sink);
+
+        const result = await store.prompt("s", "hi");
+
+        const streamed = events(sink).filter((event) => event.type === "text_delta").map((event) => event.delta).join("");
+        for (const needle of [KEY, percent, jsonEscapedPercent]) {
+          assert.ok(!streamed.includes(needle), `cut ${cut}: ${needle} leaked across the concatenated frames: ${streamed}`);
+          assert.ok(!sink.raw.includes(asFramePayload(needle)), `cut ${cut}: ${needle} leaked into the raw SSE bytes`);
+        }
+        const terminal = terminals(sink)[0];
+        assert.equal(streamed, "echo [REDACTED] done", `cut ${cut}: everything but the escaped key still arrives in order`);
+        assert.equal(terminal.text, "echo [REDACTED] done", `cut ${cut}: turn_end carries the redacted text`);
+        assert.equal(result.text, "echo [REDACTED] done", `cut ${cut}: POST /prompt is unaffected`);
+        assert.equal(terminals(sink).length, 1, `cut ${cut}: still exactly one terminal event`);
+      }
     }
   });
 

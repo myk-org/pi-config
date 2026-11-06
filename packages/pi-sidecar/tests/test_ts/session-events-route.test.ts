@@ -244,25 +244,40 @@ describe("GET /sessions/:id/events (#1019) over HTTP", () => {
 });
 
 describe("isAllowedStreamRequest (#1019)", () => {
-  it("accepts a real client Host under a wildcard bind instead of 403ing every client", () => {
-    for (const bound of ["0.0.0.0", "::"]) {
-      assert.equal(isAllowedStreamRequest(undefined, "192.168.1.7:8123", bound), true, `LAN Host under ${bound}`);
-      assert.equal(isAllowedStreamRequest(undefined, "service.internal:8123", bound), true, `hostname under ${bound}`);
-      assert.equal(isAllowedStreamRequest(undefined, "localhost:8123", bound), true, `loopback Host under ${bound}`);
-      assert.equal(isAllowedStreamRequest("http://127.0.0.1:8123", "127.0.0.1:8123", bound), true);
+  it("accepts a loopback name or an IP literal Host under a wildcard bind", () => {
+    for (const bound of ["0.0.0.0", "::", "[::]"]) {
+      assert.equal(isAllowedStreamRequest(undefined, "192.168.1.10:9201", bound), true, `LAN IP under ${bound}`);
+      assert.equal(isAllowedStreamRequest(undefined, "localhost:9201", bound), true, `loopback Host under ${bound}`);
+      assert.equal(isAllowedStreamRequest(undefined, "127.0.0.1:9201", bound), true);
+      assert.equal(isAllowedStreamRequest(undefined, "[::1]:9201", bound), true);
+      assert.equal(isAllowedStreamRequest("http://127.0.0.1:9201", "127.0.0.1:9201", bound), true);
     }
+  });
+
+  it("rejects a hostname Host under a wildcard bind — the rebinding hole", () => {
+    for (const bound of ["0.0.0.0", "::", "[::]"])
+      for (const origin of [undefined, "http://evil.com:9201"])
+        assert.equal(isAllowedStreamRequest(origin, "evil.com:9201", bound), false, `Host evil.com under ${bound}, origin=${origin}`);
   });
 
   it("still rejects a foreign Origin under a wildcard bind — the rebinding guard", () => {
     assert.equal(isAllowedStreamRequest("https://evil.example", "127.0.0.1:8123", "0.0.0.0"), false);
     assert.equal(isAllowedStreamRequest("null", "127.0.0.1:8123", "0.0.0.0"), false);
+    assert.equal(isAllowedStreamRequest("https://evil.example", "192.168.1.10:8123", "0.0.0.0"), false);
     assert.equal(isAllowedStreamRequest(undefined, "", "0.0.0.0"), false, "an unparsable Host still fails closed");
   });
 
   it("keeps the strict Host rule on a loopback bind", () => {
     assert.equal(isAllowedStreamRequest(undefined, "127.0.0.1:8123", "127.0.0.1"), true);
     assert.equal(isAllowedStreamRequest(undefined, "evil.example", "127.0.0.1"), false);
+    assert.equal(isAllowedStreamRequest(undefined, "192.168.1.10:8123", "127.0.0.1"), false);
     assert.equal(isAllowedStreamRequest(undefined, "[::1]:8123", "::1"), true);
+  });
+
+  it("keeps the strict Host rule on a specific non-loopback bind", () => {
+    assert.equal(isAllowedStreamRequest(undefined, "192.168.1.10:9201", "192.168.1.10"), true);
+    assert.equal(isAllowedStreamRequest(undefined, "192.168.1.11:9201", "192.168.1.10"), false);
+    assert.equal(isAllowedStreamRequest(undefined, "service.internal:9201", "service.internal"), true);
   });
 });
 

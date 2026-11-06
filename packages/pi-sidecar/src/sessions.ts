@@ -107,21 +107,48 @@ export function isValidApiKey(value: unknown): value is string {
 }
 
 /**
- * Key length behind each redactor instance, so a delta holdback can be derived
- * from the actual secret instead of guessing a constant. A WeakMap keeps the
- * length off the function object and out of every type that passes a redactor
- * around; a redactor built without a key (or any other function) reports 0.
+ * Longest source form each redactor can match, so a delta holdback is derived
+ * from the secret itself instead of guessing a constant. `literal` is the key
+ * as written, `escaped` is the widest form `redact` still recognizes (see
+ * `keySourceForms`). A WeakMap keeps these off the function object and out of
+ * every type that passes a redactor around; a redactor built without a key (or
+ * any other function) reports 0.
  */
-const redactorKeyLengths = new WeakMap<(value: string) => string, number>();
+const redactorForms = new WeakMap<(value: string) => string, { literal: number; escaped: number }>();
+
+/**
+ * Every source form the redactor's two decode stages (JSON escapes, then
+ * percent escapes) turn back into the key, widest last. A boundary can cut any
+ * of them, and the escaped ones are LONGER than the key — `ab` also matches as
+ * `%61%62` and as `\u0025\u0036\u0031\u0025\u0036\u0032` — so the holdback
+ * has to come from the longest of these, not from the raw key's length.
+ */
+function keySourceForms(apiKey: string): string[] {
+  const percent = [...Buffer.from(apiKey, "utf8")].map((byte) => `%${byte.toString(16).padStart(2, "0")}`).join("");
+  // `\uXXXX` per UTF-16 code unit: the JSON stage accepts that for any character.
+  const jsonEscaped = (value: string) =>
+    Array.from({ length: value.length }, (_, i) => `\\u${value.charCodeAt(i).toString(16).padStart(4, "0")}`).join("");
+  return [apiKey, jsonEscaped(apiKey), percent, jsonEscaped(percent)];
+}
 
 /**
  * How far a streamed delta may lag so a key split across two deltas is still
- * redacted as a whole: one character less than the key, which is the longest
- * span a single boundary can cut. 0 when the redactor holds no key — then
- * nothing needs holding back and deltas are emitted immediately.
+ * redacted as a whole: one character less than the widest form the redactor
+ * matches. 0 when the redactor holds no key — then nothing needs holding back
+ * and deltas are emitted immediately.
  */
 export function redactorHoldback(redact: (value: string) => string): number {
-  return Math.max(0, (redactorKeyLengths.get(redact) ?? 0) - 1);
+  return Math.max(0, (redactorForms.get(redact)?.escaped ?? 0) - 1);
+}
+
+/**
+ * Holdback for text that cannot be inside an escaped form (it holds no `%` and
+ * no `\`): the key itself, one character less than its length. Escaped forms
+ * are only wider, so a caller that can rule them out keeps deltas flowing
+ * instead of lagging by the escaped bound.
+ */
+export function redactorLiteralHoldback(redact: (value: string) => string): number {
+  return Math.max(0, (redactorForms.get(redact)?.literal ?? 0) - 1);
 }
 
 /** Compile key representations once per session, never per log or response. */
@@ -218,7 +245,8 @@ export function createApiKeyRedactor(apiKey?: string): (value: string) => string
     }
     return parts.join("");
   };
-  redactorKeyLengths.set(redact, apiKey.length);
+  const forms = keySourceForms(apiKey);
+  redactorForms.set(redact, { literal: apiKey.length, escaped: Math.max(...forms.map((form) => form.length)) });
   return redact;
 }
 
@@ -1087,11 +1115,15 @@ interface SessionEntry {
   /** SSE feed hub for this entry (#1019) — dies with the session. */
   streams: SessionEventStreams;
   /**
-   * Set by abort() before it awaits session.abort(); consumed by the prompt
-   * path's finally, which is the only place a turn ends on abort (#1019) —
-   * emitting from abort() itself would double-emit the terminal event.
+   * Abort bookkeeping for the turn in flight (#1019). `requested` is set by
+   * abort() before it awaits session.abort() and consumed by the prompt path's
+   * finally, which is the only place a turn ends on abort — emitting from
+   * abort() itself would double-emit the terminal event. `pending` counts the
+   * aborts still awaiting the SDK and `succeeded` records that one of them
+   * cancelled the turn, so a concurrent abort's rejection cannot clear
+   * `requested` while another abort is still in flight.
    */
-  abortRequested: boolean;
+  abortState: { requested: boolean; pending: number; succeeded: boolean };
 }
 
 /**
@@ -1402,7 +1434,7 @@ export class SessionStore {
       headerWritten: false,
       headerPending: false,
       streams: new SessionEventStreams(),
-      abortRequested: false,
+      abortState: { requested: false, pending: 0, succeeded: false },
     });
   }
 
@@ -2228,7 +2260,7 @@ export class SessionStore {
       createdAt: new Date().toISOString(),
       redact,
     };
-    const newEntry: SessionEntry = { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0, transcriptHeader, headerWritten: false, headerPending: false, streams: new SessionEventStreams(), abortRequested: false };
+    const newEntry: SessionEntry = { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0, transcriptHeader, headerWritten: false, headerPending: false, streams: new SessionEventStreams(), abortState: { requested: false, pending: 0, succeeded: false } };
     this.sessions.set(id, newEntry);
     log.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${customTools.length})`);
     // Transcript recording (issue #922) — OFF unless RECORD_TRANSCRIPTS is
@@ -2270,7 +2302,9 @@ export class SessionStore {
     // #1019: one monotonic turn id per prompt. The single terminal event for
     // it is emitted from this turn's finally (rejected prompt) or from the
     // post-redaction tail below — never from the recordTurn-gated sites.
-    entry.abortRequested = false;
+    // Reset here, not at turn end, so an abort still settling from the previous
+    // turn cannot clear a request made for this one.
+    entry.abortState = { requested: false, pending: 0, succeeded: false };
     const turnId = entry.streams.nextTurnId();
     entry.streams.emit({ type: "turn_start", turnId });
     // Transcript turn state is mutated only when recording is enabled — the
@@ -2345,15 +2379,18 @@ export class SessionStore {
     // to `hold` characters (0 without a session key, so the common path is
     // unchanged), which is bounded and cheap next to leaking a secret.
     // `turn_end.text` stays authoritative — it is the fully redacted response.
-    // shortcut: the window is the key's plain length, so an echo that arrives
-    // percent/JSON-escaped (wider than the key) can still lose a fragment at a
-    // boundary; widen `hold` if a provider is ever seen emitting escaped forms.
+    // `hold` covers the widest escaped form of the key (percent/JSON-escaped
+    // echoes are longer than the key), so a window that could still be inside
+    // one has to lag that far; escape-free text cannot be, so it only lags
+    // `literalHold`.
     const hold = redactorHoldback(entry.redact);
+    const literalHold = redactorLiteralHoldback(entry.redact);
     let heldText = "";
     const emitHeldText = (flush: boolean) => {
       if (heldText === "") return;
       const safe = entry.redact(heldText);
-      const cut = flush ? safe.length : Math.max(0, safe.length - hold);
+      const window = hold > literalHold && /[%\\]/.test(safe.slice(-hold)) ? hold : literalHold;
+      const cut = flush ? safe.length : Math.max(0, safe.length - window);
       heldText = safe.slice(cut);
       if (cut > 0) entry.streams.emit({ type: "text_delta", turnId, delta: safe.slice(0, cut) });
     };
@@ -2555,8 +2592,8 @@ export class SessionStore {
       // rejected prompt never reaches the post-redaction tail, so its terminal
       // event is emitted here; the success/fall-through path emits below with
       // the final text. emitTurnEnd's guard keeps it to exactly one.
-      turnAborted = entry.abortRequested;
-      entry.abortRequested = false;
+      turnAborted = entry.abortState.requested;
+      entry.abortState.requested = false;
       if (promptRejected !== undefined) emitTurnEnd(turnAborted);
     }
 
@@ -2687,21 +2724,28 @@ export class SessionStore {
     this.assertNotDisposed("abort");
     const entry = this.sessions.get(id);
     if (!entry) throw new Error(`Session ${id} not found`);
-    // #1019: nothing to abort — setting abortRequested on an idle session would
-    // flag the NEXT turn as aborted.
+    // #1019: nothing to abort — marking an idle session aborted would flag the
+    // NEXT turn as aborted.
     if (!entry.inFlight) return;
     logger.debug(`[sidecar] Aborting session: ${id}, inFlight=${entry.inFlight}`);
     // Set before awaiting: the prompt path's finally reads it after
     // session.abort() settles. Emitting here would duplicate the terminal event.
-    entry.abortRequested = true;
+    entry.abortState.requested = true;
+    entry.abortState.pending++;
     try {
       await entry.session.abort();
+      // A cancel that landed keeps the turn flagged, whatever another
+      // in-flight abort does later.
+      entry.abortState.succeeded = true;
     } catch (err) {
-      // The turn is still running: a stale flag would report it as aborted
-      // when it eventually ends.
-      entry.abortRequested = false;
+      // The turn is still running — but only if no other abort is pending and
+      // none already cancelled it: clearing the flag here is what let a
+      // concurrent rejection hide a real cancellation.
+      entry.abortState.pending = Math.max(0, entry.abortState.pending - 1);
+      if (entry.abortState.pending === 0 && !entry.abortState.succeeded) entry.abortState.requested = false;
       throw err;
     }
+    entry.abortState.pending = Math.max(0, entry.abortState.pending - 1);
     logger.info(`[sidecar] Session aborted: ${id}`);
   }
 
