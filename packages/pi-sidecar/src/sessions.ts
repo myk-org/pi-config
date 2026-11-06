@@ -2730,22 +2730,29 @@ export class SessionStore {
     logger.debug(`[sidecar] Aborting session: ${id}, inFlight=${entry.inFlight}`);
     // Set before awaiting: the prompt path's finally reads it after
     // session.abort() settles. Emitting here would duplicate the terminal event.
-    entry.abortState.requested = true;
-    entry.abortState.pending++;
+    // The state is held by reference, not re-read from entry.abortState after
+    // the await: prompt() replaces that object when the next turn starts, so a
+    // late settle from an earlier turn would otherwise clear the NEW turn's
+    // flag and report a real cancellation as `aborted: false` (Qodo). A stale
+    // object is simply discarded at the turn boundary — the new turn always
+    // starts with a fresh state.
+    const state = entry.abortState;
+    state.requested = true;
+    state.pending++;
     try {
       await entry.session.abort();
       // A cancel that landed keeps the turn flagged, whatever another
       // in-flight abort does later.
-      entry.abortState.succeeded = true;
+      state.succeeded = true;
     } catch (err) {
       // The turn is still running — but only if no other abort is pending and
       // none already cancelled it: clearing the flag here is what let a
       // concurrent rejection hide a real cancellation.
-      entry.abortState.pending = Math.max(0, entry.abortState.pending - 1);
-      if (entry.abortState.pending === 0 && !entry.abortState.succeeded) entry.abortState.requested = false;
+      state.pending = Math.max(0, state.pending - 1);
+      if (state.pending === 0 && !state.succeeded) state.requested = false;
       throw err;
     }
-    entry.abortState.pending = Math.max(0, entry.abortState.pending - 1);
+    state.pending = Math.max(0, state.pending - 1);
     logger.info(`[sidecar] Session aborted: ${id}`);
   }
 

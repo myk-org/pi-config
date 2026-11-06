@@ -444,6 +444,96 @@ describe("session event stream: abort (#1019)", () => {
     }
   });
 
+  it("an abort rejecting after the next turn started cannot clear that turn's cancellation", async () => {
+    const store = new SessionStore();
+    const sink = new FakeSink();
+    const deferred = () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    };
+    const gateA = deferred();
+    const gateB = deferred();
+    // Aborts settle only when the test says so: turn A's rejects (late), turn
+    // B's succeeds once A's rejection has already landed.
+    const lateAbortA = (() => {
+      let reject!: (err: Error) => void;
+      const promise = new Promise<void>((_res, rej) => {
+        reject = rej;
+      });
+      return { promise, reject };
+    })();
+    const abortB = deferred();
+    let promptCalls = 0;
+    let abortCalls = 0;
+    store.putSessionFixture(
+      "s",
+      fixtureSession(
+        async (emit) => {
+          if (promptCalls++ === 0) {
+            emit(delta("first"));
+            await gateA.promise;
+            emit(agentEnd("first"));
+            return;
+          }
+          emit(delta("second"));
+          await gateB.promise;
+          emit(agentEnd("second"));
+        },
+        {
+          abort: async () => {
+            if (abortCalls++ === 0) await lateAbortA.promise; // turn A: rejects late
+            else await abortB.promise; // turn B: cancels
+          },
+        },
+      ),
+      "/tmp",
+    );
+    store.openStream("s", sink);
+
+    const firstTurn = store.prompt("s", "first");
+    while (events(sink).filter((event) => event.type === "text_delta").length < 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const staleAbort = store.abort("s").then(() => "ok", (err: Error) => err.message);
+    gateA.resolve(); // turn A ends while its abort is still pending
+    await firstTurn;
+
+    const secondTurn = store.prompt("s", "second");
+    while (events(sink).filter((event) => event.type === "text_delta").length < 2) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    // Turn B's cancellation is requested but still pending when turn A's abort
+    // rejects — the window where a re-read of entry.abortState would decrement
+    // turn B's pending count and clear its request.
+    const liveAbort = store.abort("s");
+    lateAbortA.reject(new Error("abort exploded late"));
+    assert.match(await staleAbort, /abort exploded late/, "the late rejection still reaches its caller");
+    abortB.resolve();
+    await liveAbort;
+    gateB.resolve();
+    const second = await secondTurn;
+
+    assert.equal(second.text, "second");
+    const starts = events(sink).filter((event) => event.type === "turn_start");
+    assert.equal(starts.length, 2, "turn B really started after the stale abort was still pending");
+    assert.equal(
+      terminals(sink).filter((event) => event.turnId === starts[0].turnId).length,
+      1,
+      "turn A keeps its single terminal event",
+    );
+    const secondTerminal = terminals(sink).filter((event) => event.turnId === starts[1].turnId);
+    assert.equal(secondTerminal.length, 1, "turn B keeps its single terminal event");
+    assert.equal(secondTerminal[0].type, "turn_end");
+    assert.equal(
+      secondTerminal[0].aborted,
+      true,
+      "a stale abort rejecting across the turn boundary must not clear turn B's cancellation",
+    );
+  });
+
   it("a second concurrent prompt is still rejected and the attached feed stays coherent", async () => {
     const store = new SessionStore();
     const sink = new FakeSink();
