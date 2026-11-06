@@ -66,7 +66,8 @@ export interface AsyncJob {
   delivered?: boolean;
   sideEffectsApplied?: boolean;
   fireAndForget?: boolean;
-  onComplete?: () => void;
+  /** One-shot: fires once with the ingested result text. Used by async chains to feed {previous}. */
+  onComplete?: (result: { text: string; isError: boolean }) => void;
   groupId?: string;
   taskId?: string;
   cwd?: string;
@@ -97,6 +98,18 @@ export const KILL_ORIGIN_LABELS: Record<AsyncKillOrigin, string> = {
 /** Get the effective working directory for a job. */
 function jobCwd(job: { cwd?: string; projectCwd?: string }): string {
   return job.cwd || job.projectCwd || process.cwd();
+}
+
+/** Fire the job's completion hook exactly once, with the already-ingested result.
+ *  Clearing it first stops the reconciliation pass from re-firing it (which would
+ *  spawn the next async-chain step twice after a failed delivery). */
+function fireOnComplete(job: AsyncJob): void {
+  const cb = job.onComplete;
+  job.onComplete = undefined;
+  if (!cb) return;
+  try {
+    cb({ text: typeof job.output === "string" ? job.output : "", isError: job.status === "failed" });
+  } catch (e: any) { log.error(`onComplete callback failed for ${job.id}: ${e?.message}`); }
 }
 
 interface AsyncState {
@@ -145,7 +158,7 @@ export function registerAsyncAgents(
     discoverAgents?: (cwd: string, scope: "both") => Pick<AgentDiscoveryResult, "agents">;
   } = {},
 ): {
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } }) => { id: string; error?: string; model?: string };
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
@@ -625,9 +638,7 @@ export function registerAsyncAgents(
                   content: msgContent,
                   display: true,
                 }, { triggerTurn: true, deliverAs: "followUp" });
-                if (job.onComplete) {
-                  try { job.onComplete(); } catch (e: any) { log.error(`onComplete callback failed for ${job.id}: ${e?.message}`); }
-                }
+                fireOnComplete(job);
                 job.delivered = true;
                 recordDelivered(job.id);
                 log.debug("reconcile_deliver_ok", job.id);
@@ -646,9 +657,7 @@ export function registerAsyncAgents(
               } catch {}
             }
           } else if (job.fireAndForget) {
-            if (job.onComplete) {
-              try { job.onComplete(); } catch (e: any) { log.error(`onComplete callback failed for ${job.id}: ${e?.message}`); }
-            }
+            fireOnComplete(job);
             job.delivered = true;
           }
         }
@@ -720,9 +729,7 @@ export function registerAsyncAgents(
     // Skip delivery if ALL jobs in group are fire-and-forget
     if (groupJobs.every(j => j.fireAndForget)) {
       for (const j of groupJobs) {
-        if (j.onComplete) {
-          try { j.onComplete(); } catch (e: any) { log.error(`onComplete callback failed for ${j.id}: ${e?.message}`); }
-        }
+        fireOnComplete(j);
         j.delivered = true;
       }
       // Clean up result files for fire-and-forget groups
@@ -986,10 +993,8 @@ export function registerAsyncAgents(
         sendSucceeded = true; // fire-and-forget doesn't need sendMessage
       }
 
-      // Invoke onComplete callback if registered (e.g., dreaming → rebuildAndOrganize)
-      if (job.onComplete) {
-        try { job.onComplete(); } catch (e: any) { log.error(`onComplete callback failed for ${job.id}: ${e?.message}`); }
-      }
+      // Invoke onComplete callback if registered (e.g., dreaming, async chain step)
+      fireOnComplete(job);
       if (sendSucceeded) {
         job.delivered = true;
         // Persist delivered state so restore skips this job
@@ -1035,7 +1040,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } },
+    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } },
   ): { id: string; error?: string; model?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
