@@ -216,7 +216,7 @@ export class SettingsFileCorruptError extends Error {
   constructor(readonly filePath: string) {
     super(`refusing to overwrite unparseable settings file: ${filePath}`);
     this.name = "SettingsFileCorruptError";
-    log.warn("settings_write_refused_corrupt", { filePath });
+    log.error("settings_write_refused_corrupt", { filePath });
   }
 }
 
@@ -257,14 +257,27 @@ function settingCwdFor(filePath: string): string | null {
 /** Backup retention for this file: project setting where a project owns it, env/default for
  *  a global file — one project can never change another's retention. */
 function backupCountFor(filePath: string): number {
+  const def = SETTINGS_KEYS.settings_backup_count;
+  const fallback = Number(def?.default ?? 5);
+  const min = Number(def?.min ?? 0);
+  const max = Number(def?.max ?? 20);
+  // An out-of-range or non-integer value must not decide retention: `-1` would prune every
+  // backup and write none, and a huge value would rotate far past the documented limit.
+  const accept = (value: number): number | null =>
+    Number.isInteger(value) && value >= min && value <= max ? value : null;
+
   const cwd = settingCwdFor(filePath);
   if (cwd !== null) {
-    const value = Number(getSetting(cwd, "settings_backup_count"));
-    if (Number.isFinite(value) && value >= 0) return value;
+    const resolved = accept(Number(getSetting(cwd, "settings_backup_count")));
+    if (resolved !== null) return resolved;
   }
-  const fromEnv = Number(process.env.PI_SETTINGS_BACKUP_COUNT);
-  if (Number.isFinite(fromEnv) && process.env.PI_SETTINGS_BACKUP_COUNT !== "") return fromEnv;
-  return Number(SETTINGS_KEYS.settings_backup_count?.default ?? 5);
+  const raw = process.env.PI_SETTINGS_BACKUP_COUNT;
+  if (raw !== undefined && raw.trim() !== "") {
+    const resolved = accept(Number(raw));
+    if (resolved !== null) return resolved;
+    log.warn("settings_backup_count_invalid", { raw, min, max, fallback });
+  }
+  return fallback;
 }
 
 /** Drop slots beyond the configured count, so lowering retention removes old copies. */
@@ -273,7 +286,8 @@ function pruneExtraBackups(filePath: string, count: number): void {
   let entries: string[] = [];
   try {
     entries = readdirSync(dirname(filePath));
-  } catch {
+  } catch (e: any) {
+    log.warn("settings_backup_prune_scan_failed", { filePath, error: e?.message });
     return;
   }
   for (const name of entries) {
@@ -282,8 +296,8 @@ function pruneExtraBackups(filePath: string, count: number): void {
     if (!Number.isFinite(slot) || slot <= count) continue;
     try {
       unlinkSync(joinPath(dirname(filePath), name));
-    } catch {
-      /* best effort */
+    } catch (e: any) {
+      log.warn("settings_backup_prune_failed", { filePath, slot: name, error: e?.message });
     }
   }
 }
@@ -317,7 +331,7 @@ function rotateSettingsBackups(filePath: string, count: number): void {
   } catch (e: any) {
     // A write without its backup breaks the one guarantee this function exists for: if the
     // new content is wrong there is nothing to fall back to.
-    log.warn("settings_backup_failed", { filePath, error: e?.message });
+    log.error("settings_backup_failed", { filePath, error: e?.message });
     throw new SettingsBackupError(filePath, e);
   }
 }

@@ -534,6 +534,24 @@ describe("readSettingsFile / writeSettingsFile", () => {
     }
   });
 
+  it("an invalid retention value falls back to the default instead of erasing backups", () => {
+    const filePath = join(tempDir, "invalid-retention.json");
+    writeSettingsFile(filePath, { dco: true });
+    writeSettingsFile(filePath, { dco: false });
+    assert.ok(existsSync(`${filePath}.bak.1`), "a backup exists before the bad value");
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    for (const bad of ["-1", "999", "2.5", "abc"]) {
+      process.env.PI_SETTINGS_BACKUP_COUNT = bad;
+      try {
+        writeSettingsFile(filePath, { dco: true, pidash_port: 7 });
+        assert.ok(existsSync(`${filePath}.bak.1`), `backup survives invalid value ${bad}`);
+      } finally {
+        if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+        else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+      }
+    }
+  });
+
   it("refuses to overwrite an unparseable settings file and leaves it untouched", () => {
     const filePath = join(tempDir, "corrupt.json");
     const corrupt = '{ "dco": tru';
