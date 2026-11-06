@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.26.1] - 2026-11-06
+
+- The tmp sweep carries no hardcoded control-file name list: it asks
+  `daemon-manager.isLiveLegacyDaemonFile()`, which owns the two legacy names, so a future daemon
+  writing to `.pi/run` can never require the sweep to be edited. A legacy `pidiff.port`/`pidiff.pid`
+  is kept only while its recorded PID is alive (`EPERM` counts as alive — another user's running
+  process), and a dead daemon's leftovers plus every `reload.*` marker are swept like any other
+  entry. Deleting a live daemon's lockfiles would make the next connect() spawn a duplicate on its
+  port.
+- A control file can no longer block or exhaust a session: `readLockfile` accepts only regular
+  files, so a project FIFO at `pidiff.port`/`pidiff.pid` is ignored, and the pid read is capped at
+  64 bytes so an oversized file is rejected without being read.
+
 ## [4.26.0] - 2026-11-06
 
 - Async `chain` mode: steps run in sequence and each step's result is substituted into `{previous}`,
