@@ -3,9 +3,9 @@
  * No pi-coding-agent or pi-tui dependencies.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join as joinPath } from "node:path";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join as joinPath, resolve, sep } from "node:path";
 import stripJsonComments from "strip-json-comments";
 import {
   type SettingsKeyDef,
@@ -209,11 +209,48 @@ export function readSettingsFile(filePath: string): Record<string, unknown> | nu
   return null;
 }
 
+/** Thrown instead of writing when the target file cannot be parsed. A settings file that a
+ *  human can still repair by hand must never be replaced by generated content. */
+export class SettingsFileCorruptError extends Error {
+  constructor(readonly filePath: string) {
+    super(`refusing to overwrite unparseable settings file: ${filePath}`);
+    this.name = "SettingsFileCorruptError";
+    logWarn(`settings_write_refused_corrupt ${filePath}`);
+  }
+}
+
+/** Path of the previous-version copy kept next to every settings file we write. */
+export function settingsBackupPath(filePath: string): string {
+  return `${filePath}.bak`;
+}
+
 export function writeSettingsFile(filePath: string, data: Record<string, unknown>): void {
   // Write directly to target file. Per issue spec: "comments are lost on write — acceptable
   // since the example.jsonc is the reference."
   const dir = dirname(filePath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+
+  if (process.env.NODE_TEST_CONTEXT !== undefined) {
+    // Test processes may only write under the OS temp tree (same safety net the global
+    // settings path has): a test once wrote a project's real settings file.
+    const resolved = resolve(filePath);
+    const tmpRoot = resolve(tmpdir());
+    if (!resolved.startsWith(tmpRoot + sep)) {
+      throw new Error(`test process refused to write settings outside the temp tree: ${resolved}`);
+    }
+  }
+
+  if (existsSync(filePath)) {
+    // A corrupt file is recoverable by hand; a cleared one is not. Refuse rather than
+    // overwrite — this is exactly how a project's settings were once emptied.
+    if (readSettingsFile(filePath) === null) throw new SettingsFileCorruptError(filePath);
+    // Every touch keeps the previous bytes, so a wrong write is always recoverable.
+    try {
+      copyFileSync(filePath, settingsBackupPath(filePath));
+    } catch (e: any) {
+      logWarn(`settings_backup_failed ${filePath}: ${e?.message}`);
+    }
+  }
   const content = JSON.stringify(data, null, 2) + "\n";
   const tmpPath = `${filePath}.${process.pid}.${Date.now().toString(36)}`;
   try {
