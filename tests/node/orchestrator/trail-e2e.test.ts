@@ -8,7 +8,7 @@
  * Skipped (not failed) when the binary is absent: it is a developer/CI-installed
  * prerequisite, not a repository dependency.
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -16,9 +16,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createTrailIntegration } from "../../../extensions/orchestrator/trail.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 type Handler = (event: any, ctx: any) => Promise<any> | any;
 type Tool = { name: string; execute: (...args: any[]) => Promise<{ content: Array<{ text: string }> }> };

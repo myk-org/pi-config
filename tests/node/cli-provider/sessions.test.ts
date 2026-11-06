@@ -1,7 +1,7 @@
 /**
  * Tests for cli-provider session directory + reaper.
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,9 +18,8 @@ import {
   type CliSessionKey,
 } from "../../../extensions/cli-provider/sessions.js";
 import { reapStaleCliSessions } from "../../../extensions/cli-provider/session-reaper.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("cli-provider sessions", () => {
   it("listCliSessions returns empty when sessions path is not a directory", async () => {

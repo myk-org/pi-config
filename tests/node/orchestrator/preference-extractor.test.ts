@@ -8,15 +8,14 @@
  * for dreaming review. Questions, one-off grants, and task-scoped
  * instructions are filtered before queueing.
  */
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { registerPreferenceExtractor, readPreferenceCandidates, appendPreferenceCandidate } from "../../../extensions/orchestrator/preference-extractor.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 interface Harness {
   pi: any;

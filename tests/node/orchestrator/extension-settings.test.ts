@@ -4,7 +4,7 @@
  * Uses setGlobalSettingsPath to isolate tests from the real ~/.pi/ directory,
  * ensuring deterministic results regardless of developer machine config.
  */
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -17,9 +17,8 @@ import {
 	asStringArray,
 	setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("parseReviewLoopMaxCycles", () => {
 	it("accepts integer boundaries 1 and 10", () => {

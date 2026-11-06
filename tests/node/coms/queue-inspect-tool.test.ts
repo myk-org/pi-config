@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, it, after } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 interface FakePi {
 	tools: Map<string, any>;

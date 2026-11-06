@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -11,9 +11,8 @@ import {
   recordReviewerResult,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { normalizePorcelain } from "../../../extensions/orchestrator/review-porcelain.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("poller state transitions", () => {
   let tmp: string;

@@ -1,7 +1,7 @@
 /**
  * models.dev cache, CLI/ACPX id mapping, and missing-field fill.
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, utimesSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -19,9 +19,8 @@ import { mapCliDiscoveredModels } from "../../../extensions/cli-provider/runtime
 import { mapAcpxDiscoveredModels } from "../../../extensions/acpx-provider/runtime-models.js";
 import { buildRuntimeModel } from "../../../extensions/shared/create-runtime-provider.js";
 import { isPricingKnown, isPricingUnknown, safeModelRef } from "../../../extensions/shared/pricing-provenance.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const SAMPLE_CATALOG = {
   xai: {

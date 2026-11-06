@@ -2,14 +2,13 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, it, after } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import { registerCron } from "../../../extensions/orchestrator/cron.js";
 import { readDurableCronStore } from "../../../extensions/orchestrator/cron-store.ts";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import { resolveAgentModelProvider } from "../../../extensions/orchestrator/resolve-agent-model.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const dirs: string[] = [];
 const harnesses = new Set<{ restore(): void }>();

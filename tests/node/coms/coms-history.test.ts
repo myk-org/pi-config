@@ -2,7 +2,7 @@
  * #924 §5 — coms history: JSONL audit trail append/query.
  * Run with: npx tsx --test tests/node/coms/coms-history.test.ts
  */
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, appendFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,9 +15,8 @@ import {
 	HISTORY_MAX_FILE_BYTES,
 	type HistoryRecord,
 } from "../../../extensions/coms/coms-history.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 let dir: string;
 let file: string;

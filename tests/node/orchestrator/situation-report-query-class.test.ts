@@ -2,7 +2,7 @@
  * Situation report query-class budget / ordering shifts.
  * Run: npx tsx --test tests/node/orchestrator/situation-report-query-class.test.ts
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -14,9 +14,8 @@ import {
   type ScoredEntry,
 } from "../../../extensions/orchestrator/memory-scoring.js";
 import { writePromotions, promotionId } from "../../../extensions/orchestrator/promotion-queue.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 function seed(cwd: string): void {
   const topicsDir = path.join(cwd, ".pi", "memory", "topics");

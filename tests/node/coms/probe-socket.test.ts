@@ -3,10 +3,9 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as net from "node:net";
-import { describe, it, afterEach, after } from "node:test";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { describe, it, afterEach } from "node:test";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("probeStaleSocket", () => {
 	let tmpDir: string | undefined;

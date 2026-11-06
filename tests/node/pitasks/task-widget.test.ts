@@ -1,4 +1,4 @@
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -17,9 +17,8 @@ import pitasks, {
 } from "../../../extensions/pitasks/index.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import { TaskWidget } from "../../../extensions/pitasks/task-widget.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const createdBy = { type: "local" as const, origin: "system", session: "", project: "" };
 const theme = { fg: (_color: string, text: string) => text, strikethrough: (text: string) => text };

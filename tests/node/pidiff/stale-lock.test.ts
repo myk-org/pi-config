@@ -12,10 +12,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
-import { describe, it, afterEach, after } from "node:test";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { describe, it, afterEach } from "node:test";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("pidiff stale lock detection", () => {
   let tmpDir: string | undefined;

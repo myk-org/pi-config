@@ -2,16 +2,15 @@
  * Tests for daemon-manager lockfile and port helpers.
  * Run with: npx tsx --test tests/node/shared/daemon-manager.test.ts
  */
-import { describe, it, afterEach, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive, isLiveLegacyDaemonFile } from "../../../extensions/shared/daemon-manager.js";
 import { createServer, type Server } from "node:http";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("findLiveLockfile (#1020)", () => {
   let server: Server | undefined;

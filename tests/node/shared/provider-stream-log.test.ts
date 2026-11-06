@@ -9,12 +9,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, it, after } from "node:test";
+import { afterEach, describe, it } from "node:test";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const MODULE = join(REPO, "extensions/shared/provider-stream-log.ts");

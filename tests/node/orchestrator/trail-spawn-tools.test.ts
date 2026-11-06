@@ -9,16 +9,15 @@
  *
  * Run: env -u PI_SUBAGENT_CHILD npx tsx --test tests/node/orchestrator/trail-spawn-tools.test.ts
  */
-import { afterEach, beforeEach, describe, it, after } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TRAIL_QUERY_TOOLS, trailToolsArgs, withTrailTools } from "../../../extensions/orchestrator/trail.js";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 beforeEach(() => {
   // Pin the global settings file: a developer's ~/.pi settings must never decide the result.

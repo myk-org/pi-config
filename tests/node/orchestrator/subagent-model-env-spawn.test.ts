@@ -4,13 +4,12 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import { runSingleAgent } from "../../../extensions/orchestrator/subagent-tool.js";
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 // The sync path invokes process.argv[1]; the async path invokes its runner.
 // Run a real Node child at each boundary so its observed environment, not a

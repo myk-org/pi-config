@@ -3,15 +3,14 @@
  * file tools on what a phone sent. The path rules matter: a filename from
  * Discord is attacker-controlled.
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, readdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { saveInboundAttachment } from "../../../extensions/shared/chat/chat-attachments.ts";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 function tempDir(): string {
   return makeTempDir("discord-inbox-");

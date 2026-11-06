@@ -7,7 +7,7 @@
  * everything here asserts a user-visible handler return value (block / no
  * block, footer text, CLI invocations) rather than integration internals.
  */
-import { afterEach, beforeEach, describe, it, after } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -15,9 +15,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import * as trail from "../../../extensions/orchestrator/trail.js";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 type TrailRun = (args: readonly string[], opts: { cwd: string; timeoutMs?: number }) => Promise<{ stdout: string; stderr: string; code: number }>;
 type Handler = (event: any, ctx: any) => Promise<any> | any;

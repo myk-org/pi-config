@@ -11,7 +11,7 @@ import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { DANGEROUS, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
 import { commitTrailerModelId, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import {
@@ -65,7 +65,6 @@ import {
   pushTargetsProtectedBranch,
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
 
-after(removeTempDirs);
 
 describe("comment signature hook model switches", () => {
   let cwd: string;
@@ -73,7 +72,7 @@ describe("comment signature hook model switches", () => {
   let hooks: Map<string, Function>;
 
   before(() => {
-    cwd = makeTempDir("pi-enforcement-model-");
+    cwd = makeFileTempDir("pi-enforcement-model-");
     mkdirSync(join(cwd, ".pi"));
     writeFileSync(join(cwd, ".pi", "pi-config-settings.json"), JSON.stringify({ comment_signature: true }));
     prior = Object.fromEntries(["PI_PRIMARY_MODEL", "PI_MODEL", "PI_COMMENT_SIGNATURE", "PI_SUBAGENT_CHILD"].map(key => [key, process.env[key]]));
@@ -127,7 +126,7 @@ describe("subagent tool_result error propagation into file_modified matching", (
   let priorChild: string | undefined;
 
   before(async () => {
-    cwd = makeTempDir("pi-enforcement-subagent-");
+    cwd = makeFileTempDir("pi-enforcement-subagent-");
     mkdirSync(join(cwd, ".pi"), { recursive: true });
     priorChild = process.env.PI_SUBAGENT_CHILD;
     delete process.env.PI_SUBAGENT_CHILD;
@@ -337,7 +336,7 @@ describe("isRmInProjectTmp", () => {
   before(() => {
     // Use a subdirectory structure that doesn't start with /tmp to avoid
     // interference with the /tmp/<something> allowlist
-    testDir = makeTempDir("enforcement-test-");
+    testDir = makeFileTempDir("enforcement-test-");
     tmpPath = join(testDir, ".pi", "tmp");
     mkdirSync(tmpPath, { recursive: true });
     mkdirSync(join(tmpPath, "worker-123"), { recursive: true });
@@ -445,7 +444,7 @@ describe("isRmInProjectTmp — redirects", () => {
   let redirectTmpPath: string;
 
   before(() => {
-    redirectTestDir = makeTempDir("enforcement-test-");
+    redirectTestDir = makeFileTempDir("enforcement-test-");
     redirectTmpPath = join(redirectTestDir, ".pi", "tmp");
     mkdirSync(redirectTmpPath, { recursive: true });
     mkdirSync(join(redirectTmpPath, "worker-123"), { recursive: true });

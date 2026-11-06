@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, it, after } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,9 +13,8 @@ import {
   redactOpenAiCompatibleDiagnostic,
 } from "../../../extensions/shared/openai-compatible-discovery.js";
 import { isPricingKnown, isPricingUnknown } from "../../../extensions/shared/pricing-provenance.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 function modelIds(registry: ModelRegistry, provider = "gateway") {
   return registry.getAll().filter((model) => model.provider === provider).map((model) => model.id);

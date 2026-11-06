@@ -10,15 +10,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import {
 	clearSettingsCache,
 	getSetting,
 	setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("coms settings configurability", () => {
 	let tmpDir: string;

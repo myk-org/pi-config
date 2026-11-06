@@ -7,7 +7,7 @@
  * line to satisfy a budget and without resurrecting a line the user removed mid-dream.
  */
 
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,9 +19,8 @@ import {
   snapshotTopicLines,
   topicLineCanonical,
 } from "../../../extensions/orchestrator/dreaming.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const DISTILLED =
   "extensions/orchestrator/enforcement-helpers.ts: Quoted identity values can forge commits";

@@ -1,4 +1,4 @@
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -6,9 +6,8 @@ import { tmpdir } from "node:os";
 import { registerSubagentTool } from "../../../extensions/orchestrator/subagent-tool.js";
 import type { AsyncKillOrigin } from "../../../extensions/orchestrator/async-agents.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const log = createLogger("subagent-async-kill-test");
 

@@ -1,7 +1,7 @@
 /**
  * Contract tests for /resume|/new CLI history re-seed (issue #661).
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
@@ -21,9 +21,8 @@ import {
   type CliSessionKey,
 } from "../../../extensions/cli-provider/sessions.js";
 import { reapStaleCliSessions, resolveReaperActivePiSessionId, startCliSessionReaper, stopCliSessionReaper } from "../../../extensions/cli-provider/session-reaper.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("decideCliSessionStartReseed (/resume contract)", () => {
   it("keeps markers on reload", () => {

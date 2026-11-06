@@ -5,7 +5,7 @@
  * No network, no model calls: findings come from a scratch sqlite reviews DB
  * (with and without the `comments.title` column) and seeded memory lessons.
  */
-import { afterEach, beforeEach, describe, it, after } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -39,9 +39,8 @@ import {
 } from "../../../extensions/orchestrator/review-learning.js";
 import { entryHash, loadScores, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 import { readAllTopicEntries } from "../../../extensions/orchestrator/memory-tree.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 // ── Scratch reviews DB (schema mirrors myk_pi_tools/reviews/store.py) ──────
 

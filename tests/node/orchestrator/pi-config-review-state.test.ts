@@ -2,7 +2,7 @@
  * Tests for review state machine (review loop enforcement).
  * Run with: npx tsx --test tests/node/orchestrator/pi-config-review-state.test.ts
  */
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -513,9 +513,8 @@ describe("tests_passed", () => {
 // ── Worktree state isolation ──
 
 import { execFileSync } from "node:child_process";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 // Git identity env vars for hermetic tests (CI may not have global git config)
 const GIT_ENV = {

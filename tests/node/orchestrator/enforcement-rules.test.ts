@@ -2,7 +2,7 @@
  * Tests for enforcement-rules engine (trigger matching + action execution).
  * Run with: npx tsx --test tests/node/orchestrator/enforcement-rules.test.ts
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import fs from "node:fs";
@@ -18,9 +18,8 @@ import {
   type VerifierEntry,
 } from "../../../extensions/orchestrator/enforcement-rules.js";
 import { entryHash, loadScores, rebuild, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 

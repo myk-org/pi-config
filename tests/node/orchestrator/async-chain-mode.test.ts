@@ -1,4 +1,4 @@
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -8,9 +8,8 @@ import { registerSubagentTool } from "../../../extensions/orchestrator/subagent-
 import { fireOnComplete, firePendingCompletions, registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const log = createLogger("subagent-async-chain-test");
 

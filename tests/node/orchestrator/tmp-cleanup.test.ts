@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { promises as fsp } from "node:fs";
@@ -13,9 +13,8 @@ import {
   runProjectTmpSweep,
   sweepProjectTmp,
 } from "../../../extensions/orchestrator/tmp-cleanup.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const MB = 1024 * 1024;
 const G = 1024 * MB;

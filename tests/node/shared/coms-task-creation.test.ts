@@ -2,15 +2,14 @@
  * Tests for coms task lookup helpers (#731).
  * Run with: npx tsx --test tests/node/shared/coms-task-creation.test.ts
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createComsInboundTasks, getComsOriginTask, getComsOriginTasks, readTaskSummary } from "../../../extensions/coms/coms-shared.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("ESM-safe lazy pitasks loading", () => {
 	it("reads a task summary without CommonJS require", async () => {

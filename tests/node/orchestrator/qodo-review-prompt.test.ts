@@ -3,11 +3,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import { qodoReviewArgumentCompletions } from "../../../extensions/orchestrator/extended-autocomplete.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const prompt = readFileSync(new URL("../../../prompts/qodo-review.md", import.meta.url), "utf8");
 

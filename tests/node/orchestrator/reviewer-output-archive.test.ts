@@ -1,4 +1,4 @@
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -7,9 +7,8 @@ import {
   archiveReviewerOutput,
   cleanupReviewerOutputArchives,
 } from "../../../extensions/orchestrator/reviewer-output-archive.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 function mode(filePath: string): number {
   return lstatSync(filePath).mode & 0o777;

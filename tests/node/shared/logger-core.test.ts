@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, it, after } from "node:test";
+import { afterEach, it } from "node:test";
 import { createLoggerCore } from "../../../extensions/shared/logger-core.mjs";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 let home: string | undefined;
 const previousHome = process.env.HOME;

@@ -6,7 +6,7 @@
  * reviews older than the tracking window.
  */
 
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,9 +16,8 @@ import {
   distilledLessonTextList,
   recordReviewLessons,
 } from "../../../extensions/orchestrator/review-learning.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const STATE = "review-learning-state.json";
 

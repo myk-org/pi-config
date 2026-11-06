@@ -3,7 +3,7 @@
  *
  * Run: npx tsx --test tests/node/providers/restore-default-model.test.ts
  */
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -22,9 +22,8 @@ import {
   restoreDefaultModelOnSessionStart,
 } from "../../../extensions/providers/restore-default-model.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const log = createLogger("restore-default-model-test");
 

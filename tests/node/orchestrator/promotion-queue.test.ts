@@ -2,7 +2,7 @@
  * Tests for promotion-queue parser/formatter.
  * Run with: npx tsx --test tests/node/orchestrator/promotion-queue.test.ts
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -18,9 +18,8 @@ import {
   updatePromotionStatus,
   type PromotionCandidate,
 } from "../../../extensions/orchestrator/promotion-queue.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 function makeCandidate(
   overrides: Partial<PromotionCandidate> = {},

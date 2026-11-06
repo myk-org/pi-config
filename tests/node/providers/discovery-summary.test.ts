@@ -1,13 +1,12 @@
-import { afterEach, beforeEach, describe, it, after } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { clearSettingsCache } from "../../../extensions/orchestrator/project-settings.js";
 import installProviders from "../../../extensions/providers/index.js";
 import { resetProvidersInitialized } from "../../../extensions/providers/initialized-guard.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 type DiscoverySummarySetup = {
   handlers: Map<string, (event: any, ctx: any) => void>;

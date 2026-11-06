@@ -6,7 +6,7 @@
  * against a throwaway fake `pi` on an isolated PATH, so results never depend
  * on the host's global pi installation (Qodo finding, PR #774 cycle 2).
  */
-import { describe, it, afterEach, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -17,9 +17,8 @@ import {
   checkMinPiVersion,
   getPiVersion,
 } from "../../../extensions/orchestrator/utils.ts";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 let cleanupFns: Array<() => void> = [];
 

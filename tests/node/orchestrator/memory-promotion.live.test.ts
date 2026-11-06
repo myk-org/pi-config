@@ -6,7 +6,7 @@
  *
  * Run: npx tsx --test tests/node/orchestrator/memory-promotion.live.test.ts
  */
-import { describe, it, before, after } from "node:test";
+import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -21,9 +21,8 @@ import {
   matchBashCommand,
   executeAction,
 } from "../../../extensions/orchestrator/enforcement-rules.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const LESSON = "Never use `git add .`";
 const CONVENTION = "Always follow the project release convention in this repo";
@@ -66,7 +65,7 @@ function seedEntry(
 
 describe("LIVE memory promotion e2e", () => {
   before(() => {
-    cwd = makeTempDir("pi-memory-live-");
+    cwd = makeFileTempDir("pi-memory-live-");
     writeTopic("lesson", "lessons.md", LESSON);
     writeTopic("preference", "preferences.md", CONVENTION);
     writeTopic("pattern", "patterns.md", PATTERN);

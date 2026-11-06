@@ -7,15 +7,14 @@
  * prompt-cache prefixes) instead of replacing the whole systemPrompt, and
  * that a forced prompt from an earlier handler falls back to composition.
  */
-import { describe, it, before, after } from "node:test";
+import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { registerRules } from "../../../extensions/orchestrator/rules.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const originalChild = process.env.PI_SUBAGENT_CHILD;
 

@@ -9,7 +9,7 @@
  *
  * Run with: npx tsx --test tests/node/orchestrator/main-checkout-root.test.ts
  */
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -21,9 +21,8 @@ import {
   getProjectMemoryDir,
   getProjectDataDir,
 } from "../../../extensions/orchestrator/utils.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 let base: string;
 

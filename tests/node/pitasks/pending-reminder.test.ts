@@ -4,7 +4,7 @@
  * (no mirrored logic here), and boots the extension with a captured setInterval so
  * the timer wiring is exercised behaviourally instead of grepped out of the source.
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -14,9 +14,8 @@ import { decidePendingReminder, oldestPendingAt } from "../../../extensions/pita
 import * as indexModule from "../../../extensions/pitasks/index.ts";
 import * as reminders from "../../../extensions/pitasks/reminders.ts";
 import registerPitasks from "../../../extensions/pitasks/index.ts";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const MIN = 60_000;
 const THRESHOLD = 10 * MIN;

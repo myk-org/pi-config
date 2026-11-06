@@ -3,15 +3,14 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { it, after } from "node:test";
+import { it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { WebSocketServer } from "ws";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerPidash } from "../../../extensions/pidash/pidash.ts";
 import { setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.ts";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 it("reports the effective thinking level after a dashboard set-thinking command", async () => {
   const dir = makeTempDir("pidash-thinking-");

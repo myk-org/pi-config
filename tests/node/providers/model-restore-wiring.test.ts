@@ -9,16 +9,15 @@
  *
  * Run: npx tsx --test tests/node/providers/model-restore-wiring.test.ts
  */
-import { afterEach, beforeEach, describe, it, after } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerModelRestoreOnSessionStart } from "../../../extensions/providers/model-restore-wiring.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const log = createLogger("model-restore-wiring-test");
 

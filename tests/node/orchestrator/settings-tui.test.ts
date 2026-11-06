@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import { StringListSubmenu } from "../../../extensions/orchestrator/settings-tui-submenus.js";
 import { SettingsList } from "@earendil-works/pi-tui";
 import assert from "node:assert/strict";
@@ -32,9 +32,8 @@ import {
   setGlobalSettingsPath,
   clearSettingsCache,
 } from "../../../extensions/orchestrator/project-settings.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 // ── detectSource ────────────────────────────────────────────────────
 

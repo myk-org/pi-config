@@ -1,7 +1,7 @@
 /**
  * Tests for cli-provider command builders, parsers, and CLI-only discovery parsers.
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { buildCliCommand, isCliAgentName } from "../../../extensions/cli-provider/providers.js";
 import {
@@ -27,9 +27,8 @@ import {
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("cli-provider providers", () => {
   it("recognizes supported agents", () => {

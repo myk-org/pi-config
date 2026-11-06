@@ -7,7 +7,7 @@
  * recorded, and the guard reads that log.
  */
 
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,9 +15,8 @@ import { join } from "node:path";
 
 import { recordRemoval, removalsSince } from "../../../extensions/orchestrator/memory-tree.js";
 import { entryHash } from "../../../extensions/orchestrator/memory-scoring.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const LINE = "- [lesson] A memory the user deleted on purpose";
 

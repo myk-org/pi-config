@@ -3,7 +3,7 @@
  *
  * Isolates settings via setGlobalSettingsPath so tests ignore real ~/.pi/.
  */
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -13,9 +13,8 @@ import {
 	setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
 import { resolveAgentModelProvider } from "../../../extensions/orchestrator/resolve-agent-model.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("resolveAgentModelProvider", () => {
 	let tmp: string;

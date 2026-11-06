@@ -11,10 +11,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { afterEach, describe, it, after } from "node:test";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { afterEach, describe, it } from "node:test";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const TSX = import.meta.resolve("tsx");

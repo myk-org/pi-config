@@ -2,16 +2,15 @@
  * Tests for buildExternalSystemPrompt.
  * Run with: npx tsx --test tests/node/shared/build-system-prompt.test.ts
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import type { TranscriptContext } from "@earendil-works/pi-ai";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildExternalSystemPrompt, createEmptyTranscriptContext } from "../../../extensions/shared/build-system-prompt.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("buildExternalSystemPrompt", () => {
   it("creates an empty transcript context", () => {

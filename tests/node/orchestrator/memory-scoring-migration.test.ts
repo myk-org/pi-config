@@ -2,7 +2,7 @@
  * Score-key migration and stable-id binding tests (issue #915).
  * Run: npx tsx --test tests/node/orchestrator/memory-scoring-migration.test.ts
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -16,9 +16,8 @@ import {
   type ScoredEntry,
 } from "../../../extensions/orchestrator/memory-scoring.js";
 import { readAllTopicEntries } from "../../../extensions/orchestrator/memory-tree.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 function makeCwd(): string {
   return makeTempDir("memory-migrate-");

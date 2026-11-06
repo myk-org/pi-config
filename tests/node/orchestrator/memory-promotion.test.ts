@@ -2,7 +2,7 @@
  * Tests for memory promotion scan + safe apply.
  * Run with: npx tsx --test tests/node/orchestrator/memory-promotion.test.ts
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -25,9 +25,8 @@ import {
   loadPromotions,
   promotionId,
 } from "../../../extensions/orchestrator/promotion-queue.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 function seedMemory(
   cwd: string,

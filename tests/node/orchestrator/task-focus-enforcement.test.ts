@@ -2,14 +2,13 @@
  * Tests for task-focus enforcement in rules.ts.
  * Run with: npx tsx --test tests/node/orchestrator/task-focus-enforcement.test.ts
  */
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 // We can't easily test registerRules directly due to its complex pi dependency.
 // Instead, test the core logic: reading task stores and accumulating active tasks.

@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,9 +8,8 @@ import { ClaudeDriver } from "../../../extensions/providers/claude-driver.js";
 import { GeminiDriver } from "../../../extensions/providers/gemini-driver.js";
 import { CursorCliDriver } from "../../../extensions/providers/cursor-cli-driver.js";
 import { AcpxDriver } from "../../../extensions/providers/acpx-driver.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("driver config schemas", () => {
   it("ClaudeDriver driverKind", () => { assert.equal(ClaudeDriver.driverKind, "claude-cli"); });

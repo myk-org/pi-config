@@ -2,15 +2,14 @@
  * Tests for waitForResultFiles — the shared helper used by deliverGroupResults
  * to wait for missing async result files before group delivery.
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { waitForResultFiles } from "../../../extensions/orchestrator/async-wait.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("waitForResultFiles", () => {
 	let tmp: string;

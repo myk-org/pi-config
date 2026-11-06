@@ -6,7 +6,7 @@
  * scope metadata + expiry pruning, dedup reinforcement, and the preference
  * extractor's question/grant filters.
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -24,9 +24,8 @@ import {
 } from "../../../extensions/orchestrator/memory-scoring.js";
 import { readAllTopicEntries, topicCharCap } from "../../../extensions/orchestrator/memory-tree.js";
 import { loadEnforcedEntries } from "../../../extensions/orchestrator/enforcement-rules.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 function makeCwd(): string {
   return makeTempDir("memory-write-");

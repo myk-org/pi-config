@@ -10,15 +10,14 @@
  * because async-agents.ts transitively imports pi SDK internals that are
  * unavailable in the test harness.
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { countFindings } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 // formatDuration is in async-agents.ts which cannot be imported in test context
 // (transitive pi SDK deps). Inline copy for testing.
 function formatDuration(ms: number): string {

@@ -2,7 +2,7 @@
  * Tests for async LLM capability (acpx vs native).
  * Run with: npx tsx --test tests/node/orchestrator/async-capability.test.ts
  */
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -19,9 +19,8 @@ import {
   clearSettingsCache,
   setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("registered acpx providers / supportsAsyncLlm", () => {
   let tmp: string;

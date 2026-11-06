@@ -17,9 +17,8 @@ import {
   isConflictResolutionCommand,
   listUnmergedFiles,
 } from "../../../extensions/orchestrator/git-helpers.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 const GIT_ENV = {
   ...process.env,

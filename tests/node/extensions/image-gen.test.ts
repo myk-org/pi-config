@@ -7,16 +7,15 @@
  * non-image model id, and missing API key. The Gemini API happy path is not
  * exercised (no network in tests).
  */
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createImageGenTool } from "../../../extensions/image-gen/image-gen.js";
 import { setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("image-gen tool guard paths", () => {
   const runExecute = async (cwd: string) => {

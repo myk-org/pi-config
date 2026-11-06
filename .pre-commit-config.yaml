@@ -79,7 +79,7 @@ repos:
         # subagent tool early-return, failing the subagent tests from an agent
         # session. Strip both so the gate behaves the same for every committer.
         entry: >-
-          bash -c 'test -f node_modules/.bin/tsx || { echo "node-tests: run npm install first"; exit 1; }; env -u GIT_INDEX_FILE -u GIT_PREFIX -u GIT_DIR -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_NAME scripts/run-node-tests.sh "tests/node/**/*.test.ts"'
+          bash -c 'test -f node_modules/.bin/tsx || { echo "node-tests: run npm install first"; exit 1; }; env -u GIT_INDEX_FILE -u GIT_PREFIX -u GIT_DIR -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_NAME npx tsx --test "tests/node/**/*.test.ts"'
         pass_filenames: false
         files: \.(ts|tsx|mts)$|(^|/)(package\.json|tsconfig\.typecheck\.json)$
       - id: sidecar-tests

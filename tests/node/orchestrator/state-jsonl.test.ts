@@ -2,7 +2,7 @@
  * Tests for JSONL state persistence module.
  * Run with: npx tsx --test tests/node/orchestrator/state-jsonl.test.ts
  */
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -249,9 +249,8 @@ describe("multiple store instances", () => {
 // ── 7. JsonlAppendLog ──
 
 import { JsonlAppendLog } from "../../../extensions/orchestrator/state-jsonl.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 interface TestLogEntry {
   event: string;

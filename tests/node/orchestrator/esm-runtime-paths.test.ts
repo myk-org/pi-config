@@ -2,13 +2,12 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, after } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import { discoverAgents } from "../../../extensions/orchestrator/agents.js";
 import { registerRules } from "../../../extensions/orchestrator/rules.js";
 import * as sessionValidation from "../../../extensions/orchestrator/session-validation.js";
-import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
 
-after(removeTempDirs);
 
 describe("ESM runtime module paths", () => {
   it("discoverAgents loads package agents from the module directory", () => {
