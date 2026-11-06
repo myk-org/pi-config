@@ -268,26 +268,41 @@ export function isLiveLegacyDaemonFile(legacyDir: string, name: string): boolean
   return legacyLockfileOwnerAlive(legacyDir);
 }
 
+/** Outcome of adopting a pre-`.pi/run` lockfile. */
+export type LegacyAdoption = "none" | "adopted" | "failed";
+
 /** Adopt a legacy `.pi/tmp` lockfile into the run dir when a pre-`.pi/run` daemon is still
- *  alive. Called once at session start, BEFORE the tmp sweep, so the sweep itself needs no
- *  exemption for those files: the live daemon becomes discoverable at the new path and the
- *  legacy copies are left where they are (deleting a running daemon's files is not this
- *  function's business).
+ *  alive. Called once at session start, BEFORE the tmp sweep, so the sweep needs no exemption
+ *  for any file: the live daemon becomes discoverable at the new path and the legacy copies
+ *  are left alone (deleting a running daemon's files is not this function's business).
  *
- *  Refuses to touch a run dir that already holds a lockfile — that record belongs to a live
- *  daemon and an older legacy copy must never overwrite it. */
-export function adoptLegacyLockfile(lockDir: string, legacyDir: string): boolean {
+ *  A run-dir record only wins while its daemon ANSWERS: a stale record must not hide a live
+ *  legacy daemon, which is the stale-record failure pidiff discovery already had to fix.
+ *
+ *  `"failed"` means a live legacy daemon exists and could not be recorded — the caller must
+ *  not sweep, or the sweep would delete the only pointer to it. */
+export async function adoptLegacyLockfile(lockDir: string, legacyDir: string): Promise<LegacyAdoption> {
+  const legacy = readLockfile(legacyDir);
+  if (!legacy || !legacyLockfileOwnerAlive(legacyDir)) return "none";
+  if ((await findLiveLockfile([lockDir])) !== null) return "none";
   try {
-    if (fs.existsSync(path.join(lockDir, "pidiff.port"))) return false;
-    const lock = readLockfile(legacyDir);
-    if (!lock) return false;
-    if (!legacyLockfileOwnerAlive(legacyDir)) return false;
-    writeLockfile(lockDir, lock.port, lock.pid, (msg) => log.debug("legacy_lockfile_adopted", { message: msg }));
-    return true;
+    fs.mkdirSync(lockDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(lockDir, "pidiff.port"), String(legacy.port), { mode: 0o600 });
+    if (legacy.pid !== null) {
+      fs.writeFileSync(path.join(lockDir, "pidiff.pid"), String(legacy.pid), { mode: 0o600 });
+    }
   } catch (e: any) {
     log.warn("legacy_lockfile_adoption_failed", { lockDir, legacyDir, error: e?.message });
-    return false;
+    return "failed";
   }
+  // Verify the record landed: the caller decides whether to sweep based on this answer.
+  const written = readLockfile(lockDir);
+  if (!written || written.port !== legacy.port) {
+    log.warn("legacy_lockfile_adoption_unverified", { lockDir, legacyDir, port: legacy.port });
+    return "failed";
+  }
+  log.info("legacy_lockfile_adopted", { lockDir, legacyDir, port: legacy.port });
+  return "adopted";
 }
 
 /** First lockfile port (in `dirs` order) whose daemon answers /api/health, or

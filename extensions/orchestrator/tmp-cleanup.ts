@@ -406,8 +406,13 @@ export function registerTmpCleanup(pi: ExtensionAPI): void {
     setImmediate(async () => {
       try {
         // A pre-`.pi/run` daemon still alive gets its record adopted into `.pi/run` first, so
-        // the sweep below needs no exemption for any file name (#1020).
-        adoptLegacyLockfile(getProjectRunDir(cwd), getProjectTmpDir(cwd));
+        // the sweep below needs no exemption for any file name (#1020). If adoption cannot be
+        // recorded, sweeping would delete the only pointer to that daemon — skip it.
+        const adoption = await adoptLegacyLockfile(getProjectRunDir(cwd), getProjectTmpDir(cwd));
+        if (adoption === "failed") {
+          log.warn("tmp_sweep_skipped_legacy_adoption_failed", { cwd });
+          return;
+        }
         await runProjectTmpSweep(cwd);
       } catch (error: any) {
         log.warn("tmp_sweep_failed", { error: error?.message });

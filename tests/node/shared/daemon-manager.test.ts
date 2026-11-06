@@ -226,14 +226,14 @@ describe("legacy .pi/tmp lockfiles (#1020)", () => {
     }
   });
 
-  it("adoptLegacyLockfile copies a live legacy record into an empty run dir", () => {
+  it("adoptLegacyLockfile copies a live legacy record into an empty run dir", async () => {
     const runDir = mk();
     const legacyDir = mk();
     try {
       writeLockfile(legacyDir, 41234, process.pid, () => {});
-      assert.equal(adoptLegacyLockfile(runDir, legacyDir), true);
+      assert.equal(await adoptLegacyLockfile(runDir, legacyDir), "adopted");
       assert.deepEqual(readLockfile(runDir), { port: 41234, pid: process.pid });
-      // The legacy copies are left alone: a live daemon owns them.
+      // The legacy copies stay: a live daemon owns them.
       assert.equal(existsSync(join(legacyDir, "pidiff.port")), true);
     } finally {
       rmSync(runDir, { recursive: true, force: true });
@@ -241,29 +241,69 @@ describe("legacy .pi/tmp lockfiles (#1020)", () => {
     }
   });
 
-  it("adoptLegacyLockfile never overwrites a record the run dir already holds", () => {
+  it("adoptLegacyLockfile replaces a STALE run-dir record instead of hiding the live daemon", async () => {
+    // A file merely existing in `.pi/run` says nothing: if no daemon answers there, refusing
+    // adoption would leave a live legacy daemon undiscoverable while the sweep removes its
+    // files.
     const runDir = mk();
     const legacyDir = mk();
     try {
-      writeLockfile(runDir, 5000, process.pid, () => {});
+      writeLockfile(runDir, 5099, 999999, () => {}); // nothing listens on 5099
       writeLockfile(legacyDir, 41234, process.pid, () => {});
-      assert.equal(adoptLegacyLockfile(runDir, legacyDir), false);
-      assert.strictEqual(readLockfile(runDir)!.port, 5000);
+      assert.equal(await adoptLegacyLockfile(runDir, legacyDir), "adopted");
+      assert.strictEqual(readLockfile(runDir)!.port, 41234);
     } finally {
       rmSync(runDir, { recursive: true, force: true });
       rmSync(legacyDir, { recursive: true, force: true });
     }
   });
 
-  it("adoptLegacyLockfile ignores a dead legacy daemon", () => {
+  it("adoptLegacyLockfile leaves a LIVE run-dir daemon alone", async () => {
+    const runDir = mk();
+    const legacyDir = mk();
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: "ok" }));
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const port = (server.address() as { port: number }).port;
+      writeLockfile(runDir, port, process.pid, () => {});
+      writeLockfile(legacyDir, 41234, process.pid, () => {});
+      assert.equal(await adoptLegacyLockfile(runDir, legacyDir), "none");
+      assert.strictEqual(readLockfile(runDir)!.port, port);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(runDir, { recursive: true, force: true });
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("adoptLegacyLockfile ignores a dead legacy daemon", async () => {
     const runDir = mk();
     const legacyDir = mk();
     try {
       writeLockfile(legacyDir, 41234, 0, () => {});
-      assert.equal(adoptLegacyLockfile(runDir, legacyDir), false);
+      assert.equal(await adoptLegacyLockfile(runDir, legacyDir), "none");
       assert.equal(existsSync(join(runDir, "pidiff.port")), false);
     } finally {
       rmSync(runDir, { recursive: true, force: true });
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("adoptLegacyLockfile reports failure when the record cannot be written", async () => {
+    const sandbox = mk();
+    const legacyDir = mk();
+    try {
+      // A regular file where the run dir should be: mkdirSync fails, so the caller must know
+      // not to sweep.
+      const runDir = join(sandbox, "not-a-dir");
+      writeFileSync(runDir, "blocker");
+      writeLockfile(legacyDir, 41234, process.pid, () => {});
+      assert.equal(await adoptLegacyLockfile(runDir, legacyDir), "failed");
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
       rmSync(legacyDir, { recursive: true, force: true });
     }
   });
