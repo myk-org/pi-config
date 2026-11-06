@@ -38,3 +38,12 @@ Thumbs.db
 .qodo/
 
 .worktrees/
+
+# Docs site build output — .github/workflows/docs.yml builds it on main from
+# docs/*.md, so a local `uvx pi-docsite` run must never dirty the tree.
+docs/*.html
+docs/assets/
+docs/llms.txt
+docs/llms-full.txt
+docs/search-index.json
+docs/.nojekyll
