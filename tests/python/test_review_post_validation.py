@@ -323,13 +323,15 @@ class TestValidateReplyAutoSkipped:
         assert "Empty reply" in err
 
 
-def _write_threaded_review(tmp_path: Path, *, status: str, auto_skipped: object) -> Path:
+def _write_threaded_review(
+    tmp_path: Path, *, status: str, auto_skipped: object, skip_reason: str = "", category: str = "human"
+) -> Path:
     """Create one threaded (resolvable) non-sticky entry for post.run tests."""
     review_file = tmp_path / "threaded.json"
     review_file.write_text(
         json.dumps({
             "metadata": {"owner": "myk-org", "repo": "pi-config", "pr_number": "1037"},
-            "human": [
+            category: [
                 {
                     "thread_id": "thread-id",
                     "type": "review_comment",
@@ -337,11 +339,10 @@ def _write_threaded_review(tmp_path: Path, *, status: str, auto_skipped: object)
                     "line": 615,
                     "status": status,
                     "reply": "",
+                    "skip_reason": skip_reason,
                     "is_auto_skipped": auto_skipped,
                 }
             ],
-            "qodo": [],
-            "coderabbit": [],
         }),
         encoding="utf-8",
     )
@@ -385,3 +386,28 @@ def test_run_posts_no_generic_reply_for_a_threaded_auto_skipped_entry(
 
     post_thread_reply.assert_not_called()
     resolve_thread.assert_not_called()
+
+
+def test_run_still_posts_the_reason_for_a_dismissed_auto_skipped_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dismissed-thread match carries a real reason: it is posted and resolved."""
+    review_file = _write_threaded_review(
+        tmp_path,
+        status="skipped",
+        auto_skipped=True,
+        skip_reason="duplicate of the guard in #1010",
+        category="coderabbit",
+    )
+    post_thread_reply = Mock(return_value=True)
+    resolve_thread = Mock(return_value=True)
+    monkeypatch.setattr(post, "check_dependencies", lambda: None)
+    monkeypatch.setattr(post, "post_thread_reply", post_thread_reply)
+    monkeypatch.setattr(post, "resolve_thread", resolve_thread)
+
+    with pytest.raises(SystemExit, match="0"):
+        post.run(str(review_file))
+
+    post_thread_reply.assert_called_once()
+    assert "duplicate of the guard in #1010" in post_thread_reply.call_args.args[1]
+    resolve_thread.assert_called_once()

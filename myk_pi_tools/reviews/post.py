@@ -906,10 +906,11 @@ def run(json_path: str) -> None:
                 eprint(f"Skipping {category}[{i}] ({path}): status is pending")
                 continue
 
-            # Auto-skipped entries were never actionable: nothing is posted for them.
-            # Without this, the threaded path below falls back to a generic
-            # "Addressed."/"Skipped." reply and resolves the thread.
-            if _is_auto_skipped(thread_data):
+            # Auto-skipped entries with nothing to say are skipped: the threaded path
+            # below would otherwise post a generic "Addressed."/"Skipped." reply and
+            # resolve the thread. A dismissed-thread match DOES carry its reason, and
+            # that reason must still be posted and the thread resolved.
+            if _is_auto_skipped(thread_data) and not (reply.strip() or skip_reason.strip()):
                 already_posted_count += 1
                 log.debug("Skipping threaded auto-skipped entry", extra={"category": category, "path": path})
                 eprint(f"Skipping {category}[{i}] ({path}): auto-skipped (already replied in previous cycle)")
