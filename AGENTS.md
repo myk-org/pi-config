@@ -151,11 +151,11 @@ User switches log level on the fly via settings — debug must show everything n
     `search-index.json`, and `assets/` are gitignored.
   - Links **between** pages use the `.html` extension: the published site uses it, even though the
     source file is `docs/<slug>.md`.
-  - To preview locally, run the generator and discard the output:
-    `uvx pi-docsite@latest --docs-dir docs --tagline "Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar."`
+  - To preview locally, run the workspace generator and discard the output:
+    `uv run --package pi-docsite pi-docsite --docs-dir docs --tagline "Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar."`
     Omitting `--tagline` blanks the meta description and tagline on every page, so it is not optional.
-  - `uvx pi-docsite@latest` is the newest PyPI release, so a template change in `packages/pi-docsite`
-    reaches the site only after the release that publishes it. Never "fix" that by hand-editing HTML.
+  - The site is built from this repo's own generator (`packages/pi-docsite`), not a PyPI release,
+    so a template change lands on the site with the commit that carries it.
   - The output is deterministic: repeated runs are byte-identical. If a rebuild shows unrelated
     churn, that is a real regression from your edit — investigate it. Each page must have exactly one
     H1, which becomes its title and sidebar entry; headings inside code fences are ignored.
@@ -405,9 +405,12 @@ Edit the markdown and let the Action build the site. Never run the generator in 
 its output — `.github/workflows/docs-guard.yml` fails such a PR by design. Preview locally only:
 
 ```bash
-uvx pi-docsite@latest --docs-dir docs \
+uv run --package pi-docsite pi-docsite --docs-dir docs \
   --tagline "Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar."
 ```
+
+That runs this repo's own generator (`packages/pi-docsite`), which is also what CI builds with —
+never a PyPI release, so a template change lands with the commit that carries it.
 
 The output is deterministic: repeated runs are byte-identical, so a rebuild that shows
 unrelated churn means a real change. Each page must have exactly one H1, which becomes

@@ -46,15 +46,18 @@ jobs:
             [[ "$field" =~ ^[ACDMRTUXB][0-9]*$ ]] && continue
             [[ "$field" == docs/* ]] || continue
             [[ "$field" == docs/nav.json ]] && continue
-            [[ "$field" =~ ^docs/(.*/)?[^/]+\.md$ ]] && continue
+            # Pages are TOP-LEVEL only: `pi-docsite` reads `docs/*.md`, so a nested
+            # `docs/guides/new.md` would pass a `**/*.md` rule and never render. Reject it
+            # here rather than shipping a source the build silently ignores.
+            [[ "$field" =~ ^docs/[^/]+\.md$ ]] && continue
             offenders+=("$field")
           done < "$diff_file"
 
           if [ "${#offenders[@]}" -gt 0 ]; then
             echo "::error::Generated docs must not be committed — the site is built on main from the docs sources."
             printf '%s\n' "${offenders[@]}"
-            echo "Everything under docs/ other than docs/**/*.md and docs/nav.json is build output of"
-            echo ".github/workflows/docs.yml — edit the markdown source instead."
+            echo "Everything under docs/ other than top-level docs/*.md and docs/nav.json is build"
+            echo "output of .github/workflows/docs.yml — edit the markdown source instead."
             exit 1
           fi
           echo "No generated docs in the diff."

@@ -19,6 +19,7 @@ repository for artifacts, it asks ``pi-docsite`` what it produces.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -32,10 +33,12 @@ DOCS = REPO_ROOT / "docs"
 
 
 def test_docs_tree_carries_no_generated_output() -> None:
-    """Only ``**/*.md`` and ``nav.json`` may be TRACKED under docs/.
+    """Only top-level ``docs/*.md`` and ``docs/nav.json`` may be TRACKED.
 
     A local preview build may leave artifacts on disk (they are gitignored); what
     must never come back is a committed one, so this asks git, not the filesystem.
+    Nested markdown is rejected too: ``pi-docsite`` reads ``docs/*.md`` only, so a
+    ``docs/guides/new.md`` would be tracked and never render.
     """
     tracked = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "ls-files", "docs"],
@@ -43,9 +46,11 @@ def test_docs_tree_carries_no_generated_output() -> None:
         text=True,
         check=True,
     ).stdout.splitlines()
-    generated = sorted(path for path in tracked if not path.endswith(".md") and path != "docs/nav.json")
+    generated = sorted(
+        path for path in tracked if path != "docs/nav.json" and not re.fullmatch(r"docs/[^/]+\.md", path)
+    )
     assert generated == [], (
-        "generated docs must not be committed: "
+        "only top-level docs/*.md and docs/nav.json may be tracked; found: "
         + ", ".join(generated)
         + " — edit docs/*.md instead; .github/workflows/docs.yml builds the site"
     )

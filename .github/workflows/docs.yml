@@ -32,11 +32,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - name: Build site from docs/*.md
-        # Always the newest release: docs should not wait on a bump commit, and this job holds no
-        # publish rights (they are on `deploy`), so the blast radius of a bad upstream upload is a
-        # failed build, not a compromised deployment.
+        # The generator is this repo's own workspace package, not a PyPI release: the site is
+        # built from the generator source in the commit being deployed. An unreviewed or
+        # compromised `@latest` upload could otherwise write anything into the artifact the
+        # credentialed deploy job publishes.
         run: >-
-          uvx pi-docsite@latest --docs-dir docs
+          uv run --package pi-docsite pi-docsite --docs-dir docs
           --tagline "Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar."
       - uses: actions/upload-pages-artifact@v3
         with:
