@@ -3,9 +3,9 @@
  * No pi-coding-agent or pi-tui dependencies.
  */
 
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join as joinPath, resolve, sep } from "node:path";
+import { basename, dirname, join as joinPath, resolve, sep } from "node:path";
 import stripJsonComments from "strip-json-comments";
 import {
   type SettingsKeyDef,
@@ -216,7 +216,75 @@ export class SettingsFileCorruptError extends Error {
   constructor(readonly filePath: string) {
     super(`refusing to overwrite unparseable settings file: ${filePath}`);
     this.name = "SettingsFileCorruptError";
-    logWarn(`settings_write_refused_corrupt ${filePath}`);
+    log.warn("settings_write_refused_corrupt", { filePath });
+  }
+}
+
+/** `realpath` of the nearest path that exists, so a symlinked parent cannot hide the target. */
+function nearestRealPath(target: string): string {
+  const absolute = resolve(target);
+  const tail: string[] = [];
+  let current = absolute;
+  for (;;) {
+    try {
+      const real = realpathSync(current);
+      return tail.length > 0 ? joinPath(real, ...tail.reverse()) : real;
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return absolute;
+      tail.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/** The cwd whose settings govern this file: the project root for a project file, and never a
+ *  project override for a global one. A removed cwd must not block a save. */
+function settingCwdFor(filePath: string): string | null {
+  const parent = dirname(filePath);
+  if (basename(parent) === ".pi") {
+    const root = dirname(parent);
+    if (root === homedir()) return null; // global file: no project scope applies
+    return root;
+  }
+  try {
+    return process.cwd();
+  } catch {
+    return null;
+  }
+}
+
+/** Backup retention for this file: project setting where a project owns it, env/default for
+ *  a global file — one project can never change another's retention. */
+function backupCountFor(filePath: string): number {
+  const cwd = settingCwdFor(filePath);
+  if (cwd !== null) {
+    const value = Number(getSetting(cwd, "settings_backup_count"));
+    if (Number.isFinite(value) && value >= 0) return value;
+  }
+  const fromEnv = Number(process.env.PI_SETTINGS_BACKUP_COUNT);
+  if (Number.isFinite(fromEnv) && process.env.PI_SETTINGS_BACKUP_COUNT !== "") return fromEnv;
+  return Number(SETTINGS_KEYS.settings_backup_count?.default ?? 5);
+}
+
+/** Drop slots beyond the configured count, so lowering retention removes old copies. */
+function pruneExtraBackups(filePath: string, count: number): void {
+  const prefix = `${basename(filePath)}.bak.`;
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(dirname(filePath));
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith(prefix)) continue;
+    const slot = Number(name.slice(prefix.length));
+    if (!Number.isFinite(slot) || slot <= count) continue;
+    try {
+      unlinkSync(joinPath(dirname(filePath), name));
+    } catch {
+      /* best effort */
+    }
   }
 }
 
@@ -236,6 +304,7 @@ export function settingsBackupPath(filePath: string, slot = 1): string {
 /** Keep `count` previous versions: shift `.bak.N-1` → `.bak.N`, then current → `.bak.1`.
  *  A count of 0 disables backups. Failures never block the write — they only log. */
 function rotateSettingsBackups(filePath: string, count: number): void {
+  pruneExtraBackups(filePath, count);
   if (count <= 0) return;
   try {
     const oldest = settingsBackupPath(filePath, count);
@@ -248,7 +317,7 @@ function rotateSettingsBackups(filePath: string, count: number): void {
   } catch (e: any) {
     // A write without its backup breaks the one guarantee this function exists for: if the
     // new content is wrong there is nothing to fall back to.
-    logWarn(`settings_backup_failed ${filePath}: ${e?.message}`);
+    log.warn("settings_backup_failed", { filePath, error: e?.message });
     throw new SettingsBackupError(filePath, e);
   }
 }
@@ -262,11 +331,12 @@ export function writeSettingsFile(filePath: string, data: Record<string, unknown
   // change a location the write is not allowed to reach.
   if (process.env.NODE_TEST_CONTEXT !== undefined) {
     // Test processes may only write under the OS temp tree (same safety net the global
-    // settings path has): a test once wrote a project's real settings file.
-    const resolved = resolve(filePath);
-    const tmpRoot = resolve(tmpdir());
-    if (!resolved.startsWith(tmpRoot + sep)) {
-      throw new Error(`test process refused to write settings outside the temp tree: ${resolved}`);
+    // settings path has): a test once wrote a project's real settings file. Compare the REAL
+    // paths — a lexical check passes for a fixture whose `.pi` links to a real project.
+    const real = nearestRealPath(filePath);
+    const tmpRoot = realpathSync(tmpdir());
+    if (real !== tmpRoot && !real.startsWith(tmpRoot + sep)) {
+      throw new Error(`test process refused to write settings outside the temp tree: ${real}`);
     }
   }
 
@@ -278,7 +348,7 @@ export function writeSettingsFile(filePath: string, data: Record<string, unknown
     if (readSettingsFile(filePath) === null) throw new SettingsFileCorruptError(filePath);
     // Every touch keeps the previous bytes — `settings_backup_count` of them, newest at
     // `.bak.1` — so a wrong write is always recoverable.
-    rotateSettingsBackups(filePath, Number(getSetting(process.cwd(), "settings_backup_count")) || 0);
+    rotateSettingsBackups(filePath, backupCountFor(filePath));
   }
   const content = JSON.stringify(data, null, 2) + "\n";
   const tmpPath = `${filePath}.${process.pid}.${Date.now().toString(36)}`;

@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import { StringListSubmenu } from "../../../extensions/orchestrator/settings-tui-submenus.js";
 import { SettingsList } from "@earendil-works/pi-tui";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getSettingsListState } from "../../../extensions/orchestrator/settings-tui.js";
@@ -475,6 +475,62 @@ describe("readSettingsFile / writeSettingsFile", () => {
     } finally {
       if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
       else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+    }
+  });
+
+  it("removes slots beyond the retention when the count drops", () => {
+    const filePath = join(tempDir, "pruned.json");
+    writeSettingsFile(filePath, { dco: true });
+    for (const port of [1, 2, 3]) writeSettingsFile(filePath, { pidash_port: port });
+    assert.ok(existsSync(`${filePath}.bak.3`), "three backups kept by default");
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    process.env.PI_SETTINGS_BACKUP_COUNT = "1";
+    try {
+      writeSettingsFile(filePath, { pidash_port: 99 });
+      assert.ok(existsSync(`${filePath}.bak.1`));
+      for (const slot of [2, 3]) {
+        assert.equal(existsSync(`${filePath}.bak.${slot}`), false, `.bak.${slot} must be gone`);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+      else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+    }
+  });
+
+  it("keeps no backups at all when retention is 0", () => {
+    const filePath = join(tempDir, "no-backups.json");
+    writeSettingsFile(filePath, { dco: true });
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    process.env.PI_SETTINGS_BACKUP_COUNT = "0";
+    try {
+      writeSettingsFile(filePath, { dco: false });
+      writeSettingsFile(filePath, { dco: true });
+      assert.equal(existsSync(`${filePath}.bak.1`), false, "0 disables backups");
+    } finally {
+      if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+      else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+    }
+  });
+
+  it("a symlinked parent cannot smuggle a real project into the test sandbox", () => {
+    // The fixture's `.pi` points outside the OS temp tree; a LEXICAL check would accept it
+    // while the write landed there. /var/tmp is outside tmpdir() and safe to link to.
+    const outside = "/var/tmp";
+    const target = join(outside, `pi-config-settings-guard-${process.pid}.json`);
+    const fixture = join(tempDir, "linked-fixture");
+    mkdirSync(fixture, { recursive: true });
+    symlinkSync(outside, join(fixture, ".pi"));
+    const saved = process.env.NODE_TEST_CONTEXT;
+    process.env.NODE_TEST_CONTEXT = "1";
+    try {
+      assert.throws(
+        () => writeSettingsFile(join(fixture, ".pi", `pi-config-settings-guard-${process.pid}.json`), { dco: true }),
+        /refused to write settings outside the temp tree/,
+      );
+      assert.equal(existsSync(target), false, "nothing written through the link");
+    } finally {
+      if (saved === undefined) delete process.env.NODE_TEST_CONTEXT;
+      else process.env.NODE_TEST_CONTEXT = saved;
     }
   });
 
