@@ -149,17 +149,31 @@ describe("sweepProjectTmp", () => {
     }
   });
 
-  it("sweeps legacy control-file names like any other entry (#1020)", async () => {
-    // The sweep has no exemption: a live pre-`.pi/run` daemon is protected by having its
-    // record adopted into `.pi/run` before the sweep runs, never by a name list here.
+  it("keeps the lockfile of a live pre-`.pi/run` daemon (#1020)", async () => {
+    // The only exemption, and the daemon layer decides it: sweeping a live daemon's lockfile
+    // would make the next connect() spawn a duplicate on its port.
+    makeEntry("pidiff.port", 2 * MB, 90);
+    makeEntry("pidiff.pid", 2 * MB, 90);
+    fs.writeFileSync(path.join(tmpDir, "pidiff.pid"), String(process.pid));
+    makeEntry("throwaway", 2 * MB, 90);
+
+    const result = await sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
+    assert.equal(result.deleted, 1, "only the throwaway entry is swept");
+    assert.equal(fs.existsSync(path.join(tmpDir, "pidiff.port")), true, "live port file kept");
+    assert.equal(fs.existsSync(path.join(tmpDir, "pidiff.pid")), true, "live pid file kept");
+  });
+
+  it("sweeps a dead daemon's legacy lockfile and reload markers (#1020)", async () => {
     for (const name of ["pidiff.pid", "pidiff.port", "reload.flag", "reload.done", "reload.pending"]) {
       makeEntry(name, 2 * MB, 90);
     }
+    const pidFile = path.join(tmpDir, "pidiff.pid");
+    fs.writeFileSync(pidFile, "0");
+    const old = new Date(Date.now() - 90 * DAY);
+    fs.utimesSync(pidFile, old, old);
+
     const result = await sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
-    assert.equal(result.deleted, 5, "every control-file-shaped entry is swept");
-    for (const name of ["pidiff.pid", "pidiff.port", "reload.flag", "reload.done", "reload.pending"]) {
-      assert.equal(fs.existsSync(path.join(tmpDir, name)), false, `${name} is swept`);
-    }
+    assert.equal(result.deleted, 5, "a dead owner's leftovers are throwaway");
     assert.equal(fs.existsSync(tmpDir), true, "tmp root must survive");
   });
 

@@ -193,26 +193,6 @@ export function writeLockfile(lockDir: string, port: number, pid: number | null,
   } catch (e: any) { log(`writeLockfile error: ${e.message}`); }
 }
 
-/** True when `target` is a real directory, not a symlink planted by the project. */
-function isRealDirectory(target: string): boolean {
-  try {
-    const st = fs.lstatSync(target);
-    return st.isDirectory() && !st.isSymbolicLink();
-  } catch {
-    return false;
-  }
-}
-
-/** Remove a planted symlink so a write cannot follow it into an unrelated file. A regular
- *  lockfile is left for the caller's `wx` write to lose against. */
-function unlinkIfSymlink(target: string): void {
-  try {
-    if (fs.lstatSync(target).isSymbolicLink()) fs.unlinkSync(target);
-  } catch {
-    /* absence is fine */
-  }
-}
-
 /** True for a path that exists and is a regular file. Lockfiles are never FIFOs, and reading
  *  one would block the event loop, so every control-file read goes through this. */
 function isRegularFile(target: string): boolean {
@@ -288,83 +268,15 @@ export function legacyLockfileOwnerAlive(legacyDir: string): boolean {
   }
 }
 
-/** Outcome of adopting a pre-`.pi/run` lockfile. */
-export type LegacyAdoption = "none" | "adopted" | "failed";
+/** Control files a pre-`.pi/run` daemon owns inside the legacy dir. Private: the sweep asks
+ *  `isLiveLegacyDaemonFile`, so neither module keeps a second copy of the names (#1020). */
+const LEGACY_CONTROL_FILES = new Set(["pidiff.port", "pidiff.pid"]);
 
-/** Adopt a legacy `.pi/tmp` lockfile into the run dir when a pre-`.pi/run` daemon is still
- *  alive. Called once at session start, BEFORE the tmp sweep, so the sweep needs no exemption
- *  for any file: the live daemon becomes discoverable at the new path and the legacy copies
- *  are left alone (deleting a running daemon's files is not this function's business).
- *
- *  A run-dir record only wins while its daemon ANSWERS: a stale record must not hide a live
- *  legacy daemon, which is the stale-record failure pidiff discovery already had to fix.
- *
- *  `"failed"` means a live legacy daemon exists and could not be recorded — the caller must
- *  not sweep, or the sweep would delete the only pointer to it. */
-export async function adoptLegacyLockfile(lockDir: string, legacyDir: string): Promise<LegacyAdoption> {
-  const legacy = readLockfile(legacyDir);
-  if (!legacy || !legacyLockfileOwnerAlive(legacyDir)) return "none";
-  const stale = readLockfile(lockDir);
-  if ((await findLiveLockfile([lockDir])) !== null) return "none";
-
-  try {
-    fs.mkdirSync(lockDir, { recursive: true, mode: 0o700 });
-  } catch (e: any) {
-    log.warn("legacy_lockfile_adoption_failed", { lockDir, legacyDir, error: e?.message });
-    return "failed";
-  }
-  // The project controls this tree: a symlinked `.pi/run` would send the writes somewhere else.
-  if (!isRealDirectory(lockDir)) {
-    log.warn("legacy_lockfile_adoption_unsafe_dir", { lockDir });
-    return "failed";
-  }
-
-  // Drop only the exact stale record observed above; if it changed since, a concurrent start
-  // owns the run dir now and the legacy copy must not replace it.
-  if (stale) {
-    const current = readLockfile(lockDir);
-    if (!current || current.port !== stale.port) {
-      log.debug("legacy_lockfile_adoption_lost_race", { lockDir });
-      return "none";
-    }
-    try {
-      fs.unlinkSync(path.join(lockDir, "pidiff.port"));
-      fs.rmSync(path.join(lockDir, "pidiff.pid"), { force: true });
-    } catch (e: any) {
-      log.warn("legacy_lockfile_adoption_failed", { lockDir, legacyDir, error: e?.message });
-      return "failed";
-    }
-  }
-
-  const portPath = path.join(lockDir, "pidiff.port");
-  const pidPath = path.join(lockDir, "pidiff.pid");
-  // Never write THROUGH a planted symlink: `wx` refuses to create over an existing entry, and
-  // a symlink sitting there would otherwise be followed into an unrelated user file.
-  unlinkIfSymlink(portPath);
-  unlinkIfSymlink(pidPath);
-
-  try {
-    // "wx" still guards the empty-case race: a record that appeared in between loses nothing.
-    fs.writeFileSync(portPath, String(legacy.port), { mode: 0o600, flag: "wx" });
-    if (legacy.pid !== null) {
-      fs.writeFileSync(pidPath, String(legacy.pid), { mode: 0o600, flag: "wx" });
-    }
-  } catch (e: any) {
-    if (e?.code === "EEXIST") {
-      log.debug("legacy_lockfile_adoption_lost_race", { lockDir });
-      return "none";
-    }
-    log.warn("legacy_lockfile_adoption_failed", { lockDir, legacyDir, error: e?.message });
-    return "failed";
-  }
-  // Verify the record landed: the caller decides whether to sweep based on this answer.
-  const written = readLockfile(lockDir);
-  if (!written || written.port !== legacy.port) {
-    log.warn("legacy_lockfile_adoption_unverified", { lockDir, legacyDir, port: legacy.port });
-    return "failed";
-  }
-  log.info("legacy_lockfile_adopted", { lockDir, legacyDir, port: legacy.port });
-  return "adopted";
+/** True when `name` is a legacy control file whose owner is still alive — the sweep's only
+ *  exemption. A dead daemon's leftovers are ordinary throwaway. */
+export function isLiveLegacyDaemonFile(legacyDir: string, name: string): boolean {
+  if (!LEGACY_CONTROL_FILES.has(name)) return false;
+  return legacyLockfileOwnerAlive(legacyDir);
 }
 
 /** First lockfile port (in `dirs` order) whose daemon answers /api/health, or
