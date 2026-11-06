@@ -300,3 +300,114 @@ def test_run_blocks_invalid_or_non_addressed_sticky_status(
         post.run(str(review_file))
 
     post_body_comments.assert_not_called()
+
+
+class TestValidateReplyAutoSkipped:
+    """Auto-skipped entries were never actionable: no reply is expected (#1035 reply loop)."""
+
+    def test_auto_skipped_entry_needs_no_reply(self) -> None:
+        assert post.validate_reply("", "src/a.py", "skipped", auto_skipped=True) is None
+
+    def test_non_auto_skipped_skipped_entry_still_needs_a_reply(self) -> None:
+        err = post.validate_reply("", "src/a.py", "skipped", auto_skipped=False)
+        assert err is not None
+        assert "Empty reply" in err
+
+    def test_pending_needs_no_reply(self) -> None:
+        assert post.validate_reply("", "src/a.py", "pending") is None
+
+    def test_addressed_entry_still_requires_a_reply(self) -> None:
+        """The exemption must not weaken real replies."""
+        err = post.validate_reply("", "src/a.py", "addressed")
+        assert err is not None, "an addressed entry with no reply must still be rejected"
+        assert "Empty reply" in err
+
+
+def _write_threaded_review(
+    tmp_path: Path, *, status: str, auto_skipped: object, skip_reason: str = "", category: str = "human"
+) -> Path:
+    """Create one threaded (resolvable) non-sticky entry for post.run tests."""
+    review_file = tmp_path / "threaded.json"
+    review_file.write_text(
+        json.dumps({
+            "metadata": {"owner": "myk-org", "repo": "pi-config", "pr_number": "1037"},
+            category: [
+                {
+                    "thread_id": "thread-id",
+                    "type": "review_comment",
+                    "path": "myk_pi_tools/reviews/post.py",
+                    "line": 615,
+                    "status": status,
+                    "reply": "",
+                    "skip_reason": skip_reason,
+                    "is_auto_skipped": auto_skipped,
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+    return review_file
+
+
+class TestAutoSkippedFlagType:
+    """Only a real JSON true buys the exemption (bool("false") is True)."""
+
+    def test_string_false_is_not_auto_skipped(self) -> None:
+        assert post._is_auto_skipped({"is_auto_skipped": "false"}) is False
+
+    def test_json_true_is_auto_skipped(self) -> None:
+        assert post._is_auto_skipped({"is_auto_skipped": True}) is True
+
+    @pytest.mark.parametrize("auto_skipped", ["false", 1])
+    def test_run_still_requires_a_reply_when_the_flag_is_not_json_true(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, auto_skipped: object
+    ) -> None:
+        """A thread without a real auto-skip flag still needs its reply."""
+        review_file = _write_threaded_review(tmp_path, status="skipped", auto_skipped=auto_skipped)
+        monkeypatch.setattr(post, "check_dependencies", lambda: None)
+
+        with pytest.raises(SystemExit, match="1"):
+            post.run(str(review_file))
+
+
+def test_run_posts_no_generic_reply_for_a_threaded_auto_skipped_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Auto-skipped threads are never actionable: no fallback reply, no resolve."""
+    review_file = _write_threaded_review(tmp_path, status="skipped", auto_skipped=True)
+    post_thread_reply = Mock()
+    resolve_thread = Mock()
+    monkeypatch.setattr(post, "check_dependencies", lambda: None)
+    monkeypatch.setattr(post, "post_thread_reply", post_thread_reply)
+    monkeypatch.setattr(post, "resolve_thread", resolve_thread)
+
+    with pytest.raises(SystemExit, match="0"):
+        post.run(str(review_file))
+
+    post_thread_reply.assert_not_called()
+    resolve_thread.assert_not_called()
+
+
+def test_run_still_posts_the_reason_for_a_dismissed_auto_skipped_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dismissed-thread match carries a real reason: it is posted and resolved."""
+    review_file = _write_threaded_review(
+        tmp_path,
+        status="skipped",
+        auto_skipped=True,
+        skip_reason="duplicate of the guard in #1010",
+        category="coderabbit",
+    )
+    post_thread_reply = Mock(return_value=True)
+    resolve_thread = Mock(return_value=True)
+    monkeypatch.setattr(post, "check_dependencies", lambda: None)
+    monkeypatch.setattr(post, "post_thread_reply", post_thread_reply)
+    monkeypatch.setattr(post, "resolve_thread", resolve_thread)
+
+    with pytest.raises(SystemExit, match="0"):
+        post.run(str(review_file))
+
+    post_thread_reply.assert_called_once()
+    assert "duplicate of the guard in #1010" in post_thread_reply.call_args.args[1]
+    resolve_thread.assert_called_once()
