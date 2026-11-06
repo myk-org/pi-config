@@ -19,6 +19,7 @@ import { registerAskUser } from "./ask-user.js";
 import { registerAsyncAgents } from "./async-agents.js";
 import { registerDreaming } from "./dreaming.js";
 import { registerEnforcement } from "./enforcement.js";
+import { registerToolArgGuard } from "./tool-arg-guard.js";
 import { registerProjectSettings } from "./project-settings.js";
 import { registerRules } from "./rules.js";
 import { registerSessionValidation } from "./session-validation.js";
@@ -132,6 +133,8 @@ export default function (pi: ExtensionAPI) {
   registerProjectSettings(pi);
   registerTrail(pi);
   registerEnforcement(pi, IN_CONTAINER);
+  // A rejected-before-run tool call must force a retry, not end the turn silently.
+  registerToolArgGuard(pi);
   registerReviewUI(pi);
   registerRules(pi, getAsyncJobs);
 
