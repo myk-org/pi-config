@@ -193,6 +193,26 @@ export function writeLockfile(lockDir: string, port: number, pid: number | null,
   } catch (e: any) { log(`writeLockfile error: ${e.message}`); }
 }
 
+/** True when `target` is a real directory, not a symlink planted by the project. */
+function isRealDirectory(target: string): boolean {
+  try {
+    const st = fs.lstatSync(target);
+    return st.isDirectory() && !st.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/** Remove a planted symlink so a write cannot follow it into an unrelated file. A regular
+ *  lockfile is left for the caller's `wx` write to lose against. */
+function unlinkIfSymlink(target: string): void {
+  try {
+    if (fs.lstatSync(target).isSymbolicLink()) fs.unlinkSync(target);
+  } catch {
+    /* absence is fine */
+  }
+}
+
 /** True for a path that exists and is a regular file. Lockfiles are never FIFOs, and reading
  *  one would block the event loop, so every control-file read goes through this. */
 function isRegularFile(target: string): boolean {
@@ -293,6 +313,11 @@ export async function adoptLegacyLockfile(lockDir: string, legacyDir: string): P
     log.warn("legacy_lockfile_adoption_failed", { lockDir, legacyDir, error: e?.message });
     return "failed";
   }
+  // The project controls this tree: a symlinked `.pi/run` would send the writes somewhere else.
+  if (!isRealDirectory(lockDir)) {
+    log.warn("legacy_lockfile_adoption_unsafe_dir", { lockDir });
+    return "failed";
+  }
 
   // Drop only the exact stale record observed above; if it changed since, a concurrent start
   // owns the run dir now and the legacy copy must not replace it.
@@ -311,11 +336,18 @@ export async function adoptLegacyLockfile(lockDir: string, legacyDir: string): P
     }
   }
 
+  const portPath = path.join(lockDir, "pidiff.port");
+  const pidPath = path.join(lockDir, "pidiff.pid");
+  // Never write THROUGH a planted symlink: `wx` refuses to create over an existing entry, and
+  // a symlink sitting there would otherwise be followed into an unrelated user file.
+  unlinkIfSymlink(portPath);
+  unlinkIfSymlink(pidPath);
+
   try {
     // "wx" still guards the empty-case race: a record that appeared in between loses nothing.
-    fs.writeFileSync(path.join(lockDir, "pidiff.port"), String(legacy.port), { mode: 0o600, flag: "wx" });
+    fs.writeFileSync(portPath, String(legacy.port), { mode: 0o600, flag: "wx" });
     if (legacy.pid !== null) {
-      fs.writeFileSync(path.join(lockDir, "pidiff.pid"), String(legacy.pid), { mode: 0o600 });
+      fs.writeFileSync(pidPath, String(legacy.pid), { mode: 0o600, flag: "wx" });
     }
   } catch (e: any) {
     if (e?.code === "EEXIST") {

@@ -4,7 +4,7 @@
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive, adoptLegacyLockfile } from "../../../extensions/shared/daemon-manager.js";
@@ -235,6 +235,47 @@ describe("legacy .pi/tmp lockfiles (#1020)", () => {
       assert.equal(readLockfile(dir), null);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("adoptLegacyLockfile never writes through a planted symlink", async () => {
+    // A crafted project can point `.pi/run/pidiff.port` at a user file and rely on adoption
+    // following it. The symlink is removed, the target is left byte-identical.
+    const sandbox = mk();
+    const legacyDir = mk();
+    const runDir = join(sandbox, "run");
+    const victim = join(sandbox, "user-file");
+    try {
+      writeFileSync(victim, "precious user data");
+      mkdirSync(runDir);
+      symlinkSync(victim, join(runDir, "pidiff.port"));
+      symlinkSync(victim, join(runDir, "pidiff.pid"));
+      writeLockfile(legacyDir, 41234, process.pid, () => {});
+
+      assert.equal(await adoptLegacyLockfile(runDir, legacyDir), "adopted");
+      assert.equal(readFileSync(victim, "utf-8"), "precious user data", "target untouched");
+      assert.equal(lstatSync(join(runDir, "pidiff.port")).isFile(), true, "regular file now");
+      assert.strictEqual(readLockfile(runDir)!.port, 41234);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("adoptLegacyLockfile refuses a run dir that is a symlink", async () => {
+    const sandbox = mk();
+    const legacyDir = mk();
+    const realDir = join(sandbox, "elsewhere");
+    const linkedDir = join(sandbox, "run");
+    try {
+      mkdirSync(realDir);
+      symlinkSync(realDir, linkedDir);
+      writeLockfile(legacyDir, 41234, process.pid, () => {});
+      assert.equal(await adoptLegacyLockfile(linkedDir, legacyDir), "failed");
+      assert.equal(existsSync(join(realDir, "pidiff.port")), false, "nothing written through it");
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+      rmSync(legacyDir, { recursive: true, force: true });
     }
   });
 
