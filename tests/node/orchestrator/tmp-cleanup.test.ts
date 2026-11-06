@@ -29,6 +29,8 @@ afterEach(() => {
 });
 
 /** Create a file of `size` bytes and back-date it `ageDays` days. */
+const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
+
 function makeEntry(name: string, size: number, ageDays: number): string {
   const target = path.join(tmpDir, name);
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -136,6 +138,15 @@ describe("sweepProjectTmp", () => {
     const result = await sweepProjectTmp({ tmpDir, maxBytes: 1, retentionDays: 7 });
     assert.equal(result.deleted, 0);
     assert.equal(fs.existsSync(fresh), true);
+  });
+
+  it("carries no control-file names of its own (#1020)", () => {
+    // The sweep asks the daemon layer instead of holding a list it could forget to extend.
+    // A future daemon writes to `.pi/run`, so these names must not appear here at all.
+    const source = fs.readFileSync(path.join(REPO_ROOT, "extensions/orchestrator/tmp-cleanup.ts"), "utf-8");
+    for (const name of ["pidiff.pid", "pidiff.port", "reload.flag"]) {
+      assert.equal(source.includes(name), false, `${name} must not be named in the sweep`);
+    }
   });
 
   it("keeps the lockfile of a live pre-`.pi/run` daemon (#1020)", async () => {

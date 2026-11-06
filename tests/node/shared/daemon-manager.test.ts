@@ -139,16 +139,52 @@ describe("legacy .pi/tmp lockfiles (#1020)", () => {
     }
   });
 
-  it("legacyLockfileOwnerAlive reports a live pid, a dead pid and a missing file", () => {
+  it("legacyLockfileOwnerAlive is false when there is no pid file", () => {
     const dir = mk();
     try {
-      assert.equal(legacyLockfileOwnerAlive(dir), false, "no pid file");
+      assert.equal(legacyLockfileOwnerAlive(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive is true for a live pid", () => {
+    const dir = mk();
+    try {
       writeFileSync(join(dir, "pidiff.pid"), String(process.pid));
-      assert.equal(legacyLockfileOwnerAlive(dir), true, "own pid is alive");
+      assert.equal(legacyLockfileOwnerAlive(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive is false for pid 0", () => {
+    const dir = mk();
+    try {
       writeFileSync(join(dir, "pidiff.pid"), "0");
-      assert.equal(legacyLockfileOwnerAlive(dir), false, "pid 0 is not a daemon");
+      assert.equal(legacyLockfileOwnerAlive(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive is false for an unparseable pid", () => {
+    const dir = mk();
+    try {
       writeFileSync(join(dir, "pidiff.pid"), "not-a-pid");
-      assert.equal(legacyLockfileOwnerAlive(dir), false, "unparseable pid");
+      assert.equal(legacyLockfileOwnerAlive(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive refuses a non-regular pid file instead of blocking", () => {
+    // The legacy dir is project-controlled: a FIFO here would block the read during the
+    // session-start sweep, so only a regular file counts.
+    const dir = mk();
+    try {
+      mkdirSync(join(dir, "pidiff.pid"));
+      assert.equal(legacyLockfileOwnerAlive(dir), false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -16,7 +16,7 @@ import { promises as fsp } from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
-import { LEGACY_LOCKFILE_NAMES, legacyLockfileOwnerAlive } from "../shared/daemon-manager.js";
+import { isLiveLegacyDaemonFile } from "../shared/daemon-manager.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
 import { getGlobalSettingsPath, getSettingDynamic, getSettingsPath, SETTINGS_KEYS } from "./project-settings.js";
 import { readSettingsObject } from "./settings-source.js";
@@ -158,11 +158,11 @@ export async function sweepProjectTmp(opts: TmpSweepOptions): Promise<TmpSweepRe
   for (const name of names) {
     const target = path.join(base, name);
     if (!isInside(base, target)) continue;
-    // A pre-`.pi/run` pidiff daemon still owns its lockfile in the legacy dir. Keep those two
-    // files while that process is alive; a dead daemon's leftovers are throwaway like
-    // everything else here (#1020). Nothing else in `.pi/tmp` is exempt.
-    if ((LEGACY_LOCKFILE_NAMES as readonly string[]).includes(name) && legacyLockfileOwnerAlive(base)) {
-      log.warn("tmp_sweep_kept_live_legacy_daemon", { tmpDir: base, name });
+    // One exemption, and the daemon layer decides it: a pre-`.pi/run` daemon that is still
+    // ALIVE owns its lockfile here, and sweeping it would spawn a duplicate on that port.
+    // Routine and expected during the upgrade window, so debug — not warn.
+    if (isLiveLegacyDaemonFile(base, name)) {
+      log.debug("tmp_sweep_kept_live_legacy_daemon", { tmpDir: base, name });
       continue;
     }
     let stat: fs.Stats;
