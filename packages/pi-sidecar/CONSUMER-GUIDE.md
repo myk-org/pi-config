@@ -163,6 +163,40 @@ async with SidecarClient() as client:
         await client.delete_session(session_id)
 ```
 
+### Streaming a prompt
+
+`SidecarClient.stream_prompt()` opens the session's event feed, sends the prompt,
+and yields each frame's parsed payload as a dict, closing the feed when the
+turn's terminal event (`turn_end` or `error`) arrives. It is an async generator,
+so existing `prompt()` callers keep working unchanged.
+
+```python
+from pi_sidecar_client import SidecarClient
+
+async with SidecarClient() as client:
+    session_id = await client.create_session(
+        provider="google",
+        model="gemini-2.5-flash",
+        system_prompt="You are a helpful assistant.",
+    )
+    try:
+        final = ""
+        async for event in client.stream_prompt(session_id, "What is Python?"):
+            if event["type"] == "text_delta":
+                print(event["delta"], end="", flush=True)  # already redacted
+            elif event["type"] == "turn_end":
+                final = event["text"]  # authoritative — not the joined deltas
+            elif event["type"] == "error":
+                raise RuntimeError(event["message"])
+        print(final)
+    finally:
+        await client.delete_session(session_id)
+```
+
+The same session can be streamed again for its next prompt, including after an
+abort. Token counts and cost are not on the feed — read them from the
+`prompt()` response.
+
 ### Per-session API key
 
 ```python
@@ -366,6 +400,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 | `POST` | `/models/refresh` | Refresh model catalog |
 | `POST` | `/sessions` | Create a session |
 | `POST` | `/sessions/:id/prompt` | Send a prompt |
+| `GET` | `/sessions/:id/events` | SSE turn event feed for one session (additive — see [Event streams](#event-streams-sse)) |
 | `POST` | `/sessions/:id/abort` | Abort in-progress prompt |
 | `DELETE` | `/sessions/:id` | Delete a session |
 
@@ -472,6 +507,104 @@ FROM ai_token_usage WHERE ...;
 Do **not** combine a boolean aggregate with a sum of booleans in one expression
 (`bool_or(cost_partial) OR SUM(cost_partial) > 0`): `SUM(boolean)` is not valid
 on PostgreSQL.
+
+### Event streams (SSE)
+
+`GET /sessions/:id/events` streams one session's turns as server-sent events so
+a UI can render text while it is generated. It is **additive**: open the feed,
+then send the prompt with `POST /sessions/:id/prompt` exactly as today. A caller
+that never opens the feed behaves exactly as it does now — same request, same
+response shape, same timing — and a dead or slow subscriber can never fail a
+prompt.
+
+| Event | Payload | Notes |
+|---|---|---|
+| `session` | `{type, sessionId}` | sent on connect |
+| `turn_start` | `{type, turnId}` | one per accepted prompt; `turnId` is monotonic per session |
+| `text_delta` | `{type, turnId, delta}` | `delta` is already redacted server-side |
+| `turn_end` | `{type, turnId, text, aborted}` | the turn finished; `aborted: true` after an abort |
+| `error` | `{type, turnId, message}` | the turn failed; `message` comes from the already-redacted error list |
+| `: keepalive` | — | SSE comment every 15 s; not an event |
+
+Every frame is a single `data:` line holding JSON (`JSON.stringify`), because
+model output routinely contains newlines and an unescaped payload would let a
+delta forge its own frames. The event name lives in the payload's `type` field —
+there is no SSE `event:` line — so listen with `onmessage` and switch on
+`payload.type`; `addEventListener("text_delta", ...)` never fires.
+
+**End of turn:** every `turnId` receives exactly one terminal event — either
+`turn_end` or `error`, never both and never two. That event ends the turn; the
+next `turn_start` starts the following one.
+
+**`turn_end.text` is authoritative and is not `concat(deltas)`.** Deltas are
+per-message, redacted through a bounded holdback, and are emitted before
+boundary separators are spliced, so joining them does not reproduce the final
+text. The holdback keeps the tail of a turn's text pending until one character
+less than the **longest form of the `api_key` the server redacts** has arrived —
+the key itself, or its percent/JSON-escaped spellings, which are longer — so a
+secret the model echoes *split across two deltas*, plain or escaped, is replaced
+as a whole instead of leaking as fragments; deltas therefore lag the model by up
+to that many characters (0 when the session carries no `api_key`), and the
+withheld tail is flushed as the last `text_delta`(s) immediately before the
+terminal event, so nothing is lost.
+Never join or persist deltas as if they were the answer — a client that needs
+the text uses `turn_end.text`, which is the final post-boundary, post-redacted
+text.
+
+`turn_end` carries **no usage or cost** in v1 — do not assume `usage` is there.
+Read token counts and cost from the `POST /sessions/:id/prompt` response, which
+still reports them exactly as documented above.
+
+**Abort:** `POST /sessions/:id/abort` during an open feed ends the turn with
+`turn_end {aborted: true}`. The stream stays open and can be reused for the next
+prompt; aborting with no turn in flight is a no-op.
+
+**Limits.** 8 open streams per session and 32 process-wide; a request past
+either cap returns `429`, an unknown session returns `404` — both as plain JSON,
+written before any event data. A subscriber that leaves more than 1 MiB buffered
+is dropped on its own; the turn's full text remains available from the `prompt`
+response. A stream idle for 10 minutes is ended, where idle is measured on turn
+events only — `: keepalive` comments do not reset the timer, so a subscribe-only
+client is still reaped.
+
+`Origin` and `Host` are validated for this endpoint only (mismatch → `403`), so
+a DNS-rebinding page cannot read the feed. A request's `Origin`, when it is
+present, must be loopback; `Host` must be the address the sidecar is bound to
+or — when it is bound to a wildcard address (`0.0.0.0`, `DEV_MODE`) — a loopback
+name or an IP literal, never a hostname. Reaching the feed under a service
+hostname therefore requires binding that address explicitly. The rest of the
+HTTP surface, including `/prompt`, is unchanged.
+
+```js
+const { session_id } = await (
+  await fetch("http://127.0.0.1:9100/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: "google", model: "gemini-2.5-flash" }),
+  })
+).json();
+
+// Open the feed BEFORE prompting — deltas emitted before you connect are gone.
+const source = new EventSource(`http://127.0.0.1:9100/sessions/${session_id}/events`);
+source.onmessage = (msg) => {
+  const event = JSON.parse(msg.data);
+  if (event.type === "text_delta") process.stdout.write(event.delta);
+  if (event.type === "turn_end") { source.close(); console.log(event.text); }
+  if (event.type === "error") { source.close(); console.error(event.message); }
+};
+
+// The prompt itself is unchanged — the feed only observes it.
+await fetch(`http://127.0.0.1:9100/sessions/${session_id}/prompt`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ message: "What is 2+2?" }),
+});
+```
+
+The feed sends `X-Accel-Buffering: no` and flushes its headers immediately, so
+reverse proxies do not hold frames back. If a proxy in front of the sidecar
+still compresses or buffers the response, deltas arrive as one burst at the end
+— disable that for this path.
 
 ## Provider Types
 

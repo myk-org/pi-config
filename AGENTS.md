@@ -29,7 +29,7 @@ The sidecar's internal agent dir is configurable (startSidecar `agentDir` option
 process start from the configured dir — see `packages/pi-sidecar/README.md`.
 
 **Public API contract:** The HTTP REST API (`/health`, `/models`, `/providers`, `/sessions`,
-`/transcripts/recording`) and the Python client (`pi_sidecar_client`) are the external contract — never break these.
+`/sessions/:id/events`, `/transcripts/recording`) and the Python client (`pi_sidecar_client`) are the external contract — never break these.
 Internal code, imports, and structure can change freely.
 
 `prompt` usage reports `cost_usd` as the accumulation of driver-reported costs: a number means costs
