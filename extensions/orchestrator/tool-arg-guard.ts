@@ -18,8 +18,16 @@ import { sendSystemNote } from "../shared/system-note.js";
 
 const log = createLogger("tool-arg-guard");
 
-/** Pi's own argument-rejection wording — not our policy blocks. */
-const VALIDATION_FAILURE = /validation failed for tool|unknown tool/i;
+/** Pi's own rejection preamble, anchored at the START of the result. An executed tool
+ *  that merely *prints* this phrase cannot match, which stops false retries. */
+const VALIDATION_FAILURE = /^\s*(?:Validation failed for tool\s+"[^"]+":|Unknown tool:)/i;
+
+/** Keep only the parameter diagnostics — never the caller-controlled argument values.
+ *  Those can hold credentials, and a system note is a provenance-marked channel. */
+export function rejectionReason(text: string): string {
+  const cut = text.split(/Received arguments:/i)[0];
+  return cut.trim().slice(0, 300);
+}
 
 /** Flatten a tool result into text without assuming one shape. */
 export function resultText(result: unknown): string {
@@ -58,16 +66,18 @@ export function registerToolArgGuard(pi: ExtensionAPI): void {
     const text = resultText(event?.result).trim();
     if (!isArgumentRejection(Boolean(event?.isError), text)) return;
 
+    const reason = rejectionReason(text);
     log.warn("tool_call_rejected_before_run", {
       tool: event?.toolName,
       toolCallId: event?.toolCallId,
       // Diagnostic only: recorded, not used to decide.
       durationMs: event?.durationMs,
-      detail: text.slice(0, 300),
+      // Parameter diagnostics only — received argument values are deliberately dropped.
+      reason,
     });
     await sendSystemNote(
       pi,
-      `🚨 Your ${event?.toolName} call was REJECTED before it ran — the tool did NOT execute, so the action you intended did not happen:\n\n${text}\n\nRetry now with corrected arguments. A frequent cause is a wrong parameter name (e.g. sending "path" to bash instead of "command", or "write" with no "content").`,
+      `🚨 Your ${event?.toolName} call was REJECTED before it ran — the tool did NOT execute, so the action you intended did not happen:\n\n${reason}\n\nRetry now with corrected arguments. A frequent cause is a wrong parameter name (e.g. sending "path" to bash instead of "command", or "write" with no "content").`,
       { customType: "tool-arg-rejected", triggerTurn: true, deliverAs: "followUp" },
     );
   });

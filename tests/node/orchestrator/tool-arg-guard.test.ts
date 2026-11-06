@@ -7,7 +7,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isArgumentRejection, registerToolArgGuard, resultText } from "../../../extensions/orchestrator/tool-arg-guard.js";
+import { isArgumentRejection, registerToolArgGuard, rejectionReason, resultText } from "../../../extensions/orchestrator/tool-arg-guard.js";
 
 function fakePi() {
   const notes: Array<{ content: string; customType?: string }> = [];
@@ -101,9 +101,9 @@ describe("tool-arg-guard helpers", () => {
   });
 
   it("isArgumentRejection keys on pi's wording, not on durationMs", () => {
-    assert.equal(isArgumentRejection(true, 'Validation failed for tool "bash"'), true);
+    assert.equal(isArgumentRejection(true, 'Validation failed for tool "bash":\n  - command: missing'), true);
     assert.equal(isArgumentRejection(true, "Unknown tool: nope"), true);
-    assert.equal(isArgumentRejection(false, "Validation failed for tool"), false);
+    assert.equal(isArgumentRejection(false, 'Validation failed for tool "bash":'), false);
     assert.equal(isArgumentRejection(true, "⛔ Remote script execution is forbidden"), false);
   });
 
@@ -118,5 +118,46 @@ describe("tool-arg-guard helpers", () => {
     });
     assert.equal(h.notes.length, 1, "a rejection must be caught even when durationMs is present");
     assert.match(h.notes[0].content, /command: missing/, "the note carries the plain text, not JSON");
+  });
+});
+
+
+describe("tool-arg-guard hardening", () => {
+  it("ignores an executed tool that merely prints the rejection phrase", async () => {
+    const h = fakePi();
+    registerToolArgGuard(h.pi);
+    await h.fire("tool_execution_end", {
+      toolName: "bash",
+      isError: true,
+      durationMs: 120,
+      result: { content: [{ type: "text", text: "cat: foo: No such file\nUnknown tool: was printed by the command I ran" }] },
+    });
+    assert.equal(h.notes.length, 0, "executed output must never be treated as a rejection");
+  });
+
+  it("never leaks received argument values into the note", async () => {
+    const h = fakePi();
+    registerToolArgGuard(h.pi);
+    await h.fire("tool_execution_end", {
+      toolName: "bash",
+      isError: true,
+      result: 'Validation failed for tool "bash":\n  - command: missing\n\nReceived arguments:\n{\n  "path": "/tmp/x",\n  "token": "ghp_SECRETVALUE"\n}',
+    });
+    assert.equal(h.notes.length, 1);
+    assert.doesNotMatch(h.notes[0].content, /ghp_SECRETVALUE/, "credential must not reach the model");
+    assert.doesNotMatch(h.notes[0].content, /Received arguments/, "raw argument block must be dropped");
+    assert.match(h.notes[0].content, /command: missing/, "the parameter diagnostic is kept");
+  });
+
+  it("rejectionReason keeps diagnostics and drops the argument block", () => {
+    const text = 'Validation failed for tool "bash":\n  - command: missing\n\nReceived arguments:\n{"path":"/tmp/x"}';
+    const reason = rejectionReason(text);
+    assert.match(reason, /command: missing/);
+    assert.doesNotMatch(reason, /tmp\/x/);
+  });
+
+  it("does not fire when the phrase appears mid-text of a failed run", () => {
+    assert.equal(isArgumentRejection(true, "some log\nValidation failed for tool \"x\":"), false);
+    assert.equal(isArgumentRejection(true, 'Validation failed for tool "x":\n  - a: missing'), true);
   });
 });
