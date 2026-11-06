@@ -321,3 +321,67 @@ class TestValidateReplyAutoSkipped:
         err = post.validate_reply("", "src/a.py", "addressed")
         assert err is not None, "an addressed entry with no reply must still be rejected"
         assert "Empty reply" in err
+
+
+def _write_threaded_review(tmp_path: Path, *, status: str, auto_skipped: object) -> Path:
+    """Create one threaded (resolvable) non-sticky entry for post.run tests."""
+    review_file = tmp_path / "threaded.json"
+    review_file.write_text(
+        json.dumps({
+            "metadata": {"owner": "myk-org", "repo": "pi-config", "pr_number": "1037"},
+            "human": [
+                {
+                    "thread_id": "thread-id",
+                    "type": "review_comment",
+                    "path": "myk_pi_tools/reviews/post.py",
+                    "line": 615,
+                    "status": status,
+                    "reply": "",
+                    "is_auto_skipped": auto_skipped,
+                }
+            ],
+            "qodo": [],
+            "coderabbit": [],
+        }),
+        encoding="utf-8",
+    )
+    return review_file
+
+
+class TestAutoSkippedFlagType:
+    """Only a real JSON true buys the exemption (bool("false") is True)."""
+
+    def test_string_false_is_not_auto_skipped(self) -> None:
+        assert post._is_auto_skipped({"is_auto_skipped": "false"}) is False
+
+    def test_json_true_is_auto_skipped(self) -> None:
+        assert post._is_auto_skipped({"is_auto_skipped": True}) is True
+
+    @pytest.mark.parametrize("auto_skipped", ["false", 1])
+    def test_run_still_requires_a_reply_when_the_flag_is_not_json_true(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, auto_skipped: object
+    ) -> None:
+        """A thread without a real auto-skip flag still needs its reply."""
+        review_file = _write_threaded_review(tmp_path, status="skipped", auto_skipped=auto_skipped)
+        monkeypatch.setattr(post, "check_dependencies", lambda: None)
+
+        with pytest.raises(SystemExit, match="1"):
+            post.run(str(review_file))
+
+
+def test_run_posts_no_generic_reply_for_a_threaded_auto_skipped_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Auto-skipped threads are never actionable: no fallback reply, no resolve."""
+    review_file = _write_threaded_review(tmp_path, status="skipped", auto_skipped=True)
+    post_thread_reply = Mock()
+    resolve_thread = Mock()
+    monkeypatch.setattr(post, "check_dependencies", lambda: None)
+    monkeypatch.setattr(post, "post_thread_reply", post_thread_reply)
+    monkeypatch.setattr(post, "resolve_thread", resolve_thread)
+
+    with pytest.raises(SystemExit, match="0"):
+        post.run(str(review_file))
+
+    post_thread_reply.assert_not_called()
+    resolve_thread.assert_not_called()

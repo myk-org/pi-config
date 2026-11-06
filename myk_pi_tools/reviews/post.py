@@ -111,6 +111,15 @@ def is_linked_issue_spec_resolution(reply: str) -> bool:
     return False
 
 
+def _is_auto_skipped(entry: dict[str, Any]) -> bool:
+    """True only for a real JSON ``true``.
+
+    ``bool("false")`` is True, so a hand-written string must not buy an exemption
+    that suppresses the reply requirement and posts a generic reply instead.
+    """
+    return entry.get("is_auto_skipped") is True
+
+
 def validate_reply(reply: str, path: str, status: str, *, auto_skipped: bool = False) -> str | None:
     """Validate a reply is not lazy/vague. Returns error message or None if OK.
 
@@ -722,7 +731,7 @@ def run(json_path: str) -> None:
             reply = str(comment.get("reply") or comment.get("skip_reason") or "")
             status = comment.get("status", "pending")
             comment_path = comment.get("path", "unknown")
-            err = validate_reply(reply, comment_path, status, auto_skipped=bool(comment.get("is_auto_skipped")))
+            err = validate_reply(reply, comment_path, status, auto_skipped=_is_auto_skipped(comment))
             if err:
                 lazy_errors.append(err)
             # Ensure reply field is always populated (posting uses reply, not skip_reason)
@@ -750,7 +759,7 @@ def run(json_path: str) -> None:
             status = comment.get("status", "pending")
             if status == "pending":
                 continue  # Not processed yet — OK
-            if comment.get("is_auto_skipped"):
+            if _is_auto_skipped(comment):
                 continue  # Auto-skipped from previous cycle — OK
             reply = str(comment.get("reply") or "")
             is_linked_spec_skip = status == "skipped" and is_linked_issue_spec_resolution(reply)
@@ -843,7 +852,7 @@ def run(json_path: str) -> None:
                         continue
 
                     # Skip auto-skipped entries — they were already replied to in a previous cycle
-                    if thread_data.get("is_auto_skipped"):
+                    if _is_auto_skipped(thread_data):
                         already_posted_count += 1
                         eprint(
                             f"Skipping {category}[{i}] ({path}): {comment_type}"
@@ -895,6 +904,15 @@ def run(json_path: str) -> None:
             if status == "pending":
                 pending_count += 1
                 eprint(f"Skipping {category}[{i}] ({path}): status is pending")
+                continue
+
+            # Auto-skipped entries were never actionable: nothing is posted for them.
+            # Without this, the threaded path below falls back to a generic
+            # "Addressed."/"Skipped." reply and resolves the thread.
+            if _is_auto_skipped(thread_data):
+                already_posted_count += 1
+                log.debug("Skipping threaded auto-skipped entry", extra={"category": category, "path": path})
+                eprint(f"Skipping {category}[{i}] ({path}): auto-skipped (already replied in previous cycle)")
                 continue
 
             # Determine which ID to use for GraphQL
