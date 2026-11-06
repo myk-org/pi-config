@@ -106,6 +106,24 @@ export function isValidApiKey(value: unknown): value is string {
   return valid;
 }
 
+/**
+ * Key length behind each redactor instance, so a delta holdback can be derived
+ * from the actual secret instead of guessing a constant. A WeakMap keeps the
+ * length off the function object and out of every type that passes a redactor
+ * around; a redactor built without a key (or any other function) reports 0.
+ */
+const redactorKeyLengths = new WeakMap<(value: string) => string, number>();
+
+/**
+ * How far a streamed delta may lag so a key split across two deltas is still
+ * redacted as a whole: one character less than the key, which is the longest
+ * span a single boundary can cut. 0 when the redactor holds no key — then
+ * nothing needs holding back and deltas are emitted immediately.
+ */
+export function redactorHoldback(redact: (value: string) => string): number {
+  return Math.max(0, (redactorKeyLengths.get(redact) ?? 0) - 1);
+}
+
 /** Compile key representations once per session, never per log or response. */
 export function createApiKeyRedactor(apiKey?: string): (value: string) => string {
   const log = createLogger("api-key-redactor");
@@ -113,7 +131,7 @@ export function createApiKeyRedactor(apiKey?: string): (value: string) => string
   if (!apiKey) return (value) => value;
   if (apiKey.length > MAX_API_KEY_LENGTH) throw new RangeError("API key exceeds maximum length");
   const escapes: Record<string, string> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
-  return (value: string): string => {
+  const redact = (value: string): string => {
     log.debug(`Redacting API key: inputLength=${value.length}, hasKey=true`);
     if (!value.includes("\\") && !value.includes("%")) return value.replaceAll(apiKey, "[REDACTED]");
     const parts: string[] = [];
@@ -200,6 +218,8 @@ export function createApiKeyRedactor(apiKey?: string): (value: string) => string
     }
     return parts.join("");
   };
+  redactorKeyLengths.set(redact, apiKey.length);
+  return redact;
 }
 
 export function redactApiKey(value: string, apiKey?: string): string {
@@ -930,6 +950,15 @@ interface StreamSubscriber {
 }
 
 /**
+ * One SSE frame. Frames are JSON-serialized: raw model output contains
+ * newlines, so an unescaped payload would let a delta forge its own `data:`
+ * frames.
+ */
+function sseFrame(event: SessionStreamEvent): string {
+  return "data: " + JSON.stringify(event) + "\n\n";
+}
+
+/**
  * Per-session SSE hub (#1019) — one instance per SessionEntry, so a feed can
  * never outlive or alias its session: every removal path closes it. Every
  * subscriber write is contained — a dead or slow client is dropped here and
@@ -948,8 +977,12 @@ class SessionEventStreams {
     return ++this.turnSeq;
   }
 
-  /** Register a subscriber and return its detach function. */
-  add(sink: SessionStreamSink): () => void {
+  /**
+   * Register a subscriber and return its detach function. `greeting` is written
+   * to that subscriber only — broadcasting it would hand already-open feeds a
+   * duplicate `session` frame and reset their idle timers.
+   */
+  add(sink: SessionStreamSink, greeting?: SessionStreamEvent): () => void {
     const sub: StreamSubscriber = { sink };
     // Keepalive comments stop proxies from closing an idle feed. They must NOT
     // reset the idle timer — otherwise a subscribe-only client is never reaped.
@@ -958,17 +991,14 @@ class SessionEventStreams {
     sub.keepalive.unref?.();
     sub.idle.unref?.();
     this.subscribers.add(sub);
+    if (greeting) this.write(sub, sseFrame(greeting));
     return () => this.drop(sub, "detached");
   }
 
-  /**
-   * Push one turn-lifecycle event to every subscriber. Frames are
-   * JSON-serialized: raw model output contains newlines, so an unescaped
-   * payload would let a delta forge its own `data:` frames.
-   */
+  /** Push one turn-lifecycle event to every subscriber. */
   emit(event: SessionStreamEvent): void {
     if (this.subscribers.size === 0) return;
-    const frame = "data: " + JSON.stringify(event) + "\n\n";
+    const frame = sseFrame(event);
     for (const sub of [...this.subscribers]) {
       sub.idle?.refresh(); // lifecycle events only — see add()
       this.write(sub, frame);
@@ -1319,9 +1349,8 @@ export class SessionStore {
   openStream(id: string, sink: SessionStreamSink): () => void {
     this.assertStreamAllowed(id);
     const entry = this.sessions.get(id)!;
-    const detach = entry.streams.add(sink);
+    const detach = entry.streams.add(sink, { type: "session", sessionId: id });
     streamLog.info(`[sidecar] STREAM_OPEN: subscribers=${entry.streams.size}`);
-    entry.streams.emit({ type: "session", sessionId: id });
     return detach;
   }
 
@@ -2308,23 +2337,52 @@ export class SessionStore {
     // post-redaction tail, so the finally ends the turn instead.
     let promptRejected: string | undefined;
     let turnEnded = false;
+    // Bounded holdback (#1019 A): a per-delta redact cannot see a key split
+    // across two deltas, so each turn keeps the tail of its already-redacted
+    // text pending and sends only what is at least `hold` characters behind it
+    // — while a key is still incomplete it starts inside the pending window, so
+    // it is always whole when it is redacted. Cost: deltas lag the model by up
+    // to `hold` characters (0 without a session key, so the common path is
+    // unchanged), which is bounded and cheap next to leaking a secret.
+    // `turn_end.text` stays authoritative — it is the fully redacted response.
+    // shortcut: the window is the key's plain length, so an echo that arrives
+    // percent/JSON-escaped (wider than the key) can still lose a fragment at a
+    // boundary; widen `hold` if a provider is ever seen emitting escaped forms.
+    const hold = redactorHoldback(entry.redact);
+    let heldText = "";
+    const emitHeldText = (flush: boolean) => {
+      if (heldText === "") return;
+      const safe = entry.redact(heldText);
+      const cut = flush ? safe.length : Math.max(0, safe.length - hold);
+      heldText = safe.slice(cut);
+      if (cut > 0) entry.streams.emit({ type: "text_delta", turnId, delta: safe.slice(0, cut) });
+    };
     const emitTurnEnd = (aborted: boolean) => {
       if (turnEnded) return;
       turnEnded = true;
+      // Nothing may be lost to the holdback: the withheld tail goes out as the
+      // last text_delta(s) before the terminal event, so the client still ends
+      // with the whole text.
+      emitHeldText(true);
       // Abort wins over collected errors: a cancelled turn must end as
       // turn_end{aborted:true}, never as an error. Text is redacted here too so
       // the abort path (pre-tail) cannot leak what :2360 would have stripped.
+      let terminal: SessionStreamEvent;
       if (aborted) {
-        entry.streams.emit({ type: "turn_end", turnId, text: entry.redact(responseText), aborted: true });
+        terminal = { type: "turn_end", turnId, text: entry.redact(responseText), aborted: true };
       } else if (promptRejected !== undefined || errors.length > 0) {
-        entry.streams.emit({
+        terminal = {
           type: "error",
           turnId,
           message: promptRejected ?? errors.join("; ") + (errorsDropped > 0 ? ` [+${errorsDropped} more]` : ""),
-        });
+        };
       } else {
-        entry.streams.emit({ type: "turn_end", turnId, text: responseText, aborted: false });
+        terminal = { type: "turn_end", turnId, text: responseText, aborted: false };
       }
+      // The one place a turn ends, so it is also the only way to tell from the
+      // logs which terminal branch a turnId took.
+      streamLog.info(`[sidecar] STREAM_TURN_END: session=${id}, turn=${turnId}, event=${terminal.type}, aborted=${aborted}, subscribers=${entry.streams.size}`);
+      entry.streams.emit(terminal);
     };
 
     const unsubscribe = entry.session.subscribe((event) => {
@@ -2369,7 +2427,9 @@ export class SessionStore {
         textDeltaCount++;
         // #1019: redact per delta — this is the only redaction point in the
         // prompt path (:2360) and a raw delta can echo a request api_key.
-        entry.streams.emit({ type: "text_delta", turnId, delta: entry.redact(event.assistantMessageEvent.delta) });
+        // Through the holdback, so a key split across deltas is redacted whole.
+        heldText += event.assistantMessageEvent.delta;
+        emitHeldText(false);
       }
       if (event.type === "agent_end" && event.messages) {
         for (const msg of event.messages) {
@@ -2634,7 +2694,14 @@ export class SessionStore {
     // Set before awaiting: the prompt path's finally reads it after
     // session.abort() settles. Emitting here would duplicate the terminal event.
     entry.abortRequested = true;
-    await entry.session.abort();
+    try {
+      await entry.session.abort();
+    } catch (err) {
+      // The turn is still running: a stale flag would report it as aborted
+      // when it eventually ends.
+      entry.abortRequested = false;
+      throw err;
+    }
     logger.info(`[sidecar] Session aborted: ${id}`);
   }
 

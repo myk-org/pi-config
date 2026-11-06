@@ -9,12 +9,12 @@
  */
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createServer, request, type Server } from "node:http";
+import { createServer, request, type IncomingMessage, type Server } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { startSidecar } from "../../src/index.js";
+import { startSidecar, isAllowedStreamRequest } from "../../src/index.js";
 
 const PROVIDER = "sse-1019-provider";
 const MODEL = "sse-1019-model";
@@ -205,6 +205,64 @@ describe("GET /sessions/:id/events (#1019) over HTTP", () => {
         await fetch(`http://127.0.0.1:${port}/sessions/${sessionId}`, { method: "DELETE" }).catch(() => {});
       }
     }
+  });
+
+  it("a live feed outlives the request that opened it and ends with the session", async () => {
+    const sessionId = await createSession(port);
+    // Raw GET: `req` and `res` are separate objects here, which is the point —
+    // a teardown bound to the request's `close` drops the feed as soon as the
+    // GET is read, while the response is still open.
+    const feed = await new Promise<{ res: IncomingMessage; close: () => void }>((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, path: `/sessions/${sessionId}/events`, method: "GET" }, (res) => {
+        res.setEncoding("utf8");
+        resolve({ res, close: () => req.destroy() });
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    try {
+      let ended = false;
+      let body = "";
+      feed.res.on("data", (chunk: string) => { body += chunk; });
+      feed.res.on("end", () => { ended = true; });
+      while (!body.includes("\n\n")) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.match(body, /"type":"session"/, "the greeting arrives");
+
+      // The GET request is long done; a feed torn down on req `close` is gone by now.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(ended, false, "the response must stay open after its request completes");
+
+      // Only the session going away ends it.
+      await fetch(`http://127.0.0.1:${port}/sessions/${sessionId}`, { method: "DELETE" });
+      while (!ended) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.match(body, /"type":"session"/, "the feed carried the greeting before it was closed");
+    } finally {
+      feed.close();
+      await fetch(`http://127.0.0.1:${port}/sessions/${sessionId}`, { method: "DELETE" }).catch(() => {});
+    }
+  });
+});
+
+describe("isAllowedStreamRequest (#1019)", () => {
+  it("accepts a real client Host under a wildcard bind instead of 403ing every client", () => {
+    for (const bound of ["0.0.0.0", "::"]) {
+      assert.equal(isAllowedStreamRequest(undefined, "192.168.1.7:8123", bound), true, `LAN Host under ${bound}`);
+      assert.equal(isAllowedStreamRequest(undefined, "service.internal:8123", bound), true, `hostname under ${bound}`);
+      assert.equal(isAllowedStreamRequest(undefined, "localhost:8123", bound), true, `loopback Host under ${bound}`);
+      assert.equal(isAllowedStreamRequest("http://127.0.0.1:8123", "127.0.0.1:8123", bound), true);
+    }
+  });
+
+  it("still rejects a foreign Origin under a wildcard bind — the rebinding guard", () => {
+    assert.equal(isAllowedStreamRequest("https://evil.example", "127.0.0.1:8123", "0.0.0.0"), false);
+    assert.equal(isAllowedStreamRequest("null", "127.0.0.1:8123", "0.0.0.0"), false);
+    assert.equal(isAllowedStreamRequest(undefined, "", "0.0.0.0"), false, "an unparsable Host still fails closed");
+  });
+
+  it("keeps the strict Host rule on a loopback bind", () => {
+    assert.equal(isAllowedStreamRequest(undefined, "127.0.0.1:8123", "127.0.0.1"), true);
+    assert.equal(isAllowedStreamRequest(undefined, "evil.example", "127.0.0.1"), false);
+    assert.equal(isAllowedStreamRequest(undefined, "[::1]:8123", "::1"), true);
   });
 });
 

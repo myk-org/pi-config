@@ -649,6 +649,16 @@ class SidecarClient:
         which ends the generator. `turn_end["text"]` is the authoritative final
         text — deltas are pre-boundary and must not be concatenated.
 
+        The feed is **per session, not per caller**, so the turn is correlated
+        through the prompt call: the server allows one in-flight turn per
+        session, so a *successful* prompt means the streamed turn is ours, and a
+        *rejected* one (busy, 4xx/5xx) closes the feed and raises rather than
+        yielding another client's turn. Frames that arrive before that rejection
+        is observed can still be that other client's. Residual race: a turn
+        another client starts after our prompt completed but before this
+        generator closes the feed can still be reported as ours. Give each
+        concurrent caller its own session.
+
         Closing the generator early (`aclose()` / `break`) closes the SSE
         response, so the server detaches the subscriber, and cancels the
         in-flight prompt request.
@@ -669,28 +679,50 @@ class SidecarClient:
             # and the 15s keepalives would defeat the read timeout.
             prompt_task = asyncio.ensure_future(self.prompt(session_id, message, timeout=timeout))
             next_event = asyncio.ensure_future(anext(events))
-            watch_prompt = True
+            prompt_ok = False
+
+            def check_prompt() -> None:
+                """Raise unless our prompt was accepted: it decides whose turn this is."""
+                if (failure := prompt_task.exception()) is not None:
+                    raise failure
+                result = prompt_task.result()
+                if not result.success:
+                    raise RuntimeError(f"Sidecar prompt failed: {result.error}")
+
             try:
                 while True:
-                    waiters = {next_event, prompt_task} if watch_prompt else {next_event}
+                    # Widened element type: the event task and the prompt task
+                    # return different payloads, but both are Futures.
+                    waiters: set[asyncio.Future[Any]] = {next_event}
+                    if not prompt_ok:
+                        waiters.add(prompt_task)
                     done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+                    # Authoritative: the server rejects a second concurrent prompt,
+                    # so a rejection means the feed is showing another client's turn.
+                    # Check it before every yield, not after the frames.
+                    if prompt_task in done:
+                        check_prompt()
+                        prompt_ok = True
                     if next_event in done:
                         try:
                             payload = next_event.result()
                         except StopAsyncIteration:
                             break
+                        terminal = payload.get("type") in _STREAM_TERMINAL_EVENTS
+                        if terminal and not prompt_ok:
+                            # A terminal frame while our prompt is still in flight
+                            # is that other client's turn (ours is rejected as busy),
+                            # so never return their result. Wait for the verdict —
+                            # bounded by the prompt request's own timeout.
+                            await asyncio.wait({prompt_task})
+                            check_prompt()
                         yield payload
-                        if payload.get("type") in _STREAM_TERMINAL_EVENTS:
+                        if terminal:
                             return
                         next_event = asyncio.ensure_future(anext(events))
                         continue
-                    if (failure := prompt_task.exception()) is not None:
-                        raise failure
-                    result = prompt_task.result()
-                    if not result.success:
-                        raise RuntimeError(f"Sidecar prompt failed: {result.error}")
-                    # A successful prompt still ends with a terminal frame.
-                    watch_prompt = False
+                    # Prompt accepted first: keep reading for its terminal frame.
+                    continue
                 # Feed closed with no terminal frame (idle reap, slow-subscriber
                 # eviction, session deleted, shutdown): never report success.
                 detail = ""

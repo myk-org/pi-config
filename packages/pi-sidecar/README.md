@@ -363,10 +363,17 @@ there is no SSE `event:` line — so listen with `onmessage` and switch on
 next `turn_start` starts the following one.
 
 **`turn_end.text` is authoritative and is not `concat(deltas)`.** Deltas are
-per-message and are emitted before boundary separators are spliced and before
-redaction, so joining them does not reproduce the final text. Deltas are for
-rendering progress; a client that needs the exact final text uses
-`turn_end.text`, which is the final post-boundary, post-redacted text.
+per-message, redacted through a bounded holdback, and are emitted before
+boundary separators are spliced, so joining them does not reproduce the final
+text. The holdback keeps the tail of a turn's text pending until
+`api_key.length - 1` further characters have arrived, so a secret the model
+echoes *split across two deltas* is replaced as a whole instead of leaking as
+fragments; deltas therefore lag the model by up to that many characters (0 when
+the session carries no `api_key`), and the withheld tail is flushed as the last
+`text_delta`(s) immediately before the terminal event, so nothing is lost.
+Never join or persist deltas as if they were the answer — a client that needs
+the text uses `turn_end.text`, which is the final post-boundary, post-redacted
+text.
 
 `turn_end` carries **no usage or cost** in v1. Take token counts and cost from
 the `POST /sessions/:id/prompt` response, which still reports them unchanged.

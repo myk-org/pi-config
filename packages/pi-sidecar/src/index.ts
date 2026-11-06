@@ -146,7 +146,18 @@ export function isAllowedStreamRequest(origin: string | undefined, host: string 
   const hostName = headerHostname(host);
   if (!hostName) return false;
   if (hostName === boundHost.trim().toLowerCase()) return true;
+  // A wildcard bind (DEV_MODE's 0.0.0.0, or ::) has no single Host name to
+  // match — its clients address loopback, a LAN IP and the service hostname
+  // alike, so the Host check would 403 every one of them. The loopback Origin
+  // rule above is what still rejects a rebound browser page.
+  if (isWildcardBindHost(boundHost)) return true;
   return isLoopbackBindHost(boundHost) && isLoopbackBindHost(hostName);
+}
+
+/** Bind address that accepts every local address, so it can never equal a Host. */
+function isWildcardBindHost(host: string): boolean {
+  const h = host.trim().toLowerCase();
+  return h === "0.0.0.0" || h === "::" || h === "[::]";
 }
 
 /** Host value → bare hostname: drops a port and IPv6 brackets. */
@@ -772,7 +783,11 @@ export function startSidecar(options?: {
           bufferedBytes: () => res.writableLength,
           end: () => { res.end(); },
         });
-        req.on("close", () => { detach(); });
+        // `close` on the RESPONSE, not the request: the request is complete as
+        // soon as its headers are read, so it does not mean "the client is
+        // still here". res 'close' fires exactly when this socket goes away or
+        // we end it.
+        res.on("close", () => { detach(); });
         logger.info(`[sidecar] GET /sessions/${idLog}/events 200 ${Date.now() - requestStart}ms`);
         return;
       }

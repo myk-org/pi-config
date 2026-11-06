@@ -345,6 +345,40 @@ describe("session event stream: abort (#1019)", () => {
     assert.equal(terminal[0].aborted, false, "a stale abort must not leak into the next turn");
   });
 
+  it("a failed abort does not label the still-running turn aborted", async () => {
+    const store = new SessionStore();
+    const sink = new FakeSink();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    store.putSessionFixture(
+      "s",
+      fixtureSession(
+        async (emit) => {
+          emit(delta("Hello"));
+          await gate; // the turn keeps running after the abort request fails
+          emit(agentEnd("Hello"));
+        },
+        { abort: async () => { throw new Error("abort exploded"); } },
+      ),
+      "/tmp",
+    );
+    store.openStream("s", sink);
+
+    const pending = store.prompt("s", "hi");
+    while (events(sink).filter((event) => event.type === "text_delta").length < 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await assert.rejects(store.abort("s"), /abort exploded/);
+    release();
+    await pending;
+
+    const terminal = terminals(sink);
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0].aborted, false, "a rejected abort must not report the turn as cancelled");
+  });
+
   it("a second concurrent prompt is still rejected and the attached feed stays coherent", async () => {
     const store = new SessionStore();
     const sink = new FakeSink();
@@ -428,6 +462,26 @@ describe("session event stream: subscriber containment (#1019)", () => {
     assert.equal(terminals(survivor).length, 2, "the surviving subscriber keeps receiving later turns");
   });
 
+  it("a second subscriber gets its own session frame and does not disturb the first", async () => {
+    const store = new SessionStore();
+    const first = new FakeSink();
+    const second = new FakeSink();
+    store.putSessionFixture("s", textSession(), "/tmp");
+    store.openStream("s", first);
+    const before = first.raw;
+
+    store.openStream("s", second);
+
+    assert.equal(events(second).filter((event) => event.type === "session").length, 1, "the newcomer is greeted");
+    assert.equal(first.raw, before, "an open feed gets no duplicate session frame and no idle reset");
+
+    await store.prompt("s", "hi");
+    for (const sink of [first, second]) {
+      assert.equal(events(sink).filter((event) => event.type === "session").length, 1);
+      assert.equal(terminals(sink).length, 1, "both subscribers see the turn end");
+    }
+  });
+
   it("a slow subscriber over the 1 MB budget is evicted alone", async () => {
     const store = new SessionStore();
     const slow = new FakeSink();
@@ -483,6 +537,20 @@ describe("session event stream: subscriber containment (#1019)", () => {
     assert.equal(first.ended, 1, "a detached subscriber is not ended twice");
     assert.equal(second.ended, 1);
   });
+
+  it("detach is idempotent — a teardown that fires twice closes the sink once", () => {
+    const store = new SessionStore();
+    const sink = new FakeSink();
+    store.putSessionFixture("s", textSession(), "/tmp");
+    const detach = store.openStream("s", sink);
+
+    detach();
+    detach();
+    // Request and response teardown can both land (a retried or raced close).
+    assert.equal(sink.ended, 1, "the sink is ended exactly once");
+    assert.equal((store as any).sessions.get("s").streams.size, 0);
+    assert.doesNotThrow(() => detach());
+  });
 });
 
 describe("session event stream: redaction and framing (#1019)", () => {
@@ -534,6 +602,60 @@ describe("session event stream: redaction and framing (#1019)", () => {
     assert.equal(parsed.filter((event) => event.x === 1).length, 0, "no forged event reached the client");
     // Server-side: no blank-line separator inside a frame payload.
     assert.equal(sink.raw.split("\n\n").filter((block) => block.trim() !== "").length, 4);
+  });
+});
+
+describe("session event stream: split-key redaction (#1019 holdback)", () => {
+  /** Synthetic 25-char sentinel: a delta boundary can hide at most 24 of its chars. */
+  const KEY = "sk-split-holdback-0123456789"; // pragma: allowlist secret — synthetic test sentinel
+
+  /** One turn that streams `parts` in order, each part its own delta. */
+  function splitSession(parts: string[]) {
+    return fixtureSession((emit) => {
+      for (const part of parts) emit(delta(part));
+      emit(agentEnd(parts.join("")));
+    });
+  }
+
+  it("a key split across a delta boundary never appears in any frame, at any split point", async () => {
+    const before = "the key is ";
+    // Every split point, so a fix that merely widens the buffer fails on some.
+    for (let cut = 1; cut < KEY.length; cut++) {
+      const store = new SessionStore();
+      const sink = new FakeSink();
+      store.putSessionFixture("s", splitSession([before, KEY.slice(0, cut), KEY.slice(cut), " done"]), "/tmp");
+      (store as any).sessions.get("s").redact = createApiKeyRedactor(KEY);
+      store.openStream("s", sink);
+
+      const result = await store.prompt("s", "hi");
+
+      const deltas = events(sink).filter((event) => event.type === "text_delta").map((event) => event.delta);
+      const streamed = deltas.join("");
+      assert.ok(!streamed.includes(KEY), `cut ${cut}: the key leaked across the concatenated frames: ${streamed}`);
+      assert.ok(!sink.raw.includes(KEY), `cut ${cut}: the key leaked into the raw SSE bytes`);
+      // Holdback is not a drop: the withheld tail is flushed before turn_end.
+      const terminal = terminals(sink)[0];
+      assert.equal(streamed, terminal.text, `cut ${cut}: the flushed deltas must add up to the final text`);
+      assert.equal(streamed, `${before}[REDACTED] done`, `cut ${cut}: everything but the key still arrives in order`);
+      assert.equal(result.text, `${before}[REDACTED] done`, `cut ${cut}: POST /prompt is unaffected`);
+      assert.equal(terminal.text, `${before}[REDACTED] done`);
+      assert.equal(terminals(sink).length, 1, `cut ${cut}: still exactly one terminal event`);
+    }
+  });
+
+  it("holds text back only for a session that carries a key", async () => {
+    const store = new SessionStore();
+    const sink = new FakeSink();
+    store.putSessionFixture("s", textSession(), "/tmp");
+    store.openStream("s", sink);
+
+    await store.prompt("s", "hi");
+
+    // A key-free redactor needs no window: deltas go out as they arrive.
+    assert.deepEqual(
+      events(sink).filter((event) => event.type === "text_delta").map((event) => event.delta),
+      ["Hello", " world"],
+    );
   });
 });
 
