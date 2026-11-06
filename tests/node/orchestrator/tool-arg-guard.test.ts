@@ -100,11 +100,23 @@ describe("tool-arg-guard helpers", () => {
     assert.equal(resultText(null), "");
   });
 
-  it("isArgumentRejection requires error + never-ran + validation wording", () => {
-    assert.equal(isArgumentRejection(true, true, 'Validation failed for tool "bash"'), true);
-    assert.equal(isArgumentRejection(true, true, "Unknown tool: nope"), true);
-    assert.equal(isArgumentRejection(true, false, "Validation failed for tool"), false);
-    assert.equal(isArgumentRejection(false, true, "Validation failed for tool"), false);
-    assert.equal(isArgumentRejection(true, true, "⛔ Remote script execution is forbidden"), false);
+  it("isArgumentRejection keys on pi's wording, not on durationMs", () => {
+    assert.equal(isArgumentRejection(true, 'Validation failed for tool "bash"'), true);
+    assert.equal(isArgumentRejection(true, "Unknown tool: nope"), true);
+    assert.equal(isArgumentRejection(false, "Validation failed for tool"), false);
+    assert.equal(isArgumentRejection(true, "⛔ Remote script execution is forbidden"), false);
+  });
+
+  it("detects a bash rejection that still carries durationMs", async () => {
+    const h = fakePi();
+    registerToolArgGuard(h.pi);
+    await h.fire("tool_execution_end", {
+      toolName: "bash",
+      isError: true,
+      durationMs: 0,
+      result: { content: [{ type: "text", text: 'Validation failed for tool "bash":\n  - command: missing' }], details: {} },
+    });
+    assert.equal(h.notes.length, 1, "a rejection must be caught even when durationMs is present");
+    assert.match(h.notes[0].content, /command: missing/, "the note carries the plain text, not JSON");
   });
 });

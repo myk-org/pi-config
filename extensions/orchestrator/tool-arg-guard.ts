@@ -33,6 +33,8 @@ export function resultText(result: unknown): string {
   if (result && typeof result === "object") {
     const text = (result as any).text;
     if (typeof text === "string") return text;
+    // pi's rejected-call result: { content: [{ type: "text", text }], details }
+    if (Array.isArray((result as any).content)) return resultText((result as any).content);
     try {
       return JSON.stringify(result);
     } catch {
@@ -42,21 +44,25 @@ export function resultText(result: unknown): string {
   return "";
 }
 
-/** True only for pi's argument/unknown-tool rejection, never for a policy block. */
-export function isArgumentRejection(isError: boolean, neverRan: boolean, text: string): boolean {
-  return isError && neverRan && VALIDATION_FAILURE.test(text);
+/** True only for pi's argument/unknown-tool rejection, never for a policy block.
+ *  The "never ran" signal (absent durationMs) proved unreliable — bash rejections can
+ *  carry it — so the wording is the contract: pi emits this text only when it rejected
+ *  the call before execution, while policy blocks use their own message. */
+export function isArgumentRejection(isError: boolean, text: string): boolean {
+  return isError && VALIDATION_FAILURE.test(text);
 }
 
 export function registerToolArgGuard(pi: ExtensionAPI): void {
   pi.on("tool_execution_end", async (event: any) => {
     // durationMs is absent when the tool never executed.
-    const neverRan = event?.durationMs === undefined;
     const text = resultText(event?.result).trim();
-    if (!isArgumentRejection(Boolean(event?.isError), neverRan, text)) return;
+    if (!isArgumentRejection(Boolean(event?.isError), text)) return;
 
     log.warn("tool_call_rejected_before_run", {
       tool: event?.toolName,
       toolCallId: event?.toolCallId,
+      // Diagnostic only: recorded, not used to decide.
+      durationMs: event?.durationMs,
       detail: text.slice(0, 300),
     });
     await sendSystemNote(
