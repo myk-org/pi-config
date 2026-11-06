@@ -193,6 +193,16 @@ export function writeLockfile(lockDir: string, port: number, pid: number | null,
   } catch (e: any) { log(`writeLockfile error: ${e.message}`); }
 }
 
+/** True for a path that exists and is a regular file. Lockfiles are never FIFOs, and reading
+ *  one would block the event loop, so every control-file read goes through this. */
+function isRegularFile(target: string): boolean {
+  try {
+    return fs.lstatSync(target).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /** Read port from lockfile. Returns port number or null.
  *  `legacyDir` (`.pi/tmp`) is consulted only when the new dir has no lockfile:
  *  a daemon already running at upgrade time wrote its lockfile there (#1020).
@@ -202,12 +212,14 @@ export function readLockfile(lockDir: string, legacyDir?: string): { port: numbe
   const read = (dir: string): { port: number; pid: number | null } | null => {
     try {
       const portFile = path.join(dir, "pidiff.port");
-      if (!fs.existsSync(portFile)) return null;
+      // Only a regular file is a lockfile: the dirs are project-controlled, and reading a
+      // FIFO here would block the event loop for the whole session.
+      if (!isRegularFile(portFile)) return null;
       const port = parseInt(fs.readFileSync(portFile, "utf-8").trim(), 10);
       if (isNaN(port)) return null;
       let pid: number | null = null;
       const pidFile = path.join(dir, "pidiff.pid");
-      if (fs.existsSync(pidFile)) {
+      if (isRegularFile(pidFile)) {
         pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
         if (isNaN(pid)) pid = null;
       }
@@ -216,11 +228,6 @@ export function readLockfile(lockDir: string, legacyDir?: string): { port: numbe
   };
   return read(lockDir) ?? (legacyDir ? read(legacyDir) : null);
 }
-
-/** Control files a pre-`.pi/run` daemon owns inside the legacy dir. Private on purpose: the
- *  sweep asks `isLiveLegacyDaemonFile`, so no module keeps its own copy of these names and a
- *  future daemon (which writes to `.pi/run`) can never need them added anywhere (#1020). */
-const LEGACY_CONTROL_FILES = new Set(["pidiff.port", "pidiff.pid"]);
 
 /** Read the pid from a lockfile, refusing anything but a regular file: the legacy dir is
  *  project-controlled, and reading a FIFO there would block session startup. */
@@ -261,13 +268,6 @@ export function legacyLockfileOwnerAlive(legacyDir: string): boolean {
   }
 }
 
-/** True when `name` is a legacy control file whose owner is still alive — the only exemption
- *  the tmp sweep has. A dead daemon's leftovers are ordinary throwaway. */
-export function isLiveLegacyDaemonFile(legacyDir: string, name: string): boolean {
-  if (!LEGACY_CONTROL_FILES.has(name)) return false;
-  return legacyLockfileOwnerAlive(legacyDir);
-}
-
 /** Outcome of adopting a pre-`.pi/run` lockfile. */
 export type LegacyAdoption = "none" | "adopted" | "failed";
 
@@ -284,14 +284,44 @@ export type LegacyAdoption = "none" | "adopted" | "failed";
 export async function adoptLegacyLockfile(lockDir: string, legacyDir: string): Promise<LegacyAdoption> {
   const legacy = readLockfile(legacyDir);
   if (!legacy || !legacyLockfileOwnerAlive(legacyDir)) return "none";
+  const stale = readLockfile(lockDir);
   if ((await findLiveLockfile([lockDir])) !== null) return "none";
+
   try {
     fs.mkdirSync(lockDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(lockDir, "pidiff.port"), String(legacy.port), { mode: 0o600 });
+  } catch (e: any) {
+    log.warn("legacy_lockfile_adoption_failed", { lockDir, legacyDir, error: e?.message });
+    return "failed";
+  }
+
+  // Drop only the exact stale record observed above; if it changed since, a concurrent start
+  // owns the run dir now and the legacy copy must not replace it.
+  if (stale) {
+    const current = readLockfile(lockDir);
+    if (!current || current.port !== stale.port) {
+      log.debug("legacy_lockfile_adoption_lost_race", { lockDir });
+      return "none";
+    }
+    try {
+      fs.unlinkSync(path.join(lockDir, "pidiff.port"));
+      fs.rmSync(path.join(lockDir, "pidiff.pid"), { force: true });
+    } catch (e: any) {
+      log.warn("legacy_lockfile_adoption_failed", { lockDir, legacyDir, error: e?.message });
+      return "failed";
+    }
+  }
+
+  try {
+    // "wx" still guards the empty-case race: a record that appeared in between loses nothing.
+    fs.writeFileSync(path.join(lockDir, "pidiff.port"), String(legacy.port), { mode: 0o600, flag: "wx" });
     if (legacy.pid !== null) {
       fs.writeFileSync(path.join(lockDir, "pidiff.pid"), String(legacy.pid), { mode: 0o600 });
     }
   } catch (e: any) {
+    if (e?.code === "EEXIST") {
+      log.debug("legacy_lockfile_adoption_lost_race", { lockDir });
+      return "none";
+    }
     log.warn("legacy_lockfile_adoption_failed", { lockDir, legacyDir, error: e?.message });
     return "failed";
   }

@@ -226,6 +226,18 @@ describe("legacy .pi/tmp lockfiles (#1020)", () => {
     }
   });
 
+  it("readLockfile ignores a non-regular port file instead of blocking", () => {
+    // A FIFO here would block the event loop; a directory proves the regular-file guard
+    // without needing mkfifo.
+    const dir = mk();
+    try {
+      mkdirSync(join(dir, "pidiff.port"));
+      assert.equal(readLockfile(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("adoptLegacyLockfile copies a live legacy record into an empty run dir", async () => {
     const runDir = mk();
     const legacyDir = mk();
