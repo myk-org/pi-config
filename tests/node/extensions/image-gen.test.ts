@@ -7,13 +7,16 @@
  * non-image model id, and missing API key. The Gemini API happy path is not
  * exercised (no network in tests).
  */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createImageGenTool } from "../../../extensions/image-gen/image-gen.js";
 import { setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 describe("image-gen tool guard paths", () => {
   const runExecute = async (cwd: string) => {
@@ -32,7 +35,7 @@ describe("image-gen tool guard paths", () => {
   };
 
   it("returns a setup error when image_model is unset", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "image-gen-nomodel-"));
+    const cwd = makeTempDir("image-gen-nomodel-");
     try {
       const prevGemini = process.env.GEMINI_API_KEY;
       const prevGoogle = process.env.GOOGLE_API_KEY;
@@ -56,7 +59,7 @@ describe("image-gen tool guard paths", () => {
   });
 
   it("rejects an image_model that is not an image-generation model", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "image-gen-badmodel-"));
+    const cwd = makeTempDir("image-gen-badmodel-");
     try {
       const globalFile = join(cwd, "global-settings.json");
       writeFileSync(globalFile, JSON.stringify({ image_model: "gpt-4o" }));
@@ -73,7 +76,7 @@ describe("image-gen tool guard paths", () => {
   });
 
   it("returns an API-key error when the model is valid but no key is set", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "image-gen-nokey-"));
+    const cwd = makeTempDir("image-gen-nokey-");
     try {
       const globalFile = join(cwd, "global-settings.json");
       writeFileSync(globalFile, JSON.stringify({ image_model: "gemini-2.5-flash-image" }));

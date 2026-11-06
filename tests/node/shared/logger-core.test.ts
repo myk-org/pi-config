@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, it } from "node:test";
+import { afterEach, it, after } from "node:test";
 import { createLoggerCore } from "../../../extensions/shared/logger-core.mjs";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 let home: string | undefined;
 const previousHome = process.env.HOME;
@@ -21,7 +24,7 @@ afterEach(() => {
 });
 
 async function adapters(level: "debug" | "info") {
-  home ??= mkdtempSync(join(tmpdir(), "pi-logger-core-"));
+  home ??= makeTempDir("pi-logger-core-");
   process.env.HOME = home;
   process.env.PI_LOG_ADAPTER_PARITY = level;
 

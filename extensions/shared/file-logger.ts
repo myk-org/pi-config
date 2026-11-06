@@ -133,8 +133,8 @@ function appendLine(filePath: string, line: string): void {
  * Append one physical line to ~/.pi/logs/<name>/<session>.log.
  * Never writes to console.* (chat UI leak).
  * Returns true on success.
- * On primary-path failure, tries <cwd>/.pi/tmp/pi-logs/<name>.log once: the project
- * scratch dir is swept by the tmp cleanup, so a fallback log cannot outlive its project.
+ * On primary-path failure, tries `~/.pi/tmp/pi-logs` then `<cwd>/.pi/tmp/pi-logs`: both are
+ * swept by the tmp cleanup, and the home one still works when the checkout is read-only.
  */
 const LEVEL_ORDER: Record<string, number> = Object.assign(Object.create(null), { off: -1, debug: 0, info: 1, warn: 2, error: 3 });
 
@@ -215,13 +215,20 @@ export function writeFileLogLine(name: string, line: string): boolean {
     return true;
   } catch (primaryErr) {
     recordWriteError(primaryErr);
-    try {
-      const fallbackDir = path.join(process.cwd(), ".pi", "tmp", "pi-logs");
-      appendLine(path.join(fallbackDir, `${safe}.log`), line);
-      return true;
-    } catch (fallbackErr) {
-      recordWriteError(fallbackErr);
-      return false;
+    // Never the OS temp dir: `.pi/tmp` is what the tmp cleanup sweeps. Home first, because a
+    // read-only or sandboxed checkout fails exactly the way the primary path just did; the
+    // project dir is the second chance when home itself is the unwritable one.
+    for (const fallbackDir of [
+      path.join(os.homedir(), ".pi", "tmp", "pi-logs"),
+      path.join(process.cwd(), ".pi", "tmp", "pi-logs"),
+    ]) {
+      try {
+        appendLine(path.join(fallbackDir, `${safe}.log`), line);
+        return true;
+      } catch (fallbackErr) {
+        recordWriteError(fallbackErr);
+      }
     }
+    return false;
   }
 }

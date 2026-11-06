@@ -4,7 +4,7 @@
  * Mutates process.env.PATH — run serially (concurrency: false) so parallel
  * cases cannot race the shared env / resolveBinaryCache.
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
@@ -25,6 +25,9 @@ import {
   resolveBinary,
   resolveBinaryForPlatform,
 } from "../../../extensions/shared/resolve-binary.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 describe("resolveBinary", { concurrency: false }, () => {
   const prevPath = process.env.PATH;
@@ -44,7 +47,7 @@ describe("resolveBinary", { concurrency: false }, () => {
   });
 
   function makeBinDir(): string {
-    tmpRoot = mkdtempSync(join(tmpdir(), "resolve-bin-"));
+    tmpRoot = makeTempDir("resolve-bin-");
     return tmpRoot;
   }
 
@@ -179,7 +182,7 @@ describe("resolveBinaryForPlatform win32", { concurrency: false }, () => {
   });
 
   function makeBinDir(): string {
-    tmpRoot = mkdtempSync(join(tmpdir(), "resolve-win-"));
+    tmpRoot = makeTempDir("resolve-win-");
     return tmpRoot;
   }
 

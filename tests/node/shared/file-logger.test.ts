@@ -11,7 +11,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, describe, it, after } from "node:test";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const TSX = import.meta.resolve("tsx");
@@ -88,7 +91,7 @@ describe("file-logger", () => {
   });
 
   it("writes cli-provider info lines to ~/.pi/logs", async () => {
-    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-"));
+    tmpHome = makeTempDir("pi-file-log-");
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
@@ -102,7 +105,7 @@ describe("file-logger", () => {
     assert.match(body, /\[info\] \[cli-provider\] reaped session cursor\/test/);
   });
   it("writes dreaming info lines to ~/.pi/logs", async () => {
-    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-dream-"));
+    tmpHome = makeTempDir("pi-file-log-dream-");
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
@@ -116,7 +119,7 @@ describe("file-logger", () => {
     assert.match(body, /\[info\] \[dreaming\] merged provenance for 2 entries/);
   });
   it("collapses message and Error.stack newlines into one physical line", async () => {
-    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-nl-"));
+    tmpHome = makeTempDir("pi-file-log-nl-");
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
@@ -135,7 +138,7 @@ describe("file-logger", () => {
   });
 
   it("getPiLogPath is pure (no mkdir)", async () => {
-    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-pure-"));
+    tmpHome = makeTempDir("pi-file-log-pure-");
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
@@ -157,9 +160,9 @@ describe("file-logger", () => {
     // getPiLogPath returns correct path strings without side effects
   });
 
-  it("falls back to the project .pi/tmp/pi-logs when home logs are not writable", async () => {
-    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-ro-"));
-    projectDir = mkdtempSync(join(tmpdir(), "pi-file-log-proj-"));
+  it("falls back to ~/.pi/tmp/pi-logs when only the log dir is unusable", async () => {
+    tmpHome = makeTempDir("pi-file-log-ro-");
+    projectDir = makeTempDir("pi-file-log-proj-");
     previousCwd = process.cwd();
     process.chdir(projectDir);
     process.env.HOME = tmpHome;
@@ -179,14 +182,37 @@ describe("file-logger", () => {
     assert.ok(mod.getFileLogErrorCount() >= 1);
     assert.ok(mod.getLastFileLogError());
 
-    // The fallback is the project scratch dir (swept by the tmp cleanup), not the OS temp
-    // dir: a fallback log must not outlive its project.
-    const fallback = join(projectDir, ".pi", "tmp", "pi-logs", "cli-provider.log");
+    // Never the OS temp dir: the first fallback is home `.pi/tmp`, which the tmp cleanup
+    // sweeps and which still works when the checkout is read-only.
+    const fallback = join(tmpHome, ".pi", "tmp", "pi-logs", "cli-provider.log");
     assert.match(readFileSync(fallback, "utf-8"), /fallback/);
   });
 
+  it("falls back to the project .pi/tmp when home is unwritable too", async () => {
+    // HOME points at a regular file, so neither ~/.pi/logs nor ~/.pi/tmp can be created; the
+    // project's own .pi/tmp is the last non-/tmp chance.
+    tmpHome = makeTempDir("pi-file-log-home-file-");
+    const homeAsFile = join(tmpHome, "not-a-dir");
+    writeFileSync(homeAsFile, "x");
+    projectDir = makeTempDir("pi-file-log-proj-");
+    previousCwd = process.cwd();
+    process.env.HOME = homeAsFile;
+    process.env.USERPROFILE = homeAsFile;
+    process.chdir(projectDir);
+
+    const mod = await import(
+      `../../../extensions/shared/file-logger.ts?t=${Date.now() + 6}`
+    );
+    mod.setGlobalSessionId("test-session");
+    assert.equal(mod.fileLog("cli-provider", "error", "cli-provider", "project-fallback"), true);
+    assert.match(
+      readFileSync(join(projectDir, ".pi", "tmp", "pi-logs", "cli-provider.log"), "utf-8"),
+      /project-fallback/,
+    );
+  });
+
   it("recreates log dir after external delete (no stale mkdir cache)", async () => {
-    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-recreate-"));
+    tmpHome = makeTempDir("pi-file-log-recreate-");
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
 
@@ -225,7 +251,7 @@ describe("file-logger", () => {
   });
 
   it("createLogger returns debug/info/warn/error methods", async () => {
-    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-api-"));
+    tmpHome = makeTempDir("pi-file-log-logger-api-");
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
     delete process.env.__PI_PARENT_SESSION_ID;
@@ -242,7 +268,7 @@ describe("file-logger", () => {
   });
 
   it("createLogger returns isDebugEnabled", async () => {
-    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-dbg-"));
+    tmpHome = makeTempDir("pi-file-log-logger-dbg-");
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
     delete process.env.__PI_PARENT_SESSION_ID;
@@ -266,7 +292,7 @@ describe("file-logger", () => {
   });
 
   it("createLogger info writes to log file", async () => {
-    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-info-"));
+    tmpHome = makeTempDir("pi-file-log-logger-info-");
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
     delete process.env.__PI_PARENT_SESSION_ID;
@@ -289,7 +315,7 @@ describe("file-logger", () => {
   });
 
   it("createLogger error preserves Error stack traces", async () => {
-    tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-logger-err-"));
+    tmpHome = makeTempDir("pi-file-log-logger-err-");
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
     delete process.env.__PI_PARENT_SESSION_ID;
@@ -316,7 +342,7 @@ describe("file-logger", () => {
   });
 
   it("ACPX shim import enables debug from project settings without project-settings import", () => {
-    const project = mkdtempSync(join(tmpdir(), "pi-file-log-setting-"));
+    const project = makeTempDir("pi-file-log-setting-");
     mkdirSync(join(project, ".pi"));
     writeFileSync(join(project, ".pi", "pi-config-settings.jsonc"), '{"log_acpx_provider":"debug"}');
 
@@ -335,8 +361,8 @@ describe("file-logger", () => {
   });
 
   it("writes standalone settings diagnostics without recursing or exposing values", () => {
-    const root = mkdtempSync(join(tmpdir(), "pi-settings-audit-project-"));
-    const home = mkdtempSync(join(tmpdir(), "pi-settings-audit-home-"));
+    const root = makeTempDir("pi-settings-audit-project-");
+    const home = makeTempDir("pi-settings-audit-home-");
     mkdirSync(join(root, ".pi"));
     mkdirSync(join(home, ".pi"));
     writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":"debug","private_value":"do-not-log"}');
@@ -361,8 +387,8 @@ describe("file-logger", () => {
   });
 
   it("uses a valid global setting when the project setting is invalid", () => {
-    const root = mkdtempSync(join(tmpdir(), "pi-file-log-project-"));
-    const home = mkdtempSync(join(tmpdir(), "pi-file-log-home-"));
+    const root = makeTempDir("pi-file-log-project-");
+    const home = makeTempDir("pi-file-log-home-");
     mkdirSync(join(root, ".pi"));
     mkdirSync(join(home, ".pi"));
     writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":42}');
@@ -379,7 +405,7 @@ describe("file-logger", () => {
   });
 
   it("caches standalone repository resolution for repeated lookups", () => {
-    const root = mkdtempSync(join(tmpdir(), "pi-file-log-cache-"));
+    const root = makeTempDir("pi-file-log-cache-");
     mkdirSync(join(root, ".pi"));
     writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":"debug"}');
     const script = `
@@ -396,7 +422,7 @@ describe("file-logger", () => {
   });
 
   it("caches standalone repository fallback for repeated lookups", () => {
-    const root = mkdtempSync(join(tmpdir(), "pi-file-log-cache-fallback-"));
+    const root = makeTempDir("pi-file-log-cache-fallback-");
     const script = `
       const settings = await import(${JSON.stringify(join(REPO, "extensions/orchestrator/settings-source.ts"))});
       let resolutions = 0;
@@ -411,7 +437,7 @@ describe("file-logger", () => {
   });
 
   it("loads project log settings from a nested directory", () => {
-    const root = mkdtempSync(join(tmpdir(), "pi-file-log-nested-"));
+    const root = makeTempDir("pi-file-log-nested-");
     const nested = join(root, "a", "b");
     mkdirSync(join(root, ".git"));
     mkdirSync(join(root, ".pi"));
@@ -427,8 +453,8 @@ describe("file-logger", () => {
   });
 
   it("loads project log settings from a linked worktree", () => {
-    const root = mkdtempSync(join(tmpdir(), "pi-file-log-main-"));
-    const worktree = mkdtempSync(join(tmpdir(), "pi-file-log-worktree-"));
+    const root = makeTempDir("pi-file-log-main-");
+    const worktree = makeTempDir("pi-file-log-worktree-");
     const nested = join(worktree, "nested");
     mkdirSync(join(root, ".git"));
     mkdirSync(join(root, ".pi"));

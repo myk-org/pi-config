@@ -4,7 +4,7 @@
  * (no mirrored logic here), and boots the extension with a captured setInterval so
  * the timer wiring is exercised behaviourally instead of grepped out of the source.
  */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -14,6 +14,9 @@ import { decidePendingReminder, oldestPendingAt } from "../../../extensions/pita
 import * as indexModule from "../../../extensions/pitasks/index.ts";
 import * as reminders from "../../../extensions/pitasks/reminders.ts";
 import registerPitasks from "../../../extensions/pitasks/index.ts";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 const MIN = 60_000;
 const THRESHOLD = 10 * MIN;
@@ -126,7 +129,7 @@ function task(agoMs: number, status: string = "pending") {
 
 /** Boot the extension with a captured setInterval and a temp task store. */
 function boot(tasks: any[]) {
-	const cwd = mkdtempSync(join(tmpdir(), "pitasks-reminder-"));
+	const cwd = makeTempDir("pitasks-reminder-");
 	const storePath = join(cwd, "tasks.json");
 	writeFileSync(storePath, JSON.stringify({ nextId: tasks.length + 1, tasks }));
 	mkdirSync(join(cwd, ".pi"), { recursive: true });

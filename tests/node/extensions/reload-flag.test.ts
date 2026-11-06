@@ -8,7 +8,7 @@
  * may ever let an exception escape (an unhandled rejection kills pi).
  */
 
-import { test, describe } from "node:test";
+import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,6 +21,9 @@ import reloadExtension, {
   reloadPendingPath,
   reloadDonePath,
 } from "../../../extensions/reload-flag/index.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 type Handler = (event: any, ctx: any) => Promise<void>;
 type CommandHandler = (args: string, ctx: any) => Promise<void>;
@@ -49,7 +52,7 @@ function register(): Registered {
 }
 
 function makeCwd(): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "reload-flag-"));
+  const dir = makeTempDir("reload-flag-");
   mkdirSync(path.join(dir, ".pi", "run"), { recursive: true });
   // Legacy location — kept only for the pre-#1020 read-fallback tests.
   mkdirSync(path.join(dir, ".pi", "tmp"), { recursive: true });

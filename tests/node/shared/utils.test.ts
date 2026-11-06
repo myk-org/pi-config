@@ -1,13 +1,16 @@
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { djb2Hash, getProjectLegacyRunDir, getProjectRunDir, isPiMetaInvocation, isPiOneshotInvocation, shouldSkipOneshotShutdownDream, shouldSkipOneshotRegister } from "../../../extensions/orchestrator/utils.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 describe("project run dir (#1020)", () => {
 	it("getProjectRunDir returns <cwd>/.pi/run and creates it", () => {
-		const cwd = mkdtempSync(path.join(tmpdir(), "run-dir-"));
+		const cwd = makeTempDir("run-dir-");
 		try {
 			const dir = getProjectRunDir(cwd);
 			assert.equal(dir, path.join(cwd, ".pi", "run"));
@@ -16,7 +19,7 @@ describe("project run dir (#1020)", () => {
 	});
 
 	it("getProjectRunDir creates the dir owner-only (0700)", () => {
-		const cwd = mkdtempSync(path.join(tmpdir(), "run-dir-"));
+		const cwd = makeTempDir("run-dir-");
 		try {
 			const mode = statSync(getProjectRunDir(cwd)).mode & 0o777;
 			assert.equal(mode & 0o077, 0, `group/other must have no access, got ${mode.toString(8)}`);
@@ -24,7 +27,7 @@ describe("project run dir (#1020)", () => {
 	});
 
 	it("getProjectLegacyRunDir points at .pi/tmp without creating it", () => {
-		const cwd = mkdtempSync(path.join(tmpdir(), "run-dir-"));
+		const cwd = makeTempDir("run-dir-");
 		try {
 			assert.equal(getProjectLegacyRunDir(cwd), path.join(cwd, ".pi", "tmp"));
 			assert.ok(!existsSync(path.join(cwd, ".pi", "tmp")), "legacy dir is read-only — never created");

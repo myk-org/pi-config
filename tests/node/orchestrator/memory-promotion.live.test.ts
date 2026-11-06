@@ -21,6 +21,9 @@ import {
   matchBashCommand,
   executeAction,
 } from "../../../extensions/orchestrator/enforcement-rules.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 const LESSON = "Never use `git add .`";
 const CONVENTION = "Always follow the project release convention in this repo";
@@ -63,7 +66,7 @@ function seedEntry(
 
 describe("LIVE memory promotion e2e", () => {
   before(() => {
-    cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-memory-live-"));
+    cwd = makeTempDir("pi-memory-live-");
     writeTopic("lesson", "lessons.md", LESSON);
     writeTopic("preference", "preferences.md", CONVENTION);
     writeTopic("pattern", "patterns.md", PATTERN);

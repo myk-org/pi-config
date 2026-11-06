@@ -9,13 +9,16 @@
  *
  * Run with: npx tsx --test tests/node/orchestrator/worktree-root.test.ts
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { tryResolveWorktreeRoot, resolveWorktreeRoot, mainCheckoutRoot } from "../../../extensions/orchestrator/utils.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 let base: string;
 
@@ -27,7 +30,7 @@ function makeRepo(name: string): string {
 }
 
 beforeEach(() => {
-  base = mkdtempSync(join(tmpdir(), "worktree-"));
+  base = makeTempDir("worktree-");
 });
 
 afterEach(() => {

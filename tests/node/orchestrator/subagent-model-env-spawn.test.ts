@@ -4,10 +4,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import { runSingleAgent } from "../../../extensions/orchestrator/subagent-tool.js";
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 // The sync path invokes process.argv[1]; the async path invokes its runner.
 // Run a real Node child at each boundary so its observed environment, not a
@@ -21,7 +24,7 @@ describe("subagent child model environment", { concurrency: false }, () => {
   ]) {
     const label = `${selected ? "selected" : "no selected"} model, ${inherited ? "inherited" : "no inherited"} PI_MODEL`;
     async function withChild(check: (cwd: string, script: string, output: string, agent: any, parentModelId: string | undefined) => Promise<void>) {
-      const cwd = mkdtempSync(join(tmpdir(), "subagent-model-env-"));
+      const cwd = makeTempDir("subagent-model-env-");
       const previous = { model: process.env.PI_MODEL, primary: process.env.PI_PRIMARY_MODEL, argv: process.argv[1], projectTmp: process.env.PROJECT_TMP_DIR, output: process.env.CHILD_ENV_OUTPUT };
       const previousInterval = global.setInterval;
       const script = join(cwd, "child.cjs");

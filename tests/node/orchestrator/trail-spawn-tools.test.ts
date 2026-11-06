@@ -9,13 +9,16 @@
  *
  * Run: env -u PI_SUBAGENT_CHILD npx tsx --test tests/node/orchestrator/trail-spawn-tools.test.ts
  */
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TRAIL_QUERY_TOOLS, trailToolsArgs, withTrailTools } from "../../../extensions/orchestrator/trail.js";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 beforeEach(() => {
   // Pin the global settings file: a developer's ~/.pi settings must never decide the result.
@@ -28,7 +31,7 @@ afterEach(() => {
 });
 /** Temp repo whose own `.pi` settings say whether Trail is on. */
 function repo(trailEnable: boolean): string {
-  const root = mkdtempSync(join(tmpdir(), "trail-spawn-"));
+  const root = makeTempDir("trail-spawn-");
   mkdirSync(join(root, ".pi"), { recursive: true });
   writeFileSync(join(root, ".pi/pi-config-settings.jsonc"), JSON.stringify({ trail_enable: trailEnable }));
   return root;

@@ -1,7 +1,7 @@
 /**
  * Contract tests for /resume|/new CLI history re-seed (issue #661).
  */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
@@ -21,6 +21,9 @@ import {
   type CliSessionKey,
 } from "../../../extensions/cli-provider/sessions.js";
 import { reapStaleCliSessions, resolveReaperActivePiSessionId, startCliSessionReaper, stopCliSessionReaper } from "../../../extensions/cli-provider/session-reaper.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 describe("decideCliSessionStartReseed (/resume contract)", () => {
   it("keeps markers on reload", () => {
@@ -78,7 +81,7 @@ describe("/resume reseed path (markers + history seed)", () => {
   it("clears matching piSession markers on resume", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-resume-clear-"));
+    const home = makeTempDir("cli-resume-clear-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -123,7 +126,7 @@ describe("/resume reseed path (markers + history seed)", () => {
   it("resume from bound sid does not clear concurrent default markers", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-resume-no-cross-"));
+    const home = makeTempDir("cli-resume-no-cross-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -282,7 +285,7 @@ describe("/resume reseed path (markers + history seed)", () => {
   it("reload does not clear markers", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-reload-keep-"));
+    const home = makeTempDir("cli-reload-keep-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -323,7 +326,7 @@ describe("reaper vs active piSessionId", () => {
   it("does not reap idle running marker for the active pi session", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-reap-active-"));
+    const home = makeTempDir("cli-reap-active-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -356,7 +359,7 @@ describe("reaper vs active piSessionId", () => {
   it("does not reap idle running marker from a different piSessionId", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-reap-other-"));
+    const home = makeTempDir("cli-reap-other-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -389,7 +392,7 @@ describe("reaper vs active piSessionId", () => {
   it("keeps idle running markers when active piSessionId is unknown", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-reap-unknown-"));
+    const home = makeTempDir("cli-reap-unknown-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -469,7 +472,7 @@ describe("startCliSessionReaper scheduling", () => {
   it("does not sweep immediately on start", async () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-reaper-start-"));
+    const home = makeTempDir("cli-reaper-start-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     stopCliSessionReaper();
@@ -508,7 +511,7 @@ describe("startCliSessionReaper scheduling", () => {
   it("interval sweep reaps idle stopped but keeps concurrent running markers", async () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-reaper-interval-"));
+    const home = makeTempDir("cli-reaper-interval-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     process.env.PI_SESSION_ID = "env-sid";

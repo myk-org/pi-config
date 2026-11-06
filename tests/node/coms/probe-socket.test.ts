@@ -3,7 +3,10 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as net from "node:net";
-import { describe, it, afterEach } from "node:test";
+import { describe, it, afterEach, after } from "node:test";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 describe("probeStaleSocket", () => {
 	let tmpDir: string | undefined;
@@ -20,7 +23,7 @@ describe("probeStaleSocket", () => {
 	});
 
 	it("returns 'in_use' for active socket", async () => {
-		tmpDir = mkdtempSync(join(tmpdir(), "probe-active-"));
+		tmpDir = makeTempDir("probe-active-");
 		const sockPath = join(tmpDir, "test.sock");
 
 		// Start a real Unix socket server
@@ -37,7 +40,7 @@ describe("probeStaleSocket", () => {
 	});
 
 	it("returns 'stale' for non-existent socket", async () => {
-		tmpDir = mkdtempSync(join(tmpdir(), "probe-missing-"));
+		tmpDir = makeTempDir("probe-missing-");
 		const sockPath = join(tmpDir, "nonexistent.sock");
 
 		const { probeStaleSocket } = await import(
@@ -48,7 +51,7 @@ describe("probeStaleSocket", () => {
 	});
 
 	it("returns 'stale' on connection refused", async () => {
-		tmpDir = mkdtempSync(join(tmpdir(), "probe-refused-"));
+		tmpDir = makeTempDir("probe-refused-");
 		const sockPath = join(tmpDir, "refused.sock");
 
 		// Create and immediately close a server to get ECONNREFUSED
@@ -67,7 +70,7 @@ describe("probeStaleSocket", () => {
 	});
 
 	it("respects configured timeout via cwd", async () => {
-		tmpDir = mkdtempSync(join(tmpdir(), "probe-timeout-"));
+		tmpDir = makeTempDir("probe-timeout-");
 		const piDir = join(tmpDir, ".pi");
 		mkdirSync(piDir, { recursive: true });
 		// Set a very short timeout

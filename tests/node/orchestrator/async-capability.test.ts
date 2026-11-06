@@ -2,7 +2,7 @@
  * Tests for async LLM capability (acpx vs native).
  * Run with: npx tsx --test tests/node/orchestrator/async-capability.test.ts
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -19,6 +19,9 @@ import {
   clearSettingsCache,
   setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 describe("registered acpx providers / supportsAsyncLlm", () => {
   let tmp: string;
@@ -31,8 +34,8 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
 
   beforeEach(() => {
     clearSettingsCache();
-    tmp = mkdtempSync(join(tmpdir(), "async-cap-"));
-    globalTmp = mkdtempSync(join(tmpdir(), "async-cap-g-"));
+    tmp = makeTempDir("async-cap-");
+    globalTmp = makeTempDir("async-cap-g-");
     setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
     delete process.env.ACPX_AGENTS;
     delete process.env.PI_INTERNAL_OPERATIONS_PROVIDER;

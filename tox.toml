@@ -18,6 +18,6 @@ allowlist_externals = ["npx"]
 # Second suite: the browser assets shipped in renderer/static, which have no
 # exports and can only be tested by running them against a DOM.
 commands = [
-  ["npx", "tsx", "--test", "tests/node/**/*.test.ts"],
-  ["npx", "tsx", "--test", "packages/pi-docsite/tests/js/**/*.test.ts"],
+  ["bash", "scripts/run-node-tests.sh", "tests/node/**/*.test.ts"],
+  ["bash", "scripts/run-node-tests.sh", "packages/pi-docsite/tests/js/**/*.test.ts"],
 ]

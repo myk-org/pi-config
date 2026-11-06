@@ -3,12 +3,15 @@
  * servers where `builtin:mcp` reads them, or MCP silently stops working.
  * Run with: npx tsx --test tests/node/shared/mcp-config-migration.test.ts
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { migrateMcpConfig, mcpConfigPaths } from "../../../extensions/shared/mcp-config-migration.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 let home: string;
 let legacy: string;
@@ -17,7 +20,7 @@ let current: string;
 const SERVERS = JSON.stringify({ mcpServers: { jira: { command: "npx", args: ["-y", "mcp-jira"] } } });
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), "mcp-migrate-"));
+  home = makeTempDir("mcp-migrate-");
   ({ legacy, current } = mcpConfigPaths(home));
 });
 

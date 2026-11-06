@@ -1,5 +1,5 @@
 /** #968 G — browser-ops settings payload/apply round-trip (project scope only; global touches real home). */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -7,9 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySetting, buildSettingsPayload, validateSettingValue } from "../../../extensions/pidash/browser-ops.ts";
 import { SETTINGS_KEYS } from "../../../extensions/orchestrator/project-settings.ts";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 function tempProject(): string {
-  const dir = mkdtempSync(join(tmpdir(), "pidash-settings-"));
+  const dir = makeTempDir("pidash-settings-");
   mkdirSync(join(dir, ".pi"), { recursive: true });
   return dir;
 }

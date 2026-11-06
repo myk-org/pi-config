@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, describe, it, after } from "node:test";
 import {
   acquireLeaderLock,
   mutateDurableCronStore,
@@ -16,12 +16,15 @@ import {
   type DurableCronTask,
   validateDurableCronTask,
 } from "../../../extensions/orchestrator/cron-store.ts";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 
 function tempStore() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-store-"));
+  const dir = makeTempDir("pi-cron-store-");
   dirs.push(dir);
   return path.join(dir, "crons.json");
 }

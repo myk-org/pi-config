@@ -9,9 +9,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, describe, it, after } from "node:test";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const MODULE = join(REPO, "extensions/shared/provider-stream-log.ts");
@@ -50,8 +53,8 @@ async function loadModule(level: string): Promise<{
   mod: typeof import("../../../extensions/shared/provider-stream-log.js");
   home: string;
 }> {
-  const home = mkdtempSync(join(tmpdir(), "pi-provider-stream-home-"));
-  const project = mkdtempSync(join(tmpdir(), "pi-provider-stream-project-"));
+  const home = makeTempDir("pi-provider-stream-home-");
+  const project = makeTempDir("pi-provider-stream-project-");
   const prevHome = process.env.HOME;
   const prevUserProfile = process.env.USERPROFILE;
   const prevParent = process.env.__PI_PARENT_SESSION_ID;

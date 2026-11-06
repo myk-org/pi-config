@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -8,6 +8,9 @@ import { registerSubagentTool } from "../../../extensions/orchestrator/subagent-
 import { fireOnComplete, firePendingCompletions, registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 const log = createLogger("subagent-async-chain-test");
 
@@ -43,7 +46,7 @@ interface SpawnCall {
  * completion manually — no child processes, no result files, no polling.
  */
 function harness(opts: { hasUI?: boolean; confirm?: (title: string, message?: string) => Promise<boolean> } = {}) {
-  const cwd = mkdtempSync(join(tmpdir(), "subagent-async-chain-"));
+  const cwd = makeTempDir("subagent-async-chain-");
   const confirmCalls: Array<{ title: string; message?: string }> = [];
   const spawns: SpawnCall[] = [];
   const messages: any[] = [];
@@ -240,7 +243,7 @@ describe("async chain step handoff", () => {
 
   it("discovers project agents for each step's cwd", async () => {
     const h = harness();
-    const stepCwd = mkdtempSync(join(tmpdir(), "subagent-async-chain-step-"));
+    const stepCwd = makeTempDir("subagent-async-chain-step-");
     try {
       mkdirSync(join(stepCwd, ".pi", "agents"), { recursive: true });
       writeFileSync(join(stepCwd, ".pi", "agents", "step-only.md"), "---\nname: step-only\ndescription: only in this directory\n---\nbody\n");
@@ -322,7 +325,7 @@ describe("fireOnComplete one-shot semantics", () => {
 
 /** Harness around registerAsyncAgents — real spawn path, stubbed child process. */
 function asyncHarness(opts: { hasUI?: boolean; confirm?: (title: string, message?: string) => Promise<boolean> } = {}) {
-  const cwd = mkdtempSync(join(tmpdir(), "async-chain-durable-"));
+  const cwd = makeTempDir("async-chain-durable-");
   const handlers = new Map<string, Array<(event: unknown, ctx: any) => void>>();
   const messages: any[] = [];
   const previousSetInterval = global.setInterval;
@@ -480,7 +483,7 @@ describe("project-agent approval covers every chain step cwd", () => {
   it("asks for approval when a step's own cwd contributes a project agent", async () => {
     const h = harness({ hasUI: true, confirm: async () => true });
     try {
-      const stepDir = mkdtempSync(join(tmpdir(), "chain-step-cwd-"));
+      const stepDir = makeTempDir("chain-step-cwd-");
       writeProjectAgent(stepDir, "step-only");
       const steps = [
         { agent: "worker", task: "one", cwd: h.ctx.cwd, estimatedSeconds: 5, taskId: "-1" },
@@ -501,7 +504,7 @@ describe("project-agent approval covers every chain step cwd", () => {
   it("cancels the chain when the step-local project agent is declined", async () => {
     const h = harness({ hasUI: true, confirm: async () => false });
     try {
-      const stepDir = mkdtempSync(join(tmpdir(), "chain-step-cwd-"));
+      const stepDir = makeTempDir("chain-step-cwd-");
       writeProjectAgent(stepDir, "step-only");
       const steps = [
         { agent: "worker", task: "one", cwd: h.ctx.cwd, estimatedSeconds: 5, taskId: "-1" },
@@ -519,8 +522,8 @@ describe("project-agent approval covers every chain step cwd", () => {
   it("lists BOTH sources when two step dirs hold an agent of the same name", async () => {
     const h = harness({ hasUI: true, confirm: async () => true });
     try {
-      const dirA = mkdtempSync(join(tmpdir(), "chain-dup-a-"));
-      const dirB = mkdtempSync(join(tmpdir(), "chain-dup-b-"));
+      const dirA = makeTempDir("chain-dup-a-");
+      const dirB = makeTempDir("chain-dup-b-");
       writeProjectAgent(dirA, "dup-name");
       writeProjectAgent(dirB, "dup-name");
       const steps = [

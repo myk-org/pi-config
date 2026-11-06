@@ -6,7 +6,7 @@
  * against a throwaway fake `pi` on an isolated PATH, so results never depend
  * on the host's global pi installation (Qodo finding, PR #774 cycle 2).
  */
-import { describe, it, afterEach } from "node:test";
+import { describe, it, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -17,12 +17,15 @@ import {
   checkMinPiVersion,
   getPiVersion,
 } from "../../../extensions/orchestrator/utils.ts";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 let cleanupFns: Array<() => void> = [];
 
 /** Put a fake `pi` that prints `version` at the front of PATH for this test. */
 function useFakePi(version: string): void {
-  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-pi-bin-"));
+  const binDir = makeTempDir("fake-pi-bin-");
   const script = path.join(binDir, "pi");
   fs.writeFileSync(
     script,

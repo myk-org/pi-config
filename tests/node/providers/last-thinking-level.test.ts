@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -12,6 +12,9 @@ import {
   shouldRestoreLastThinkingLevel,
   writeLastThinkingLevel,
 } from "../../../extensions/providers/last-thinking-level.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 type Handler = (event: any, ctx: any) => any;
 
@@ -42,7 +45,7 @@ describe("last-used thinking level", () => {
   let statePath: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "pi-thinking-"));
+    dir = makeTempDir("pi-thinking-");
     statePath = join(dir, "state", "last-thinking-level.json");
   });
 

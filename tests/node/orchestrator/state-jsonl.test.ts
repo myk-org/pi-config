@@ -2,7 +2,7 @@
  * Tests for JSONL state persistence module.
  * Run with: npx tsx --test tests/node/orchestrator/state-jsonl.test.ts
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -22,7 +22,7 @@ interface TestState {
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "state-jsonl-test-"));
+  tmpDir = makeTempDir("state-jsonl-test-");
 });
 
 afterEach(() => {
@@ -249,6 +249,9 @@ describe("multiple store instances", () => {
 // ── 7. JsonlAppendLog ──
 
 import { JsonlAppendLog } from "../../../extensions/orchestrator/state-jsonl.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 interface TestLogEntry {
   event: string;
@@ -470,7 +473,7 @@ describe("createCachedStore corrupt legacy migration", () => {
 
 describe("JsonlStateStore.mutate — lock contention (Qodo round 2, PR #916)", () => {
   it("preserves the latest state when a briefly-held lock releases", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jsonl-contention-"));
+    const dir = makeTempDir("jsonl-contention-");
     try {
       const file = path.join(dir, "state.jsonl");
       const store = new JsonlStateStore<{ n: number }>(file);
@@ -501,7 +504,7 @@ describe("JsonlStateStore.mutate — lock contention (Qodo round 2, PR #916)", (
   });
 
   it("fails explicitly when the lock stays unavailable instead of appending a stale snapshot", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jsonl-lockfail-"));
+    const dir = makeTempDir("jsonl-lockfail-");
     try {
       const file = path.join(dir, "state.jsonl");
       const store = new JsonlStateStore<{ n: number }>(file);

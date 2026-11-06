@@ -2,7 +2,7 @@
  * Tests for autoCompleteTask() and autoMarkInProgress() task lifecycle helpers.
  * Run with: npx tsx --test tests/node/orchestrator/auto-task-lifecycle.test.ts
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -12,6 +12,9 @@ import {
   autoMarkInProgress,
 } from "../../../extensions/orchestrator/task-lifecycle.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 function writeTaskStore(dir: string, fileName: string, tasks: Array<{ id: string; status: string; subject: string }>): string {
   const tasksDir = join(dir, ".pi", "tasks");
@@ -29,7 +32,7 @@ describe("autoCompleteTask", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "auto-complete-"));
+    tmp = makeTempDir("auto-complete-");
   });
 
   afterEach(() => {
@@ -122,7 +125,7 @@ describe("autoMarkInProgress", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "auto-mark-"));
+    tmp = makeTempDir("auto-mark-");
   });
 
   afterEach(() => {
@@ -192,7 +195,7 @@ describe("autoCompleteTask call-site guard (subagent-tool pattern)", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "call-site-"));
+    tmp = makeTempDir("call-site-");
   });
 
   afterEach(() => {
@@ -246,7 +249,7 @@ describe("autoCompleteTask error handling", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "lifecycle-err-"));
+    tmp = makeTempDir("lifecycle-err-");
   });
 
   afterEach(() => {
@@ -285,7 +288,7 @@ describe("autoMarkInProgress error handling", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "lifecycle-err-"));
+    tmp = makeTempDir("lifecycle-err-");
   });
 
   afterEach(() => {
@@ -343,7 +346,7 @@ describe("autoCompleteTask update-failure handling", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "update-fail-"));
+    tmp = makeTempDir("update-fail-");
   });
 
   afterEach(() => {
@@ -371,7 +374,7 @@ describe("autoMarkInProgress update-failure handling", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "update-fail-"));
+    tmp = makeTempDir("update-fail-");
   });
 
   afterEach(() => {

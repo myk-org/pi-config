@@ -1,5 +1,5 @@
 /** Trail integration contract for #978. Run: npx tsx --test tests/node/orchestrator/trail.test.ts */
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -7,6 +7,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import * as trail from "../../../extensions/orchestrator/trail.js";
 import { getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 type TrailRun = (args: readonly string[], opts: { cwd: string }) => Promise<{ stdout: string; stderr: string; code: number }>;
 type Handler = (event: any, ctx: any) => Promise<any> | any;
@@ -42,12 +45,12 @@ function promptEvent(prompt: string, options: Record<string, any> = {}) {
 }
 /** Temp repo root with an on-disk code map (map presence is a filesystem check now). */
 function mapRoot(nodes: Array<{ id: string; name: string; path: string }>, nodeCount = nodes.length) {
-  const root = mkdtempSync(join(tmpdir(), "trail-map-"));
+  const root = makeTempDir("trail-map-");
   mkdirSync(join(root, "graft/.graph"), { recursive: true });
   writeFileSync(join(root, "graft/.graph/wiring.json"), JSON.stringify({ meta: { nodeCount }, nodes, edges: [] }));
   return root;
 }
-const defaultRoot = mkdtempSync(join(tmpdir(), "trail-default-"));
+const defaultRoot = makeTempDir("trail-default-");
 let defaultSession = 0;
 function ctx(cwd = defaultRoot, trusted = true, sessionId = `session-${++defaultSession}`) {
   const status: Array<{ key: string; text: string | undefined }> = [];
@@ -79,7 +82,7 @@ describe("Trail enablement, trust, and startup", () => {
     const untrusted = register({ setting: () => true }); await start(untrusted, ctx("/untrusted/project", false)); assert.equal(untrusted.tools.size, 0); assert.equal(untrusted.calls.length, 0);
   });
   for (const transition of ["untrusted", "disabled"] as const) it(`invalidates tools and status on a ${transition} session transition`, async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-transition-"));
+    const root = makeTempDir("trail-transition-");
     try {
       let enabled = true;
       const r = register({ setting: () => enabled }); await start(r, ctx(root));
@@ -103,7 +106,7 @@ describe("Trail enablement, trust, and startup", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("reports a repo with no map as absent without cold-building it", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-nomap-"));
+    const root = makeTempDir("trail-nomap-");
     try {
       const r = register(); const c = await start(r, ctx(root));
       assert.deepEqual(r.calls, [], "a repo without a map is never cold-built at session start");
@@ -158,14 +161,14 @@ describe("Trail enablement, trust, and startup", () => {
       writeFileSync(join(root, ".trail/cache/.graph/wiring.json"), JSON.stringify({ meta: { nodeCount: 5 }, nodes: [] }));
       assert.equal(trail.trailMapDir(root, silentLogger), join(root, ".trail/cache"));
       assert.equal(trail.trailNodes(root, silentLogger), 5);
-      const empty = mkdtempSync(join(tmpdir(), "trail-empty-"));
+      const empty = makeTempDir("trail-empty-");
       assert.equal(trail.trailMapDir(empty, silentLogger), null);
       rmSync(empty, { recursive: true, force: true });
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("seeds a map-less worktree with a query instead of a build", async () => {
     const main = mapRoot([{ id: "a", name: "a", path: "src/auth.ts" }]);
-    const worktree = mkdtempSync(join(tmpdir(), "trail-wt-"));
+    const worktree = makeTempDir("trail-wt-");
     try {
       mkdirSync(join(main, ".git/worktrees/wt"), { recursive: true });
       writeFileSync(join(main, ".git/worktrees/wt/commondir"), "../..\n");
@@ -247,7 +250,7 @@ describe("Trail retrieval, injection, and the gate", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("does not gate navigation when the map is unavailable", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-nogate-"));
+    const root = makeTempDir("trail-nogate-");
     try {
       const r = register(); const c = await start(r, ctx(root));
       await r.handlers.get("before_agent_start")![0](promptEvent("locate the authentication implementation"), c);
@@ -403,7 +406,7 @@ describe("Trail savings accounting", () => {
     assert.match(c.status.at(-1)?.text ?? "", /~700 tok saved/);
   });
   it("publishes the exact authoritative parent aggregate", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-publish-"));
+    const root = makeTempDir("trail-publish-");
     try {
       const r = register({ graph: async () => "fresh" }); const c = await start(r, ctx(root));
       r.handlers.get("tool_result")![0]({ toolName: "trail_repo_map", input: {}, content: savings("[trail] tokens saved ≈ 1,098,359"), isError: false }, c);
@@ -411,7 +414,7 @@ describe("Trail savings accounting", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("aggregates a parent and two child processes into the parent status", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-family-"));
+    const root = makeTempDir("trail-family-");
     try {
       const parent = register({ graph: async () => "fresh" }); const parentCtx = await start(parent, ctx(root, true, "parent-session"));
       for (const [id, amount] of [["child-one", 200], ["child-two", 300]] as const) {
@@ -428,7 +431,7 @@ describe("Trail savings accounting", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("treats an unreadable savings lock as contended", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-partial-lock-"));
+    const root = makeTempDir("trail-partial-lock-");
     try {
       const seeded = register({ graph: async () => "fresh" }); const c = await start(seeded, ctx(root, true, "partial-lock"));
       const store = join(root, ".pi/tmp", readdirSync(join(root, ".pi/tmp")).find(name => name.endsWith(".dirty"))!.replace(/\.dirty$/, ""));
@@ -439,7 +442,7 @@ describe("Trail savings accounting", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("releases its savings lock after a persist failure", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-failed-save-"));
+    const root = makeTempDir("trail-failed-save-");
     try {
       const r = register({ graph: async () => "fresh" }); const c = await start(r, ctx(root, true, "failed-save"));
       const store = join(root, ".pi/tmp", readdirSync(join(root, ".pi/tmp")).find(name => name.endsWith(".dirty"))!.replace(/\.dirty$/, ""));
@@ -450,7 +453,7 @@ describe("Trail savings accounting", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("does not lose deltas from independently initialized writers", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-race-"));
+    const root = makeTempDir("trail-race-");
     try {
       const writers = [register({ graph: async () => "fresh" }), register({ graph: async () => "fresh" }), register({ graph: async () => "fresh" })];
       await Promise.all(writers.map((writer, index) => start(writer, ctx(root, true, `writer-${index}`))));
@@ -464,7 +467,7 @@ describe("Trail savings accounting", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("persists canonical savings emitted by automatic prompt retrieval", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-prompt-"));
+    const root = makeTempDir("trail-prompt-");
     try {
       const output = `${JSON.stringify({ coverage: .9, hits: [{ title: "answer", pointer: "src/a.ts:1" }] })}\n[trail] tokens saved ≈ 450`;
       const r = register({ graph: async () => "fresh", results: [{ stdout: output }] }); const c = await start(r, ctx(root, true, "prompt-session"));
@@ -474,7 +477,7 @@ describe("Trail savings accounting", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   for (const reason of ["reload", "resume"]) it(`restores session savings before rendering on ${reason}`, async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-session-"));
+    const root = makeTempDir("trail-session-");
     try {
       const first = register({ graph: async () => "fresh" }); const firstCtx = await start(first, ctx(root, true, "saved-session"));
       first.handlers.get("tool_result")![0]({ toolName: "trail_repo_map", input: {}, content: savings("map\n[trail] tokens saved ≈ 700"), isError: false }, firstCtx);
@@ -484,7 +487,7 @@ describe("Trail savings accounting", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("isolates new sessions and stores a hashed ID with private modes", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-session-"));
+    const root = makeTempDir("trail-session-");
     try {
       const first = register({ graph: async () => "fresh" }); const firstCtx = await start(first, ctx(root, true, "secret-session-id"));
       first.handlers.get("tool_result")![0]({ toolName: "trail_repo_map", input: {}, content: savings("map\n[trail] tokens saved ≈ 400"), isError: false }, firstCtx);
@@ -497,7 +500,7 @@ describe("Trail savings accounting", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("falls back safely for a corrupt session store", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-session-"));
+    const root = makeTempDir("trail-session-");
     try {
       const seeded = register({ graph: async () => "fresh" }); const seededCtx = await start(seeded, ctx(root));
       seeded.handlers.get("tool_result")![0]({ toolName: "trail_repo_map", input: {}, content: savings("[trail] tokens saved ≈ 100"), isError: false }, seededCtx);
@@ -508,7 +511,7 @@ describe("Trail savings accounting", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("accumulates and persists savings after restoration", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-session-"));
+    const root = makeTempDir("trail-session-");
     try {
       const first = register({ graph: async () => "fresh" }); const c1 = await start(first, ctx(root, true, "aggregate-session")); first.handlers.get("tool_result")![0]({ toolName: "trail_repo_map", input: {}, content: savings("[trail] tokens saved ≈ 250"), isError: false }, c1);
       const second = register({ graph: async () => "fresh" }); const c2 = ctx(root, true, "aggregate-session"); await second.handlers.get("session_start")![0]({ reason: "reload" }, c2); second.handlers.get("tool_result")![0]({ toolName: "trail_repo_map", input: {}, content: savings("[trail] tokens saved ≈ 350"), isError: false }, c2);
@@ -517,7 +520,7 @@ describe("Trail savings accounting", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("publishes zero when a new session replaces one with savings", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-switch-"));
+    const root = makeTempDir("trail-switch-");
     try {
       const r = register({ graph: async () => "fresh" });
       const oldCtx = await start(r, ctx(root, true, "old-session"));
@@ -601,7 +604,7 @@ describe("Trail build locking", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   for (const mode of ["sync", "async"] as const) it(`marks the parent stale from a ${mode} child edit signal without rebuilding`, async () => {
-    const root = mkdtempSync(join(tmpdir(), `trail-${mode}-child-`));
+    const root = makeTempDir(`trail-${mode}-child-`);
     try {
       const parent = register({ graph: async () => "fresh" }); const parentCtx = await start(parent, ctx(root, true, "parent"));
       process.env.PI_SUBAGENT_CHILD = "1"; process.env.__PI_PARENT_SESSION_ID = "parent";
@@ -620,7 +623,7 @@ describe("Trail build locking", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("writes child dirty signals under the resolved worktree root", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-child-root-"));
+    const root = makeTempDir("trail-child-root-");
     try {
       execFileSync("git", ["init", "-q", root]);
       const nested = join(root, "nested"); mkdirSync(nested);
@@ -641,7 +644,7 @@ describe("Trail paths and status", () => {
     assert.deepEqual(trail.withTrailTools(["read"], false), ["read"]);
   });
   it("rejects a symlink that escapes the project before invoking Trail", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-root-")); const outside = mkdtempSync(join(tmpdir(), "trail-outside-"));
+    const root = makeTempDir("trail-root-"); const outside = makeTempDir("trail-outside-");
     try { mkdirSync(join(root, "src")); writeFileSync(join(outside, "secret.ts"), "secret"); symlinkSync(join(outside, "secret.ts"), join(root, "src", "escape.ts"));
       const r = register({ graph: async () => "fresh" }); const c = await start(r, ctx(root)); const result = await r.tools.get("trail_file_api")!.execute("id", { path: "src/escape.ts" }, undefined, undefined, c);
       assert.match(result.content[0].text, /project/i); assert.equal(r.calls.length, 0);

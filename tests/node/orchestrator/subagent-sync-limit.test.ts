@@ -10,12 +10,15 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, after } from "node:test";
 import {
 	clearSettingsCache,
 	getSetting,
 	setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 describe("subagent sync limit settings", () => {
 	let tmpDir: string;
@@ -24,8 +27,8 @@ describe("subagent sync limit settings", () => {
 
 	beforeEach(() => {
 		clearSettingsCache();
-		tmpDir = mkdtempSync(join(tmpdir(), "subagent-sync-"));
-		globalTmp = mkdtempSync(join(tmpdir(), "subagent-sync-global-"));
+		tmpDir = makeTempDir("subagent-sync-");
+		globalTmp = makeTempDir("subagent-sync-global-");
 		setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
 		delete process.env.PI_SYNC_AGENT_MAX_SECONDS;
 	});
@@ -91,7 +94,7 @@ describe("subagent sync limit settings", () => {
 	});
 
 	it("checkSyncLimit enforces configured limit", async () => {
-		tmpDir = mkdtempSync(join(tmpdir(), "subagent-check-"));
+		tmpDir = makeTempDir("subagent-check-");
 		const piDir = join(tmpDir, ".pi");
 		mkdirSync(piDir, { recursive: true });
 		writeFileSync(
@@ -119,7 +122,7 @@ describe("subagent sync limit settings", () => {
 	});
 
 	it("checkSyncLimit uses default 60s limit", async () => {
-		tmpDir = mkdtempSync(join(tmpdir(), "subagent-default-check-"));
+		tmpDir = makeTempDir("subagent-default-check-");
 
 		const { clearSettingsCache: clearCache } = await import(
 			`../../../extensions/orchestrator/project-settings.ts`
@@ -139,7 +142,7 @@ describe("subagent sync limit settings", () => {
 	});
 
 	it("checkSyncLimit respects per-project settings", async () => {
-		tmpDir = mkdtempSync(join(tmpdir(), "subagent-per-project-"));
+		tmpDir = makeTempDir("subagent-per-project-");
 		const piDir = join(tmpDir, ".pi");
 		mkdirSync(piDir, { recursive: true });
 		writeFileSync(

@@ -16,7 +16,7 @@
  *
  * No network: the model call is injected.
  */
-import { afterEach, before, beforeEach, describe, it } from "node:test";
+import { afterEach, before, beforeEach, describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -26,6 +26,9 @@ import { createReviewLearning, findingProvenance } from "../../../extensions/orc
 import { entryHash, loadScores } from "../../../extensions/orchestrator/memory-scoring.js";
 import { readAllTopicEntries } from "../../../extensions/orchestrator/memory-tree.js";
 import { embedEntry } from "../../../extensions/orchestrator/memory-embeddings.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 // ── Scratch reviews DB (schema mirrors myk_pi_tools/reviews/store.py) ──────
 
@@ -65,7 +68,7 @@ const REPO = { owner: "myk-org", repo: "demo" };
 
 /** Seed a scratch DB: one myk-org/demo review @ sha-mode with addressed ids 1,2 and a skipped id 3. */
 function seedModeDb(): { dbPath: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-modes-"));
+  const dir = makeTempDir("review-learning-modes-");
   const dbPath = path.join(dir, "reviews.db");
   const db = new DatabaseSync(dbPath);
   db.exec(SCHEMA);
@@ -84,7 +87,7 @@ function seedModeDb(): { dbPath: string } {
 
 /** cwd with the seeded reviews.db at the location getProjectDataDir resolves to. */
 function cwdWithDb(): string {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-modes-cwd-"));
+  const cwd = makeTempDir("review-learning-modes-cwd-");
   const dataDir = path.join(cwd, ".pi", "data");
   fs.mkdirSync(dataDir, { recursive: true });
   fs.copyFileSync(seedModeDb().dbPath, path.join(dataDir, "reviews.db"));
@@ -155,7 +158,7 @@ afterEach(() => {
 // ~7ms. When the model is unavailable, warmup fails fast and the embeds
 // inside the write path fail fast too — no behavior change either way.
 before(async () => {
-  const warmupDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-modes-warmup-"));
+  const warmupDir = makeTempDir("review-learning-modes-warmup-");
   try {
     await embedEntry(warmupDir, "pipeline warmup", "lesson");
   } finally {

@@ -1,7 +1,7 @@
 /**
  * Tests for cli-provider command builders, parsers, and CLI-only discovery parsers.
  */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { buildCliCommand, isCliAgentName } from "../../../extensions/cli-provider/providers.js";
 import {
@@ -27,6 +27,9 @@ import {
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 describe("cli-provider providers", () => {
   it("recognizes supported agents", () => {
@@ -244,7 +247,7 @@ Tip: use --model <id>
     const splitAt = chunkSize - 10;
     const pad = Buffer.alloc(splitAt, 0x41); // 'A'
     const body = Buffer.from(entry, "utf-8");
-    const dir = mkdtempSync(join(tmpdir(), "cli-claude-scan-"));
+    const dir = makeTempDir("cli-claude-scan-");
     const file = join(dir, "fake-claude.bin");
     try {
       writeFileSync(file, Buffer.concat([pad, body]));
@@ -420,8 +423,8 @@ describe("cli-provider parsers", () => {
 
 describe("cli-* supports async LLM", () => {
   it("does not coerce cli providers even when registered", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "cli-async-"));
-    const globalTmp = mkdtempSync(join(tmpdir(), "cli-async-g-"));
+    const tmp = makeTempDir("cli-async-");
+    const globalTmp = makeTempDir("cli-async-g-");
     try {
       setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
       mkdirSync(join(tmp, ".pi"), { recursive: true });

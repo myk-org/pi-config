@@ -7,7 +7,7 @@
  * line to satisfy a budget and without resurrecting a line the user removed mid-dream.
  */
 
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +19,9 @@ import {
   snapshotTopicLines,
   topicLineCanonical,
 } from "../../../extensions/orchestrator/dreaming.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 const DISTILLED =
   "extensions/orchestrator/enforcement-helpers.ts: Quoted identity values can forge commits";
@@ -29,7 +32,7 @@ const HISTORY = "- [done] #936 merged via PR #937 in v4.14.0";
 const NOT_REMOVED = () => false;
 
 function topics(lines: string[], name = "lessons"): { dir: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "dream-guard-"));
+  const dir = makeTempDir("dream-guard-");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${name}.md`), `# Lessons\n\n${lines.join("\n")}\n`, "utf-8");
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };

@@ -2,7 +2,7 @@
  * Tests for open-PR parsing / cache helpers used by the status line.
  * Run with: npx tsx --test tests/node/orchestrator/git-helpers-open-pr.test.ts
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -16,6 +16,9 @@ import {
   seedOpenPrCacheForTests,
   setGhPrViewRunner,
 } from "../../../extensions/orchestrator/git-helpers.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 const {
   GIT_DIR: _GIT_DIR,
@@ -35,7 +38,7 @@ const GIT_ENV = {
 };
 
 function initGithubRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), "open-pr-"));
+  const dir = makeTempDir("open-pr-");
   execFileSync("git", ["init", "-b", "main"], {
     cwd: dir,
     stdio: "ignore",

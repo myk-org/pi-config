@@ -11,6 +11,7 @@ import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { DANGEROUS, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
 import { commitTrailerModelId, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import {
@@ -64,13 +65,15 @@ import {
   pushTargetsProtectedBranch,
 } from "../../../extensions/orchestrator/enforcement-helpers.js";
 
+after(removeTempDirs);
+
 describe("comment signature hook model switches", () => {
   let cwd: string;
   let prior: Record<string, string | undefined>;
   let hooks: Map<string, Function>;
 
   before(() => {
-    cwd = mkdtempSync(join(tmpdir(), "pi-enforcement-model-"));
+    cwd = makeTempDir("pi-enforcement-model-");
     mkdirSync(join(cwd, ".pi"));
     writeFileSync(join(cwd, ".pi", "pi-config-settings.json"), JSON.stringify({ comment_signature: true }));
     prior = Object.fromEntries(["PI_PRIMARY_MODEL", "PI_MODEL", "PI_COMMENT_SIGNATURE", "PI_SUBAGENT_CHILD"].map(key => [key, process.env[key]]));
@@ -124,7 +127,7 @@ describe("subagent tool_result error propagation into file_modified matching", (
   let priorChild: string | undefined;
 
   before(async () => {
-    cwd = mkdtempSync(join(tmpdir(), "pi-enforcement-subagent-"));
+    cwd = makeTempDir("pi-enforcement-subagent-");
     mkdirSync(join(cwd, ".pi"), { recursive: true });
     priorChild = process.env.PI_SUBAGENT_CHILD;
     delete process.env.PI_SUBAGENT_CHILD;
@@ -334,7 +337,7 @@ describe("isRmInProjectTmp", () => {
   before(() => {
     // Use a subdirectory structure that doesn't start with /tmp to avoid
     // interference with the /tmp/<something> allowlist
-    testDir = mkdtempSync(join(tmpdir(), "enforcement-test-"));
+    testDir = makeTempDir("enforcement-test-");
     tmpPath = join(testDir, ".pi", "tmp");
     mkdirSync(tmpPath, { recursive: true });
     mkdirSync(join(tmpPath, "worker-123"), { recursive: true });
@@ -442,7 +445,7 @@ describe("isRmInProjectTmp — redirects", () => {
   let redirectTmpPath: string;
 
   before(() => {
-    redirectTestDir = mkdtempSync(join(homedir(), ".enforcement-test-"));
+    redirectTestDir = makeTempDir("enforcement-test-");
     redirectTmpPath = join(redirectTestDir, ".pi", "tmp");
     mkdirSync(redirectTmpPath, { recursive: true });
     mkdirSync(join(redirectTmpPath, "worker-123"), { recursive: true });
@@ -2892,7 +2895,7 @@ describe("descriptor-duplication redirects survive the split (PR #948 R3)", () =
 // ── issue #949: exact-command dangerous allowlist ──
 
 describe("dangerous command allowlist (issue #949)", () => {
-  const mkCwd = (): string => mkdtempSync(join(tmpdir(), "rl-allow-"));
+  const mkCwd = (): string => makeTempDir("rl-allow-");
   const BARE_SHELL_RE = DANGEROUS[DANGEROUS.length - 1] as RegExp;
 
   const writeSettings = (cwd: string, data: Record<string, unknown>) => {
@@ -3075,7 +3078,7 @@ describe("dangerous command allowlist (issue #949)", () => {
   });
 
   it("a git-TRACKED project settings file is not trusted for the allowlist", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "rl-tracked-"));
+    const cwd = makeTempDir("rl-tracked-");
     execFileSync("git", ["init", "-q"], { cwd });
     writeSettings(cwd, { dangerous_command_allowlist: ["*"] });
     execFileSync("git", ["add", "-f", getSettingsPath(cwd)], { cwd });
@@ -3094,7 +3097,7 @@ describe("dangerous command allowlist (issue #949)", () => {
   // a later `git add` + commit that starts tracking the file must be caught
   // on the very next check, without anyone clearing the cache.
   it("a settings file that becomes tracked later is untrusted on the next check (no trusted-cache)", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "rl-later-tracked-"));
+    const cwd = makeTempDir("rl-later-tracked-");
     execFileSync("git", ["init", "-q"], { cwd });
     writeSettings(cwd, { dangerous_command_allowlist: ["*"] });
     const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
@@ -3109,7 +3112,7 @@ describe("dangerous command allowlist (issue #949)", () => {
   // Qodo PR #950 R6: a symlinked `.pi` dir (or settings file) hides the real
   // file from `git ls-files` while the loader follows the link — not trusted.
   it("a symlinked settings path is not trusted for the allowlist", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "rl-symlinked-"));
+    const cwd = makeTempDir("rl-symlinked-");
     execFileSync("git", ["init", "-q"], { cwd });
     // Root file with a wildcard approval, and `.pi` symlinked to the root
     writeFileSync(join(cwd, "pi-config-settings.jsonc"), JSON.stringify({ dangerous_command_allowlist: ["*"] }));
@@ -3160,7 +3163,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), "rl-gate-"));
+    cwd = makeTempDir("rl-gate-");
     promptCalls = [];
     choice = undefined;
   });
@@ -3427,7 +3430,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   // Qodo PR #950 R8: a transient git failure (unknown trust) must NOT mint a
   // machine-wide approval — nothing is written, the approval is one-time.
   it("an UNKNOWN trust verdict (git unavailable) writes NOTHING — run-once only", async () => {
-    const tdir = mkdtempSync(join(tmpdir(), "rl-trust-unknown-"));
+    const tdir = makeTempDir("rl-trust-unknown-");
     mkdirSync(join(tdir, ".pi"), { recursive: true });
     writeFileSync(getSettingsPath(tdir), "{}");
     const savedPath = process.env.PATH;
@@ -3462,7 +3465,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   // the dir verdict when the file was missing, so the first approval wrote
   // an entry the next lookup would reject.
   it("a symlinked .pi dir is untrusted even before the settings file exists (first approval refused)", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "rl-symlink-missing-"));
+    const cwd = makeTempDir("rl-symlink-missing-");
     try {
       execFileSync("git", ["init", "-q"], { cwd });
       // `.pi` symlinked to the repo root; NO settings file at the target
@@ -3483,7 +3486,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   // approvals WITHOUT a process restart — the tracked verdict is TTL-cached,
   // not cached forever.
   it("untracking the settings file recovers project trust after the TTL (no restart)", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "rl-untrack-ttl-"));
+    const cwd = makeTempDir("rl-untrack-ttl-");
     try {
       execFileSync("git", ["init", "-q"], { cwd });
       mkdirSync(join(cwd, ".pi"), { recursive: true });
@@ -3511,7 +3514,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   it("a global-scope write without a test override NEVER touches the real user settings (sandbox)", async () => {
-    const tdir = mkdtempSync(join(tmpdir(), "rl-sandbox-"));
+    const tdir = makeTempDir("rl-sandbox-");
     try {
       execFileSync("git", ["init", "-q"], { cwd: tdir });
       mkdirSync(join(tdir, ".pi"), { recursive: true });
@@ -3567,7 +3570,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   it("'always allow' in a repo with a TRACKED settings file stores globally, where lookup honors it", async () => {
-    const tdir = mkdtempSync(join(tmpdir(), "rl-tracked-approve-"));
+    const tdir = makeTempDir("rl-tracked-approve-");
     execFileSync("git", ["init", "-q"], { cwd: tdir });
     mkdirSync(join(tdir, ".pi"), { recursive: true });
     writeFileSync(getSettingsPath(tdir), "{}");
@@ -3956,7 +3959,7 @@ describe("git identity guard (#995)", () => {
       } as any);
     });
     beforeEach(() => {
-      cwd = mkdtempSync(join(tmpdir(), "rl-identity-"));
+      cwd = makeTempDir("rl-identity-");
     });
 
     it("blocks a forged identity", async () => {

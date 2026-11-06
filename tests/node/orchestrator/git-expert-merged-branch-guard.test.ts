@@ -2,12 +2,15 @@
  * Regression tests for the merged-branch guard documented in git-expert.
  * Run with: npx tsx --test tests/node/orchestrator/git-expert-merged-branch-guard.test.ts
  */
-import { afterEach, describe, it } from "node:test";
+import { afterEach, describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 const {
   GIT_DIR: _GIT_DIR,
@@ -37,7 +40,7 @@ function git(repo: string, args: string[]): string {
 }
 
 function createRepo(defaultBranch: string): string {
-  const repo = mkdtempSync(join(tmpdir(), "git-expert-guard-"));
+  const repo = makeTempDir("git-expert-guard-");
   repos.push(repo);
   git(repo, ["init", "-b", defaultBranch]);
   git(repo, ["commit", "--allow-empty", "-m", "initial"]);

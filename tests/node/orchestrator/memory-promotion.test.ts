@@ -2,7 +2,7 @@
  * Tests for memory promotion scan + safe apply.
  * Run with: npx tsx --test tests/node/orchestrator/memory-promotion.test.ts
  */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -25,6 +25,9 @@ import {
   loadPromotions,
   promotionId,
 } from "../../../extensions/orchestrator/promotion-queue.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 function seedMemory(
   cwd: string,
@@ -108,7 +111,7 @@ describe("inferMechanicalEnforcement", () => {
 
 describe("scanPromotionCandidates + applySafePromotions", () => {
   it("auto-applies high-confidence enforcement without writing rules/", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-m-"));
+    const cwd = makeTempDir("promo-m-");
     try {
       seedMemory(cwd, 'Never use `git add .`', "lesson", EVIDENCE_ENFORCEMENT);
       seedMemory(
@@ -150,7 +153,7 @@ describe("scanPromotionCandidates + applySafePromotions", () => {
   });
 
   it("markTopicEntryEnforced is idempotent", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-mark-"));
+    const cwd = makeTempDir("promo-mark-");
     try {
       seedMemory(cwd, "Never use `npm publish`", "lesson", 1);
       assert.equal(markTopicEntryEnforced(cwd, "lesson", "Never use `npm publish`"), true);
@@ -203,7 +206,7 @@ describe("scanPromotionCandidates + applySafePromotions", () => {
   }
 
   it("keeps rejected project_rule status after promotion pass", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-rej-"));
+    const cwd = makeTempDir("promo-rej-");
     try {
       const { rejectedText } = seedMergeFixture(cwd);
       applySafePromotions(cwd);
@@ -217,7 +220,7 @@ describe("scanPromotionCandidates + applySafePromotions", () => {
   });
 
   it("keeps applied enforcement status after promotion pass", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-app-"));
+    const cwd = makeTempDir("promo-app-");
     try {
       seedMergeFixture(cwd);
       applySafePromotions(cwd);
@@ -231,7 +234,7 @@ describe("scanPromotionCandidates + applySafePromotions", () => {
   });
 
   it("does not reopen rejected project_rule as proposed", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-noreopen-"));
+    const cwd = makeTempDir("promo-noreopen-");
     try {
       const { rejectedText } = seedMergeFixture(cwd);
       applySafePromotions(cwd);
@@ -250,7 +253,7 @@ describe("scanPromotionCandidates + applySafePromotions", () => {
   });
 
   it("merges trigger metadata when upgrading proposed to applied", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-meta-"));
+    const cwd = makeTempDir("promo-meta-");
     try {
       const lesson = "Never use `git add .`";
       seedMemory(cwd, lesson, "lesson", EVIDENCE_ENFORCEMENT);
@@ -276,7 +279,7 @@ describe("scanPromotionCandidates + applySafePromotions", () => {
   });
 
   it("preserves original createdAt when upgrading proposed to applied", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-created-"));
+    const cwd = makeTempDir("promo-created-");
     try {
       const lesson = "Never use `git add .`";
       seedMemory(cwd, lesson, "lesson", EVIDENCE_ENFORCEMENT);
@@ -301,7 +304,7 @@ describe("scanPromotionCandidates + applySafePromotions", () => {
   });
 
   it("keeps existing verifier when upgrade patch omits it", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-verifier-"));
+    const cwd = makeTempDir("promo-verifier-");
     try {
       const lesson = "Never use `git add .`";
       seedMemory(cwd, lesson, "lesson", EVIDENCE_ENFORCEMENT);

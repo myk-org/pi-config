@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -17,6 +17,9 @@ import pitasks, {
 } from "../../../extensions/pitasks/index.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import { TaskWidget } from "../../../extensions/pitasks/task-widget.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 const createdBy = { type: "local" as const, origin: "system", session: "", project: "" };
 const theme = { fg: (_color: string, text: string) => text, strikethrough: (text: string) => text };
@@ -91,7 +94,7 @@ describe("TaskWidget rendering", () => {
 
 describe("TaskWidget telemetry lifecycle", () => {
 	it("does not attribute a turn to restored in-progress tasks", () => {
-		const dir = mkdtempSync(join(tmpdir(), "pitasks-"));
+		const dir = makeTempDir("pitasks-");
 		const path = join(dir, "tasks.json");
 		const originalNow = Date.now;
 		let store: TaskStore | undefined;
@@ -157,7 +160,7 @@ describe("TaskWidget telemetry lifecycle", () => {
 
 describe("session-targeted task helpers", () => {
 	it("release file watchers", () => {
-		const dir = mkdtempSync(join(tmpdir(), "pitasks-session-store-"));
+		const dir = makeTempDir("pitasks-session-store-");
 		try {
 			const script = `import { createTaskForSession, createTasksForSession, deleteTaskForSession, getTaskForSession, listTasksForSession, updateTaskForSession, updateTasksForSession } from './extensions/pitasks/index.js'; const dir = process.argv[1]; const by = { type: 'local', origin: 'system', session: '', project: '' }; const task = createTaskForSession('session', 'Task', 'body', by, undefined, dir); createTasksForSession('session', [{ subject: 'Task two', description: 'body', createdBy: by }], dir); getTaskForSession('session', task.id, dir); listTasksForSession('session', dir); updateTaskForSession('session', task.id, { status: 'in_progress' }, dir); updateTasksForSession('session', [{ id: task.id, fields: { status: 'completed' } }], dir); deleteTaskForSession('session', task.id, dir);`;
 			// 20 s, not 5: this spawns a tsx child, and under the pre-commit hook the node suite
@@ -193,7 +196,7 @@ describe("pitasks telemetry bridge", () => {
 
 	it("refreshes the resumed widget after an external file update", async () => {
 		const child = process.env.PI_SUBAGENT_CHILD;
-		const dir = mkdtempSync(join(tmpdir(), "pitasks-resume-watch-"));
+		const dir = makeTempDir("pitasks-resume-watch-");
 		const taskPath = join(dir, "tasks.json");
 		const piTasks = process.env.PI_TASKS;
 		const handlers = new Map<string, Function>();
@@ -227,7 +230,7 @@ describe("pitasks telemetry bridge", () => {
 
 	it("attributes a resumed turn only to the task active before shutdown", async () => {
 		const child = process.env.PI_SUBAGENT_CHILD;
-		const dir = mkdtempSync(join(tmpdir(), "pitasks-resume-telemetry-"));
+		const dir = makeTempDir("pitasks-resume-telemetry-");
 		const taskPath = join(dir, "tasks.json");
 		const piTasks = process.env.PI_TASKS;
 		const handlers = new Map<string, Function>();
@@ -259,7 +262,7 @@ describe("pitasks telemetry bridge", () => {
 
 	it("preserves only explicitly active telemetry across extension reload", async () => {
 		const child = process.env.PI_SUBAGENT_CHILD;
-		const dir = mkdtempSync(join(tmpdir(), "pitasks-reload-telemetry-"));
+		const dir = makeTempDir("pitasks-reload-telemetry-");
 		const taskPath = join(dir, "tasks.json");
 		const piTasks = process.env.PI_TASKS;
 		const first = new Map<string, Function>();
@@ -292,7 +295,7 @@ describe("pitasks telemetry bridge", () => {
 
 	it("reactivates its widget after shutdown and resume", async () => {
 		const child = process.env.PI_SUBAGENT_CHILD;
-		const dir = mkdtempSync(join(tmpdir(), "pitasks-resume-"));
+		const dir = makeTempDir("pitasks-resume-");
 		const taskPath = join(dir, "tasks.json");
 		const piTasks = process.env.PI_TASKS;
 		const handlers = new Map<string, Function>();

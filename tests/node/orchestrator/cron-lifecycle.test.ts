@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, describe, it, after } from "node:test";
 import { registerCron } from "../../../extensions/orchestrator/cron.js";
 import { readDurableCronStore } from "../../../extensions/orchestrator/cron-store.ts";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import { resolveAgentModelProvider } from "../../../extensions/orchestrator/resolve-agent-model.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 const dirs: string[] = [];
 const harnesses = new Set<{ restore(): void }>();
@@ -64,7 +67,7 @@ function context(cwd: string, sessionId = "session-one", trusted = true) { retur
 
 describe("cron lifecycle", { concurrency: false }, () => {
   it("skips malformed durable records before scheduling timers", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const store = path.join(cwd, ".pi", "cron", "crons.json");
     fs.mkdirSync(path.dirname(store), { recursive: true });
     fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [
@@ -91,7 +94,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("clears timers and intervals during teardown", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
@@ -105,7 +108,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("removes the leader lock during teardown", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
@@ -134,7 +137,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("notifies the user when persisted project crons load", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const store = path.join(cwd, ".pi", "cron", "crons.json");
     fs.mkdirSync(path.dirname(store), { recursive: true });
     fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ id: "project-job", scope: "project", cwd, description: "check", task: "check", intervalMs: 10_000, createdAt: 1 }] }));
@@ -150,7 +153,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("does not schedule untrusted durable tasks", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const store = path.join(cwd, ".pi", "cron", "crons.json");
     fs.mkdirSync(path.dirname(store), { recursive: true });
     fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ id: "untrusted", scope: "project", cwd, description: "nope", task: "/status", intervalMs: 10_000, createdAt: 1 }] }));
@@ -166,7 +169,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("dispatches one overdue durable occurrence before rescheduling", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const store = path.join(cwd, ".pi", "cron", "crons.json");
     fs.mkdirSync(path.dirname(store), { recursive: true });
     fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ id: "overdue", scope: "project", cwd, description: "overdue", task: "/status", intervalMs: 10_000, createdAt: 1, nextRun: 1 }] }));
@@ -185,7 +188,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("does not dispatch a durable task after losing its lease", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const store = path.join(cwd, ".pi", "cron", "crons.json");
     fs.mkdirSync(path.dirname(store), { recursive: true });
     fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ id: "due", scope: "project", cwd, description: "due", task: "/status", intervalMs: 10_000, createdAt: 1, nextRun: 1 }] }));
@@ -208,7 +211,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("does not dispatch a slash task after losing its lease during persistence", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const store = path.join(cwd, ".pi", "cron", "crons.json");
     fs.mkdirSync(path.dirname(store), { recursive: true });
     fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ id: "due", scope: "project", cwd, description: "due", task: "/status", intervalMs: 10_000, createdAt: 1, nextRun: 1 }] }));
@@ -238,7 +241,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("does not dispatch a durable task when its own heartbeat has expired", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const store = path.join(cwd, ".pi", "cron", "crons.json");
     fs.mkdirSync(path.dirname(store), { recursive: true });
     fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ id: "due", scope: "project", cwd, description: "due", task: "/status", intervalMs: 10_000, createdAt: 1, nextRun: 1 }] }));
@@ -258,7 +261,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("starts a newly added durable task immediately when this process is leader", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
@@ -270,7 +273,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("publishes cron status changes even when the task count is unchanged", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
@@ -288,7 +291,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("continues timer scheduling when durable persistence fails", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const store = path.join(cwd, ".pi", "cron", "crons.json");
     const h = makeCron();
     try {
@@ -305,7 +308,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("refuses cron creation in one-shot mode", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
@@ -318,8 +321,8 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("clears timers and releases old project leadership before a cwd switch", async () => {
-    const firstCwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-"));
-    const secondCwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(firstCwd, secondCwd);
+    const firstCwd = makeTempDir("pi-cron-project-");
+    const secondCwd = makeTempDir("pi-cron-project-"); dirs.push(firstCwd, secondCwd);
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
@@ -338,7 +341,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("restores session tasks only for the same session after extension reload", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const first = makeCron();
     try {
       first.pi.events.on = first.pi.eventHandler;
@@ -358,7 +361,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("retains session tasks across session resume", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const first = makeCron();
     try {
       first.pi.events.on = first.pi.eventHandler;
@@ -378,7 +381,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("does not restore session tasks into a new session and removes its old file", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
@@ -396,7 +399,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("rejects invalid schedules before persisting", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
@@ -417,7 +420,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("accepts the minimum interval", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
@@ -428,7 +431,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   for (const [hour, minute] of [[0, 0], [23, 59]]) it(`accepts daily time ${String(hour).padStart(2, "0")}:${minute}`, async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
@@ -439,7 +442,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("pidash kill removes all durable tasks transactionally", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
@@ -453,7 +456,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   });
 
   it("pidash kill accepts a scope-qualified durable id", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+    const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const h = makeCron();
     try {
       h.pi.events.on = h.pi.eventHandler;
@@ -469,7 +472,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
   describe("model override", () => {
     /** Isolate settings so dispatch decisions do not read the developer's global config. */
     function isolateSettings(cwd: string, settings: Record<string, unknown> = {}) {
-      const globalDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-global-")); dirs.push(globalDir);
+      const globalDir = makeTempDir("pi-cron-global-"); dirs.push(globalDir);
       setGlobalSettingsPath(path.join(globalDir, "pi-config-settings.json"));
       fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
       fs.writeFileSync(path.join(cwd, ".pi", "pi-config-settings.json"), JSON.stringify(settings));
@@ -484,7 +487,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
     }
 
     it("normalizes and persists the requested model", async () => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+      const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
       const h = makeCron();
       const restore = isolateSettings(cwd);
       try {
@@ -501,7 +504,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
     });
 
     it("rejects a malformed model", async () => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+      const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
       const h = makeCron();
       const restore = isolateSettings(cwd);
       try {
@@ -516,7 +519,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
     });
 
     it("treats a blank model as inherit", async () => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+      const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
       const h = makeCron();
       const restore = isolateSettings(cwd);
       try {
@@ -529,7 +532,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
     });
 
     it("accepts a bare model id", async () => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+      const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
       const h = makeCron();
       const restore = isolateSettings(cwd);
       try {
@@ -542,7 +545,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
     });
 
     it("passes the pinned provider and model to the async agent", async () => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+      const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
       const h = makeCron();
       const restore = isolateSettings(cwd);
       const spawns: any[] = [];
@@ -558,7 +561,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
     });
 
     it("keeps provider resolution when only a bare model id is pinned", async () => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+      const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
       const h = makeCron();
       const restore = isolateSettings(cwd);
       const spawns: any[] = [];
@@ -573,7 +576,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
     });
 
     it("drops an acpx override in favour of the internal ops sidecar", async () => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+      const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
       const h = makeCron();
       const restore = isolateSettings(cwd, { acpx_agents: ["cursor"], internal_operations_provider: "openai", internal_operations_model: "gpt-5.4" });
       const spawns: any[] = [];
@@ -590,7 +593,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
     });
 
     it("keeps the sidecar authoritative over a conflicting worker override", async () => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+      const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
       const h = makeCron();
       // The worker override would otherwise outrank parentProvider/parentModelId and send the
       // child to an acpx-* provider it cannot register.
@@ -617,7 +620,7 @@ describe("cron lifecycle", { concurrency: false }, () => {
     });
 
     it("skips an acpx override when no internal ops provider is configured", async () => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-project-")); dirs.push(cwd);
+      const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
       const h = makeCron();
       const restore = isolateSettings(cwd, { acpx_agents: ["cursor"] });
       const spawns: any[] = [];

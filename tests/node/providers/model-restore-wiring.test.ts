@@ -9,13 +9,16 @@
  *
  * Run: npx tsx --test tests/node/providers/model-restore-wiring.test.ts
  */
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerModelRestoreOnSessionStart } from "../../../extensions/providers/model-restore-wiring.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 const log = createLogger("model-restore-wiring-test");
 
@@ -88,7 +91,7 @@ describe("model-restore-wiring session_start (#901)", () => {
   const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "pi-model-restore-wiring-"));
+    dir = makeTempDir("pi-model-restore-wiring-");
     process.env.PI_CODING_AGENT_DIR = dir;
     writeFileSync(
       join(dir, "settings.json"),

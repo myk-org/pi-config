@@ -6,7 +6,7 @@
  * and seeded memory lessons; git surfaces are either injected or exercised
  * against throwaway local repos.
  */
-import { beforeEach, afterEach, describe, it } from "node:test";
+import { beforeEach, afterEach, describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -26,6 +26,9 @@ import {
 } from "../../../extensions/orchestrator/review-learning.js";
 import { entryHash, loadScores, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 import { getProjectDataDir } from "../../../extensions/orchestrator/utils.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 // ── Scratch reviews DB (schema mirrors myk_pi_tools/reviews/store.py) ──────
 
@@ -65,7 +68,7 @@ const REPO = { owner: "myk-org", repo: "demo" };
 const repoInfo = () => REPO;
 
 function makeCwd(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-inject-"));
+  return makeTempDir("review-learning-inject-");
 }
 
 interface CommentSeed {

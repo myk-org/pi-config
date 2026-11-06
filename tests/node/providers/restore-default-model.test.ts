@@ -3,7 +3,7 @@
  *
  * Run: npx tsx --test tests/node/providers/restore-default-model.test.ts
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -22,6 +22,9 @@ import {
   restoreDefaultModelOnSessionStart,
 } from "../../../extensions/providers/restore-default-model.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
+import { makeTempDir, removeTempDirs } from "../helpers/temp-dirs.js";
+
+after(removeTempDirs);
 
 const log = createLogger("restore-default-model-test");
 
@@ -399,7 +402,7 @@ describe("readPiAgentDefaults + merge", () => {
   const prev = process.env.PI_CODING_AGENT_DIR;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "pi-agent-settings-"));
+    dir = makeTempDir("pi-agent-settings-");
   });
 
   afterEach(() => {
@@ -590,7 +593,7 @@ describe("resolveDefaultModel + restoreDefaultModelOnSessionStart", () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "pi-restore-"));
+    dir = makeTempDir("pi-restore-");
   });
 
   afterEach(() => {
