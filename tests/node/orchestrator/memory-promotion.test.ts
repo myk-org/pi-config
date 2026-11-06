@@ -80,10 +80,14 @@ describe("inferMechanicalEnforcement", () => {
     assert.equal(inf!.trigger, "bash_contains git add .");
   });
 
-  it("extracts ask_user verifier", () => {
+  it("extracts ask_user as an ORDERING rule: verifier only, no blanket trigger", () => {
     const inf = inferMechanicalEnforcement("Always ask_user before gh pr merge");
     assert.ok(inf);
     assert.equal(inf!.verifier, "tool_called ask_user before gh pr merge");
+    // A trigger here would fire on the command itself, including the compliant
+    // "ask_user then run it" case; the ordering check is the enforcement.
+    assert.equal(inf!.trigger, undefined, "no unconditional trigger");
+    assert.equal(inf!.action, undefined, "no unconditional warn");
   });
 
   it("returns null for non-mechanical knowledge", () => {
