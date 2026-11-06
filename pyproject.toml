@@ -107,6 +107,7 @@ pi-docsite = { workspace = true }
 
 [dependency-groups]
 tests = ["pytest>=9.0.2"]
-# Regenerating docs/ — only needed when docs change, never at runtime.
+# Local preview only — CI builds the real site (.github/workflows/docs.yml).
+# Never needed at runtime, and never for a PR: generated output is not committed.
 # The generator itself is a workspace package: packages/pi-docsite.
 docs = ["pi-docsite", "types-markdown>=3.5"]

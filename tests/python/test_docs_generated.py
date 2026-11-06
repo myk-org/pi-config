@@ -1,34 +1,26 @@
-"""The committed docs artifacts must be generator output, not hand edits.
+"""docs/ carries sources only — the site is built by CI, not committed.
 
-``docs/*.html`` the generator wrote, plus ``docs/llms.txt``,
-``docs/llms-full.txt`` and ``docs/search-index.json``, are produced by
-``pi-docsite`` from ``docs/*.md`` and ``docs/nav.json``, and committed in the
-same change as the markdown that caused them (AGENTS.md). A diff touching them
-is therefore expected — but only as generator output, which a reviewer cannot
-tell apart from a hand edit by looking at the patch.
+``docs/*.md`` and ``docs/nav.json`` are the hand-written source. The generated
+``docs/*.html``, ``docs/assets/**``, ``docs/llms*.txt`` and
+``docs/search-index.json`` are build output of ``.github/workflows/docs.yml`` and
+are gitignored (issue #1040). Two things are therefore worth checking
+mechanically:
 
-This test settles it mechanically: regenerate from the same sources into a
-throwaway directory and require the committed tree to carry exactly that output,
-byte for byte — pages, ``llms*.txt``, ``search-index.json`` and everything under
-``docs/assets/``, which the generator owns just as much and which downstream
-sites serve directly.
+1. No generated artifact is tracked. Committing one re-introduces the
+   merge-conflict machine the migration removed (``llms-full.txt`` and
+   ``search-index.json`` are global: any two page edits collide in the same
+   bytes), and ``.github/workflows/docs-guard.yml`` fails such a PR anyway.
+2. The tracked sources still build. CI would catch a broken source, but only
+   after the push; this local check keeps the failure at the edit.
 
-Ownership comes from the generator, never from a glob over the repository:
-``pi-docsite`` deliberately preserves HTML it did not write (a hand-written
-``404.html`` or a search-verification page), so only files it produces are
-compared. Iterating over the generated set instead of the committed set is also
-what catches a *deleted* artifact — a page dropped from the repository while its
-Markdown source stays put would leave the published site incomplete.
-
-The scratch directory lives under the repo's ``.pi/tmp`` on purpose: the
-generator resolves the site's repo links with ``git remote get-url origin`` from
-the docs directory, so a copy outside the worktree regenerates different bytes
-for reasons that have nothing to do with the markdown.
+Ownership of the output stays with the generator: nothing here globs the
+repository for artifacts, it asks ``pi-docsite`` what it produces.
 """
 
 from __future__ import annotations
 
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -39,12 +31,32 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCS = REPO_ROOT / "docs"
 
 
-def test_committed_docs_match_generator_output() -> None:
+def test_docs_tree_carries_no_generated_output() -> None:
+    """Only ``**/*.md`` and ``nav.json`` may be TRACKED under docs/.
+
+    A local preview build may leave artifacts on disk (they are gitignored); what
+    must never come back is a committed one, so this asks git, not the filesystem.
+    """
+    tracked = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "docs"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    generated = sorted(path for path in tracked if not path.endswith(".md") and path != "docs/nav.json")
+    assert generated == [], (
+        "generated docs must not be committed: "
+        + ", ".join(generated)
+        + " — edit docs/*.md instead; .github/workflows/docs.yml builds the site"
+    )
+
+
+def test_generator_builds_from_tracked_sources() -> None:
+    """Every tracked page still builds from the sources in the tree."""
     generate = pytest.importorskip(
         "pi_docsite.generate",
         reason="docs dependency group is not installed (uv run --group docs ...)",
     )
-    marker = generate.GENERATED_MARKER
 
     scratch_parent = REPO_ROOT / ".pi" / "tmp"
     scratch_parent.mkdir(parents=True, exist_ok=True)
@@ -52,44 +64,15 @@ def test_committed_docs_match_generator_output() -> None:
     try:
         staged = scratch / "docs"
         staged.mkdir()
-        for source in [*DOCS.glob("*.md"), DOCS / "nav.json"]:
+        sources = sorted(DOCS.glob("*.md"))
+        assert sources, "docs/ has no markdown sources"
+        for source in [*sources, DOCS / "nav.json"]:
             shutil.copy2(source, staged / source.name)
-        shutil.copytree(DOCS / "assets", staged / "assets")
 
         assert generate.main(["--docs-dir", str(staged), "--tagline", TAGLINE]) == 0
 
-        generated = sorted(
-            path for path in staged.rglob("*") if path.is_file() and path.suffix != ".md" and path.name != "nav.json"
-        )
-        produced = [path for path in generated if path.exists()]
-        assert produced, "the generator produced no artifacts -- nothing to compare"
-
-        missing: list[str] = []
-        drifted: list[str] = []
-        for path in produced:
-            relative = path.relative_to(staged)
-            committed = DOCS / relative
-            if not committed.exists():
-                missing.append(str(relative))
-            elif committed.read_bytes() != path.read_bytes():
-                drifted.append(str(relative))
-        released = {path.relative_to(staged) for path in produced}
-        stale = [
-            page.name
-            for page in sorted(DOCS.glob("*.html"))
-            if Path(page.name) not in released and marker in page.read_text(encoding="utf-8")
-        ]
-
-        problems = [
-            ("missing from the repository", missing),
-            ("differing from the regenerated bytes", drifted),
-            ("carrying the generator marker without being produced", stale),
-        ]
-        reported = [f"{what}: {', '.join(names)}" for what, names in problems if names]
-        assert not reported, (
-            "; ".join(reported)
-            + f' -- regenerate with `uv run --group docs pi-docsite --docs-dir docs --tagline "{TAGLINE}"`'
-            " instead of editing or deleting generated files"
-        )
+        produced = {path.stem for path in staged.glob("*.html")}
+        missing = [source.stem for source in sources if source.stem not in produced]
+        assert not missing, f"pages that did not render: {', '.join(missing)}"
     finally:
         shutil.rmtree(scratch, ignore_errors=True)

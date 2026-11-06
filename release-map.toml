@@ -43,8 +43,6 @@ paths = [
   "README.md",    # npm auto-includes it in the tarball
   "CHANGELOG.md", # packaged + read by pi (pi.changelogPath) for update notes
 ]
-# docs_render belongs to the pi-docsite generator, not the orchestrator.
-exclude-paths = ["scripts/docs_render/"]
 
 [[package]]
 name = "myk-pi-tools"
@@ -85,7 +83,7 @@ name = "pi-docsite"
 registry = "pypi"
 # Dynamic version: pyproject pulls it from pi_docsite.__version__.
 version-files = ["packages/pi-docsite/src/pi_docsite/__init__.py"]
-paths = ["packages/pi-docsite/", "scripts/docs_render/"]
+paths = ["packages/pi-docsite/"]
 
 # The container image (ghcr.io/myk-org/pi-config) is not a versioned
 # package: it rebuilds whenever ANY package ships, or when these paths
