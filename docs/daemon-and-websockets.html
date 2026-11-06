@@ -449,7 +449,7 @@
 <li><strong>Refresh without losing context:</strong> Closing the laptop or reloading the dashboard usually reconnects to the same pidash daemon and replays buffered activity.</li>
 <li><strong>Multiple terminals, one dashboard:</strong> Several <code>pi</code> sessions can share pidash; the UI lists them so you can jump between projects.</li>
 <li><strong>Project-local diffs:</strong> Opening pidiff in repo A does not collide with repo B, because each project owns its lockfiles and port under <code>.pi/run/</code>.</li>
-<li><strong>Files appear under <code>.pi/tmp/</code>:</strong> Expect job folders, result JSON, debug logs, and pidiff lockfiles. They are project-scoped working state, not source code — keep <code>.pi/</code> out of git (the installer can configure this; see <a href="quickstart.html">Installation &amp; Quickstart</a>).</li>
+<li><strong>Files appear under <code>.pi/tmp/</code>:</strong> Expect job folders, result JSON, and debug logs there, plus pidiff lockfiles under <code>.pi/run/</code>. They are project-scoped working state, not source code — keep <code>.pi/</code> out of git (the installer can configure this; see <a href="quickstart.html">Installation &amp; Quickstart</a>).</li>
 <li><strong>Graceful degradation:</strong> If a daemon cannot start (port busy, slow first compile, firewall), the terminal session keeps working; real-time dashboard features simply stay disconnected until <code>/pidash start</code> or <code>/pidiff start</code> succeeds.</li>
 </ul>
 <blockquote>
