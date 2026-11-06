@@ -285,9 +285,12 @@ progress. It does not commit, push, create a PR, or post results.
 - CLI providers (`cli-*`): see `docs/cli-provider.md`
 - **Self-reload after deploy**: `.dev/deploy-all.sh` (and standalone `deploy-extensions.sh`) writes a nonce to `.pi/run/reload.flag`.
   The `extensions/reload-flag/` extension consumes it and calls `ctx.reload()` — the same public API `/reload` uses,
-  nothing in pi is patched — within ~0.5s, then the new runtime publishes the nonce to `.pi/run/reload.done`
+  nothing in pi is patched — then the new runtime publishes the nonce to `.pi/run/reload.done`
   (mirrored into `.pi/tmp/reload.done` so a pre-#1020 requester polling the old path still sees it).
-  To confirm a reload landed: read `.pi/run/reload.done` and compare with the flag nonce.
+  The reload runs at the session's **next idle point** (~0.5s after the turn ends), never mid-turn: the handler
+  awaits `ctx.waitForIdle()` first. A busy session must END ITS TURN to receive it.
+  To confirm a reload landed: read `.pi/run/reload.done` and compare with the newest flag nonce. Verifying
+  anything against a runtime that has not reloaded proves nothing — the old code is still loaded.
   A flag parked in `.pi/tmp/reload.flag` by a pre-#1020 requester is still consumed.
   Fresh session starts clear stale flag/pending/done state (latest code is already loaded).
   Worktree sessions do NOT auto-reload (deploy writes the flag to the main checkout).
