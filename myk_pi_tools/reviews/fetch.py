@@ -496,8 +496,9 @@ def fetch_review_threads(
                 for c in rest_comments
             ],
         }
-        if include_resolved:
-            thread_data["is_resolved"] = is_resolved
+        # Issue #1033: is_resolved is always present — include_resolved controls
+        # filtering, never whether consumers can count open threads.
+        thread_data["is_resolved"] = is_resolved
         # Filter by user if specified
         if user and (thread_data.get("author") or "").lower() != user.lower():
             continue
@@ -1213,6 +1214,51 @@ def get_thread_key(thread: dict[str, Any]) -> str | None:
     return None
 
 
+CLI_LOCATOR_FIELDS = ("path", "line", "end_line", "node_id", "comment_id", "thread_id")
+
+
+def _reconcile_cli_threads_with_github(
+    cli_threads: list[dict[str, Any]], all_threads: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Give CLI threads their GitHub twin's locators and real resolution state (issue #1033).
+
+    Qodo's ``pr-review-session`` payload omits ``file_path``/``start_line`` for findings it
+    closed, and the dedup below then drops the GitHub thread that still carries them — so
+    the only record left has no span, and ``reviews address`` cannot match a ``path:line``
+    rule against it.
+
+    Copy the locators while the twin is still available, then take the twin's state:
+    closure in Qodo is NOT resolution on GitHub, and ``already_replied`` must reflect an
+    actual reply rather than a closed finding. A finding Qodo closed while the thread is
+    still open stays answerable.
+    """
+    twins = {t.get("thread_id"): t for t in all_threads if t.get("thread_id") and t.get("author") in QODO_USERS}
+    inherited = 0
+    reopened = 0
+    for thread in cli_threads:
+        twin = twins.get(thread.get("thread_id"))
+        if twin is None:
+            continue
+        for field in CLI_LOCATOR_FIELDS:
+            if not thread.get(field) and twin.get(field) not in (None, ""):
+                thread[field] = twin[field]
+                inherited += 1
+        thread["is_resolved"] = bool(twin.get("is_resolved", False))
+        if thread.get("is_auto_skipped") and not thread["is_resolved"]:
+            # Closed in Qodo, still open on GitHub: a reply is still owed.
+            thread["is_auto_skipped"] = False
+            thread["already_replied"] = bool(twin.get("replies"))
+            if thread.get("status") == "skipped":
+                thread["status"] = "pending"
+            reopened += 1
+    if inherited or reopened:
+        log.info(
+            "reconciled CLI threads with their GitHub twins",
+            extra={"locator_fields": inherited, "reopened": reopened},
+        )
+    return cli_threads
+
+
 def merge_threads(all_threads: list[dict[str, Any]], specific_threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Merge specific threads with all threads, deduplicating by prioritized keys."""
     if not specific_threads:
@@ -1474,6 +1520,9 @@ def run(
                 # truncated CLI read) are kept untouched.
                 cli_thread_ids = {t.get("thread_id") for t in cli_threads if t.get("thread_id")}
                 if cli_thread_ids:
+                    # Issue #1033: take the twins' spans and state BEFORE dropping them,
+                    # otherwise a CLI finding Qodo closed is left spanless and unaddressable.
+                    cli_threads = _reconcile_cli_threads_with_github(cli_threads, all_threads)
                     before = len(all_threads)
                     all_threads = [
                         t
