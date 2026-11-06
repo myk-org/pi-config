@@ -278,7 +278,11 @@ def test_map_all_closed_statuses_skipped(status: str) -> None:
     t = threads[0]
     assert t["status"] == "skipped"
     assert t["is_auto_skipped"] is True
-    assert t["already_replied"] is True
+    # A closed finding is not a replied one (issue #1033): only the GitHub thread
+    # shows whether a reply exists, and fetch reconciles the flag with it.
+    assert not t.get("already_replied")
+    assert t.get("reply") is None
+    assert t["is_resolved"] is False
 
 
 @pytest.mark.parametrize(("level", "priority"), sorted(ACTION_LEVEL_PRIORITY.items()))

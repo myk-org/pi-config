@@ -57,8 +57,8 @@ Token streams and tool activity originate inside the `pi` session. Extensions fo
 
 - **Refresh without losing context:** Closing the laptop or reloading the dashboard usually reconnects to the same pidash daemon and replays buffered activity.
 - **Multiple terminals, one dashboard:** Several `pi` sessions can share pidash; the UI lists them so you can jump between projects.
-- **Project-local diffs:** Opening pidiff in repo A does not collide with repo B, because each project owns its lockfiles and port under `.pi/tmp/`.
-- **Files appear under `.pi/tmp/`:** Expect job folders, result JSON, debug logs, and pidiff lockfiles. They are project-scoped working state, not source code — keep `.pi/` out of git (the installer can configure this; see [Installation & Quickstart](quickstart.html)).
+- **Project-local diffs:** Opening pidiff in repo A does not collide with repo B, because each project owns its lockfiles and port under `.pi/run/`.
+- **Files appear under `.pi/tmp/`:** Expect job folders, result JSON, and debug logs there, plus pidiff lockfiles under `.pi/run/`. They are project-scoped working state, not source code — keep `.pi/` out of git (the installer can configure this; see [Installation & Quickstart](quickstart.html)).
 - **Graceful degradation:** If a daemon cannot start (port busy, slow first compile, firewall), the terminal session keeps working; real-time dashboard features simply stay disconnected until `/pidash start` or `/pidiff start` succeeds.
 
 > **Warning:** pidash requires TUI mode. Headless or non-UI invocations will not keep a dashboard connection.

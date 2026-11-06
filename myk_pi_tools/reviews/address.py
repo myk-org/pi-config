@@ -331,7 +331,16 @@ def _is_addressable(entry: dict[str, Any]) -> bool:
     mapping. Successfully posted entries are protected by ``posted_at``,
     which post.run stamps on every successful post.
     """
-    addressable = not entry.get("is_auto_skipped") and not entry.get("posted_at")
+    if entry.get("posted_at"):
+        return False
+    addressable = not entry.get("is_auto_skipped") or (
+        # Issue #1033: closed in Qodo but the GitHub thread is still open, so a reply is
+        # still owed. Informational items are never findings and stay skipped.
+        entry.get("type") != "qodo_reply"
+        and entry.get("is_resolved") is False
+        and bool(entry.get("path"))
+        and entry.get("line") is not None
+    )
     log.debug(
         "addressable=%s for %s:%s (status=%s, posted=%s, auto_skipped=%s)",
         addressable,
@@ -691,6 +700,19 @@ def run(json_path: str | None = None, replies_file: str | None = None, set_statu
         return 1
 
     if not groups:
+        # Issue #1033: name what was dropped instead of failing with no explanation.
+        stranded = [
+            e
+            for src in SOURCES
+            for e in data.get(src, [])
+            if e.get("is_auto_skipped") and e.get("is_resolved") is False and not e.get("posted_at")
+        ]
+        if stranded:
+            log.warning("skipped %d finding(s) whose GitHub threads are still open", len(stranded))
+            eprint(
+                f"Warning: skipped {len(stranded)} finding(s) whose GitHub threads are still open "
+                "(no path:line — re-run reviews fetch)"
+            )
         # Posted-but-unresolved entries: post.run stamped posted_at and exited
         # 1 when the resolve failed, so a re-run must retry the resolve (post)
         # and store instead of bailing out with "no findings matched".

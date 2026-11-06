@@ -244,6 +244,10 @@ def map_cli_findings_to_threads(data: dict[str, Any]) -> list[dict[str, Any]]:
             "agent_prompt": "",
             "qodo_cli": True,
             "attribution_status": attribution,
+            # The CLI payload carries no GitHub resolution state. False is a placeholder:
+            # fetch inherits the GitHub twin's real value (issue #1033), and the field
+            # must exist on every thread so consumers can count open threads.
+            "is_resolved": False,
             "finding_uuid": finding.get("id"),
             "review_run_id": finding.get("review_run_id"),
             "git_sha": finding.get("git_sha"),
@@ -252,9 +256,10 @@ def map_cli_findings_to_threads(data: dict[str, Any]) -> list[dict[str, Any]]:
         if not is_open:
             # CLOSED findings behave like previously-dismissed comments:
             # present for the summary count, never actionable, never re-processed.
-            thread["already_replied"] = True
+            # `already_replied` is deliberately NOT set here (issue #1033): a closed
+            # finding is not a replied one, and only the GitHub thread shows whether a
+            # reply exists. fetch reconciles both flags with that thread.
             thread["is_auto_skipped"] = True
-            thread["reply"] = f"Qodo CLI: finding closed ({attribution})"
 
         threads.append(thread)
 
