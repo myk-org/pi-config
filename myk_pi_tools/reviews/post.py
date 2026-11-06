@@ -111,12 +111,20 @@ def is_linked_issue_spec_resolution(reply: str) -> bool:
     return False
 
 
-def validate_reply(reply: str, path: str, status: str) -> str | None:
+def validate_reply(reply: str, path: str, status: str, *, auto_skipped: bool = False) -> str | None:
     """Validate a reply is not lazy/vague. Returns error message or None if OK.
 
     Pending entries are skipped (no reply expected).
+
+    Auto-skipped entries are skipped too: they were never actionable (a Qodo
+    finding the CLI reports closed, an informational reply), so nothing is posted
+    for them and demanding a reply blocked the entire PR on findings the pipeline
+    deliberately does not answer. They used to pass only because closed findings
+    carried a synthetic "finding closed" reply, which #1033 removed as untrue.
     """
     if status == "pending":
+        return None
+    if auto_skipped:
         return None
     if not isinstance(reply, str):
         reply = str(reply) if reply is not None else ""
@@ -714,7 +722,7 @@ def run(json_path: str) -> None:
             reply = str(comment.get("reply") or comment.get("skip_reason") or "")
             status = comment.get("status", "pending")
             comment_path = comment.get("path", "unknown")
-            err = validate_reply(reply, comment_path, status)
+            err = validate_reply(reply, comment_path, status, auto_skipped=bool(comment.get("is_auto_skipped")))
             if err:
                 lazy_errors.append(err)
             # Ensure reply field is always populated (posting uses reply, not skip_reason)

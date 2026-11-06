@@ -300,3 +300,24 @@ def test_run_blocks_invalid_or_non_addressed_sticky_status(
         post.run(str(review_file))
 
     post_body_comments.assert_not_called()
+
+
+class TestValidateReplyAutoSkipped:
+    """Auto-skipped entries were never actionable: no reply is expected (#1035 reply loop)."""
+
+    def test_auto_skipped_entry_needs_no_reply(self) -> None:
+        assert post.validate_reply("", "src/a.py", "skipped", auto_skipped=True) is None
+
+    def test_non_auto_skipped_skipped_entry_still_needs_a_reply(self) -> None:
+        err = post.validate_reply("", "src/a.py", "skipped", auto_skipped=False)
+        assert err is not None
+        assert "Empty reply" in err
+
+    def test_pending_needs_no_reply(self) -> None:
+        assert post.validate_reply("", "src/a.py", "pending") is None
+
+    def test_addressed_entry_still_requires_a_reply(self) -> None:
+        """The exemption must not weaken real replies."""
+        err = post.validate_reply("", "src/a.py", "addressed")
+        assert err is not None, "an addressed entry with no reply must still be rejected"
+        assert "Empty reply" in err
