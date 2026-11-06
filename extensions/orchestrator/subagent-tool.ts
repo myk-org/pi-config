@@ -31,6 +31,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
+import type { AsyncChainState } from "./async-agents.js";
 
 // Task store access via the pitasks module.
 // `taskStore` is `export let` — a live binding the pitasks extension assigns when it
@@ -106,6 +107,23 @@ const SYNC_TIME_EXCEEDED_ERROR = (seconds: number, limit: number, cwd: string) =
   return `Estimated time ${seconds}s meets or exceeds ${limit}s sync limit. Use async: true instead.`;
 };
 const MISSING_ESTIMATE_ERROR = "Missing required parameter: estimatedSeconds. Provide an estimated duration in seconds for sync agent tasks.";
+
+/** Cap for the {previous} substitution: the whole task becomes ONE argv entry, so a
+ *  large result would blow past ARG_MAX and fail the next step's spawn. */
+const MAX_PREVIOUS_CHARS = 32_000;
+
+/** Truncate a step result for the next step, saying how much was dropped. */
+function capPrevious(previous: string): string {
+  const dropped = previous.length - MAX_PREVIOUS_CHARS;
+  if (dropped <= 0) return previous;
+  return `${previous.slice(0, MAX_PREVIOUS_CHARS)}\n\n[truncated: ${dropped} of ${previous.length} chars dropped to keep the next step's task argument under the OS limit]`;
+}
+
+/** Substitute {previous} literally — String.replace would expand $&, $$, $' and $` in the result. */
+function withPrevious(task: string, previous: string): string {
+  if (!task.includes("{previous}")) return task;
+  return task.split("{previous}").join(capPrevious(previous));
+}
 
 let syncPenalty = 0;
 let lastSyncAgent = "";
@@ -639,7 +657,7 @@ async function validateTaskId(taskId: string, _cwd: string, _sessionId?: string)
 
 export function registerSubagentTool(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; persistSession?: boolean; explicit?: { model?: string; provider?: string }; onComplete?: (result: { text: string; isError: boolean }) => void }) => { id: string; error?: string; model?: string },
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState; onComplete?: (result: { text: string; isError: boolean }) => void }) => { id: string; error?: string; model?: string },
   killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] },
 ): void {
   // Only the orchestrator (top-level pi) can spawn subagents.
@@ -721,21 +739,30 @@ export function registerSubagentTool(
     const stepName = (i: number): string =>
       i === 0 && params.name ? params.name : `${steps[i].agent} (chain ${i + 1}/${total})`;
 
+    /** A step's cwd may hold project agents the parent's cwd does not — discover per step. */
+    const stepAgents = (cwd: string): AgentConfig[] => discoverAgents(cwd, params.agentScope ?? "both").agents;
+
     const spawnStep = (i: number, prev: string): { id: string; error?: string; model?: string } => {
       const s = steps[i];
       const name = stepName(i);
       log.info("async_chain_step_spawn", { step: i + 1, total, agent: s.agent, name });
-      return spawnAsyncAgent(s.agent, s.task.replace(/\{previous\}/g, prev), s.cwd, agents, {
+      return spawnAsyncAgent(s.agent, withPrevious(s.task, prev), s.cwd, stepAgents(s.cwd), {
         name,
         parentModelId,
         parentProvider,
         taskId: s.taskId,
         persistSession: params.persistSession,
         explicit,
+        // Durable so a reload can report the chain it can no longer continue.
+        chain: {
+          steps: steps.map(st => ({ agent: st.agent, task: st.task })),
+          index: i,
+          previous: capPrevious(prev),
+        },
         onComplete: (result) => {
           if (result.isError) {
             // Chain stops here — the delivered async result header names this step.
-            log.warn("async_chain_step_failed", { step: i + 1, total, agent: s.agent, name, output: result.text.slice(0, 200) });
+            log.error("async_chain_step_failed", { step: i + 1, total, agent: s.agent, name, output: result.text.slice(0, 200) });
             return;
           }
           log.info("async_chain_step_complete", { step: i + 1, total, agent: s.agent, name, output_chars: result.text.length });
@@ -744,7 +771,20 @@ export function registerSubagentTool(
             return;
           }
           log.info("async_chain_next_step", { from: i + 1, to: i + 2, agent: steps[i + 1].agent });
-          const next = spawnStep(i + 1, result.text);
+          let next: { id: string; error?: string; model?: string };
+          try {
+            next = spawnStep(i + 1, result.text);
+          } catch (err) {
+            // A synchronous throw must not escape the completion hook — the chain is dead either way.
+            const reason = String((err as Error)?.message ?? err);
+            log.error("async_chain_next_step_spawn_failed", { step: i + 2, agent: steps[i + 1].agent, error: reason });
+            void sendSystemNote(
+              pi,
+              `🚨 Async chain stopped: step ${i + 2} (${steps[i + 1].agent}) could not be spawned after step ${i + 1} completed — ${reason}`,
+              { customType: "subagent-chain-error", triggerTurn: true, deliverAs: "followUp" },
+            );
+            return;
+          }
           if (next.error) {
             log.error("async_chain_next_step_spawn_failed", { step: i + 2, agent: steps[i + 1].agent, error: next.error });
             void sendSystemNote(

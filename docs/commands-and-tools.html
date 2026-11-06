@@ -754,7 +754,7 @@
 </tr>
 <tr>
 <td><code>subagent</code></td>
-<td>Delegate to a subagent with isolated context; modes are single (<code>agent</code>+<code>task</code>), parallel (<code>tasks[]</code>), and chain (<code>chain[]</code> with a <code>{previous}</code> placeholder)</td>
+<td>Delegate to a subagent with isolated context; modes are single (<code>agent</code>+<code>task</code>), parallel (<code>tasks[]</code>), and chain (<code>chain[]</code> with a <code>{previous}</code> placeholder). A chain also runs async with <code>async: true</code>: each step needs its own <code>taskId</code> and <code>cwd</code>, each step gets the previous step's output as <code>{previous}</code>, and a failed step stops the chain</td>
 <td><code>agent</code>, <code>task</code>, <code>tasks[]</code>, <code>chain[]</code>, <code>agentScope</code>, <code>confirmProjectAgents</code>, <code>cwd</code>, <code>estimatedSeconds</code> (required for sync; <code>&gt;= 30</code> forces async), <code>async</code>, <code>fireAndForget</code>, <code>name</code>, <code>taskId</code> (<code>-1</code> if unlinked), <code>asyncKill</code>, <code>persistSession</code>, <code>model</code> (<code>provider/model-id</code>)</td>
 </tr>
 <tr>

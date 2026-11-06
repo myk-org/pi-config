@@ -35,6 +35,7 @@ import { setSlot } from "./status-bar.js";
 import { getSetting } from "./project-settings.js";
 import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
+import { sendSystemNote } from "../shared/system-note.js";
 
 const SETTINGS_KEYS: Record<string, unknown> = JSON.parse(
   fs.readFileSync(
@@ -88,6 +89,26 @@ export interface AsyncJob {
  */
 export type AsyncKillOrigin = "user" | "orchestrator" | "task-system";
 
+/** Durable record of an async chain's position, written into each step's workerDir
+ *  as chain.json. The step's continuation lives in the onComplete closure, which a
+ *  reload destroys — this file is what lets restoration report the chain instead of
+ *  dropping it silently. */
+export interface AsyncChainState {
+  steps: Array<{ agent: string; task: string }>;
+  /** Index (0-based) of the step being spawned when this was written. */
+  index: number;
+  previous: string;
+  /** Set once restoration has reported this chain as interrupted. */
+  interruptedAt?: number;
+}
+
+function readChainState(workerDir: string): AsyncChainState | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(workerDir, "chain.json"), "utf-8"));
+    return Array.isArray(parsed?.steps) ? parsed as AsyncChainState : null;
+  } catch { return null; }
+}
+
 /** Human-readable attribution per origin. The single source for every surface. */
 export const KILL_ORIGIN_LABELS: Record<AsyncKillOrigin, string> = {
   user: "Killed by user",
@@ -103,7 +124,7 @@ function jobCwd(job: { cwd?: string; projectCwd?: string }): string {
 /** Fire the job's completion hook exactly once, with the already-ingested result.
  *  Clearing it first stops the reconciliation pass from re-firing it (which would
  *  spawn the next async-chain step twice after a failed delivery). */
-function fireOnComplete(job: AsyncJob): void {
+export function fireOnComplete(job: AsyncJob): void {
   const cb = job.onComplete;
   job.onComplete = undefined;
   if (!cb) return;
@@ -158,7 +179,7 @@ export function registerAsyncAgents(
     discoverAgents?: (cwd: string, scope: "both") => Pick<AgentDiscoveryResult, "agents">;
   } = {},
 ): {
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } }) => { id: string; error?: string; model?: string };
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
@@ -1040,7 +1061,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } },
+    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState },
   ): { id: string; error?: string; model?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -1074,6 +1095,12 @@ export function registerAsyncAgents(
       projectCwd: getLiveAsyncCtx()?.sessionManager?.getCwd?.() || null,
       sessionId: getLiveAsyncCtx()?.sessionManager?.getSessionId?.() || null,
     }), { mode: 0o600 });
+
+    // Chain position — a reload drops the onComplete continuation, so restore reads
+    // this file to report the chain it can no longer resume instead of losing it.
+    if (options?.chain) {
+      fs.writeFileSync(path.join(workerDir, "chain.json"), JSON.stringify(options.chain), { mode: 0o600 });
+    }
 
     // Track reviewer spawn BEFORE building args — addReviewerPending sets status to
     // in_progress, so all reviewers in the same batch see consistent state.
@@ -1521,6 +1548,22 @@ export function registerAsyncAgents(
           };
           asyncState.jobs.set(id, job);
           log.info(`restored job: ${id} state=${job.status}`);
+
+          // A chain's continuation lived in the onComplete closure this reload destroyed.
+          // chain.json records what was still pending — report it, never drop it silently.
+          const chain = readChainState(job.workerDir);
+          if (chain && chain.interruptedAt === undefined && chain.index + 1 < chain.steps.length) {
+            const remaining = [...new Set(chain.steps.slice(chain.index + 1).map(s => s.agent))];
+            log.error(`async_chain_interrupted: chain interrupted at step ${chain.index + 1} of ${chain.steps.length} (${job.agent}), remaining agents: ${remaining.join(", ")}`);
+            void sendSystemNote(
+              pi,
+              `🚨 Async chain interrupted at step ${chain.index + 1} of ${chain.steps.length} — the extension reloaded, so the chain cannot continue. Step ${chain.index + 1} (${job.agent}) may still be running; steps ${chain.index + 2}-${chain.steps.length} were never spawned. Remaining agents: ${remaining.join(", ")}. Re-run them with subagent(chain: ...).`,
+              { customType: "subagent-chain-error", triggerTurn: true, deliverAs: "followUp" },
+            ).catch((e: any) => log.error(`chain_interrupted note failed: ${e?.message || e}`));
+            // Durable so a second reload does not repeat the note.
+            chain.interruptedAt = Date.now();
+            try { fs.writeFileSync(path.join(job.workerDir, "chain.json"), JSON.stringify(chain), { mode: 0o600 }); } catch {}
+          }
         }
       }
     } catch (e: any) { log.error(`job restore failed: ${e?.message || e}`); }
