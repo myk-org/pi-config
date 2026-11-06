@@ -133,7 +133,8 @@ function appendLine(filePath: string, line: string): void {
  * Append one physical line to ~/.pi/logs/<name>/<session>.log.
  * Never writes to console.* (chat UI leak).
  * Returns true on success.
- * On primary-path failure, tries os.tmpdir()/pi-logs/<name>.log once.
+ * On primary-path failure, tries <cwd>/.pi/tmp/pi-logs/<name>.log once: the project
+ * scratch dir is swept by the tmp cleanup, so a fallback log cannot outlive its project.
  */
 const LEVEL_ORDER: Record<string, number> = Object.assign(Object.create(null), { off: -1, debug: 0, info: 1, warn: 2, error: 3 });
 
@@ -215,7 +216,7 @@ export function writeFileLogLine(name: string, line: string): boolean {
   } catch (primaryErr) {
     recordWriteError(primaryErr);
     try {
-      const fallbackDir = path.join(os.tmpdir(), "pi-logs");
+      const fallbackDir = path.join(process.cwd(), ".pi", "tmp", "pi-logs");
       appendLine(path.join(fallbackDir, `${safe}.log`), line);
       return true;
     } catch (fallbackErr) {

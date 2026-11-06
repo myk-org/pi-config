@@ -37,6 +37,8 @@ describe("file-logger", () => {
   };
   let tmpHome: string | undefined;
   let tmpFallbackBase: string | undefined;
+  let projectDir: string | undefined;
+  let previousCwd: string | undefined;
 
   afterEach(() => {
     if (originals.HOME === undefined) delete process.env.HOME;
@@ -70,8 +72,19 @@ describe("file-logger", () => {
         /* ignore */
       }
     }
+    if (previousCwd) process.chdir(previousCwd);
+    for (const dir of [projectDir]) {
+      if (!dir) continue;
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
     tmpHome = undefined;
     tmpFallbackBase = undefined;
+    projectDir = undefined;
+    previousCwd = undefined;
   });
 
   it("writes cli-provider info lines to ~/.pi/logs", async () => {
@@ -144,9 +157,11 @@ describe("file-logger", () => {
     // getPiLogPath returns correct path strings without side effects
   });
 
-  it("falls back to isolated TMPDIR when home logs are not writable", async () => {
+  it("falls back to the project .pi/tmp/pi-logs when home logs are not writable", async () => {
     tmpHome = mkdtempSync(join(tmpdir(), "pi-file-log-ro-"));
-    tmpFallbackBase = mkdtempSync(join(tmpdir(), "pi-file-log-tmp-"));
+    projectDir = mkdtempSync(join(tmpdir(), "pi-file-log-proj-"));
+    previousCwd = process.cwd();
+    process.chdir(projectDir);
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
     process.env.TMPDIR = tmpFallbackBase;
@@ -164,7 +179,9 @@ describe("file-logger", () => {
     assert.ok(mod.getFileLogErrorCount() >= 1);
     assert.ok(mod.getLastFileLogError());
 
-    const fallback = join(tmpFallbackBase, "pi-logs", "cli-provider.log");
+    // The fallback is the project scratch dir (swept by the tmp cleanup), not the OS temp
+    // dir: a fallback log must not outlive its project.
+    const fallback = join(projectDir, ".pi", "tmp", "pi-logs", "cli-provider.log");
     assert.match(readFileSync(fallback, "utf-8"), /fallback/);
   });
 
