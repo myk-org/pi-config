@@ -43,7 +43,7 @@ interface AsyncJob {
   delivered?: boolean;
   sideEffectsApplied?: boolean;
   fireAndForget?: boolean;
-  onComplete?: () => void;
+  onComplete?: (result: { text: string; isError: boolean }) => void;
   groupId?: string;
   taskId?: string;
   cwd?: string;

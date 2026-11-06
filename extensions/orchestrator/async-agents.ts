@@ -35,6 +35,7 @@ import { setSlot } from "./status-bar.js";
 import { getSetting } from "./project-settings.js";
 import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
+import { sendSystemNote } from "../shared/system-note.js";
 
 const SETTINGS_KEYS: Record<string, unknown> = JSON.parse(
   fs.readFileSync(
@@ -66,7 +67,8 @@ export interface AsyncJob {
   delivered?: boolean;
   sideEffectsApplied?: boolean;
   fireAndForget?: boolean;
-  onComplete?: () => void;
+  /** One-shot: fires once with the ingested result text. Used by async chains to feed {previous}. */
+  onComplete?: (result: { text: string; isError: boolean }) => void;
   groupId?: string;
   taskId?: string;
   cwd?: string;
@@ -87,6 +89,26 @@ export interface AsyncJob {
  */
 export type AsyncKillOrigin = "user" | "orchestrator" | "task-system";
 
+/** Durable record of an async chain's position, written into each step's workerDir
+ *  as chain.json. The step's continuation lives in the onComplete closure, which a
+ *  reload destroys — this file is what lets restoration report the chain instead of
+ *  dropping it silently. */
+export interface AsyncChainState {
+  steps: Array<{ agent: string; task: string }>;
+  /** Index (0-based) of the step being spawned when this was written. */
+  index: number;
+  previous: string;
+  /** Set once restoration has reported this chain as interrupted. */
+  interruptedAt?: number;
+}
+
+function readChainState(workerDir: string): AsyncChainState | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(workerDir, "chain.json"), "utf-8"));
+    return Array.isArray(parsed?.steps) ? parsed as AsyncChainState : null;
+  } catch { return null; }
+}
+
 /** Human-readable attribution per origin. The single source for every surface. */
 export const KILL_ORIGIN_LABELS: Record<AsyncKillOrigin, string> = {
   user: "Killed by user",
@@ -97,6 +119,32 @@ export const KILL_ORIGIN_LABELS: Record<AsyncKillOrigin, string> = {
 /** Get the effective working directory for a job. */
 function jobCwd(job: { cwd?: string; projectCwd?: string }): string {
   return job.cwd || job.projectCwd || process.cwd();
+}
+
+/** Fire the job's completion hook exactly once, with the already-ingested result.
+ *  Clearing it first stops the reconciliation pass from re-firing it (which would
+ *  spawn the next async-chain step twice after a failed delivery). */
+export function fireOnComplete(job: AsyncJob): void {
+  const cb = job.onComplete;
+  job.onComplete = undefined;
+  if (!cb) return;
+  try {
+    cb({ text: typeof job.output === "string" ? job.output : "", isError: job.status === "failed" });
+  } catch (e: any) { log.error(`onComplete callback failed for ${job.id}: ${e?.message}`); }
+}
+
+/** Fire every pending completion hook in one reconciliation pass.
+ *  Returns how many fired. Exported so the PASS is testable, not just the
+ *  single-job helper — the hook-once guarantee is a property of the loop. */
+export function firePendingCompletions(jobs: Iterable<AsyncJob>): number {
+  let fired = 0;
+  for (const job of jobs) {
+    if (!job.onComplete) continue;
+    fireOnComplete(job);
+    fired++;
+  }
+  if (fired > 0) log.info("fire_pending_completions", { fired });
+  return fired;
 }
 
 interface AsyncState {
@@ -145,7 +193,7 @@ export function registerAsyncAgents(
     discoverAgents?: (cwd: string, scope: "both") => Pick<AgentDiscoveryResult, "agents">;
   } = {},
 ): {
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } }) => { id: string; error?: string; model?: string };
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] };
   getAsyncJobs: () => Array<{ id: string; agent: string; name?: string; task: string; status: string; startedAt: number }>;
 } {
@@ -625,9 +673,7 @@ export function registerAsyncAgents(
                   content: msgContent,
                   display: true,
                 }, { triggerTurn: true, deliverAs: "followUp" });
-                if (job.onComplete) {
-                  try { job.onComplete(); } catch (e: any) { log.error(`onComplete callback failed for ${job.id}: ${e?.message}`); }
-                }
+                fireOnComplete(job);
                 job.delivered = true;
                 recordDelivered(job.id);
                 log.debug("reconcile_deliver_ok", job.id);
@@ -646,9 +692,7 @@ export function registerAsyncAgents(
               } catch {}
             }
           } else if (job.fireAndForget) {
-            if (job.onComplete) {
-              try { job.onComplete(); } catch (e: any) { log.error(`onComplete callback failed for ${job.id}: ${e?.message}`); }
-            }
+            fireOnComplete(job);
             job.delivered = true;
           }
         }
@@ -719,12 +763,8 @@ export function registerAsyncAgents(
 
     // Skip delivery if ALL jobs in group are fire-and-forget
     if (groupJobs.every(j => j.fireAndForget)) {
-      for (const j of groupJobs) {
-        if (j.onComplete) {
-          try { j.onComplete(); } catch (e: any) { log.error(`onComplete callback failed for ${j.id}: ${e?.message}`); }
-        }
-        j.delivered = true;
-      }
+      firePendingCompletions(groupJobs);
+      for (const j of groupJobs) j.delivered = true;
       // Clean up result files for fire-and-forget groups
       for (const j of groupJobs) {
         const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);
@@ -986,10 +1026,8 @@ export function registerAsyncAgents(
         sendSucceeded = true; // fire-and-forget doesn't need sendMessage
       }
 
-      // Invoke onComplete callback if registered (e.g., dreaming → rebuildAndOrganize)
-      if (job.onComplete) {
-        try { job.onComplete(); } catch (e: any) { log.error(`onComplete callback failed for ${job.id}: ${e?.message}`); }
-      }
+      // Invoke onComplete callback if registered (e.g., dreaming, async chain step)
+      fireOnComplete(job);
       if (sendSucceeded) {
         job.delivered = true;
         // Persist delivered state so restore skips this job
@@ -1035,7 +1073,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: () => void; persistSession?: boolean; explicit?: { model?: string; provider?: string } },
+    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState },
   ): { id: string; error?: string; model?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -1069,6 +1107,12 @@ export function registerAsyncAgents(
       projectCwd: getLiveAsyncCtx()?.sessionManager?.getCwd?.() || null,
       sessionId: getLiveAsyncCtx()?.sessionManager?.getSessionId?.() || null,
     }), { mode: 0o600 });
+
+    // Chain position — a reload drops the onComplete continuation, so restore reads
+    // this file to report the chain it can no longer resume instead of losing it.
+    if (options?.chain) {
+      fs.writeFileSync(path.join(workerDir, "chain.json"), JSON.stringify(options.chain), { mode: 0o600 });
+    }
 
     // Track reviewer spawn BEFORE building args — addReviewerPending sets status to
     // in_progress, so all reviewers in the same batch see consistent state.
@@ -1516,6 +1560,22 @@ export function registerAsyncAgents(
           };
           asyncState.jobs.set(id, job);
           log.info(`restored job: ${id} state=${job.status}`);
+
+          // A chain's continuation lived in the onComplete closure this reload destroyed.
+          // chain.json records what was still pending — report it, never drop it silently.
+          const chain = readChainState(job.workerDir);
+          if (chain && chain.interruptedAt === undefined && chain.index + 1 < chain.steps.length) {
+            const remaining = [...new Set(chain.steps.slice(chain.index + 1).map(s => s.agent))];
+            log.error(`async_chain_interrupted: chain interrupted at step ${chain.index + 1} of ${chain.steps.length} (${job.agent}), remaining agents: ${remaining.join(", ")}`);
+            void sendSystemNote(
+              pi,
+              `🚨 Async chain interrupted at step ${chain.index + 1} of ${chain.steps.length} — the extension reloaded, so the chain cannot continue. Step ${chain.index + 1} (${job.agent}) may still be running; steps ${chain.index + 2}-${chain.steps.length} were never spawned. Remaining agents: ${remaining.join(", ")}. Re-run them with subagent(chain: ...).`,
+              { customType: "subagent-chain-error", triggerTurn: true, deliverAs: "followUp" },
+            ).catch((e: any) => log.error(`chain_interrupted note failed: ${e?.message || e}`));
+            // Durable so a second reload does not repeat the note.
+            chain.interruptedAt = Date.now();
+            try { fs.writeFileSync(path.join(job.workerDir, "chain.json"), JSON.stringify(chain), { mode: 0o600 }); } catch {}
+          }
         }
       }
     } catch (e: any) { log.error(`job restore failed: ${e?.message || e}`); }

@@ -152,3 +152,26 @@ describe("ui-bridge", () => {
     assert.equal(await p, "a");
   });
 });
+
+
+describe("ui-bridge degrade path (no ctx.ui.custom)", () => {
+  it("confirm true resolves true instead of always cancelling", async () => {
+    const bridged = createBridgedUi(fakePi() as any);
+    const ctx = { hasUI: true, ui: { confirm: async () => true } };
+    assert.equal(await bridged.confirm(ctx as any, "Run project-local agents?"), true);
+  });
+
+  it("confirm false resolves false", async () => {
+    const bridged = createBridgedUi(fakePi() as any);
+    const ctx = { hasUI: true, ui: { confirm: async () => false } };
+    assert.equal(await bridged.confirm(ctx as any, "Run?"), false);
+  });
+
+  it("no UI resolves false without calling the prompt", async () => {
+    const bridged = createBridgedUi(fakePi() as any);
+    let called = false;
+    const ctx = { hasUI: false, ui: { confirm: async () => { called = true; return true; } } };
+    assert.equal(await bridged.confirm(ctx as any, "Run?"), false);
+    assert.equal(called, false);
+  });
+});

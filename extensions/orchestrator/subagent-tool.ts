@@ -31,6 +31,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
+import type { AsyncChainState } from "./async-agents.js";
 
 // Task store access via the pitasks module.
 // `taskStore` is `export let` — a live binding the pitasks extension assigns when it
@@ -107,6 +108,23 @@ const SYNC_TIME_EXCEEDED_ERROR = (seconds: number, limit: number, cwd: string) =
 };
 const MISSING_ESTIMATE_ERROR = "Missing required parameter: estimatedSeconds. Provide an estimated duration in seconds for sync agent tasks.";
 
+/** Cap for the {previous} substitution: the whole task becomes ONE argv entry, so a
+ *  large result would blow past ARG_MAX and fail the next step's spawn. */
+const MAX_PREVIOUS_CHARS = 32_000;
+
+/** Truncate a step result for the next step, saying how much was dropped. */
+function capPrevious(previous: string): string {
+  const dropped = previous.length - MAX_PREVIOUS_CHARS;
+  if (dropped <= 0) return previous;
+  return `${previous.slice(0, MAX_PREVIOUS_CHARS)}\n\n[truncated: ${dropped} of ${previous.length} chars dropped to keep the next step's task argument under the OS limit]`;
+}
+
+/** Substitute {previous} literally — String.replace would expand $&, $$, $' and $` in the result. */
+function withPrevious(task: string, previous: string): string {
+  if (!task.includes("{previous}")) return task;
+  return task.split("{previous}").join(capPrevious(previous));
+}
+
 let syncPenalty = 0;
 let lastSyncAgent = "";
 let lastSyncEstimate = 0;
@@ -139,6 +157,7 @@ const ChainItem = Type.Object({
   }),
   cwd: Type.String({ description: "Working directory" }),
   estimatedSeconds: Type.Number({ description: "Estimated step duration in seconds" }),
+  taskId: Type.Optional(Type.String({ description: "Task ID to auto-complete when this async chain step finishes" })),
 });
 // pi 1.5.0's StringEnum returns a pi-schema Schema, which TypeBox's Static cannot
 // read — params.agentScope degraded to `unknown`. Unsafe keeps the JSON-Schema
@@ -638,7 +657,7 @@ async function validateTaskId(taskId: string, _cwd: string, _sessionId?: string)
 
 export function registerSubagentTool(
   pi: ExtensionAPI,
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; persistSession?: boolean; explicit?: { model?: string; provider?: string } }) => { id: string; error?: string; model?: string },
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState; onComplete?: (result: { text: string; isError: boolean }) => void }) => { id: string; error?: string; model?: string },
   killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] },
 ): void {
   // Only the orchestrator (top-level pi) can spawn subagents.
@@ -668,6 +687,130 @@ export function registerSubagentTool(
     };
   }
 
+  /** Async chain — spawns step 1, and each step's completion hook spawns the next
+   *  with {previous} replaced by that step's result text. */
+  async function executeAsyncChain(
+    params: any,
+    agents: AgentConfig[],
+    mkd: (mode: "single" | "parallel" | "chain") => (results: SingleResult[]) => SubagentDetails,
+    parentModelId: string | undefined,
+    parentProvider: string | undefined,
+    ctx: any,
+    explicit?: { model?: string; provider?: string },
+  ) {
+    const steps = (params.chain ?? []) as Array<{ agent: string; task: string; cwd: string; taskId?: string }>;
+    const total = steps.length;
+    const fail = (text: string) => ({
+      content: [{ type: "text" as const, text }],
+      details: mkd("chain")([]),
+      isError: true,
+    });
+
+    if (total === 0) return fail("Error: chain array is empty — at least one step is required.");
+    for (let i = 0; i < total; i++) {
+      const s = steps[i];
+      if (!s.agent || !s.task) return fail(`Async chain step ${i + 1} requires both agent and task.`);
+      if (!s.cwd) return fail(`${MISSING_CWD_ERROR} (chain step ${i + 1}, agent: ${s.agent})`);
+      if (s.taskId == null) {
+        // Force a follow-up turn so the AI MUST deal with this error, as the other async paths do
+        await sendSystemNote(
+          pi,
+          `🚨 CRITICAL: Async chain call was REJECTED — missing taskId for step ${i + 1} (${s.agent}). NO agents were spawned. You MUST retry with a taskId on every chain step. Use TaskList to find task IDs; "-1" is only for a single read-only check.`,
+          { customType: "subagent-taskid-error", triggerTurn: true, deliverAs: "followUp" },
+        );
+        return fail(`Missing required parameter: taskId. Every async agent MUST have a taskId (chain step ${i + 1}, agent: ${s.agent}).\n\nIf this step is working on a task: pass the task ID (e.g., taskId: "5")\nIf it is only doing a single read-only check: pass taskId: "-1" (editing or PR work needs a real task id)`);
+      }
+      const taskErr = await validateTaskId(s.taskId, ctx.cwd, ctx.sessionManager?.getSessionId?.());
+      if (taskErr) {
+        await sendSystemNote(
+          pi,
+          `🚨 CRITICAL: ${taskErr} (chain step ${i + 1}, agent: ${s.agent}). NO agents were spawned. Fix the taskId and retry.`,
+          { customType: "subagent-taskid-error", triggerTurn: true, deliverAs: "followUp" },
+        );
+        return fail(`${taskErr} (chain step ${i + 1}, agent: ${s.agent})`);
+      }
+    }
+    if (syncPenalty > 0) {
+      log.info("sync_penalty_reset", "async chain used");
+      syncPenalty = 0;
+    }
+
+    /** Step names carry the position so the status line and result header say which step ran. */
+    const stepName = (i: number): string =>
+      i === 0 && params.name ? params.name : `${steps[i].agent} (chain ${i + 1}/${total})`;
+
+    /** A step's cwd may hold project agents the parent's cwd does not — discover per step. */
+    const stepAgents = (cwd: string): AgentConfig[] => discoverAgents(cwd, params.agentScope ?? "both").agents;
+
+    const spawnStep = (i: number, prev: string): { id: string; error?: string; model?: string } => {
+      const s = steps[i];
+      const name = stepName(i);
+      log.info("async_chain_step_spawn", { step: i + 1, total, agent: s.agent, name });
+      return spawnAsyncAgent(s.agent, withPrevious(s.task, prev), s.cwd, stepAgents(s.cwd), {
+        name,
+        parentModelId,
+        parentProvider,
+        taskId: s.taskId,
+        persistSession: params.persistSession,
+        explicit,
+        // Durable so a reload can report the chain it can no longer continue.
+        chain: {
+          steps: steps.map(st => ({ agent: st.agent, task: st.task })),
+          index: i,
+          previous: capPrevious(prev),
+        },
+        onComplete: (result) => {
+          if (result.isError) {
+            // Chain stops here — the delivered async result header names this step.
+            log.error("async_chain_step_failed", { step: i + 1, total, agent: s.agent, name, output: result.text.slice(0, 200) });
+            return;
+          }
+          log.info("async_chain_step_complete", { step: i + 1, total, agent: s.agent, name, output_chars: result.text.length });
+          if (i + 1 >= total) {
+            log.info("async_chain_done", { steps: total });
+            return;
+          }
+          log.info("async_chain_next_step", { from: i + 1, to: i + 2, agent: steps[i + 1].agent });
+          let next: { id: string; error?: string; model?: string };
+          try {
+            next = spawnStep(i + 1, result.text);
+          } catch (err) {
+            // A synchronous throw must not escape the completion hook — the chain is dead either way.
+            const reason = String((err as Error)?.message ?? err);
+            log.error("async_chain_next_step_spawn_failed", { step: i + 2, agent: steps[i + 1].agent, error: reason });
+            void sendSystemNote(
+              pi,
+              `🚨 Async chain stopped: step ${i + 2} (${steps[i + 1].agent}) could not be spawned after step ${i + 1} completed — ${reason}`,
+              { customType: "subagent-chain-error", triggerTurn: true, deliverAs: "followUp" },
+            );
+            return;
+          }
+          if (next.error) {
+            log.error("async_chain_next_step_spawn_failed", { step: i + 2, agent: steps[i + 1].agent, error: next.error });
+            void sendSystemNote(
+              pi,
+              `🚨 Async chain stopped: step ${i + 2} (${steps[i + 1].agent}) could not be spawned after step ${i + 1} completed — ${next.error}`,
+              { customType: "subagent-chain-error", triggerTurn: true, deliverAs: "followUp" },
+            );
+          } else {
+            log.info("async_chain_next_step_spawned", { step: i + 2, id: next.id });
+          }
+        },
+      });
+    };
+
+    const first = spawnStep(0, "");
+    if (first.error) return fail(`Async chain step 1 (${steps[0].agent}) failed to spawn: ${first.error}`);
+    const modelInfo = first.model ? ` (${first.model})` : "";
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Async chain started: ${stepName(0)} [${first.id}]${modelInfo}\n${total} step(s) run in sequence — each step receives the previous step's output as {previous}.\nA failed step stops the chain and is named in its result.\nUse /async-status to check progress.`,
+      }],
+      details: mkd("chain")([]),
+    };
+  }
+
   async function executeAsync(
     params: any,
     agents: AgentConfig[],
@@ -678,11 +821,7 @@ export function registerSubagentTool(
     explicit?: { model?: string; provider?: string },
   ) {
     if (params.chain) {
-      return {
-        content: [{ type: "text" as const, text: "Async mode does not support chain. Use agent + task or tasks array." }],
-        details: mkd("single")([]),
-        isError: true,
-      };
+      return executeAsyncChain(params, agents, mkd, parentModelId, parentProvider, ctx, explicit);
     }
 
     // Parallel async — spawn each task as a separate async agent
@@ -1628,9 +1767,14 @@ export function registerSubagentTool(
         const violators = [...new Set(requested.filter(n => ASYNC_ONLY_AGENTS.has(n)))];
         if (violators.length > 0) {
           const inChain = params.chain?.some(s => ASYNC_ONLY_AGENTS.has(s.agent));
-          if (inChain) {
+          // An async chain satisfies the async-only requirement; anything that would run the
+          // steps in the foreground (sync chain, or an acpx parent that coerces async→sync) cannot.
+          if (inChain && (params.async !== true || !asyncOk)) {
+            const why = params.async !== true
+              ? "a sync chain runs its steps in the foreground"
+              : `the parent provider cannot spawn async agents (${parentProvider ?? "unknown"})`;
             return {
-              content: [{ type: "text", text: `These agents cannot be used in chain mode: ${violators.join(", ")}. Dispatch them as separate async tasks instead.` }],
+              content: [{ type: "text", text: `These agents can only run async, and ${why}: ${violators.join(", ")}. Async chain needs async: true on a provider that supports async agents.` }],
               details: mkd("single")([]),
               isError: true,
             };
@@ -1670,14 +1814,45 @@ export function registerSubagentTool(
         if (params.chain) for (const s of params.chain) requested.add(s.agent);
         if (params.tasks) for (const t of params.tasks) requested.add(t.agent);
         if (params.agent) requested.add(params.agent);
-        const projAgents = Array.from(requested)
-          .map((n) => agents.find((a) => a.name === n))
-          .filter((a): a is AgentConfig => a?.source === "project");
+        // A chain step carries its own cwd, so it can resolve a DIFFERENT project agent set
+        // than the parent's — including a project agent that shadows a user agent of the
+        // same name. Resolve every step against its own cwd or the approval is bypassed.
+        const projAgents: AgentConfig[] = [];
+        const sources: string[] = [];
+        for (const name of requested) {
+          const parentAgent = agents.find((a) => a.name === name);
+          if (parentAgent?.source === "project") {
+            projAgents.push(parentAgent);
+            if (discovery.projectAgentsDir) sources.push(discovery.projectAgentsDir);
+          }
+        }
+        // Async chains resolve agents per step, so a step's own cwd can contribute a
+        // project agent — including one that SHADOWS a parent user agent of the same name.
+        // Sync chains still resolve against the parent list, so asking about their steps
+        // would prompt for an agent that never runs.
+        if (params.async === true) {
+          // Structured key: a "@" join is ambiguous when a name or path contains "@".
+          const seen = new Set(projAgents.map((a) => JSON.stringify([a.name, discovery.projectAgentsDir ?? ""])));
+          for (const step of params.chain ?? []) {
+            if (!step.cwd || step.cwd === ctx.cwd) continue;
+            const stepDiscovery = discoverAgents(step.cwd, scope);
+            const stepAgent = stepDiscovery.agents.find((a) => a.name === step.agent);
+            if (stepAgent?.source !== "project") continue;
+            // Dedupe on name+directory: the same name in a second project dir is a
+            // DIFFERENT agent and its source must appear in the prompt.
+            const key = JSON.stringify([stepAgent.name, stepDiscovery.projectAgentsDir ?? ""]);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            projAgents.push(stepAgent);
+            if (stepDiscovery.projectAgentsDir) sources.push(stepDiscovery.projectAgentsDir);
+          }
+        }
         if (projAgents.length > 0) {
+          const uniqueSources = [...new Set(sources)];
           const ok = await bridgedUi.confirm(
             ctx,
             "Run project-local agents?",
-            `Agents: ${projAgents.map((a) => a.name).join(", ")}\nSource: ${discovery.projectAgentsDir}`,
+            `Agents: ${projAgents.map((a) => a.name).join(", ")}\nSource: ${uniqueSources.join(", ")}`,
           );
           if (!ok)
             return {
