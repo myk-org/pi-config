@@ -268,6 +268,28 @@ export function isLiveLegacyDaemonFile(legacyDir: string, name: string): boolean
   return legacyLockfileOwnerAlive(legacyDir);
 }
 
+/** Adopt a legacy `.pi/tmp` lockfile into the run dir when a pre-`.pi/run` daemon is still
+ *  alive. Called once at session start, BEFORE the tmp sweep, so the sweep itself needs no
+ *  exemption for those files: the live daemon becomes discoverable at the new path and the
+ *  legacy copies are left where they are (deleting a running daemon's files is not this
+ *  function's business).
+ *
+ *  Refuses to touch a run dir that already holds a lockfile — that record belongs to a live
+ *  daemon and an older legacy copy must never overwrite it. */
+export function adoptLegacyLockfile(lockDir: string, legacyDir: string): boolean {
+  try {
+    if (fs.existsSync(path.join(lockDir, "pidiff.port"))) return false;
+    const lock = readLockfile(legacyDir);
+    if (!lock) return false;
+    if (!legacyLockfileOwnerAlive(legacyDir)) return false;
+    writeLockfile(lockDir, lock.port, lock.pid, (msg) => log.debug("legacy_lockfile_adopted", { message: msg }));
+    return true;
+  } catch (e: any) {
+    log.warn("legacy_lockfile_adoption_failed", { lockDir, legacyDir, error: e?.message });
+    return false;
+  }
+}
+
 /** First lockfile port (in `dirs` order) whose daemon answers /api/health, or
  *  null. Exported for testing. */
 export async function findLiveLockfile(dirs: string[]): Promise<number | null> {

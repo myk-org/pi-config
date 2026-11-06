@@ -149,37 +149,16 @@ describe("sweepProjectTmp", () => {
     }
   });
 
-  it("keeps the lockfile of a live pre-`.pi/run` daemon (#1020)", async () => {
-    // A daemon started before the `.pi/run` move still owns `pidiff.port`/`pidiff.pid` here.
-    // Sweeping them would make the next connect() miss it and spawn a duplicate on its port,
-    // so the sweep asks the daemon layer whether that PID is alive — not a name list.
-    makeEntry("pidiff.port", 2 * MB, 90);
-    makeEntry("pidiff.pid", 2 * MB, 90);
-    fs.writeFileSync(path.join(tmpDir, "pidiff.pid"), String(process.pid));
-    makeEntry("throwaway", 2 * MB, 90);
-
-    const result = await sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
-    assert.equal(result.deleted, 1, "only the throwaway entry is swept");
-    assert.equal(fs.existsSync(path.join(tmpDir, "pidiff.port")), true, "live daemon port file kept");
-    assert.equal(fs.existsSync(path.join(tmpDir, "pidiff.pid")), true, "live daemon pid file kept");
-    assert.equal(fs.existsSync(path.join(tmpDir, "throwaway")), false, "everything else is swept");
-  });
-
-  it("sweeps a dead daemon's legacy lockfile like any other entry (#1020)", async () => {
+  it("sweeps legacy control-file names like any other entry (#1020)", async () => {
+    // The sweep has no exemption: a live pre-`.pi/run` daemon is protected by having its
+    // record adopted into `.pi/run` before the sweep runs, never by a name list here.
     for (const name of ["pidiff.pid", "pidiff.port", "reload.flag", "reload.done", "reload.pending"]) {
       makeEntry(name, 2 * MB, 90);
     }
-    // A PID that cannot be alive: 0 is rejected by the liveness check. Writing the file
-    // resets its mtime, so backdate it past the retention floor again.
-    const pidFile = path.join(tmpDir, "pidiff.pid");
-    fs.writeFileSync(pidFile, "0");
-    const old = new Date(Date.now() - 90 * DAY);
-    fs.utimesSync(pidFile, old, old);
-
     const result = await sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
-    assert.equal(result.deleted, 5, "nothing under .pi/tmp is exempt once its owner is gone");
+    assert.equal(result.deleted, 5, "every control-file-shaped entry is swept");
     for (const name of ["pidiff.pid", "pidiff.port", "reload.flag", "reload.done", "reload.pending"]) {
-      assert.equal(fs.existsSync(path.join(tmpDir, name)), false, `${name} must be swept`);
+      assert.equal(fs.existsSync(path.join(tmpDir, name)), false, `${name} is swept`);
     }
     assert.equal(fs.existsSync(tmpDir), true, "tmp root must survive");
   });

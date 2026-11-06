@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive } from "../../../extensions/shared/daemon-manager.js";
+import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive, adoptLegacyLockfile } from "../../../extensions/shared/daemon-manager.js";
 import { createServer, type Server } from "node:http";
 
 describe("findLiveLockfile (#1020)", () => {
@@ -223,6 +223,48 @@ describe("legacy .pi/tmp lockfiles (#1020)", () => {
     } finally {
       (process as unknown as { kill: unknown }).kill = original;
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("adoptLegacyLockfile copies a live legacy record into an empty run dir", () => {
+    const runDir = mk();
+    const legacyDir = mk();
+    try {
+      writeLockfile(legacyDir, 41234, process.pid, () => {});
+      assert.equal(adoptLegacyLockfile(runDir, legacyDir), true);
+      assert.deepEqual(readLockfile(runDir), { port: 41234, pid: process.pid });
+      // The legacy copies are left alone: a live daemon owns them.
+      assert.equal(existsSync(join(legacyDir, "pidiff.port")), true);
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("adoptLegacyLockfile never overwrites a record the run dir already holds", () => {
+    const runDir = mk();
+    const legacyDir = mk();
+    try {
+      writeLockfile(runDir, 5000, process.pid, () => {});
+      writeLockfile(legacyDir, 41234, process.pid, () => {});
+      assert.equal(adoptLegacyLockfile(runDir, legacyDir), false);
+      assert.strictEqual(readLockfile(runDir)!.port, 5000);
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("adoptLegacyLockfile ignores a dead legacy daemon", () => {
+    const runDir = mk();
+    const legacyDir = mk();
+    try {
+      writeLockfile(legacyDir, 41234, 0, () => {});
+      assert.equal(adoptLegacyLockfile(runDir, legacyDir), false);
+      assert.equal(existsSync(join(runDir, "pidiff.port")), false);
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+      rmSync(legacyDir, { recursive: true, force: true });
     }
   });
 

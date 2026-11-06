@@ -15,8 +15,8 @@ import * as fs from "node:fs";
 import { promises as fsp } from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { adoptLegacyLockfile } from "../shared/daemon-manager.js";
 import { createLogger } from "../shared/logger.js";
-import { isLiveLegacyDaemonFile } from "../shared/daemon-manager.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
 import { getGlobalSettingsPath, getSettingDynamic, getSettingsPath, SETTINGS_KEYS } from "./project-settings.js";
 import { readSettingsObject } from "./settings-source.js";
@@ -158,13 +158,6 @@ export async function sweepProjectTmp(opts: TmpSweepOptions): Promise<TmpSweepRe
   for (const name of names) {
     const target = path.join(base, name);
     if (!isInside(base, target)) continue;
-    // One exemption, and the daemon layer decides it: a pre-`.pi/run` daemon that is still
-    // ALIVE owns its lockfile here, and sweeping it would spawn a duplicate on that port.
-    // Routine and expected during the upgrade window, so debug — not warn.
-    if (isLiveLegacyDaemonFile(base, name)) {
-      log.debug("tmp_sweep_kept_live_legacy_daemon", { tmpDir: base, name });
-      continue;
-    }
     let stat: fs.Stats;
     try {
       stat = await fsp.lstat(target);
@@ -412,6 +405,9 @@ export function registerTmpCleanup(pi: ExtensionAPI): void {
     if (typeof cwd !== "string" || !cwd) return;
     setImmediate(async () => {
       try {
+        // A pre-`.pi/run` daemon still alive gets its record adopted into `.pi/run` first, so
+        // the sweep below needs no exemption for any file name (#1020).
+        adoptLegacyLockfile(getProjectRunDir(cwd), getProjectTmpDir(cwd));
         await runProjectTmpSweep(cwd);
       } catch (error: any) {
         log.warn("tmp_sweep_failed", { error: error?.message });
