@@ -163,7 +163,7 @@ describe("sweepProjectTmp", () => {
     assert.equal(fs.existsSync(path.join(tmpDir, "pidiff.pid")), true, "live pid file kept");
   });
 
-  it("sweeps a dead daemon's legacy lockfile and reload markers (#1020)", async () => {
+  it("sweeps every legacy control file once the daemon is dead (#1020)", async () => {
     for (const name of ["pidiff.pid", "pidiff.port", "reload.flag", "reload.done", "reload.pending"]) {
       makeEntry(name, 2 * MB, 90);
     }

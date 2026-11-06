@@ -178,6 +178,17 @@ describe("legacy .pi/tmp lockfiles (#1020)", () => {
     }
   });
 
+  it("legacyLockfileOwnerAlive refuses an oversized pid file", () => {
+    // The file is project-controlled; a pid is a few bytes, so a large file is not read.
+    const dir = mk();
+    try {
+      writeFileSync(join(dir, "pidiff.pid"), "1".repeat(4096));
+      assert.equal(legacyLockfileOwnerAlive(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("legacyLockfileOwnerAlive refuses a non-regular pid file instead of blocking", () => {
     // The legacy dir is project-controlled: a FIFO here would block the read during the
     // session-start sweep, so only a regular file counts.

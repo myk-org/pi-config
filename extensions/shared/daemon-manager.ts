@@ -193,6 +193,9 @@ export function writeLockfile(lockDir: string, port: number, pid: number | null,
   } catch (e: any) { log(`writeLockfile error: ${e.message}`); }
 }
 
+/** A pid file holds digits and a newline; anything bigger is not one. */
+const MAX_PID_FILE_BYTES = 64;
+
 /** True for a path that exists and is a regular file. Lockfiles are never FIFOs, and reading
  *  one would block the event loop, so every control-file read goes through this. */
 function isRegularFile(target: string): boolean {
@@ -233,8 +236,15 @@ export function readLockfile(lockDir: string, legacyDir?: string): { port: numbe
  *  project-controlled, and reading a FIFO there would block session startup. */
 function readLegacyPid(pidFile: string): number | null {
   try {
-    if (!fs.lstatSync(pidFile).isFile()) {
+    const st = fs.lstatSync(pidFile);
+    if (!st.isFile()) {
       log.debug("legacy_pid_not_a_regular_file", { pidFile });
+      return null;
+    }
+    // The file is project-controlled: a pid is a few bytes, so refuse anything larger rather
+    // than reading an arbitrary file into memory during session start.
+    if (st.size > MAX_PID_FILE_BYTES) {
+      log.debug("legacy_pid_file_too_large", { pidFile, size: st.size });
       return null;
     }
     const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
