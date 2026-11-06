@@ -190,6 +190,42 @@ describe("legacy .pi/tmp lockfiles (#1020)", () => {
     }
   });
 
+  it("legacyLockfileOwnerAlive treats EPERM as alive, not dead", () => {
+    // Another user's live process answers EPERM, not success. Reading that as "dead" would
+    // let the sweep delete a running daemon's control files.
+    const dir = mk();
+    const original = process.kill;
+    try {
+      writeFileSync(join(dir, "pidiff.pid"), "424242");
+      (process as unknown as { kill: unknown }).kill = () => {
+        const err = new Error("operation not permitted") as NodeJS.ErrnoException;
+        err.code = "EPERM";
+        throw err;
+      };
+      assert.equal(legacyLockfileOwnerAlive(dir), true);
+    } finally {
+      (process as unknown as { kill: unknown }).kill = original;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive treats ESRCH as dead", () => {
+    const dir = mk();
+    const original = process.kill;
+    try {
+      writeFileSync(join(dir, "pidiff.pid"), "424243");
+      (process as unknown as { kill: unknown }).kill = () => {
+        const err = new Error("no such process") as NodeJS.ErrnoException;
+        err.code = "ESRCH";
+        throw err;
+      };
+      assert.equal(legacyLockfileOwnerAlive(dir), false);
+    } finally {
+      (process as unknown as { kill: unknown }).kill = original;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("the new dir wins when both exist", () => {
     const runDir = mk();
     const legacyDir = mk();
