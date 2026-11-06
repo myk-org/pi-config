@@ -133,6 +133,19 @@ export function fireOnComplete(job: AsyncJob): void {
   } catch (e: any) { log.error(`onComplete callback failed for ${job.id}: ${e?.message}`); }
 }
 
+/** Fire every pending completion hook in one reconciliation pass.
+ *  Returns how many fired. Exported so the PASS is testable, not just the
+ *  single-job helper — the hook-once guarantee is a property of the loop. */
+export function firePendingCompletions(jobs: Iterable<AsyncJob>): number {
+  let fired = 0;
+  for (const job of jobs) {
+    if (!job.onComplete) continue;
+    fireOnComplete(job);
+    fired++;
+  }
+  return fired;
+}
+
 interface AsyncState {
   jobs: Map<string, AsyncJob>;
   poller: ReturnType<typeof setInterval> | null;
@@ -749,10 +762,8 @@ export function registerAsyncAgents(
 
     // Skip delivery if ALL jobs in group are fire-and-forget
     if (groupJobs.every(j => j.fireAndForget)) {
-      for (const j of groupJobs) {
-        fireOnComplete(j);
-        j.delivered = true;
-      }
+      firePendingCompletions(groupJobs);
+      for (const j of groupJobs) j.delivered = true;
       // Clean up result files for fire-and-forget groups
       for (const j of groupJobs) {
         const rp = path.join(ASYNC_RESULTS_DIR, `${j.id}.json`);

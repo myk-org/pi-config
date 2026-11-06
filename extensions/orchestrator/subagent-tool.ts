@@ -1814,14 +1814,33 @@ export function registerSubagentTool(
         if (params.chain) for (const s of params.chain) requested.add(s.agent);
         if (params.tasks) for (const t of params.tasks) requested.add(t.agent);
         if (params.agent) requested.add(params.agent);
-        const projAgents = Array.from(requested)
-          .map((n) => agents.find((a) => a.name === n))
-          .filter((a): a is AgentConfig => a?.source === "project");
+        // A chain step carries its own cwd, so it can resolve a DIFFERENT project agent set
+        // than the parent's — including a project agent that shadows a user agent of the
+        // same name. Resolve every step against its own cwd or the approval is bypassed.
+        const projAgents: AgentConfig[] = [];
+        const sources: string[] = [];
+        for (const name of requested) {
+          const parentAgent = agents.find((a) => a.name === name);
+          if (parentAgent?.source === "project") {
+            projAgents.push(parentAgent);
+            if (discovery.projectAgentsDir) sources.push(discovery.projectAgentsDir);
+          }
+        }
+        for (const step of params.chain ?? []) {
+          if (!step.cwd || step.cwd === ctx.cwd) continue;
+          const stepDiscovery = discoverAgents(step.cwd, scope);
+          const stepAgent = stepDiscovery.agents.find((a) => a.name === step.agent);
+          if (stepAgent?.source === "project" && !projAgents.some((a) => a.name === stepAgent.name)) {
+            projAgents.push(stepAgent);
+            if (stepDiscovery.projectAgentsDir) sources.push(stepDiscovery.projectAgentsDir);
+          }
+        }
         if (projAgents.length > 0) {
+          const uniqueSources = [...new Set(sources)];
           const ok = await bridgedUi.confirm(
             ctx,
             "Run project-local agents?",
-            `Agents: ${projAgents.map((a) => a.name).join(", ")}\nSource: ${discovery.projectAgentsDir}`,
+            `Agents: ${projAgents.map((a) => a.name).join(", ")}\nSource: ${uniqueSources.join(", ")}`,
           );
           if (!ok)
             return {

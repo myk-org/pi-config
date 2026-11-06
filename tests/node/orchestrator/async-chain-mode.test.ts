@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerSubagentTool } from "../../../extensions/orchestrator/subagent-tool.js";
-import { fireOnComplete, registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
+import { fireOnComplete, firePendingCompletions, registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
 
@@ -42,8 +42,9 @@ interface SpawnCall {
  * records every spawn and keeps its onComplete hook so the test can drive step
  * completion manually — no child processes, no result files, no polling.
  */
-function harness() {
+function harness(opts: { hasUI?: boolean; confirm?: (title: string, message?: string) => Promise<boolean> } = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "subagent-async-chain-"));
+  const confirmCalls: Array<{ title: string; message?: string }> = [];
   const spawns: SpawnCall[] = [];
   const messages: any[] = [];
   let tool: any;
@@ -70,14 +71,23 @@ function harness() {
 
   const ctx = {
     cwd,
-    hasUI: false,
-    ui: { theme: { fg: (_: string, value: string) => value }, notify() {}, setWorkingMessage() {} },
+    hasUI: opts.hasUI ?? false,
+    ui: {
+      theme: { fg: (_: string, value: string) => value },
+      notify() {},
+      setWorkingMessage() {},
+      confirm: async (title: string, message?: string) => {
+        confirmCalls.push({ title, message });
+        return opts.confirm ? opts.confirm(title, message) : true;
+      },
+    },
     sessionManager: { getCwd: () => cwd, getSessionId: () => "test" },
   };
 
   return {
     spawns,
     messages,
+    confirmCalls,
     ctx,
     setFailNextSpawn: (value: boolean) => { failNextSpawn = value; },
     setThrowNextSpawn: (value: boolean) => { throwNextSpawn = value; },
@@ -311,7 +321,7 @@ describe("fireOnComplete one-shot semantics", () => {
 });
 
 /** Harness around registerAsyncAgents — real spawn path, stubbed child process. */
-function asyncHarness() {
+function asyncHarness(opts: { hasUI?: boolean; confirm?: (title: string, message?: string) => Promise<boolean> } = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "async-chain-durable-"));
   const handlers = new Map<string, Array<(event: unknown, ctx: any) => void>>();
   const messages: any[] = [];
@@ -331,8 +341,16 @@ function asyncHarness() {
   });
   const ctx = {
     cwd,
-    hasUI: false,
-    ui: { theme: { fg: (_: string, value: string) => value }, notify() {}, setWorkingMessage() {} },
+    hasUI: opts.hasUI ?? false,
+    ui: {
+      theme: { fg: (_: string, value: string) => value },
+      notify() {},
+      setWorkingMessage() {},
+      confirm: async (title: string, message?: string) => {
+        confirmCalls.push({ title, message });
+        return opts.confirm ? opts.confirm(title, message) : true;
+      },
+    },
     sessionManager: { getCwd: () => cwd, getSessionId: () => "test" },
   };
   const sessionStart = () => handlers.get("session_start")![0]({}, ctx);
@@ -402,5 +420,98 @@ describe("async chain durability across a reload", () => {
       h.sessionStart();
       assert.equal(h.messages.length, 0);
     } finally { h.restore(); }
+  });
+});
+
+
+describe("firePendingCompletions reconciliation pass", () => {
+  const job = (id: string, status: "complete" | "failed", output: string) => ({
+    id, agent: "worker", task: "t", workerDir: "/tmp", startedAt: 1, updatedAt: 1, status, output,
+  }) as any;
+
+  it("fires each hook once across repeated passes, skipping jobs without one", () => {
+    const calls: string[] = [];
+    const a = job("a", "complete", "A");
+    a.onComplete = () => calls.push("a");
+    const b = job("b", "failed", "B");
+    b.onComplete = (result: { text: string; isError: boolean }) => calls.push(`b:${result.text}:${result.isError}`);
+    const noHook = job("c", "complete", "C");
+
+    assert.equal(firePendingCompletions([a, b, noHook]), 2, "first pass fires both hooks");
+    assert.equal(firePendingCompletions([a, b, noHook]), 0, "second reconciliation pass must not re-fire");
+    assert.deepEqual(calls, ["a", "b:B:true"]);
+  });
+
+  it("keeps firing the remaining hooks when one throws", () => {
+    const calls: string[] = [];
+    const boom = job("boom", "complete", "X");
+    boom.onComplete = () => { throw new Error("hook exploded"); };
+    const after = job("after", "complete", "Y");
+    after.onComplete = () => calls.push("after");
+
+    assert.equal(firePendingCompletions([boom, after]), 2, "a throwing hook must not stop the pass");
+    assert.deepEqual(calls, ["after"]);
+    assert.equal(boom.onComplete, undefined, "the throwing hook is still one-shot");
+  });
+});
+
+
+describe("project-agent approval covers every chain step cwd", () => {
+  const writeProjectAgent = (dir: string, name: string) => {
+    mkdirSync(join(dir, ".pi", "agents"), { recursive: true });
+    writeFileSync(
+      join(dir, ".pi", "agents", `${name}.md`),
+      `---\nname: ${name}\ndescription: step-local project agent\ntools: read\n---\n\nDo the thing.\n`,
+    );
+  };
+
+  it("asks for approval when a step's own cwd contributes a project agent", async () => {
+    const h = harness({ hasUI: true, confirm: async () => true });
+    try {
+      const stepDir = mkdtempSync(join(tmpdir(), "chain-step-cwd-"));
+      writeProjectAgent(stepDir, "step-only");
+      const steps = [
+        { agent: "worker", task: "one", cwd: h.ctx.cwd, estimatedSeconds: 5, taskId: "-1" },
+        { agent: "step-only", task: "two", cwd: stepDir, estimatedSeconds: 5, taskId: "-1" },
+      ];
+      const result = await h.run({ chain: steps, name: "gate test", async: true, taskId: "-1" });
+      assert.ok(h.confirmCalls.length > 0, "the step-local project agent must be presented for approval");
+      const body = h.confirmCalls.map(c => c.message ?? "").join("\n");
+      assert.match(body, /step-only/, "the prompt names the agent");
+      assert.match(body, new RegExp(stepDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the prompt shows that agent's source dir");
+      assert.equal(h.spawns.length, 1, `approval allows the chain to start — got: ${h.text(result)} | confirmCalls=${h.confirmCalls.length}`);
+      rmSync(stepDir, { recursive: true, force: true });
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("cancels the chain when the step-local project agent is declined", async () => {
+    const h = harness({ hasUI: true, confirm: async () => false });
+    try {
+      const stepDir = mkdtempSync(join(tmpdir(), "chain-step-cwd-"));
+      writeProjectAgent(stepDir, "step-only");
+      const steps = [
+        { agent: "worker", task: "one", cwd: h.ctx.cwd, estimatedSeconds: 5, taskId: "-1" },
+        { agent: "step-only", task: "two", cwd: stepDir, estimatedSeconds: 5, taskId: "-1" },
+      ];
+      const result = await h.run({ chain: steps, name: "gate test", async: true, taskId: "-1" });
+      assert.equal(h.spawns.length, 0, "declined approval must not spawn anything");
+      assert.match(h.text(result), /Canceled: project-local agents not approved/);
+      rmSync(stepDir, { recursive: true, force: true });
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("does not prompt when every step resolves to the parent's own agents", async () => {
+    const h = harness({ hasUI: true });
+    try {
+      const result = await h.run({ chain: chain(h.ctx.cwd), name: "no gate", async: true, taskId: "-1" });
+      assert.equal(h.confirmCalls.length, 0, "no project agent involved → no prompt");
+      assert.equal(h.spawns.length, 1);
+    } finally {
+      h.restore();
+    }
   });
 });

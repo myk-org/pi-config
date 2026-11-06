@@ -59,7 +59,10 @@ export function createBridgedUi(pi: ExtensionAPI): BridgedUi {
     if (typeof ctx.ui?.custom !== "function") {
       log.debug("bridged prompt degraded — no ui.custom", { method });
       if (method === "select") return await ctx.ui.select(title, options) as T | undefined;
-      if (method === "confirm") return (await ctx.ui.confirm(title, message)) as T | undefined;
+      // The confirm wrapper compares against the "__confirmed__"/"Yes" sentinels, so a raw
+      // boolean here was always rejected — every prompt without ui.custom cancelled, and an
+      // approval could never succeed. Translate the answer to the sentinel the caller expects.
+      if (method === "confirm") return ((await ctx.ui.confirm(title, message)) ? "__confirmed__" : "__denied__") as T | undefined;
       return await ctx.ui.input(title) as T | undefined;
     }
 
