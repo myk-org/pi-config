@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.26.0] - 2026-11-06
+
+- Async `chain` mode: steps run in sequence and each step's result is substituted into `{previous}`,
+  with per-step `taskId`/`cwd`, the step position in the status line and result header, a durable
+  `chain.json` for reload reporting, and stop-on-failure. `onComplete` receives `{ text, isError }` and
+  fires exactly once, so a retried reconciliation pass cannot spawn the next step twice.
+- A tool call pi rejects for invalid arguments now forces a retry. Such a call skips `tool_call` and
+  `tool_result`, so nothing told the model its action never ran and a turn could end silently. The guard
+  matches pi's own rejection preamble, keeps only the parameter diagnostics (argument values can hold
+  credentials and the system note is a provenance-marked channel), and names the likely mistake.
+- The UI bridge degrade path honours an approval again: without `ctx.ui.custom`, `confirm` returned a
+  boolean while the wrapper compared `"__confirmed__"`, so every prompt in that runtime cancelled.
+
 ## [4.25.0] - 2026-11-06
 
 - `.pi/tmp` is cleaned at session start: above `project_tmp_max_size` (default `2G`), entries older than
