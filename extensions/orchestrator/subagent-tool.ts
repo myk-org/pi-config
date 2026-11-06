@@ -1832,7 +1832,7 @@ export function registerSubagentTool(
         // would prompt for an agent that never runs.
         if (params.async === true) {
           // Structured key: a "@" join is ambiguous when a name or path contains "@".
-        const seen = new Set(projAgents.map((a) => JSON.stringify([a.name, discovery.projectAgentsDir ?? ""])));
+          const seen = new Set(projAgents.map((a) => JSON.stringify([a.name, discovery.projectAgentsDir ?? ""])));
           for (const step of params.chain ?? []) {
             if (!step.cwd || step.cwd === ctx.cwd) continue;
             const stepDiscovery = discoverAgents(step.cwd, scope);
