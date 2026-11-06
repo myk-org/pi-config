@@ -195,7 +195,10 @@ export function writeLockfile(lockDir: string, port: number, pid: number | null,
 
 /** Read port from lockfile. Returns port number or null.
  *  `legacyDir` (`.pi/tmp`) is consulted only when the new dir has no lockfile:
- *  a daemon already running at upgrade time wrote its lockfile there (#1020). */
+ *  a daemon already running at upgrade time wrote its lockfile there (#1020).
+ *  A legacy lockfile found this way is MOVED into `lockDir`, so `.pi/tmp` stops
+ *  holding state a sweep would have to protect — the daemon stays found because the
+ *  next read hits the new path. */
 export function readLockfile(lockDir: string, legacyDir?: string): { port: number; pid: number | null } | null {
   const read = (dir: string): { port: number; pid: number | null } | null => {
     try {
@@ -212,7 +215,28 @@ export function readLockfile(lockDir: string, legacyDir?: string): { port: numbe
       return { port, pid };
     } catch (e: any) { log.debug("readLockfile error: %s", e?.message); return null; }
   };
-  return read(lockDir) ?? (legacyDir ? read(legacyDir) : null);
+  return read(lockDir) ?? (legacyDir ? migrateLegacyLockfile(read(legacyDir), lockDir, legacyDir) : null);
+}
+
+/** Move a legacy `.pi/tmp` lockfile into the run dir. Returns the lock unchanged, so a
+ *  pre-upgrade daemon stays reachable; a failure to migrate only logs (the legacy copy
+ *  is still readable next time). */
+function migrateLegacyLockfile(
+  lock: { port: number; pid: number | null } | null,
+  lockDir: string,
+  legacyDir: string,
+): { port: number; pid: number | null } | null {
+  if (!lock) return null;
+  try {
+    writeLockfile(lockDir, lock.port, lock.pid, (msg) => log.debug("lockfile_migrated", { legacyDir, message: msg }));
+    for (const name of ["pidiff.port", "pidiff.pid"]) {
+      const legacyPath = path.join(legacyDir, name);
+      if (fs.existsSync(legacyPath)) fs.unlinkSync(legacyPath);
+    }
+  } catch (e: any) {
+    log.debug("lockfile_migration_failed", { legacyDir, error: e?.message });
+  }
+  return lock;
 }
 
 /** First lockfile port (in `dirs` order) whose daemon answers /api/health, or

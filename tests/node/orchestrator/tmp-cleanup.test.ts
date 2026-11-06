@@ -7,7 +7,6 @@ import * as path from "node:path";
 import {
   DEFAULT_MAX_SIZE,
   DEFAULT_RETENTION_DAYS,
-  TMP_PROTECTED_NAMES,
   TMP_SWEEP_LOCK,
   parseSize,
   registerTmpCleanup,
@@ -139,15 +138,17 @@ describe("sweepProjectTmp", () => {
     assert.equal(fs.existsSync(fresh), true);
   });
 
-  it("survives the sweep: legacy .pi/tmp stragglers are kept for a pre-#1020 daemon", async () => {
-    for (const name of TMP_PROTECTED_NAMES) makeEntry(name, 2 * MB, 90);
-    // Condition 1: over the cap, everything old enough.
-    await sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
-    // Condition 2: under the cap.
-    makeEntry("filler.bin", 2 * MB, 90);
-    await sweepProjectTmp({ tmpDir, maxBytes: 100 * MB, retentionDays: 7 });
-    for (const name of TMP_PROTECTED_NAMES) {
-      assert.equal(fs.existsSync(path.join(tmpDir, name)), true, `${name} must survive`);
+  it("sweeps daemon-control-file names like any other entry (#1020)", async () => {
+    // Control files live in `.pi/run`; nothing under `.pi/tmp` is exempt any more, so a
+    // name that used to be protected must not survive. This is the test that keeps the
+    // exclusion list from creeping back in.
+    for (const name of ["pidiff.pid", "pidiff.port", "reload.flag", "reload.done", "reload.pending"]) {
+      makeEntry(name, 2 * MB, 90);
+    }
+    const result = await sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
+    assert.equal(result.deleted, 5, "every control-file-shaped entry is swept");
+    for (const name of ["pidiff.pid", "pidiff.port", "reload.flag", "reload.done", "reload.pending"]) {
+      assert.equal(fs.existsSync(path.join(tmpDir, name)), false, `${name} must be swept`);
     }
     assert.equal(fs.existsSync(tmpDir), true, "tmp root must survive");
   });

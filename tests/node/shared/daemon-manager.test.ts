@@ -122,6 +122,26 @@ describe("legacy .pi/tmp lockfiles (#1020)", () => {
     }
   });
 
+  it("moves a legacy lockfile into the run dir on read, leaving .pi/tmp nothing to protect", () => {
+    const runDir = mk();
+    const legacyDir = mk();
+    try {
+      writeLockfile(legacyDir, 41234, 4321, () => {});
+      assert.deepEqual(readLockfile(runDir, legacyDir), { port: 41234, pid: 4321 });
+      // Migrated on read: the run dir owns it now, so a later sweep of `.pi/tmp`
+      // deletes nothing a live daemon needs.
+      assert.strictEqual(readFileSync(join(runDir, "pidiff.port"), "utf-8"), "41234");
+      assert.strictEqual(readFileSync(join(runDir, "pidiff.pid"), "utf-8"), "4321");
+      assert.equal(existsSync(join(legacyDir, "pidiff.port")), false, "legacy port file is gone");
+      assert.equal(existsSync(join(legacyDir, "pidiff.pid")), false, "legacy pid file is gone");
+      // The daemon stays found without the legacy dir being consulted at all.
+      assert.deepEqual(readLockfile(runDir), { port: 41234, pid: 4321 });
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
   it("the new dir wins when both exist", () => {
     const runDir = mk();
     const legacyDir = mk();
