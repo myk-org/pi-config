@@ -462,6 +462,22 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 5 });
   });
 
+  it("refuses the write when the previous version cannot be backed up", () => {
+    const filePath = join(tempDir, "no-backup.json");
+    writeSettingsFile(filePath, { dco: true });
+    // One slot, occupied by a directory: the old copy cannot be unlinked or replaced.
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    process.env.PI_SETTINGS_BACKUP_COUNT = "1";
+    mkdirSync(`${filePath}.bak.1`, { recursive: true });
+    try {
+      assert.throws(() => writeSettingsFile(filePath, { dco: false }), /without a backup/);
+      assert.deepEqual(JSON.parse(readFileSync(filePath, "utf-8")), { dco: true }, "file untouched");
+    } finally {
+      if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+      else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+    }
+  });
+
   it("refuses to overwrite an unparseable settings file and leaves it untouched", () => {
     const filePath = join(tempDir, "corrupt.json");
     const corrupt = '{ "dco": tru';

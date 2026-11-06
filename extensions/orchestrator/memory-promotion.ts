@@ -94,8 +94,10 @@ export function inferMechanicalEnforcement(text: string): InferredEnforcement | 
   if (askBefore?.[1]) {
     const cmd = askBefore[1].replace(/[.!]+$/, "").trim();
     if (cmd.length > 2 && cmd.length < 80) {
+      // A bare `tool_name bash` + warn is refused by the write path and ignored by the
+      // loader, so promotion must not claim it is enforced: scope it to the command.
       return {
-        trigger: "tool_name bash" as EnforcementTrigger,
+        trigger: `bash_contains ${cmd}` as EnforcementTrigger,
         action: "warn",
         verifier: `tool_called ask_user before ${cmd}`,
         confidence: "high",

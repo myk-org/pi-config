@@ -159,7 +159,7 @@ describe("file-logger", () => {
     // getPiLogPath returns correct path strings without side effects
   });
 
-  it("falls back to ~/.pi/tmp/pi-logs when only the log dir is unusable", async () => {
+  it("falls back to the project .pi/tmp/pi-logs when only the log dir is unusable", async () => {
     tmpHome = makeTempDir("pi-file-log-ro-");
     projectDir = makeTempDir("pi-file-log-proj-");
     previousCwd = process.cwd();
@@ -181,32 +181,37 @@ describe("file-logger", () => {
     assert.ok(mod.getFileLogErrorCount() >= 1);
     assert.ok(mod.getLastFileLogError());
 
-    // Never the OS temp dir: the first fallback is home `.pi/tmp`, which the tmp cleanup
-    // sweeps and which still works when the checkout is read-only.
-    const fallback = join(tmpHome, ".pi", "tmp", "pi-logs", "cli-provider.log");
+    // Never the OS temp dir, and the project comes first: its tmp sweep owns the file, so a
+    // fallback log cannot outlive the checkout. Home is only the second chance.
+    const fallback = join(projectDir, ".pi", "tmp", "pi-logs", "cli-provider.log");
     assert.match(readFileSync(fallback, "utf-8"), /fallback/);
+    assert.equal(existsSync(join(tmpHome, ".pi", "tmp", "pi-logs", "cli-provider.log")), false,
+      "home fallback must not be used while the project one works");
   });
 
-  it("falls back to the project .pi/tmp when home is unwritable too", async () => {
-    // HOME points at a regular file, so neither ~/.pi/logs nor ~/.pi/tmp can be created; the
-    // project's own .pi/tmp is the last non-/tmp chance.
-    tmpHome = makeTempDir("pi-file-log-home-file-");
-    const homeAsFile = join(tmpHome, "not-a-dir");
-    writeFileSync(homeAsFile, "x");
-    projectDir = makeTempDir("pi-file-log-proj-");
+  it("falls back to ~/.pi/tmp when the project is unwritable too", async () => {
+    // The checkout's `.pi` is a regular file, so its `.pi/tmp/pi-logs` cannot be created; the
+    // last non-/tmp chance is home `.pi/tmp`.
+    tmpHome = makeTempDir("pi-file-log-home-");
+    projectDir = makeTempDir("pi-file-log-blocked-");
+    // Primary `~/.pi/logs` unusable as well, so the project fallback and then home are the
+    // only options left.
+    mkdirSync(join(tmpHome, ".pi"), { recursive: true });
+    writeFileSync(join(tmpHome, ".pi", "logs"), "not-a-dir");
+    writeFileSync(join(projectDir, ".pi"), "not-a-dir");
     previousCwd = process.cwd();
-    process.env.HOME = homeAsFile;
-    process.env.USERPROFILE = homeAsFile;
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
     process.chdir(projectDir);
 
     const mod = await import(
       `../../../extensions/shared/file-logger.ts?t=${Date.now() + 6}`
     );
     mod.setGlobalSessionId("test-session");
-    assert.equal(mod.fileLog("cli-provider", "error", "cli-provider", "project-fallback"), true);
+    assert.equal(mod.fileLog("cli-provider", "error", "cli-provider", "home-fallback"), true);
     assert.match(
-      readFileSync(join(projectDir, ".pi", "tmp", "pi-logs", "cli-provider.log"), "utf-8"),
-      /project-fallback/,
+      readFileSync(join(tmpHome, ".pi", "tmp", "pi-logs", "cli-provider.log"), "utf-8"),
+      /home-fallback/,
     );
   });
 

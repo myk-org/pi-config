@@ -220,6 +220,14 @@ export class SettingsFileCorruptError extends Error {
   }
 }
 
+/** Thrown when the previous version could not be preserved, so nothing is written. */
+export class SettingsBackupError extends Error {
+  constructor(readonly filePath: string, readonly cause?: unknown) {
+    super(`refusing to write settings without a backup: ${filePath}`);
+    this.name = "SettingsBackupError";
+  }
+}
+
 /** Path of the newest previous-version copy kept next to a settings file. */
 export function settingsBackupPath(filePath: string, slot = 1): string {
   return `${filePath}.bak.${slot}`;
@@ -238,7 +246,10 @@ function rotateSettingsBackups(filePath: string, count: number): void {
     }
     copyFileSync(filePath, settingsBackupPath(filePath, 1));
   } catch (e: any) {
+    // A write without its backup breaks the one guarantee this function exists for: if the
+    // new content is wrong there is nothing to fall back to.
     logWarn(`settings_backup_failed ${filePath}: ${e?.message}`);
+    throw new SettingsBackupError(filePath, e);
   }
 }
 
@@ -246,8 +257,9 @@ export function writeSettingsFile(filePath: string, data: Record<string, unknown
   // Write directly to target file. Per issue spec: "comments are lost on write — acceptable
   // since the example.jsonc is the reference."
   const dir = dirname(filePath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 
+  // Refuse BEFORE touching the filesystem: creating the parent of a rejected path would
+  // change a location the write is not allowed to reach.
   if (process.env.NODE_TEST_CONTEXT !== undefined) {
     // Test processes may only write under the OS temp tree (same safety net the global
     // settings path has): a test once wrote a project's real settings file.
@@ -257,6 +269,8 @@ export function writeSettingsFile(filePath: string, data: Record<string, unknown
       throw new Error(`test process refused to write settings outside the temp tree: ${resolved}`);
     }
   }
+
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 
   if (existsSync(filePath)) {
     // A corrupt file is recoverable by hand; a cleared one is not. Refuse rather than

@@ -215,13 +215,21 @@ export function writeFileLogLine(name: string, line: string): boolean {
     return true;
   } catch (primaryErr) {
     recordWriteError(primaryErr);
-    // Never the OS temp dir: `.pi/tmp` is what the tmp cleanup sweeps. Home first, because a
-    // read-only or sandboxed checkout fails exactly the way the primary path just did; the
-    // project dir is the second chance when home itself is the unwritable one.
-    for (const fallbackDir of [
-      path.join(os.homedir(), ".pi", "tmp", "pi-logs"),
-      path.join(process.cwd(), ".pi", "tmp", "pi-logs"),
-    ]) {
+    // Never the OS temp dir: `.pi/tmp` is what the tmp cleanup sweeps. The project comes
+    // first so its sweep owns the file; home is the second chance when the checkout is
+    // read-only or has been deleted under us.
+    const fallbackDirs: string[] = [];
+    try {
+      fallbackDirs.push(path.join(process.cwd(), ".pi", "tmp", "pi-logs"));
+    } catch {
+      /* cwd removed — the home fallback below still works */
+    }
+    try {
+      fallbackDirs.push(path.join(os.homedir(), ".pi", "tmp", "pi-logs"));
+    } catch {
+      /* no home — nothing left to try */
+    }
+    for (const fallbackDir of fallbackDirs) {
       try {
         appendLine(path.join(fallbackDir, `${safe}.log`), line);
         return true;
