@@ -1,8 +1,9 @@
 """Tests for pi_sidecar_client with mocked responses and a local HTTP request test."""
 
+import asyncio
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1506,3 +1507,89 @@ async def test_async_context_manager_reuse_after_close() -> None:
     with pytest.raises(RuntimeError, match="already closed"):
         async with client:
             pass
+
+
+class _SseBody(httpx.AsyncByteStream):
+    """Fake SSE body: fixed chunks, optionally followed by an indefinite wait."""
+
+    def __init__(self, chunks: list[bytes], *, hang: bool) -> None:
+        self._chunks = chunks
+        self._hang = hang
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            yield chunk
+        if self._hang:
+            await asyncio.Event().wait()  # an idle feed: only keepalives would arrive
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class _SseTransport(httpx.AsyncBaseTransport):
+    """Serves GET /sessions/:id/events from _SseBody and fakes POST /prompt."""
+
+    def __init__(self, chunks: list[bytes], *, hang: bool, prompt_hangs: bool) -> None:
+        self.stream = _SseBody(chunks, hang=hang)
+        self._prompt_hangs = prompt_hangs
+        self.prompt_cancelled = False
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=self.stream)
+        if not self._prompt_hangs:
+            return httpx.Response(200, json={"text": "hi"})
+        try:
+            while True:
+                await asyncio.Event().wait()  # the turn never answers: close must cancel it
+        except asyncio.CancelledError:
+            self.prompt_cancelled = True
+            raise
+
+
+@pytest.mark.asyncio
+async def test_stream_prompt_sse_parsing_and_close() -> None:
+    """stream_prompt parses SSE frames and closes the feed on generator close (#1019)."""
+    frames = [
+        b'data: {"type":"session","sessionId":"s1"}\n\n',
+        b'data: {"type":"text_delta","turnId":1,"delta":"h\xc3',  # frame AND utf-8 char split
+        b'\xa9"}\n\n',
+        b": keepalive\n\n",  # comment, must be ignored
+        b'data: {"type":"turn_start",\ndata: "turnId":1}\n\n',  # two data lines, one event
+        b"data: not json at all\n\n",  # malformed: skipped, not fatal
+        b'data: {"type":"turn_end","turnId":1,"text":"hi","aborted":false}\r\n\r\n',  # CRLF
+    ]
+    client = SidecarClient(base_url="http://test")
+    # The constructor builds its own client; swap in the fake transport.
+    client._client = httpx.AsyncClient(
+        base_url="http://test", transport=_SseTransport(frames, hang=False, prompt_hangs=False)
+    )
+
+    events = [event async for event in client.stream_prompt("s1", "hello")]
+    assert [event["type"] for event in events] == ["session", "text_delta", "turn_start", "turn_end"]
+    assert events[1]["delta"] == "hé"
+    assert events[3]["text"] == "hi"
+
+    # Closing mid-turn must close the response and cancel the in-flight prompt.
+    hanging = _SseTransport(frames[:2], hang=True, prompt_hangs=True)
+    client._client = httpx.AsyncClient(base_url="http://test", transport=hanging)
+    stream = client.stream_prompt("s1", "hello")
+    assert (await anext(stream))["type"] == "session"
+    await stream.aclose()
+    assert hanging.stream.closed
+    assert hanging.prompt_cancelled
+
+    # An `error` frame is terminal too, and a feed that ends without a terminal
+    # frame must raise instead of reporting a successful turn.
+    error_frames = [frames[0], b'data: {"type":"error","turnId":1,"message":"boom"}\n\n', frames[3]]
+    client._client = httpx.AsyncClient(
+        base_url="http://test", transport=_SseTransport(error_frames, hang=False, prompt_hangs=False)
+    )
+    assert [event["type"] async for event in client.stream_prompt("s1", "hello")] == ["session", "error"]
+    client._client = httpx.AsyncClient(
+        base_url="http://test", transport=_SseTransport(frames[:1], hang=False, prompt_hangs=False)
+    )
+    with pytest.raises(RuntimeError, match="ended before turn_end/error"):
+        [event async for event in client.stream_prompt("s1", "hello")]
+    await client._client.aclose()

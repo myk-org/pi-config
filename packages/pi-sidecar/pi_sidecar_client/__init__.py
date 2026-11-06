@@ -4,7 +4,8 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, TypedDict
@@ -271,6 +272,57 @@ def _map_provider_model(provider: str, model: str, api_key: str | None = None) -
             _redact_api_key(sidecar_model, api_key),
         )
     return sidecar_provider, sidecar_model
+
+
+# Event types that end one turn on GET /sessions/:id/events (#1019).
+_STREAM_TERMINAL_EVENTS = frozenset({"turn_end", "error"})
+
+
+def _parse_sse_frame(lines: list[str]) -> dict[str, Any] | None:
+    """Join a frame's `data:` lines into its JSON payload; None if malformed."""
+    try:
+        payload = json.loads("\n".join(lines))
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        # Skip, never raise: one bad frame must not kill a live turn, and the
+        # server's own terminal frame still ends the stream. Log sizes only —
+        # frames carry model output.
+        logger.warning("Skipping malformed SSE frame: bytes=%d", sum(len(line) for line in lines))
+        return None
+    return payload
+
+
+async def _iter_sse_events(response: httpx.Response) -> AsyncIterator[dict[str, Any]]:
+    """Yield each SSE frame's JSON payload from a streaming response.
+
+    Frames are buffered until the blank line that terminates them, so a chunk
+    split mid-frame cannot truncate an event; CRLF and `: keepalive` comments
+    are handled. Each payload keeps the server's `type` key
+    (see `SessionStreamEvent` in `src/sessions.ts`). A bare CR line ending is
+    not treated as a terminator: the sidecar only ever writes LF/CRLF.
+    """
+    buffer = ""
+    data: list[str] = []
+    # aiter_text decodes incrementally, so a multi-byte character split across
+    # chunks survives intact.
+    async for text in response.aiter_text():
+        buffer += text
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            if line.endswith("\r"):
+                line = line[:-1]
+            if not line:
+                if data:
+                    payload = _parse_sse_frame(data)
+                    data = []
+                    if payload is not None:
+                        yield payload
+            elif line.startswith(":"):
+                continue
+            elif line.startswith("data:"):
+                value = line[len("data:") :]
+                data.append(value[1:] if value.startswith(" ") else value)
 
 
 class SidecarClient:
@@ -585,6 +637,81 @@ class SidecarClient:
             text=text,
             usage=usage,
         )
+
+    async def stream_prompt(
+        self, session_id: str, message: str, timeout: float | None = None
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Stream one prompt turn from `GET /sessions/:id/events` (#1019).
+
+        Subscribes to the session's SSE feed first, then runs the usual blocking
+        `prompt()` concurrently, and yields every parsed frame: `session`,
+        `turn_start`, `text_delta`, then exactly one of `turn_end` / `error`,
+        which ends the generator. `turn_end["text"]` is the authoritative final
+        text — deltas are pre-boundary and must not be concatenated.
+
+        Closing the generator early (`aclose()` / `break`) closes the SSE
+        response, so the server detaches the subscriber, and cancels the
+        in-flight prompt request.
+
+        Raises:
+            httpx.HTTPStatusError: if the feed is rejected (403 origin/host,
+                404 unknown session, 429 too many streams).
+            RuntimeError: if the prompt fails or the feed ends without a
+                terminal event.
+        """
+        logger.debug("Streaming prompt: session=%s, message_length=%d", session_id, len(message))
+        request_timeout = timeout or self._client.timeout
+        async with self._client.stream("GET", f"/sessions/{session_id}/events", timeout=request_timeout) as resp:
+            resp.raise_for_status()
+            events = _iter_sse_events(resp)
+            # Both run concurrently: a rejected prompt (e.g. a second turn on the
+            # same session) starts no turn, so no terminal frame ever arrives,
+            # and the 15s keepalives would defeat the read timeout.
+            prompt_task = asyncio.ensure_future(self.prompt(session_id, message, timeout=timeout))
+            next_event = asyncio.ensure_future(anext(events))
+            watch_prompt = True
+            try:
+                while True:
+                    waiters = {next_event, prompt_task} if watch_prompt else {next_event}
+                    done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+                    if next_event in done:
+                        try:
+                            payload = next_event.result()
+                        except StopAsyncIteration:
+                            break
+                        yield payload
+                        if payload.get("type") in _STREAM_TERMINAL_EVENTS:
+                            return
+                        next_event = asyncio.ensure_future(anext(events))
+                        continue
+                    if (failure := prompt_task.exception()) is not None:
+                        raise failure
+                    result = prompt_task.result()
+                    if not result.success:
+                        raise RuntimeError(f"Sidecar prompt failed: {result.error}")
+                    # A successful prompt still ends with a terminal frame.
+                    watch_prompt = False
+                # Feed closed with no terminal frame (idle reap, slow-subscriber
+                # eviction, session deleted, shutdown): never report success.
+                detail = ""
+                if prompt_task.done() and not prompt_task.cancelled():
+                    if (failure := prompt_task.exception()) is not None:
+                        raise failure
+                    if prompt_error := prompt_task.result().error:
+                        detail = f": {prompt_error}"
+                raise RuntimeError(f"Sidecar event stream ended before turn_end/error{detail}")
+            finally:
+                logger.debug("Stream closed: session=%s", session_id)
+                for task in (next_event, prompt_task):
+                    if task.done():
+                        # Retrieve an unread result: asyncio warns about any
+                        # exception nobody observed.
+                        if not task.cancelled():
+                            task.exception()
+                        continue
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
 
     async def abort(self, session_id: str) -> None:
         """Abort an in-progress prompt."""

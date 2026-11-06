@@ -125,6 +125,45 @@ export function isLoopbackBindHost(host: string): boolean {
 }
 
 /**
+ * DNS-rebinding guard for the SSE feed (#1019) — applied to that endpoint
+ * only. An EventSource request is preflight-free, so a rebound page counts as
+ * same-origin and could read the stream; `/prompt` keeps its current
+ * behaviour because validating it would change existing clients (separate
+ * issue). Fail-closed: an unparsable Origin, an unparsable Host, or a Host that
+ * is neither the bound address nor loopback is rejected.
+ */
+export function isAllowedStreamRequest(origin: string | undefined, host: string | undefined, boundHost: string): boolean {
+  if (origin !== undefined) {
+    let originHost: string | undefined;
+    try {
+      originHost = headerHostname(new URL(origin).hostname);
+    } catch {
+      return false; // `Origin: null` and garbage fail closed
+    }
+    if (!originHost || !isLoopbackBindHost(originHost)) return false;
+  }
+  if (host === undefined) return true;
+  const hostName = headerHostname(host);
+  if (!hostName) return false;
+  if (hostName === boundHost.trim().toLowerCase()) return true;
+  return isLoopbackBindHost(boundHost) && isLoopbackBindHost(hostName);
+}
+
+/** Host value → bare hostname: drops a port and IPv6 brackets. */
+function headerHostname(value: string): string | undefined {
+  const v = value.trim().toLowerCase();
+  if (!v) return undefined;
+  if (v.startsWith("[")) {
+    const end = v.indexOf("]");
+    return end > 1 ? v.slice(1, end) : undefined;
+  }
+  // A bare IPv6 address has more than one colon — keep it whole.
+  const first = v.indexOf(":");
+  const last = v.lastIndexOf(":");
+  return first === last && last > 0 ? v.slice(0, last) : v;
+}
+
+/**
  * Strip auth-configuration detail (env labels, credential sources) for
  * non-loopback binds. Keeps authStatus.configured (boolean) and authCheck.type
  * (string); strips source/label. Loopback responses pass through.
@@ -357,6 +396,13 @@ export function startSidecar(options?: {
       draining = true;
       stopWatchdog?.();
       if (cleanupInterval !== undefined) clearInterval(cleanupInterval);
+      // #1019: close SSE feeds BEFORE waiting for connections to drain — an
+      // open stream holds its socket, so the drain would run to its timeout.
+      try {
+        store.closeAllStreams();
+      } catch (err) {
+        logger.warn(`[sidecar] SHUTDOWN_STREAM_CLOSE_FAILED: reason=${reason}`, err);
+      }
       // Stop accepting new connections, then wait for in-flight handlers, then
       // dispose the store. Disposing before handlers finish races prompt/abort.
       // Always continue to disposeAll even if close() fails — otherwise sessions
@@ -696,6 +742,38 @@ export function startSidecar(options?: {
         await store.abort(params.id);
         logger.info(`[sidecar] POST /sessions/${idLog}/abort 200 ${Date.now() - requestStart}ms`);
         sendJson(res, 200, { aborted: true });
+        return;
+      }
+
+      // GET /sessions/:id/events (#1019) — SSE feed for one session's turns.
+      // EventSource is GET-only, so this is additive: POST /prompt keeps its
+      // response shape. Every rejection happens BEFORE any SSE header, so a
+      // rejected request is plain JSON.
+      params = routeMatch(url, "/sessions/:id/events");
+      if (method === "GET" && params) {
+        const idLog = sanitizeForLog(params.id);
+        if (!isAllowedStreamRequest(req.headers.origin, req.headers.host, trustBindHost)) {
+          logger.warn(`[sidecar] GET /sessions/${idLog}/events 403: reason=origin_or_host_not_allowed`);
+          sendJson(res, 403, { error: "Origin or Host not allowed for event streams" });
+          return;
+        }
+        // Rejections first: they are plain JSON, so nothing may be written to
+        // the response before them.
+        store.assertStreamAllowed(params.id);
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+          "X-Accel-Buffering": "no",
+        });
+        res.flushHeaders();
+        const detach = store.openStream(params.id, {
+          write: (frame) => { res.write(frame); },
+          bufferedBytes: () => res.writableLength,
+          end: () => { res.end(); },
+        });
+        req.on("close", () => { detach(); });
+        logger.info(`[sidecar] GET /sessions/${idLog}/events 200 ${Date.now() - requestStart}ms`);
         return;
       }
 

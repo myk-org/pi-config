@@ -891,6 +891,126 @@ function isCatalogFreeModel(model: { id?: string; provider?: string; api?: strin
   }
 }
 
+const streamLog = createLogger("session-streams");
+
+/** Max bytes one subscriber may leave buffered before it is dropped (#1019). */
+const MAX_PENDING_BYTES = 1_048_576;
+const STREAM_KEEPALIVE_MS = 15_000;
+const STREAM_IDLE_MS = 10 * 60 * 1000;
+/** Per-session SSE feed ceiling (#1019). */
+export const MAX_STREAMS_PER_SESSION = 8;
+/** Process-wide SSE feed ceiling — POST /sessions is unauthenticated, so
+ *  per-session caps alone let one client create N sessions × 8 streams. */
+export const MAX_STREAMS_GLOBAL = 32;
+
+/**
+ * Transport sink for one `GET /sessions/:id/events` subscriber (#1019). The
+ * hub owns framing, caps and timers; the route owns the HTTP response.
+ */
+export interface SessionStreamSink {
+  write(frame: string): void;
+  /** Bytes the transport still has buffered — the bounded-queue check. */
+  bufferedBytes(): number;
+  /** Close the stream from the server side. */
+  end(): void;
+}
+
+/** One frame pushed to `GET /sessions/:id/events`; `type` is the event name. */
+export type SessionStreamEvent =
+  | { type: "session"; sessionId: string }
+  | { type: "turn_start"; turnId: number }
+  | { type: "text_delta"; turnId: number; delta: string }
+  | { type: "turn_end"; turnId: number; text: string; aborted: boolean }
+  | { type: "error"; turnId: number; message: string };
+
+interface StreamSubscriber {
+  sink: SessionStreamSink;
+  keepalive?: ReturnType<typeof setInterval>;
+  idle?: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * Per-session SSE hub (#1019) — one instance per SessionEntry, so a feed can
+ * never outlive or alias its session: every removal path closes it. Every
+ * subscriber write is contained — a dead or slow client is dropped here and
+ * never surfaces into the prompt path that produced the event.
+ */
+class SessionEventStreams {
+  private subscribers = new Set<StreamSubscriber>();
+  private turnSeq = 0;
+
+  get size(): number {
+    return this.subscribers.size;
+  }
+
+  /** Monotonic per-session turn id. */
+  nextTurnId(): number {
+    return ++this.turnSeq;
+  }
+
+  /** Register a subscriber and return its detach function. */
+  add(sink: SessionStreamSink): () => void {
+    const sub: StreamSubscriber = { sink };
+    // Keepalive comments stop proxies from closing an idle feed. They must NOT
+    // reset the idle timer — otherwise a subscribe-only client is never reaped.
+    sub.keepalive = setInterval(() => this.write(sub, ": keepalive\n\n"), STREAM_KEEPALIVE_MS);
+    sub.idle = setTimeout(() => this.drop(sub, "idle_timeout"), STREAM_IDLE_MS);
+    sub.keepalive.unref?.();
+    sub.idle.unref?.();
+    this.subscribers.add(sub);
+    return () => this.drop(sub, "detached");
+  }
+
+  /**
+   * Push one turn-lifecycle event to every subscriber. Frames are
+   * JSON-serialized: raw model output contains newlines, so an unescaped
+   * payload would let a delta forge its own `data:` frames.
+   */
+  emit(event: SessionStreamEvent): void {
+    if (this.subscribers.size === 0) return;
+    const frame = "data: " + JSON.stringify(event) + "\n\n";
+    for (const sub of [...this.subscribers]) {
+      sub.idle?.refresh(); // lifecycle events only — see add()
+      this.write(sub, frame);
+    }
+  }
+
+  /** Close every subscriber (session removed, shutdown). */
+  close(reason: string): void {
+    for (const sub of [...this.subscribers]) this.drop(sub, reason);
+  }
+
+  private write(sub: StreamSubscriber, frame: string): void {
+    try {
+      sub.sink.write(frame);
+      if (sub.sink.bufferedBytes() <= MAX_PENDING_BYTES) return;
+    } catch {
+      // A throwing sink must never fail the prompt that produced the event.
+      this.drop(sub, "write_failed");
+      return;
+    }
+    this.drop(sub, "slow_subscriber");
+  }
+
+  private drop(sub: StreamSubscriber, reason: string): void {
+    if (!this.subscribers.delete(sub)) return;
+    if (sub.keepalive) clearInterval(sub.keepalive);
+    if (sub.idle) clearTimeout(sub.idle);
+    let pending = 0;
+    try {
+      pending = sub.sink.bufferedBytes();
+    } catch {
+      // sink already dead — nothing to measure
+    }
+    try {
+      sub.sink.end();
+    } catch {
+      // connection already gone
+    }
+    streamLog.info(`[sidecar] STREAM_CLOSED: reason=${reason}, subscribers=${this.subscribers.size}, pending_bytes=${pending}`);
+  }
+}
+
 interface SessionEntry {
   session: StoredSession;
   lastActivity: number;
@@ -934,6 +1054,14 @@ interface SessionEntry {
    * stays null instead. A catalog zero is authoritative and reported as free.
    */
   pricingKnown: boolean;
+  /** SSE feed hub for this entry (#1019) — dies with the session. */
+  streams: SessionEventStreams;
+  /**
+   * Set by abort() before it awaits session.abort(); consumed by the prompt
+   * path's finally, which is the only place a turn ends on abort (#1019) —
+   * emitting from abort() itself would double-emit the terminal event.
+   */
+  abortRequested: boolean;
 }
 
 /**
@@ -1164,6 +1292,54 @@ export class SessionStore {
   }
 
   /**
+   * Open an SSE feed for a session (#1019). Rejections throw before the caller
+   * writes any header, so they stay plain JSON: unknown session → 404, stream
+   * ceilings → 429.
+   */
+  assertStreamAllowed(id: string): void {
+    this.assertNotDisposed("openStream");
+    const entry = this.sessions.get(id);
+    if (!entry) throw httpError(`Session ${id} not found`, 404);
+    if (entry.streams.size >= MAX_STREAMS_PER_SESSION) {
+      throw httpError(`Too many event streams for this session (max ${MAX_STREAMS_PER_SESSION})`, 429);
+    }
+    let total = 0;
+    for (const other of this.sessions.values()) total += other.streams.size;
+    if (total >= MAX_STREAMS_GLOBAL) {
+      throw httpError(`Too many event streams (max ${MAX_STREAMS_GLOBAL})`, 429);
+    }
+  }
+
+  /**
+   * Register the subscriber and send the opening `session` frame. Call only
+   * AFTER the SSE headers are written (a body write before `writeHead` commits
+   * implicit headers). The caller has already run assertStreamAllowed, and
+   * there is no await in between, so its ceilings still hold.
+   */
+  openStream(id: string, sink: SessionStreamSink): () => void {
+    this.assertStreamAllowed(id);
+    const entry = this.sessions.get(id)!;
+    const detach = entry.streams.add(sink);
+    streamLog.info(`[sidecar] STREAM_OPEN: subscribers=${entry.streams.size}`);
+    entry.streams.emit({ type: "session", sessionId: id });
+    return detach;
+  }
+
+  /**
+   * Close every open SSE feed without touching sessions (#1019). Shutdown
+   * calls this before it waits for connections to drain — an open stream would
+   * otherwise stall the drain to its timeout.
+   */
+  closeAllStreams(): void {
+    let count = 0;
+    for (const entry of this.sessions.values()) {
+      count += entry.streams.size;
+      entry.streams.close("shutdown");
+    }
+    if (count > 0) streamLog.info(`[sidecar] STREAMS_CLOSED: reason=shutdown, count=${count}`);
+  }
+
+  /**
    * Test fixture: register a session without create() (no real SDK).
    * Not part of the HTTP/Python client contract. Requires abort() so
    * SessionStore.abort() cannot TypeError.
@@ -1196,6 +1372,8 @@ export class SessionStore {
       },
       headerWritten: false,
       headerPending: false,
+      streams: new SessionEventStreams(),
+      abortRequested: false,
     });
   }
 
@@ -2021,7 +2199,7 @@ export class SessionStore {
       createdAt: new Date().toISOString(),
       redact,
     };
-    const newEntry: SessionEntry = { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0, transcriptHeader, headerWritten: false, headerPending: false };
+    const newEntry: SessionEntry = { session, lastActivity: Date.now(), inFlight: false, cwd: options.cwd, redact, pricingKnown: hasKnownPricing(model), turnCount: 0, transcriptHeader, headerWritten: false, headerPending: false, streams: new SessionEventStreams(), abortRequested: false };
     this.sessions.set(id, newEntry);
     log.info(`[sidecar] Session created: ${id} (provider=${redactDiagnostic(options.provider, redact)}, model=${redactDiagnostic(options.model, redact)}, tools=${tools.length}, customTools=${customTools.length})`);
     // Transcript recording (issue #922) — OFF unless RECORD_TRANSCRIPTS is
@@ -2060,6 +2238,12 @@ export class SessionStore {
 
     entry.lastActivity = Date.now();
     entry.inFlight = true;
+    // #1019: one monotonic turn id per prompt. The single terminal event for
+    // it is emitted from this turn's finally (rejected prompt) or from the
+    // post-redaction tail below — never from the recordTurn-gated sites.
+    entry.abortRequested = false;
+    const turnId = entry.streams.nextTurnId();
+    entry.streams.emit({ type: "turn_start", turnId });
     // Transcript turn state is mutated only when recording is enabled — the
     // disabled path stays zero-overhead (#923 review).
     const recordTurn = this.isRecordingEnabled();
@@ -2117,6 +2301,32 @@ export class SessionStore {
     const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: null as number | null, cost_partial: false, duration_ms: 0 };
     const startTime = Date.now();
 
+    // #1019: terminal-event state. `turnAborted` is captured outside the
+    // recordTurn gate so abort works on a default (recording-off) config.
+    let turnAborted = false;
+    // Set when the prompt rejects with nothing to return: that throw skips the
+    // post-redaction tail, so the finally ends the turn instead.
+    let promptRejected: string | undefined;
+    let turnEnded = false;
+    const emitTurnEnd = (aborted: boolean) => {
+      if (turnEnded) return;
+      turnEnded = true;
+      // Abort wins over collected errors: a cancelled turn must end as
+      // turn_end{aborted:true}, never as an error. Text is redacted here too so
+      // the abort path (pre-tail) cannot leak what :2360 would have stripped.
+      if (aborted) {
+        entry.streams.emit({ type: "turn_end", turnId, text: entry.redact(responseText), aborted: true });
+      } else if (promptRejected !== undefined || errors.length > 0) {
+        entry.streams.emit({
+          type: "error",
+          turnId,
+          message: promptRejected ?? errors.join("; ") + (errorsDropped > 0 ? ` [+${errorsDropped} more]` : ""),
+        });
+      } else {
+        entry.streams.emit({ type: "turn_end", turnId, text: responseText, aborted: false });
+      }
+    };
+
     const unsubscribe = entry.session.subscribe((event) => {
       // Pi SDK event types don't export the error variant — cast is necessary
       if ((event as any).type === "error") {
@@ -2157,6 +2367,9 @@ export class SessionStore {
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         responseText += event.assistantMessageEvent.delta;
         textDeltaCount++;
+        // #1019: redact per delta — this is the only redaction point in the
+        // prompt path (:2360) and a raw delta can echo a request api_key.
+        entry.streams.emit({ type: "text_delta", turnId, delta: entry.redact(event.assistantMessageEvent.delta) });
       }
       if (event.type === "agent_end" && event.messages) {
         for (const msg of event.messages) {
@@ -2226,10 +2439,12 @@ export class SessionStore {
         // Transcript recording (issue #922): capture the turn payload here;
         // the record itself is queued after the response is fully assembled
         // (see below — boundary processing must not diverge from final_text).
+        // #1019: captured outside the recordTurn gate so an SDK-initiated
+        // abort still ends the turn as `aborted` with recording disabled.
+        turnStopReason = finalAssistant?.stopReason;
         if (recordTurn) {
           turnWasRecorded = true;
           turnMessages = event.messages;
-          turnStopReason = finalAssistant?.stopReason;
         }
       }
     });
@@ -2269,12 +2484,20 @@ export class SessionStore {
         }
         // fall through to structured return below
       } else {
-        throw httpError(redactDiagnostic(err?.message || String(err), entry.redact), err?.statusCode ?? 500, err);
+        promptRejected = redactDiagnostic(err?.message || String(err), entry.redact);
+        throw httpError(promptRejected, err?.statusCode ?? 500, err);
       }
     } finally {
       unsubscribe();
       entry.inFlight = false;
       entry.lastActivity = Date.now();
+      // #1019: clear into `aborted` here — abort() itself never emits. A
+      // rejected prompt never reaches the post-redaction tail, so its terminal
+      // event is emitted here; the success/fall-through path emits below with
+      // the final text. emitTurnEnd's guard keeps it to exactly one.
+      turnAborted = entry.abortRequested;
+      entry.abortRequested = false;
+      if (promptRejected !== undefined) emitTurnEnd(turnAborted);
     }
 
     // Insert \n\n at message boundaries for text responses only.
@@ -2358,6 +2581,9 @@ export class SessionStore {
     }
 
     responseText = entry.redact(responseText);
+    // #1019: turn_end carries the final text — read after the boundary splice
+    // and redaction, so it is authoritative and not concat(deltas).
+    emitTurnEnd(turnAborted || turnStopReason === "aborted");
     usage.duration_ms = Date.now() - startTime;
     logger.log(`[sidecar] PROMPT_COMPLETED: session=${id}, text_length=${responseText.length}, deltas=${textDeltaCount}, tokens_in=${usage.input_tokens}, tokens_out=${usage.output_tokens}, duration_ms=${usage.duration_ms}`);
 
@@ -2401,7 +2627,13 @@ export class SessionStore {
     this.assertNotDisposed("abort");
     const entry = this.sessions.get(id);
     if (!entry) throw new Error(`Session ${id} not found`);
+    // #1019: nothing to abort — setting abortRequested on an idle session would
+    // flag the NEXT turn as aborted.
+    if (!entry.inFlight) return;
     logger.debug(`[sidecar] Aborting session: ${id}, inFlight=${entry.inFlight}`);
+    // Set before awaiting: the prompt path's finally reads it after
+    // session.abort() settles. Emitting here would duplicate the terminal event.
+    entry.abortRequested = true;
     await entry.session.abort();
     logger.info(`[sidecar] Session aborted: ${id}`);
   }
@@ -2413,6 +2645,7 @@ export class SessionStore {
       logger.debug(`[sidecar] SESSION_DELETE: result=no-op, session=${id}, reason=not_found`);
       return false;
     }
+    entry.streams.close("session_deleted");
     entry.session.dispose();
     this.sessions.delete(id);
     logger.log(`[sidecar] SESSION_DELETE: result=disposed, session=${id}`);
@@ -2454,6 +2687,7 @@ export class SessionStore {
     for (const [id, entry] of this.sessions) {
       logger.log(`[sidecar] SESSION_DISPOSE: session=${id}`);
       try {
+        entry.streams.close("disposed");
         entry.session.dispose();
       } catch (err) {
         logger.warn(`[sidecar] SESSION_DISPOSE_FAILED: session=${id}`, err);
@@ -2491,6 +2725,7 @@ export class SessionStore {
       if (entry.inFlight) continue;
       if (now - entry.lastActivity > maxAge) {
         logger.log(`[sidecar] Cleaning up stale session: ${id}`);
+        entry.streams.close("session_stale");
         entry.session.dispose();
         this.sessions.delete(id);
         cleaned++;

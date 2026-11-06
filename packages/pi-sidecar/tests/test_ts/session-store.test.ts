@@ -255,9 +255,11 @@ describe("SessionStore (mocked runtime)", () => {
       const baselineIds = baseline.map((m: DiscoveredModel) => `${m.provider}/${m.id}`).sort();
 
       // Inject fake session entries — never call create() (that would hit the real SDK).
+      // putSessionFixture, not a hand-built entry: every entry now carries the
+      // #1019 stream hub that delete() closes.
       const sessionIds = Array.from({ length: 5 }, (_, i) => `mock-session-${i}`);
       for (const id of sessionIds) {
-        store.sessions.set(id, { session: fakeSession(), lastActivity: Date.now(), inFlight: false, cwd: "/tmp" });
+        store.putSessionFixture(id, fakeSession(), "/tmp");
       }
       assert.equal(store.count(), 5);
 
@@ -372,20 +374,32 @@ describe("SessionStore (mocked runtime)", () => {
     assert.equal(getSessionCwd(), undefined);
   });
 
-  it("abort() succeeds on a fixture session that implements abort()", async () => {
+  it("abort() reaches the SDK only while a turn is in flight (#1019)", async () => {
     const store = new SessionStore();
     let aborted = false;
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => { release = resolve; });
     store.putSessionFixture(
       "s-abort",
       {
         ...fixtureSession(),
+        prompt: async () => {
+          await turn;
+        },
         abort: async () => {
           aborted = true;
+          release();
         },
       },
       "/tmp/job-sidecar-768",
     );
+    // An idle session has no turn to cancel — aborting must not flag the next one.
     await store.abort("s-abort");
+    assert.equal(aborted, false);
+
+    const pending = store.prompt("s-abort", "hi");
+    await store.abort("s-abort");
+    await pending;
     assert.equal(aborted, true);
   });
 
