@@ -1831,7 +1831,8 @@ export function registerSubagentTool(
         // Sync chains still resolve against the parent list, so asking about their steps
         // would prompt for an agent that never runs.
         if (params.async === true) {
-          const seen = new Set(projAgents.map((a) => `${a.name}@${discovery.projectAgentsDir ?? ""}`));
+          // Structured key: a "@" join is ambiguous when a name or path contains "@".
+        const seen = new Set(projAgents.map((a) => JSON.stringify([a.name, discovery.projectAgentsDir ?? ""])));
           for (const step of params.chain ?? []) {
             if (!step.cwd || step.cwd === ctx.cwd) continue;
             const stepDiscovery = discoverAgents(step.cwd, scope);
@@ -1839,7 +1840,7 @@ export function registerSubagentTool(
             if (stepAgent?.source !== "project") continue;
             // Dedupe on name+directory: the same name in a second project dir is a
             // DIFFERENT agent and its source must appear in the prompt.
-            const key = `${stepAgent.name}@${stepDiscovery.projectAgentsDir ?? ""}`;
+            const key = JSON.stringify([stepAgent.name, stepDiscovery.projectAgentsDir ?? ""]);
             if (seen.has(key)) continue;
             seen.add(key);
             projAgents.push(stepAgent);

@@ -442,6 +442,18 @@ describe("firePendingCompletions reconciliation pass", () => {
     assert.deepEqual(calls, ["a", "b:B:true"]);
   });
 
+  it("leaves a log trail with the fired count", () => {
+    const job = (id: string) => ({ id, agent: "worker", task: "t", workerDir: "/tmp", startedAt: 1, updatedAt: 1, status: "complete", output: "x" }) as any;
+    const a = job("a");
+    a.onComplete = () => {};
+    // async-agents.ts logs under "async_agents" — read that trail.
+    const logPath = getPiLogPath("async_agents");
+    const before = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").length : 0;
+    assert.equal(firePendingCompletions([a]), 1);
+    const after = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").slice(before) : "";
+    assert.match(after, /fire_pending_completions/, "the pass must log how many hooks fired");
+  });
+
   it("keeps firing the remaining hooks when one throws", () => {
     const calls: string[] = [];
     const boom = job("boom", "complete", "X");
