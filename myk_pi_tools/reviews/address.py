@@ -334,10 +334,14 @@ def _is_addressable(entry: dict[str, Any]) -> bool:
     if entry.get("posted_at"):
         return False
     addressable = not entry.get("is_auto_skipped") or (
-        # Issue #1033: closed in Qodo but the GitHub thread is still open, so a reply is
-        # still owed. Informational items are never findings and stay skipped.
+        # Issue #1033: closed in Qodo but its GitHub thread is still open, so a reply is
+        # still owed. Strictly False, never None: unknown resolution is not openness.
+        # Informational items stay skipped, and so does anything already answered or
+        # deliberately skipped (skip_reason), which a second reply would duplicate.
         entry.get("type") != "qodo_reply"
         and entry.get("is_resolved") is False
+        and not entry.get("already_replied")
+        and not entry.get("skip_reason")
         and bool(entry.get("path"))
         and entry.get("line") is not None
     )
@@ -699,20 +703,25 @@ def run(json_path: str | None = None, replies_file: str | None = None, set_statu
         eprint(f"Error: cannot apply replies:{e}")
         return 1
 
+    # Issue #1033: name what was dropped, whether or not other findings matched. A partial
+    # run used to swallow this because the warning lived inside `if not groups`.
+    stranded = [
+        e
+        for src in SOURCES
+        for e in data.get(src, [])
+        if e.get("is_auto_skipped")
+        and e.get("is_resolved") is False
+        and not e.get("posted_at")
+        and e.get("type") != "qodo_reply"
+    ]
+    if stranded:
+        log.warning("skipped %d finding(s) whose GitHub threads are still open", len(stranded))
+        eprint(
+            f"Warning: skipped {len(stranded)} finding(s) whose GitHub threads are still open "
+            "(no path:line — re-run reviews fetch)"
+        )
+
     if not groups:
-        # Issue #1033: name what was dropped instead of failing with no explanation.
-        stranded = [
-            e
-            for src in SOURCES
-            for e in data.get(src, [])
-            if e.get("is_auto_skipped") and e.get("is_resolved") is False and not e.get("posted_at")
-        ]
-        if stranded:
-            log.warning("skipped %d finding(s) whose GitHub threads are still open", len(stranded))
-            eprint(
-                f"Warning: skipped {len(stranded)} finding(s) whose GitHub threads are still open "
-                "(no path:line — re-run reviews fetch)"
-            )
         # Posted-but-unresolved entries: post.run stamped posted_at and exited
         # 1 when the resolve failed, so a re-run must retry the resolve (post)
         # and store instead of bailing out with "no findings matched".

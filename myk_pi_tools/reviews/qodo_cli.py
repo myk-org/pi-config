@@ -244,10 +244,12 @@ def map_cli_findings_to_threads(data: dict[str, Any]) -> list[dict[str, Any]]:
             "agent_prompt": "",
             "qodo_cli": True,
             "attribution_status": attribution,
-            # The CLI payload carries no GitHub resolution state. False is a placeholder:
-            # fetch inherits the GitHub twin's real value (issue #1033), and the field
-            # must exist on every thread so consumers can count open threads.
-            "is_resolved": False,
+            # The CLI payload carries no GitHub resolution state, and fetch only sees the
+            # GitHub twin when it was not filtered out — so None means UNKNOWN, not open.
+            # Asserting False here made a Qodo-closed, GitHub-resolved thread look open and
+            # `address` replied to it (Qodo finding on #1034). fetch replaces this with the
+            # twin's real value whenever the twin is available.
+            "is_resolved": None,
             "finding_uuid": finding.get("id"),
             "review_run_id": finding.get("review_run_id"),
             "git_sha": finding.get("git_sha"),

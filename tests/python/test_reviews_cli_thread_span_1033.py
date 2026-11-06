@@ -98,11 +98,16 @@ def test_reconcile_reopens_closed_but_unresolved_thread() -> None:
     assert _is_addressable(t) is True
 
 
-def test_reconcile_keeps_closed_and_resolved_thread_skipped() -> None:
+def test_reconcile_inherits_resolved_state_from_twin() -> None:
+    cli = [_cli_thread()]
+    _reconcile_cli_threads_with_github(cli, [_github_twin(is_resolved=True)])
+    assert cli[0]["is_resolved"] is True
+
+
+def test_resolved_thread_stays_unaddressable() -> None:
     cli = [_cli_thread()]
     _reconcile_cli_threads_with_github(cli, [_github_twin(is_resolved=True)])
     t = cli[0]
-    assert t["is_resolved"] is True
     assert t["is_auto_skipped"] is True
     assert _is_addressable(t) is False
 
@@ -148,7 +153,9 @@ def test_closed_cli_finding_is_not_marked_replied(status: str) -> None:
     assert t["status"] == "skipped"
     assert not t.get("already_replied")
     assert t.get("reply") is None
-    assert t["is_resolved"] is False  # present so consumers can count open threads
+    # The field is present on every thread but None = unknown (Qodo finding on #1034):
+    # a False placeholder made resolved threads look open and got them replied to.
+    assert t["is_resolved"] is None
 
 
 # --- is_resolved round-trip: counting open threads matches GitHub ---
@@ -257,3 +264,59 @@ def test_address_cli_warns_when_findings_are_stranded(tmp_path: Path, monkeypatc
     result = CliRunner().invoke(reviews, ["address", "--json", str(reviews_json), "--replies", str(replies)])
     assert result.exit_code != 0, "a stranded finding must not exit 0"
     assert "still open" in result.output
+
+
+def test_already_replied_entry_is_not_addressable() -> None:
+    """A reconciled entry with an existing reply must not receive a second one."""
+    entry = _cli_thread(path="src/app.py", line=42, is_auto_skipped=True, is_resolved=False)
+    entry["already_replied"] = True
+    assert _is_addressable(entry) is False
+
+
+def test_skipped_with_reason_is_not_addressable() -> None:
+    """`auto_skip_replied_findings` marks skip_reason; that decision must survive."""
+    entry = _cli_thread(path="src/app.py", line=42, is_auto_skipped=True, is_resolved=False)
+    entry["skip_reason"] = "Already replied, Qodo did not push back"
+    assert _is_addressable(entry) is False
+
+
+def test_unknown_resolution_is_not_addressable() -> None:
+    """None means fetch could not see the twin — never treat that as open."""
+    entry = _cli_thread(path="src/app.py", line=42, is_auto_skipped=True, is_resolved=None)
+    assert _is_addressable(entry) is False
+
+
+def test_stranded_warning_fires_on_partial_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Qodo finding on #1034: the warning was confined to the all-stranded path."""
+    _patch_post_store(monkeypatch)
+    matched = _cli_thread(path="src/app.py", line=42, is_auto_skipped=False, is_resolved=False)
+    stranded = _cli_thread(thread_id="PRRT_stranded", path="", line=None, is_auto_skipped=True, is_resolved=False)
+    reviews_json = tmp_path / "pr-42-reviews.json"
+    reviews_json.write_text(
+        json.dumps({"metadata": {"owner": "o", "repo": "r", "pr_number": 42}, "qodo": [matched, stranded]}),
+        encoding="utf-8",
+    )
+    replies = tmp_path / "replies.json"
+    replies.write_text("src/app.py:42|Fixed.\n", encoding="utf-8")
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(reviews_json), "--replies", str(replies)])
+    # The matched finding is still addressed, and the stranded one is named.
+    assert "still open" in result.output
+    saved = json.loads(reviews_json.read_text(encoding="utf-8"))
+    assert saved["qodo"][0]["reply"] == "Fixed."
+
+
+def test_informational_entries_are_not_counted_as_stranded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`qodo_reply` items are informational, not dropped findings."""
+    _patch_post_store(monkeypatch)
+    info = _cli_thread(type="qodo_reply", path="", line=None, is_auto_skipped=True, is_resolved=False)
+    reviews_json = tmp_path / "pr-42-reviews.json"
+    reviews_json.write_text(
+        json.dumps({"metadata": {"owner": "o", "repo": "r", "pr_number": 42}, "qodo": [info]}),
+        encoding="utf-8",
+    )
+    replies = tmp_path / "replies.json"
+    replies.write_text("*|Acknowledged.\n", encoding="utf-8")
+
+    result = CliRunner().invoke(reviews, ["address", "--json", str(reviews_json), "--replies", str(replies)])
+    assert "still open" not in result.output

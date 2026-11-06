@@ -282,7 +282,9 @@ def test_map_all_closed_statuses_skipped(status: str) -> None:
     # shows whether a reply exists, and fetch reconciles the flag with it.
     assert not t.get("already_replied")
     assert t.get("reply") is None
-    assert t["is_resolved"] is False
+    # Unknown, not open: fetch fills in the GitHub twin's value when it can see it,
+    # and None keeps a resolved thread from being replied to again.
+    assert t["is_resolved"] is None
 
 
 @pytest.mark.parametrize(("level", "priority"), sorted(ACTION_LEVEL_PRIORITY.items()))
