@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import { promises as fsp } from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isLiveLegacyDaemonFile } from "../shared/daemon-manager.js";
 import { createLogger } from "../shared/logger.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
 import { getGlobalSettingsPath, getSettingDynamic, getSettingsPath, SETTINGS_KEYS } from "./project-settings.js";
@@ -29,21 +30,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Defaults live in `settings-keys.json` only — never restated here. */
 export const DEFAULT_MAX_SIZE = String(SETTINGS_KEYS.project_tmp_max_size.default);
 export const DEFAULT_RETENTION_DAYS = Number(SETTINGS_KEYS.project_tmp_retention_days.default);
-/**
- * Transitional debris from pre-#1020 daemons: `.pi/tmp` was the control-file home
- * before `.pi/run`, so a daemon started before the upgrade still holds its pid/port and
- * reload handshake here, and the read-both fallback (#1025) needs these files to find it.
- * Sweeping them would make the next connect() miss the live daemon and spawn a duplicate
- * on the same port. Never deleted, whatever their age; the set disappears once no
- * pre-upgrade daemon remains.
- */
-export const TMP_PROTECTED_NAMES = new Set([
-  "pidiff.pid",
-  "pidiff.port",
-  "reload.flag",
-  "reload.done",
-  "reload.pending",
-]);
 /** Lives in `.pi/run`, never in the swept dir. */
 export const TMP_SWEEP_LOCK = ".tmp-sweep.lock";
 /** A crashed sweep would otherwise block every later session forever. */
@@ -171,7 +157,14 @@ export async function sweepProjectTmp(opts: TmpSweepOptions): Promise<TmpSweepRe
   let total = 0;
   for (const name of names) {
     const target = path.join(base, name);
-    if (!isInside(base, target) || TMP_PROTECTED_NAMES.has(name)) continue;
+    if (!isInside(base, target)) continue;
+    // One exemption, decided by the daemon layer: a pre-`.pi/run` daemon that is still ALIVE
+    // owns its lockfile here, and sweeping it makes the next connect() spawn a duplicate on
+    // that port. A dead daemon's leftovers are throwaway like everything else (#1020).
+    if (isLiveLegacyDaemonFile(base, name)) {
+      log.debug("tmp_sweep_kept_live_legacy_daemon", { tmpDir: base, name });
+      continue;
+    }
     let stat: fs.Stats;
     try {
       stat = await fsp.lstat(target);

@@ -903,10 +903,11 @@ See [Managing Custom Agents](managing-custom-agents.html) for details.
 ## Project Temp Cleanup Keys
 
 `.pi/tmp` is swept at session start when it grows past the size cap. Size is the only trigger and age is the
-safety floor, so a project under the cap is never touched however old its entries are. Daemon control files
-(`pidiff.pid`, `pidiff.port`, `reload.flag`, `reload.done`, `reload.pending`, `.tmp-sweep.lock`) are never
-deleted, a symlink is unlinked without following it, a sweep whose `.pi/tmp` resolves outside the checkout is
-refused, and the sweep is skipped in one-shot sessions (`pi -p`, `--mode json`, piped print sessions).
+safety floor, so a project under the cap is never touched however old its entries are. Nothing in `.pi/tmp` is
+exempt: daemon control files (`pidiff.pid`, `pidiff.port`, `reload.flag`, `reload.done`, `reload.pending`) and
+the sweep lock live in `.pi/run`, outside the swept directory. A symlink is unlinked without following it, a
+sweep whose `.pi/tmp` resolves outside the checkout is refused, and the sweep is skipped in one-shot sessions
+(`pi -p`, `--mode json`, piped print sessions).
 
 ### `project_tmp_max_size`
 

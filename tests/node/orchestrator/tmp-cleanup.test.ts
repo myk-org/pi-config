@@ -7,7 +7,6 @@ import * as path from "node:path";
 import {
   DEFAULT_MAX_SIZE,
   DEFAULT_RETENTION_DAYS,
-  TMP_PROTECTED_NAMES,
   TMP_SWEEP_LOCK,
   parseSize,
   registerTmpCleanup,
@@ -30,6 +29,8 @@ afterEach(() => {
 });
 
 /** Create a file of `size` bytes and back-date it `ageDays` days. */
+const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
+
 function makeEntry(name: string, size: number, ageDays: number): string {
   const target = path.join(tmpDir, name);
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -139,16 +140,40 @@ describe("sweepProjectTmp", () => {
     assert.equal(fs.existsSync(fresh), true);
   });
 
-  it("survives the sweep: legacy .pi/tmp stragglers are kept for a pre-#1020 daemon", async () => {
-    for (const name of TMP_PROTECTED_NAMES) makeEntry(name, 2 * MB, 90);
-    // Condition 1: over the cap, everything old enough.
-    await sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
-    // Condition 2: under the cap.
-    makeEntry("filler.bin", 2 * MB, 90);
-    await sweepProjectTmp({ tmpDir, maxBytes: 100 * MB, retentionDays: 7 });
-    for (const name of TMP_PROTECTED_NAMES) {
-      assert.equal(fs.existsSync(path.join(tmpDir, name)), true, `${name} must survive`);
+  it("carries no control-file names of its own (#1020)", () => {
+    // The sweep asks the daemon layer instead of holding a list it could forget to extend.
+    // A future daemon writes to `.pi/run`, so these names must not appear here at all.
+    const source = fs.readFileSync(path.join(REPO_ROOT, "extensions/orchestrator/tmp-cleanup.ts"), "utf-8");
+    for (const name of ["pidiff.pid", "pidiff.port", "reload.flag"]) {
+      assert.equal(source.includes(name), false, `${name} must not be named in the sweep`);
     }
+  });
+
+  it("keeps the lockfile of a live pre-`.pi/run` daemon (#1020)", async () => {
+    // The only exemption, and the daemon layer decides it: sweeping a live daemon's lockfile
+    // would make the next connect() spawn a duplicate on its port.
+    makeEntry("pidiff.port", 2 * MB, 90);
+    makeEntry("pidiff.pid", 2 * MB, 90);
+    fs.writeFileSync(path.join(tmpDir, "pidiff.pid"), String(process.pid));
+    makeEntry("throwaway", 2 * MB, 90);
+
+    const result = await sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
+    assert.equal(result.deleted, 1, "only the throwaway entry is swept");
+    assert.equal(fs.existsSync(path.join(tmpDir, "pidiff.port")), true, "live port file kept");
+    assert.equal(fs.existsSync(path.join(tmpDir, "pidiff.pid")), true, "live pid file kept");
+  });
+
+  it("sweeps every legacy control file once the daemon is dead (#1020)", async () => {
+    for (const name of ["pidiff.pid", "pidiff.port", "reload.flag", "reload.done", "reload.pending"]) {
+      makeEntry(name, 2 * MB, 90);
+    }
+    const pidFile = path.join(tmpDir, "pidiff.pid");
+    fs.writeFileSync(pidFile, "0");
+    const old = new Date(Date.now() - 90 * DAY);
+    fs.utimesSync(pidFile, old, old);
+
+    const result = await sweepProjectTmp({ tmpDir, maxBytes: 0, retentionDays: 7 });
+    assert.equal(result.deleted, 5, "a dead owner's leftovers are throwaway");
     assert.equal(fs.existsSync(tmpDir), true, "tmp root must survive");
   });
 

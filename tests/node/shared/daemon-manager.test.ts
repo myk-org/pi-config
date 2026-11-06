@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon } from "../../../extensions/shared/daemon-manager.js";
+import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive, isLiveLegacyDaemonFile } from "../../../extensions/shared/daemon-manager.js";
 import { createServer, type Server } from "node:http";
 
 describe("findLiveLockfile (#1020)", () => {
@@ -119,6 +119,146 @@ describe("legacy .pi/tmp lockfiles (#1020)", () => {
     } finally {
       rmSync(runDir, { recursive: true, force: true });
       rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reading a legacy lockfile never moves or deletes it", () => {
+    const runDir = mk();
+    const legacyDir = mk();
+    try {
+      writeLockfile(legacyDir, 41234, 4321, () => {});
+      assert.deepEqual(readLockfile(runDir, legacyDir), { port: 41234, pid: 4321 });
+      // The legacy owner may be live: moving its record would let the sweep (or a crashed
+      // read) take it away and a later connect() would spawn a duplicate on that port.
+      assert.strictEqual(readFileSync(join(legacyDir, "pidiff.port"), "utf-8"), "41234");
+      assert.strictEqual(readFileSync(join(legacyDir, "pidiff.pid"), "utf-8"), "4321");
+      assert.equal(existsSync(join(runDir, "pidiff.port")), false, "no copy written into the run dir");
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive is false when there is no pid file", () => {
+    const dir = mk();
+    try {
+      assert.equal(legacyLockfileOwnerAlive(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive is true for a live pid", () => {
+    const dir = mk();
+    try {
+      writeFileSync(join(dir, "pidiff.pid"), String(process.pid));
+      assert.equal(legacyLockfileOwnerAlive(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive is false for pid 0", () => {
+    const dir = mk();
+    try {
+      writeFileSync(join(dir, "pidiff.pid"), "0");
+      assert.equal(legacyLockfileOwnerAlive(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive is false for an unparseable pid", () => {
+    const dir = mk();
+    try {
+      writeFileSync(join(dir, "pidiff.pid"), "not-a-pid");
+      assert.equal(legacyLockfileOwnerAlive(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive refuses an oversized pid file", () => {
+    // The file is project-controlled; a pid is a few bytes, so a large file is not read.
+    const dir = mk();
+    try {
+      writeFileSync(join(dir, "pidiff.pid"), "1".repeat(4096));
+      assert.equal(legacyLockfileOwnerAlive(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive refuses a non-regular pid file instead of blocking", () => {
+    // The legacy dir is project-controlled: a FIFO here would block the read during the
+    // session-start sweep, so only a regular file counts.
+    const dir = mk();
+    try {
+      mkdirSync(join(dir, "pidiff.pid"));
+      assert.equal(legacyLockfileOwnerAlive(dir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive treats EPERM as alive, not dead", () => {
+    // Another user's live process answers EPERM, not success. Reading that as "dead" would
+    // let the sweep delete a running daemon's control files.
+    const dir = mk();
+    const original = process.kill;
+    try {
+      writeFileSync(join(dir, "pidiff.pid"), "424242");
+      (process as unknown as { kill: unknown }).kill = () => {
+        const err = new Error("operation not permitted") as NodeJS.ErrnoException;
+        err.code = "EPERM";
+        throw err;
+      };
+      assert.equal(legacyLockfileOwnerAlive(dir), true);
+    } finally {
+      (process as unknown as { kill: unknown }).kill = original;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("legacyLockfileOwnerAlive treats ESRCH as dead", () => {
+    const dir = mk();
+    const original = process.kill;
+    try {
+      writeFileSync(join(dir, "pidiff.pid"), "424243");
+      (process as unknown as { kill: unknown }).kill = () => {
+        const err = new Error("no such process") as NodeJS.ErrnoException;
+        err.code = "ESRCH";
+        throw err;
+      };
+      assert.equal(legacyLockfileOwnerAlive(dir), false);
+    } finally {
+      (process as unknown as { kill: unknown }).kill = original;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("readLockfile ignores a non-regular port file instead of blocking", () => {
+    // The dirs are project-controlled: a FIFO here would block the event loop.
+    const dir = mk();
+    try {
+      mkdirSync(join(dir, "pidiff.port"));
+      assert.equal(readLockfile(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("isLiveLegacyDaemonFile is true only for a legacy lockfile whose owner is alive", () => {
+    const dir = mk();
+    try {
+      writeLockfile(dir, 41234, process.pid, () => {});
+      assert.equal(isLiveLegacyDaemonFile(dir, "pidiff.port"), true);
+      assert.equal(isLiveLegacyDaemonFile(dir, "pidiff.pid"), true);
+      assert.equal(isLiveLegacyDaemonFile(dir, "reload.flag"), false, "not a lockfile");
+      writeFileSync(join(dir, "pidiff.pid"), "0");
+      assert.equal(isLiveLegacyDaemonFile(dir, "pidiff.port"), false, "dead owner");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

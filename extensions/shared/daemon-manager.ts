@@ -193,19 +193,36 @@ export function writeLockfile(lockDir: string, port: number, pid: number | null,
   } catch (e: any) { log(`writeLockfile error: ${e.message}`); }
 }
 
+/** A pid file holds digits and a newline; anything bigger is not one. */
+const MAX_PID_FILE_BYTES = 64;
+
+/** True for a path that exists and is a regular file. Lockfiles are never FIFOs, and reading
+ *  one would block the event loop, so every control-file read goes through this. */
+function isRegularFile(target: string): boolean {
+  try {
+    return fs.lstatSync(target).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /** Read port from lockfile. Returns port number or null.
  *  `legacyDir` (`.pi/tmp`) is consulted only when the new dir has no lockfile:
- *  a daemon already running at upgrade time wrote its lockfile there (#1020). */
+ *  a daemon already running at upgrade time wrote its lockfile there (#1020).
+ *  Reading never moves or deletes anything — moving a live daemon's record is what the
+ *  sweep's liveness check exists to avoid. */
 export function readLockfile(lockDir: string, legacyDir?: string): { port: number; pid: number | null } | null {
   const read = (dir: string): { port: number; pid: number | null } | null => {
     try {
       const portFile = path.join(dir, "pidiff.port");
-      if (!fs.existsSync(portFile)) return null;
+      // Only a regular file is a lockfile: the dirs are project-controlled, and reading a
+      // FIFO here would block the event loop for the whole session.
+      if (!isRegularFile(portFile)) return null;
       const port = parseInt(fs.readFileSync(portFile, "utf-8").trim(), 10);
       if (isNaN(port)) return null;
       let pid: number | null = null;
       const pidFile = path.join(dir, "pidiff.pid");
-      if (fs.existsSync(pidFile)) {
+      if (isRegularFile(pidFile)) {
         pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
         if (isNaN(pid)) pid = null;
       }
@@ -213,6 +230,63 @@ export function readLockfile(lockDir: string, legacyDir?: string): { port: numbe
     } catch (e: any) { log.debug("readLockfile error: %s", e?.message); return null; }
   };
   return read(lockDir) ?? (legacyDir ? read(legacyDir) : null);
+}
+
+/** Read the pid from a lockfile, refusing anything but a regular file: the legacy dir is
+ *  project-controlled, and reading a FIFO there would block session startup. */
+function readLegacyPid(pidFile: string): number | null {
+  try {
+    const st = fs.lstatSync(pidFile);
+    if (!st.isFile()) {
+      log.debug("legacy_pid_not_a_regular_file", { pidFile });
+      return null;
+    }
+    // The file is project-controlled: a pid is a few bytes, so refuse anything larger rather
+    // than reading an arbitrary file into memory during session start.
+    if (st.size > MAX_PID_FILE_BYTES) {
+      log.debug("legacy_pid_file_too_large", { pidFile, size: st.size });
+      return null;
+    }
+    const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+    if (isNaN(pid) || pid <= 0) {
+      log.debug("legacy_pid_unparseable", { pidFile });
+      return null;
+    }
+    return pid;
+  } catch (e: any) {
+    log.debug("legacy_pid_unreadable", { pidFile, error: e?.message });
+    return null;
+  }
+}
+
+/** True when the legacy `.pi/tmp` lockfile belongs to a LIVE process. `EPERM` means the
+ *  process exists under another user, so it counts as alive — treating it as dead would let
+ *  the sweep delete a running daemon's files. */
+export function legacyLockfileOwnerAlive(legacyDir: string): boolean {
+  const pid = readLegacyPid(path.join(legacyDir, "pidiff.pid"));
+  if (pid === null) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: any) {
+    if (e?.code === "EPERM") {
+      log.debug("legacy_daemon_owned_by_another_user", { pid });
+      return true;
+    }
+    log.debug("legacy_daemon_not_running", { pid, code: e?.code });
+    return false;
+  }
+}
+
+/** Control files a pre-`.pi/run` daemon owns inside the legacy dir. Private: the sweep asks
+ *  `isLiveLegacyDaemonFile`, so neither module keeps a second copy of the names (#1020). */
+const LEGACY_CONTROL_FILES = new Set(["pidiff.port", "pidiff.pid"]);
+
+/** True when `name` is a legacy control file whose owner is still alive — the sweep's only
+ *  exemption. A dead daemon's leftovers are ordinary throwaway. */
+export function isLiveLegacyDaemonFile(legacyDir: string, name: string): boolean {
+  if (!LEGACY_CONTROL_FILES.has(name)) return false;
+  return legacyLockfileOwnerAlive(legacyDir);
 }
 
 /** First lockfile port (in `dirs` order) whose daemon answers /api/health, or
