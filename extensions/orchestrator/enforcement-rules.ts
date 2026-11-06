@@ -16,8 +16,11 @@ import {
   type EnforcementTrigger,
   type EnforcementAction,
 } from "./memory-scoring.js";
+import { createLogger } from "../shared/logger.js";
 import { readAllTopicEntries } from "./memory-tree.js";
 import { getSetting } from "./project-settings.js";
+
+const log = createLogger("enforcement");
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -84,6 +87,16 @@ export function loadEnforcedEntries(cwd: string, sessionId?: string): EnforcedEn
 
   for (const { hash, entry } of all) {
     if (!entry.trigger || !entry.action) continue;
+    // A `tool_name bash` rule fires on every command: block stops the session dead, warn
+    // buries every result under a banner. Both happened with entries already in the store,
+    // so the guard lives at load time as well as write time.
+    if (
+      entry.trigger.trim().toLowerCase() === "tool_name bash" &&
+      ["block", "warn"].includes(entry.action.trim().split(/\s+/)[0])
+    ) {
+      log.warn("enforcement_rule_unscoped_bash_ignored", { hash, action: entry.action });
+      continue;
+    }
 
     result.push({
       hash,

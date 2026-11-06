@@ -105,6 +105,21 @@ function validateTrigger(trigger: string): string | null {
   return null;
 }
 
+/** A `tool_name bash` rule fires on EVERY command, so a block (or a warn) there can brick
+ *  the session instead of enforcing anything specific. Two of them did exactly that: one
+ *  blocked every bash call, the other printed a banner on every call. Such a rule is never
+ *  what the writer means — a bash rule has to name the command it is about. */
+export function unscopedBashRuleError(trigger: string, action: string | undefined): string | null {
+  if (trigger.trim().toLowerCase() !== "tool_name bash") return null;
+  const verb = (action ?? "").trim().split(/\s+/)[0];
+  if (verb !== "block" && verb !== "warn") return null;
+  log.warn("memory-write: unscoped bash trigger rejected", { trigger, action });
+  return (
+    `Refusing "${trigger}" with action "${verb}": it would apply to EVERY bash call. ` +
+    "Scope it to the command, e.g. 'bash_contains rm -rf /' or 'bash_regex ^git push'."
+  );
+}
+
 function validateAction(action: string): string | null {
   const validActions = ["block", "warn"];
   const isRunAfter = action.startsWith("run_after ");
@@ -2366,6 +2381,8 @@ export async function addMemoryEntry(cwd: string, input: AddMemoryInput): Promis
   if (input.trigger) {
     const err = validateTrigger(input.trigger);
     if (err) return { status: "rejected", message: err };
+    const unscoped = unscopedBashRuleError(input.trigger, input.action);
+    if (unscoped) return { status: "rejected", message: unscoped };
   }
   if (input.action) {
     const err = validateAction(input.action);
