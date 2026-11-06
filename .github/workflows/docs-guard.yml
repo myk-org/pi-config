@@ -1,0 +1,63 @@
+name: Docs Guard
+
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  no-generated-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reject generated docs in the PR
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # The diff is captured to a file first so its exit status is checked on its own: piping
+          # git into grep without pipefail reports "no match" when the diff never ran (missing base
+          # ref, shallow clone), so an absent check would look exactly like a passing one.
+          diff_file="$(mktemp)"
+          trap 'rm -f "$diff_file"' EXIT
+
+          # -z keeps git from quoting or escaping paths (that is core.quotePath and unrelated to
+          # the shell): quoted, an added docs/résumé.html arrives as
+          # "docs/r\303\251sum\303\251.html" and matches none of the patterns below — the guard
+          # would pass exactly the files it exists to reject.
+          git diff --name-status -z --diff-filter=AMR -M "origin/${BASE_REF}...HEAD" > "$diff_file"
+
+          # Only added/modified/renamed files are a violation. A DELETION is the migration
+          # itself (#1040 removes the committed output) and must pass, or the PR that fixes the
+          # rule can never satisfy it. Renames are checked on BOTH sides, so
+          # docs/foo.md -> docs/index.html is caught too.
+          # -z emits `status\0path\0` (`R100\0old\0new\0` for a rename), so the status tokens are
+          # dropped by shape, not by column — there is no column left after NUL splitting.
+          # The fields are matched as they arrive and never re-joined with newlines: a path CAN
+          # itself contain a newline, and converting NUL -> newline splits `docs/evil\nx.html`
+          # into two lines that match none of the patterns — the generated file would slip
+          # through. `read -d ''` fails at EOF, which only ends this while condition (set -e does
+          # not apply to a loop condition), so the last field is not dropped.
+          offenders=()
+          while IFS= read -r -d '' field; do
+            # Status tokens: no path under docs/ can look like one, they all start with `docs/`.
+            [[ "$field" =~ ^[ACDMRTUXB][0-9]*$ ]] && continue
+            [[ "$field" == docs/* ]] || continue
+            [[ "$field" == docs/nav.json ]] && continue
+            # Pages are TOP-LEVEL only: `pi-docsite` reads `docs/*.md`, so a nested
+            # `docs/guides/new.md` would pass a `**/*.md` rule and never render. Reject it
+            # here rather than shipping a source the build silently ignores.
+            [[ "$field" =~ ^docs/[^/]+\.md$ ]] && continue
+            offenders+=("$field")
+          done < "$diff_file"
+
+          if [ "${#offenders[@]}" -gt 0 ]; then
+            echo "::error::Generated docs must not be committed — the site is built on main from the docs sources."
+            printf '%s\n' "${offenders[@]}"
+            echo "Everything under docs/ other than top-level docs/*.md and docs/nav.json is build"
+            echo "output of .github/workflows/docs.yml — edit the markdown source instead."
+            exit 1
+          fi
+          echo "No generated docs in the diff."

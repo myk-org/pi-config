@@ -143,19 +143,22 @@ User switches log level on the fly via settings — debug must show everything n
   come from `~/.pi/agent/npm/node_modules/pi-orchestrator-config`. Tests:
   `tests/python/test_install.py`. Allowed: this repo for *developers*; optional
   `docker build` from a clone; third-party git (e.g. mcp-proxy).
-- Docs: `docs/*.md` are the hand-written source; `.html`, `llms*.txt`, and
-  `search-index.json` are generated from them by `uv run --group docs pi-docsite
-  --docs-dir docs --tagline "Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar."`
-  — never hand-edit the generated files. `--tagline` is not optional in practice: omitting it
-  blanks the meta description and tagline on every page.
-  - **MANDATORY — MANDATORY REGENERATION.** Whenever you change ANY `docs/*.md`,
-    you MUST re-run the `pi-docsite` command above in the same change, and you MUST
-    commit the regenerated `.html`, `llms.txt`, `llms-full.txt`, and `search-index.json`
-    alongside the markdown that caused them. Editing `docs/*.md` and leaving the
-    generated files stale is an incomplete change, not a follow-up task.
-  - The output is deterministic: repeated runs are byte-identical. If a rebuild shows
-    unrelated churn, that is a real regression from your edit — investigate it, do not
-    commit the churn.
+- Docs: `docs/*.md` are the hand-written source and the only docs files in the tree —
+  `.github/workflows/docs.yml` builds the site from them on `main`, and
+  `.github/workflows/docs-guard.yml` rejects any PR that adds or modifies a generated path.
+  - **NEVER run `pi-docsite` in a PR and never commit its output.** Editing `docs/*.md` is the
+    whole change; the Action builds the site. Generated `.html`, `llms.txt`, `llms-full.txt`,
+    `search-index.json`, and `assets/` are gitignored.
+  - Links **between** pages use the `.html` extension: the published site uses it, even though the
+    source file is `docs/<slug>.md`.
+  - To preview locally, run the workspace generator and discard the output:
+    `uv run --package pi-docsite pi-docsite --docs-dir docs --tagline "Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar."`
+    Omitting `--tagline` blanks the meta description and tagline on every page, so it is not optional.
+  - The site is built from this repo's own generator (`packages/pi-docsite`), not a PyPI release,
+    so a template change lands on the site with the commit that carries it.
+  - The output is deterministic: repeated runs are byte-identical. If a rebuild shows unrelated
+    churn, that is a real regression from your edit — investigate it. Each page must have exactly one
+    H1, which becomes its title and sidebar entry; headings inside code fences are ignored.
   - Use the `pi-docsite` skill (`.pi/skills/` or `~/.pi/agent/skills/pi-docsite/`) when
     you need to build, rebuild, or debug the docs site, or add a docs page.
 - **CLI specialist agents (container):** `entrypoint.sh` runs
@@ -393,20 +396,25 @@ agents/`httpd.py` from the npm unpack.
 
 ## Documentation
 
-`docs/*.md` are hand-written and are the single source of truth. Everything else in
-`docs/` — `*.html`, `llms.txt`, `llms-full.txt`, `search-index.json`, `assets/` — is
-generated and committed.
+`docs/*.md` are hand-written and are the single source of truth. Everything else in `docs/` —
+`*.html`, `llms.txt`, `llms-full.txt`, `search-index.json`, `assets/` — is build output: produced by
+`.github/workflows/docs.yml` on `main`, gitignored locally, and kept in history at the pre-migration
+commit.
 
-Regenerate after changing any `docs/*.md`:
+Edit the markdown and let the Action build the site. Never run the generator in a PR and never commit
+its output — `.github/workflows/docs-guard.yml` fails such a PR by design. Preview locally only:
 
 ```bash
-uv run --group docs pi-docsite --docs-dir docs \
+uv run --package pi-docsite pi-docsite --docs-dir docs \
   --tagline "Agent orchestration for pi: routing, subagents, background work, memory, providers, and sidecar."
 ```
 
+That runs this repo's own generator (`packages/pi-docsite`), which is also what CI builds with —
+never a PyPI release, so a template change lands with the commit that carries it.
+
 The output is deterministic: repeated runs are byte-identical, so a rebuild that shows
 unrelated churn means a real change. Each page must have exactly one H1, which becomes
-its title and its sidebar entry; headings inside code fences are ignored.
+its title and its sidebar entry; headings inside code fences are ignored. Inter-page links
+use `.html`.
 
-Edit the markdown, never the HTML. If a page renders wrong, fix the markdown or the
-templates under `scripts/docs_render/`.
+If a page renders wrong, fix the markdown or the templates in `packages/pi-docsite/`.
