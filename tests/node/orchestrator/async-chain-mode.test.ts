@@ -504,6 +504,28 @@ describe("project-agent approval covers every chain step cwd", () => {
     }
   });
 
+  it("lists BOTH sources when two step dirs hold an agent of the same name", async () => {
+    const h = harness({ hasUI: true, confirm: async () => true });
+    try {
+      const dirA = mkdtempSync(join(tmpdir(), "chain-dup-a-"));
+      const dirB = mkdtempSync(join(tmpdir(), "chain-dup-b-"));
+      writeProjectAgent(dirA, "dup-name");
+      writeProjectAgent(dirB, "dup-name");
+      const steps = [
+        { agent: "dup-name", task: "one", cwd: dirA, estimatedSeconds: 5, taskId: "-1" },
+        { agent: "dup-name", task: "two", cwd: dirB, estimatedSeconds: 5, taskId: "-1" },
+      ];
+      await h.run({ chain: steps, name: "dup gate", async: true, taskId: "-1" });
+      const body = h.confirmCalls.map(c => c.message ?? "").join("\n");
+      assert.match(body, new RegExp(dirA.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "source A listed");
+      assert.match(body, new RegExp(dirB.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "source B listed — same name, different agent");
+      rmSync(dirA, { recursive: true, force: true });
+      rmSync(dirB, { recursive: true, force: true });
+    } finally {
+      h.restore();
+    }
+  });
+
   it("does not prompt when every step resolves to the parent's own agents", async () => {
     const h = harness({ hasUI: true });
     try {

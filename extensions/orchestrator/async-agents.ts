@@ -143,6 +143,7 @@ export function firePendingCompletions(jobs: Iterable<AsyncJob>): number {
     fireOnComplete(job);
     fired++;
   }
+  if (fired > 0) log.info("fire_pending_completions", { fired });
   return fired;
 }
 

@@ -1826,11 +1826,22 @@ export function registerSubagentTool(
             if (discovery.projectAgentsDir) sources.push(discovery.projectAgentsDir);
           }
         }
-        for (const step of params.chain ?? []) {
-          if (!step.cwd || step.cwd === ctx.cwd) continue;
-          const stepDiscovery = discoverAgents(step.cwd, scope);
-          const stepAgent = stepDiscovery.agents.find((a) => a.name === step.agent);
-          if (stepAgent?.source === "project" && !projAgents.some((a) => a.name === stepAgent.name)) {
+        // Async chains resolve agents per step, so a step's own cwd can contribute a
+        // project agent — including one that SHADOWS a parent user agent of the same name.
+        // Sync chains still resolve against the parent list, so asking about their steps
+        // would prompt for an agent that never runs.
+        if (params.async === true) {
+          const seen = new Set(projAgents.map((a) => `${a.name}@${discovery.projectAgentsDir ?? ""}`));
+          for (const step of params.chain ?? []) {
+            if (!step.cwd || step.cwd === ctx.cwd) continue;
+            const stepDiscovery = discoverAgents(step.cwd, scope);
+            const stepAgent = stepDiscovery.agents.find((a) => a.name === step.agent);
+            if (stepAgent?.source !== "project") continue;
+            // Dedupe on name+directory: the same name in a second project dir is a
+            // DIFFERENT agent and its source must appear in the prompt.
+            const key = `${stepAgent.name}@${stepDiscovery.projectAgentsDir ?? ""}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
             projAgents.push(stepAgent);
             if (stepDiscovery.projectAgentsDir) sources.push(stepDiscovery.projectAgentsDir);
           }
