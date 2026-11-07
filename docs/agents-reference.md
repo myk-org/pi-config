@@ -84,7 +84,7 @@ Scoped to third-party repositories you are considering adopting, not to auditing
 
 ## Code review
 
-The five `code-reviewer-*` agents are dispatched by the review loop, not by chat routing. After any code change, all five plus `test-runner` run in parallel as async subagents, and the loop repeats until the state is clean (capped by `review_loop_max_cycles`). `reviewer` is the general-purpose single-agent review.
+The five `code-reviewer-*` agents are dispatched by the review loop, not by chat routing. After any code change, all five plus `test-runner` run in parallel as async subagents, and the loop repeats until the state is clean (capped by `review_loop_max_cycles`). Every round records **what** it reviews — `PR #1054 @ 75098f6`, `commit cfb1222 (local)`, `issue #42`, or `plan docs/x.md` — and the cycle counter resets when that subject changes, so the status line and the cap always refer to one loop rather than to a running total of the worktree. `reviewer` is the general-purpose single-agent review.
 
 | Agent | Description | Tools |
 | :--- | :--- | :--- |

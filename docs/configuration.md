@@ -175,7 +175,7 @@ See [Automating Code Reviews](automating-code-reviews.html) for details.
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `review_loop_max_cycles` | integer `1`-`10` | `3` | `PI_REVIEW_LOOP_MAX_CYCLES` | Maximum number of review-loop cycles when review-loop enforcement is enabled. | Caps reviewer re-dispatch count. Invalid values fall through to the next resolution layer or the default. |
+| `review_loop_max_cycles` | integer `1`-`10` | `3` | `PI_REVIEW_LOOP_MAX_CYCLES` | Maximum number of review-loop cycles when review-loop enforcement is enabled. | Caps reviewer re-dispatch count **for the subject under review** — the open PR at its head commit, else the local commit, or the plan/issue a caller names explicitly. A different subject starts counting at 1, and a loop that finishes clean restarts, so the cap can never latch onto unrelated work. Invalid values fall through to the next resolution layer or the default. |
 
 > **Warning:** Accepted values are integers `1` through `10`, or digit strings `"1"` through `"10"`. Values such as `0`, `11`, `"01"`, `"10.0"`, `"1e1"`, and `"inf"` are ignored.
 

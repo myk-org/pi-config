@@ -10,12 +10,16 @@
  * On first access, migrates any legacy pi-config-review-state.json automatically.
  */
 
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getSetting } from "./project-settings.js";
+import { createLogger } from "../shared/logger.js";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
 import { resolveWorktreeRoot } from "./utils.js";
+
+const log = createLogger("pi-config-review-state");
 
 type StateTransitionCallback = (state: ReviewState) => void;
 let onTransitionCb: StateTransitionCallback | null = null;
@@ -33,9 +37,46 @@ function notifyTransition(state: ReviewState): void {
   catch { /* transition callback failed — fire-and-forget, never propagate */ }
 }
 
+/** What a review loop is looking at. Four known shapes plus an escape hatch, so a new review
+ *  type is recorded instead of being blocked by the schema. */
+export type ReviewSubject =
+  | { kind: "pr"; repo: string; number: number; head_sha: string }
+  | { kind: "issue"; repo: string; number: number }
+  | { kind: "local"; head_sha: string }
+  | { kind: "plan"; path: string }
+  | { kind: "other"; id: string };
+
+/** Stable identity of a subject — what the cycle counter resets against. Kept as one string so
+ *  the JSONL stays greppable and two shapes can never both claim the same loop. */
+export function subjectKey(subject: ReviewSubject): string {
+  switch (subject.kind) {
+    case "pr": return `pr:${subject.repo}#${subject.number}@${subject.head_sha}`;
+    case "issue": return `issue:${subject.repo}#${subject.number}`;
+    case "local": return `local:${subject.head_sha}`;
+    case "plan": return `plan:${subject.path}`;
+    case "other": return `other:${subject.id}`;
+  }
+}
+
+/** Short human label for the status line: `PR #1054 @ 75098f6`, `commit cfb1222 (local)`. */
+export function subjectLabel(subject: ReviewSubject | null): string {
+  if (!subject) return "no subject";
+  switch (subject.kind) {
+    case "pr": return `PR #${subject.number} @ ${subject.head_sha.slice(0, 7)}`;
+    case "issue": return `issue #${subject.number}`;
+    case "local": return `commit ${subject.head_sha.slice(0, 7)} (local)`;
+    case "plan": return `plan ${subject.path}`;
+    case "other": return subject.id;
+  }
+}
+
 export interface ReviewState {
   status: "none" | "needs_review" | "in_progress" | "has_findings" | "clean";
   cycle: number;
+  /** What this loop reviews; `null` on state written before the field existed. */
+  subject: ReviewSubject | null;
+  /** When the current subject's cycle counting began. */
+  subject_started_at: string | null;
   reviewers_pending: string[];
   reviewers_total: number;
   findings_count: number;
@@ -69,6 +110,8 @@ function defaultState(): ReviewState {
   return {
     status: "none",
     cycle: 0,
+    subject: null,
+    subject_started_at: null,
     reviewers_pending: [],
     reviewers_total: 0,
     findings_count: 0,
@@ -79,11 +122,43 @@ function defaultState(): ReviewState {
   };
 }
 
+/** Read a stored subject, rejecting anything that is not one of the known shapes (a hand-edited
+ *  or older file must not crash the counter — it simply counts as "no subject"). */
+function normalizeSubject(raw: any): ReviewSubject | null {
+  if (!raw || typeof raw !== "object") return null;
+  const str = (value: any) => (typeof value === "string" && value ? value : null);
+  switch (raw.kind) {
+    case "pr": {
+      const repo = str(raw.repo), head = str(raw.head_sha);
+      return repo && head && typeof raw.number === "number" ? { kind: "pr", repo, number: raw.number, head_sha: head } : null;
+    }
+    case "issue": {
+      const repo = str(raw.repo);
+      return repo && typeof raw.number === "number" ? { kind: "issue", repo, number: raw.number } : null;
+    }
+    case "local": {
+      const head = str(raw.head_sha);
+      return head ? { kind: "local", head_sha: head } : null;
+    }
+    case "plan": {
+      const file = str(raw.path);
+      return file ? { kind: "plan", path: file } : null;
+    }
+    case "other": {
+      const id = str(raw.id);
+      return id ? { kind: "other", id } : null;
+    }
+    default: return null;
+  }
+}
+
 /** Normalize a raw parsed object into a valid ReviewState with defaults for missing fields. */
 function normalizeRawState(raw: any): ReviewState {
   return {
     status: raw.status ?? "none",
     cycle: typeof raw.cycle === "number" ? raw.cycle : 0,
+    subject: normalizeSubject(raw.subject),
+    subject_started_at: typeof raw.subject_started_at === "string" ? raw.subject_started_at : null,
     reviewers_pending: Array.isArray(raw.reviewers_pending) ? raw.reviewers_pending : [],
     reviewers_total: typeof raw.reviewers_total === "number" ? raw.reviewers_total : 0,
     findings_count: typeof raw.findings_count === "number" ? raw.findings_count : 0,
@@ -221,19 +296,41 @@ export function markNeedsReview(cwd: string): void {
   });
 }
 
-/** Add a single reviewer to the pending list. Sets status to in_progress if not already. */
-export function addReviewerPending(cwd: string, reviewerName: string): void {
+/** Start a review round: record a pending reviewer AND the subject under review.
+ *
+ *  `subject` is REQUIRED — a loop that cannot name what it reviews counts rounds for nothing,
+ *  which is how one worktree accumulated "cycle 46" across unrelated PRs. The first reviewer of a
+ *  round increments `cycle`; a DIFFERENT subject (another PR, commit, issue or plan file) starts
+ *  that subject's counting at 1. Passing null throws rather than silently miscounting. */
+export function addReviewerPending(cwd: string, reviewerName: string, subject: ReviewSubject): void {
+  if (!subject || typeof subject !== "object") {
+    throw new Error("[pi-config-review-state] addReviewerPending requires the review subject");
+  }
   withStateLock(cwd, (state) => {
     if (!state.reviewers_pending.includes(reviewerName)) {
       state.reviewers_pending.push(reviewerName);
       state.reviewers_total = Math.max(state.reviewers_total, state.reviewers_pending.length);
     }
-    if (state.status !== "in_progress") {
-      state.status = "in_progress";
+    const key = subjectKey(subject);
+    const previousKey = state.subject ? subjectKey(state.subject) : null;
+    const subjectChanged = previousKey !== key;
+    const startsRound = subjectChanged || state.status !== "in_progress";
+    if (subjectChanged) {
+      // A new subject is a new loop — even while a reviewer for the previous subject is still
+      // pending: keeping the old subject would attribute this round to the wrong loop.
+      state.subject = subject;
+      state.cycle = 1;
+      state.subject_started_at = new Date().toISOString();
+    } else if (state.status !== "in_progress") {
       state.cycle++;
+    }
+    if (startsRound) {
+      // A round begins: findings and edit flags belong to it, not to the round before.
       state.findings_count = 0;
       state.edited_during_cycle = false;
     }
+    state.status = "in_progress";
+    log.debug("review_round_start", { reviewer: reviewerName, subject: key, cycle: state.cycle, subjectChanged, previousSubject: previousKey });
     writeState(cwd, state);
     notifyTransition(state);
   });
@@ -274,14 +371,38 @@ export function isReviewClean(cwd: string): boolean {
   return true;
 }
 
-/** Check if commit is allowed — clean review, no tracking, or max cycles exhausted. */
+/** HEAD of the worktree, or null when it cannot be read (not a repo, git missing). */
+function currentHeadSha(cwd: string): string | null {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf-8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when the stored subject is the one this worktree is reviewing now. A subject that carries a
+ *  commit must match HEAD; a plan or issue is not tied to a commit and is only replaced by a caller
+ *  naming a new one. Unknown HEAD answers false, so the cap never applies on a guess. */
+function subjectIsCurrent(cwd: string, subject: ReviewSubject | null): boolean {
+  if (!subject) return true; // legacy state: nothing to compare, keep the historical behaviour
+  // ONLY a review of a commit can exhaust the commit cap. A plan, an issue, or an `other` subject
+  // (including the `unresolved:` fallback written when HEAD cannot be read) never licensed a
+  // commit — treating them as current let such a round's count authorize unreviewed code.
+  if (subject.kind !== "pr" && subject.kind !== "local") return false;
+  const head = currentHeadSha(cwd);
+  return head !== null && subject.head_sha === head;
+}
+
+/** Check if commit is allowed — clean review, no tracking, or max cycles exhausted FOR THIS
+ *  SUBJECT. Without the subject check, an exhausted cap from an earlier loop licensed commits on
+ *  new work that had never been reviewed. */
 export function isCommitAllowed(cwd: string): boolean {
   if (isReviewClean(cwd)) return true;
   const state = readReviewState(cwd);
   // Allow commit when max review cycles exhausted — cap reached, no reviewers running
   if ((state.status === "has_findings" || state.status === "clean" || state.status === "needs_review") && state.reviewers_pending.length === 0) {
     const maxCycles = getSetting(cwd, "review_loop_max_cycles");
-    if (state.cycle >= maxCycles) return true;
+    if (state.cycle >= maxCycles && subjectIsCurrent(cwd, state.subject)) return true;
   }
   return false;
 }

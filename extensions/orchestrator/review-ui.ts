@@ -8,7 +8,7 @@
 
 import type { ExtensionAPI, ExtensionContext, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { onStateTransition, readReviewState, markNeedsReview, resetReviewState, type ReviewState } from "./pi-config-review-state.js";
+import { onStateTransition, readReviewState, markNeedsReview, resetReviewState, subjectLabel, type ReviewState } from "./pi-config-review-state.js";
 import { ICON_REVIEW_CLEAN, ICON_REVIEW_NEEDED, ICON_REVIEW_PROGRESS, ICON_REVIEW_FINDINGS } from "./icons.js";
 import { getSetting } from "./project-settings.js";
 import { setSlot, clearSlot } from "./status-bar.js";
@@ -19,6 +19,8 @@ import { normalizePorcelain } from "./review-porcelain.js";
 interface ReviewStatusData {
   status: ReviewState["status"];
   cycle: number;
+  /** Defaulted for entries written before the subject was recorded. */
+  subject?: ReviewState["subject"];
   findings_count: number;
   tests_passed: boolean;
   reviewers_pending: string[];
@@ -38,12 +40,36 @@ function stateKey(s: { status: string; cycle: number; findings_count: number; te
 
 export { normalizePorcelain } from "./review-porcelain.js";
 
+/** The single-line status summary. Pure so it can be asserted without a TUI: a dropped subject
+ *  segment or a broken format would otherwise pass every test. */
+export function reviewStatusLine(data: ReviewStatusData): string {
+  const subject = subjectLabel(data.subject ?? null);
+  switch (data.status) {
+    case "in_progress": {
+      const testsIcon = data.tests_passed ? "✅" : "⏳";
+      const waiting = data.reviewers_pending.length > 0 ? ` — waiting: ${data.reviewers_pending.join(", ")}` : "";
+      return `🔄 Review cycle ${data.cycle} — ${subject} — ${data.findings_count} findings — tests ${testsIcon}${waiting}`;
+    }
+    case "clean": {
+      const testsLabel = data.tests_passed ? "tests passed" : "tests pending";
+      return `✅ Review clean — cycle ${data.cycle} — ${subject} — ${testsLabel} — ${data.tests_passed ? "ready to commit" : "awaiting tests"}`;
+    }
+    case "needs_review":
+      return `⚠️ Code changed — review needed`;
+    case "has_findings":
+      return `🔍 Review cycle ${data.cycle} — ${subject} — ${data.findings_count} finding${data.findings_count !== 1 ? "s" : ""} — needs fixes`;
+    default:
+      return `📋 Review: ${data.status}`;
+  }
+}
+
 export function registerReviewUI(pi: ExtensionAPI): void {
   // Register the entry renderer for "review-status" custom type
   pi.registerEntryRenderer<ReviewStatusData>("review-status", (entry, { expanded }, theme) => {
     const data = entry.data ?? {
       status: "none" as const,
       cycle: 0,
+      subject: null,
       findings_count: 0,
       tests_passed: false,
       reviewers_pending: [],
@@ -57,30 +83,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
 
     const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
 
-    let line: string;
-    switch (data.status) {
-      case "in_progress": {
-        const testsIcon = data.tests_passed ? "✅" : "⏳";
-        const waiting = data.reviewers_pending.length > 0
-          ? ` — waiting: ${data.reviewers_pending.join(", ")}`
-          : "";
-        line = `🔄 Review cycle ${data.cycle} — ${data.findings_count} findings — tests ${testsIcon}${waiting}`;
-        break;
-      }
-      case "clean": {
-        const testsLabel = data.tests_passed ? "tests passed" : "tests pending";
-        line = `✅ Review clean — cycle ${data.cycle} — ${testsLabel} — ${data.tests_passed ? "ready to commit" : "awaiting tests"}`;
-        break;
-      }
-      case "needs_review":
-        line = `⚠️ Code changed — review needed`;
-        break;
-      case "has_findings":
-        line = `🔍 Review cycle ${data.cycle} — ${data.findings_count} finding${data.findings_count !== 1 ? "s" : ""} — needs fixes`;
-        break;
-      default:
-        line = `📋 Review: ${data.status}`;
-    }
+    const line = reviewStatusLine(data);
 
     const colorMap: Record<string, ThemeColor> = {
       in_progress: "accent",
@@ -242,6 +245,7 @@ export function registerReviewUI(pi: ExtensionAPI): void {
     pi.appendEntry<ReviewStatusData>("review-status", {
       status: state.status,
       cycle: state.cycle,
+      subject: state.subject,
       findings_count: state.findings_count,
       tests_passed: state.tests_passed,
       reviewers_pending: [...state.reviewers_pending],
