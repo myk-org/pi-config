@@ -322,6 +322,41 @@ const backedUpInSession = new Set<string>();
 /** Files this visit CREATED: their pre-visit state is "absent", so backing up the first partial
  *  version would misrepresent it. */
 const createdInSession = new Set<string>();
+/** Visit snapshots waiting to be promoted into the numbered chain when the visit closes. */
+const visitSnapshots = new Set<string>();
+
+/** A visit keeps its own copy under this suffix, so an external save during the visit (which
+ *  rotates the numbered chain) cannot destroy the state the user opened the TUI with. */
+const VISIT_SUFFIX = ".bak.visit";
+
+function visitSnapshotPath(filePath: string): string {
+  return `${filePath}${VISIT_SUFFIX}`;
+}
+
+/** Move each visit snapshot into `.bak.1` (shifting the chain), once, when the visit closes. */
+function promoteVisitSnapshots(): void {
+  for (const snapshot of visitSnapshots) {
+    const filePath = snapshot.slice(0, -VISIT_SUFFIX.length);
+    try {
+      if (!existsSync(snapshot)) continue;
+      const count = backupCountFor(filePath);
+      if (count <= 0) {
+        unlinkSync(snapshot);
+        continue;
+      }
+      const oldest = settingsBackupPath(filePath, count);
+      if (existsSync(oldest)) unlinkSync(oldest);
+      for (let slot = count - 1; slot >= 1; slot--) {
+        const from = settingsBackupPath(filePath, slot);
+        if (existsSync(from)) renameSync(from, settingsBackupPath(filePath, slot + 1));
+      }
+      renameSync(snapshot, settingsBackupPath(filePath, 1));
+    } catch (e: any) {
+      log.warn("settings_visit_snapshot_promote_failed", { filePath, error: e?.message });
+    }
+  }
+  visitSnapshots.clear();
+}
 
 export function beginSettingsEditSession(): void {
   editSessionDepth++;
@@ -330,6 +365,7 @@ export function beginSettingsEditSession(): void {
 export function endSettingsEditSession(): void {
   editSessionDepth = Math.max(0, editSessionDepth - 1);
   if (editSessionDepth === 0) {
+    promoteVisitSnapshots();
     backedUpInSession.clear();
     createdInSession.clear();
   }
@@ -411,13 +447,20 @@ export function writeSettingsFile(
     // Pruning runs on EVERY write: lowering the retention during a visit must drop the slots
     // above the new limit, and inside a visit only the rotation itself is deduped.
     pruneExtraBackups(filePath, count);
-    if (shouldBackUp(filePath, options.dedupeBackup === true)) {
-      rotateSettingsBackups(filePath, count);
-      // Recorded only when a copy was actually made: retention 0 skips rotation, and the user may
-      // enable backups later in the same visit.
-      if (options.dedupeBackup === true && editSessionDepth > 0 && count > 0) {
-        backedUpInSession.add(filePath);
+    if (options.dedupeBackup === true && editSessionDepth > 0) {
+      // Inside a visit the snapshot is the restore point; the chain is only touched at visit end.
+      if (shouldBackUp(filePath, true) && count > 0) {
+        try {
+          copyFileSync(filePath, visitSnapshotPath(filePath));
+          backedUpInSession.add(filePath);
+          visitSnapshots.add(visitSnapshotPath(filePath));
+        } catch (e: any) {
+          log.error("settings_backup_failed", { filePath, error: e?.message });
+          throw new SettingsBackupError(filePath, e);
+        }
       }
+    } else {
+      rotateSettingsBackups(filePath, count);
     }
   }
   const content = JSON.stringify(data, null, 2) + "\n";
