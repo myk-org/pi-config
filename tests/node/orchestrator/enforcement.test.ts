@@ -4,13 +4,14 @@
  */
 import { describe, it, before, after, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { DANGEROUS, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
+import { DANGEROUS, isNoexecSyntaxCheck, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
+import { getPiLogPath } from "../../../extensions/shared/file-logger.js";
 import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
 import { commitTrailerModelId, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
@@ -329,6 +330,135 @@ describe("isReadOnlyStatement", () => {
 // ── isRmInProjectTmp ──
 
 describe("isRmInProjectTmp", () => {
+
+  it("allows rm -rf on a literal path inside the home scratch", () => {
+    // The user's own report: a literal absolute path inside ~/.pi/tmp.
+    const cwd = makeTempDir("rm-home-tmp-");
+    assert.equal(isRmInProjectTmp(`rm -rf ${homedir()}/.pi/tmp/docsbuild-test`, cwd), true);
+  });
+
+  it("refuses home-scratch deletions that are not literal paths inside it", () => {
+    const cwd = makeTempDir("rm-home-tmp-");
+    const home = homedir();
+    for (const stmt of [
+      `rm -rf ${home}/.pi/logs/x`, // outside the scratch
+      `rm -rf ${home}/.pi/tmp/../config`, // traversal
+      `rm -rf ${home}/.pi/tmp/*`, // glob, not a literal path
+      `sudo rm -rf ${home}/.pi/tmp/x`, // privilege escalation
+      `rm -rf ${home}/.pi/tmp/link/\\.\\./.ssh/authorized_keys`, // shell strips \\ to ..
+      `rm -rf ${home}/.pi/tmp/\\*`, // a glob hiding behind an escape
+    ]) {
+      assert.equal(isRmInProjectTmp(stmt, cwd), false, stmt);
+    }
+  });
+
+  // A fake home under /tmp would prove nothing — the system-/tmp rule exempts it regardless. Both
+  // tests build it on a neutral root so they assert THIS rule on any host, whichever shape the
+  // real ~/.pi/tmp has.
+  const neutralRoot = (): string | null =>
+    ["/var/tmp", "/usr/tmp"].find((dir) => {
+      try {
+        accessSync(dir, constants.W_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    }) ?? null;
+
+  it("refuses the exemption when the home scratch is a symlink", (t) => {
+    const neutral = neutralRoot();
+    if (!neutral) {
+      t.skip("no neutral temp root writable on this host");
+      return;
+    }
+    const cwd = makeTempDir("rm-home-link-");
+    const fakeHome = mkdtempSync(join(neutral, "rm-fake-home-"));
+    const realHome = process.env.HOME;
+    // `~/.pi/tmp -> ~` would hand the whole home directory to the exemption.
+    mkdirSync(join(fakeHome, ".pi"), { recursive: true });
+    symlinkSync(fakeHome, join(fakeHome, ".pi", "tmp"), "dir");
+    process.env.HOME = fakeHome;
+    try {
+      // Naming a path outside the scratch is refused even though its target sits inside it.
+      assert.equal(isRmInProjectTmp(`rm -rf ${fakeHome}/.ssh`, cwd), false, "a symlinked scratch grants nothing");
+      // A path written THROUGH the scratch still works: that is the layout real users have, and it
+      // is the only spelling that names the scratch.
+      assert.equal(isRmInProjectTmp(`rm -rf ${fakeHome}/.pi/tmp/x`, cwd), true);
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a .. that the kernel would apply to a symlink target", (t) => {
+    // path.resolve collapses `link/..` lexically; the kernel resolves it against where `link`
+    // points. With a decoy in the scratch, the collapsed path looks in-scratch either way — so the
+    // operand is refused before any of that, on the `..` alone.
+    const neutral = neutralRoot();
+    if (!neutral) {
+      t.skip("no neutral temp root writable on this host");
+      return;
+    }
+    const cwd = makeTempDir("rm-dotdot-");
+    const fakeHome = mkdtempSync(join(neutral, "rm-dotdot-home-"));
+    const realHome = process.env.HOME;
+    mkdirSync(join(fakeHome, ".pi", "tmp", ".ssh"), { recursive: true });
+    mkdirSync(join(fakeHome, ".ssh"), { recursive: true });
+    writeFileSync(join(fakeHome, ".pi", "tmp", ".ssh", "authorized_keys"), "");
+    writeFileSync(join(fakeHome, ".ssh", "authorized_keys"), "");
+    symlinkSync(join(fakeHome, ".ssh"), join(fakeHome, ".pi", "tmp", "link"), "dir");
+    process.env.HOME = fakeHome;
+    try {
+      assert.equal(
+        isRmInProjectTmp(`rm -rf ${fakeHome}/.pi/tmp/link/../.ssh/authorized_keys`, cwd),
+        false,
+        "a decoy in the scratch must not legalise traversal",
+      );
+      assert.equal(isRmInProjectTmp(`rm -rf ${fakeHome}/.pi/tmp/pkg/..`, cwd), false);
+      // Plain scratch paths are unaffected.
+      assert.equal(isRmInProjectTmp(`rm -rf ${fakeHome}/.pi/tmp/build-scratch`, cwd), true);
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("still decides when the home directory does not exist", () => {
+    // A HOME pointing nowhere must not turn the gate into an exception: it just grants no exemption.
+    const cwd = makeTempDir("rm-nohome-");
+    const realHome = process.env.HOME;
+    process.env.HOME = join(cwd, "never-created", "home");
+    try {
+      assert.equal(isRmInProjectTmp("rm -rf /tmp/some-scratch", cwd), true, "the /tmp rule still applies");
+      assert.equal(isRmInProjectTmp("rm -rf /etc/hosts", cwd), false, "and nothing else is exempt");
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+    }
+  });
+
+  it("allows the home scratch whether or not it is a symlink", (t) => {
+    const neutral = neutralRoot();
+    if (!neutral) {
+      t.skip("no neutral temp root writable on this host");
+      return;
+    }
+    const cwd = makeTempDir("rm-home-real-");
+    const fakeHome = mkdtempSync(join(neutral, "rm-real-home-"));
+    const realHome = process.env.HOME;
+    mkdirSync(join(fakeHome, ".pi", "tmp"), { recursive: true });
+    process.env.HOME = fakeHome;
+    try {
+      assert.equal(isRmInProjectTmp(`rm -rf ${fakeHome}/.pi/tmp/build-scratch`, cwd), true);
+      assert.equal(isRmInProjectTmp(`rm -rf ${fakeHome}/.ssh`, cwd), false);
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
   let testDir: string;
   let tmpPath: string;
 
@@ -2885,6 +3015,47 @@ describe("descriptor-duplication redirects survive the split (PR #948 R3)", () =
     assert.deepStrictEqual(stmts, ["grep foo file >&2"]);
   });
 
+  it("treats bash -n as a noexec syntax check, not a shell execution", () => {
+    for (const cmd of [
+      "bash -n script.sh",
+      "sh -n .dev/deploy-all.sh",
+      "/bin/bash -n script.sh",
+      "bash -x -n script.sh",
+      "sudo bash -n script.sh",
+      "timeout 5 bash -n script.sh",
+      "bash -n",                     // stdin: parses only, nothing runs
+      "bash -xn script.sh",          // composite flag still means noexec
+    ]) {
+      assert.equal(isNoexecSyntaxCheck(cmd), true, cmd);
+    }
+    for (const cmd of [
+      "bash script.sh",              // executes
+      "bash -c 'bash -n script.sh'", // -n belongs to the inner command
+      "zsh script.sh",
+      "bash deploy-all.sh -n",       // executes the script, passes -n to it
+      "sh script.sh -n",
+      "bash -c 'x' -n",              // -c already executes a string
+      'bash -n "$(rm -rf /tmp/target)"', // the CALLING shell expands first
+      "bash -n <(echo hi)",          // process substitution runs
+      "bash -n `echo hi`",
+      "bash -- -n",                  // -- ends options; -n is a file name
+      "bash -n +n script.sh",        // +n switches noexec back off
+      "bash +n -n script.sh",        // +n applies regardless of order
+      "bash -n +o noexec script.sh", // named option re-enables execution
+      "bash -n${IFS}+n${IFS}-c 'rm -rf /tmp/target'", // ${IFS} word-splits into options
+      "bash -n $script.sh",          // any expansion may split or change the word
+      "bash -n '+n' script.sh",      // quotes are removed BEFORE bash parses: this is a +n option
+      'bash -n "+n" script.sh',
+      "bash -n \\+n script.sh",
+      "bash -n 'script.sh'",         // quoted operands are refused too — no exception worth it
+    ]) {
+      assert.equal(isNoexecSyntaxCheck(cmd), false, cmd);
+    }
+    // The helper sees ONE statement: a chain is split by the gate, so `bash -n a && bash b`
+    // still flags its second statement (`splitBashStatements` keeps them apart).
+    assert.equal(splitBashStatements("bash -n a.sh && bash b.sh").filter((st) => !isNoexecSyntaxCheck(st)).length, 1);
+  });
+
   it("still splits a background & (regression)", () => {
     const stmts = splitBashStatements('command echo ok & rm -rf "$HOME/project"');
     assert.deepStrictEqual(stmts, ["command echo ok", 'rm -rf "$HOME/project"']);
@@ -3199,6 +3370,18 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
       assert.equal(res?.block, true, cmd);
       assert.match(res.reason, /ABSOLUTE/i);
     }
+  });
+
+  it("logs the noexec exemption with a hash, never the command text", async () => {
+    const logPath = getPiLogPath("enforcement");
+    const before = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").length : 0;
+
+    const result = await runBash("bash -n /tmp/secret-path-marker.sh");
+    assert.equal(result?.block, undefined, "a syntax check is not blocked");
+
+    const written = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").slice(before) : "";
+    assert.match(written, /dangerous_gate_noexec_syntax_check/, "the exemption must leave a trail");
+    assert.ok(!written.includes("secret-path-marker"), "the command text must not reach the log");
   });
 
   it("blocks quoted tilde targets — quoted ~ does not expand (Qodo #964)", async () => {

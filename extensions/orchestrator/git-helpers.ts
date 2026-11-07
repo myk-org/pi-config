@@ -1154,6 +1154,44 @@ export function listUnmergedFiles(cwd?: string): { ok: boolean; files: string[] 
   return { ok: true, files: [...files] };
 }
 
+/** `bash -n file`, `sh -n script`, `bash -x -n f` — the shell only PARSES: nothing is executed.
+ *  A syntax check is not a command to approve, so the gate must not treat it as running a shell.
+ *  Only an exact `-n` token counts; anything fuzzier stays dangerous. */
+export function isNoexecSyntaxCheck(statement: string): boolean {
+  const WRAPPERS =
+    /^(?:(?:[0-9]*>{1,2}|&>)\S*\s+)*(?:\s*(?:[A-Za-z_]\w*=\S*|(?:then|do|else|elif)\b|sudo(?:\s+-\S+(?:\s+\S+)?)*|rtk(?:\s+-\S+)*|(?:command|builtin|exec)\b|env(?:\s+(?:-\S+(?:\s+\S+)?|\S+=\S*))*|timeout\s+(?:-\S+(?:\s+\S+)?\s+)*\S+|nice(?:\s+(?:-\S+(?:\s+\S+)?))*|nohup\b)\s+)*/i;
+  const SHELL = /^(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh\b/i;
+  // The calling shell expands and word-splits before the syntax check runs: `$(...)` executes,
+  // `${IFS}` splits one token into several options (`bash -n${IFS}+n${IFS}-c …`), backticks run,
+  // and `<(...)`/`>(...)` execute. ANY `$` is refused outright — a legitimate `bash -n script.sh`
+  // never needs one. Quotes and backslashes go too: the CALLING shell removes them before Bash
+  // parses, so `bash -n '+n' script.sh` would hand Bash a `+n` option while this predicate saw a
+  // harmless operand.
+  if (/[$`'"\\]|<(?=\()|>(?=\()/.test(statement)) return false;
+  const rest = statement.replace(WRAPPERS, "").trim();
+  const shellMatch = SHELL.exec(rest);
+  if (!shellMatch) return false;
+  const tokens = rest.slice(shellMatch[0].length).trim().split(/\s+/).filter(Boolean);
+
+  // `-n` only counts in the shell's OWN leading option block, and only if nothing turns it back
+  // off. The invocation accepts the `set` options, so `+n` re-enables execution:
+  //   `bash script.sh -n`  — operand, the script runs
+  //   `bash -- -n`         — `--` ends the options; it runs a FILE called `-n`
+  //   `bash -n +n script`  — noexec is switched off again
+  let noexec = false;
+  for (const token of tokens) {
+    if (token === "--") break; // option terminator: everything after is an operand
+    // `+` options enable modes again (`+n`, `+o noexec`, …). Refusing ALL of them keeps this
+    // predicate from having to model the whole `set` option table.
+    if (token.startsWith("+")) return false;
+    if (!token.startsWith("-")) break; // first operand (script name or argument)
+    // `-c` takes the program text — whatever follows is executed as parsed, so never exempt it.
+    if (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(token)) return false;
+    if (/^-[a-zA-Z]*n/.test(token)) noexec = true; // -n, -xn, -nx
+  }
+  return noexec;
+}
+
 export const DANGEROUS = [
   /\brm\s+(?:-[a-zA-Z]+\s+)*(-[a-zA-Z]*r[a-zA-Z]*|--recursive)/i,
   /\bsudo\b/i,

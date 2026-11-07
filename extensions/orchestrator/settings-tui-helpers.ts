@@ -3,7 +3,7 @@
  * No pi-coding-agent or pi-tui dependencies.
  */
 
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join as joinPath, resolve, sep } from "node:path";
 import stripJsonComments from "strip-json-comments";
@@ -313,6 +313,186 @@ export class SettingsBackupError extends Error {
   }
 }
 
+/** Depth of the interactive editing session (`/pi-config-settings`). While it is open the file
+ *  is snapshotted ONCE, on the first change: a user who adjusts five values must not rotate the
+ *  pre-visit state out of existence. Writes outside the TUI are discrete actions and keep their
+ *  own backup. */
+let editSessionDepth = 0;
+const backedUpInSession = new Set<string>();
+/** Files this visit CREATED: their pre-visit state is "absent", so backing up the first partial
+ *  version would misrepresent it. */
+const createdInSession = new Set<string>();
+/** Visit snapshots waiting to be promoted into the numbered chain when the visit closes. */
+const visitSnapshots = new Set<string>();
+
+/** A visit keeps its own copy, so an external save during the visit (which rotates the numbered
+ *  chain) cannot destroy the state the user opened the TUI with. The process id is part of the
+ *  name: two TUI processes editing one file must not overwrite each other's restore point. */
+function visitSnapshotPath(filePath: string): string {
+  return `${filePath}.bak.visit-${process.pid}`;
+}
+
+/** Serialize chain mutations across processes: rotating or promoting shifts `.bak.N` files, and a
+ *  concurrent writer interleaving between the shift and the rename would lose a restore point. */
+function withChainLock<T>(filePath: string, fn: () => T): T {
+  // The lock is ONE file created with O_EXCL: creating it IS owning it. Splitting that into
+  // mkdir-then-write-pid left a window where the directory existed with no owner, and a reader
+  // could steal a lock a live writer was still acquiring — both then shifted the chain.
+  const lockPath = `${filePath}.bak.lock`;
+  let locked = false;
+  try {
+    for (let attempt = 0; attempt < 100 && !locked; attempt++) {
+      try {
+        writeFileSync(lockPath, String(process.pid), { flag: "wx", mode: 0o600 });
+        locked = true;
+      } catch {
+        // Take over a lock only when its OWNER IS GONE. Age alone is not evidence: a paused or
+        // slow owner could resume and mutate the chain alongside this process.
+        let stale = false;
+        try {
+          const ownerPid = Number(readFileSync(lockPath, "utf-8").trim());
+          if (Number.isInteger(ownerPid) && ownerPid > 0) {
+            try {
+              process.kill(ownerPid, 0); // alive — leave it alone
+            } catch {
+              stale = true; // owner is gone
+            }
+          } else {
+            // Created but not yet written, or a crash mid-write. A live acquisition writes its pid
+            // immediately, so this grace never steals from a live writer, and it is far shorter
+            // than the retry budget — an orphaned lock clears inside the same save.
+            stale = Date.now() - statSync(lockPath).mtimeMs > 200;
+          }
+        } catch {
+          // Vanished between the failed create and this read — retry immediately.
+        }
+        if (stale) {
+          // Atomic steal: rename first, so exactly one of several racing writers claims the stale
+          // lock. Deleting in place let two writers remove each other's fresh lock.
+          const grave = `${lockPath}.stale-${process.pid}-${Date.now()}`;
+          try {
+            renameSync(lockPath, grave);
+            unlinkSync(grave);
+          } catch {
+            /* another writer claimed it — retry the acquisition */
+          }
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      }
+    }
+    if (!locked) {
+      // NEVER mutate the chain without the lock: a concurrent shift-and-rename loses a restore
+      // point, which is worse than refusing the save.
+      log.error("settings_backup_lock_timeout", { filePath });
+      throw new SettingsBackupError(filePath, new Error("backup lock timeout"));
+    }
+    return fn();
+  } finally {
+    if (locked) {
+      try {
+        // Only release a lock we still own: if it was stolen, it now belongs to someone else.
+        if (readFileSync(lockPath, "utf-8").trim() === String(process.pid)) unlinkSync(lockPath);
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+}
+
+/** Promote one visit snapshot into the numbered chain (`.bak.1`), shifting older copies. */
+function promoteSnapshot(snapshotPath: string): void {
+  const filePath = snapshotPath.replace(/\.bak\.visit-\d+$/, "");
+  if (!existsSync(snapshotPath)) return;
+  withChainLock(filePath, () => promoteSnapshotLocked(snapshotPath, filePath));
+}
+
+function promoteSnapshotLocked(snapshotPath: string, filePath: string): void {
+  const count = backupCountFor(filePath);
+  if (count <= 0) {
+    unlinkSync(snapshotPath);
+    return;
+  }
+  const oldest = settingsBackupPath(filePath, count);
+  if (existsSync(oldest)) unlinkSync(oldest);
+  for (let slot = count - 1; slot >= 1; slot--) {
+    const from = settingsBackupPath(filePath, slot);
+    if (existsSync(from)) renameSync(from, settingsBackupPath(filePath, slot + 1));
+  }
+  renameSync(snapshotPath, settingsBackupPath(filePath, 1));
+}
+
+/** Snapshots left by a process that is gone are promoted instead of being overwritten by the next
+ *  visit — a crash must cost nothing. A snapshot owned by a LIVE process is left alone. */
+function reapStaleVisitSnapshots(filePath: string): void {
+  const dir = dirname(filePath);
+  const marker = `${basename(filePath)}.bak.visit-`;
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith(marker)) continue;
+    const pid = Number(name.slice(marker.length));
+    if (!Number.isInteger(pid)) continue;
+    // Skip only a snapshot THIS process owns: a pid can be reused, and a reused pid must not
+    // cause a crashed editor's copy to be silently overwritten.
+    if (pid === process.pid && visitSnapshots.has(joinPath(dir, name))) continue;
+    try {
+      process.kill(pid, 0);
+      continue; // owner still alive
+    } catch {
+      /* dead: fall through and promote its snapshot */
+    }
+    try {
+      promoteSnapshot(joinPath(dir, name));
+      log.info("settings_visit_snapshot_recovered", { filePath, pid });
+    } catch (e: any) {
+      log.warn("settings_visit_snapshot_recover_failed", { filePath, pid, error: e?.message });
+    }
+  }
+}
+
+/** Move each visit snapshot into `.bak.1` (shifting the chain), once, when the visit closes. */
+function promoteVisitSnapshots(): void {
+  const failed = new Set<string>();
+  for (const snapshot of [...visitSnapshots]) {
+    try {
+      promoteSnapshot(snapshot);
+    } catch (e: any) {
+      // Kept in the set so a retry can still promote it; if the process ends first, the next
+      // visit reaps it by pid.
+      failed.add(snapshot);
+      log.warn("settings_visit_snapshot_promote_failed", { snapshot, error: e?.message });
+    }
+  }
+  visitSnapshots.clear();
+  for (const snapshot of failed) visitSnapshots.add(snapshot);
+}
+
+export function beginSettingsEditSession(): void {
+  editSessionDepth++;
+}
+
+export function endSettingsEditSession(): void {
+  editSessionDepth = Math.max(0, editSessionDepth - 1);
+  if (editSessionDepth === 0) {
+    promoteVisitSnapshots();
+    backedUpInSession.clear();
+    createdInSession.clear();
+  }
+}
+
+/** True when this write should rotate a backup. Only the settings TUI asks for dedupe; a browser
+ *  save or an allowlist approval arriving mid-visit is a separate action and keeps its own
+ *  restore point. */
+function shouldBackUp(filePath: string, dedupe: boolean): boolean {
+  if (!dedupe || editSessionDepth === 0) return true;
+  if (createdInSession.has(filePath)) return false;
+  return !backedUpInSession.has(filePath);
+}
+
 /** Path of the newest previous-version copy kept next to a settings file. */
 export function settingsBackupPath(filePath: string, slot = 1): string {
   return `${filePath}.bak.${slot}`;
@@ -321,8 +501,11 @@ export function settingsBackupPath(filePath: string, slot = 1): string {
 /** Keep `count` previous versions: shift `.bak.N-1` → `.bak.N`, then current → `.bak.1`.
  *  A count of 0 disables backups. Failures never block the write — they only log. */
 function rotateSettingsBackups(filePath: string, count: number): void {
-  pruneExtraBackups(filePath, count);
   if (count <= 0) return;
+  withChainLock(filePath, () => rotateSettingsBackupsLocked(filePath, count));
+}
+
+function rotateSettingsBackupsLocked(filePath: string, count: number): void {
   try {
     const oldest = settingsBackupPath(filePath, count);
     if (existsSync(oldest)) unlinkSync(oldest);
@@ -339,7 +522,11 @@ function rotateSettingsBackups(filePath: string, count: number): void {
   }
 }
 
-export function writeSettingsFile(filePath: string, data: Record<string, unknown>): void {
+export function writeSettingsFile(
+  filePath: string,
+  data: Record<string, unknown>,
+  options: { dedupeBackup?: boolean } = {},
+): void {
   // Write directly to target file. Per issue spec: "comments are lost on write — acceptable
   // since the example.jsonc is the reference."
   const dir = dirname(filePath);
@@ -359,13 +546,40 @@ export function writeSettingsFile(filePath: string, data: Record<string, unknown
 
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 
-  if (existsSync(filePath)) {
+  const existedBefore = existsSync(filePath);
+  if (!existedBefore && options.dedupeBackup === true && editSessionDepth > 0) {
+    // Created during this visit: nothing to restore to, and the first partial version is not the
+    // pre-visit state, so later writes in the same visit must not snapshot it.
+    createdInSession.add(filePath);
+  }
+
+  if (existedBefore) {
     // A corrupt file is recoverable by hand; a cleared one is not. Refuse rather than
     // overwrite — this is exactly how a project's settings were once emptied.
     if (readSettingsFile(filePath) === null) throw new SettingsFileCorruptError(filePath);
-    // Every touch keeps the previous bytes — `settings_backup_count` of them, newest at
-    // `.bak.1` — so a wrong write is always recoverable.
-    rotateSettingsBackups(filePath, backupCountFor(filePath));
+    // Keep the pre-change bytes — `settings_backup_count` of them, newest at `.bak.1`. Inside the
+    // settings TUI that happens once per visit, so editing several values keeps the state the user
+    // started from. Recorded only after a successful rotation, so a failed one is retried.
+    const count = backupCountFor(filePath);
+    // Pruning runs on EVERY write: lowering the retention during a visit must drop the slots
+    // above the new limit, and inside a visit only the rotation itself is deduped.
+    pruneExtraBackups(filePath, count);
+    if (options.dedupeBackup === true && editSessionDepth > 0) {
+      // Inside a visit the snapshot is the restore point; the chain is only touched at visit end.
+      if (shouldBackUp(filePath, true) && count > 0) {
+        try {
+          reapStaleVisitSnapshots(filePath);
+          copyFileSync(filePath, visitSnapshotPath(filePath));
+          backedUpInSession.add(filePath);
+          visitSnapshots.add(visitSnapshotPath(filePath));
+        } catch (e: any) {
+          log.error("settings_backup_failed", { filePath, error: e?.message });
+          throw new SettingsBackupError(filePath, e);
+        }
+      }
+    } else {
+      rotateSettingsBackups(filePath, count);
+    }
   }
   const content = JSON.stringify(data, null, 2) + "\n";
   const tmpPath = `${filePath}.${process.pid}.${Date.now().toString(36)}`;

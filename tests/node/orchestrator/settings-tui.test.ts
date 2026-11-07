@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import { StringListSubmenu } from "../../../extensions/orchestrator/settings-tui-submenus.js";
 import { SettingsList } from "@earendil-works/pi-tui";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getSettingsListState } from "../../../extensions/orchestrator/settings-tui.js";
@@ -12,6 +12,8 @@ import {
   parseRawValue,
   readSettingsFile,
   writeSettingsFile,
+  beginSettingsEditSession,
+  endSettingsEditSession,
   getFilePathForScope,
   CATEGORIES,
   registerSettingsTuiCommand,
@@ -476,6 +478,232 @@ describe("readSettingsFile / writeSettingsFile", () => {
       if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
       else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
     }
+  });
+
+  it("snapshots once per settings-TUI visit, not once per changed value", () => {
+    const filePath = join(tempDir, "one-per-visit.json");
+    writeSettingsFile(filePath, { dco: true, pidash_port: 1 });
+
+    beginSettingsEditSession();
+    try {
+      for (const port of [2, 3, 4, 5, 6]) writeSettingsFile(filePath, { dco: true, pidash_port: port }, { dedupeBackup: true });
+    } finally {
+      endSettingsEditSession(); // promotes the visit snapshot into `.bak.1`
+    }
+
+    // Five changes inside one visit, but the backup is the state the user arrived with.
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { dco: true, pidash_port: 1 });
+    assert.equal(existsSync(`${filePath}.bak.2`), false, "no per-change rotation inside a visit");
+
+    // The next visit snapshots the new pre-visit state.
+    beginSettingsEditSession();
+    try {
+      writeSettingsFile(filePath, { dco: false, pidash_port: 7 }, { dedupeBackup: true });
+    } finally {
+      endSettingsEditSession();
+    }
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { dco: true, pidash_port: 6 });
+  });
+
+  it("an external save during a visit cannot consume the visit snapshot", () => {
+    // retention 1 is the tightest case: the external save rotates the chain, yet the visit's own
+    // copy must still be the pre-visit state when the visit closes.
+    const filePath = join(tempDir, "visit-vs-external.json");
+    writeSettingsFile(filePath, { pidash_port: 1 }); // pre-visit state
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    process.env.PI_SETTINGS_BACKUP_COUNT = "1";
+    beginSettingsEditSession();
+    try {
+      writeSettingsFile(filePath, { pidash_port: 2 }, { dedupeBackup: true }); // TUI change
+      writeSettingsFile(filePath, { pidash_port: 3 }); // browser/allowlist write, rotates the chain
+    } finally {
+      if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+      else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+      endSettingsEditSession(); // promotes the visit snapshot to .bak.1
+    }
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 },
+      "the state the user opened the TUI with survives an interleaved external save");
+    assert.equal(existsSync(`${filePath}.bak.visit-${process.pid}`), false, "no leftover snapshot after the visit");
+  });
+
+  it("takes over a lock file that never got its owner", () => {
+    const filePath = join(tempDir, "orphan-lock.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    // Crash mid-write: the lock file exists with no usable owner, and is older than the grace.
+    writeFileSync(`${filePath}.bak.lock`, "");
+    utimesSync(`${filePath}.bak.lock`, new Date(Date.now() - 5_000), new Date(Date.now() - 5_000));
+    const started = Date.now();
+    writeSettingsFile(filePath, { pidash_port: 2 });
+    assert.ok(Date.now() - started < 1_000, "an orphaned lock must not burn the whole retry budget");
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 },
+      "the settings were saved despite the orphaned lock");
+    assert.equal(existsSync(`${filePath}.bak.lock`), false);
+  });
+
+  it("gives a lock being acquired time to publish its owner", () => {
+    // The window this protects: a live writer has created the lock and is writing its pid right
+    // now. A young lock is therefore left alone; only one past the grace may be taken over.
+    const filePath = join(tempDir, "acquiring-lock.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    writeFileSync(`${filePath}.bak.lock`, "");
+    const started = Date.now();
+    writeSettingsFile(filePath, { pidash_port: 2 });
+    assert.ok(Date.now() - started >= 190, "the young lock was left alone for its grace period");
+    assert.equal(existsSync(`${filePath}.bak.lock`), false, "and released once it aged out");
+  });
+
+  it("takes over a lock whose owner is gone", () => {
+    const filePath = join(tempDir, "stale-lock.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    // A dead process left its lock behind (pid 999999 is not running).
+    writeFileSync(`${filePath}.bak.lock`, "999999");
+    writeSettingsFile(filePath, { pidash_port: 2 });
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 },
+      "the stale lock was taken over and the backup written");
+    assert.equal(existsSync(`${filePath}.bak.lock`), false, "lock released after the write");
+  });
+
+  it("refuses the save when the backup lock cannot be taken", () => {
+    // Fail closed: mutating the chain without the lock can lose another process's restore point.
+    const filePath = join(tempDir, "locked.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    // A live owner: this very process, so the lock is never stolen.
+    writeFileSync(`${filePath}.bak.lock`, String(process.pid));
+    try {
+      assert.throws(() => writeSettingsFile(filePath, { pidash_port: 2 }), /without a backup/);
+      assert.deepEqual(JSON.parse(readFileSync(filePath, "utf-8")), { pidash_port: 1 }, "file untouched");
+    } finally {
+      rmSync(`${filePath}.bak.lock`, { force: true });
+    }
+  });
+
+  it("recovers a snapshot left by a crashed visit instead of overwriting it", () => {
+    const filePath = join(tempDir, "crashed-visit.json");
+    writeSettingsFile(filePath, { pidash_port: 1 }); // pre-crash state
+    // A dead process left its visit snapshot behind (pid 999999 is not running).
+    writeFileSync(`${filePath}.bak.visit-999999`, JSON.stringify({ pidash_port: 0 }));
+
+    beginSettingsEditSession();
+    try {
+      writeSettingsFile(filePath, { pidash_port: 2 }, { dedupeBackup: true });
+      // Its own snapshot exists under this process's pid, not the dead one's name.
+      assert.ok(existsSync(`${filePath}.bak.visit-${process.pid}`), "visit uses its own slot");
+    } finally {
+      endSettingsEditSession();
+    }
+
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 },
+      "this visit's snapshot is in the newest slot");
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.2`, "utf-8")), { pidash_port: 0 },
+      "the crashed visit's snapshot was promoted, not overwritten");
+    assert.equal(existsSync(`${filePath}.bak.visit-999999`), false, "stale snapshot consumed");
+  });
+
+  it("retries the visit backup after a failed rotation", () => {
+    const filePath = join(tempDir, "retry-backup.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    process.env.PI_SETTINGS_BACKUP_COUNT = "1";
+    beginSettingsEditSession();
+    try {
+      // A directory squatting on the snapshot path makes the first snapshot fail.
+      mkdirSync(`${filePath}.bak.visit-${process.pid}`, { recursive: true });
+      assert.throws(() => writeSettingsFile(filePath, { pidash_port: 2 }, { dedupeBackup: true }),
+        /without a backup/);
+      rmSync(`${filePath}.bak.visit-${process.pid}`, { recursive: true, force: true });
+      // Not recorded on failure → the next write in the same visit tries again and succeeds.
+      writeSettingsFile(filePath, { pidash_port: 3 }, { dedupeBackup: true });
+    } finally {
+      endSettingsEditSession();
+      if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+      else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+    }
+    // The refused write never reached the file, so the retried snapshot holds the state that
+    // survived it — port 1 — and a copy now exists at all, which is the point.
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 });
+  });
+
+  it("enabling backups mid-visit still creates one", () => {
+    const filePath = join(tempDir, "enable-mid-visit.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    process.env.PI_SETTINGS_BACKUP_COUNT = "0";
+    beginSettingsEditSession();
+    try {
+      writeSettingsFile(filePath, { pidash_port: 2 }, { dedupeBackup: true }); // retention 0: no copy
+      process.env.PI_SETTINGS_BACKUP_COUNT = "3";
+      writeSettingsFile(filePath, { pidash_port: 3 }, { dedupeBackup: true });
+    } finally {
+      endSettingsEditSession();
+      if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+      else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+    }
+    assert.ok(existsSync(`${filePath}.bak.1`), "backup created once retention is enabled");
+  });
+
+  it("a file created during a visit is not backed up from its first partial version", () => {
+    const filePath = join(tempDir, "created-in-visit.json");
+    beginSettingsEditSession();
+    try {
+      writeSettingsFile(filePath, { pidash_port: 1 }, { dedupeBackup: true });
+      writeSettingsFile(filePath, { pidash_port: 2 }, { dedupeBackup: true });
+      assert.equal(existsSync(`${filePath}.bak.1`), false, "nothing existed before the visit");
+    } finally {
+      endSettingsEditSession();
+    }
+  });
+
+  it("an external save during a visit keeps its own backup", () => {
+    // A browser or allowlist write arrives while the overlay is open: it is a separate action and
+    // must get its own restore point, not inherit the visit's dedupe.
+    const filePath = join(tempDir, "external-during-visit.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    beginSettingsEditSession();
+    try {
+      writeSettingsFile(filePath, { pidash_port: 2 }, { dedupeBackup: true });
+      writeSettingsFile(filePath, { pidash_port: 3 }); // external write, no dedupe
+    } finally {
+      endSettingsEditSession();
+    }
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 },
+      "the visit snapshot wins the newest slot when the visit closes");
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.2`, "utf-8")), { pidash_port: 2 },
+      "the external save kept its own restore point one slot older");
+  });
+
+  it("lowering retention during a visit prunes the extra slots", () => {
+    const filePath = join(tempDir, "shrink-in-visit.json");
+    writeSettingsFile(filePath, { pidash_port: 0 });
+    for (const port of [1, 2, 3]) {
+      beginSettingsEditSession();
+      try {
+        writeSettingsFile(filePath, { pidash_port: port }, { dedupeBackup: true });
+      } finally {
+        endSettingsEditSession();
+      }
+    }
+    assert.ok(existsSync(`${filePath}.bak.3`), "three visits → three backups");
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    process.env.PI_SETTINGS_BACKUP_COUNT = "1";
+    beginSettingsEditSession();
+    try {
+      writeSettingsFile(filePath, { pidash_port: 9 }, { dedupeBackup: true });
+      writeSettingsFile(filePath, { pidash_port: 10 }, { dedupeBackup: true });
+    } finally {
+      endSettingsEditSession(); // promotion uses the retention in force during the visit
+      if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+      else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+    }
+    for (const slot of [2, 3]) {
+      assert.equal(existsSync(`${filePath}.bak.${slot}`), false, `.bak.${slot} must be pruned mid-visit`);
+    }
+  });
+
+  it("keeps per-write backups for writes outside a TUI visit", () => {
+    const filePath = join(tempDir, "outside-visit.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    writeSettingsFile(filePath, { pidash_port: 2 });
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 });
   });
 
   it("removes slots beyond the retention when the count drops", () => {

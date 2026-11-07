@@ -5,6 +5,7 @@
  * review state tracking and gitignore checks.
  */
 
+import { createHash } from "node:crypto";
 import { createLogger } from "../shared/logger.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -27,6 +28,7 @@ import {
 } from "./enforcement-helpers.js";
 import {
   DANGEROUS,
+  isNoexecSyntaxCheck,
   dangerousPatternLabel,
   getCurrentBranch,
   isInsideGitWorkTree,
@@ -458,6 +460,16 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
   const hasDangerous = statements.some((stmt) => {
     // Skip read-only commands with no dangerous subshells
     if (isReadOnlyStatement(stmt)) return false;
+    // `bash -n file` only parses: nothing executes, so there is nothing to approve. Logged —
+    // an exemption from the gate must leave a trail an operator can find.
+    if (isNoexecSyntaxCheck(stmt)) {
+      // Audit trail without content: a statement can carry paths, tokens or credentials, so the
+      // log records a short hash an operator can match, never the words themselves.
+      log.info("dangerous_gate_noexec_syntax_check", {
+        statementHash: createHash("sha256").update(stmt).digest("hex").slice(0, 12),
+      });
+      return false;
+    }
     return DANGEROUS.some((p) => p.test(stmt));
   });
   if (hasDangerous) {
@@ -497,9 +509,17 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
 
     // Allow rm -rf targeting only .pi/tmp/ paths without confirmation
     const allRmInTmp = statements
-      .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt))
+      .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt) && !isNoexecSyntaxCheck(stmt))
       .every((stmt) => isRmInProjectTmp(stmt, cwd));
-    if (allRmInTmp) return undefined;
+    if (allRmInTmp) {
+      // Never exempt silently: the audit line carries a hash, not the statement (paths can be
+      // sensitive), matching the syntax-check exemption above.
+      log.info("dangerous_gate_rm_scratch_exempt", {
+        statements: statements.length,
+        statementHash: createHash("sha256").update(statements.join("\n")).digest("hex").slice(0, 12),
+      });
+      return undefined;
+    }
 
     // User-approved allowlist (issue #949): the gate identifies the DANGEROUS
     // STATEMENTS (split out of the chain, benign plumbing tails — descriptor
@@ -517,7 +537,7 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     const dangerousStmts = [
       ...new Set(
         statements
-          .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt))
+          .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt) && !isNoexecSyntaxCheck(stmt))
           .map((stmt) => normalizeDangerousStatement(stmt)),
       ),
     ];

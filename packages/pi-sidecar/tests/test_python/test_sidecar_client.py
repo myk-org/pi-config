@@ -3,6 +3,8 @@
 import asyncio
 import json
 import os
+import subprocess
+import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1697,3 +1699,52 @@ async def test_stream_prompt_raises_when_foreign_turn_ends_before_prompt_verdict
     with pytest.raises(RuntimeError, match="busy"):
         await pending
     assert transport.stream.closed
+
+
+class TestLogLevelFromEnv:
+    """PI_SIDECAR_LOG_LEVEL must never make the client unimportable (rootcoz#453).
+
+    The read happens at import time, so each case runs in a fresh interpreter.
+    """
+
+    @staticmethod
+    def _import_level(value: str | None) -> "subprocess.CompletedProcess[str]":
+        env = {k: v for k, v in os.environ.items() if k != "PI_SIDECAR_LOG_LEVEL"}
+        # The fresh interpreter has no installed copy of this tree — point it at the source.
+        client_root = str(Path(pi_sidecar_client.__file__).parent.parent)
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, [client_root, env.get("PYTHONPATH")]))
+        if value is not None:
+            env["PI_SIDECAR_LOG_LEVEL"] = value
+        return subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, "-c", "import pi_sidecar_client as c; print(c.logger.level)"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+            check=False,
+        )
+
+    @pytest.mark.parametrize(
+        ("value", "expected_level"),
+        [
+            ("info", "20"),  # the documented spelling for this variable
+            ("debug", "10"),
+            ("warning", "30"),
+            ("WARN", "30"),
+            ("INFO", "20"),  # upper case keeps working
+            ("Info", "20"),
+        ],
+    )
+    def test_accepts_any_case(self, value: str, expected_level: str) -> None:
+        result = self._import_level(value)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected_level
+        assert "PI_SIDECAR_LOG_LEVEL" not in result.stderr
+
+    @pytest.mark.parametrize("value", ["verbos", "inf o", ""])
+    def test_invalid_value_falls_back_to_info(self, value: str) -> None:
+        result = self._import_level(value)
+        assert result.returncode == 0, "an unusable env var must not break the import"
+        assert result.stdout.strip() == "20"
+        if value.strip():
+            assert "PI_SIDECAR_LOG_LEVEL" in result.stderr, "the warning must name the variable"

@@ -1942,6 +1942,26 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
 
   // Resolve and substitute PROJECT_TMP_DIR env var
   const projectTmpDir = path.join(cwd, ".pi", "tmp");
+  // The home scratch (~/.pi/tmp) is our own throwaway tree too: the logger fallback and build
+  // scratch tests write there. Same exemption as the project one, same literal-path guards.
+  // Two roots, and BOTH must match: the scratch path as written (which may itself be a symlink —
+  // `~/.pi/tmp` often points into a dotfiles checkout) and where that path really lives. Matching
+  // only the real root made a symlink's target trusted: with `~/.pi/tmp -> ~`, `rm -rf ~/.ssh`
+  // resolves beneath it and would skip approval without ever naming the scratch.
+  // Both resolutions live inside one try: `homedir()` itself can throw when HOME is unset or
+  // points nowhere, and this helper feeds the dangerous-command gate — an exception here would
+  // replace a decision with a crash instead of simply granting no exemption.
+  let lexicalHomeTmp: string | null = null;
+  let resolvedHomeTmp: string | null = null;
+  try {
+    lexicalHomeTmp = path.resolve(realpathSync(homedir()), ".pi", "tmp").replace(/\/+$/, "");
+    resolvedHomeTmp = realpathSync(lexicalHomeTmp);
+  } catch {
+    lexicalHomeTmp = null; // no home, or no scratch in it — nothing to match
+    resolvedHomeTmp = null;
+  }
+  const underHomeTmp = (pathname: string, root: string): boolean =>
+    pathname === root || pathname.startsWith(root + path.sep);
   let resolvedCwd: string | null;
   try {
     resolvedCwd = realpathSync(cwd);
@@ -1952,14 +1972,21 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
   for (const p of paths) {
     // Substitute ${PROJECT_TMP_DIR} or $PROJECT_TMP_DIR
     const expanded = p.replace(/\$\{?PROJECT_TMP_DIR\}?/g, projectTmpDir);
+    // Refuse `..` outright. `path.resolve` collapses it LEXICALLY, while the kernel applies it to
+    // where a preceding symlink actually points — so `~/.pi/tmp/link/../.ssh/key` looks in-scratch
+    // here and deletes `~/.ssh/key` there. Nothing legitimate needs `..` in a scratch operand.
+    if (/(^|\/)\.\.($|\/)/.test(expanded)) return false;
+    // The shell removes backslashes before `rm` sees the path, so `\.\.` is `..` and `\*` is a
+    // glob that no literal-path check ever saw. A literal scratch path needs none of them.
+    if (expanded.includes("\\")) return false;
+    const lexical = path.resolve(cwd, expanded);
     let resolved: string;
     try {
       // Use realpathSync to resolve symlinks — prevents symlink traversal attacks
-      resolved = realpathSync(path.resolve(cwd, expanded));
+      resolved = realpathSync(lexical);
     } catch {
       // Path doesn't exist. For /tmp paths, validate the existing parent via realpathSync
       // to catch symlinked parents (e.g., /tmp/evil-link -> / where evil-link exists).
-      const lexical = path.resolve(cwd, expanded);
       if (lexical.startsWith("/tmp/") && lexical !== "/tmp" && lexical.length > 5) {
         // Block paths containing traversal sequences — even if they resolve under /tmp/,
         // they may have escaped and re-entered via ..
@@ -1978,6 +2005,19 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
           }
         } catch {
           // Parent also doesn't exist — safe (entire path is non-existent)
+        }
+        resolved = lexical;
+      } else if (resolvedHomeTmp !== null && lexicalHomeTmp !== null && underHomeTmp(lexical, lexicalHomeTmp)) {
+        // Non-existent path under the home scratch — validate the parent the same way.
+        if (expanded.includes("..")) return false;
+        const parentDir = path.dirname(lexical);
+        try {
+          const resolvedParent = realpathSync(parentDir);
+          if (!resolvedParent.startsWith(resolvedHomeTmp + path.sep) && resolvedParent !== resolvedHomeTmp) {
+            return false;
+          }
+        } catch {
+          // Parent also doesn't exist — safe
         }
         resolved = lexical;
       } else if (resolvedCwd !== null &&
@@ -2012,7 +2052,12 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
        resolved.endsWith(`${path.sep}.pi${path.sep}tmp`));
     const inSystemTmp = resolved.startsWith("/tmp/") && resolved !== "/tmp" && resolved.length > 5;
 
-    if (!inProjectTmp && !inSystemTmp) return false;
+    // The path as WRITTEN must name the scratch (a symlinked scratch cannot lend its target out),
+    // and its real location must stay inside the scratch (a symlink inside it cannot escape).
+    const inHomeTmp = lexicalHomeTmp !== null && resolvedHomeTmp !== null &&
+      underHomeTmp(lexical, lexicalHomeTmp) && underHomeTmp(resolved, resolvedHomeTmp);
+
+    if (!inProjectTmp && !inSystemTmp && !inHomeTmp) return false;
   }
 
   return true;
