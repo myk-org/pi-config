@@ -74,6 +74,27 @@ export function makeTempDir(prefix: string): string {
 /** File-scoped: for a fixture created in `before()`; removed with the run root. */
 export const makeFileTempDir = makeTempDir;
 
+// A test process can end without reaching `after()`: a spawned child killed, a crash, Ctrl-C, or a
+// cancelled CI job. `exit` covers the first two, but a signal terminates without emitting `exit`
+// unless it is handled — so SIGINT/SIGTERM/SIGHUP remove the run root and then exit with the
+// conventional 128+signal code. Only SIGKILL (and power loss) can still leave a directory, and the
+// next run reaps it by PID.
+function cleanupRunRoot(): void {
+  try {
+    fs.rmSync(TEST_RUN_ROOT, { recursive: true, force: true });
+  } catch {
+    /* already gone */
+  }
+}
+
+process.once("exit", cleanupRunRoot);
+for (const [signal, number] of [["SIGINT", 2], ["SIGTERM", 15], ["SIGHUP", 1]] as const) {
+  process.once(signal, () => {
+    cleanupRunRoot();
+    process.exit(128 + number);
+  });
+}
+
 reapDeadRuns();
 
 beforeEach(() => {
