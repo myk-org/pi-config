@@ -1,5 +1,23 @@
 # Changelog
 
+## [4.27.0] - 2026-11-07
+
+- Settings writes keep a configurable history: the previous file is copied to `.bak.1` before every
+  write, older copies rotate up to `settings_backup_count` (default 5, range 0-20,
+  `PI_SETTINGS_BACKUP_COUNT`), and lowering the count prunes the extra copies. A write whose backup
+  cannot be made is refused rather than proceeding without a fallback.
+- A settings file that does not parse is never replaced: the save is refused
+  (`SettingsFileCorruptError`) and the file is left byte-identical, so a hand-repairable file cannot
+  be emptied by generated content.
+- Test processes can no longer write real settings: under `node:test`, writes outside the temp tree
+  are refused, checked against the **real** path so a symlinked `.pi` cannot reach a real project.
+- An unscoped `tool_name bash` memory rule is refused at write time and ignored at load time, so a
+  memory entry can neither block every command nor append a banner to every result. "always
+  ask_user before X" is promoted as an ordering verifier instead of a blanket warning.
+- Log fallbacks stay inside the project: `.pi/tmp/pi-logs` is tried before the home copy, and a
+  vanished working directory no longer throws while the fallback list is built.
+- The qodo-review prompt writes its context under `.pi/tmp`, not `/tmp`.
+
 ## [4.26.1] - 2026-11-06
 
 - The tmp sweep carries no hardcoded control-file name list: it asks
