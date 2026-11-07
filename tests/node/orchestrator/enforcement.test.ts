@@ -4,7 +4,7 @@
  */
 import { describe, it, before, after, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
@@ -342,6 +342,66 @@ describe("isRmInProjectTmp", () => {
       assert.equal(isRmInProjectTmp(`rm -rf ${home}/.pi/tmp/../config`, cwd), false);
       assert.equal(isRmInProjectTmp(`rm -rf ${home}/.pi/tmp/*`, cwd), false);
       assert.equal(isRmInProjectTmp(`sudo rm -rf ${home}/.pi/tmp/x`, cwd), false);
+    }
+  });
+
+  // A fake home under /tmp would prove nothing — the system-/tmp rule exempts it regardless. Both
+  // tests build it on a neutral root so they assert THIS rule on any host, whichever shape the
+  // real ~/.pi/tmp has.
+  const neutralRoot = (): string | null =>
+    ["/var/tmp", "/usr/tmp"].find((dir) => {
+      try {
+        accessSync(dir, constants.W_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    }) ?? null;
+
+  it("refuses the exemption when the home scratch is a symlink", (t) => {
+    const neutral = neutralRoot();
+    if (!neutral) {
+      t.skip("no neutral temp root writable on this host");
+      return;
+    }
+    const cwd = makeTempDir("rm-home-link-");
+    const fakeHome = mkdtempSync(join(neutral, "rm-fake-home-"));
+    const realHome = process.env.HOME;
+    // `~/.pi/tmp -> ~` would hand the whole home directory to the exemption.
+    mkdirSync(join(fakeHome, ".pi"), { recursive: true });
+    symlinkSync(fakeHome, join(fakeHome, ".pi", "tmp"), "dir");
+    process.env.HOME = fakeHome;
+    try {
+      // Naming a path outside the scratch is refused even though its target sits inside it.
+      assert.equal(isRmInProjectTmp(`rm -rf ${fakeHome}/.ssh`, cwd), false, "a symlinked scratch grants nothing");
+      // A path written THROUGH the scratch still works: that is the layout real users have, and it
+      // is the only spelling that names the scratch.
+      assert.equal(isRmInProjectTmp(`rm -rf ${fakeHome}/.pi/tmp/x`, cwd), true);
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("allows the home scratch whether or not it is a symlink", (t) => {
+    const neutral = neutralRoot();
+    if (!neutral) {
+      t.skip("no neutral temp root writable on this host");
+      return;
+    }
+    const cwd = makeTempDir("rm-home-real-");
+    const fakeHome = mkdtempSync(join(neutral, "rm-real-home-"));
+    const realHome = process.env.HOME;
+    mkdirSync(join(fakeHome, ".pi", "tmp"), { recursive: true });
+    process.env.HOME = fakeHome;
+    try {
+      assert.equal(isRmInProjectTmp(`rm -rf ${fakeHome}/.pi/tmp/build-scratch`, cwd), true);
+      assert.equal(isRmInProjectTmp(`rm -rf ${fakeHome}/.ssh`, cwd), false);
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+      rmSync(fakeHome, { recursive: true, force: true });
     }
   });
   let testDir: string;
@@ -2929,6 +2989,10 @@ describe("descriptor-duplication redirects survive the split (PR #948 R3)", () =
       "bash -n +o noexec script.sh", // named option re-enables execution
       "bash -n${IFS}+n${IFS}-c 'rm -rf /tmp/target'", // ${IFS} word-splits into options
       "bash -n $script.sh",          // any expansion may split or change the word
+      "bash -n '+n' script.sh",      // quotes are removed BEFORE bash parses: this is a +n option
+      'bash -n "+n" script.sh',
+      "bash -n \\+n script.sh",
+      "bash -n 'script.sh'",         // quoted operands are refused too — no exception worth it
     ]) {
       assert.equal(isNoexecSyntaxCheck(cmd), false, cmd);
     }

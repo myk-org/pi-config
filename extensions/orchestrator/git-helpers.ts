@@ -1164,8 +1164,10 @@ export function isNoexecSyntaxCheck(statement: string): boolean {
   // The calling shell expands and word-splits before the syntax check runs: `$(...)` executes,
   // `${IFS}` splits one token into several options (`bash -n${IFS}+n${IFS}-c …`), backticks run,
   // and `<(...)`/`>(...)` execute. ANY `$` is refused outright — a legitimate `bash -n script.sh`
-  // never needs one.
-  if (/\$|`|<(?=\()|>(?=\()/.test(statement)) return false;
+  // never needs one. Quotes and backslashes go too: the CALLING shell removes them before Bash
+  // parses, so `bash -n '+n' script.sh` would hand Bash a `+n` option while this predicate saw a
+  // harmless operand.
+  if (/[$`'"\\]|<(?=\()|>(?=\()/.test(statement)) return false;
   const rest = statement.replace(WRAPPERS, "").trim();
   const shellMatch = SHELL.exec(rest);
   if (!shellMatch) return false;
