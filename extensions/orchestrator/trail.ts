@@ -260,10 +260,32 @@ const SEARCH_WRAPPERS = new Set(["sudo", "env", "time", "command", "nice", "exec
  * which agents do use). `git grep` counts; an argument that merely says `rg`
  * (`echo rg`) does not, because it is not the command.
  */
+/** A redirection operator that stands alone takes the next token as its destination. */
+const BARE_REDIRECT = /^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/;
+
+/** Operands of a search: quote-stripped, with redirections and their destinations dropped.
+ *  The redirect test runs on the RAW token — `'<'` is a quoted pattern, not an operator, and
+ *  stripping the quotes first turned it into one and shifted every later operand. */
+function searchOperands(raw: string[]): string[] {
+  const operands: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const token = raw[i]!;
+    if (REDIRECT_TOKEN.test(token)) {
+      if (BARE_REDIRECT.test(token)) i++; // `> /dev/null`: drop the destination too
+      continue;
+    }
+    operands.push(token.replace(/^["']|["']$/g, ""));
+  }
+  return operands;
+}
+
 function searchCommand(command: unknown): { binary: string; operands: string[]; directories: string[] } | null {
   const first = firstCommand(command);
   if (!first) return null;
-  const tokens = first.trim().split(/\s+/).map(token => token.replace(/^["']|["']$/g, ""));
+  const raw = first.trim().split(/\s+/);
+  // A DEFINITION runs nothing: `function f { rg foo src; }` only declares a body.
+  if (/^(?:function$|[A-Za-z_]\w*\(\)$)/.test(raw[0] ?? "")) return null;
+  const tokens = raw.map(token => token.replace(/^["']|["']$/g, ""));
   // Shares the one parser for "what does this segment actually run" — assignments, control
   // keywords and transparent wrappers (`rtk`, `sudo`, `env`) included, so a wrapper can never be
   // handled in one place and forgotten in another.
@@ -295,13 +317,15 @@ function searchCommand(command: unknown): { binary: string; operands: string[]; 
         continue;
       }
       // A bare `grep` subcommand searches; `--grep=x` on another subcommand is a filter.
-      return token.toLowerCase() === "grep" ? { binary: "git grep", operands: tokens.slice(i + 1), directories } : null;
+      return token.toLowerCase() === "grep"
+        ? { binary: "git grep", operands: searchOperands(raw.slice(i + 1)), directories }
+        : null;
     }
     return null;
   }
   // Redirections are plumbing, not operands: `grep -rn E1 .pi/tmp 2>/dev/null` searches `.pi/tmp`.
   return SEARCH_BINARIES.has(binary)
-    ? { binary, operands: tokens.slice(index + 1).filter(token => !REDIRECT_TOKEN.test(token)), directories: [] }
+    ? { binary, operands: searchOperands(raw.slice(index + 1)), directories: [] }
     : null;
 }
 function searchBinary(command: unknown): string | null { return searchCommand(command)?.binary ?? null; }

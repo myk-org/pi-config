@@ -670,7 +670,7 @@ describe("Shell search classification", () => {
     });
   }
 
-  for (const command of ["cat src/auth.ts | grep authenticate", "ps aux | grep pi", "git status --short", "git log --grep=authenticate", "git -C src log --oneline", "ls; grep authenticate", "echo rg", "cat src/auth.ts | /usr/bin/grep authenticate", "grep foo package.json", "rg foo README.md", "grep foo /etc/hosts"]) {
+  for (const command of ["cat src/auth.ts | grep authenticate", "ps aux | grep pi", "git status --short", "git log --grep=authenticate", "git -C src log --oneline", "ls; grep authenticate", "echo rg", "cat src/auth.ts | /usr/bin/grep authenticate", "grep foo package.json", "rg foo README.md", "grep foo /etc/hosts", "function f { rg foo src; }", "f() { rg foo src; }"]) {
     it(`never blocks a shell command that does not search first: ${command}`, async () => {
       const { root, r, c } = await armed();
       try {
@@ -995,6 +995,18 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
 
   it("keeps the gate when the map holds code under an otherwise ignored directory", () => {
     assert.equal(allowed("rg foo vendor", new Set([...mapPaths, "vendor/pkg/index.ts"])), false);
+  });
+
+  it("drops a redirection together with its destination", () => {
+    // `rg PATTERN > /dev/null` searches the checkout; /dev/null is where output goes.
+    assert.equal(allowed("rg PATTERN > /dev/null"), false);
+    assert.equal(allowed("grep -rn PATTERN 2> /tmp/errors.log src"), false, "a spaced 2> keeps its destination out of the operands");
+  });
+
+  it("keeps a quoted redirection character as a pattern", () => {
+    // Quotes are removed by the shell, so `'<'` is grep's pattern — not an operator that
+    // shifts `src/auth.ts` into the pattern slot and hides it from the map check.
+    assert.equal(allowed("rg '<' src/auth.ts /tmp/other-file"), false);
   });
 
   it("leaves a search with no path operand to the gate", () => {
