@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.28.1] - 2026-11-07
+
+- The Trail gate forces again. The runtime prefixes shell commands with `rtk`, so no search was
+  classified and searches of mapped code ran unguarded; `rtk` is handled by the shared command-word
+  parser instead of a private wrapper list.
+- The gate honours where a search really runs: `cd`, repeated `git -C`, symlinked directory hops,
+  and a failed or backgrounded `cd` all keep it closed. A redirect no longer counts as an operand,
+  and a quoted `'<'` stays a pattern.
+- Gitignored scratch and other trees are no longer gated: a search of `.pi/tmp`, build output, a
+  sibling checkout, or a directory the map holds nothing beneath is exempt, decided by the map
+  rather than `.gitignore`. The checkout root, mapped directories, indexed files and ancestors
+  (`..`, `/`) still gate.
+
 ## [4.28.0] - 2026-11-07
 
 - Settings backups are scoped to a TUI visit: `/pi-config-settings` takes one restore point per
