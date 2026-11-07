@@ -385,7 +385,10 @@ function currentHeadSha(cwd: string): string | null {
  *  naming a new one. Unknown HEAD answers false, so the cap never applies on a guess. */
 function subjectIsCurrent(cwd: string, subject: ReviewSubject | null): boolean {
   if (!subject) return true; // legacy state: nothing to compare, keep the historical behaviour
-  if (subject.kind === "plan" || subject.kind === "issue" || subject.kind === "other") return true;
+  // ONLY a review of a commit can exhaust the commit cap. A plan, an issue, or an `other` subject
+  // (including the `unresolved:` fallback written when HEAD cannot be read) never licensed a
+  // commit — treating them as current let such a round's count authorize unreviewed code.
+  if (subject.kind !== "pr" && subject.kind !== "local") return false;
   const head = currentHeadSha(cwd);
   return head !== null && subject.head_sha === head;
 }

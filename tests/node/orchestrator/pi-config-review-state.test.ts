@@ -831,18 +831,31 @@ describe("review subject", () => {
   });
 
   it("keeps today's reset after a CLEAN round, so the max-cycles cap cannot latch", () => {
+    // Only a review of a commit can license a commit, so this needs a repo and a local subject.
+    execFileSync("git", ["init", "-q"], { cwd });
+    execFileSync("git", ["config", "user.email", "t@example.com"], { cwd });
+    execFileSync("git", ["config", "user.name", "T"], { cwd });
+    writeFileSync(join(cwd, "f.txt"), "x\n");
+    execFileSync("git", ["add", "f.txt"], { cwd });
+    execFileSync("git", ["commit", "-qm", "init"], { cwd });
+    const local: ReviewSubject = {
+      kind: "local",
+      head_sha: execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf-8" }).trim(),
+    };
+
     markNeedsReview(cwd);
-    round(planA, "a", 1);
-    round(planA, "b", 1);
+    round(local, "a", 1);
+    round(local, "b", 1);
     assert.equal(readReviewState(cwd).cycle, 2);
     // Finish the loop clean without the helper's trailing edit.
-    addReviewerPending(cwd, "c", planA);
+    addReviewerPending(cwd, "c", local);
     recordReviewerResult(cwd, "c", 0);
     assert.equal(readReviewState(cwd).status, "clean");
+    markTestsPassed(cwd);
     assert.equal(isCommitAllowed(cwd), true, "a clean loop allows the commit");
     markNeedsReview(cwd);
     assert.equal(readReviewState(cwd).cycle, 0, "a finished loop restarts counting");
-    addReviewerPending(cwd, "d", planA);
+    addReviewerPending(cwd, "d", local);
     assert.equal(readReviewState(cwd).cycle, 1, "and the cap is not already tripped");
   });
 
@@ -1026,5 +1039,42 @@ describe("a round for another subject replaces the pending one", () => {
     assert.deepEqual(s.subject, plan("docs/two.md"), "the round is attributed to what it reviews");
     assert.equal(s.cycle, 1);
     assert.deepEqual(s.reviewers_pending, ["reviewer-a", "reviewer-b"]);
+  });
+});
+
+describe("only a commit-bearing review can exhaust the commit cap", () => {
+  const atCap = (subject: ReviewSubject) => {
+    markNeedsReview(cwd);
+    for (let i = 0; i < 3; i++) {
+      addReviewerPending(cwd, `r${i}`, subject);
+      recordReviewerResult(cwd, `r${i}`, 1);
+      markNeedsReview(cwd);
+    }
+    assert.ok(readReviewState(cwd).cycle >= 3, `expected the cap, got ${readReviewState(cwd).cycle}`);
+  };
+
+  beforeEach(() => {
+    execFileSync("git", ["init", "-q"], { cwd });
+    execFileSync("git", ["config", "user.email", "t@example.com"], { cwd });
+    execFileSync("git", ["config", "user.name", "T"], { cwd });
+    writeFileSync(join(cwd, "f.txt"), "x\n");
+    execFileSync("git", ["add", "f.txt"], { cwd });
+    execFileSync("git", ["commit", "-qm", "init"], { cwd });
+  });
+
+  it("does not license a commit from an unresolved round", () => {
+    atCap({ kind: "other", id: `unresolved:${cwd}` });
+    assert.equal(isCommitAllowed(cwd), false, "an unreadable HEAD must never authorize a commit");
+  });
+
+  it("does not license a commit from a plan or issue review", () => {
+    atCap({ kind: "plan", path: "docs/x.md" });
+    assert.equal(isCommitAllowed(cwd), false, "a plan review is not a review of this commit");
+  });
+
+  it("does license a commit from a review of THIS commit", () => {
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf-8" }).trim();
+    atCap({ kind: "local", head_sha: head });
+    assert.equal(isCommitAllowed(cwd), true);
   });
 });
