@@ -375,7 +375,7 @@ function saveChange(key: string, value: unknown, scope: "project" | "global", cw
   }
   if (Object.keys(current).length === 0 && !existsSync(filePath)) return { ok: true };
   try {
-    writeSettingsFile(filePath, current);
+    writeSettingsFile(filePath, current, { dedupeBackup: true });
   } catch (e) {
     return { ok: false, reason: "write_error", error: e };
   }
@@ -392,7 +392,7 @@ function deleteFromScope(key: string, scope: "project" | "global", cwd: string):
   if (!(key in current)) return { ok: true };
   delete current[key];
   try {
-    writeSettingsFile(filePath, current);
+    writeSettingsFile(filePath, current, { dedupeBackup: true });
   } catch (e) {
     return { ok: false, reason: "write_error", error: e };
   }

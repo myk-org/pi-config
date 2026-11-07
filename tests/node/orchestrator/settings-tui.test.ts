@@ -486,7 +486,7 @@ describe("readSettingsFile / writeSettingsFile", () => {
 
     beginSettingsEditSession();
     try {
-      for (const port of [2, 3, 4, 5, 6]) writeSettingsFile(filePath, { dco: true, pidash_port: port });
+      for (const port of [2, 3, 4, 5, 6]) writeSettingsFile(filePath, { dco: true, pidash_port: port }, { dedupeBackup: true });
     } finally {
       endSettingsEditSession();
     }
@@ -498,11 +498,55 @@ describe("readSettingsFile / writeSettingsFile", () => {
     // The next visit snapshots the new pre-visit state.
     beginSettingsEditSession();
     try {
-      writeSettingsFile(filePath, { dco: false, pidash_port: 7 });
+      writeSettingsFile(filePath, { dco: false, pidash_port: 7 }, { dedupeBackup: true });
     } finally {
       endSettingsEditSession();
     }
     assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { dco: true, pidash_port: 6 });
+  });
+
+  it("an external save during a visit keeps its own backup", () => {
+    // A browser or allowlist write arrives while the overlay is open: it is a separate action and
+    // must get its own restore point, not inherit the visit's dedupe.
+    const filePath = join(tempDir, "external-during-visit.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    beginSettingsEditSession();
+    try {
+      writeSettingsFile(filePath, { pidash_port: 2 }, { dedupeBackup: true });
+      writeSettingsFile(filePath, { pidash_port: 3 }); // external write, no dedupe
+    } finally {
+      endSettingsEditSession();
+    }
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 2 },
+      "external write backed up the state it replaced, not the pre-visit one");
+  });
+
+  it("lowering retention during a visit prunes the extra slots", () => {
+    const filePath = join(tempDir, "shrink-in-visit.json");
+    writeSettingsFile(filePath, { pidash_port: 0 });
+    for (const port of [1, 2, 3]) {
+      beginSettingsEditSession();
+      try {
+        writeSettingsFile(filePath, { pidash_port: port }, { dedupeBackup: true });
+      } finally {
+        endSettingsEditSession();
+      }
+    }
+    assert.ok(existsSync(`${filePath}.bak.3`), "three visits → three backups");
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    process.env.PI_SETTINGS_BACKUP_COUNT = "1";
+    beginSettingsEditSession();
+    try {
+      writeSettingsFile(filePath, { pidash_port: 9 }, { dedupeBackup: true });
+      writeSettingsFile(filePath, { pidash_port: 10 }, { dedupeBackup: true });
+    } finally {
+      process.env.PI_SETTINGS_BACKUP_COUNT = saved ?? "";
+      if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+      endSettingsEditSession();
+    }
+    for (const slot of [2, 3]) {
+      assert.equal(existsSync(`${filePath}.bak.${slot}`), false, `.bak.${slot} must be pruned mid-visit`);
+    }
   });
 
   it("keeps per-write backups for writes outside a TUI visit", () => {

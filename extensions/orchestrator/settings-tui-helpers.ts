@@ -329,9 +329,11 @@ export function endSettingsEditSession(): void {
   if (editSessionDepth === 0) backedUpInSession.clear();
 }
 
-/** True when this write should rotate a backup: always outside a session, once per file inside. */
-function shouldBackUp(filePath: string): boolean {
-  if (editSessionDepth === 0) return true;
+/** True when this write should rotate a backup. Only the settings TUI asks for dedupe; a browser
+ *  save or an allowlist approval arriving mid-visit is a separate action and keeps its own
+ *  restore point. */
+function shouldBackUp(filePath: string, dedupe: boolean): boolean {
+  if (!dedupe || editSessionDepth === 0) return true;
   return !backedUpInSession.has(filePath);
 }
 
@@ -343,7 +345,6 @@ export function settingsBackupPath(filePath: string, slot = 1): string {
 /** Keep `count` previous versions: shift `.bak.N-1` → `.bak.N`, then current → `.bak.1`.
  *  A count of 0 disables backups. Failures never block the write — they only log. */
 function rotateSettingsBackups(filePath: string, count: number): void {
-  pruneExtraBackups(filePath, count);
   if (count <= 0) return;
   try {
     const oldest = settingsBackupPath(filePath, count);
@@ -361,7 +362,11 @@ function rotateSettingsBackups(filePath: string, count: number): void {
   }
 }
 
-export function writeSettingsFile(filePath: string, data: Record<string, unknown>): void {
+export function writeSettingsFile(
+  filePath: string,
+  data: Record<string, unknown>,
+  options: { dedupeBackup?: boolean } = {},
+): void {
   // Write directly to target file. Per issue spec: "comments are lost on write — acceptable
   // since the example.jsonc is the reference."
   const dir = dirname(filePath);
@@ -388,9 +393,13 @@ export function writeSettingsFile(filePath: string, data: Record<string, unknown
     // Keep the pre-change bytes — `settings_backup_count` of them, newest at `.bak.1`. Inside the
     // settings TUI that happens once per visit, so editing several values keeps the state the user
     // started from. Recorded only after a successful rotation, so a failed one is retried.
-    if (shouldBackUp(filePath)) {
-      rotateSettingsBackups(filePath, backupCountFor(filePath));
-      if (editSessionDepth > 0) backedUpInSession.add(filePath);
+    const count = backupCountFor(filePath);
+    // Pruning runs on EVERY write: lowering the retention during a visit must drop the slots
+    // above the new limit, and inside a visit only the rotation itself is deduped.
+    pruneExtraBackups(filePath, count);
+    if (shouldBackUp(filePath, options.dedupeBackup === true)) {
+      rotateSettingsBackups(filePath, count);
+      if (options.dedupeBackup === true && editSessionDepth > 0) backedUpInSession.add(filePath);
     }
   }
   const content = JSON.stringify(data, null, 2) + "\n";
