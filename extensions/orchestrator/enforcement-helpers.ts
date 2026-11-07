@@ -1976,6 +1976,9 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
     // where a preceding symlink actually points — so `~/.pi/tmp/link/../.ssh/key` looks in-scratch
     // here and deletes `~/.ssh/key` there. Nothing legitimate needs `..` in a scratch operand.
     if (/(^|\/)\.\.($|\/)/.test(expanded)) return false;
+    // The shell removes backslashes before `rm` sees the path, so `\.\.` is `..` and `\*` is a
+    // glob that no literal-path check ever saw. A literal scratch path needs none of them.
+    if (expanded.includes("\\")) return false;
     const lexical = path.resolve(cwd, expanded);
     let resolved: string;
     try {

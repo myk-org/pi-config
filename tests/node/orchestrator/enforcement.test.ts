@@ -345,6 +345,8 @@ describe("isRmInProjectTmp", () => {
       `rm -rf ${home}/.pi/tmp/../config`, // traversal
       `rm -rf ${home}/.pi/tmp/*`, // glob, not a literal path
       `sudo rm -rf ${home}/.pi/tmp/x`, // privilege escalation
+      `rm -rf ${home}/.pi/tmp/link/\\.\\./.ssh/authorized_keys`, // shell strips \\ to ..
+      `rm -rf ${home}/.pi/tmp/\\*`, // a glob hiding behind an escape
     ]) {
       assert.equal(isRmInProjectTmp(stmt, cwd), false, stmt);
     }
