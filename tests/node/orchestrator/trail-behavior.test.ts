@@ -953,6 +953,20 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
     assert.equal(allowed("git -Csrc grep foo util", withSrc), false, "the attached form moves it too");
     assert.equal(allowed("git -C $DIR grep foo util"), false, "an unexpanded target keeps the gate");
     assert.equal(allowed("cd src && git -C util grep foo .", withSrc), false, "the two compose");
+    // Only the pre-subcommand region holds git's global options: `-C3` after `grep` is context.
+    // With root-level `util` unmapped, an exemption proves the base stayed at the root — had `-C3`
+    // been read as a directory, the base would be `./3` and the operand unresolvable.
+    mkdirSync(join(root, "util"), { recursive: true });
+    assert.equal(allowed("git grep -C3 foo util", withSrc), true, "grep's -C3 is not a directory");
+    // Wrappers and assignments are skipped by the parser, so the -C is still found.
+    assert.equal(allowed("env FOO=1 git -C src grep foo util", withSrc), false);
+    assert.equal(allowed("command git -C src grep foo util", withSrc), false);
+    // Repeated -C composes in order, so the last one is not resolved against the session root.
+    mkdirSync(join(root, "src/nested"), { recursive: true });
+    mkdirSync(join(root, "nested"), { recursive: true });
+    const nested = new Set([...mapPaths, "src/nested/x.ts"]);
+    assert.equal(allowed("git -C src -C nested grep foo .", nested), false);
+    assert.equal(allowed("git -C nested grep foo .", nested), true, "the root-level nested/ is unmapped");
   });
 
   it("allows an outside directory only when it cannot recurse back in", () => {

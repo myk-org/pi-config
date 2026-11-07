@@ -257,7 +257,7 @@ const SEARCH_WRAPPERS = new Set(["sudo", "env", "time", "command", "nice", "exec
  * which agents do use). `git grep` counts; an argument that merely says `rg`
  * (`echo rg`) does not, because it is not the command.
  */
-function searchCommand(command: unknown): { binary: string; operands: string[] } | null {
+function searchCommand(command: unknown): { binary: string; operands: string[]; directories: string[] } | null {
   const first = firstCommand(command);
   if (!first) return null;
   const tokens = first.trim().split(/\s+/).map(token => token.replace(/^["']|["']$/g, ""));
@@ -269,15 +269,23 @@ function searchCommand(command: unknown): { binary: string; operands: string[] }
   // Git takes global options between `git` and its subcommand (`-C src`,
   // `--no-pager`, `-c k=v`), so `grep` is not necessarily the next token.
   if (binary === "git") {
+    // Only this region — between `git` and its subcommand — holds global options. Scanning the
+    // whole segment would read grep's own `-C3` (context lines) as a directory switch.
+    // Repeated `-C` composes in order: `git -C a -C b grep` searches `a/b`. Keep them all.
+    const directories: string[] = [];
     for (let i = index + 1; i < tokens.length; i++) {
       const token = tokens[i]!;
-      if (token.startsWith("-")) { if (GIT_VALUE_OPTIONS.has(token)) i++; continue; }
+      if (token.startsWith("-")) {
+        if (token === "-C" || token === "-c") { if (token === "-C") directories.push(tokens[i + 1] ?? ""); i++; continue; }
+        if (token.startsWith("-C") && token.length > 2) { directories.push(token.slice(2)); continue; }
+        continue;
+      }
       // A bare `grep` subcommand searches; `--grep=x` on another subcommand is a filter.
-      return token.toLowerCase() === "grep" ? { binary: "git grep", operands: tokens.slice(i + 1) } : null;
+      return token.toLowerCase() === "grep" ? { binary: "git grep", operands: tokens.slice(i + 1), directories } : null;
     }
     return null;
   }
-  return SEARCH_BINARIES.has(binary) ? { binary, operands: tokens.slice(index + 1) } : null;
+  return SEARCH_BINARIES.has(binary) ? { binary, operands: tokens.slice(index + 1), directories: [] } : null;
 }
 function searchBinary(command: unknown): string | null { return searchCommand(command)?.binary ?? null; }
 /** `git` options whose value is the following token. */
@@ -307,33 +315,8 @@ function searchBaseDir(command: unknown, root: string, logger: Logger = log): st
   let base = root;
   for (const segment of segments) {
     const match = /^cd(?:\s+(.*))?$/.exec(segment);
-    if (!match) {
-      // `git -C <dir> grep …` searches <dir>, not the session directory. Honour it, or gate.
-      const tokens = segment.split(/\s+/).filter(Boolean);
-      if ((tokens[0] ?? "").split("/").pop()!.toLowerCase().replace(/^["']|["']$/g, "") === "git") {
-        let dirFlag: string | null = null;
-        for (let i = 0; i < tokens.length; i++) {
-          const token = tokens[i]!;
-          if (token === "-C") dirFlag = (tokens[i + 1] ?? "").replace(/^["']|["']$/g, "");
-          else if (token.startsWith("-C") && token.length > 2) dirFlag = token.slice(2).replace(/^["']|["']$/g, "");
-        }
-        if (dirFlag !== null) {
-          if (!dirFlag || /[$`*?~]/.test(dirFlag)) {
-            logger.debug("gate_search_base", { reason: "unmodellable_git_c", target: dirFlag });
-            return null;
-          }
-          const next = resolve(base, dirFlag);
-          try {
-            if (!statSync(next).isDirectory()) throw new Error("not a directory");
-          } catch {
-            logger.debug("gate_search_base", { reason: "git_c_target_unusable", target: dirFlag });
-            return null;
-          }
-          base = next;
-        }
-      }
-      break; // the search segment — its own directory is `base`
-    }
+    if (!match) break; // the search segment; its directory is resolved below
+
     const target = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
     // `cd` alone (HOME), `cd -`, and anything the shell must expand are not modellable.
     if (!target || target === "-" || /[$`*?~]/.test(target)) {
@@ -347,6 +330,23 @@ function searchBaseDir(command: unknown, root: string, logger: Logger = log): st
       if (!statSync(next).isDirectory()) throw new Error("not a directory");
     } catch {
       logger.debug("gate_search_base", { reason: "cd_target_unusable", target });
+      return null;
+    }
+    base = next;
+  }
+  // `git -C <dir> grep …` searches <dir>. The parser reports it — already past the wrappers and
+  // only from the pre-subcommand region — so nothing here has to re-read the tokens.
+  for (const directory of searchCommand(command)?.directories ?? []) {
+    const target = directory.replace(/^["']|["']$/g, "");
+    if (!target || /[$`*?~]/.test(target)) {
+      logger.debug("gate_search_base", { reason: "unmodellable_git_c", target });
+      return null;
+    }
+    const next = resolve(base, target);
+    try {
+      if (!statSync(next).isDirectory()) throw new Error("not a directory");
+    } catch {
+      logger.debug("gate_search_base", { reason: "git_c_target_unusable", target });
       return null;
     }
     base = next;
