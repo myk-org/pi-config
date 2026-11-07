@@ -44,7 +44,7 @@ import {
   runGit,
 } from "./git-helpers.js";
 import { spawnSync } from "node:child_process";
-import { markNeedsReview, isCommitAllowed, readReviewState, statePath, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
+import { markNeedsReview, isCommitAllowed, readReviewState, subjectLabel, statePath, markTestsPassed, markTestsFailed } from "./pi-config-review-state.js";
 import {
   checkPythonPipBlock,
   checkRemoteExecBlock,
@@ -1391,6 +1391,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       const lines = [
         `Review Loop Enforcement: ${enabled ? "enabled" : "disabled"}${worktreeLabel}`,
         `Status: ${state.status}`,
+        `Subject: ${subjectLabel(state.subject)}`,
         `Cycle: ${state.cycle}`,
         `Findings: ${state.findings_count}`,
         `Reviewers pending: ${state.reviewers_pending.length}/${state.reviewers_total}${state.reviewers_pending.length > 0 ? " (" + state.reviewers_pending.join(", ") + ")" : ""}`,

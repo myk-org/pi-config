@@ -14,9 +14,12 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getSetting } from "./project-settings.js";
+import { createLogger } from "../shared/logger.js";
 import { createCachedStore } from "./state-jsonl.js";
 import type { JsonlStateStore } from "./state-jsonl.js";
 import { resolveWorktreeRoot } from "./utils.js";
+
+const log = createLogger("pi-config-review-state");
 
 type StateTransitionCallback = (state: ReviewState) => void;
 let onTransitionCb: StateTransitionCallback | null = null;
@@ -310,20 +313,24 @@ export function addReviewerPending(cwd: string, reviewerName: string, subject: R
     }
     const key = subjectKey(subject);
     const previousKey = state.subject ? subjectKey(state.subject) : null;
-    if (state.status !== "in_progress") {
-      state.status = "in_progress";
-      if (previousKey !== key) {
-        // A new subject is a new loop: this is its first round, not a continuation.
-        state.cycle = 1;
-        state.subject = subject;
-        state.subject_started_at = new Date().toISOString();
-        state.findings_count = 0;
-      } else {
-        state.cycle++;
-      }
+    const subjectChanged = previousKey !== key;
+    const startsRound = subjectChanged || state.status !== "in_progress";
+    if (subjectChanged) {
+      // A new subject is a new loop — even while a reviewer for the previous subject is still
+      // pending: keeping the old subject would attribute this round to the wrong loop.
+      state.subject = subject;
+      state.cycle = 1;
+      state.subject_started_at = new Date().toISOString();
+    } else if (state.status !== "in_progress") {
+      state.cycle++;
+    }
+    if (startsRound) {
+      // A round begins: findings and edit flags belong to it, not to the round before.
       state.findings_count = 0;
       state.edited_during_cycle = false;
     }
+    state.status = "in_progress";
+    log.debug("review_round_start", { reviewer: reviewerName, subject: key, cycle: state.cycle, subjectChanged, previousSubject: previousKey });
     writeState(cwd, state);
     notifyTransition(state);
   });

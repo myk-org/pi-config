@@ -9,8 +9,10 @@ import {
   readReviewState,
   addReviewerPending,
   recordReviewerResult,
+  type ReviewSubject,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { normalizePorcelain } from "../../../extensions/orchestrator/review-porcelain.js";
+import { reviewStatusLine } from "../../../extensions/orchestrator/review-ui.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 /** Every round must name what it reviews; these suites review one local commit. */
@@ -171,5 +173,46 @@ describe("poller decision logic (replica)", () => {
 
   it("clean from none → skip (already none)", () => {
     assert.equal(pollerDecision("", "file.ts", { status: "none" }), "skip");
+  });
+});
+
+// ── Status line: the reviewed subject must appear, in every state that shows a cycle ──
+
+describe("reviewStatusLine", () => {
+  const base = {
+    status: "in_progress" as const,
+    cycle: 3,
+    findings_count: 2,
+    tests_passed: false,
+    reviewers_pending: ["code-reviewer-security"],
+    reviewers_total: 5,
+    timestamp: 0,
+  };
+  const pr = { kind: "pr" as const, repo: "o/r", number: 1056, head_sha: "d1c6e7f0abc" }; // pragma: allowlist secret
+
+  it("names the subject and the cycle while reviewers run", () => {
+    const line = reviewStatusLine({ ...base, subject: pr });
+    assert.match(line, /Review cycle 3/);
+    assert.match(line, /PR #1056 @ d1c6e7f/, "the reviewed PR must be visible");
+    assert.match(line, /2 findings/);
+    assert.match(line, /waiting: code-reviewer-security/);
+  });
+
+  it("names the subject when the review is clean", () => {
+    const line = reviewStatusLine({ ...base, status: "clean", tests_passed: true, subject: pr });
+    assert.match(line, /Review clean — cycle 3/);
+    assert.match(line, /PR #1056 @ d1c6e7f/);
+    assert.match(line, /tests passed/);
+  });
+
+  it("names the subject when findings need fixing", () => {
+    const line = reviewStatusLine({ ...base, status: "has_findings", subject: { kind: "local", head_sha: "abc1234def" } });
+    assert.match(line, /cycle 3/);
+    assert.match(line, /commit abc1234 \(local\)/);
+    assert.match(line, /2 findings — needs fixes/);
+  });
+
+  it("says so when a legacy entry has no subject", () => {
+    assert.match(reviewStatusLine({ ...base, subject: undefined }), /no subject/);
   });
 });

@@ -25,7 +25,7 @@ import {
   subjectLabel,
   type ReviewSubject,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
-import { parseOpenPr, resolveReviewSubject } from "../../../extensions/orchestrator/review-subject.js";
+import { parseOpenPr, parseRepoSlug, resetReviewSubjectCache, resolveReviewSubject } from "../../../extensions/orchestrator/review-subject.js";
 
 /** Every round must name what it reviews; these suites review one local commit. */
 const SUBJECT: ReviewSubject = { kind: "local", head_sha: "0123456789abcdef0123456789abcdef01234567" }; // pragma: allowlist secret
@@ -980,5 +980,65 @@ describe("parseOpenPr", () => {
     assert.equal(parseOpenPr(JSON.stringify({ number: "1056", headRefOid: "x", state: "OPEN" })), null);
     // The shape the jq filter produced before it was removed: a PR with no real number.
     assert.equal(parseOpenPr(JSON.stringify({ number: null, headRefOid: "(.headRefOid)", state: "OPEN" })), null);
+  });
+});
+
+describe("resolveReviewSubject — PR identity and its failure modes", () => {
+  const silent = { debug() {}, info() {}, warn() {}, error() {}, isDebugEnabled: () => false } as any;
+  const head = "a".repeat(40);
+  const deps = (over: any = {}) => ({
+    headSha: () => head,
+    branch: () => "feat/x",
+    remoteUrl: () => "git@github.com:owner/my.repo.git",
+    openPr: () => ({ status: "none" as const }),
+    ...over,
+  });
+
+  beforeEach(() => resetReviewSubjectCache());
+
+  it("strips only a trailing .git from a repository name containing dots", () => {
+    assert.equal(parseRepoSlug("git@github.com:owner/my.repo.git"), "owner/my.repo");
+    assert.equal(parseRepoSlug("https://github.com/o/r"), "o/r");
+    assert.equal(parseRepoSlug("https://gitlab.com/o/r"), null, "only GitHub remotes are PR-addressable");
+    assert.equal(parseRepoSlug(null), null);
+  });
+
+  it("carries the LOCAL head, so unpushed commits are a new loop", () => {
+    const subject = resolveReviewSubject("/tmp/any", silent, deps({ openPr: () => ({ status: "open", number: 1056 }) }));
+    assert.deepEqual(subject, { kind: "pr", repo: "owner/my.repo", number: 1056, head_sha: head });
+  });
+
+  it("falls back to the commit when the branch has no PR", () => {
+    assert.deepEqual(resolveReviewSubject("/tmp/any", silent, deps()), { kind: "local", head_sha: head });
+  });
+
+  it("does not restart the loop when gh fails transiently", () => {
+    let mode: "open" | "error" = "open";
+    const lookup = () => (mode === "open" ? { status: "open" as const, number: 1056 } : { status: "error" as const });
+    assert.equal((resolveReviewSubject("/tmp/any", silent, deps({ openPr: lookup })) as any).number, 1056);
+    resetReviewSubjectCache(); // force a fresh lookup, as a later round would
+    mode = "error";
+    const second = resolveReviewSubject("/tmp/any", silent, deps({ openPr: lookup })) as any;
+    assert.equal(second.kind, "local", "with no cache to reuse, the commit is the honest answer");
+  });
+
+  it("returns null when HEAD cannot be read", () => {
+    assert.equal(resolveReviewSubject("/tmp/any", silent, deps({ headSha: () => null })), null);
+  });
+});
+
+describe("a round for another subject replaces the pending one", () => {
+  const plan = (path: string): ReviewSubject => ({ kind: "plan", path });
+
+  it("does not keep the previous subject while its reviewer is still pending", () => {
+    markNeedsReview(cwd);
+    addReviewerPending(cwd, "reviewer-a", plan("docs/one.md"));
+    assert.equal(readReviewState(cwd).reviewers_pending.length, 1);
+    // A reviewer for a different plan starts while the first is still running.
+    addReviewerPending(cwd, "reviewer-b", plan("docs/two.md"));
+    const s = readReviewState(cwd);
+    assert.deepEqual(s.subject, plan("docs/two.md"), "the round is attributed to what it reviews");
+    assert.equal(s.cycle, 1);
+    assert.deepEqual(s.reviewers_pending, ["reviewer-a", "reviewer-b"]);
   });
 });
