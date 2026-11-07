@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger, type Logger } from "../shared/logger.js";
+import { skipToCommandWord } from "./git-helpers.js";
+import { REDIRECT_TOKEN } from "./enforcement-helpers.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { findSettingsFile, getSetting, parseSettingsFile } from "./project-settings.js";
@@ -249,7 +251,8 @@ function parseAsk(stdout: string): Ask | null {
   try { return JSON.parse(stdout.slice(start, end + 1)) as Ask; } catch { return null; }
 }
 const SEARCH_BINARIES = new Set(["rg", "grep", "egrep", "fgrep", "find", "fd", "ag", "ack"]);
-/** Prefixes that still name the command they wrap, so the search check must look past them. */
+/** Executors that still name the command they run. `rtk` is NOT listed: it is handled by the
+ *  shared `skipToCommandWord` parser along with the control keywords and inline assignments. */
 const SEARCH_WRAPPERS = new Set(["sudo", "env", "time", "command", "nice", "exec"]);
 /**
  * The search binary a command runs first, if any — the binary is the first token
@@ -257,27 +260,73 @@ const SEARCH_WRAPPERS = new Set(["sudo", "env", "time", "command", "nice", "exec
  * which agents do use). `git grep` counts; an argument that merely says `rg`
  * (`echo rg`) does not, because it is not the command.
  */
-function searchCommand(command: unknown): { binary: string; operands: string[] } | null {
+/** A redirection operator that stands alone takes the next token as its destination. */
+const BARE_REDIRECT = /^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/;
+
+/** Operands of a search: quote-stripped, with redirections and their destinations dropped.
+ *  The redirect test runs on the RAW token — `'<'` is a quoted pattern, not an operator, and
+ *  stripping the quotes first turned it into one and shifted every later operand. */
+function searchOperands(raw: string[]): string[] {
+  const operands: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const token = raw[i]!;
+    if (REDIRECT_TOKEN.test(token)) {
+      if (BARE_REDIRECT.test(token)) i++; // `> /dev/null`: drop the destination too
+      continue;
+    }
+    operands.push(token.replace(/^["']|["']$/g, ""));
+  }
+  return operands;
+}
+
+function searchCommand(command: unknown): { binary: string; operands: string[]; directories: string[] } | null {
   const first = firstCommand(command);
   if (!first) return null;
-  const tokens = first.trim().split(/\s+/).map(token => token.replace(/^["']|["']$/g, ""));
-  let index = 0;
-  while (index < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]!) || SEARCH_WRAPPERS.has(tokens[index]!.toLowerCase()))) index++;
+  const raw = first.trim().split(/\s+/);
+  // A DEFINITION runs nothing: `function f { rg foo src; }` only declares a body.
+  if (/^(?:function$|[A-Za-z_]\w*\(\)$)/.test(raw[0] ?? "")) return null;
+  const tokens = raw.map(token => token.replace(/^["']|["']$/g, ""));
+  // Shares the one parser for "what does this segment actually run" — assignments, control
+  // keywords and transparent wrappers (`rtk`, `sudo`, `env`) included, so a wrapper can never be
+  // handled in one place and forgotten in another.
+  // The shared parser owns `rtk` and the other transparent prefixes (PR #996); the executors
+  // below it — whose own directory options are parsed elsewhere — are skipped here.
+  let index = skipToCommandWord(tokens);
+  // Executors and inline assignments interleave (`env FOO=1 rg …`), so both are consumed here.
+  for (;;) {
+    const word = tokens[index];
+    if (word === undefined) break;
+    if (SEARCH_WRAPPERS.has(word.toLowerCase()) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) { index++; continue; }
+    break;
+  }
   const head = tokens[index];
   if (!head) return null;
   const binary = head.split("/").pop()!.toLowerCase();
   // Git takes global options between `git` and its subcommand (`-C src`,
   // `--no-pager`, `-c k=v`), so `grep` is not necessarily the next token.
   if (binary === "git") {
+    // Only this region — between `git` and its subcommand — holds global options. Scanning the
+    // whole segment would read grep's own `-C3` (context lines) as a directory switch.
+    // Repeated `-C` composes in order: `git -C a -C b grep` searches `a/b`. Keep them all.
+    const directories: string[] = [];
     for (let i = index + 1; i < tokens.length; i++) {
       const token = tokens[i]!;
-      if (token.startsWith("-")) { if (GIT_VALUE_OPTIONS.has(token)) i++; continue; }
+      if (token.startsWith("-")) {
+        if (token === "-C" || token === "-c") { if (token === "-C") directories.push(tokens[i + 1] ?? ""); i++; continue; }
+        if (token.startsWith("-C") && token.length > 2) { directories.push(token.slice(2)); continue; }
+        continue;
+      }
       // A bare `grep` subcommand searches; `--grep=x` on another subcommand is a filter.
-      return token.toLowerCase() === "grep" ? { binary: "git grep", operands: tokens.slice(i + 1) } : null;
+      return token.toLowerCase() === "grep"
+        ? { binary: "git grep", operands: searchOperands(raw.slice(i + 1)), directories }
+        : null;
     }
     return null;
   }
-  return SEARCH_BINARIES.has(binary) ? { binary, operands: tokens.slice(index + 1) } : null;
+  // Redirections are plumbing, not operands: `grep -rn E1 .pi/tmp 2>/dev/null` searches `.pi/tmp`.
+  return SEARCH_BINARIES.has(binary)
+    ? { binary, operands: searchOperands(raw.slice(index + 1)), directories: [] }
+    : null;
 }
 function searchBinary(command: unknown): string | null { return searchCommand(command)?.binary ?? null; }
 /** `git` options whose value is the following token. */
@@ -292,23 +341,114 @@ const GIT_VALUE_OPTIONS = new Set(["-c", "-C"]);
  * An absolute path OUTSIDE the checkout is not project navigation at all: the map
  * has nothing to say about it, so it is allowed.
  */
-function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string): boolean {
+/** The directory the search itself runs in. A leading `cd` moves it, and relative operands must
+ *  be resolved there — resolving against the session root approved paths the shell never searched.
+ *  Returns null when the destination cannot be known statically, which keeps the gate closed. */
+function searchBaseDir(command: unknown, root: string, logger: Logger = log): string | null {
+  const raw = String(command ?? "").split("|")[0]!;
+  // `cd build & rg foo .` runs the cd in a background subshell, so the foreground search keeps the
+  // session directory. Background semantics are not worth modelling — gate instead of guessing.
+  if (/(^|[^&>])&([^&=]|$)/.test(raw)) {
+    logger.debug("gate_search_base", { reason: "background_job" });
+    return null;
+  }
+  const segments = raw.split(/&&|;/).map(part => part.trim()).filter(Boolean);
+  let base = root;
+  for (const segment of segments) {
+    const match = /^cd(?:\s+(.*))?$/.exec(segment);
+    if (!match) break; // the search segment; its directory is resolved below
+
+    const target = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
+    // `cd` alone (HOME), `cd -`, and anything the shell must expand are not modellable.
+    if (!target || target === "-" || /[$`*?~]/.test(target)) {
+      logger.debug("gate_search_base", { reason: "unmodellable_cd", target });
+      return null;
+    }
+    // Physically, like the process: entering a symlink moves the shell to its TARGET, so a later
+    // `cd ../x` must be resolved from there, not from the link's own location.
+    let next: string;
+    // `cd somefile; rg foo .` leaves the shell where it was when the cd FAILS, so a target that is
+    // not an existing directory tells us nothing about where the search runs.
+    try {
+      next = realpathSync(resolve(base, target));
+      if (!statSync(next).isDirectory()) throw new Error("not a directory");
+    } catch {
+      logger.debug("gate_search_base", { reason: "cd_target_unusable", target });
+      return null;
+    }
+    base = next;
+  }
+  // `git -C <dir> grep …` searches <dir>. The parser reports it — already past the wrappers and
+  // only from the pre-subcommand region — so nothing here has to re-read the tokens.
+  for (const directory of searchCommand(command)?.directories ?? []) {
+    const target = directory.replace(/^["']|["']$/g, "");
+    if (!target || /[$`*?~]/.test(target)) {
+      logger.debug("gate_search_base", { reason: "unmodellable_git_c", target });
+      return null;
+    }
+    let next: string;
+    try {
+      next = realpathSync(resolve(base, target)); // physical, as git enters it
+      if (!statSync(next).isDirectory()) throw new Error("not a directory");
+    } catch {
+      logger.debug("gate_search_base", { reason: "git_c_target_unusable", target });
+      return null;
+    }
+    base = next;
+  }
+  logger.debug("gate_search_base", { base, root });
+  return base;
+}
+
+/** `prefix` with exactly one trailing separator — `/` must not become `//`, which made every
+ *  ancestor test against the filesystem root answer false. */
+function dirPrefix(directory: string): string {
+  return directory.endsWith(sep) ? directory : directory + sep;
+}
+
+/** Search operands the map cannot answer are not blind navigation.
+ *
+ *  Inside the checkout that is decided by the MAP, not by .gitignore: a directory is exempt only
+ *  when no indexed file lies beneath it, so an ignored folder holding mapped code still gates, and
+ *  no subprocess runs in the synchronous tool_call handler. Outside the checkout only an ancestor
+ *  of the root still gates (`rg foo ..` recurses back in); a sibling checkout, a plain non-git
+ *  folder, or this repo's gitignored scratch (`.pi/tmp`) is another directory's business.
+ *  Real paths are compared, so an external symlink into the checkout resolves back inside. */
+export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string, logger: Logger = log): boolean {
   const search = searchCommand(command);
   if (!search) return false;
   const operands = search.operands.filter(token => !token.startsWith("-"));
   // `find` names a path first; every other search binary takes the pattern first.
   const paths = search.binary === "find" ? operands : operands.slice(1);
   if (!paths.length) return false;
+  const base = searchBaseDir(command, root, logger);
+  if (!base) return false;
+  const verdict = (path: string, allowed: boolean, reason: string): boolean => {
+    logger.debug("gate_search_unindexed", { path, allowed, reason, base });
+    return allowed;
+  };
   return paths.every(path => {
-    const absolute = resolve(root, path);
-    const rel = relative(root, absolute);
-    const outside = rel.startsWith("..") || isAbsolute(rel);
-    let info; try { info = statSync(absolute); } catch { return false; }
-    // Outside the checkout only a FILE is safe to search: a parent directory such
-    // as `..` recurses back into this checkout, so `rg foo ..` is navigation.
-    if (outside) return info.isFile();
-    if (mapPaths.has(rel.split(sep).join("/"))) return false;
-    return info.isFile();
+    let real: string;
+    let info;
+    try {
+      const absolute = resolve(base, path);
+      real = realpathSync(absolute);
+      info = statSync(real);
+    } catch {
+      return verdict(path, false, "unresolvable"); // missing or unreadable: keep the gate
+    }
+    const rel = relative(root, real);
+    const outside = rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel);
+    if (outside) return verdict(path, real !== root && !root.startsWith(dirPrefix(real)), "outside_checkout");
+    if (real === root) return verdict(path, false, "checkout_root");
+    const inside = rel.split(sep).join("/");
+    if (mapPaths.has(inside)) return verdict(path, false, "indexed_file");
+    if (info.isFile()) return verdict(path, true, "unindexed_file");
+    if (!info.isDirectory()) return verdict(path, true, "not_a_directory");
+    for (const mapped of mapPaths) {
+      if (mapped === inside || mapped.startsWith(`${inside}/`)) return verdict(path, false, "mapped_beneath");
+    }
+    return verdict(path, true, "map_holds_nothing"); // no retrieval could replace this search
   });
 }
 function searchTool(event: any, logger: Logger = log): boolean {

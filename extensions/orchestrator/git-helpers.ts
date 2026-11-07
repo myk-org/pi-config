@@ -818,7 +818,7 @@ export function segmentRunsGit(segment: string): boolean {
  * segment actually run" goes through here, so a prefix is never handled in one
  * parser and forgotten in another (Qodo, PR #996).
  */
-function skipToCommandWord(words: string[]): number {
+export function skipToCommandWord(words: string[]): number {
   let k = 0;
   while (k < words.length) {
     // `function NAME { ... }` puts the name between the keyword and the body.

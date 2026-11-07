@@ -1382,6 +1382,10 @@ export function allowlistGlobToRegExp(pattern: string): RegExp {
   return new RegExp(`^${re}$`, "s");
 }
 
+/** A shell redirection operator, joined (`2>/dev/null`, `&>f`) or bare (`2>`, `<`).
+ *  Shared so parsers that walk a command's tokens strip plumbing the same way. */
+export const REDIRECT_TOKEN = /^(?:[0-9]*>{1,2}|&>|[0-9]*<)/;
+
 /** Normalize a dangerous statement for allowlist matching and storage:
  * trailing I/O redirections (`> /dev/null`, `2>&1`, `2>/dev/null`, `&>f`)
  * are plumbing, not danger — strip them so `bash x 2>&1` matches an entry
@@ -1813,7 +1817,7 @@ function parseRmPathTokens(stmt: string): RmPathToken[] | null {
     }
     if (!pastSeparator && token.value.startsWith("-") && token.quote === null) continue;
     // Skip shell redirections — handle both joined (2>/dev/null) and spaced (2> /dev/null)
-    if (/^[0-9]*>{1,2}|^&>|^[0-9]*</.test(token.value)) {
+    if (REDIRECT_TOKEN.test(token.value)) {
       // If the token is ONLY the operator (no target attached), skip the next token too
       if (/^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/.test(token.value)) {
         skipNext = true;

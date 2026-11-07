@@ -9,7 +9,7 @@
  */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -659,7 +659,7 @@ describe("Shell search classification", () => {
     return { root, r, c };
   }
 
-  for (const command of ["rg authenticate src", "grep -rn authenticate src", "grep -rn foo src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "git -C src grep authenticate", "git --no-pager grep authenticate", "git -c core.pager=cat grep authenticate", "git -c x=y --no-pager grep authenticate", "env FOO=1 rg authenticate", "rg foo", "rg foo .", "rg foo src/", "rg foo src/v1.2/", "rg foo src/v1.2", "grep foo package.json src", "rg foo ..", "rg foo ../", "find .. -name '*.ts'"]) {
+  for (const command of ["rg authenticate src", "grep -rn authenticate src", "grep -rn foo src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "git -C src grep authenticate", "git --no-pager grep authenticate", "git -c core.pager=cat grep authenticate", "git -c x=y --no-pager grep authenticate", "env FOO=1 rg authenticate", "rtk grep -rn authenticate src", "rtk rg authenticate src", "rg foo", "rg foo .", "rg foo src/", "grep foo package.json src", "rg foo ..", "rg foo ../", "find .. -name '*.ts'", "rg foo /"]) {
     it(`blocks a first-segment search: ${command}`, async () => {
       const { root, r, c } = await armed();
       try {
@@ -670,7 +670,7 @@ describe("Shell search classification", () => {
     });
   }
 
-  for (const command of ["cat src/auth.ts | grep authenticate", "ps aux | grep pi", "git status --short", "git log --grep=authenticate", "git -C src log --oneline", "ls; grep authenticate", "echo rg", "cat src/auth.ts | /usr/bin/grep authenticate", "grep foo package.json", "rg foo README.md", "grep foo /etc/hosts"]) {
+  for (const command of ["cat src/auth.ts | grep authenticate", "ps aux | grep pi", "git status --short", "git log --grep=authenticate", "git -C src log --oneline", "ls; grep authenticate", "echo rg", "cat src/auth.ts | /usr/bin/grep authenticate", "grep foo package.json", "rg foo README.md", "grep foo /etc/hosts", "function f { rg foo src; }", "f() { rg foo src; }"]) {
     it(`never blocks a shell command that does not search first: ${command}`, async () => {
       const { root, r, c } = await armed();
       try {
@@ -891,5 +891,126 @@ describe("Enablement callback logger", () => {
       await start(r, ctx(root));
       assert.deepEqual(seen, [stub], "a `setting: trailEnabled` caller inherits the injected logger");
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+/**
+ * Searching a directory the map holds nothing beneath is not blind navigation. This is decided by
+ * the MAP — never by .gitignore, which can cover tracked, indexed code — and outside the checkout
+ * only by ancestry, so a sibling checkout is not judged against this one's map.
+ */
+describe("unindexedSearch exempts directories the map cannot answer for", () => {
+  const root = makeTempDir("trail-unindexed-");
+  const mapPaths = new Set(["extensions/orchestrator/trail.ts", "docs/configuration.md", "src/auth.ts"]);
+  const sibling = makeTempDir("trail-sibling-");
+
+  beforeEach(() => {
+    for (const dir of [".pi/tmp/issue397", "extensions/orchestrator", "docs", "build", "src/v1.2", "vendor"]) {
+      mkdirSync(join(root, dir), { recursive: true });
+    }
+    // An ignored directory that holds mapped code: the map, not .gitignore, decides.
+    mkdirSync(join(root, "vendor/pkg"), { recursive: true });
+    writeFileSync(join(root, "vendor/pkg/index.ts"), "export {};\n");
+    mkdirSync(join(sibling, ".pi/tmp"), { recursive: true });
+  });
+
+  const allowed = (cmd: string, paths = mapPaths): boolean => trail.unindexedSearch(cmd, paths, root, silentLogger);
+
+  it("allows a search of gitignored scratch", () => {
+    assert.equal(allowed(`grep -rn "E1" .pi/tmp --include=*.md`), true);
+    // A redirect is plumbing, not an operand — the live form of the reported command.
+    assert.equal(allowed(`rtk grep -rn "E1" .pi/tmp --include=*.md 2>/dev/null`), true);
+  });
+
+  it("allows a search of a directory the map holds nothing beneath", () => {
+    assert.equal(allowed("grep -rn PATTERN build"), true, "build output holds nothing mapped");
+    assert.equal(allowed("rg foo src/v1.2/"), true, "so does an unmapped source subdirectory");
+  });
+
+  it("keeps the gate when the cd target is not a directory", () => {
+    // `cd unindexed.txt; rg foo .` fails and the search still runs in the session directory.
+    writeFileSync(join(root, "unindexed.txt"), "not a directory\n");
+    assert.equal(allowed("cd unindexed.txt; rg foo ."), false);
+    assert.equal(allowed("cd nope; rg foo ."), false, "a missing target is equally unknowable");
+  });
+
+  it("keeps the gate when the cd runs in a background job", () => {
+    // `cd build & rg foo .` backgrounds the cd, so the search keeps the session directory.
+    assert.equal(allowed("cd build & rg foo ."), false);
+  });
+
+  it("resolves relative operands against a leading cd", () => {
+    // The reported case: the search runs in ANOTHER checkout, so the operand is not ours.
+    assert.equal(allowed(`cd ${sibling} && grep -rn E1 .pi/tmp`), true);
+    // A cd we cannot model keeps the gate.
+    assert.equal(allowed("cd $DIR && rg foo src"), false);
+    assert.equal(allowed("cd - && rg foo src"), false);
+  });
+
+  it("honours a git -C directory, and gates when it cannot be modelled", () => {
+    // `git -C src grep foo util` searches src/util, so an unmapped root-level util proves nothing.
+    mkdirSync(join(root, "src/util"), { recursive: true });
+    const withSrc = new Set([...mapPaths, "src/util/index.ts"]);
+    assert.equal(allowed("git -C src grep foo util", withSrc), false);
+    assert.equal(allowed("git -Csrc grep foo util", withSrc), false, "the attached form moves it too");
+    assert.equal(allowed("git -C $DIR grep foo util"), false, "an unexpanded target keeps the gate");
+    assert.equal(allowed("cd src && git -C util grep foo .", withSrc), false, "the two compose");
+    // Only the pre-subcommand region holds git's global options: `-C3` after `grep` is context.
+    // With root-level `util` unmapped, an exemption proves the base stayed at the root — had `-C3`
+    // been read as a directory, the base would be `./3` and the operand unresolvable.
+    mkdirSync(join(root, "util"), { recursive: true });
+    assert.equal(allowed("git grep -C3 foo util", withSrc), true, "grep's -C3 is not a directory");
+    // Wrappers and assignments are skipped by the parser, so the -C is still found.
+    assert.equal(allowed("env FOO=1 git -C src grep foo util", withSrc), false);
+    assert.equal(allowed("command git -C src grep foo util", withSrc), false);
+    // Repeated -C composes in order, so the last one is not resolved against the session root.
+    mkdirSync(join(root, "src/nested"), { recursive: true });
+    mkdirSync(join(root, "nested"), { recursive: true });
+    const nested = new Set([...mapPaths, "src/nested/x.ts"]);
+    assert.equal(allowed("git -C src -C nested grep foo .", nested), false);
+    assert.equal(allowed("git -C nested grep foo .", nested), true, "the root-level nested/ is unmapped");
+    // Entering a symlink moves the process onto its target, so a later `-C ../x` starts there.
+    mkdirSync(join(root, "real/inner"), { recursive: true });
+    mkdirSync(join(root, "real/mapped"), { recursive: true });
+    mkdirSync(join(root, "mapped"), { recursive: true }); // unmapped decoy at the root
+    symlinkSync(join(root, "real/inner"), join(root, "link"), "dir");
+    const physical = new Set([...mapPaths, "real/mapped/x.ts"]);
+    assert.equal(allowed("git -C link -C ../mapped grep PATTERN .", physical), false);
+  });
+
+  it("allows an outside directory only when it cannot recurse back in", () => {
+    assert.equal(allowed(`rg foo ${sibling}`), true);
+    assert.equal(allowed("rg foo .."), false, "a parent directory recurses back into this checkout");
+    assert.equal(allowed("rg foo /"), false, "the filesystem root contains this checkout");
+    assert.equal(allowed(`rg foo ${root}`), false, "the root covers the whole map");
+  });
+
+  it("keeps the gate for anything the map can answer", () => {
+    assert.equal(allowed("rg foo extensions"), false);
+    assert.equal(allowed("rg foo extensions/orchestrator"), false);
+    assert.equal(allowed("rg foo ."), false);
+    assert.equal(allowed("rg foo extensions/orchestrator/trail.ts"), false);
+    assert.equal(allowed("rg foo src"), false, "a mapped file lies beneath it");
+  });
+
+  it("keeps the gate when the map holds code under an otherwise ignored directory", () => {
+    assert.equal(allowed("rg foo vendor", new Set([...mapPaths, "vendor/pkg/index.ts"])), false);
+  });
+
+  it("drops a redirection together with its destination", () => {
+    // `rg PATTERN > /dev/null` searches the checkout; /dev/null is where output goes.
+    assert.equal(allowed("rg PATTERN > /dev/null"), false);
+    assert.equal(allowed("grep -rn PATTERN 2> /tmp/errors.log src"), false, "a spaced 2> keeps its destination out of the operands");
+  });
+
+  it("keeps a quoted redirection character as a pattern", () => {
+    // Quotes are removed by the shell, so `'<'` is grep's pattern — not an operator that
+    // shifts `src/auth.ts` into the pattern slot and hides it from the map check.
+    assert.equal(allowed("rg '<' src/auth.ts /tmp/other-file"), false);
+  });
+
+  it("leaves a search with no path operand to the gate", () => {
+    assert.equal(allowed("grep -c PATTERN missing-dir"), false, "a missing path is not evidence of safety");
+    assert.equal(allowed("echo hello"), false);
   });
 });
