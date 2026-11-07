@@ -13,6 +13,10 @@ import {
 import { normalizePorcelain } from "../../../extensions/orchestrator/review-porcelain.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
+/** Every round must name what it reviews; these suites review one local commit. */
+const SUBJECT: ReviewSubject = { kind: "local", head_sha: "0123456789abcdef0123456789abcdef01234567" }; // pragma: allowlist secret
+
+
 
 describe("poller state transitions", () => {
   let tmp: string;
@@ -43,7 +47,7 @@ describe("poller state transitions", () => {
   it("dirty from clean → needs_review", () => {
     // Set up clean state
     markNeedsReview(tmp);
-    addReviewerPending(tmp, "test-reviewer");
+    addReviewerPending(tmp, "test-reviewer", SUBJECT);
     recordReviewerResult(tmp, "test-reviewer", 0);
     const clean = readReviewState(tmp);
     assert.equal(clean.status, "clean");
@@ -55,7 +59,7 @@ describe("poller state transitions", () => {
 
   it("dirty from has_findings → needs_review", () => {
     markNeedsReview(tmp);
-    addReviewerPending(tmp, "test-reviewer");
+    addReviewerPending(tmp, "test-reviewer", SUBJECT);
     recordReviewerResult(tmp, "test-reviewer", 3);
     const hf = readReviewState(tmp);
     assert.equal(hf.status, "has_findings");
@@ -66,7 +70,7 @@ describe("poller state transitions", () => {
 
   it("dirty during in_progress → sets edited_during_cycle", () => {
     markNeedsReview(tmp);
-    addReviewerPending(tmp, "test-reviewer");
+    addReviewerPending(tmp, "test-reviewer", SUBJECT);
     const ip = readReviewState(tmp);
     assert.equal(ip.status, "in_progress");
     assert.equal(ip.edited_during_cycle, false);
@@ -88,7 +92,7 @@ describe("poller state transitions", () => {
 
   it("clean from clean → resets to none", () => {
     markNeedsReview(tmp);
-    addReviewerPending(tmp, "r");
+    addReviewerPending(tmp, "r", SUBJECT);
     recordReviewerResult(tmp, "r", 0);
     assert.equal(readReviewState(tmp).status, "clean");
     resetReviewState(tmp);

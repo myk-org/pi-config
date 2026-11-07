@@ -20,6 +20,7 @@ import { resolveAgentModelProvider } from "./resolve-agent-model.js";
 import { trailToolsArgs } from "./trail.js";
 import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
 import { addReviewerPending, recordReviewerResult, countFindings, readReviewState } from "./pi-config-review-state.js";
+import { resolveReviewSubject } from "./review-subject.js";
 import {
   getMainBranch,
 } from "./git-helpers.js";
@@ -1117,7 +1118,12 @@ export function registerAsyncAgents(
     // Track reviewer spawn BEFORE building args — addReviewerPending sets status to
     // in_progress, so all reviewers in the same batch see consistent state.
     if (agentName.startsWith("code-reviewer-")) {
-      try { addReviewerPending(cwd, agentName); } catch { /* best-effort */ }
+      // The state must record WHAT is reviewed: its PR, or the commit when there is no open PR.
+      const subject = resolveReviewSubject(cwd, log);
+      try {
+        if (subject) addReviewerPending(cwd, agentName, subject);
+        else log.warn("review_subject_unresolved", { cwd, agent: agentName });
+      } catch { /* best-effort */ }
     }
 
     // Build pi args
