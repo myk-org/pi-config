@@ -384,6 +384,40 @@ describe("isRmInProjectTmp", () => {
     }
   });
 
+  it("refuses a .. that the kernel would apply to a symlink target", (t) => {
+    // path.resolve collapses `link/..` lexically; the kernel resolves it against where `link`
+    // points. With a decoy in the scratch, the collapsed path looks in-scratch either way — so the
+    // operand is refused before any of that, on the `..` alone.
+    const neutral = neutralRoot();
+    if (!neutral) {
+      t.skip("no neutral temp root writable on this host");
+      return;
+    }
+    const cwd = makeTempDir("rm-dotdot-");
+    const fakeHome = mkdtempSync(join(neutral, "rm-dotdot-home-"));
+    const realHome = process.env.HOME;
+    mkdirSync(join(fakeHome, ".pi", "tmp", ".ssh"), { recursive: true });
+    mkdirSync(join(fakeHome, ".ssh"), { recursive: true });
+    writeFileSync(join(fakeHome, ".pi", "tmp", ".ssh", "authorized_keys"), "");
+    writeFileSync(join(fakeHome, ".ssh", "authorized_keys"), "");
+    symlinkSync(join(fakeHome, ".ssh"), join(fakeHome, ".pi", "tmp", "link"), "dir");
+    process.env.HOME = fakeHome;
+    try {
+      assert.equal(
+        isRmInProjectTmp(`rm -rf ${fakeHome}/.pi/tmp/link/../.ssh/authorized_keys`, cwd),
+        false,
+        "a decoy in the scratch must not legalise traversal",
+      );
+      assert.equal(isRmInProjectTmp(`rm -rf ${fakeHome}/.pi/tmp/pkg/..`, cwd), false);
+      // Plain scratch paths are unaffected.
+      assert.equal(isRmInProjectTmp(`rm -rf ${fakeHome}/.pi/tmp/build-scratch`, cwd), true);
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
   it("still decides when the home directory does not exist", () => {
     // A HOME pointing nowhere must not turn the gate into an exception: it just grants no exemption.
     const cwd = makeTempDir("rm-nohome-");

@@ -1972,6 +1972,10 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
   for (const p of paths) {
     // Substitute ${PROJECT_TMP_DIR} or $PROJECT_TMP_DIR
     const expanded = p.replace(/\$\{?PROJECT_TMP_DIR\}?/g, projectTmpDir);
+    // Refuse `..` outright. `path.resolve` collapses it LEXICALLY, while the kernel applies it to
+    // where a preceding symlink actually points — so `~/.pi/tmp/link/../.ssh/key` looks in-scratch
+    // here and deletes `~/.ssh/key` there. Nothing legitimate needs `..` in a scratch operand.
+    if (/(^|\/)\.\.($|\/)/.test(expanded)) return false;
     const lexical = path.resolve(cwd, expanded);
     let resolved: string;
     try {
