@@ -266,18 +266,21 @@ function backupCountFor(filePath: string): number {
   const accept = (value: number): number | null =>
     Number.isInteger(value) && value >= min && value <= max ? value : null;
 
+  // Validate the env value FIRST, for its diagnostic: `getSetting` substitutes the default
+  // before the range check can see it, so a malformed env var would otherwise be logged only
+  // on a global save and silently swallowed on a project one.
+  const raw = process.env.PI_SETTINGS_BACKUP_COUNT;
+  const envCount = raw !== undefined && raw.trim() !== "" ? accept(Number(raw)) : null;
+  if (raw !== undefined && raw.trim() !== "" && envCount === null) {
+    log.warn("settings_backup_count_invalid", { raw, min, max, fallback });
+  }
+
   const cwd = settingCwdFor(filePath);
   if (cwd !== null) {
     const resolved = accept(Number(getSetting(cwd, "settings_backup_count")));
     if (resolved !== null) return resolved;
   }
-  const raw = process.env.PI_SETTINGS_BACKUP_COUNT;
-  if (raw !== undefined && raw.trim() !== "") {
-    const resolved = accept(Number(raw));
-    if (resolved !== null) return resolved;
-    log.warn("settings_backup_count_invalid", { raw, min, max, fallback });
-  }
-  return fallback;
+  return envCount ?? fallback;
 }
 
 /** Drop slots beyond the configured count, so lowering retention removes old copies. */
