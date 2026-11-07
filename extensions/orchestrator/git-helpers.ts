@@ -1154,6 +1154,24 @@ export function listUnmergedFiles(cwd?: string): { ok: boolean; files: string[] 
   return { ok: true, files: [...files] };
 }
 
+/** `bash -n file`, `sh -n script`, `bash -x -n f` — the shell only PARSES: nothing is executed.
+ *  A syntax check is not a command to approve, so the gate must not treat it as running a shell.
+ *  Only an exact `-n` token counts; anything fuzzier stays dangerous. */
+export function isNoexecSyntaxCheck(statement: string): boolean {
+  const WRAPPERS =
+    /^(?:(?:[0-9]*>{1,2}|&>)\S*\s+)*(?:\s*(?:[A-Za-z_]\w*=\S*|(?:then|do|else|elif)\b|sudo(?:\s+-\S+(?:\s+\S+)?)*|rtk(?:\s+-\S+)*|(?:command|builtin|exec)\b|env(?:\s+(?:-\S+(?:\s+\S+)?|\S+=\S*))*|timeout\s+(?:-\S+(?:\s+\S+)?\s+)*\S+|nice(?:\s+(?:-\S+(?:\s+\S+)?))*|nohup\b)\s+)*/i;
+  const SHELL = /^(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh\b/i;
+  const rest = statement.replace(WRAPPERS, "").trim();
+  const shellMatch = SHELL.exec(rest);
+  if (!shellMatch) return false;
+  const tokens = rest.slice(shellMatch[0].length).trim().split(/\s+/).filter(Boolean);
+  // `bash -c '…'` executes the string, so a `-n` that only appears INSIDE that string must not
+  // exempt it: the token has to be an argument of the shell itself.
+  const cIndex = tokens.indexOf("-c");
+  const ownTokens = cIndex === -1 ? tokens : tokens.slice(0, cIndex);
+  return ownTokens.includes("-n");
+}
+
 export const DANGEROUS = [
   /\brm\s+(?:-[a-zA-Z]+\s+)*(-[a-zA-Z]*r[a-zA-Z]*|--recursive)/i,
   /\bsudo\b/i,

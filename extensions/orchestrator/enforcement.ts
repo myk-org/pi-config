@@ -27,6 +27,7 @@ import {
 } from "./enforcement-helpers.js";
 import {
   DANGEROUS,
+  isNoexecSyntaxCheck,
   dangerousPatternLabel,
   getCurrentBranch,
   isInsideGitWorkTree,
@@ -458,6 +459,8 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
   const hasDangerous = statements.some((stmt) => {
     // Skip read-only commands with no dangerous subshells
     if (isReadOnlyStatement(stmt)) return false;
+    // `bash -n file` only parses: nothing executes, so there is nothing to approve.
+    if (isNoexecSyntaxCheck(stmt)) return false;
     return DANGEROUS.some((p) => p.test(stmt));
   });
   if (hasDangerous) {
@@ -497,7 +500,7 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
 
     // Allow rm -rf targeting only .pi/tmp/ paths without confirmation
     const allRmInTmp = statements
-      .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt))
+      .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt) && !isNoexecSyntaxCheck(stmt))
       .every((stmt) => isRmInProjectTmp(stmt, cwd));
     if (allRmInTmp) return undefined;
 
@@ -517,7 +520,7 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     const dangerousStmts = [
       ...new Set(
         statements
-          .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt))
+          .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt) && !isNoexecSyntaxCheck(stmt))
           .map((stmt) => normalizeDangerousStatement(stmt)),
       ),
     ];

@@ -523,7 +523,29 @@ describe("readSettingsFile / writeSettingsFile", () => {
     }
     assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 },
       "the state the user opened the TUI with survives an interleaved external save");
-    assert.equal(existsSync(`${filePath}${".bak.visit"}`), false, "no leftover snapshot after the visit");
+    assert.equal(existsSync(`${filePath}.bak.visit-${process.pid}`), false, "no leftover snapshot after the visit");
+  });
+
+  it("recovers a snapshot left by a crashed visit instead of overwriting it", () => {
+    const filePath = join(tempDir, "crashed-visit.json");
+    writeSettingsFile(filePath, { pidash_port: 1 }); // pre-crash state
+    // A dead process left its visit snapshot behind (pid 999999 is not running).
+    writeFileSync(`${filePath}.bak.visit-999999`, JSON.stringify({ pidash_port: 0 }));
+
+    beginSettingsEditSession();
+    try {
+      writeSettingsFile(filePath, { pidash_port: 2 }, { dedupeBackup: true });
+      // Its own snapshot exists under this process's pid, not the dead one's name.
+      assert.ok(existsSync(`${filePath}.bak.visit-${process.pid}`), "visit uses its own slot");
+    } finally {
+      endSettingsEditSession();
+    }
+
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 },
+      "this visit's snapshot is in the newest slot");
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.2`, "utf-8")), { pidash_port: 0 },
+      "the crashed visit's snapshot was promoted, not overwritten");
+    assert.equal(existsSync(`${filePath}.bak.visit-999999`), false, "stale snapshot consumed");
   });
 
   it("retries the visit backup after a failed rotation", () => {
@@ -534,10 +556,10 @@ describe("readSettingsFile / writeSettingsFile", () => {
     beginSettingsEditSession();
     try {
       // A directory squatting on the snapshot path makes the first snapshot fail.
-      mkdirSync(`${filePath}.bak.visit`, { recursive: true });
+      mkdirSync(`${filePath}.bak.visit-${process.pid}`, { recursive: true });
       assert.throws(() => writeSettingsFile(filePath, { pidash_port: 2 }, { dedupeBackup: true }),
         /without a backup/);
-      rmSync(`${filePath}.bak.visit`, { recursive: true, force: true });
+      rmSync(`${filePath}.bak.visit-${process.pid}`, { recursive: true, force: true });
       // Not recorded on failure → the next write in the same visit tries again and succeeds.
       writeSettingsFile(filePath, { pidash_port: 3 }, { dedupeBackup: true });
     } finally {

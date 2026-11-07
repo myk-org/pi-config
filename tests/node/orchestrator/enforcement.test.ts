@@ -10,7 +10,7 @@ import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { DANGEROUS, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
+import { DANGEROUS, isNoexecSyntaxCheck, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
 import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
 import { commitTrailerModelId, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
@@ -2883,6 +2883,30 @@ describe("descriptor-duplication redirects survive the split (PR #948 R3)", () =
   it("keeps >&2 attached to its statement", () => {
     const stmts = splitBashStatements("grep foo file >&2");
     assert.deepStrictEqual(stmts, ["grep foo file >&2"]);
+  });
+
+  it("treats bash -n as a noexec syntax check, not a shell execution", () => {
+    for (const cmd of [
+      "bash -n script.sh",
+      "sh -n .dev/deploy-all.sh",
+      "/bin/bash -n script.sh",
+      "bash -x -n script.sh",
+      "sudo bash -n script.sh",
+      "timeout 5 bash -n script.sh",
+      "bash -n",                     // stdin: parses only, nothing runs
+    ]) {
+      assert.equal(isNoexecSyntaxCheck(cmd), true, cmd);
+    }
+    for (const cmd of [
+      "bash script.sh",              // executes
+      "bash -c 'bash -n script.sh'", // -n belongs to the inner command
+      "zsh script.sh",
+    ]) {
+      assert.equal(isNoexecSyntaxCheck(cmd), false, cmd);
+    }
+    // The helper sees ONE statement: a chain is split by the gate, so `bash -n a && bash b`
+    // still flags its second statement (`splitBashStatements` keeps them apart).
+    assert.equal(splitBashStatements("bash -n a.sh && bash b.sh").filter((st) => !isNoexecSyntaxCheck(st)).length, 1);
   });
 
   it("still splits a background & (regression)", () => {

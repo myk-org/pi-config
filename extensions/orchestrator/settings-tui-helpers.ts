@@ -325,37 +325,76 @@ const createdInSession = new Set<string>();
 /** Visit snapshots waiting to be promoted into the numbered chain when the visit closes. */
 const visitSnapshots = new Set<string>();
 
-/** A visit keeps its own copy under this suffix, so an external save during the visit (which
- *  rotates the numbered chain) cannot destroy the state the user opened the TUI with. */
-const VISIT_SUFFIX = ".bak.visit";
-
+/** A visit keeps its own copy, so an external save during the visit (which rotates the numbered
+ *  chain) cannot destroy the state the user opened the TUI with. The process id is part of the
+ *  name: two TUI processes editing one file must not overwrite each other's restore point. */
 function visitSnapshotPath(filePath: string): string {
-  return `${filePath}${VISIT_SUFFIX}`;
+  return `${filePath}.bak.visit-${process.pid}`;
+}
+
+/** Promote one visit snapshot into the numbered chain (`.bak.1`), shifting older copies. */
+function promoteSnapshot(snapshotPath: string): void {
+  const filePath = snapshotPath.replace(/\.bak\.visit-\d+$/, "");
+  if (!existsSync(snapshotPath)) return;
+  const count = backupCountFor(filePath);
+  if (count <= 0) {
+    unlinkSync(snapshotPath);
+    return;
+  }
+  const oldest = settingsBackupPath(filePath, count);
+  if (existsSync(oldest)) unlinkSync(oldest);
+  for (let slot = count - 1; slot >= 1; slot--) {
+    const from = settingsBackupPath(filePath, slot);
+    if (existsSync(from)) renameSync(from, settingsBackupPath(filePath, slot + 1));
+  }
+  renameSync(snapshotPath, settingsBackupPath(filePath, 1));
+}
+
+/** Snapshots left by a process that is gone are promoted instead of being overwritten by the next
+ *  visit — a crash must cost nothing. A snapshot owned by a LIVE process is left alone. */
+function reapStaleVisitSnapshots(filePath: string): void {
+  const dir = dirname(filePath);
+  const marker = `${basename(filePath)}.bak.visit-`;
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith(marker)) continue;
+    const pid = Number(name.slice(marker.length));
+    if (!Number.isInteger(pid) || pid === process.pid) continue;
+    try {
+      process.kill(pid, 0);
+      continue; // owner still alive
+    } catch {
+      /* dead: fall through and promote its snapshot */
+    }
+    try {
+      promoteSnapshot(joinPath(dir, name));
+      log.info("settings_visit_snapshot_recovered", { filePath, pid });
+    } catch (e: any) {
+      log.warn("settings_visit_snapshot_recover_failed", { filePath, pid, error: e?.message });
+    }
+  }
 }
 
 /** Move each visit snapshot into `.bak.1` (shifting the chain), once, when the visit closes. */
 function promoteVisitSnapshots(): void {
-  for (const snapshot of visitSnapshots) {
-    const filePath = snapshot.slice(0, -VISIT_SUFFIX.length);
+  const failed = new Set<string>();
+  for (const snapshot of [...visitSnapshots]) {
     try {
-      if (!existsSync(snapshot)) continue;
-      const count = backupCountFor(filePath);
-      if (count <= 0) {
-        unlinkSync(snapshot);
-        continue;
-      }
-      const oldest = settingsBackupPath(filePath, count);
-      if (existsSync(oldest)) unlinkSync(oldest);
-      for (let slot = count - 1; slot >= 1; slot--) {
-        const from = settingsBackupPath(filePath, slot);
-        if (existsSync(from)) renameSync(from, settingsBackupPath(filePath, slot + 1));
-      }
-      renameSync(snapshot, settingsBackupPath(filePath, 1));
+      promoteSnapshot(snapshot);
     } catch (e: any) {
-      log.warn("settings_visit_snapshot_promote_failed", { filePath, error: e?.message });
+      // Kept in the set so a retry can still promote it; if the process ends first, the next
+      // visit reaps it by pid.
+      failed.add(snapshot);
+      log.warn("settings_visit_snapshot_promote_failed", { snapshot, error: e?.message });
     }
   }
   visitSnapshots.clear();
+  for (const snapshot of failed) visitSnapshots.add(snapshot);
 }
 
 export function beginSettingsEditSession(): void {
@@ -451,6 +490,7 @@ export function writeSettingsFile(
       // Inside a visit the snapshot is the restore point; the chain is only touched at visit end.
       if (shouldBackUp(filePath, true) && count > 0) {
         try {
+          reapStaleVisitSnapshots(filePath);
           copyFileSync(filePath, visitSnapshotPath(filePath));
           backedUpInSession.add(filePath);
           visitSnapshots.add(visitSnapshotPath(filePath));
