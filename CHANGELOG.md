@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.29.0] - 2026-11-07
+
+- Every review round records WHAT it reviews: a `ReviewSubject` (`pr` with repo and head, `issue`,
+  `local` commit, `plan` file, or `other`) is required by `addReviewerPending`, so a round can no
+  longer count for nothing. The counter resets per subject, `/review-status` prints the subject, and
+  the status line reads `Review cycle 3 — PR #1056 @ 0fd58c45 — 2 findings`.
+- The cycle cap belongs to one loop: an exhausted `review_loop_max_cycles` no longer licenses
+  commits for a different commit, and only a `pr`/`local` subject whose head matches `HEAD` can
+  exhaust it at all.
+- PR identity survives escaping, transient failures and branch switches: the PR comes from the
+  shared cached lookup in `git-helpers` (no private `gh` wrapper, no synchronous network wait in
+  dispatch), parsed from JSON instead of a jq filter, cached per branch, and the subject carries the
+  local head so unpushed commits start a new loop.
+- A reviewer joining a pending round for another plan or commit replaces the stored subject instead
+  of inheriting it.
+
 ## [4.28.1] - 2026-11-07
 
 - The Trail gate forces again. The runtime prefixes shell commands with `rtk`, so no search was
