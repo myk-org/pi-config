@@ -1,9 +1,9 @@
 /** Trail integration contract for #978. Run: npx tsx --test tests/node/orchestrator/trail.test.ts */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
+
 import { dirname, join } from "node:path";
 import * as trail from "../../../extensions/orchestrator/trail.js";
 import { getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";

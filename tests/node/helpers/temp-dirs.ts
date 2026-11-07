@@ -26,7 +26,12 @@ const created: string[] = [];
 let testStart = 0;
 
 function create(prefix: string): string {
-  fs.mkdirSync(TEST_RUN_ROOT, { recursive: true });
+  // `recursive` still throws if the container vanishes mid-call; one retry covers that window.
+  try {
+    fs.mkdirSync(TEST_RUN_ROOT, { recursive: true });
+  } catch {
+    fs.mkdirSync(TEST_RUN_ROOT, { recursive: true });
+  }
   const dir = fs.mkdtempSync(path.join(TEST_RUN_ROOT, prefix));
   created.push(dir);
   return dir;

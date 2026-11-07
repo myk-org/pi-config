@@ -1,8 +1,8 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+
 import { registerSubagentTool } from "../../../extensions/orchestrator/subagent-tool.js";
 import type { AsyncKillOrigin } from "../../../extensions/orchestrator/async-agents.js";
 import { createLogger } from "../../../extensions/shared/logger.js";

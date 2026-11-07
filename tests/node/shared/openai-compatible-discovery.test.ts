@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+
 import { join } from "node:path";
 import type { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import installOpenAiCompatibleDiscovery from "../../../extensions/openai-compatible-discovery/index.js";

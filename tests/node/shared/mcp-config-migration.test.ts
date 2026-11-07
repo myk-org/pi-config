@@ -5,9 +5,9 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+
 import { migrateMcpConfig, mcpConfigPaths } from "../../../extensions/shared/mcp-config-migration.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 

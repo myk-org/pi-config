@@ -10,8 +10,7 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, request, type IncomingMessage, type Server } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { startSidecar, isAllowedStreamRequest } from "../../src/index.js";

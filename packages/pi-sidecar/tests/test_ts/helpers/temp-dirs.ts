@@ -20,7 +20,12 @@ const created: string[] = [];
 let testStart = 0;
 
 function create(prefix: string): string {
-  fs.mkdirSync(TEST_RUN_ROOT, { recursive: true });
+  // `recursive` still throws if the container vanishes mid-call; one retry covers that window.
+  try {
+    fs.mkdirSync(TEST_RUN_ROOT, { recursive: true });
+  } catch {
+    fs.mkdirSync(TEST_RUN_ROOT, { recursive: true });
+  }
   const dir = fs.mkdtempSync(path.join(TEST_RUN_ROOT, prefix));
   created.push(dir);
   return dir;
@@ -82,9 +87,6 @@ after(() => {
   } catch {
     /* already gone */
   }
-  try {
-    fs.rmdirSync(TEST_TMP_BASE);
-  } catch {
-    /* another test file is still running */
-  }
+  // The shared container is deliberately left in place: another test process can be between
+  // creating it and creating its run root, and removing it here makes that mkdir fail (ENOENT).
 });

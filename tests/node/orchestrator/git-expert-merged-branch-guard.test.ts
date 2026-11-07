@@ -5,8 +5,8 @@
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
+
 import { join } from "node:path";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 

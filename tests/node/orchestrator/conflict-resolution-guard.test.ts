@@ -6,8 +6,8 @@
 import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync, mkdirSync } from "node:fs";
+
 import { join } from "node:path";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";

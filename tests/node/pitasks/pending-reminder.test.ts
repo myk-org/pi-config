@@ -7,8 +7,8 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+
 import { join } from "node:path";
 import { decidePendingReminder, oldestPendingAt } from "../../../extensions/pitasks/reminders.ts";
 import * as indexModule from "../../../extensions/pitasks/index.ts";

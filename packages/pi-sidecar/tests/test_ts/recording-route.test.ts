@@ -6,8 +6,7 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { startSidecar } from "../../src/index.js";
 import { makeTempDir } from "./helpers/temp-dirs.js";

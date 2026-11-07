@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, isAbsolute, join } from "node:path";
-import { accessSync, statSync, mkdtempSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { accessSync, statSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { DEFAULT_TOOLS } from "../../src/sessions.js";

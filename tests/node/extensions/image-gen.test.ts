@@ -9,8 +9,8 @@
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, rmSync } from "node:fs";
+
 import { join } from "node:path";
 import { createImageGenTool } from "../../../extensions/image-gen/image-gen.js";
 import { setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
