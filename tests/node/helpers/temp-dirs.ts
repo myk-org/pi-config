@@ -82,6 +82,16 @@ export function makeTempDir(prefix: string): string {
 /** Alias kept for fixtures created in `before()`; the scope comes from when it is created. */
 export const makeFileTempDir = makeTempDir;
 
+// A test process can end without reaching `after()` (a spawned child killed, a crash). Removing
+// this process's run root on exit closes that window; SIGKILL is the only case left.
+process.once("exit", () => {
+  try {
+    fs.rmSync(TEST_RUN_ROOT, { recursive: true, force: true });
+  } catch {
+    /* already gone */
+  }
+});
+
 reapDeadRuns();
 
 beforeEach(() => {
