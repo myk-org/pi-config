@@ -25,7 +25,7 @@ import {
   subjectLabel,
   type ReviewSubject,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
-import { parseOpenPr, parseRepoSlug, resetReviewSubjectCache, resolveReviewSubject } from "../../../extensions/orchestrator/review-subject.js";
+import { parseRepoSlug, resolveReviewSubject } from "../../../extensions/orchestrator/review-subject.js";
 
 /** Every round must name what it reviews; these suites review one local commit. */
 const SUBJECT: ReviewSubject = { kind: "local", head_sha: "0123456789abcdef0123456789abcdef01234567" }; // pragma: allowlist secret
@@ -961,40 +961,15 @@ describe("max-cycles cap is scoped to the reviewed subject", () => {
   });
 });
 
-describe("parseOpenPr", () => {
-  // Shaped like `gh pr view --json number,headRefOid,state` output.
-  const open = JSON.stringify({ number: 1056, headRefOid: "d1c6e7f072295b68ad0078736bf643779464e69e", state: "OPEN" }); // pragma: allowlist secret
-
-  it("keeps the PR number and head exactly as gh reports them", () => {
-    assert.deepEqual(parseOpenPr(open), { number: 1056, head_sha: "d1c6e7f072295b68ad0078736bf643779464e69e" }); // pragma: allowlist secret
-  });
-
-  it("ignores a PR that is not open", () => {
-    assert.equal(parseOpenPr(JSON.stringify({ number: 1, headRefOid: "a".repeat(40), state: "MERGED" })), null);
-  });
-
-  it("rejects an unusable payload instead of inventing an identity", () => {
-    assert.equal(parseOpenPr(""), null);
-    assert.equal(parseOpenPr("not json"), null);
-    assert.equal(parseOpenPr(JSON.stringify({ state: "OPEN" })), null);
-    assert.equal(parseOpenPr(JSON.stringify({ number: "1056", headRefOid: "x", state: "OPEN" })), null);
-    // The shape the jq filter produced before it was removed: a PR with no real number.
-    assert.equal(parseOpenPr(JSON.stringify({ number: null, headRefOid: "(.headRefOid)", state: "OPEN" })), null);
-  });
-});
-
 describe("resolveReviewSubject — PR identity and its failure modes", () => {
   const silent = { debug() {}, info() {}, warn() {}, error() {}, isDebugEnabled: () => false } as any;
   const head = "a".repeat(40);
   const deps = (over: any = {}) => ({
     headSha: () => head,
-    branch: () => "feat/x",
     remoteUrl: () => "git@github.com:owner/my.repo.git",
-    openPr: () => ({ status: "none" as const }),
+    openPrNumber: () => null,
     ...over,
   });
-
-  beforeEach(() => resetReviewSubjectCache());
 
   it("strips only a trailing .git from a repository name containing dots", () => {
     assert.equal(parseRepoSlug("git@github.com:owner/my.repo.git"), "owner/my.repo");
@@ -1004,7 +979,7 @@ describe("resolveReviewSubject — PR identity and its failure modes", () => {
   });
 
   it("carries the LOCAL head, so unpushed commits are a new loop", () => {
-    const subject = resolveReviewSubject("/tmp/any", silent, deps({ openPr: () => ({ status: "open", number: 1056 }) }));
+    const subject = resolveReviewSubject("/tmp/any", silent, deps({ openPrNumber: () => 1056 }));
     assert.deepEqual(subject, { kind: "pr", repo: "owner/my.repo", number: 1056, head_sha: head });
   });
 
@@ -1012,14 +987,25 @@ describe("resolveReviewSubject — PR identity and its failure modes", () => {
     assert.deepEqual(resolveReviewSubject("/tmp/any", silent, deps()), { kind: "local", head_sha: head });
   });
 
-  it("does not restart the loop when gh fails transiently", () => {
-    let mode: "open" | "error" = "open";
-    const lookup = () => (mode === "open" ? { status: "open" as const, number: 1056 } : { status: "error" as const });
-    assert.equal((resolveReviewSubject("/tmp/any", silent, deps({ openPr: lookup })) as any).number, 1056);
-    resetReviewSubjectCache(); // force a fresh lookup, as a later round would
-    mode = "error";
-    const second = resolveReviewSubject("/tmp/any", silent, deps({ openPr: lookup })) as any;
-    assert.equal(second.kind, "local", "with no cache to reuse, the commit is the honest answer");
+  it("does no lookup at all when the remote is not a PR host", () => {
+    let lookups = 0;
+    const started = Date.now();
+    const subject = resolveReviewSubject("/tmp/any", silent, deps({
+      remoteUrl: () => null,
+      openPrNumber: () => { lookups++; return null; },
+    }));
+    assert.deepEqual(subject, { kind: "local", head_sha: head });
+    assert.equal(lookups, 0, "no PR candidate means no lookup");
+    assert.ok(Date.now() - started < 200, "and no subprocess in the dispatch path");
+  });
+
+  it("takes the PR from the shared cache without a network round-trip", () => {
+    let lookups = 0;
+    const subject = resolveReviewSubject("/tmp/any", silent, deps({
+      openPrNumber: () => { lookups++; return 42; },
+    }));
+    assert.equal(lookups, 1);
+    assert.deepEqual(subject, { kind: "pr", repo: "owner/my.repo", number: 42, head_sha: head });
   });
 
   it("returns null when HEAD cannot be read", () => {

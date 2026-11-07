@@ -5,33 +5,25 @@
  * reviewer spawn knows its cwd, not the PR), so it is derived here: the open PR for the branch if
  * there is one, otherwise the commit being reviewed.
  *
- * Two things this deliberately does NOT do:
- * - It never returns a stale identity as if it were current: the subject carries the LOCAL head, so
- *   unpushed commits start a new loop instead of hiding behind the PR's remote head.
- * - It never turns a failed `gh` call into "no PR": a network or auth error would restart the same
- *   PR's counting at 1 every round. A failure reuses what was resolved for that branch before.
+ * The PR never comes from a synchronous `gh` call. `git-helpers` already owns that lookup with its
+ * own cache, in-flight coalescing and refresh path (`getOpenPr` / `refreshOpenPr`), so this reads
+ * the cache and asks for a background refresh — dispatch stays free of network waits.
+ *
+ * The subject carries the LOCAL head, never the PR's remote head: a round reviews the working tree,
+ * so an unpushed commit is a new loop rather than an echo of the PR's previous count.
  */
 import { execFileSync } from "node:child_process";
 import type { Logger } from "../shared/logger.js";
+import { getOpenPr, parseOpenPrJson, refreshOpenPr } from "./git-helpers.js";
 import { subjectKey, type ReviewSubject } from "./pi-config-review-state.js";
 
-/** `gh pr view` outcomes: an open PR, genuinely no PR, or a lookup we could not complete. */
-export type PrLookup =
-  | { status: "open"; number: number }
-  | { status: "none" }
-  | { status: "error" };
-
-/** Injectable lookups, so the PR branch is testable without git, gh or a network. */
+/** Injectable lookups, so the subject shapes are testable without git, gh or a network. */
 export interface ReviewSubjectDeps {
   headSha?: (cwd: string) => string | null;
-  branch?: (cwd: string) => string | null;
   remoteUrl?: (cwd: string) => string | null;
-  openPr?: (cwd: string) => PrLookup;
+  /** The open PR's number for this worktree, from cache only. */
+  openPrNumber?: (cwd: string) => number | null;
 }
-
-/** A PR lookup is reused for this long: a reviewer batch must not pay a `gh` round-trip per spawn. */
-const PR_CACHE_MS = 60_000;
-const prCache = new Map<string, { number: number; at: number }>();
 
 function git(cwd: string, args: string[]): string | null {
   try {
@@ -49,33 +41,27 @@ export function parseRepoSlug(url: string | null): string | null {
   return match ? `${match[1]}/${match[2]}` : null;
 }
 
-/** Parse `gh pr view --json number,headRefOid,state`. Pure so the shape is asserted without a
- *  network call — and so no value travels through a jq filter (in JavaScript `"\\(.x)"` loses its
- *  backslash to string escaping, which silently turned the number into "(.number)"). */
-export function parseOpenPr(raw: string): { number: number; head_sha: string } | null {
-  try {
-    const data = JSON.parse(raw);
-    if (data?.state !== "OPEN") return null;
-    if (!Number.isInteger(data?.number) || data.number <= 0) return null;
-    if (typeof data?.headRefOid !== "string" || data.headRefOid.length === 0) return null;
-    return { number: data.number, head_sha: data.headRefOid };
-  } catch {
-    return null;
-  }
-}
+/** Cold-cache fallbacks: one bounded `gh` call per worktree per minute, so the FIRST round of a
+ *  session already names the PR instead of recording `local` and resetting to `pr` a round later. */
+const COLD_LOOKUP_MS = 60_000;
+const coldPr = new Map<string, { number: number | null; at: number }>();
 
-function ghOpenPr(cwd: string): PrLookup {
+function coldOpenPrNumber(cwd: string): number | null {
+  const entry = coldPr.get(cwd);
+  if (entry && Date.now() - entry.at < COLD_LOOKUP_MS) return entry.number;
+  let number: number | null = null;
   try {
-    const raw = execFileSync("gh", ["pr", "view", "--json", "number,headRefOid,state"], {
-      cwd, encoding: "utf-8", timeout: 3_000, stdio: ["ignore", "pipe", "pipe"],
+    // Same `--json` shape the shared parser expects; git-helpers keeps its own cache warm through
+    // its async refresh, which is asked for below.
+    const raw = execFileSync("gh", ["pr", "view", "--json", "number,url,state"], {
+      cwd, encoding: "utf-8", timeout: 3_000, stdio: ["ignore", "pipe", "ignore"],
     });
-    const pr = parseOpenPr(raw);
-    return pr ? { status: "open", number: pr.number } : { status: "none" };
-  } catch (error: any) {
-    // `gh` exits non-zero for "no PR for this branch" too — that is a real answer, not a failure.
-    const stderr = String(error?.stderr ?? "") + String(error?.message ?? "");
-    return /no (?:open )?pull requests? found/i.test(stderr) ? { status: "none" } : { status: "error" };
+    number = parseOpenPrJson(raw)?.number ?? null;
+  } catch {
+    number = null; // no PR, not a GitHub repo, or gh unavailable — the commit is the honest answer
   }
+  coldPr.set(cwd, { number, at: Date.now() });
+  return number;
 }
 
 /** The subject this worktree is reviewing right now: its open PR at the local head, else the commit.
@@ -86,40 +72,21 @@ export function resolveReviewSubject(cwd: string, logger: Logger, deps: ReviewSu
     logger.debug("review_subject_no_head", { cwd });
     return null;
   }
-  const branch = (deps.branch ?? ((dir: string) => git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])))(cwd) ?? "detached";
   const repo = parseRepoSlug((deps.remoteUrl ?? ((dir: string) => git(dir, ["remote", "get-url", "origin"])))(cwd));
 
   let number: number | null = null;
   if (repo) {
-    const key = `${cwd}\u0000${branch}`;
-    const cached = prCache.get(key);
-    if (cached && Date.now() - cached.at < PR_CACHE_MS) {
-      number = cached.number;
-    } else {
-      const lookup = (deps.openPr ?? ghOpenPr)(cwd);
-      if (lookup.status === "open") {
-        number = lookup.number;
-        prCache.set(key, { number, at: Date.now() });
-      } else if (lookup.status === "error") {
-        // Reuse what this branch resolved before: a transient failure must not restart the loop.
-        number = cached?.number ?? null;
-        logger.warn("review_subject_pr_unavailable", { cwd, branch, reused: cached?.number ?? null });
-      } else {
-        prCache.delete(key);
-      }
+    number = (deps.openPrNumber ?? ((dir: string) => getOpenPr(dir)?.number ?? coldOpenPrNumber(dir)))(cwd);
+    // Keep the shared cache warm for the rest of the session; never awaited here.
+    if (number === null && !deps.openPrNumber) {
+      void refreshOpenPr(cwd).catch(() => undefined);
+      logger.debug("review_subject_refresh_scheduled", { cwd });
     }
   }
 
-  // The local head, not the PR's remote head: a round reviews the working tree, and an unpushed
-  // commit is a different loop even when the PR number has not changed.
   const subject: ReviewSubject = repo && number !== null
     ? { kind: "pr", repo, number, head_sha: head }
     : { kind: "local", head_sha: head };
   logger.debug("review_subject_resolved", { cwd, subject: subjectKey(subject) });
   return subject;
-}
-
-/** Test seam: drop cached PR lookups between assertions. */
-export function resetReviewSubjectCache(): void {
-  prCache.clear();
 }
