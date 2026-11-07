@@ -35,6 +35,8 @@ import {
   getFilePathForScope,
   readSettingsFile,
   writeSettingsFile,
+  beginSettingsEditSession,
+  endSettingsEditSession,
   registerSettingsTuiCommand,
   isSecretNoChange,
   resolveSecretPrefill,
@@ -655,11 +657,17 @@ async function openSettingsTui(ctx: ExtensionCommandContext, initialScope?: stri
   // Clear cached settings so TUI always shows fresh values
   clearSettingsCache();
 
-  await ctx.ui.custom<undefined>(
-    (tui, theme, _kb, done) =>
-      new SettingsOverlay(tui, theme, cwd, modelRegistry, editScope, done, (msg, level) => ctx.ui.notify(msg, level)),
-    OVERLAY_OPTS,
-  );
+  // One backup per visit, not per keystroke-saved value.
+  beginSettingsEditSession();
+  try {
+    await ctx.ui.custom<undefined>(
+      (tui, theme, _kb, done) =>
+        new SettingsOverlay(tui, theme, cwd, modelRegistry, editScope, done, (msg, level) => ctx.ui.notify(msg, level)),
+      OVERLAY_OPTS,
+    );
+  } finally {
+    endSettingsEditSession();
+  }
 }
 
 // ── Registration ────────────────────────────────────────────

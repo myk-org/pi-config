@@ -12,6 +12,8 @@ import {
   parseRawValue,
   readSettingsFile,
   writeSettingsFile,
+  beginSettingsEditSession,
+  endSettingsEditSession,
   getFilePathForScope,
   CATEGORIES,
   registerSettingsTuiCommand,
@@ -476,6 +478,38 @@ describe("readSettingsFile / writeSettingsFile", () => {
       if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
       else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
     }
+  });
+
+  it("snapshots once per settings-TUI visit, not once per changed value", () => {
+    const filePath = join(tempDir, "one-per-visit.json");
+    writeSettingsFile(filePath, { dco: true, pidash_port: 1 });
+
+    beginSettingsEditSession();
+    try {
+      for (const port of [2, 3, 4, 5, 6]) writeSettingsFile(filePath, { dco: true, pidash_port: port });
+    } finally {
+      endSettingsEditSession();
+    }
+
+    // Five changes inside one visit, but the backup is the state the user arrived with.
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { dco: true, pidash_port: 1 });
+    assert.equal(existsSync(`${filePath}.bak.2`), false, "no per-change rotation inside a visit");
+
+    // The next visit snapshots the new pre-visit state.
+    beginSettingsEditSession();
+    try {
+      writeSettingsFile(filePath, { dco: false, pidash_port: 7 });
+    } finally {
+      endSettingsEditSession();
+    }
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { dco: true, pidash_port: 6 });
+  });
+
+  it("keeps per-write backups for writes outside a TUI visit", () => {
+    const filePath = join(tempDir, "outside-visit.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    writeSettingsFile(filePath, { pidash_port: 2 });
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 });
   });
 
   it("removes slots beyond the retention when the count drops", () => {

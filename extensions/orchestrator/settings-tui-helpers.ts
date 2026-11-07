@@ -313,6 +313,28 @@ export class SettingsBackupError extends Error {
   }
 }
 
+/** Depth of the interactive editing session (`/pi-config-settings`). While it is open the file
+ *  is snapshotted ONCE, on the first change: a user who adjusts five values must not rotate the
+ *  pre-visit state out of existence. Writes outside the TUI are discrete actions and keep their
+ *  own backup. */
+let editSessionDepth = 0;
+const backedUpInSession = new Set<string>();
+
+export function beginSettingsEditSession(): void {
+  editSessionDepth++;
+}
+
+export function endSettingsEditSession(): void {
+  editSessionDepth = Math.max(0, editSessionDepth - 1);
+  if (editSessionDepth === 0) backedUpInSession.clear();
+}
+
+/** True when this write should rotate a backup: always outside a session, once per file inside. */
+function shouldBackUp(filePath: string): boolean {
+  if (editSessionDepth === 0) return true;
+  return !backedUpInSession.has(filePath);
+}
+
 /** Path of the newest previous-version copy kept next to a settings file. */
 export function settingsBackupPath(filePath: string, slot = 1): string {
   return `${filePath}.bak.${slot}`;
@@ -363,9 +385,13 @@ export function writeSettingsFile(filePath: string, data: Record<string, unknown
     // A corrupt file is recoverable by hand; a cleared one is not. Refuse rather than
     // overwrite — this is exactly how a project's settings were once emptied.
     if (readSettingsFile(filePath) === null) throw new SettingsFileCorruptError(filePath);
-    // Every touch keeps the previous bytes — `settings_backup_count` of them, newest at
-    // `.bak.1` — so a wrong write is always recoverable.
-    rotateSettingsBackups(filePath, backupCountFor(filePath));
+    // Keep the pre-change bytes — `settings_backup_count` of them, newest at `.bak.1`. Inside the
+    // settings TUI that happens once per visit, so editing several values keeps the state the user
+    // started from. Recorded only after a successful rotation, so a failed one is retried.
+    if (shouldBackUp(filePath)) {
+      rotateSettingsBackups(filePath, backupCountFor(filePath));
+      if (editSessionDepth > 0) backedUpInSession.add(filePath);
+    }
   }
   const content = JSON.stringify(data, null, 2) + "\n";
   const tmpPath = `${filePath}.${process.pid}.${Date.now().toString(36)}`;
