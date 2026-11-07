@@ -659,7 +659,7 @@ describe("Shell search classification", () => {
     return { root, r, c };
   }
 
-  for (const command of ["rg authenticate src", "grep -rn authenticate src", "grep -rn foo src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "git -C src grep authenticate", "git --no-pager grep authenticate", "git -c core.pager=cat grep authenticate", "git -c x=y --no-pager grep authenticate", "env FOO=1 rg authenticate", "rg foo", "rg foo .", "rg foo src/", "rg foo src/v1.2/", "rg foo src/v1.2", "grep foo package.json src", "rg foo ..", "rg foo ../", "find .. -name '*.ts'"]) {
+  for (const command of ["rg authenticate src", "grep -rn authenticate src", "grep -rn foo src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "git -C src grep authenticate", "git --no-pager grep authenticate", "git -c core.pager=cat grep authenticate", "git -c x=y --no-pager grep authenticate", "env FOO=1 rg authenticate", "rg foo", "rg foo .", "rg foo src/", "grep foo package.json src", "rg foo ..", "rg foo ../", "find .. -name '*.ts'", "rg foo /"]) {
     it(`blocks a first-segment search: ${command}`, async () => {
       const { root, r, c } = await armed();
       try {
@@ -895,50 +895,62 @@ describe("Enablement callback logger", () => {
 });
 
 /**
- * Searching a directory the map holds nothing beneath is not blind navigation. Gitignored
- * scratch (`.pi/tmp`) and other checkouts are the two shapes that fired the gate wrongly.
+ * Searching a directory the map holds nothing beneath is not blind navigation. This is decided by
+ * the MAP — never by .gitignore, which can cover tracked, indexed code — and outside the checkout
+ * only by ancestry, so a sibling checkout is not judged against this one's map.
  */
-describe("unindexedSearch exempts directories the map does not cover", () => {
+describe("unindexedSearch exempts directories the map cannot answer for", () => {
   const root = makeTempDir("trail-unindexed-");
-  const mapPaths = new Set(["extensions/orchestrator/trail.ts", "docs/configuration.md"]);
+  const mapPaths = new Set(["extensions/orchestrator/trail.ts", "docs/configuration.md", "src/auth.ts"]);
+  const sibling = makeTempDir("trail-sibling-");
 
   beforeEach(() => {
-    for (const dir of [".pi/tmp/issue397", "extensions/orchestrator", "docs", "build", "src/v1.2"]) {
+    for (const dir of [".pi/tmp/issue397", "extensions/orchestrator", "docs", "build", "src/v1.2", "vendor"]) {
       mkdirSync(join(root, dir), { recursive: true });
     }
-    writeFileSync(join(root, ".gitignore"), ".pi/\nbuild/\n");
-    execFileSync("git", ["init", "-q"], { cwd: root });
+    // An ignored directory that holds mapped code: the map, not .gitignore, decides.
+    mkdirSync(join(root, "vendor/pkg"), { recursive: true });
+    writeFileSync(join(root, "vendor/pkg/index.ts"), "export {};\n");
+    mkdirSync(join(sibling, ".pi/tmp"), { recursive: true });
   });
 
-  const allowed = (cmd: string): boolean => trail.unindexedSearch(cmd, mapPaths, root);
+  const allowed = (cmd: string, paths = mapPaths): boolean => trail.unindexedSearch(cmd, paths, root);
 
-  it("allows a search of gitignored scratch", () => {
-    // The reported case: `cd /some/other/repo && grep -rn PATTERN .pi/tmp`.
+  it("allows a search of gitignored scratch and of unmapped directories", () => {
     assert.equal(allowed(`grep -rn "E1" .pi/tmp --include=*.md`), true);
-    assert.equal(allowed("grep -rn PATTERN build"), true, "build output is ignored too");
+    assert.equal(allowed("grep -rn PATTERN build"), true, "build output holds nothing mapped");
+    assert.equal(allowed("rg foo src/v1.2/"), true, "the map holds nothing beneath it");
   });
 
-  it("keeps the gate for a tracked directory the map does not cover", () => {
-    // The map may simply be stale; that is what the gate is for.
-    assert.equal(allowed("rg foo src/v1.2/"), false);
+  it("resolves relative operands against a leading cd", () => {
+    // The reported case: the search runs in ANOTHER checkout, so the operand is not ours.
+    assert.equal(allowed(`cd ${sibling} && grep -rn E1 .pi/tmp`), true);
+    // A cd we cannot model keeps the gate.
+    assert.equal(allowed("cd $DIR && rg foo src"), false);
+    assert.equal(allowed("cd - && rg foo src"), false);
   });
 
-  it("allows a search of a sibling checkout, but not of an ancestor that recurses back in", () => {
-    const sibling = makeTempDir("trail-sibling-");
+  it("allows an outside directory only when it cannot recurse back in", () => {
     assert.equal(allowed(`rg foo ${sibling}`), true);
     assert.equal(allowed("rg foo .."), false, "a parent directory recurses back into this checkout");
-    assert.equal(allowed(`rg foo ${root}`), false, "the root covers everything the map holds");
+    assert.equal(allowed("rg foo /"), false, "the filesystem root contains this checkout");
+    assert.equal(allowed(`rg foo ${root}`), false, "the root covers the whole map");
   });
 
-  it("still blocks a search of a tracked directory or an indexed file", () => {
+  it("keeps the gate for anything the map can answer", () => {
     assert.equal(allowed("rg foo extensions"), false);
     assert.equal(allowed("rg foo extensions/orchestrator"), false);
     assert.equal(allowed("rg foo ."), false);
     assert.equal(allowed("rg foo extensions/orchestrator/trail.ts"), false);
+    assert.equal(allowed("rg foo src"), false, "a mapped file lies beneath it");
+  });
+
+  it("keeps the gate when the map holds code under an otherwise ignored directory", () => {
+    assert.equal(allowed("rg foo vendor", new Set([...mapPaths, "vendor/pkg/index.ts"])), false);
   });
 
   it("leaves a search with no path operand to the gate", () => {
-    assert.equal(allowed("grep -c PATTERN package.json.bak"), false, "a missing path is not evidence of safety");
+    assert.equal(allowed("grep -c PATTERN missing-dir"), false, "a missing path is not evidence of safety");
     assert.equal(allowed("echo hello"), false);
   });
 });
