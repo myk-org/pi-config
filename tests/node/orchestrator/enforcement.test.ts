@@ -330,6 +330,20 @@ describe("isReadOnlyStatement", () => {
 // ── isRmInProjectTmp ──
 
 describe("isRmInProjectTmp", () => {
+
+  it("allows rm -rf on the home scratch, and nothing above it", () => {
+    const cwd = makeTempDir("rm-home-tmp-");
+    const home = homedir();
+    {
+      // The user's own report: a literal absolute path inside ~/.pi/tmp.
+      assert.equal(isRmInProjectTmp(`rm -rf ${home}/.pi/tmp/docsbuild-test`, cwd), true);
+      // Outside that tree — logs, settings, or a traversal/glob out of it — still asks.
+      assert.equal(isRmInProjectTmp(`rm -rf ${home}/.pi/logs/x`, cwd), false);
+      assert.equal(isRmInProjectTmp(`rm -rf ${home}/.pi/tmp/../config`, cwd), false);
+      assert.equal(isRmInProjectTmp(`rm -rf ${home}/.pi/tmp/*`, cwd), false);
+      assert.equal(isRmInProjectTmp(`sudo rm -rf ${home}/.pi/tmp/x`, cwd), false);
+    }
+  });
   let testDir: string;
   let tmpPath: string;
 

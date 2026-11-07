@@ -1942,6 +1942,15 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
 
   // Resolve and substitute PROJECT_TMP_DIR env var
   const projectTmpDir = path.join(cwd, ".pi", "tmp");
+  // The home scratch (~/.pi/tmp) is our own throwaway tree too: the logger fallback and build
+  // scratch tests write there. Same exemption as the project one, same literal-path guards.
+  const homeTmpDir = path.join(homedir(), ".pi", "tmp");
+  let resolvedHomeTmp: string | null;
+  try {
+    resolvedHomeTmp = realpathSync(homeTmpDir);
+  } catch {
+    resolvedHomeTmp = null; // never created — nothing to match
+  }
   let resolvedCwd: string | null;
   try {
     resolvedCwd = realpathSync(cwd);
@@ -1980,6 +1989,20 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
           // Parent also doesn't exist — safe (entire path is non-existent)
         }
         resolved = lexical;
+      } else if (resolvedHomeTmp !== null &&
+        (lexical.startsWith(resolvedHomeTmp + path.sep) || lexical === resolvedHomeTmp)) {
+        // Non-existent path under the home scratch — validate the parent the same way.
+        if (expanded.includes("..")) return false;
+        const parentDir = path.dirname(lexical);
+        try {
+          const resolvedParent = realpathSync(parentDir);
+          if (!resolvedParent.startsWith(resolvedHomeTmp + path.sep) && resolvedParent !== resolvedHomeTmp) {
+            return false;
+          }
+        } catch {
+          // Parent also doesn't exist — safe
+        }
+        resolved = lexical;
       } else if (resolvedCwd !== null &&
         (lexical.startsWith(resolvedCwd + path.sep) || lexical === resolvedCwd) &&
         (lexical.includes(`${path.sep}.pi${path.sep}tmp${path.sep}`) ||
@@ -2012,7 +2035,10 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
        resolved.endsWith(`${path.sep}.pi${path.sep}tmp`));
     const inSystemTmp = resolved.startsWith("/tmp/") && resolved !== "/tmp" && resolved.length > 5;
 
-    if (!inProjectTmp && !inSystemTmp) return false;
+    const inHomeTmp = resolvedHomeTmp !== null &&
+      (resolved.startsWith(resolvedHomeTmp + path.sep) || resolved === resolvedHomeTmp);
+
+    if (!inProjectTmp && !inSystemTmp && !inHomeTmp) return false;
   }
 
   return true;
