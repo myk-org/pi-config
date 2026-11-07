@@ -511,7 +511,15 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     const allRmInTmp = statements
       .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt) && !isNoexecSyntaxCheck(stmt))
       .every((stmt) => isRmInProjectTmp(stmt, cwd));
-    if (allRmInTmp) return undefined;
+    if (allRmInTmp) {
+      // Never exempt silently: the audit line carries a hash, not the statement (paths can be
+      // sensitive), matching the syntax-check exemption above.
+      log.info("dangerous_gate_rm_scratch_exempt", {
+        statements: statements.length,
+        statementHash: createHash("sha256").update(statements.join("\n")).digest("hex").slice(0, 12),
+      });
+      return undefined;
+    }
 
     // User-approved allowlist (issue #949): the gate identifies the DANGEROUS
     // STATEMENTS (split out of the chain, benign plumbing tails — descriptor

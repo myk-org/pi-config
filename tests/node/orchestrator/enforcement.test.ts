@@ -331,17 +331,22 @@ describe("isReadOnlyStatement", () => {
 
 describe("isRmInProjectTmp", () => {
 
-  it("allows rm -rf on the home scratch, and nothing above it", () => {
+  it("allows rm -rf on a literal path inside the home scratch", () => {
+    // The user's own report: a literal absolute path inside ~/.pi/tmp.
+    const cwd = makeTempDir("rm-home-tmp-");
+    assert.equal(isRmInProjectTmp(`rm -rf ${homedir()}/.pi/tmp/docsbuild-test`, cwd), true);
+  });
+
+  it("refuses home-scratch deletions that are not literal paths inside it", () => {
     const cwd = makeTempDir("rm-home-tmp-");
     const home = homedir();
-    {
-      // The user's own report: a literal absolute path inside ~/.pi/tmp.
-      assert.equal(isRmInProjectTmp(`rm -rf ${home}/.pi/tmp/docsbuild-test`, cwd), true);
-      // Outside that tree — logs, settings, or a traversal/glob out of it — still asks.
-      assert.equal(isRmInProjectTmp(`rm -rf ${home}/.pi/logs/x`, cwd), false);
-      assert.equal(isRmInProjectTmp(`rm -rf ${home}/.pi/tmp/../config`, cwd), false);
-      assert.equal(isRmInProjectTmp(`rm -rf ${home}/.pi/tmp/*`, cwd), false);
-      assert.equal(isRmInProjectTmp(`sudo rm -rf ${home}/.pi/tmp/x`, cwd), false);
+    for (const stmt of [
+      `rm -rf ${home}/.pi/logs/x`, // outside the scratch
+      `rm -rf ${home}/.pi/tmp/../config`, // traversal
+      `rm -rf ${home}/.pi/tmp/*`, // glob, not a literal path
+      `sudo rm -rf ${home}/.pi/tmp/x`, // privilege escalation
+    ]) {
+      assert.equal(isRmInProjectTmp(stmt, cwd), false, stmt);
     }
   });
 
