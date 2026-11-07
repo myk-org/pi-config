@@ -945,6 +945,16 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
     assert.equal(allowed("cd - && rg foo src"), false);
   });
 
+  it("honours a git -C directory, and gates when it cannot be modelled", () => {
+    // `git -C src grep foo util` searches src/util, so an unmapped root-level util proves nothing.
+    mkdirSync(join(root, "src/util"), { recursive: true });
+    const withSrc = new Set([...mapPaths, "src/util/index.ts"]);
+    assert.equal(allowed("git -C src grep foo util", withSrc), false);
+    assert.equal(allowed("git -Csrc grep foo util", withSrc), false, "the attached form moves it too");
+    assert.equal(allowed("git -C $DIR grep foo util"), false, "an unexpanded target keeps the gate");
+    assert.equal(allowed("cd src && git -C util grep foo .", withSrc), false, "the two compose");
+  });
+
   it("allows an outside directory only when it cannot recurse back in", () => {
     assert.equal(allowed(`rg foo ${sibling}`), true);
     assert.equal(allowed("rg foo .."), false, "a parent directory recurses back into this checkout");

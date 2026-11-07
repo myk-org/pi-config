@@ -307,7 +307,33 @@ function searchBaseDir(command: unknown, root: string, logger: Logger = log): st
   let base = root;
   for (const segment of segments) {
     const match = /^cd(?:\s+(.*))?$/.exec(segment);
-    if (!match) break; // the search segment — its own directory is `base`
+    if (!match) {
+      // `git -C <dir> grep …` searches <dir>, not the session directory. Honour it, or gate.
+      const tokens = segment.split(/\s+/).filter(Boolean);
+      if ((tokens[0] ?? "").split("/").pop()!.toLowerCase().replace(/^["']|["']$/g, "") === "git") {
+        let dirFlag: string | null = null;
+        for (let i = 0; i < tokens.length; i++) {
+          const token = tokens[i]!;
+          if (token === "-C") dirFlag = (tokens[i + 1] ?? "").replace(/^["']|["']$/g, "");
+          else if (token.startsWith("-C") && token.length > 2) dirFlag = token.slice(2).replace(/^["']|["']$/g, "");
+        }
+        if (dirFlag !== null) {
+          if (!dirFlag || /[$`*?~]/.test(dirFlag)) {
+            logger.debug("gate_search_base", { reason: "unmodellable_git_c", target: dirFlag });
+            return null;
+          }
+          const next = resolve(base, dirFlag);
+          try {
+            if (!statSync(next).isDirectory()) throw new Error("not a directory");
+          } catch {
+            logger.debug("gate_search_base", { reason: "git_c_target_unusable", target: dirFlag });
+            return null;
+          }
+          base = next;
+        }
+      }
+      break; // the search segment — its own directory is `base`
+    }
     const target = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
     // `cd` alone (HOME), `cd -`, and anything the shell must expand are not modellable.
     if (!target || target === "-" || /[$`*?~]/.test(target)) {
