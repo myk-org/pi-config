@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.28.0] - 2026-11-07
+
+- Settings backups are scoped to a TUI visit: `/pi-config-settings` takes one restore point per
+  session instead of one per changed value, so the state you opened the overlay with survives a
+  burst of edits. Writes outside the TUI (allowlist approval, browser save) still back up per
+  action, and a snapshot left by a crashed visit is promoted rather than overwritten.
+- The backup lock is a single `O_EXCL` file: a dead owner's lock is taken over atomically, an
+  orphaned lock clears inside the same save, and a save that genuinely cannot take the lock still
+  refuses instead of shifting the chain and losing another process's restore point.
+- `bash -n file` no longer asks for approval — a pure syntax check runs nothing. Expansions,
+  backticks, process substitution, `+` options, `--`, `-c`, quotes and backslashes still ask.
+- `rm -rf` on a literal path inside the project `.pi/tmp` or `~/.pi/tmp` skips approval, with the
+  exemption logged as a statement hash. The operand must name the scratch both as written and as
+  resolved; `..`, backslashes, globs, quoting, subshells and `sudo` all still ask.
+- A missing `HOME` no longer makes the dangerous-command gate throw instead of deciding.
+
 ## [4.27.0] - 2026-11-07
 
 - Settings writes keep a configurable history: the previous file is copied to `.bak.1` before every
