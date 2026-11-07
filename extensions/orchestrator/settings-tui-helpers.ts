@@ -319,6 +319,9 @@ export class SettingsBackupError extends Error {
  *  own backup. */
 let editSessionDepth = 0;
 const backedUpInSession = new Set<string>();
+/** Files this visit CREATED: their pre-visit state is "absent", so backing up the first partial
+ *  version would misrepresent it. */
+const createdInSession = new Set<string>();
 
 export function beginSettingsEditSession(): void {
   editSessionDepth++;
@@ -326,7 +329,10 @@ export function beginSettingsEditSession(): void {
 
 export function endSettingsEditSession(): void {
   editSessionDepth = Math.max(0, editSessionDepth - 1);
-  if (editSessionDepth === 0) backedUpInSession.clear();
+  if (editSessionDepth === 0) {
+    backedUpInSession.clear();
+    createdInSession.clear();
+  }
 }
 
 /** True when this write should rotate a backup. Only the settings TUI asks for dedupe; a browser
@@ -334,6 +340,7 @@ export function endSettingsEditSession(): void {
  *  restore point. */
 function shouldBackUp(filePath: string, dedupe: boolean): boolean {
   if (!dedupe || editSessionDepth === 0) return true;
+  if (createdInSession.has(filePath)) return false;
   return !backedUpInSession.has(filePath);
 }
 
@@ -386,7 +393,14 @@ export function writeSettingsFile(
 
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 
-  if (existsSync(filePath)) {
+  const existedBefore = existsSync(filePath);
+  if (!existedBefore && options.dedupeBackup === true && editSessionDepth > 0) {
+    // Created during this visit: nothing to restore to, and the first partial version is not the
+    // pre-visit state, so later writes in the same visit must not snapshot it.
+    createdInSession.add(filePath);
+  }
+
+  if (existedBefore) {
     // A corrupt file is recoverable by hand; a cleared one is not. Refuse rather than
     // overwrite — this is exactly how a project's settings were once emptied.
     if (readSettingsFile(filePath) === null) throw new SettingsFileCorruptError(filePath);
@@ -399,7 +413,11 @@ export function writeSettingsFile(
     pruneExtraBackups(filePath, count);
     if (shouldBackUp(filePath, options.dedupeBackup === true)) {
       rotateSettingsBackups(filePath, count);
-      if (options.dedupeBackup === true && editSessionDepth > 0) backedUpInSession.add(filePath);
+      // Recorded only when a copy was actually made: retention 0 skips rotation, and the user may
+      // enable backups later in the same visit.
+      if (options.dedupeBackup === true && editSessionDepth > 0 && count > 0) {
+        backedUpInSession.add(filePath);
+      }
     }
   }
   const content = JSON.stringify(data, null, 2) + "\n";

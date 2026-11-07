@@ -505,6 +505,60 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { dco: true, pidash_port: 6 });
   });
 
+  it("retries the visit backup after a failed rotation", () => {
+    const filePath = join(tempDir, "retry-backup.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    process.env.PI_SETTINGS_BACKUP_COUNT = "1";
+    beginSettingsEditSession();
+    try {
+      // A directory squatting on the only slot makes the first rotation fail.
+      mkdirSync(`${filePath}.bak.1`, { recursive: true });
+      assert.throws(() => writeSettingsFile(filePath, { pidash_port: 2 }, { dedupeBackup: true }),
+        /without a backup/);
+      rmSync(`${filePath}.bak.1`, { recursive: true, force: true });
+      // Not recorded on failure → the next write in the same visit tries again and succeeds.
+      writeSettingsFile(filePath, { pidash_port: 3 }, { dedupeBackup: true });
+      // The refused write never reached the file, so the retried backup holds the state that
+      // survived it — port 1 — and a copy now exists at all, which is the point.
+      assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 });
+    } finally {
+      if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+      else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+      endSettingsEditSession();
+    }
+  });
+
+  it("enabling backups mid-visit still creates one", () => {
+    const filePath = join(tempDir, "enable-mid-visit.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    process.env.PI_SETTINGS_BACKUP_COUNT = "0";
+    beginSettingsEditSession();
+    try {
+      writeSettingsFile(filePath, { pidash_port: 2 }, { dedupeBackup: true }); // retention 0: no copy
+      process.env.PI_SETTINGS_BACKUP_COUNT = "3";
+      writeSettingsFile(filePath, { pidash_port: 3 }, { dedupeBackup: true });
+      assert.ok(existsSync(`${filePath}.bak.1`), "backup created once retention is enabled");
+    } finally {
+      if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+      else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+      endSettingsEditSession();
+    }
+  });
+
+  it("a file created during a visit is not backed up from its first partial version", () => {
+    const filePath = join(tempDir, "created-in-visit.json");
+    beginSettingsEditSession();
+    try {
+      writeSettingsFile(filePath, { pidash_port: 1 }, { dedupeBackup: true });
+      writeSettingsFile(filePath, { pidash_port: 2 }, { dedupeBackup: true });
+      assert.equal(existsSync(`${filePath}.bak.1`), false, "nothing existed before the visit");
+    } finally {
+      endSettingsEditSession();
+    }
+  });
+
   it("an external save during a visit keeps its own backup", () => {
     // A browser or allowlist write arrives while the overlay is open: it is a separate action and
     // must get its own restore point, not inherit the visit's dedupe.
