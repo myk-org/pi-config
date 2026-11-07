@@ -14,7 +14,30 @@ from urllib.parse import quote
 import httpx
 from simple_logger.logger import get_logger
 
-logger = get_logger(name=__name__, level=os.environ.get("PI_SIDECAR_LOG_LEVEL", "INFO"))
+_LOG_LEVELS = frozenset({"NOTSET", "DEBUG", "INFO", "WARNING", "WARN", "ERROR", "CRITICAL", "FATAL"})
+
+
+def _log_level_from_env() -> str:
+    """Return the client log level from PI_SIDECAR_LOG_LEVEL.
+
+    Case-insensitive: the documented value for this variable is lowercase (``info``), while
+    ``logging`` only accepts an upper-case name. An unusable value must not make this module
+    unimportable — that took down every CLI that merely imported the client — so it falls back
+    to INFO and says which variable to fix.
+    """
+    raw = os.environ.get("PI_SIDECAR_LOG_LEVEL", "INFO").strip()
+    level = raw.upper() or "INFO"
+    if level not in _LOG_LEVELS:
+        print(
+            f"pi_sidecar_client: ignoring PI_SIDECAR_LOG_LEVEL={raw!r}; "
+            f"use one of {', '.join(sorted(_LOG_LEVELS))}. Falling back to INFO.",
+            file=sys.stderr,
+        )
+        return "INFO"
+    return level
+
+
+logger = get_logger(name=__name__, level=_log_level_from_env())
 
 DEFAULT_SIDECAR_URL = "http://127.0.0.1:9100"
 DEFAULT_CWD = tempfile.gettempdir()

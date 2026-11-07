@@ -50,7 +50,7 @@ npx pi-sidecar-start
 | `SIDECAR_PORT` | `9100` | `9201` | Listen port |
 | `SIDECAR_HOST` | `127.0.0.1` | `127.0.0.1` | Bind address (`DEV_MODE=true` → `0.0.0.0` if host unset) |
 | `SIDECAR_URL` | — | — | Client base URL (Python default `http://127.0.0.1:9100`) |
-| `PI_SIDECAR_LOG_LEVEL` | `info` | `info` | Server / client log level |
+| `PI_SIDECAR_LOG_LEVEL` | `info` | `info` | Server / client log level. Case-insensitive (`info` and `INFO` both work); an unrecognised value is reported on stderr and falls back to `info` rather than breaking the client import. |
 
 > **Tip:** Point the client at the port you actually started. Dev script uses **9201**; the Node server and Python client default to **9100**.
 
