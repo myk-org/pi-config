@@ -3,9 +3,9 @@
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, utimesSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, utimesSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+
 import {
   MODELS_DEV_TTL_MS,
   applyThinkingLevelFromModel,

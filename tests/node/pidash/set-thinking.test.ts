@@ -1,7 +1,7 @@
 import { EventEmitter, once } from "node:events";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { writeFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+
 import { join } from "node:path";
 import { it, afterEach } from "node:test";
 import assert from "node:assert/strict";

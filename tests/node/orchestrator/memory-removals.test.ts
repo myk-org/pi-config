@@ -9,8 +9,8 @@
 
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+
 import { join } from "node:path";
 
 import { recordRemoval, removalsSince } from "../../../extensions/orchestrator/memory-tree.js";

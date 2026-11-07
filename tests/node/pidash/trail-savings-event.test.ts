@@ -10,9 +10,9 @@
  * Run with: npx tsx --test tests/node/pidash/trail-savings-event.test.ts
  */
 import { EventEmitter, once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+
 import { join } from "node:path";
 import { it, afterEach } from "node:test";
 import assert from "node:assert/strict";

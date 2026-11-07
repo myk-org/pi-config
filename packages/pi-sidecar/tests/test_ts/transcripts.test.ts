@@ -7,7 +7,7 @@
  */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionStore } from "../../src/sessions.js";
@@ -22,9 +22,10 @@ import {
   transcriptsEnabled,
   writeSessionHeader,
 } from "../../src/transcripts.js";
+import { makeTempDir } from "./helpers/temp-dirs.js";
 
 function tempTranscriptsDir(): string {
-  return mkdtempSync(join(tmpdir(), "sidecar-transcripts-"));
+  return makeTempDir("sidecar-transcripts-");
 }
 
 /** Redactor that masks a planted fake credential, like createApiKeyRedactor. */
@@ -554,8 +555,8 @@ describe("store wiring (end-to-end through prompt())", () => {
     process.env.RECORD_TRANSCRIPTS = "1";
     const prevOffline = process.env.PI_OFFLINE;
     process.env.PI_OFFLINE = "1";
-    const agentDir = mkdtempSync(join(tmpdir(), "sidecar-agent-hdr-923-"));
-    const sessionCwd = mkdtempSync(join(tmpdir(), "sidecar-cwd-hdr-923-"));
+    const agentDir = makeTempDir("sidecar-agent-hdr-923-");
+    const sessionCwd = makeTempDir("sidecar-cwd-hdr-923-");
     writeFileSync(
       join(agentDir, "models.json"),
       JSON.stringify({

@@ -5,8 +5,8 @@
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync, readdirSync, writeFileSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, existsSync, readdirSync, writeFileSync, symlinkSync } from "node:fs";
+
 import { join, basename } from "node:path";
 import { saveInboundAttachment } from "../../../extensions/shared/chat/chat-attachments.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";

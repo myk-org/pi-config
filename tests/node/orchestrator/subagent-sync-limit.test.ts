@@ -7,8 +7,8 @@
  * Run with: npx tsx --test tests/node/orchestrator/subagent-sync-limit.test.ts
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+
 import { join } from "node:path";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import {

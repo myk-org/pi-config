@@ -1,9 +1,9 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";

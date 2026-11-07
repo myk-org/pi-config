@@ -4,9 +4,9 @@
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+
 import { waitForResultFiles } from "../../../extensions/orchestrator/async-wait.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 

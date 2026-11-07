@@ -1,7 +1,7 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, rmSync, statSync } from "node:fs";
+
 import path from "node:path";
 import { djb2Hash, getProjectLegacyRunDir, getProjectRunDir, isPiMetaInvocation, isPiOneshotInvocation, shouldSkipOneshotShutdownDream, shouldSkipOneshotRegister } from "../../../extensions/orchestrator/utils.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";

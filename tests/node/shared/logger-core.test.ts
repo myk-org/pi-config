@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
+
 import { join } from "node:path";
 import { afterEach, it } from "node:test";
 import { createLoggerCore } from "../../../extensions/shared/logger-core.mjs";

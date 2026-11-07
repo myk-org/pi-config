@@ -24,9 +24,9 @@ import {
   clearSettingsCache,
   setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 

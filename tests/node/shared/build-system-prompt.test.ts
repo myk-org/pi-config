@@ -5,9 +5,9 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import type { TranscriptContext } from "@earendil-works/pi-ai";
-import { mkdtempSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+
 import { buildExternalSystemPrompt, createEmptyTranscriptContext } from "../../../extensions/shared/build-system-prompt.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 

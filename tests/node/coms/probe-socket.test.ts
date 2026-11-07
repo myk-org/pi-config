@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, mkdirSync, writeFileSync } from "node:fs";
+
 import { join } from "node:path";
 import * as net from "node:net";
 import { describe, it, afterEach } from "node:test";

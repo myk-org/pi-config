@@ -1,9 +1,9 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+
 import { registerSubagentTool } from "../../../extensions/orchestrator/subagent-tool.js";
 import { fireOnComplete, firePendingCompletions, registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";

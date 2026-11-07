@@ -1,7 +1,6 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -12,6 +11,7 @@ import {
   resolveInternalAgentDir,
 } from "../../src/sessions.js";
 import { createLogger } from "../../src/logger.js";
+import { makeTempDir } from "./helpers/temp-dirs.js";
 
 const log = createLogger("agent-dir-config-test");
 
@@ -116,8 +116,8 @@ describe("SessionStore configured agent dir", { concurrency: false }, () => {
 
   it("registers custom providers from the configured dir's models.json and creates sessions for them", async () => {
     log.debug("testing custom models.json provider registration and session creation via configured agent dir");
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-agent-dir-902-"));
-    const sessionCwd = mkdtempSync(join(tmpdir(), "sidecar-create-cwd-902-"));
+    const dir = makeTempDir("sidecar-agent-dir-902-");
+    const sessionCwd = makeTempDir("sidecar-create-cwd-902-");
     writeFileSync(
       join(dir, "models.json"),
       JSON.stringify({
@@ -170,7 +170,7 @@ describe("SessionStore configured agent dir", { concurrency: false }, () => {
 
   it("honors PI_SIDECAR_AGENT_DIR at construction", async () => {
     log.debug("testing SessionStore picks up PI_SIDECAR_AGENT_DIR env via provider discovery");
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-agent-dir-env-"));
+    const dir = makeTempDir("sidecar-agent-dir-env-");
     writeModelsJson(dir, "env-dir-prov-902", "env-dir-model");
     const store = withAgentDirEnv(dir, () => new SessionStore());
     try {
@@ -194,7 +194,7 @@ describe("SessionStore configured agent dir", { concurrency: false }, () => {
 describe("readSettingsSeed", () => {
   it("reads settings.json from the agent dir", () => {
     log.debug("testing readSettingsSeed parses settings.json from the agent dir");
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-settings-902-"));
+    const dir = makeTempDir("sidecar-settings-902-");
     try {
       writeFileSync(join(dir, "settings.json"), JSON.stringify({ defaultProvider: "foo" }));
       assert.deepEqual(readSettingsSeed(dir), { defaultProvider: "foo" });
@@ -205,7 +205,7 @@ describe("readSettingsSeed", () => {
 
   it("returns {} when settings.json is missing", () => {
     log.debug("testing readSettingsSeed falls back to {} for a missing settings.json");
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-settings-902-"));
+    const dir = makeTempDir("sidecar-settings-902-");
     try {
       assert.deepEqual(readSettingsSeed(dir), {});
     } finally {
@@ -215,7 +215,7 @@ describe("readSettingsSeed", () => {
 
   it("returns {} when settings.json is unparseable", () => {
     log.debug("testing readSettingsSeed falls back to {} for an unparseable settings.json");
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-settings-902-"));
+    const dir = makeTempDir("sidecar-settings-902-");
     try {
       writeFileSync(join(dir, "settings.json"), "{ not json");
       assert.deepEqual(readSettingsSeed(dir), {});
@@ -226,7 +226,7 @@ describe("readSettingsSeed", () => {
 
   it("returns {} when settings.json is not a JSON object", () => {
     log.debug("testing readSettingsSeed falls back to {} for a non-object settings.json");
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-settings-902-"));
+    const dir = makeTempDir("sidecar-settings-902-");
     try {
       writeFileSync(join(dir, "settings.json"), JSON.stringify(["not", "an", "object"]));
       assert.deepEqual(readSettingsSeed(dir), {});
@@ -283,9 +283,9 @@ describe("SessionStore settings come from a startup snapshot of the deployment d
 
   it("per-request agent_dir drives resource loading, not session settings", async () => {
     log.debug("testing that a per-request agent_dir loads its resources but not its settings");
-    const deployDir = mkdtempSync(join(tmpdir(), "sidecar-snapshot-deploy-"));
-    const requestDir = mkdtempSync(join(tmpdir(), "sidecar-snapshot-request-"));
-    const cwd = mkdtempSync(join(tmpdir(), "sidecar-snapshot-cwd-"));
+    const deployDir = makeTempDir("sidecar-snapshot-deploy-");
+    const requestDir = makeTempDir("sidecar-snapshot-request-");
+    const cwd = makeTempDir("sidecar-snapshot-cwd-");
     try {
       writeModelsJson(deployDir, "snapshot-deploy-prov", "snapshot-deploy-model");
       // Deployment snapshot disables the extension; the request dir's own settings.json
@@ -322,9 +322,9 @@ describe("SessionStore settings come from a startup snapshot of the deployment d
 
   it("per-request agent_dir resources still load when the deployment snapshot allows them", async () => {
     log.debug("testing that resource loading genuinely uses the per-request agent_dir");
-    const deployDir = mkdtempSync(join(tmpdir(), "sidecar-snapshot-deploy2-"));
-    const requestDir = mkdtempSync(join(tmpdir(), "sidecar-snapshot-request2-"));
-    const cwd = mkdtempSync(join(tmpdir(), "sidecar-snapshot-cwd2-"));
+    const deployDir = makeTempDir("sidecar-snapshot-deploy2-");
+    const requestDir = makeTempDir("sidecar-snapshot-request2-");
+    const cwd = makeTempDir("sidecar-snapshot-cwd2-");
     try {
       // No deployment settings.json — the snapshot seed is {} and disables nothing.
       writeModelsJson(deployDir, "snapshot-deploy2-prov", "snapshot-deploy2-model");
@@ -357,8 +357,8 @@ describe("SessionStore settings come from a startup snapshot of the deployment d
 
   it("editing the deployment settings.json after construction does not change subsequent sessions", async () => {
     log.debug("testing that the deployment settings snapshot is never re-read");
-    const deployDir = mkdtempSync(join(tmpdir(), "sidecar-snapshot-deploy3-"));
-    const cwd = mkdtempSync(join(tmpdir(), "sidecar-snapshot-cwd3-"));
+    const deployDir = makeTempDir("sidecar-snapshot-deploy3-");
+    const cwd = makeTempDir("sidecar-snapshot-cwd3-");
     try {
       writeModelsJson(deployDir, "snapshot-deploy3-prov", "snapshot-deploy3-model");
       writeProviderExtension(deployDir, EXT_NAME, "snapshot-dep3-ext-prov", "snapshot-dep3-ext-model");

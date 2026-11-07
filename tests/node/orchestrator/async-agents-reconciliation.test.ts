@@ -13,9 +13,9 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { countFindings } from "../../../extensions/orchestrator/pi-config-review-state.js";
-import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, existsSync, rmSync } from "node:fs";
+import { writeFileSync, readFileSync, unlinkSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 // formatDuration is in async-agents.ts which cannot be imported in test context

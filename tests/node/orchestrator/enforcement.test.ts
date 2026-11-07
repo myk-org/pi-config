@@ -4,7 +4,7 @@
  */
 import { describe, it, before, after, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";

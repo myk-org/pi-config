@@ -4,8 +4,8 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync, appendFileSync, statSync } from "node:fs";
+
 import { join } from "node:path";
 import {
 	appendHistoryRecord,
