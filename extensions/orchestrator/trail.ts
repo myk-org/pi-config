@@ -295,17 +295,37 @@ const GIT_VALUE_OPTIONS = new Set(["-c", "-C"]);
 /** The directory the search itself runs in. A leading `cd` moves it, and relative operands must
  *  be resolved there — resolving against the session root approved paths the shell never searched.
  *  Returns null when the destination cannot be known statically, which keeps the gate closed. */
-function searchBaseDir(command: unknown, root: string): string | null {
-  const segments = String(command ?? "").split("|")[0]!.split(/&&|;|&/).map(part => part.trim()).filter(Boolean);
+function searchBaseDir(command: unknown, root: string, logger: Logger = log): string | null {
+  const raw = String(command ?? "").split("|")[0]!;
+  // `cd build & rg foo .` runs the cd in a background subshell, so the foreground search keeps the
+  // session directory. Background semantics are not worth modelling — gate instead of guessing.
+  if (/(^|[^&>])&([^&=]|$)/.test(raw)) {
+    logger.debug("gate_search_base", { reason: "background_job" });
+    return null;
+  }
+  const segments = raw.split(/&&|;/).map(part => part.trim()).filter(Boolean);
   let base = root;
   for (const segment of segments) {
     const match = /^cd(?:\s+(.*))?$/.exec(segment);
     if (!match) break; // the search segment — its own directory is `base`
     const target = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
     // `cd` alone (HOME), `cd -`, and anything the shell must expand are not modellable.
-    if (!target || target === "-" || /[$`*?~]/.test(target)) return null;
-    base = resolve(base, target);
+    if (!target || target === "-" || /[$`*?~]/.test(target)) {
+      logger.debug("gate_search_base", { reason: "unmodellable_cd", target });
+      return null;
+    }
+    const next = resolve(base, target);
+    // `cd somefile; rg foo .` leaves the shell where it was when the cd FAILS, so a target that is
+    // not an existing directory tells us nothing about where the search runs.
+    try {
+      if (!statSync(next).isDirectory()) throw new Error("not a directory");
+    } catch {
+      logger.debug("gate_search_base", { reason: "cd_target_unusable", target });
+      return null;
+    }
+    base = next;
   }
+  logger.debug("gate_search_base", { base, root });
   return base;
 }
 
@@ -323,15 +343,19 @@ function dirPrefix(directory: string): string {
  *  of the root still gates (`rg foo ..` recurses back in); a sibling checkout, a plain non-git
  *  folder, or this repo's gitignored scratch (`.pi/tmp`) is another directory's business.
  *  Real paths are compared, so an external symlink into the checkout resolves back inside. */
-export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string): boolean {
+export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string, logger: Logger = log): boolean {
   const search = searchCommand(command);
   if (!search) return false;
   const operands = search.operands.filter(token => !token.startsWith("-"));
   // `find` names a path first; every other search binary takes the pattern first.
   const paths = search.binary === "find" ? operands : operands.slice(1);
   if (!paths.length) return false;
-  const base = searchBaseDir(command, root);
+  const base = searchBaseDir(command, root, logger);
   if (!base) return false;
+  const verdict = (path: string, allowed: boolean, reason: string): boolean => {
+    logger.debug("gate_search_unindexed", { path, allowed, reason, base });
+    return allowed;
+  };
   return paths.every(path => {
     let real: string;
     let info;
@@ -340,20 +364,20 @@ export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: s
       real = realpathSync(absolute);
       info = statSync(real);
     } catch {
-      return false; // missing, unreadable, or an unresolvable chain: keep the gate
+      return verdict(path, false, "unresolvable"); // missing or unreadable: keep the gate
     }
     const rel = relative(root, real);
     const outside = rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel);
-    if (outside) return real !== root && !root.startsWith(dirPrefix(real));
-    if (real === root) return false; // the checkout root covers the whole map
+    if (outside) return verdict(path, real !== root && !root.startsWith(dirPrefix(real)), "outside_checkout");
+    if (real === root) return verdict(path, false, "checkout_root");
     const inside = rel.split(sep).join("/");
-    if (mapPaths.has(inside)) return false;
-    if (info.isFile()) return true; // an unindexed file (package.json, a doc, a lockfile)
-    if (!info.isDirectory()) return true;
+    if (mapPaths.has(inside)) return verdict(path, false, "indexed_file");
+    if (info.isFile()) return verdict(path, true, "unindexed_file");
+    if (!info.isDirectory()) return verdict(path, true, "not_a_directory");
     for (const mapped of mapPaths) {
-      if (mapped === inside || mapped.startsWith(`${inside}/`)) return false;
+      if (mapped === inside || mapped.startsWith(`${inside}/`)) return verdict(path, false, "mapped_beneath");
     }
-    return true; // the map holds nothing beneath: no retrieval could replace this search
+    return verdict(path, true, "map_holds_nothing"); // no retrieval could replace this search
   });
 }
 function searchTool(event: any, logger: Logger = log): boolean {

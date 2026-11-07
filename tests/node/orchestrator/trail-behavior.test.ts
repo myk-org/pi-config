@@ -914,12 +914,27 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
     mkdirSync(join(sibling, ".pi/tmp"), { recursive: true });
   });
 
-  const allowed = (cmd: string, paths = mapPaths): boolean => trail.unindexedSearch(cmd, paths, root);
+  const allowed = (cmd: string, paths = mapPaths): boolean => trail.unindexedSearch(cmd, paths, root, silentLogger);
 
-  it("allows a search of gitignored scratch and of unmapped directories", () => {
+  it("allows a search of gitignored scratch", () => {
     assert.equal(allowed(`grep -rn "E1" .pi/tmp --include=*.md`), true);
+  });
+
+  it("allows a search of a directory the map holds nothing beneath", () => {
     assert.equal(allowed("grep -rn PATTERN build"), true, "build output holds nothing mapped");
-    assert.equal(allowed("rg foo src/v1.2/"), true, "the map holds nothing beneath it");
+    assert.equal(allowed("rg foo src/v1.2/"), true, "so does an unmapped source subdirectory");
+  });
+
+  it("keeps the gate when the cd target is not a directory", () => {
+    // `cd unindexed.txt; rg foo .` fails and the search still runs in the session directory.
+    writeFileSync(join(root, "unindexed.txt"), "not a directory\n");
+    assert.equal(allowed("cd unindexed.txt; rg foo ."), false);
+    assert.equal(allowed("cd nope; rg foo ."), false, "a missing target is equally unknowable");
+  });
+
+  it("keeps the gate when the cd runs in a background job", () => {
+    // `cd build & rg foo .` backgrounds the cd, so the search keeps the session directory.
+    assert.equal(allowed("cd build & rg foo ."), false);
   });
 
   it("resolves relative operands against a leading cd", () => {
