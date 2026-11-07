@@ -11,6 +11,8 @@ import {
   cosineSimilarity,
   EMBEDDING_POOLING,
 } from "../../../extensions/orchestrator/memory-embeddings.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 // Hardcoded to match NEAR_DUPLICATE_THRESHOLD in memory-tools.ts (0.90).
 // Can't import directly because memory-tools.ts pulls in typebox/pi-agent deps.
@@ -77,7 +79,7 @@ describe("embeddings cache invalidation", () => {
   let cwd: string;
 
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), "embed-test-"));
+    cwd = makeTempDir("embed-test-");
     mkdirSync(join(cwd, ".pi", "memory"), { recursive: true });
   });
 
@@ -146,7 +148,7 @@ describe("release entry regression (requires ONNX model)", () => {
   let regressionCwd: string;
 
   beforeEach(() => {
-    regressionCwd = mkdtempSync(join(tmpdir(), "regression-"));
+    regressionCwd = makeTempDir("regression-");
     mkdirSync(join(regressionCwd, ".pi", "memory"), { recursive: true });
   });
 

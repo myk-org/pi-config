@@ -10,12 +10,14 @@
  * because async-agents.ts transitively imports pi SDK internals that are
  * unavailable in the test harness.
  */
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { countFindings } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 // formatDuration is in async-agents.ts which cannot be imported in test context
 // (transitive pi SDK deps). Inline copy for testing.
 function formatDuration(ms: number): string {
@@ -408,7 +410,7 @@ describe("async-agents reconciliation (issue #734)", () => {
 
     it("fs.unlinkSync deletes result file after ingestion", () => {
       // Simulates processResultFile: create file, read it, delete it
-      tmpDir = mkdtempSync(join(tmpdir(), "async-result-lifecycle-"));
+      tmpDir = makeTempDir("async-result-lifecycle-");
       const resultPath = join(tmpDir, "worker-123.json");
       writeFileSync(resultPath, JSON.stringify({ id: "worker-123", success: true, output: "done", exitCode: 0, durationMs: 1000 }));
       assert.ok(existsSync(resultPath), "result file should exist before ingestion");
@@ -423,7 +425,7 @@ describe("async-agents reconciliation (issue #734)", () => {
 
     it("re-ingestion skip deletes stale file", () => {
       // Simulates: job.output !== undefined → delete file, return
-      tmpDir = mkdtempSync(join(tmpdir(), "async-result-reingest-"));
+      tmpDir = makeTempDir("async-result-reingest-");
       const resultPath = join(tmpDir, "worker-456.json");
       writeFileSync(resultPath, JSON.stringify({ id: "worker-456", output: "stale" }));
 
@@ -437,7 +439,7 @@ describe("async-agents reconciliation (issue #734)", () => {
     });
 
     it("orphan result file is deleted when no matching job exists", () => {
-      tmpDir = mkdtempSync(join(tmpdir(), "async-result-orphan-"));
+      tmpDir = makeTempDir("async-result-orphan-");
       const resultPath = join(tmpDir, "orphan-789.json");
       writeFileSync(resultPath, JSON.stringify({ id: "orphan-789", output: "old" }));
 
@@ -451,7 +453,7 @@ describe("async-agents reconciliation (issue #734)", () => {
     });
 
     it("delivered job result file is cleaned up", () => {
-      tmpDir = mkdtempSync(join(tmpdir(), "async-result-delivered-"));
+      tmpDir = makeTempDir("async-result-delivered-");
       const resultPath = join(tmpDir, "delivered-101.json");
       writeFileSync(resultPath, JSON.stringify({ id: "delivered-101" }));
 
@@ -465,7 +467,7 @@ describe("async-agents reconciliation (issue #734)", () => {
 
     it("output persisted to status.json survives result file deletion", () => {
       // Simulates: after ingestion, output is written to status.json
-      tmpDir = mkdtempSync(join(tmpdir(), "async-result-persist-"));
+      tmpDir = makeTempDir("async-result-persist-");
       const statusPath = join(tmpDir, "status.json");
       writeFileSync(statusPath, JSON.stringify({ runId: "persist-1", state: "running" }));
 
@@ -488,7 +490,7 @@ describe("async-agents reconciliation (issue #734)", () => {
     let tmpDir: string;
 
     it("restored complete job reads output from status.json", () => {
-      tmpDir = mkdtempSync(join(tmpdir(), "async-restore-"));
+      tmpDir = makeTempDir("async-restore-");
       const statusPath = join(tmpDir, "status.json");
       writeFileSync(statusPath, JSON.stringify({
         runId: "restore-1", agent: "worker", state: "complete",
@@ -515,7 +517,7 @@ describe("async-agents reconciliation (issue #734)", () => {
     });
 
     it("restored running job has delivered=false, eligible for zombie detection", () => {
-      tmpDir = mkdtempSync(join(tmpdir(), "async-restore-running-"));
+      tmpDir = makeTempDir("async-restore-running-");
       const statusPath = join(tmpDir, "status.json");
       writeFileSync(statusPath, JSON.stringify({
         runId: "restore-2", agent: "worker", state: "running",
@@ -539,7 +541,7 @@ describe("async-agents reconciliation (issue #734)", () => {
     });
 
     it("killed job with persisted state restores as delivered", () => {
-      tmpDir = mkdtempSync(join(tmpdir(), "async-restore-killed-"));
+      tmpDir = makeTempDir("async-restore-killed-");
       const statusPath = join(tmpDir, "status.json");
       // killAsyncAgent writes state: "failed", exitCode: -9
       writeFileSync(statusPath, JSON.stringify({

@@ -2,7 +2,7 @@
  * Tests for enforcement-rules engine (trigger matching + action execution).
  * Run with: npx tsx --test tests/node/orchestrator/enforcement-rules.test.ts
  */
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import fs from "node:fs";
@@ -18,6 +18,8 @@ import {
   type VerifierEntry,
 } from "../../../extensions/orchestrator/enforcement-rules.js";
 import { entryHash, loadScores, rebuild, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -295,7 +297,7 @@ describe("loadEnforcedEntries — returns entries with trigger and action", () =
   const now = new Date().toISOString();
 
   function makeTmpDir(): string {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "enforcement-test-"));
+    const tmpDir = makeTempDir("enforcement-test-");
     const memoryDir = path.join(tmpDir, ".pi", "memory");
     const topicsDir = path.join(memoryDir, "topics");
     fs.mkdirSync(topicsDir, { recursive: true });
@@ -387,7 +389,7 @@ describe("loadVerifierEntries — returns entries with verifier field", () => {
   const now = new Date().toISOString();
 
   function makeTmpDir(): string {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "verifier-test-"));
+    const tmpDir = makeTempDir("verifier-test-");
     const memoryDir = path.join(tmpDir, ".pi", "memory");
     const topicsDir = path.join(memoryDir, "topics");
     fs.mkdirSync(topicsDir, { recursive: true });
@@ -556,7 +558,7 @@ describe("rebuild — orphan preservation for enforced entries", () => {
   const verifierHash = entryHash(verifierLine);
 
   function makeTmpDir(): string {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rebuild-orphan-test-"));
+    const tmpDir = makeTempDir("rebuild-orphan-test-");
     const memoryDir = path.join(tmpDir, ".pi", "memory");
     const topicsDir = path.join(memoryDir, "topics");
     fs.mkdirSync(topicsDir, { recursive: true });
@@ -678,7 +680,7 @@ describe("rebuild — orphan preservation for enforced entries", () => {
 
 describe("loadEnforcedEntries / loadVerifierEntries — session & expiry eligibility (Qodo round 2, PR #916)", () => {
   function makeScopedDir(): string {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "enforcement-rules-scope-"));
+    const tmpDir = makeTempDir("enforcement-rules-scope-");
     const memoryDir = path.join(tmpDir, ".pi", "memory");
     fs.mkdirSync(path.join(memoryDir, "topics"), { recursive: true });
     fs.writeFileSync(

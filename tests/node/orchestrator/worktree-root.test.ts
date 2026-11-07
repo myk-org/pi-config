@@ -16,6 +16,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { tryResolveWorktreeRoot, resolveWorktreeRoot, mainCheckoutRoot } from "../../../extensions/orchestrator/utils.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 let base: string;
 
@@ -27,7 +29,7 @@ function makeRepo(name: string): string {
 }
 
 beforeEach(() => {
-  base = mkdtempSync(join(tmpdir(), "worktree-"));
+  base = makeTempDir("worktree-");
 });
 
 afterEach(() => {

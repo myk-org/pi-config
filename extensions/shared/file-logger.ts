@@ -133,7 +133,8 @@ function appendLine(filePath: string, line: string): void {
  * Append one physical line to ~/.pi/logs/<name>/<session>.log.
  * Never writes to console.* (chat UI leak).
  * Returns true on success.
- * On primary-path failure, tries os.tmpdir()/pi-logs/<name>.log once.
+ * On primary-path failure, tries `~/.pi/tmp/pi-logs` then `<cwd>/.pi/tmp/pi-logs`: both are
+ * swept by the tmp cleanup, and the home one still works when the checkout is read-only.
  */
 const LEVEL_ORDER: Record<string, number> = Object.assign(Object.create(null), { off: -1, debug: 0, info: 1, warn: 2, error: 3 });
 
@@ -214,13 +215,28 @@ export function writeFileLogLine(name: string, line: string): boolean {
     return true;
   } catch (primaryErr) {
     recordWriteError(primaryErr);
+    // Never the OS temp dir: `.pi/tmp` is what the tmp cleanup sweeps. The project comes
+    // first so its sweep owns the file; home is the second chance when the checkout is
+    // read-only or has been deleted under us.
+    const fallbackDirs: string[] = [];
     try {
-      const fallbackDir = path.join(os.tmpdir(), "pi-logs");
-      appendLine(path.join(fallbackDir, `${safe}.log`), line);
-      return true;
-    } catch (fallbackErr) {
-      recordWriteError(fallbackErr);
-      return false;
+      fallbackDirs.push(path.join(process.cwd(), ".pi", "tmp", "pi-logs"));
+    } catch {
+      /* cwd removed — the home fallback below still works */
     }
+    try {
+      fallbackDirs.push(path.join(os.homedir(), ".pi", "tmp", "pi-logs"));
+    } catch {
+      /* no home — nothing left to try */
+    }
+    for (const fallbackDir of fallbackDirs) {
+      try {
+        appendLine(path.join(fallbackDir, `${safe}.log`), line);
+        return true;
+      } catch (fallbackErr) {
+        recordWriteError(fallbackErr);
+      }
+    }
+    return false;
   }
 }

@@ -25,7 +25,7 @@ import {
 let cwd: string;
 
 beforeEach(() => {
-  cwd = mkdtempSync(join(tmpdir(), "pi-config-review-state-test-"));
+  cwd = makeTempDir("pi-config-review-state-test-");
   mkdirSync(join(cwd, ".git")); // .git dir needed so resolveWorktreeRoot treats this as a git root
 });
 
@@ -513,6 +513,8 @@ describe("tests_passed", () => {
 // ── Worktree state isolation ──
 
 import { execFileSync } from "node:child_process";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 // Git identity env vars for hermetic tests (CI may not have global git config)
 const GIT_ENV = {
@@ -531,7 +533,7 @@ describe("worktree state isolation", () => {
   beforeEach(() => {
     // Create a real git repo with two worktrees to exercise the actual
     // git rev-parse --show-toplevel / --git-common-dir code paths.
-    mainRepo = mkdtempSync(join(tmpdir(), "wt-main-"));
+    mainRepo = makeTempDir("wt-main-");
     execFileSync("git", ["init"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
     execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: mainRepo, stdio: "ignore", env: GIT_ENV });
 

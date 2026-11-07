@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -7,6 +7,8 @@ import {
   archiveReviewerOutput,
   cleanupReviewerOutputArchives,
 } from "../../../extensions/orchestrator/reviewer-output-archive.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 function mode(filePath: string): number {
   return lstatSync(filePath).mode & 0o777;
@@ -22,7 +24,7 @@ function archive(dir: string, name: string, bytes: number, ageMs = 0): string {
 
 describe("reviewer output archives (issue #803)", () => {
   it("creates owner-only worker output plus durable archives", () => {
-    const dir = mkdtempSync(join(tmpdir(), "reviewer-output-"));
+    const dir = makeTempDir("reviewer-output-");
     const outputPath = join(dir, "output.log");
     const archivePath = join(dir, "reviewer-results", "job.json");
     writeFileSync(outputPath, "sensitive reviewer output", { mode: 0o644 });
@@ -36,7 +38,7 @@ describe("reviewer output archives (issue #803)", () => {
   });
 
   it("applies retention when a new archive is written", () => {
-    const dir = mkdtempSync(join(tmpdir(), "reviewer-retention-"));
+    const dir = makeTempDir("reviewer-retention-");
     const expired = archive(dir, "expired.json", 1, 8 * 24 * 60 * 60 * 1000);
     const outputPath = join(dir, "output.log");
     writeFileSync(outputPath, "current output", { mode: 0o600 });
@@ -48,7 +50,7 @@ describe("reviewer output archives (issue #803)", () => {
   });
 
   it("removes expired archives without following symlinks", () => {
-    const dir = mkdtempSync(join(tmpdir(), "reviewer-retention-"));
+    const dir = makeTempDir("reviewer-retention-");
     const outside = archive(dir, "outside.json", 1);
     const expired = archive(dir, "expired.json", 1, 2_000);
     const link = join(dir, "linked.json");
@@ -62,7 +64,7 @@ describe("reviewer output archives (issue #803)", () => {
   });
 
   it("keeps newest archives within count plus aggregate-size limits", () => {
-    const dir = mkdtempSync(join(tmpdir(), "reviewer-retention-"));
+    const dir = makeTempDir("reviewer-retention-");
     const oldest = archive(dir, "oldest.json", 4, 3_000);
     const middle = archive(dir, "middle.json", 4, 2_000);
     const newest = archive(dir, "newest.json", 4, 1_000);

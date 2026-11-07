@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive, isLiveLegacyDaemonFile } from "../../../extensions/shared/daemon-manager.js";
 import { createServer, type Server } from "node:http";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 describe("findLiveLockfile (#1020)", () => {
   let server: Server | undefined;
@@ -29,8 +31,8 @@ describe("findLiveLockfile (#1020)", () => {
 
   it("finds the live daemon in the legacy dir when the new-dir record is stale", async () => {
     const livePort = await listenHealthy();
-    const runDir = mkdtempSync(join(tmpdir(), "dm-live-"));
-    const legacyDir = mkdtempSync(join(tmpdir(), "dm-live-legacy-"));
+    const runDir = makeTempDir("dm-live-");
+    const legacyDir = makeTempDir("dm-live-legacy-");
     try {
       const deadPort = await findFreePort();
       writeLockfile(runDir, deadPort, null, () => {}); // stale record shadows nothing yet
@@ -44,7 +46,7 @@ describe("findLiveLockfile (#1020)", () => {
   });
 
   it("returns null when no recorded port is healthy", async () => {
-    const runDir = mkdtempSync(join(tmpdir(), "dm-live-"));
+    const runDir = makeTempDir("dm-live-");
     try {
       writeLockfile(runDir, await findFreePort(), null, () => {});
       assert.strictEqual(await findLiveLockfile([runDir, ""]), null);
@@ -54,7 +56,7 @@ describe("findLiveLockfile (#1020)", () => {
 
 describe("lockfile operations", () => {
   it("stores port and pid via writeLockfile, retrieves via readLockfile", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dm-test-"));
+    const dir = makeTempDir("dm-test-");
     try {
       const log = () => {};
       writeLockfile(dir, 12345, 99999, log);
@@ -66,7 +68,7 @@ describe("lockfile operations", () => {
   });
 
   it("handles null pid in lockfile", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dm-test-"));
+    const dir = makeTempDir("dm-test-");
     try {
       const log = () => {};
       writeLockfile(dir, 8080, null, log);
@@ -85,7 +87,7 @@ describe("lockfile operations", () => {
 
 describe("removeLockfile", () => {
   it("cleans up both lockfile entries", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dm-test-"));
+    const dir = makeTempDir("dm-test-");
     try {
       const log = () => {};
       writeLockfile(dir, 12345, 99999, log);
@@ -98,7 +100,7 @@ describe("removeLockfile", () => {
   });
 
   it("handles missing files gracefully", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dm-test-"));
+    const dir = makeTempDir("dm-test-");
     try {
       const log = () => {};
       removeLockfile(dir, log); // should not throw
@@ -107,7 +109,7 @@ describe("removeLockfile", () => {
 });
 
 describe("legacy .pi/tmp lockfiles (#1020)", () => {
-  const mk = () => mkdtempSync(join(tmpdir(), "dm-legacy-"));
+  const mk = () => makeTempDir("dm-legacy-");
 
   it("a daemon that started before the move is still found via the legacy dir", () => {
     const runDir = mk();
@@ -305,8 +307,8 @@ describe("legacy .pi/tmp lockfiles (#1020)", () => {
 
 describe("killDaemonByPid", () => {
   it("reads the legacy pid file when the new one is absent", () => {
-    const runDir = mkdtempSync(join(tmpdir(), "dm-test-"));
-    const legacyDir = mkdtempSync(join(tmpdir(), "dm-legacy-"));
+    const runDir = makeTempDir("dm-test-");
+    const legacyDir = makeTempDir("dm-legacy-");
     const legacyPidFile = join(legacyDir, "pidiff.pid");
     try {
       writeFileSync(legacyPidFile, "999999999"); // dead pid
@@ -325,7 +327,7 @@ describe("killDaemonByPid", () => {
   });
 
   it("returns false for invalid pid in file", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dm-test-"));
+    const dir = makeTempDir("dm-test-");
     const pidFile = join(dir, "test.pid");
     try {
       writeFileSync(pidFile, "not-a-number");
@@ -336,7 +338,7 @@ describe("killDaemonByPid", () => {
   });
 
   it("returns false for dead pid and cleans up file", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dm-test-"));
+    const dir = makeTempDir("dm-test-");
     const pidFile = join(dir, "test.pid");
     try {
       // Use a PID that's almost certainly not running
@@ -368,7 +370,7 @@ describe("findFreePort", () => {
 
 describe("findJitiUnder", () => {
   it("walks up from a nested dir to jiti-cli.mjs", () => {
-    const root = mkdtempSync(join(tmpdir(), "jiti-walk-"));
+    const root = makeTempDir("jiti-walk-");
     try {
       const cli = join(root, "node_modules", "jiti", "lib", "jiti-cli.mjs");
       mkdirSync(join(root, "node_modules", "jiti", "lib"), { recursive: true });
@@ -382,7 +384,7 @@ describe("findJitiUnder", () => {
   });
 
   it("returns undefined when jiti is absent", () => {
-    const root = mkdtempSync(join(tmpdir(), "jiti-miss-"));
+    const root = makeTempDir("jiti-miss-");
     try {
       assert.strictEqual(findJitiUnder(root), undefined);
     } finally {
@@ -391,7 +393,7 @@ describe("findJitiUnder", () => {
   });
 
   it("findJitiPath uses argv1 walk, not execPath-adjacent global", () => {
-    const root = mkdtempSync(join(tmpdir(), "jiti-argv-"));
+    const root = makeTempDir("jiti-argv-");
     try {
       const cli = join(root, "node_modules", "jiti", "lib", "jiti-cli.mjs");
       mkdirSync(join(root, "node_modules", "jiti", "lib"), { recursive: true });

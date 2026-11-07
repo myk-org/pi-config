@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import { discoverAgents } from "../../../extensions/orchestrator/agents.js";
 import { registerRules } from "../../../extensions/orchestrator/rules.js";
 import * as sessionValidation from "../../../extensions/orchestrator/session-validation.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 describe("ESM runtime module paths", () => {
   it("discoverAgents loads package agents from the module directory", () => {
@@ -45,7 +47,7 @@ describe("ESM runtime module paths", () => {
     ["mismatched package name", JSON.stringify({ name: "other", version: "1.2.3" })],
   ] as const) {
     it(`returns null for ${name}`, () => {
-      const root = mkdtempSync(join(tmpdir(), "package-version-"));
+      const root = makeTempDir("package-version-");
       try {
         if (manifest !== null) writeFileSync(join(root, "package.json"), manifest);
         assert.equal(sessionValidation.findPackageVersion(root), null);
@@ -56,7 +58,7 @@ describe("ESM runtime module paths", () => {
   }
 
   it("finds the package at the fifth checked directory", () => {
-    const root = mkdtempSync(join(tmpdir(), "package-version-"));
+    const root = makeTempDir("package-version-");
     const start = join(root, "a", "b", "c", "d");
     try {
       mkdirSync(start, { recursive: true });
@@ -68,7 +70,7 @@ describe("ESM runtime module paths", () => {
   });
 
   it("does not search beyond the fifth checked directory", () => {
-    const root = mkdtempSync(join(tmpdir(), "package-version-"));
+    const root = makeTempDir("package-version-");
     const start = join(root, "a", "b", "c", "d", "e");
     try {
       mkdirSync(start, { recursive: true });

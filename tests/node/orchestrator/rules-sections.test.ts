@@ -7,12 +7,14 @@
  * prompt-cache prefixes) instead of replacing the whole systemPrompt, and
  * that a forced prompt from an earlier handler falls back to composition.
  */
-import { describe, it, before, after } from "node:test";
+import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { registerRules } from "../../../extensions/orchestrator/rules.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 const originalChild = process.env.PI_SUBAGENT_CHILD;
 
@@ -69,7 +71,7 @@ function makeEvent(cwd: string, forced?: string) {
 
 describe("before_agent_start section injection", () => {
   it("injects context as structured sections, not a full systemPrompt replacement", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "rules-sections-"));
+    const cwd = makeTempDir("rules-sections-");
     try {
       // Seed a memory so the situation report has content
       const topicsDir = path.join(cwd, ".pi", "memory", "topics");
@@ -99,7 +101,7 @@ describe("before_agent_start section injection", () => {
   });
 
   it("falls back to systemPrompt composition when an earlier handler forced the prompt", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "rules-forced-"));
+    const cwd = makeTempDir("rules-forced-");
     try {
       const topicsDir = path.join(cwd, ".pi", "memory", "topics");
       fs.mkdirSync(topicsDir, { recursive: true });

@@ -2,7 +2,7 @@
  * Tests for promotion-queue parser/formatter.
  * Run with: npx tsx --test tests/node/orchestrator/promotion-queue.test.ts
  */
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -18,6 +18,8 @@ import {
   updatePromotionStatus,
   type PromotionCandidate,
 } from "../../../extensions/orchestrator/promotion-queue.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 function makeCandidate(
   overrides: Partial<PromotionCandidate> = {},
@@ -81,7 +83,7 @@ describe("format/parse round-trip", () => {
 
 describe("appendPromotions with updatePromotionStatus", () => {
   it("dedups by id then updates status", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-q-"));
+    const cwd = makeTempDir("promo-q-");
     try {
       const a = makeCandidate();
       const b = makeCandidate({ text: "Always ask_user before gh pr merge" });
@@ -106,7 +108,7 @@ describe("appendPromotions with updatePromotionStatus", () => {
 
 describe("updatePromotionCandidates", () => {
   it("ignores immutable identity fields in patches", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-patch-"));
+    const cwd = makeTempDir("promo-patch-");
     try {
       const a = makeCandidate({
         createdAt: "2026-07-01T00:00:00.000Z",
@@ -141,7 +143,7 @@ describe("updatePromotionCandidates", () => {
   });
 
   it("ignores undefined patch values so existing fields stay", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-undef-"));
+    const cwd = makeTempDir("promo-undef-");
     try {
       const a = makeCandidate({
         verifier: "keep-me",
@@ -167,7 +169,7 @@ describe("updatePromotionCandidates", () => {
   });
 
   it("rejects invalid status so the candidate still reloads", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "promo-invalid-"));
+    const cwd = makeTempDir("promo-invalid-");
     try {
       const a = makeCandidate({ status: "proposed", reason: "keep" });
       appendPromotions(cwd, [a]);

@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -6,13 +6,15 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 const log = createLogger("async-kill-origin-test");
 
 /** Agent-written: minimal registerAsyncAgents harness capturing commands, events and deliveries. */
 function harness() {
   log.debug("create_harness");
-  const cwd = mkdtempSync(join(tmpdir(), "async-kill-origin-"));
+  const cwd = makeTempDir("async-kill-origin-");
   const handlers = new Map<string, Array<(event: unknown, ctx: any) => void>>();
   const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
   const events = new EventEmitter();

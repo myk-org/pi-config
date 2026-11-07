@@ -14,6 +14,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { registerPreferenceExtractor, readPreferenceCandidates, appendPreferenceCandidate } from "../../../extensions/orchestrator/preference-extractor.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 interface Harness {
   pi: any;
@@ -59,7 +61,7 @@ describe("registerPreferenceExtractor — candidate queue, no direct writes (iss
   let cwd: string;
 
   beforeEach(() => {
-    cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pref-extractor-"));
+    cwd = makeTempDir("pref-extractor-");
   });
 
   afterEach(() => {

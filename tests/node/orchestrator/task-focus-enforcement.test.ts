@@ -7,6 +7,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 // We can't easily test registerRules directly due to its complex pi dependency.
 // Instead, test the core logic: reading task stores and accumulating active tasks.
@@ -16,7 +18,7 @@ describe("task-focus enforcement: store scanning", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "task-focus-"));
+    tmp = makeTempDir("task-focus-");
   });
 
   afterEach(() => {

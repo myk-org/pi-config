@@ -3,8 +3,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import { qodoReviewArgumentCompletions } from "../../../extensions/orchestrator/extended-autocomplete.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 const prompt = readFileSync(new URL("../../../prompts/qodo-review.md", import.meta.url), "utf8");
 
@@ -70,7 +72,7 @@ describe("qodo-review autocomplete", () => {
   });
 
   it("never writes ticket URLs or pathspecs into debug logs", () => {
-    const home = mkdtempSync(join(tmpdir(), "qodo-autocomplete-log-"));
+    const home = makeTempDir("qodo-autocomplete-log-");
     try {
       const script = `
         const { setGlobalSessionId } = await import(${JSON.stringify(new URL("../../../extensions/shared/file-logger.ts", import.meta.url).href)});

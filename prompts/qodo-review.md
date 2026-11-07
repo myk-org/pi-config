@@ -51,7 +51,7 @@ log in, refresh tools, or run any audit automatically.
 
 ## Attach session context
 
-Before each review, write a self-contained JSON context file under `/tmp`. Include:
+Before each review, write a self-contained JSON context file under `.pi/tmp/` (the project scratch dir the tmp sweep cleans — never `/tmp`). Include:
 
 - what this session changed and why;
 - key implementation decisions and their rationale;

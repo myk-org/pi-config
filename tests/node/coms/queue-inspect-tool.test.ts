@@ -3,6 +3,8 @@ import { afterEach, describe, it } from "node:test";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 interface FakePi {
 	tools: Map<string, any>;
@@ -75,7 +77,7 @@ async function startPeer(name: string, sessionId: string): Promise<FakePi> {
 }
 
 async function startQueuedPeers() {
-	workspace = mkdtempSync(join(tmpdir(), "coms-queue-inspect-"));
+	workspace = makeTempDir("coms-queue-inspect-");
 	mkdirSync(join(workspace, ".pi"));
 	writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
 	const sender = await startPeer("sender", "sender-session");
@@ -88,7 +90,7 @@ async function startQueuedPeers() {
 
 describe("coms_queue_inspect execute result", { concurrency: false }, () => {
 	async function startShutdownPeer() {
-		workspace = mkdtempSync(join(tmpdir(), "coms-queue-inspect-"));
+		workspace = makeTempDir("coms-queue-inspect-");
 		mkdirSync(join(workspace, ".pi"));
 		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
 		const peer = await startPeer("shutdown", "shutdown-session");
@@ -115,7 +117,7 @@ describe("coms_queue_inspect execute result", { concurrency: false }, () => {
 	});
 
 	it("cleans failed sends without an unhandled rejection or pending outbound entry", async () => {
-		workspace = mkdtempSync(join(tmpdir(), "coms-send-failure-"));
+		workspace = makeTempDir("coms-send-failure-");
 		mkdirSync(join(workspace, ".pi"));
 		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
 		const sender = await startPeer("sender", "failure-sender");
@@ -140,7 +142,7 @@ describe("coms_queue_inspect execute result", { concurrency: false }, () => {
 	});
 
 	it("captures a response that arrives while task creation is suspended", async () => {
-		workspace = mkdtempSync(join(tmpdir(), "coms-fast-reply-"));
+		workspace = makeTempDir("coms-fast-reply-");
 		mkdirSync(join(workspace, ".pi"));
 		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
 		const sender = await startPeer("sender", "fast-sender");
@@ -163,7 +165,7 @@ describe("coms_queue_inspect execute result", { concurrency: false }, () => {
 	});
 
 	it("shuts down after task creation leaves a metadata-only reply", async () => {
-		workspace = mkdtempSync(join(tmpdir(), "coms-queue-inspect-"));
+		workspace = makeTempDir("coms-queue-inspect-");
 		mkdirSync(join(workspace, ".pi"));
 		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
 		const sender = await startPeer("sender", "metadata-sender");

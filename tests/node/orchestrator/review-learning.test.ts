@@ -39,6 +39,8 @@ import {
 } from "../../../extensions/orchestrator/review-learning.js";
 import { entryHash, loadScores, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 import { readAllTopicEntries } from "../../../extensions/orchestrator/memory-tree.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 // ── Scratch reviews DB (schema mirrors myk_pi_tools/reviews/store.py) ──────
 
@@ -81,7 +83,7 @@ interface SeededDb {
 }
 
 function seedDb(): SeededDb {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-"));
+  const dir = makeTempDir("review-learning-");
   const dbPath = path.join(dir, "reviews.db");
   const db = new DatabaseSync(dbPath);
   db.exec(SCHEMA);
@@ -185,7 +187,7 @@ describe("resolveRepoInfo (git remote origin)", () => {
     execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
   }
   function tempRepo(): string {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-repo-"));
+    const cwd = makeTempDir("review-learning-repo-");
     git(cwd, "init", "-b", "main");
     return cwd;
   }
@@ -200,7 +202,7 @@ describe("resolveRepoInfo (git remote origin)", () => {
     const badRemote = tempRepo();
     git(badRemote, "remote", "add", "origin", "/just/a/local/path");
     assert.equal(resolveRepoInfo(badRemote), null);
-    assert.equal(resolveRepoInfo(fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-norepo-"))), null);
+    assert.equal(resolveRepoInfo(makeTempDir("review-learning-norepo-")), null);
   });
 });
 
@@ -253,7 +255,7 @@ describe("reviews DB queries", () => {
     assert.deepEqual(getAddressedComments(path.join(dbPath, "missing.db"), 1), []);
   });
   it("getAddressedComments falls back to title-less rows on legacy DBs without the title column", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-legacy-"));
+    const dir = makeTempDir("review-learning-legacy-");
     const dbPath = path.join(dir, "reviews.db");
     const db = new DatabaseSync(dbPath);
     db.exec(SCHEMA.replace(",\n    title TEXT DEFAULT NULL", ""));
@@ -272,7 +274,7 @@ describe("reviews DB queries", () => {
 
 describe("distilled-review state", () => {
   it("round-trips review ids and survives reload", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-state-"));
+    const dir = makeTempDir("review-learning-state-");
     assert.equal(loadDistilledReviews(dir).size, 0);
     markReviewDistilled(dir, 7);
     markReviewDistilled(dir, 9);
@@ -280,7 +282,7 @@ describe("distilled-review state", () => {
   });
   it("loadDistilledReviews tolerates a missing/corrupt state file", () => {
     assert.equal(loadDistilledReviews("/nonexistent-dir").size, 0);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-state-"));
+    const dir = makeTempDir("review-learning-state-");
     fs.writeFileSync(path.join(dir, "review-learning-state.json"), "not json{");
     assert.equal(loadDistilledReviews(dir).size, 0);
   });
@@ -288,7 +290,7 @@ describe("distilled-review state", () => {
 
 describe("prNumberFromCommand", () => {
   it("reads the PR number only from the command's explicit --json file", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    const cwd = makeTempDir("review-learning-pr-");
     fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
     fs.writeFileSync(
       path.join(cwd, ".pi", "tmp", "pr-42-reviews.json"),
@@ -298,7 +300,7 @@ describe("prNumberFromCommand", () => {
     assert.equal(pr, 42);
   });
   it("reads the PR number from a store-session positional JSON via pr_url", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    const cwd = makeTempDir("review-learning-pr-");
     fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
     fs.writeFileSync(
       path.join(cwd, ".pi", "tmp", "qodo-943-abc1234.json"),
@@ -308,14 +310,14 @@ describe("prNumberFromCommand", () => {
     assert.equal(pr, 943);
   });
   it("store-session with an unreadable or pr_url-less JSON yields null", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    const cwd = makeTempDir("review-learning-pr-");
     fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
     fs.writeFileSync(path.join(cwd, ".pi", "tmp", "qodo-bad.json"), JSON.stringify({ findings: [] }));
     assert.equal(prNumberFromCommand("myk-pi-tools reviews store-session .pi/tmp/qodo-bad.json", cwd), null);
     assert.equal(prNumberFromCommand("myk-pi-tools reviews store-session .pi/tmp/gone.json", cwd), null);
   });
   it("no --json → null even when leftover pr-*-reviews.json files linger (final runs delete their own)", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    const cwd = makeTempDir("review-learning-pr-");
     fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
     // a STALE JSON from another PR must never be picked up by a fallback
     fs.writeFileSync(
@@ -325,13 +327,13 @@ describe("prNumberFromCommand", () => {
     assert.equal(prNumberFromCommand("myk-pi-tools reviews address --set addressed", cwd), null);
   });
   it("returns null when nothing is readable", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    const cwd = makeTempDir("review-learning-pr-");
     assert.equal(prNumberFromCommand("myk-pi-tools reviews address --json .pi/tmp/gone.json --set addressed", cwd), null);
     assert.equal(prNumberFromCommand("myk-pi-tools reviews address --set addressed", cwd), null);
     assert.equal(prNumberFromCommand(undefined, cwd), null);
   });
   it("a combined poll+store command resolves the PR from the session JSON — the --json 2>/dev/null redirect never wins (Qodo beb11c94)", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    const cwd = makeTempDir("review-learning-pr-");
     fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
     fs.writeFileSync(
       path.join(cwd, ".pi", "tmp", "qodo-943-0d6ad31.json"),
@@ -343,7 +345,7 @@ describe("prNumberFromCommand", () => {
     assert.equal(prNumberFromCommand(command, cwd), 943);
   });
   it("expands ${PROJECT_TMP_DIR} in a store-session path (Qodo 657c5633)", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-pr-"));
+    const cwd = makeTempDir("review-learning-pr-");
     fs.mkdirSync(path.join(cwd, ".pi", "tmp"), { recursive: true });
     fs.writeFileSync(
       path.join(cwd, ".pi", "tmp", "qodo-77-abc.json"),
@@ -550,7 +552,7 @@ describe("reload-status stamp", () => {
 // ── Memory dedupe + write ──────────────────────────────────────────────────
 
 function makeCwd(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-mem-"));
+  return makeTempDir("review-learning-mem-");
 }
 
 function seedLessonEntry(cwd: string, text: string, derivedFrom?: string, evidenceCount = 1): void {
@@ -1064,7 +1066,7 @@ describe("review-learning hook", () => {
 });
 
 it("markReviewDistilled is idempotent — repeated fires never duplicate ids", async () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "rl-mark-"));
+  const cwd = makeTempDir("rl-mark-");
   const dataDir = path.join(cwd, ".pi", "data");
   fs.mkdirSync(dataDir, { recursive: true });
 

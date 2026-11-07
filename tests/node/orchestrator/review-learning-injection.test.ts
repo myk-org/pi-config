@@ -26,6 +26,8 @@ import {
 } from "../../../extensions/orchestrator/review-learning.js";
 import { entryHash, loadScores, type ScoredEntry } from "../../../extensions/orchestrator/memory-scoring.js";
 import { getProjectDataDir } from "../../../extensions/orchestrator/utils.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 // ── Scratch reviews DB (schema mirrors myk_pi_tools/reviews/store.py) ──────
 
@@ -65,7 +67,7 @@ const REPO = { owner: "myk-org", repo: "demo" };
 const repoInfo = () => REPO;
 
 function makeCwd(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "review-learning-inject-"));
+  return makeTempDir("review-learning-inject-");
 }
 
 interface CommentSeed {

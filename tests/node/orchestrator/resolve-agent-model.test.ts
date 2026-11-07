@@ -13,6 +13,8 @@ import {
 	setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
 import { resolveAgentModelProvider } from "../../../extensions/orchestrator/resolve-agent-model.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 describe("resolveAgentModelProvider", () => {
 	let tmp: string;
@@ -20,8 +22,8 @@ describe("resolveAgentModelProvider", () => {
 
 	beforeEach(() => {
 		clearSettingsCache();
-		tmp = mkdtempSync(join(tmpdir(), "pi-resolve-agent-model-"));
-		globalTmp = mkdtempSync(join(tmpdir(), "pi-resolve-agent-model-global-"));
+		tmp = makeTempDir("pi-resolve-agent-model-");
+		globalTmp = makeTempDir("pi-resolve-agent-model-global-");
 		setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
 	});
 

@@ -17,12 +17,14 @@ import {
   checkMinPiVersion,
   getPiVersion,
 } from "../../../extensions/orchestrator/utils.ts";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 let cleanupFns: Array<() => void> = [];
 
 /** Put a fake `pi` that prints `version` at the front of PATH for this test. */
 function useFakePi(version: string): void {
-  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-pi-bin-"));
+  const binDir = makeTempDir("fake-pi-bin-");
   const script = path.join(binDir, "pi");
   fs.writeFileSync(
     script,

@@ -11,12 +11,14 @@ import {
   recordReviewerResult,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { normalizePorcelain } from "../../../extensions/orchestrator/review-porcelain.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 describe("poller state transitions", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "poller-test-"));
+    tmp = makeTempDir("poller-test-");
     fs.mkdirSync(path.join(tmp, ".pi", "data"), { recursive: true });
     // Create minimal settings file for getSetting
     fs.mkdirSync(path.join(tmp, ".pi"), { recursive: true });

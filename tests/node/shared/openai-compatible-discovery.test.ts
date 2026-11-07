@@ -13,6 +13,8 @@ import {
   redactOpenAiCompatibleDiagnostic,
 } from "../../../extensions/shared/openai-compatible-discovery.js";
 import { isPricingKnown, isPricingUnknown } from "../../../extensions/shared/pricing-provenance.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 function modelIds(registry: ModelRegistry, provider = "gateway") {
   return registry.getAll().filter((model) => model.provider === provider).map((model) => model.id);
@@ -24,7 +26,7 @@ describe("OpenAI-compatible provider discovery", { concurrency: false }, () => {
   let agentDir: string;
 
   beforeEach(() => {
-    agentDir = mkdtempSync(join(tmpdir(), "openai-compatible-discovery-agent-"));
+    agentDir = makeTempDir("openai-compatible-discovery-agent-");
     process.env.PI_CODING_AGENT_DIR = agentDir;
   });
 

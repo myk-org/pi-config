@@ -17,6 +17,8 @@ import {
 	asStringArray,
 	setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 describe("parseReviewLoopMaxCycles", () => {
 	it("accepts integer boundaries 1 and 10", () => {
@@ -127,8 +129,8 @@ describe("extension settings", () => {
 
 	beforeEach(() => {
 		clearSettingsCache();
-		tmp = mkdtempSync(join(tmpdir(), "pi-ext-settings-"));
-		globalTmp = mkdtempSync(join(tmpdir(), "pi-ext-global-"));
+		tmp = makeTempDir("pi-ext-settings-");
+		globalTmp = makeTempDir("pi-ext-global-");
 		// Isolate from real ~/.pi/pi-config-settings.json
 		setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
 		delete process.env.PI_PIDASH_ENABLE;
@@ -484,8 +486,8 @@ describe("JSONC and file discovery", () => {
 
 	beforeEach(() => {
 		clearSettingsCache();
-		tmp = mkdtempSync(join(tmpdir(), "pi-ext-settings-jsonc-"));
-		globalTmp = mkdtempSync(join(tmpdir(), "pi-ext-global-jsonc-"));
+		tmp = makeTempDir("pi-ext-settings-jsonc-");
+		globalTmp = makeTempDir("pi-ext-global-jsonc-");
 		setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
 		delete process.env.PI_COMS_MAX_HOPS;
 	});

@@ -1,7 +1,7 @@
 /**
  * Tests for cli-provider session directory + reaper.
  */
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,6 +18,8 @@ import {
   type CliSessionKey,
 } from "../../../extensions/cli-provider/sessions.js";
 import { reapStaleCliSessions } from "../../../extensions/cli-provider/session-reaper.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 describe("cli-provider sessions", () => {
   it("listCliSessions returns empty when sessions path is not a directory", async () => {
@@ -27,7 +29,7 @@ describe("cli-provider sessions", () => {
     const { mkdirSync } = await import("node:fs");
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-notdir-"));
+    const home = makeTempDir("cli-sess-notdir-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -47,7 +49,7 @@ describe("cli-provider sessions", () => {
     const { mkdirSync } = await import("node:fs");
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-write-notdir-"));
+    const home = makeTempDir("cli-sess-write-notdir-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -131,7 +133,7 @@ describe("cli-provider sessions", () => {
     );
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-adopt-"));
+    const home = makeTempDir("cli-sess-adopt-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -215,7 +217,7 @@ describe("cli-provider sessions", () => {
     } = await import("../../../extensions/cli-provider/sessions.js");
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-no-adopt-"));
+    const home = makeTempDir("cli-sess-no-adopt-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -255,7 +257,7 @@ describe("cli-provider sessions", () => {
     } = await import("../../../extensions/cli-provider/sessions.js");
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-prov-"));
+    const home = makeTempDir("cli-sess-prov-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -291,7 +293,7 @@ describe("cli-provider sessions", () => {
     const { mkdirSync } = await import("node:fs");
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-mig-keep-"));
+    const home = makeTempDir("cli-sess-mig-keep-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -328,7 +330,7 @@ describe("cli-provider sessions", () => {
       await import("../../../extensions/cli-provider/sessions.js");
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-mig-"));
+    const home = makeTempDir("cli-sess-mig-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -360,7 +362,7 @@ describe("cli-provider sessions", () => {
     } = await import("../../../extensions/cli-provider/sessions.js");
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-migall-"));
+    const home = makeTempDir("cli-sess-migall-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -418,7 +420,7 @@ describe("cli-provider sessions", () => {
     } = await import("../../../extensions/cli-provider/sessions.js");
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-mig-prefer-"));
+    const home = makeTempDir("cli-sess-mig-prefer-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -461,7 +463,7 @@ describe("cli-provider sessions", () => {
     } = await import("../../../extensions/cli-provider/sessions.js");
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-mig1-prefer-"));
+    const home = makeTempDir("cli-sess-mig1-prefer-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -494,7 +496,7 @@ describe("cli-provider sessions", () => {
     );
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-no-legacy-"));
+    const home = makeTempDir("cli-sess-no-legacy-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -535,7 +537,7 @@ describe("cli-provider sessions", () => {
     );
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-scoped-"));
+    const home = makeTempDir("cli-sess-scoped-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -584,7 +586,7 @@ describe("cli-provider sessions", () => {
     );
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-cwd-"));
+    const home = makeTempDir("cli-sess-cwd-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -647,7 +649,7 @@ describe("cli-provider sessions", () => {
   it("saves then loads session id", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-"));
+    const home = makeTempDir("cli-sess-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -673,7 +675,7 @@ describe("cli-provider sessions", () => {
   it("touchCliSession advances lastSeenAt", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-touch-"));
+    const home = makeTempDir("cli-sess-touch-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -699,7 +701,7 @@ describe("cli-provider sessions", () => {
   it("clearCliSessionId removes the marker", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-clear-"));
+    const home = makeTempDir("cli-sess-clear-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -724,7 +726,7 @@ describe("cli-provider sessions", () => {
   it("loadCliSessionId returns null on malformed JSON", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-sess-bad-"));
+    const home = makeTempDir("cli-sess-bad-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -753,7 +755,7 @@ describe("cli-provider sessions", () => {
   it("does not reap idle running markers for the active pi session (issue #661)", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-reap-running-"));
+    const home = makeTempDir("cli-reap-running-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {
@@ -786,7 +788,7 @@ describe("cli-provider sessions", () => {
   it("reaps idle stopped session markers", () => {
     const prevHome = process.env.HOME;
     const prevProfile = process.env.USERPROFILE;
-    const home = mkdtempSync(join(tmpdir(), "cli-reap-"));
+    const home = makeTempDir("cli-reap-");
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     try {

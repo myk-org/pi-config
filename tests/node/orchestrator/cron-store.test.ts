@@ -16,12 +16,14 @@ import {
   type DurableCronTask,
   validateDurableCronTask,
 } from "../../../extensions/orchestrator/cron-store.ts";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 
 function tempStore() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cron-store-"));
+  const dir = makeTempDir("pi-cron-store-");
   dirs.push(dir);
   return path.join(dir, "crons.json");
 }

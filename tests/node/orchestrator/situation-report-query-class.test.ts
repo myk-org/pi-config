@@ -2,7 +2,7 @@
  * Situation report query-class budget / ordering shifts.
  * Run: npx tsx --test tests/node/orchestrator/situation-report-query-class.test.ts
  */
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -14,6 +14,8 @@ import {
   type ScoredEntry,
 } from "../../../extensions/orchestrator/memory-scoring.js";
 import { writePromotions, promotionId } from "../../../extensions/orchestrator/promotion-queue.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 function seed(cwd: string): void {
   const topicsDir = path.join(cwd, ".pi", "memory", "topics");
@@ -62,7 +64,7 @@ function seed(cwd: string): void {
 
 describe("buildSituationReport queryClass", () => {
   it("includes promotion candidates with query-class hint for git_release", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sitrep-qc-"));
+    const cwd = makeTempDir("sitrep-qc-");
     try {
       seed(cwd);
       const report = buildSituationReport(cwd, 1700, { queryClass: "git_release" });
@@ -76,7 +78,7 @@ describe("buildSituationReport queryClass", () => {
   });
 
   it("boosts mistakes earlier for debug vs general", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sitrep-dbg-"));
+    const cwd = makeTempDir("sitrep-dbg-");
     try {
       seed(cwd);
       const debug = buildSituationReport(cwd, 1700, { queryClass: "debug" });
@@ -101,7 +103,7 @@ describe("buildSituationReport queryClass", () => {
   });
 
   it("pr_review hint points at review-guidelines", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sitrep-pr-"));
+    const cwd = makeTempDir("sitrep-pr-");
     try {
       seed(cwd);
       const report = buildSituationReport(cwd, 1700, { queryClass: "pr_review" });
@@ -113,7 +115,7 @@ describe("buildSituationReport queryClass", () => {
   });
 
   it("returns empty string when tokenBudget is zero", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sitrep-zero-"));
+    const cwd = makeTempDir("sitrep-zero-");
     try {
       seed(cwd);
       assert.equal(buildSituationReport(cwd, 0, { queryClass: "git_release" }), "");
@@ -128,7 +130,7 @@ describe("getMemoryTokenBudget — 0 disables the report (Qodo #15 PR #916)", ()
     const { getMemoryTokenBudget, buildSituationReport } = await import(
       "../../../extensions/orchestrator/situation-report.js"
     );
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "situation-budget-"));
+    const cwd = makeTempDir("situation-budget-");
     try {
       fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
       fs.writeFileSync(

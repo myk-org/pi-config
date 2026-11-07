@@ -8,6 +8,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 const {
   GIT_DIR: _GIT_DIR,
@@ -37,7 +39,7 @@ function git(repo: string, args: string[]): string {
 }
 
 function createRepo(defaultBranch: string): string {
-  const repo = mkdtempSync(join(tmpdir(), "git-expert-guard-"));
+  const repo = makeTempDir("git-expert-guard-");
   repos.push(repo);
   git(repo, ["init", "-b", defaultBranch]);
   git(repo, ["commit", "--allow-empty", "-m", "initial"]);

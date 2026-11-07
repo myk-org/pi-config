@@ -19,6 +19,8 @@ import {
   clearSettingsCache,
   setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 describe("registered acpx providers / supportsAsyncLlm", () => {
   let tmp: string;
@@ -31,8 +33,8 @@ describe("registered acpx providers / supportsAsyncLlm", () => {
 
   beforeEach(() => {
     clearSettingsCache();
-    tmp = mkdtempSync(join(tmpdir(), "async-cap-"));
-    globalTmp = mkdtempSync(join(tmpdir(), "async-cap-g-"));
+    tmp = makeTempDir("async-cap-");
+    globalTmp = makeTempDir("async-cap-g-");
     setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
     delete process.env.ACPX_AGENTS;
     delete process.env.PI_INTERNAL_OPERATIONS_PROVIDER;

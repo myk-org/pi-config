@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import * as trail from "../../../extensions/orchestrator/trail.js";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 type TrailRun = (args: readonly string[], opts: { cwd: string; timeoutMs?: number }) => Promise<{ stdout: string; stderr: string; code: number }>;
 type Handler = (event: any, ctx: any) => Promise<any> | any;
@@ -73,7 +75,7 @@ function customEvent(message: any, options: Record<string, any> = {}) {
 }
 /** Temp repo root with an on-disk code map (map presence is a filesystem check). */
 function mapRoot(nodes: Array<{ id: string; name: string; path: string }>, nodeCount = nodes.length) {
-  const root = mkdtempSync(join(tmpdir(), "trail-behavior-map-"));
+  const root = makeTempDir("trail-behavior-map-");
   mkdirSync(join(root, "graft/.graph"), { recursive: true });
   writeFileSync(join(root, "graft/.graph/wiring.json"), JSON.stringify({ meta: { nodeCount }, nodes, edges: [] }));
   // The unindexed-search exemption stats the real filesystem, so the fixture needs
@@ -93,7 +95,7 @@ function mapRoot(nodes: Array<{ id: string; name: string; path: string }>, nodeC
 }
 /** Linked-worktree fixture: `<worktree>/.git` points at `<main>/.git/worktrees/wt`. */
 function linkedWorktree(main: string) {
-  const worktree = mkdtempSync(join(tmpdir(), "trail-behavior-wt-"));
+  const worktree = makeTempDir("trail-behavior-wt-");
   mkdirSync(join(main, ".git/worktrees/wt"), { recursive: true });
   writeFileSync(join(main, ".git/worktrees/wt/commondir"), "../..\n");
   writeFileSync(join(worktree, ".git"), `gitdir: ${join(main, ".git/worktrees/wt")}\n`);
@@ -103,7 +105,7 @@ function settings(root: string, values: Record<string, unknown>) {
   mkdirSync(join(root, ".pi"), { recursive: true });
   writeFileSync(join(root, ".pi/pi-config-settings.jsonc"), JSON.stringify(values));
 }
-const defaultRoot = mkdtempSync(join(tmpdir(), "trail-behavior-default-"));
+const defaultRoot = makeTempDir("trail-behavior-default-");
 let defaultSession = 0;
 function ctx(cwd = defaultRoot, trusted = true, sessionId = `trail-behavior-${++defaultSession}`) {
   const status: Array<{ key: string; text: string | undefined }> = [];
@@ -458,7 +460,7 @@ describe("Navigation gate fails open", () => {
   });
 
   it("does not block when the project has no map", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-behavior-nomap-"));
+    const root = makeTempDir("trail-behavior-nomap-");
     try {
       const r = register();
       const c = await start(r, ctx(root));
@@ -542,7 +544,7 @@ describe("Repo map tool and map layout", () => {
   });
 
   it("reports no map when neither layout exists", () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-behavior-nolayout-"));
+    const root = makeTempDir("trail-behavior-nolayout-");
     try {
       assert.equal(trail.trailMapDir(root, silentLogger), null);
       assert.equal(trail.trailNodes(root, silentLogger), 0);
@@ -562,7 +564,7 @@ describe("Repo map tool and map layout", () => {
 
 describe("Worktree enablement", () => {
   for (const value of [false, true]) it(`a linked worktree without .pi settings inherits trail_enable:${value} from the main checkout`, () => {
-    const main = mkdtempSync(join(tmpdir(), "trail-behavior-main-"));
+    const main = makeTempDir("trail-behavior-main-");
     const worktree = linkedWorktree(main);
     try {
       settings(main, { trail_enable: value });
@@ -572,7 +574,7 @@ describe("Worktree enablement", () => {
   });
 
   it("keeps its own trail_enable outside a worktree", () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-behavior-plain-"));
+    const root = makeTempDir("trail-behavior-plain-");
     try {
       settings(root, { trail_enable: false });
       clearSettingsCache();
@@ -586,7 +588,7 @@ describe("Worktree enablement", () => {
 
 describe("Session start never cold-builds", () => {
   it("performs zero build invocations for a repo with no map", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-behavior-nobuild-"));
+    const root = makeTempDir("trail-behavior-nobuild-");
     try {
       const r = register();
       await start(r, ctx(root));
@@ -717,7 +719,7 @@ describe("Shell search classification", () => {
 
 describe("Fresh checkout map build", () => {
   it("starts one background build on the first substantive prompt and fails that turn open", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-behavior-fresh-"));
+    const root = makeTempDir("trail-behavior-fresh-");
     try {
       const log = turnLog();
       const r = register({ logger: log.logger });
@@ -737,7 +739,7 @@ describe("Fresh checkout map build", () => {
   });
 
   it("keeps a control prompt from starting a build", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-behavior-fresh-control-"));
+    const root = makeTempDir("trail-behavior-fresh-control-");
     try {
       const r = register();
       const c = await start(r, ctx(root));
@@ -747,7 +749,7 @@ describe("Fresh checkout map build", () => {
   });
 
   it("builds in a worktree whose main checkout is on trail but has no wiring file", async () => {
-    const main = mkdtempSync(join(tmpdir(), "trail-behavior-pending-main-"));
+    const main = makeTempDir("trail-behavior-pending-main-");
     const worktree = linkedWorktree(main);
     try {
       // ".trail/cache" only marks a checkout on trail; without a wiring file
@@ -824,7 +826,7 @@ describe("Injection without structured prompt options", () => {
 
 describe("Production registration (registerTrail)", () => {
   it("registers the tools and every handler through the real entry point", async () => {
-    const root = mkdtempSync(join(tmpdir(), "trail-behavior-register-"));
+    const root = makeTempDir("trail-behavior-register-");
     try {
       execFileSync("git", ["init", "-q", root]);
       settings(root, { trail_enable: true });
@@ -843,7 +845,7 @@ describe("Production registration (registerTrail)", () => {
 
 describe("Worktree kill switch", () => {
   it("honours a linked worktree's own trail_enable:false over the main checkout", () => {
-    const main = mkdtempSync(join(tmpdir(), "trail-behavior-kill-main-"));
+    const main = makeTempDir("trail-behavior-kill-main-");
     const worktree = linkedWorktree(main);
     try {
       settings(main, { trail_enable: true });

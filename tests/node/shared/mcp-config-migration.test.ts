@@ -9,6 +9,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { migrateMcpConfig, mcpConfigPaths } from "../../../extensions/shared/mcp-config-migration.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 let home: string;
 let legacy: string;
@@ -17,7 +19,7 @@ let current: string;
 const SERVERS = JSON.stringify({ mcpServers: { jira: { command: "npx", args: ["-y", "mcp-jira"] } } });
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), "mcp-migrate-"));
+  home = makeTempDir("mcp-migrate-");
   ({ legacy, current } = mcpConfigPaths(home));
 });
 

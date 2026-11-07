@@ -38,8 +38,10 @@ export const EVIDENCE_PROJECT_RULE = 5;
 const log = createLogger("memory");
 
 export interface InferredEnforcement {
-  trigger: EnforcementTrigger;
-  action: EnforcementAction;
+  /** A rule can be ordering-only: then the verifier is the enforcement and there is no
+   *  trigger/action pair to fire unconditionally. */
+  trigger?: EnforcementTrigger;
+  action?: EnforcementAction;
   actionCommand?: string;
   verifier?: string;
   confidence: "high" | "low";
@@ -94,9 +96,11 @@ export function inferMechanicalEnforcement(text: string): InferredEnforcement | 
   if (askBefore?.[1]) {
     const cmd = askBefore[1].replace(/[.!]+$/, "").trim();
     if (cmd.length > 2 && cmd.length < 80) {
+      // The rule is about ORDER, so the verifier is the enforcement. A `bash_contains` warn
+      // would also fire after a compliant `ask_user` + command pair, which is exactly the
+      // noise this story keeps producing; and a bare `tool_name bash` is refused at write
+      // time and ignored at load time.
       return {
-        trigger: "tool_name bash" as EnforcementTrigger,
-        action: "warn",
         verifier: `tool_called ask_user before ${cmd}`,
         confidence: "high",
       };

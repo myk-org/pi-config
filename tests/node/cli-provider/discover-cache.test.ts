@@ -25,6 +25,8 @@ import {
   resolveBinary,
   resolveBinaryForPlatform,
 } from "../../../extensions/shared/resolve-binary.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 describe("resolveBinary", { concurrency: false }, () => {
   const prevPath = process.env.PATH;
@@ -44,7 +46,7 @@ describe("resolveBinary", { concurrency: false }, () => {
   });
 
   function makeBinDir(): string {
-    tmpRoot = mkdtempSync(join(tmpdir(), "resolve-bin-"));
+    tmpRoot = makeTempDir("resolve-bin-");
     return tmpRoot;
   }
 
@@ -179,7 +181,7 @@ describe("resolveBinaryForPlatform win32", { concurrency: false }, () => {
   });
 
   function makeBinDir(): string {
-    tmpRoot = mkdtempSync(join(tmpdir(), "resolve-win-"));
+    tmpRoot = makeTempDir("resolve-win-");
     return tmpRoot;
   }
 

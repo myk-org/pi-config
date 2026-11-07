@@ -6,7 +6,7 @@
  * scope metadata + expiry pruning, dedup reinforcement, and the preference
  * extractor's question/grant filters.
  */
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -24,9 +24,11 @@ import {
 } from "../../../extensions/orchestrator/memory-scoring.js";
 import { readAllTopicEntries, topicCharCap } from "../../../extensions/orchestrator/memory-tree.js";
 import { loadEnforcedEntries } from "../../../extensions/orchestrator/enforcement-rules.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 function makeCwd(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "memory-write-"));
+  return makeTempDir("memory-write-");
 }
 
 function seedEntry(
@@ -946,7 +948,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("tool_name bash with block warns as over-broad", async () => {
+  it("tool_name bash with block is rejected — it would stop every command", async () => {
     const cwd = makeCwd();
     try {
       const result = await addMemoryEntry(cwd, {
@@ -955,8 +957,9 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
         trigger: "tool_name bash",
         action: "block",
       });
-      assert.equal(result.status, "added");
+      assert.equal(result.status, "rejected");
       assert.match(result.message, /EVERY bash call/i);
+      assert.match(result.message, /bash_contains|bash_regex/i, "the rejection must say how to scope it");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
@@ -1144,7 +1147,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
     }
   });
 
-  it("tool_name bash warns for ANY action, not just block (Qodo b2f6f0e6)", async () => {
+  it("tool_name bash is rejected for warn too — a banner on every command is noise", async () => {
     const cwd = makeCwd();
     try {
       const result = await addMemoryEntry(cwd, {
@@ -1153,7 +1156,7 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
         trigger: "tool_name bash",
         action: "warn",
       });
-      assert.equal(result.status, "added");
+      assert.equal(result.status, "rejected");
       assert.match(result.message, /EVERY bash call/i);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
@@ -1169,13 +1172,8 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
         trigger: "tool_name  bash ",
         action: "warn",
       });
-      assert.equal(result.status, "added");
-      // Verify through the enforcement loader — the consumer of the stored
-      // trigger — not the score-file internals (Qodo 309f268e).
-      const enforced = loadEnforcedEntries(cwd);
-      const entry = enforced.find((e) => e.trigger === "tool_name bash");
-      assert.ok(entry, "canonical trigger must load for enforcement");
-      assert.equal(entry!.action, "warn");
+      // Whitespace does not make an over-broad bash rule acceptable.
+      assert.equal(result.status, "rejected");
       assert.match(result.message, /EVERY bash call/i);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
@@ -2501,9 +2499,9 @@ describe("conflict gate — clause-scoped polarity, quoted spans, trigger warnin
         trigger: "tool_name BASH",
         action: "block",
       });
-      assert.equal(result.status, "added");
-      const enforced = loadEnforcedEntries(cwd);
-      assert.ok(enforced.some((e) => e.trigger === "tool_name bash"), "must store the lowercase form the matcher compares");
+      // Case-insensitive on purpose: "BASH" is the same over-broad rule and must not be
+      // stored either — a stored one blocks every command at load time.
+      assert.equal(result.status, "rejected");
       assert.match(result.message, /EVERY bash call/i);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });

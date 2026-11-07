@@ -16,6 +16,8 @@ import {
   seedOpenPrCacheForTests,
   setGhPrViewRunner,
 } from "../../../extensions/orchestrator/git-helpers.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 const {
   GIT_DIR: _GIT_DIR,
@@ -35,7 +37,7 @@ const GIT_ENV = {
 };
 
 function initGithubRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), "open-pr-"));
+  const dir = makeTempDir("open-pr-");
   execFileSync("git", ["init", "-b", "main"], {
     cwd: dir,
     stdio: "ignore",

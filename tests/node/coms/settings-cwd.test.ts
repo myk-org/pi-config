@@ -16,6 +16,8 @@ import {
 	getSetting,
 	setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 describe("coms settings configurability", () => {
 	let tmpDir: string;
@@ -23,8 +25,8 @@ describe("coms settings configurability", () => {
 
 	beforeEach(() => {
 		clearSettingsCache();
-		tmpDir = mkdtempSync(join(tmpdir(), "coms-settings-"));
-		globalTmp = mkdtempSync(join(tmpdir(), "coms-settings-global-"));
+		tmpDir = makeTempDir("coms-settings-");
+		globalTmp = makeTempDir("coms-settings-global-");
 		setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
 	});
 

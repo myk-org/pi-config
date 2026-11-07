@@ -1,7 +1,7 @@
 /**
  * models.dev cache, CLI/ACPX id mapping, and missing-field fill.
  */
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, utimesSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -19,6 +19,8 @@ import { mapCliDiscoveredModels } from "../../../extensions/cli-provider/runtime
 import { mapAcpxDiscoveredModels } from "../../../extensions/acpx-provider/runtime-models.js";
 import { buildRuntimeModel } from "../../../extensions/shared/create-runtime-provider.js";
 import { isPricingKnown, isPricingUnknown, safeModelRef } from "../../../extensions/shared/pricing-provenance.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 const SAMPLE_CATALOG = {
   xai: {
@@ -62,7 +64,7 @@ describe("modelsDevCachePath", () => {
 
 describe("loadModelsDevCatalog", () => {
   it("fetches catalog when cache file is missing", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "models-dev-"));
+    const dir = makeTempDir("models-dev-");
     const cachePath = join(dir, "models.dev.json");
     let fetches = 0;
     try {
@@ -81,7 +83,7 @@ describe("loadModelsDevCatalog", () => {
   });
 
   it("writes cache file when catalog fetch succeeds", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "models-dev-"));
+    const dir = makeTempDir("models-dev-");
     const cachePath = join(dir, "models.dev.json");
     try {
       await loadModelsDevCatalog({
@@ -96,7 +98,7 @@ describe("loadModelsDevCatalog", () => {
   });
 
   it("concurrent refreshes leave a valid cache file", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "models-dev-"));
+    const dir = makeTempDir("models-dev-");
     const cachePath = join(dir, "models.dev.json");
     try {
       await Promise.all([
@@ -117,7 +119,7 @@ describe("loadModelsDevCatalog", () => {
   });
 
   it("reuses cache younger than one day without fetching", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "models-dev-"));
+    const dir = makeTempDir("models-dev-");
     mkdirSync(dir, { recursive: true });
     const cachePath = join(dir, "models.dev.json");
     writeFileSync(cachePath, JSON.stringify(SAMPLE_CATALOG));
@@ -139,7 +141,7 @@ describe("loadModelsDevCatalog", () => {
   });
 
   it("refetches when cache is older than one day", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "models-dev-"));
+    const dir = makeTempDir("models-dev-");
     const cachePath = join(dir, "models.dev.json");
     writeFileSync(cachePath, JSON.stringify({ stale: { models: {} } }));
     const old = (Date.now() - MODELS_DEV_TTL_MS - 1000) / 1000;
@@ -162,7 +164,7 @@ describe("loadModelsDevCatalog", () => {
   });
 
   it("keeps stale cache when refresh fetch fails", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "models-dev-"));
+    const dir = makeTempDir("models-dev-");
     const cachePath = join(dir, "models.dev.json");
     writeFileSync(cachePath, JSON.stringify(SAMPLE_CATALOG));
     const old = (Date.now() - MODELS_DEV_TTL_MS - 1000) / 1000;

@@ -3,16 +3,18 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import { createAcpxAdapter } from "../../../extensions/providers/acpx-driver.js";
 import { createClaudeAdapter } from "../../../extensions/providers/claude-driver.js";
 import { createCursorAcpxAdapter } from "../../../extensions/providers/cursor-acpx-driver.js";
 import { createCursorCliAdapter } from "../../../extensions/providers/cursor-cli-driver.js";
 import { createGeminiAdapter } from "../../../extensions/providers/gemini-driver.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 function fakeCli(fn: (binary: string, output: string, args: string) => Promise<void>): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "persistent-prompt-"));
+  const dir = makeTempDir("persistent-prompt-");
   const binary = join(dir, "agent");
   const output = join(dir, "prompts");
   const args = join(dir, "args");
@@ -158,7 +160,7 @@ describe("persistent provider system prompts", () => {
     ["Cursor", createCursorCliAdapter],
   ] as const) {
     it(`${name} CLI retries a failed prompt application`, async () => {
-      const dir = mkdtempSync(join(tmpdir(), "failed-prompt-"));
+      const dir = makeTempDir("failed-prompt-");
       const binary = join(dir, "agent");
       const output = join(dir, "prompts");
       const count = join(dir, "count");

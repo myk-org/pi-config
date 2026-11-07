@@ -1,20 +1,22 @@
 /**
  * Tests for runCliAgent process spawning (mocked via PATH fake binary).
  */
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runCliAgent } from "../../../extensions/cli-provider/runner.js";
 import { resolveCliTimeoutMs } from "../../../extensions/cli-provider/runner.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 function withFakeBinary(
   name: string,
   scriptBody: string,
   fn: (binDir: string) => Promise<void>,
 ): Promise<void> {
-  const binDir = mkdtempSync(join(tmpdir(), "cli-runner-bin-"));
+  const binDir = makeTempDir("cli-runner-bin-");
   const prevPath = process.env.PATH;
   try {
     const script = join(binDir, name);

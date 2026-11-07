@@ -21,6 +21,8 @@ import {
   getProjectMemoryDir,
   getProjectDataDir,
 } from "../../../extensions/orchestrator/utils.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 let base: string;
 
@@ -61,7 +63,7 @@ function makeRepoWithWorktree(repoName: string, wtName: string): { repo: string;
 }
 
 beforeEach(() => {
-  base = mkdtempSync(join(tmpdir(), "main-checkout-"));
+  base = makeTempDir("main-checkout-");
 });
 
 afterEach(() => {

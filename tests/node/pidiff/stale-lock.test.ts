@@ -13,6 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import { describe, it, afterEach } from "node:test";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 describe("pidiff stale lock detection", () => {
   let tmpDir: string | undefined;
@@ -28,7 +30,7 @@ describe("pidiff stale lock detection", () => {
     const { evaluateSpawnLock } = await import(
       `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now()}`
     );
-    tmpDir = mkdtempSync(join(tmpdir(), "pidiff-lock-"));
+    tmpDir = makeTempDir("pidiff-lock-");
     const lockPath = join(tmpDir, "pidiff.spawning");
     writeFileSync(lockPath, "99999999");
 
@@ -41,7 +43,7 @@ describe("pidiff stale lock detection", () => {
     const { evaluateSpawnLock } = await import(
       `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 1}`
     );
-    tmpDir = mkdtempSync(join(tmpdir(), "pidiff-lock-"));
+    tmpDir = makeTempDir("pidiff-lock-");
     const lockPath = join(tmpDir, "pidiff.spawning");
     writeFileSync(lockPath, String(process.pid));
 
@@ -54,7 +56,7 @@ describe("pidiff stale lock detection", () => {
     const { evaluateSpawnLock } = await import(
       `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 2}`
     );
-    tmpDir = mkdtempSync(join(tmpdir(), "pidiff-lock-"));
+    tmpDir = makeTempDir("pidiff-lock-");
     const lockPath = join(tmpDir, "pidiff.spawning");
     writeFileSync(lockPath, "not-a-pid");
     // Set mtime to 2s ago to exceed the 1s floor
@@ -70,7 +72,7 @@ describe("pidiff stale lock detection", () => {
     const { evaluateSpawnLock } = await import(
       `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 3}`
     );
-    tmpDir = mkdtempSync(join(tmpdir(), "pidiff-lock-"));
+    tmpDir = makeTempDir("pidiff-lock-");
     const lockPath = join(tmpDir, "pidiff.spawning.nonexistent");
 
     const result = evaluateSpawnLock(lockPath, 60000);
@@ -82,7 +84,7 @@ describe("pidiff stale lock detection", () => {
     const { evaluateSpawnLock } = await import(
       `../../../extensions/pidiff/spawn-lock.ts?t=${Date.now() + 4}`
     );
-    tmpDir = mkdtempSync(join(tmpdir(), "pidiff-lock-"));
+    tmpDir = makeTempDir("pidiff-lock-");
     const lockPath = join(tmpDir, "pidiff.spawning");
     writeFileSync(lockPath, String(process.pid));
     // Set mtime to 2s ago to exceed the 1s floor
@@ -106,7 +108,7 @@ describe("spawn lock across .pi/run and legacy .pi/tmp (#1020)", () => {
   });
 
   const mkDirs = (n: number): string[] => {
-    dirs = Array.from({ length: n }, () => mkdtempSync(join(tmpdir(), "pidiff-spawn-")));
+    dirs = Array.from({ length: n }, () => makeTempDir("pidiff-spawn-"));
     return dirs;
   };
 
@@ -189,7 +191,7 @@ describe("findRunningPidiffPort across .pi/run and legacy .pi/tmp (#1024)", () =
   };
 
   const mkDir = (prefix: string): string => {
-    const dir = mkdtempSync(join(tmpdir(), prefix));
+    const dir = makeTempDir(prefix);
     dirs.push(dir);
     return dir;
   };

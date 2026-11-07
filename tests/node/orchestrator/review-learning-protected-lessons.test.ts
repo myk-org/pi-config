@@ -6,7 +6,7 @@
  * reviews older than the tracking window.
  */
 
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,11 +16,13 @@ import {
   distilledLessonTextList,
   recordReviewLessons,
 } from "../../../extensions/orchestrator/review-learning.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 const STATE = "review-learning-state.json";
 
 function dataDir(state: unknown): { dir: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "review-lessons-"));
+  const dir = makeTempDir("review-lessons-");
   writeFileSync(join(dir, STATE), JSON.stringify(state), "utf-8");
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
@@ -71,7 +73,7 @@ describe("distilledLessonTextList", () => {
   });
 
   it("returns an empty list for a missing or malformed state file", () => {
-    const missing = mkdtempSync(join(tmpdir(), "review-lessons-none-"));
+    const missing = makeTempDir("review-lessons-none-");
     try {
       assert.deepEqual(distilledLessonTextList(missing), []);
     } finally {

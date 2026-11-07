@@ -8,6 +8,8 @@ import { ClaudeDriver } from "../../../extensions/providers/claude-driver.js";
 import { GeminiDriver } from "../../../extensions/providers/gemini-driver.js";
 import { CursorCliDriver } from "../../../extensions/providers/cursor-cli-driver.js";
 import { AcpxDriver } from "../../../extensions/providers/acpx-driver.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 describe("driver config schemas", () => {
   it("ClaudeDriver driverKind", () => { assert.equal(ClaudeDriver.driverKind, "claude-cli"); });
@@ -83,7 +85,7 @@ describe("acpx probe binary check", { concurrency: false }, () => {
   });
 
   it("returns unavailable when cursor agent binary missing from PATH", async () => {
-    tmpRoot = mkdtempSync(join(tmpdir(), "acpx-probe-"));
+    tmpRoot = makeTempDir("acpx-probe-");
     process.env.PATH = tmpRoot; // empty dir — no "agent" binary
     const result = await AcpxDriver.probe({ agent: "cursor", enabled: true });
     assert.equal(result.available, false);
@@ -92,7 +94,7 @@ describe("acpx probe binary check", { concurrency: false }, () => {
   });
 
   it("returns unavailable when claude agent binary missing from PATH", async () => {
-    tmpRoot = mkdtempSync(join(tmpdir(), "acpx-probe-"));
+    tmpRoot = makeTempDir("acpx-probe-");
     process.env.PATH = tmpRoot;
     const result = await AcpxDriver.probe({ agent: "claude", enabled: true });
     assert.equal(result.available, false);
@@ -101,7 +103,7 @@ describe("acpx probe binary check", { concurrency: false }, () => {
   });
 
   it("returns unavailable for agent with missing binary", async () => {
-    tmpRoot = mkdtempSync(join(tmpdir(), "acpx-probe-"));
+    tmpRoot = makeTempDir("acpx-probe-");
     process.env.PATH = tmpRoot;
     const result = await AcpxDriver.probe({ agent: "nonexistent-xyz-99999", enabled: true });
     assert.equal(result.available, false);
@@ -109,7 +111,7 @@ describe("acpx probe binary check", { concurrency: false }, () => {
   });
 
   it("finds cursor agent binary when present on PATH", async () => {
-    tmpRoot = mkdtempSync(join(tmpdir(), "acpx-probe-"));
+    tmpRoot = makeTempDir("acpx-probe-");
     const dest = join(tmpRoot, "agent");
     writeFileSync(dest, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     process.env.PATH = tmpRoot;

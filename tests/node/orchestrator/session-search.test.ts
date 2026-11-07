@@ -2,7 +2,7 @@
  * Session-search store and harvest tests (issue #915).
  * Run: npx tsx --test tests/node/orchestrator/session-search.test.ts
  */
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,9 +12,11 @@ import {
   searchSessions,
   extractSessionSummaries,
 } from "../../../extensions/orchestrator/session-search.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 function makeCwd(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "session-search-"));
+  return makeTempDir("session-search-");
 }
 
 describe("session-search JSONL store", () => {

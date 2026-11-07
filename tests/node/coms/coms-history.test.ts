@@ -15,11 +15,13 @@ import {
 	HISTORY_MAX_FILE_BYTES,
 	type HistoryRecord,
 } from "../../../extensions/coms/coms-history.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 let dir: string;
 let file: string;
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "coms-history-"));
+	dir = makeTempDir("coms-history-");
 	file = join(dir, "history.jsonl");
 });
 afterEach(() => {

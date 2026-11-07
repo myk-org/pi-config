@@ -13,6 +13,8 @@ import {
   runProjectTmpSweep,
   sweepProjectTmp,
 } from "../../../extensions/orchestrator/tmp-cleanup.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 const MB = 1024 * 1024;
 const G = 1024 * MB;
@@ -21,7 +23,7 @@ const DAY = 24 * 60 * 60 * 1000;
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-test-"));
+  tmpDir = makeTempDir("tmp-cleanup-test-");
 });
 
 afterEach(() => {
@@ -178,7 +180,7 @@ describe("sweepProjectTmp", () => {
   });
 
   it("unlinks a symlink without touching its target", async () => {
-    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-target-"));
+    const outside = makeTempDir("tmp-cleanup-target-");
     try {
       const target = path.join(outside, "precious.bin");
       fs.writeFileSync(target, Buffer.alloc(4 * MB));
@@ -217,7 +219,7 @@ describe("sweepProjectTmp", () => {
   });
 
   it("refuses a tmp root swapped for a symlink once the scan started", async () => {
-    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-outside-"));
+    const outside = makeTempDir("tmp-cleanup-outside-");
     const moved = `${tmpDir}-moved`;
     try {
       makeEntry("old.bin", 4 * MB, 90);
@@ -248,7 +250,7 @@ describe("sweepProjectTmp", () => {
   });
 
   it("cannot reach a path outside the tmp root", async () => {
-    const sibling = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-sibling-"));
+    const sibling = makeTempDir("tmp-cleanup-sibling-");
     try {
       const victim = path.join(sibling, "keep.bin");
       fs.writeFileSync(victim, Buffer.alloc(2 * MB));
@@ -269,7 +271,7 @@ describe("runProjectTmpSweep", () => {
   const lockPath = () => path.join(runDir(), TMP_SWEEP_LOCK);
 
   beforeEach(() => {
-    project = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-project-"));
+    project = makeTempDir("tmp-cleanup-project-");
     tmpDir = path.join(project, ".pi", "tmp");
     fs.mkdirSync(tmpDir, { recursive: true });
     process.env.PI_PROJECT_TMP_MAX_SIZE = "";
@@ -291,7 +293,7 @@ describe("runProjectTmpSweep", () => {
   });
 
   it("a numeric 0 in the settings file also disables it", async () => {
-    const project = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-project-"));
+    const project = makeTempDir("tmp-cleanup-project-");
     try {
       fs.mkdirSync(path.join(project, ".pi", "tmp"), { recursive: true });
       fs.writeFileSync(path.join(project, ".pi", "pi-config-settings.json"), JSON.stringify({ project_tmp_max_size: 0 }));
@@ -311,8 +313,8 @@ describe("runProjectTmpSweep", () => {
   });
 
   it("refuses a tmp dir that resolves outside the checkout", async () => {
-    const project = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-project-"));
-    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "tmp-cleanup-outside-"));
+    const project = makeTempDir("tmp-cleanup-project-");
+    const outside = makeTempDir("tmp-cleanup-outside-");
     try {
       fs.mkdirSync(path.join(outside, "tmp"), { recursive: true });
       fs.symlinkSync(path.join(outside, "tmp"), path.join(project, ".pi"), "dir");

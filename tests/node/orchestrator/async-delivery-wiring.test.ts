@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -7,13 +7,15 @@ import { tmpdir } from "node:os";
 import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { markNeedsReview, markTestsPassed, readReviewState } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 const log = createLogger("async-delivery-wiring-test");
 const reviewerOutput = JSON.stringify({ findings: Array.from({ length: 100 }, () => ({ detail: "sensitive ".repeat(80) })) });
 
 function harness() {
   log.debug("create_harness");
-  const cwd = mkdtempSync(join(tmpdir(), "async-delivery-runtime-"));
+  const cwd = makeTempDir("async-delivery-runtime-");
   const handlers = new Map<string, Array<(event: unknown, ctx: any) => void>>();
   const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
   const events = new EventEmitter();

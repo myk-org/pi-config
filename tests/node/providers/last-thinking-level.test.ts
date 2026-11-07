@@ -12,6 +12,8 @@ import {
   shouldRestoreLastThinkingLevel,
   writeLastThinkingLevel,
 } from "../../../extensions/providers/last-thinking-level.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 type Handler = (event: any, ctx: any) => any;
 
@@ -42,7 +44,7 @@ describe("last-used thinking level", () => {
   let statePath: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "pi-thinking-"));
+    dir = makeTempDir("pi-thinking-");
     statePath = join(dir, "state", "last-thinking-level.json");
   });
 

@@ -14,7 +14,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { it } from "node:test";
+import { it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { WebSocketServer } from "ws";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -22,6 +22,8 @@ import { registerPidash } from "../../../extensions/pidash/pidash.ts";
 import { setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.ts";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.ts";
 import { createPidashSessionState, updatePidashSession } from "../../../scripts/pidash-session-state.ts";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 const INVALID_PAYLOADS: unknown[] = [
   { tokenSavings: -1 },
@@ -33,7 +35,7 @@ const INVALID_PAYLOADS: unknown[] = [
 ];
 
 it("forwards validated trail savings to the session projection and drops invalid payloads", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pidash-trail-savings-"));
+  const dir = makeTempDir("pidash-trail-savings-");
   const server = createServer((_req, res) => { res.end(JSON.stringify({ status: "ok" })); });
   const sockets = new WebSocketServer({ server, path: "/ws/pi" });
   const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();

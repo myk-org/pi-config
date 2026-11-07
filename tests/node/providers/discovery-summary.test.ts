@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { clearSettingsCache } from "../../../extensions/orchestrator/project-settings.js";
 import installProviders from "../../../extensions/providers/index.js";
 import { resetProvidersInitialized } from "../../../extensions/providers/initialized-guard.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 type DiscoverySummarySetup = {
   handlers: Map<string, (event: any, ctx: any) => void>;
@@ -32,7 +34,7 @@ describe("CLI/ACPX provider discovery summary (#788)", () => {
   let cwd: string;
 
   beforeEach(() => {
-    cwd = mkdtempSync(`${tmpdir()}/provider-discovery-summary-`);
+    cwd = makeTempDir("provider-discovery-summary-");
     process.chdir(cwd);
     clearSettingsCache();
     resetProvidersInitialized();

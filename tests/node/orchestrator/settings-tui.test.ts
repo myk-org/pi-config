@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import { StringListSubmenu } from "../../../extensions/orchestrator/settings-tui-submenus.js";
 import { SettingsList } from "@earendil-works/pi-tui";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getSettingsListState } from "../../../extensions/orchestrator/settings-tui.js";
@@ -32,6 +32,8 @@ import {
   setGlobalSettingsPath,
   clearSettingsCache,
 } from "../../../extensions/orchestrator/project-settings.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 // ── detectSource ────────────────────────────────────────────────────
 
@@ -42,12 +44,12 @@ describe("detectSource", () => {
   let globalSettingsPath: string;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "settings-tui-test-"));
+    tempDir = makeTempDir("settings-tui-test-");
     // Create a fake git repo so resolveRepoRoot works
     mkdirSync(join(tempDir, ".git"), { recursive: true });
     piDir = join(tempDir, ".pi");
     mkdirSync(piDir, { recursive: true });
-    globalDir = mkdtempSync(join(tmpdir(), "settings-tui-global-"));
+    globalDir = makeTempDir("settings-tui-global-");
     globalSettingsPath = join(globalDir, "pi-config-settings.json");
     setGlobalSettingsPath(globalSettingsPath);
     clearSettingsCache();
@@ -196,7 +198,7 @@ describe("formatValue", () => {
   });
 
   it("reads secret value from scope file that contains it", () => {
-    const projectDir = mkdtempSync(join(tmpdir(), "settings-secret-scope-"));
+    const projectDir = makeTempDir("settings-secret-scope-");
     const settingsPath = join(projectDir, "settings.json");
     writeFileSync(settingsPath, JSON.stringify({ coms_dir: "real-token-value" }));
 
@@ -208,7 +210,7 @@ describe("formatValue", () => {
   });
 
   it("returns no secret from scope file that does not contain it", () => {
-    const projectDir = mkdtempSync(join(tmpdir(), "settings-secret-scope-"));
+    const projectDir = makeTempDir("settings-secret-scope-");
     const otherPath = join(projectDir, "other.json");
     const otherData = readSettingsFile(otherPath);
     assert.deepEqual(otherData, {});
@@ -375,7 +377,7 @@ describe("CATEGORIES coverage (drift detection against settings-keys.json)", () 
     const validSources = new Set(["P", "G", "E", "D"]);
     // With no files and no env, every key should return "D"
     for (const key of Object.keys(SETTINGS_KEYS)) {
-      const tempDir2 = mkdtempSync(join(tmpdir(), "settings-drift-"));
+      const tempDir2 = makeTempDir("settings-drift-");
       mkdirSync(join(tempDir2, ".git"), { recursive: true });
       mkdirSync(join(tempDir2, ".pi"), { recursive: true });
       const source = detectSource(key, SETTINGS_KEYS[key], tempDir2);
@@ -391,7 +393,7 @@ describe("readSettingsFile / writeSettingsFile", () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "settings-tui-rw-"));
+    tempDir = makeTempDir("settings-tui-rw-");
   });
 
   afterEach(() => {
@@ -431,6 +433,132 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.ok(content.includes('"dco": true'), "should contain formatted dco");
     assert.ok(content.includes('"pidash_port": 8080'), "should contain formatted port");
     assert.ok(content.endsWith("\n"), "should end with newline");
+  });
+
+  it("keeps the previous content in .bak.1 before every write", () => {
+    const filePath = join(tempDir, "backed-up.json");
+    writeSettingsFile(filePath, { dco: true });
+    assert.equal(existsSync(`${filePath}.bak.1`), false, "no backup for a first-ever write");
+    writeSettingsFile(filePath, { dco: false, pidash_port: 8081 });
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { dco: true }, "previous version kept");
+    assert.deepEqual(JSON.parse(readFileSync(filePath, "utf-8")), { dco: false, pidash_port: 8081 });
+  });
+
+  it("rotates up to settings_backup_count versions, newest at .bak.1", () => {
+    const filePath = join(tempDir, "rotated.json");
+    for (const port of [1, 2, 3, 4, 5, 6]) {
+      if (existsSync(filePath)) writeSettingsFile(filePath, { pidash_port: port });
+      else {
+        mkdirSync(tempDir, { recursive: true });
+        writeFileSync(filePath, JSON.stringify({ pidash_port: 0 }));
+        writeSettingsFile(filePath, { pidash_port: port });
+      }
+    }
+    // default count is 5: .bak.1..bak.5 exist, .bak.6 does not, newest is the previous write
+    for (const slot of [1, 2, 3, 4, 5]) {
+      assert.ok(existsSync(`${filePath}.bak.${slot}`), `.bak.${slot} must exist`);
+    }
+    assert.equal(existsSync(`${filePath}.bak.6`), false, "oldest beyond the count is dropped");
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 5 });
+  });
+
+  it("refuses the write when the previous version cannot be backed up", () => {
+    const filePath = join(tempDir, "no-backup.json");
+    writeSettingsFile(filePath, { dco: true });
+    // One slot, occupied by a directory: the old copy cannot be unlinked or replaced.
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    process.env.PI_SETTINGS_BACKUP_COUNT = "1";
+    mkdirSync(`${filePath}.bak.1`, { recursive: true });
+    try {
+      assert.throws(() => writeSettingsFile(filePath, { dco: false }), /without a backup/);
+      assert.deepEqual(JSON.parse(readFileSync(filePath, "utf-8")), { dco: true }, "file untouched");
+    } finally {
+      if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+      else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+    }
+  });
+
+  it("removes slots beyond the retention when the count drops", () => {
+    const filePath = join(tempDir, "pruned.json");
+    writeSettingsFile(filePath, { dco: true });
+    for (const port of [1, 2, 3]) writeSettingsFile(filePath, { pidash_port: port });
+    assert.ok(existsSync(`${filePath}.bak.3`), "three backups kept by default");
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    process.env.PI_SETTINGS_BACKUP_COUNT = "1";
+    try {
+      writeSettingsFile(filePath, { pidash_port: 99 });
+      assert.ok(existsSync(`${filePath}.bak.1`));
+      for (const slot of [2, 3]) {
+        assert.equal(existsSync(`${filePath}.bak.${slot}`), false, `.bak.${slot} must be gone`);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+      else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+    }
+  });
+
+  it("keeps no backups at all when retention is 0", () => {
+    const filePath = join(tempDir, "no-backups.json");
+    writeSettingsFile(filePath, { dco: true });
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    process.env.PI_SETTINGS_BACKUP_COUNT = "0";
+    try {
+      writeSettingsFile(filePath, { dco: false });
+      writeSettingsFile(filePath, { dco: true });
+      assert.equal(existsSync(`${filePath}.bak.1`), false, "0 disables backups");
+    } finally {
+      if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+      else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+    }
+  });
+
+  it("a symlinked parent cannot smuggle a real project into the test sandbox", () => {
+    // The fixture's `.pi` points outside the OS temp tree; a LEXICAL check would accept it
+    // while the write landed there. /var/tmp is outside tmpdir() and safe to link to.
+    const outside = "/var/tmp";
+    const target = join(outside, `pi-config-settings-guard-${process.pid}.json`);
+    const fixture = join(tempDir, "linked-fixture");
+    mkdirSync(fixture, { recursive: true });
+    symlinkSync(outside, join(fixture, ".pi"));
+    const saved = process.env.NODE_TEST_CONTEXT;
+    process.env.NODE_TEST_CONTEXT = "1";
+    try {
+      assert.throws(
+        () => writeSettingsFile(join(fixture, ".pi", `pi-config-settings-guard-${process.pid}.json`), { dco: true }),
+        /refused to write settings outside the temp tree/,
+      );
+      assert.equal(existsSync(target), false, "nothing written through the link");
+    } finally {
+      if (saved === undefined) delete process.env.NODE_TEST_CONTEXT;
+      else process.env.NODE_TEST_CONTEXT = saved;
+    }
+  });
+
+  it("an invalid retention value falls back to the default instead of erasing backups", () => {
+    const filePath = join(tempDir, "invalid-retention.json");
+    writeSettingsFile(filePath, { dco: true });
+    writeSettingsFile(filePath, { dco: false });
+    assert.ok(existsSync(`${filePath}.bak.1`), "a backup exists before the bad value");
+    const saved = process.env.PI_SETTINGS_BACKUP_COUNT;
+    for (const bad of ["-1", "999", "2.5", "abc"]) {
+      process.env.PI_SETTINGS_BACKUP_COUNT = bad;
+      try {
+        writeSettingsFile(filePath, { dco: true, pidash_port: 7 });
+        assert.ok(existsSync(`${filePath}.bak.1`), `backup survives invalid value ${bad}`);
+      } finally {
+        if (saved === undefined) delete process.env.PI_SETTINGS_BACKUP_COUNT;
+        else process.env.PI_SETTINGS_BACKUP_COUNT = saved;
+      }
+    }
+  });
+
+  it("refuses to overwrite an unparseable settings file and leaves it untouched", () => {
+    const filePath = join(tempDir, "corrupt.json");
+    const corrupt = '{ "dco": tru';
+    writeFileSync(filePath, corrupt);
+    assert.throws(() => writeSettingsFile(filePath, { dco: true }), /unparseable settings file/);
+    assert.equal(readFileSync(filePath, "utf-8"), corrupt, "bytes are exactly as they were");
+    assert.equal(existsSync(`${filePath}.bak`), false, "nothing was backed up over it either");
   });
 
   it("creates parent directories", () => {
@@ -488,10 +616,10 @@ describe("getFilePathForScope", () => {
   let globalDir: string;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "settings-tui-scope-"));
+    tempDir = makeTempDir("settings-tui-scope-");
     mkdirSync(join(tempDir, ".git"), { recursive: true });
     mkdirSync(join(tempDir, ".pi"), { recursive: true });
-    globalDir = mkdtempSync(join(tmpdir(), "settings-tui-scope-global-"));
+    globalDir = makeTempDir("settings-tui-scope-global-");
     setGlobalSettingsPath(join(globalDir, "pi-config-settings.json"));
     clearSettingsCache();
   });
@@ -665,10 +793,10 @@ describe("resolveSecretPrefill", () => {
   let globalDir: string;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "settings-secret-prefill-"));
+    tempDir = makeTempDir("settings-secret-prefill-");
     mkdirSync(join(tempDir, ".git"), { recursive: true });
     mkdirSync(join(tempDir, ".pi"), { recursive: true });
-    globalDir = mkdtempSync(join(tmpdir(), "settings-secret-prefill-global-"));
+    globalDir = makeTempDir("settings-secret-prefill-global-");
     setGlobalSettingsPath(join(globalDir, "pi-config-settings.json"));
     clearSettingsCache();
   });

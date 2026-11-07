@@ -17,6 +17,8 @@ import {
   isConflictResolutionCommand,
   listUnmergedFiles,
 } from "../../../extensions/orchestrator/git-helpers.js";
+import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
+
 
 const GIT_ENV = {
   ...process.env,
@@ -39,7 +41,7 @@ function gitIn(repo: string, args: string[]): void {
 /** main: a.txt=base; branch: a.txt=theirs; main: a.txt=ours -> real merge conflict. */
 function conflictedRepo(at?: string): string {
   testLog.debug("fixture_repo", "kind", "conflicted");
-  const repo = at ?? mkdtempSync(join(tmpdir(), "conflict-guard-"));
+  const repo = at ?? makeTempDir("conflict-guard-");
   if (at) mkdirSync(repo, { recursive: true });
   const git = (args: string[]) => gitIn(repo, args);
   git(["init", "-q", "-b", "main"]);
@@ -63,7 +65,7 @@ function conflictedRepo(at?: string): string {
 /** A real repo with a clean index — a failed `git` call must not be what makes a test pass. */
 function cleanRepo(): string {
   testLog.debug("fixture_repo", "kind", "clean");
-  const repo = mkdtempSync(join(tmpdir(), "conflict-clean-"));
+  const repo = makeTempDir("conflict-clean-");
   gitIn(repo, ["init", "-q", "-b", "main"]);
   writeFileSync(join(repo, "a.txt"), "clean\n");
   gitIn(repo, ["add", "a.txt"]);
@@ -115,7 +117,7 @@ describe("conflict-resolution guard", () => {
   });
 
   it("marks an unreadable index as failed rather than clean", () => {
-    const notARepo = mkdtempSync(join(tmpdir(), "conflict-norepo-"));
+    const notARepo = makeTempDir("conflict-norepo-");
     assert.deepEqual(listUnmergedFiles(notARepo), { ok: false, files: [] });
     rmSync(notARepo, { recursive: true, force: true });
   });
@@ -216,7 +218,7 @@ describe("conflict-resolution guard", () => {
   });
 
   it("follows a cd inside a nested shell script", async () => {
-    const root = mkdtempSync(join(tmpdir(), "conflict-nested-shell-cd-"));
+    const root = makeTempDir("conflict-nested-shell-cd-");
     gitIn(root, ["init", "-q", "-b", "main"]);
     writeFileSync(join(root, "keep.txt"), "clean\n");
     gitIn(root, ["add", "keep.txt"]);
@@ -240,7 +242,7 @@ describe("conflict-resolution guard", () => {
   it("sees a conflict outside the directory it runs from", async () => {
     // From a subdirectory, `git add ../a.txt` still stages the conflict at the
     // repository root — the lookup must not be scoped to the cwd.
-    const root = mkdtempSync(join(tmpdir(), "conflict-subdir-"));
+    const root = makeTempDir("conflict-subdir-");
     conflictedRepo(root);
     mkdirSync(join(root, "sub"));
 
@@ -352,7 +354,7 @@ describe("conflict-resolution guard", () => {
   it("blocks a command that creates the conflict and stages it in one line", async () => {
     // The index is read before the command runs, so the conflict is invisible to
     // the check above; creating it and staging it together is the same bypass.
-    const root = mkdtempSync(join(tmpdir(), "conflict-sequencer-"));
+    const root = makeTempDir("conflict-sequencer-");
     gitIn(root, ["init", "-q", "-b", "main"]);
     writeFileSync(join(root, "a.txt"), "one\n");
     gitIn(root, ["add", "a.txt"]);
@@ -693,7 +695,7 @@ describe("conflict-resolution guard", () => {
 
   it("follows a subshell cd into a conflicted worktree", async () => {
     // Session cwd is clean; the conflict lives in the worktree the subshell enters.
-    const root = mkdtempSync(join(tmpdir(), "conflict-subshell-"));
+    const root = makeTempDir("conflict-subshell-");
     mkdirSync(join(root, ".worktrees"));
     conflictedRepo(join(root, ".worktrees", "conflicted"));
 
@@ -707,7 +709,7 @@ describe("conflict-resolution guard", () => {
 
   it("blocks a resolution command when the conflict state cannot be read", async () => {
     // Inside a repository whose index will not answer: fail closed.
-    const root = mkdtempSync(join(tmpdir(), "conflict-badindex-"));
+    const root = makeTempDir("conflict-badindex-");
     gitIn(root, ["init", "-q", "-b", "main"]);
     writeFileSync(join(root, "keep.txt"), "clean\n");
     gitIn(root, ["add", "keep.txt"]);
@@ -723,7 +725,7 @@ describe("conflict-resolution guard", () => {
   });
 
   it("reads an escaped space in a -C value", async () => {
-    const root = mkdtempSync(join(tmpdir(), "conflict-escaped-c-"));
+    const root = makeTempDir("conflict-escaped-c-");
     gitIn(root, ["init", "-q", "-b", "main"]);
     writeFileSync(join(root, "keep.txt"), "clean\n");
     gitIn(root, ["add", "keep.txt"]);
@@ -740,7 +742,7 @@ describe("conflict-resolution guard", () => {
 
   it("refuses when one candidate repository cannot be read", async () => {
     // A readable candidate elsewhere must not excuse an unreadable target.
-    const root = mkdtempSync(join(tmpdir(), "conflict-partial-read-"));
+    const root = makeTempDir("conflict-partial-read-");
     gitIn(root, ["init", "-q", "-b", "main"]);
     writeFileSync(join(root, "keep.txt"), "clean\n");
     gitIn(root, ["add", "keep.txt"]);
@@ -763,7 +765,7 @@ describe("conflict-resolution guard", () => {
 
   it("allows staging where there is no repository yet", async () => {
     // `git init && git add -A` has nothing to conflict with.
-    const fresh = mkdtempSync(join(tmpdir(), "conflict-fresh-"));
+    const fresh = makeTempDir("conflict-fresh-");
     process.env.PI_AGENT_NAME = "git-expert";
     process.env.PI_SUBAGENT_CHILD = "1";
     const result = await run("git init -q && git add -A", fresh);
@@ -772,7 +774,7 @@ describe("conflict-resolution guard", () => {
   });
 
   it("catches a conflict selected by an attached git -C path", async () => {
-    const root = mkdtempSync(join(tmpdir(), "conflict-git-c-attached-"));
+    const root = makeTempDir("conflict-git-c-attached-");
     gitIn(root, ["init", "-q", "-b", "main"]);
     writeFileSync(join(root, "keep.txt"), "clean\n");
     gitIn(root, ["add", "keep.txt"]);
@@ -788,7 +790,7 @@ describe("conflict-resolution guard", () => {
   });
 
   it("catches a conflict behind a second git -C override", async () => {
-    const root = mkdtempSync(join(tmpdir(), "conflict-git-c-twice-"));
+    const root = makeTempDir("conflict-git-c-twice-");
     mkdirSync(join(root, "clean"));
     gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
     conflictedRepo(join(root, "conflicted"));
@@ -804,7 +806,7 @@ describe("conflict-resolution guard", () => {
   it("resolves a relative -C against the directory in effect at that command", async () => {
     // The staging happens before the later cd, so -C resolves against the
     // earlier directory, not the final one.
-    const root = mkdtempSync(join(tmpdir(), "conflict-git-c-order-"));
+    const root = makeTempDir("conflict-git-c-order-");
     mkdirSync(join(root, "clean"));
     gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
     conflictedRepo(join(root, "inner", "conflicted"));
@@ -818,7 +820,7 @@ describe("conflict-resolution guard", () => {
   });
 
   it("catches a conflict entered through a cd option", async () => {
-    const root = mkdtempSync(join(tmpdir(), "conflict-cd-option-"));
+    const root = makeTempDir("conflict-cd-option-");
     gitIn(root, ["init", "-q", "-b", "main"]);
     writeFileSync(join(root, "keep.txt"), "clean\n");
     gitIn(root, ["add", "keep.txt"]);
@@ -834,7 +836,7 @@ describe("conflict-resolution guard", () => {
   });
 
   it("catches a conflict entered by a cd in an if condition", async () => {
-    const root = mkdtempSync(join(tmpdir(), "conflict-cd-if-"));
+    const root = makeTempDir("conflict-cd-if-");
     gitIn(root, ["init", "-q", "-b", "main"]);
     writeFileSync(join(root, "keep.txt"), "clean\n");
     gitIn(root, ["add", "keep.txt"]);
@@ -850,7 +852,7 @@ describe("conflict-resolution guard", () => {
   });
 
   it("refuses a resolution command that selects the index with an env var", async () => {
-    const root = mkdtempSync(join(tmpdir(), "conflict-git-env-"));
+    const root = makeTempDir("conflict-git-env-");
     gitIn(root, ["init", "-q", "-b", "main"]);
     writeFileSync(join(root, "keep.txt"), "clean\n");
     gitIn(root, ["add", "keep.txt"]);
@@ -875,7 +877,7 @@ describe("conflict-resolution guard", () => {
 
   it("does not block staging that leaves a conflicted session repo", async () => {
     // The session repo is conflicted but the command runs elsewhere entirely.
-    const root = mkdtempSync(join(tmpdir(), "conflict-clean-target-"));
+    const root = makeTempDir("conflict-clean-target-");
     mkdirSync(join(root, "clean"));
     gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
     conflictedRepo(root);
@@ -889,7 +891,7 @@ describe("conflict-resolution guard", () => {
 
   it("does not fail closed on a trailing change of directory", async () => {
     // Staging runs in the session repo; /tmp is not a repository at all.
-    const root = mkdtempSync(join(tmpdir(), "conflict-trailing-cd-"));
+    const root = makeTempDir("conflict-trailing-cd-");
     gitIn(root, ["init", "-q", "-b", "main"]);
     writeFileSync(join(root, "keep.txt"), "clean\n");
     gitIn(root, ["add", "keep.txt"]);
@@ -906,7 +908,7 @@ describe("conflict-resolution guard", () => {
     // (cd clean && cd conflicted && git add a.txt): chained relative cds
     // compose, so the conflict is only found if each is applied to the running
     // directory rather than to the session root.
-    const root = mkdtempSync(join(tmpdir(), "conflict-second-cd-"));
+    const root = makeTempDir("conflict-second-cd-");
     mkdirSync(join(root, "clean"));
     gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
     conflictedRepo(join(root, "clean", "conflicted"));
@@ -920,7 +922,7 @@ describe("conflict-resolution guard", () => {
   });
 
   it("resolves a git -C override over the shell directory", async () => {
-    const root = mkdtempSync(join(tmpdir(), "conflict-git-c-"));
+    const root = makeTempDir("conflict-git-c-");
     mkdirSync(join(root, "clean"));
     gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
     conflictedRepo(join(root, "conflicted"));
@@ -936,7 +938,7 @@ describe("conflict-resolution guard", () => {
   it("catches a conflict behind a conditional branch", async () => {
     // `cd conflicted || cd .` - the second branch may never run, so the guard
     // must not settle on it.
-    const root = mkdtempSync(join(tmpdir(), "conflict-conditional-"));
+    const root = makeTempDir("conflict-conditional-");
     conflictedRepo(join(root, "conflicted"));
 
     process.env.PI_AGENT_NAME = "git-expert";
@@ -949,10 +951,10 @@ describe("conflict-resolution guard", () => {
 
   it("follows a bare cd to the home directory", async () => {
     const priorHome = process.env.HOME;
-    const home = mkdtempSync(join(tmpdir(), "conflict-home-"));
+    const home = makeTempDir("conflict-home-");
     process.env.HOME = home;
     try {
-      const root = mkdtempSync(join(tmpdir(), "conflict-home-session-"));
+      const root = makeTempDir("conflict-home-session-");
       gitIn(root, ["init", "-q", "-b", "main"]);
       writeFileSync(join(root, "keep.txt"), "clean\n");
       gitIn(root, ["add", "keep.txt"]);
@@ -973,7 +975,7 @@ describe("conflict-resolution guard", () => {
   });
 
   it("follows cd - back to the previous directory", async () => {
-    const root = mkdtempSync(join(tmpdir(), "conflict-previous-"));
+    const root = makeTempDir("conflict-previous-");
     mkdirSync(join(root, "clean"));
     gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
     conflictedRepo(root);
@@ -988,7 +990,7 @@ describe("conflict-resolution guard", () => {
 
   it("does not follow a backgrounded cd into the foreground", async () => {
     // `cd clean &` runs in a subshell, so the staging happens where we already are.
-    const root = mkdtempSync(join(tmpdir(), "conflict-background-"));
+    const root = makeTempDir("conflict-background-");
     mkdirSync(join(root, "clean"));
     gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
     conflictedRepo(root);
@@ -1003,7 +1005,7 @@ describe("conflict-resolution guard", () => {
 
   it("checks both directories when a cd may be skipped", async () => {
     // `false && cd clean` never runs, so the staging happens where we already are.
-    const root = mkdtempSync(join(tmpdir(), "conflict-skipped-cd-"));
+    const root = makeTempDir("conflict-skipped-cd-");
     mkdirSync(join(root, "clean"));
     gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
     conflictedRepo(root);
@@ -1018,7 +1020,7 @@ describe("conflict-resolution guard", () => {
 
   it("starts a new subshell from the outer directory", async () => {
     // The second subshell must not inherit the first one's directory.
-    const root = mkdtempSync(join(tmpdir(), "conflict-two-subshells-"));
+    const root = makeTempDir("conflict-two-subshells-");
     mkdirSync(join(root, "clean"));
     gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
     conflictedRepo(root);
@@ -1034,7 +1036,7 @@ describe("conflict-resolution guard", () => {
   it("catches a conflict behind a completed subshell", async () => {
     // `(cd clean)` cannot move the outer shell, so staging runs in the session
     // repo - which is the conflicted one here.
-    const root = mkdtempSync(join(tmpdir(), "conflict-subshell-scope-"));
+    const root = makeTempDir("conflict-subshell-scope-");
     mkdirSync(join(root, "clean"));
     gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
     conflictedRepo(root);
@@ -1048,7 +1050,7 @@ describe("conflict-resolution guard", () => {
   });
 
   it("catches a conflict behind an earlier read-only git command", async () => {
-    const root = mkdtempSync(join(tmpdir(), "conflict-two-git-"));
+    const root = makeTempDir("conflict-two-git-");
     mkdirSync(join(root, "clean"));
     gitIn(join(root, "clean"), ["init", "-q", "-b", "main"]);
     conflictedRepo(join(root, "conflicted"));
@@ -1063,7 +1065,7 @@ describe("conflict-resolution guard", () => {
 
   it("reads a quoted cd target containing spaces", async () => {
     // Truncating at the space would check a directory that does not exist.
-    const root = mkdtempSync(join(tmpdir(), "conflict-space-"));
+    const root = makeTempDir("conflict-space-");
     mkdirSync(join(root, "clean"));
     conflictedRepo(join(root, "work tree"));
 

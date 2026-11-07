@@ -3,15 +3,17 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { it } from "node:test";
+import { it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { WebSocketServer } from "ws";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerPidash } from "../../../extensions/pidash/pidash.ts";
 import { setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.ts";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 it("reports the effective thinking level after a dashboard set-thinking command", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pidash-thinking-"));
+  const dir = makeTempDir("pidash-thinking-");
   const server = createServer((_req, res) => { res.end(JSON.stringify({ status: "ok" })); });
   const sockets = new WebSocketServer({ server, path: "/ws/pi" });
   const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();

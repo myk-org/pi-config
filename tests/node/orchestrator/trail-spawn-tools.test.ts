@@ -16,6 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TRAIL_QUERY_TOOLS, trailToolsArgs, withTrailTools } from "../../../extensions/orchestrator/trail.js";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 beforeEach(() => {
   // Pin the global settings file: a developer's ~/.pi settings must never decide the result.
@@ -28,7 +30,7 @@ afterEach(() => {
 });
 /** Temp repo whose own `.pi` settings say whether Trail is on. */
 function repo(trailEnable: boolean): string {
-  const root = mkdtempSync(join(tmpdir(), "trail-spawn-"));
+  const root = makeTempDir("trail-spawn-");
   mkdirSync(join(root, ".pi"), { recursive: true });
   writeFileSync(join(root, ".pi/pi-config-settings.jsonc"), JSON.stringify({ trail_enable: trailEnable }));
   return root;

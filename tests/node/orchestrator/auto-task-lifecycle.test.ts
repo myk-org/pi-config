@@ -12,6 +12,8 @@ import {
   autoMarkInProgress,
 } from "../../../extensions/orchestrator/task-lifecycle.js";
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
+import { makeTempDir } from "../helpers/temp-dirs.js";
+
 
 function writeTaskStore(dir: string, fileName: string, tasks: Array<{ id: string; status: string; subject: string }>): string {
   const tasksDir = join(dir, ".pi", "tasks");
@@ -29,7 +31,7 @@ describe("autoCompleteTask", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "auto-complete-"));
+    tmp = makeTempDir("auto-complete-");
   });
 
   afterEach(() => {
@@ -122,7 +124,7 @@ describe("autoMarkInProgress", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "auto-mark-"));
+    tmp = makeTempDir("auto-mark-");
   });
 
   afterEach(() => {
@@ -192,7 +194,7 @@ describe("autoCompleteTask call-site guard (subagent-tool pattern)", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "call-site-"));
+    tmp = makeTempDir("call-site-");
   });
 
   afterEach(() => {
@@ -246,7 +248,7 @@ describe("autoCompleteTask error handling", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "lifecycle-err-"));
+    tmp = makeTempDir("lifecycle-err-");
   });
 
   afterEach(() => {
@@ -285,7 +287,7 @@ describe("autoMarkInProgress error handling", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "lifecycle-err-"));
+    tmp = makeTempDir("lifecycle-err-");
   });
 
   afterEach(() => {
@@ -343,7 +345,7 @@ describe("autoCompleteTask update-failure handling", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "update-fail-"));
+    tmp = makeTempDir("update-fail-");
   });
 
   afterEach(() => {
@@ -371,7 +373,7 @@ describe("autoMarkInProgress update-failure handling", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "update-fail-"));
+    tmp = makeTempDir("update-fail-");
   });
 
   afterEach(() => {
