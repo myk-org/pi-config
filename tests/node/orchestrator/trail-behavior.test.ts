@@ -9,7 +9,7 @@
  */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -967,6 +967,13 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
     const nested = new Set([...mapPaths, "src/nested/x.ts"]);
     assert.equal(allowed("git -C src -C nested grep foo .", nested), false);
     assert.equal(allowed("git -C nested grep foo .", nested), true, "the root-level nested/ is unmapped");
+    // Entering a symlink moves the process onto its target, so a later `-C ../x` starts there.
+    mkdirSync(join(root, "real/inner"), { recursive: true });
+    mkdirSync(join(root, "real/mapped"), { recursive: true });
+    mkdirSync(join(root, "mapped"), { recursive: true }); // unmapped decoy at the root
+    symlinkSync(join(root, "real/inner"), join(root, "link"), "dir");
+    const physical = new Set([...mapPaths, "real/mapped/x.ts"]);
+    assert.equal(allowed("git -C link -C ../mapped grep PATTERN .", physical), false);
   });
 
   it("allows an outside directory only when it cannot recurse back in", () => {

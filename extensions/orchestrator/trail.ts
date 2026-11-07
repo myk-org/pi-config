@@ -323,10 +323,13 @@ function searchBaseDir(command: unknown, root: string, logger: Logger = log): st
       logger.debug("gate_search_base", { reason: "unmodellable_cd", target });
       return null;
     }
-    const next = resolve(base, target);
+    // Physically, like the process: entering a symlink moves the shell to its TARGET, so a later
+    // `cd ../x` must be resolved from there, not from the link's own location.
+    let next: string;
     // `cd somefile; rg foo .` leaves the shell where it was when the cd FAILS, so a target that is
     // not an existing directory tells us nothing about where the search runs.
     try {
+      next = realpathSync(resolve(base, target));
       if (!statSync(next).isDirectory()) throw new Error("not a directory");
     } catch {
       logger.debug("gate_search_base", { reason: "cd_target_unusable", target });
@@ -342,8 +345,9 @@ function searchBaseDir(command: unknown, root: string, logger: Logger = log): st
       logger.debug("gate_search_base", { reason: "unmodellable_git_c", target });
       return null;
     }
-    const next = resolve(base, target);
+    let next: string;
     try {
+      next = realpathSync(resolve(base, target)); // physical, as git enters it
       if (!statSync(next).isDirectory()) throw new Error("not a directory");
     } catch {
       logger.debug("gate_search_base", { reason: "git_c_target_unusable", target });
