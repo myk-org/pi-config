@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger, type Logger } from "../shared/logger.js";
+import { skipToCommandWord } from "./git-helpers.js";
+import { REDIRECT_TOKEN } from "./enforcement-helpers.js";
 import { isPiOneshotInvocation } from "../shared/oneshot.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { findSettingsFile, getSetting, parseSettingsFile } from "./project-settings.js";
@@ -249,7 +251,8 @@ function parseAsk(stdout: string): Ask | null {
   try { return JSON.parse(stdout.slice(start, end + 1)) as Ask; } catch { return null; }
 }
 const SEARCH_BINARIES = new Set(["rg", "grep", "egrep", "fgrep", "find", "fd", "ag", "ack"]);
-/** Prefixes that still name the command they wrap, so the search check must look past them. */
+/** Executors that still name the command they run. `rtk` is NOT listed: it is handled by the
+ *  shared `skipToCommandWord` parser along with the control keywords and inline assignments. */
 const SEARCH_WRAPPERS = new Set(["sudo", "env", "time", "command", "nice", "exec"]);
 /**
  * The search binary a command runs first, if any — the binary is the first token
@@ -261,8 +264,19 @@ function searchCommand(command: unknown): { binary: string; operands: string[]; 
   const first = firstCommand(command);
   if (!first) return null;
   const tokens = first.trim().split(/\s+/).map(token => token.replace(/^["']|["']$/g, ""));
-  let index = 0;
-  while (index < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]!) || SEARCH_WRAPPERS.has(tokens[index]!.toLowerCase()))) index++;
+  // Shares the one parser for "what does this segment actually run" — assignments, control
+  // keywords and transparent wrappers (`rtk`, `sudo`, `env`) included, so a wrapper can never be
+  // handled in one place and forgotten in another.
+  // The shared parser owns `rtk` and the other transparent prefixes (PR #996); the executors
+  // below it — whose own directory options are parsed elsewhere — are skipped here.
+  let index = skipToCommandWord(tokens);
+  // Executors and inline assignments interleave (`env FOO=1 rg …`), so both are consumed here.
+  for (;;) {
+    const word = tokens[index];
+    if (word === undefined) break;
+    if (SEARCH_WRAPPERS.has(word.toLowerCase()) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) { index++; continue; }
+    break;
+  }
   const head = tokens[index];
   if (!head) return null;
   const binary = head.split("/").pop()!.toLowerCase();
@@ -285,7 +299,10 @@ function searchCommand(command: unknown): { binary: string; operands: string[]; 
     }
     return null;
   }
-  return SEARCH_BINARIES.has(binary) ? { binary, operands: tokens.slice(index + 1), directories: [] } : null;
+  // Redirections are plumbing, not operands: `grep -rn E1 .pi/tmp 2>/dev/null` searches `.pi/tmp`.
+  return SEARCH_BINARIES.has(binary)
+    ? { binary, operands: tokens.slice(index + 1).filter(token => !REDIRECT_TOKEN.test(token)), directories: [] }
+    : null;
 }
 function searchBinary(command: unknown): string | null { return searchCommand(command)?.binary ?? null; }
 /** `git` options whose value is the following token. */

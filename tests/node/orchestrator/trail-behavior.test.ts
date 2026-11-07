@@ -659,7 +659,7 @@ describe("Shell search classification", () => {
     return { root, r, c };
   }
 
-  for (const command of ["rg authenticate src", "grep -rn authenticate src", "grep -rn foo src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "git -C src grep authenticate", "git --no-pager grep authenticate", "git -c core.pager=cat grep authenticate", "git -c x=y --no-pager grep authenticate", "env FOO=1 rg authenticate", "rg foo", "rg foo .", "rg foo src/", "grep foo package.json src", "rg foo ..", "rg foo ../", "find .. -name '*.ts'", "rg foo /"]) {
+  for (const command of ["rg authenticate src", "grep -rn authenticate src", "grep -rn foo src", "find src -name '*.ts'", "fd authenticate", "cd src && rg authenticate", "FOO=1 rg authenticate", "/usr/bin/rg authenticate src", "git grep -n authenticate", "git -C src grep authenticate", "git --no-pager grep authenticate", "git -c core.pager=cat grep authenticate", "git -c x=y --no-pager grep authenticate", "env FOO=1 rg authenticate", "rtk grep -rn authenticate src", "rtk rg authenticate src", "rg foo", "rg foo .", "rg foo src/", "grep foo package.json src", "rg foo ..", "rg foo ../", "find .. -name '*.ts'", "rg foo /"]) {
     it(`blocks a first-segment search: ${command}`, async () => {
       const { root, r, c } = await armed();
       try {
@@ -918,6 +918,8 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
 
   it("allows a search of gitignored scratch", () => {
     assert.equal(allowed(`grep -rn "E1" .pi/tmp --include=*.md`), true);
+    // A redirect is plumbing, not an operand — the live form of the reported command.
+    assert.equal(allowed(`rtk grep -rn "E1" .pi/tmp --include=*.md 2>/dev/null`), true);
   });
 
   it("allows a search of a directory the map holds nothing beneath", () => {
