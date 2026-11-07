@@ -12,6 +12,7 @@ import {
 } from "../../../../extensions/shared/session-cwd.js";
 import { createCursorCliAdapter } from "../../../../extensions/providers/cursor-cli-driver.js";
 import { createAcpxAdapter } from "../../../../extensions/providers/acpx-driver.js";
+import { makeTempDir } from "./helpers/temp-dirs.js";
 
 /**
  * Unit tests for SessionStore lifecycle (refresh / catalog / status / concurrency).
@@ -404,9 +405,9 @@ describe("SessionStore (mocked runtime)", () => {
   });
 
   it("prompt() passes session cwd to Cursor CLI spawn, not boot cwd (#768)", async () => {
-    const bootCwd = mkdtempSync(join(tmpdir(), "pi-boot-768-"));
-    const sessionCwd = mkdtempSync(join(tmpdir(), "pi-job-768-"));
-    const binDir = mkdtempSync(join(tmpdir(), "pi-agent-bin-768-"));
+    const bootCwd = makeTempDir("pi-boot-768-");
+    const sessionCwd = makeTempDir("pi-job-768-");
+    const binDir = makeTempDir("pi-agent-bin-768-");
     const seenFile = join(binDir, "seen-cwd");
     const prevPath = process.env.PATH;
     writeFileSync(
@@ -457,8 +458,8 @@ exit 0
   });
 
   it("prompt() passes session cwd to ACPX ensureSession, not boot cwd (#768)", async () => {
-    const bootCwd = mkdtempSync(join(tmpdir(), "pi-boot-acpx-768-"));
-    const sessionCwd = mkdtempSync(join(tmpdir(), "pi-job-acpx-768-"));
+    const bootCwd = makeTempDir("pi-boot-acpx-768-");
+    const sessionCwd = makeTempDir("pi-job-acpx-768-");
     let ensureCwd: string | undefined;
     const mockRuntime = {
       ensureSession: async (opts: { cwd?: string }) => {

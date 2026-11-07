@@ -13,6 +13,7 @@ import { join } from "node:path";
 
 import { SessionStore, createApiKeyRedactor } from "../../src/sessions.js";
 import type { SessionStreamSink } from "../../src/sessions.js";
+import { makeTempDir } from "./helpers/temp-dirs.js";
 
 // Recording OFF is the default config and the point of one of the tests below;
 // pin it (and the transcript dir) so a developer's env cannot change the result.
@@ -24,7 +25,7 @@ before(() => {
   savedRecording = process.env.RECORD_TRANSCRIPTS;
   savedTranscriptsDir = process.env.PI_SIDECAR_TRANSCRIPTS_DIR;
   delete process.env.RECORD_TRANSCRIPTS;
-  tempDir = mkdtempSync(join(tmpdir(), "sidecar-sse-stream-1019-"));
+  tempDir = makeTempDir("sidecar-sse-stream-1019-");
   process.env.PI_SIDECAR_TRANSCRIPTS_DIR = tempDir;
 });
 

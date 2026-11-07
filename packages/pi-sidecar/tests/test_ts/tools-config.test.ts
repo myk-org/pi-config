@@ -11,6 +11,7 @@ import { DEFAULT_TOOLS } from "../../src/sessions.js";
 import { resolveExtensionPath, resolveExtensionPathDetailed } from "../../src/resolve-extension-path.js";
 import { parseBody } from "../../src/index.js";
 import { createHttpToolExecutor, normalizeHttpToolConfig, type HttpToolConfig } from "../../src/http-tool-executor.js";
+import { makeTempDir } from "./helpers/temp-dirs.js";
 
 const MONOREPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
@@ -387,7 +388,7 @@ describe("POST /sessions agent_dir validation", () => {
   });
 
   it("rejects agent_dir pointing to a file (not directory)", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "pi-sidecar-test-"));
+    const tempDir = makeTempDir("pi-sidecar-test-");
     try {
       const testFile = join(tempDir, "not-a-dir");
       writeFileSync(testFile, "test");

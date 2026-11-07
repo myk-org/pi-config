@@ -9,6 +9,7 @@ import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { startSidecar } from "../../src/index.js";
 import { SessionStore, readTrustedKeyScopedProviders } from "../../src/sessions.js";
 import { logger } from "../../src/logger.js";
+import { makeTempDir } from "./helpers/temp-dirs.js";
 
 const keyA = 'local-"\\/key-a'; // pragma: allowlist secret — synthetic test credential
 const keyB = "local-key-b"; // pragma: allowlist secret — synthetic test credential
@@ -361,7 +362,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
   }
 
   it("rejects a builtin ID whose runtime endpoint differs from Pi's builtin", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-839-shadow-"));
+    const dir = makeTempDir("sidecar-839-shadow-");
     writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { groq: {
       baseUrl: "https://evil.example/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
       models: [{ id: "static" }],
@@ -401,7 +402,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
   });
 
   it("never fetches a custom provider's private-network model URL", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-839-ssrf-"));
+    const dir = makeTempDir("sidecar-839-ssrf-");
     writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { unsafe839: {
       baseUrl: "http://169.254.169.254/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
       models: [{ id: "static-only", name: "Static only" }],
@@ -435,7 +436,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
   });
 
   it("declines a dotted provider's non-loopback gateway without outbound traffic", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-839-dotted-"));
+    const dir = makeTempDir("sidecar-839-dotted-");
     writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { "gateway.example": {
       baseUrl: "https://gateway.example.com/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
       models: [{ id: "static-only", name: "Static" }],
@@ -485,7 +486,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
    * branch no longer applies and the key must never leave the process.
    */
   it("refuses to list for a builtin whose baseUrl is overridden away from canonical", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-892-redirect-"));
+    const dir = makeTempDir("sidecar-892-redirect-");
     writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { openrouter: {
       baseUrl: "https://redirected.example/v1",
     } } }));
@@ -515,7 +516,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
   });
 
   it("does not contact a custom gateway when no key is supplied", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-839-no-key-"));
+    const dir = makeTempDir("sidecar-839-no-key-");
     writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { "gateway.example": {
       baseUrl: "https://gateway.example.com/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
       models: [{ id: "static-only", name: "Static" }],
@@ -542,7 +543,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
   });
 
   it("returns unsupported without outbound requests when a gateway has no compatible models", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-839-fallback-"));
+    const dir = makeTempDir("sidecar-839-fallback-");
     writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { "gateway.example": {
       baseUrl: "https://gateway.example.com/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
       models: [],
@@ -577,7 +578,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
       Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
       const originalFetch = globalThis.fetch;
       globalThis.fetch = (async () => new Response("{}", { status: status === 401 ? 401 : 503 })) as typeof fetch;
-      const dir = mkdtempSync(join(tmpdir(), "sidecar-839-fail-"));
+      const dir = makeTempDir("sidecar-839-fail-");
       try {
         await assert.rejects(() => store.create({ provider: "openai", model: "unknown-839", systemPrompt: "hi", cwd: dir, agentDir: dir, tools: [], apiKey: keyA }),
           (error: any) => error.statusCode === status);
@@ -591,7 +592,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
     Object.assign(store, { internalRuntime: { services: { modelRuntime: runtime }, dispose: async () => {} }, modelRuntime: runtime, modelRegistry: new ModelRegistry(runtime), _ready: true });
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({ error: `invalid ${keyA}` }), { status: 401 })) as typeof fetch;
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-839-secret-"));
+    const dir = makeTempDir("sidecar-839-secret-");
     try {
       await assert.rejects(() => store.create({ provider: "openai", model: "unknown-839", systemPrompt: "hi", cwd: dir, agentDir: dir, tools: [], apiKey: keyA }),
         (error: Error) => { noKey(error.message, keyA); return true; });
@@ -606,7 +607,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
     globalThis.fetch = (async () => new Response(JSON.stringify({ models: [{
       name: "models/gemini-new-839", supportedGenerationMethods: ["generateContent"], inputTokenLimit: 4096, outputTokenLimit: 1024,
     }] }), { status: 200 })) as typeof fetch;
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-839-google-"));
+    const dir = makeTempDir("sidecar-839-google-");
     try {
       const session = await store.create({ provider: "google", model: "gemini-new-839", systemPrompt: "hi", cwd: dir, agentDir: dir, tools: [], apiKey: keyA });
       const selected = (store as any).sessions.get(session).session.model;
@@ -624,7 +625,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
     globalThis.fetch = (async () => new Response(JSON.stringify({ models: [
       { name: "models/gemini-zeroprice-839", supportedGenerationMethods: ["generateContent"], inputTokenLimit: 4096, outputTokenLimit: 1024 },
     ] }), { status: 200 })) as typeof fetch;
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-839-zeroprice-"));
+    const dir = makeTempDir("sidecar-839-zeroprice-");
     try {
       const id = await store.create({ provider: "google", model: "gemini-zeroprice-839", systemPrompt: "hi", cwd: dir, agentDir: dir, tools: [], apiKey: keyA });
       const entry = (store as any).sessions.get(id);
@@ -641,7 +642,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
     globalThis.fetch = (async () => new Response(JSON.stringify({ models: [{
       name: "models/embedding-private-839", supportedGenerationMethods: ["embedContent"], inputTokenLimit: 4096, outputTokenLimit: 1024,
     }] }), { status: 200 })) as typeof fetch;
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-839-embed-"));
+    const dir = makeTempDir("sidecar-839-embed-");
     try {
       await assert.rejects(
         () => store.create({ provider: "google", model: "embedding-private-839", systemPrompt: "hi", cwd: dir, agentDir: dir, tools: [], apiKey: keyA }),
@@ -659,7 +660,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
     globalThis.fetch = (async () => new Response(JSON.stringify({ models: [{
       name: "models/gemini-incomplete-839", supportedGenerationMethods: ["generateContent"], inputTokenLimit: 4096,
     }] }), { status: 200 })) as typeof fetch;
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-839-incomplete-"));
+    const dir = makeTempDir("sidecar-839-incomplete-");
     try {
       await assert.rejects(
         () => store.create({ provider: "google", model: "gemini-incomplete-839", systemPrompt: "hi", cwd: dir, agentDir: dir, tools: [], apiKey: keyA }),
@@ -670,7 +671,7 @@ describe("SessionStore key-scoped OpenAI-compatible discovery", { concurrency: f
   });
 
   it("uses the local model API per key without modifying the shared catalog or cache", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-839-"));
+    const dir = makeTempDir("sidecar-839-");
     const seen: string[] = [];
     const api = createServer((req, res) => {
       seen.push(req.headers.authorization ?? "");
@@ -760,7 +761,7 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
   };
 
   it("lists a manifest-flagged custom provider against its configured baseUrl", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-flag-"));
+    const dir = makeTempDir("sidecar-912-flag-");
     writeManifest(dir, {
       flagged912: { baseUrl: "https://flagged.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
         trustKeyScopedListing: true, models: [{ id: "static-only", name: "Static" }] },
@@ -793,7 +794,7 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
   });
 
   it("refuses key-scoped listing for an unflagged sibling provider without any request", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-plain-"));
+    const dir = makeTempDir("sidecar-912-plain-");
     writeManifest(dir, {
       plain912: { baseUrl: "https://plain.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
         models: [{ id: "static-only", name: "Static" }] },
@@ -819,7 +820,7 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
     ["hash", "https://hygiene.example.test/v1#frag"],
   ] as const) {
     it(`rejects a flagged provider baseUrl with ${name}`, async () => {
-      const dir = mkdtempSync(join(tmpdir(), `sidecar-912-hygiene-${name}-`));
+      const dir = makeTempDir(`sidecar-912-hygiene-${name}-`);
       writeManifest(dir, { hygiene912: { baseUrl, api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
         trustKeyScopedListing: true, models: [{ id: "static-only", name: "Static" }] } });
       const store = await fixtureStore(dir);
@@ -842,7 +843,7 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
     // Regression: indexById accumulates manifest ids during the merge, so a
     // second manifest entry with the same id must NOT inherit "listing"
     // provenance from the first — source derives from the pre-merge live set.
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-913-dup-manifest-"));
+    const dir = makeTempDir("sidecar-913-dup-manifest-");
     writeManifest(dir, {
       dup913: { baseUrl: "https://dup.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
         trustKeyScopedListing: true, models: [
@@ -873,7 +874,7 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
   });
 
   it("unions the live listing with manifest-only models for a flagged provider", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-union-"));
+    const dir = makeTempDir("sidecar-912-union-");
     writeManifest(dir, {
       union912: { baseUrl: "https://union.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
         trustKeyScopedListing: true, models: [
@@ -907,7 +908,7 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
   });
 
   it("dedupes by id with manifest metadata winning over the live entry", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-dedupe-"));
+    const dir = makeTempDir("sidecar-912-dedupe-");
     writeManifest(dir, {
       dedupe912: { baseUrl: "https://dedupe.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
         trustKeyScopedListing: true, models: [
@@ -940,8 +941,8 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
     // lazily loaded runtime provider carries a repointed URL (models.json edited
     // after SessionStore construction). The old flag must not send the user's
     // key to the new host.
-    const manifestDir = mkdtempSync(join(tmpdir(), "sidecar-913-pin-manifest-"));
-    const runtimeDir = mkdtempSync(join(tmpdir(), "sidecar-913-pin-runtime-"));
+    const manifestDir = makeTempDir("sidecar-913-pin-manifest-");
+    const runtimeDir = makeTempDir("sidecar-913-pin-runtime-");
     writeManifest(manifestDir, { pinned913: {
       baseUrl: "https://snapshot.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
       trustKeyScopedListing: true, models: [{ id: "static-only", name: "Static" }] } });
@@ -968,8 +969,8 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
   it("redacts credential-bearing parts from the trust-mismatch warning's pinned URL", async () => {
     // The snapshot keeps the full normalized manifest URL (userinfo retained);
     // the mismatch warn must log only the origin, never credential or path.
-    const manifestDir = mkdtempSync(join(tmpdir(), "sidecar-913-redact-manifest-"));
-    const runtimeDir = mkdtempSync(join(tmpdir(), "sidecar-913-redact-runtime-"));
+    const manifestDir = makeTempDir("sidecar-913-redact-manifest-");
+    const runtimeDir = makeTempDir("sidecar-913-redact-runtime-");
     writeManifest(manifestDir, { redact913: {
       baseUrl: "https://user:snapshot-secret@snapshot.example.test/v1", // pragma: allowlist secret — synthetic URL, never fetched
       api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
@@ -1001,7 +1002,7 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
   });
 
   it("warns per skipped malformed manifest model entry", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-skip-"));
+    const dir = makeTempDir("sidecar-912-skip-");
     writeManifest(dir, { skip912: {
       baseUrl: "https://skip.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
       trustKeyScopedListing: true, models: [
@@ -1031,8 +1032,8 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
     // the admin declares limits for the same id in the agent-dir models.json.
     // Here the runtime catalog lacks the id, so create() must resolve it through
     // the key-scoped listing and take its limits from the manifest snapshot.
-    const manifestDir = mkdtempSync(join(tmpdir(), "sidecar-913-fallback-manifest-"));
-    const runtimeDir = mkdtempSync(join(tmpdir(), "sidecar-913-fallback-runtime-"));
+    const manifestDir = makeTempDir("sidecar-913-fallback-manifest-");
+    const runtimeDir = makeTempDir("sidecar-913-fallback-runtime-");
     writeManifest(manifestDir, { limits913: {
       baseUrl: "https://limits.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
       trustKeyScopedListing: true, models: [{ id: "live-no-limits-913", name: "Live No Limits", contextWindow: 8192, maxTokens: 4096 }] } });
@@ -1089,8 +1090,8 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
   it("names the models.json remedy when a key-listed model has no limits anywhere", async () => {
     // Unknown limits are a hard failure by design — no fabricated defaults —
     // but the 400 must tell the admin how to make the model usable.
-    const manifestDir = mkdtempSync(join(tmpdir(), "sidecar-913-remedy-manifest-"));
-    const runtimeDir = mkdtempSync(join(tmpdir(), "sidecar-913-remedy-runtime-"));
+    const manifestDir = makeTempDir("sidecar-913-remedy-manifest-");
+    const runtimeDir = makeTempDir("sidecar-913-remedy-runtime-");
     writeManifest(manifestDir, { remedy913: {
       baseUrl: "https://remedy.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
       trustKeyScopedListing: true, models: [{ id: "live-no-limits-913", name: "Live No Limits" }] } });
@@ -1119,7 +1120,7 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
   });
 
   it("never leaks another provider's manifest models into a listing", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-cross-"));
+    const dir = makeTempDir("sidecar-912-cross-");
     writeManifest(dir, {
       crossA912: { baseUrl: "https://cross-a.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
         trustKeyScopedListing: true, models: [{ id: "a-manifest-only-912", name: "A Manifest" }] },
@@ -1148,7 +1149,7 @@ describe("trustKeyScopedListing manifest flag", { concurrency: false }, () => {
   });
 
   it("ignores a trustKeyScopedListing flag supplied in the request body", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sidecar-912-body-"));
+    const dir = makeTempDir("sidecar-912-body-");
     writeManifest(dir, { plain912: { baseUrl: "https://plain.example.test/v1", api: "openai-completions", apiKey: "unused-ambient", // pragma: allowlist secret — synthetic config
       models: [{ id: "static-only", name: "Static" }] } });
     const offline = process.env.PI_OFFLINE;

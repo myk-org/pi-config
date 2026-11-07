@@ -10,6 +10,7 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/provid
 import { SessionStore, redactApiKey, resolveExt, snapshotLegacyAmbientProviders } from "../../src/sessions.js";
 import { logger } from "../../src/logger.js";
 import { buildAmbientLoginAuth } from "../../../../extensions/shared/create-runtime-provider.js";
+import { makeTempDir } from "./helpers/temp-dirs.js";
 
 const secret = 'session-"\\-key';
 const escaped = JSON.stringify(secret).slice(1, -1);
@@ -22,7 +23,7 @@ describe("session API key", () => {
   let echoError = false;
 
   before(async () => {
-    cwd = mkdtempSync(join(tmpdir(), "sidecar-key-"));
+    cwd = makeTempDir("sidecar-key-");
     const faux = fauxProvider({ provider: "test-session-key", models: [{ id: "local" }] });
     // Real SDK runtime and agent sessions; the only fake is the external model provider.
     faux.setResponses(Array.from({ length: 30 }, () => async (_context, options) => {

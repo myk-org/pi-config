@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { parseBody, sendJson } from "../../src/index.js";
+import { makeTempDir } from "./helpers/temp-dirs.js";
 
 /**
  * Integration tests for agent_dir parameter validation.
@@ -72,7 +73,7 @@ describe("agent_dir integration validation", () => {
   });
 
   it("rejects file (not directory) with 400", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "pi-sidecar-test-"));
+    const tempDir = makeTempDir("pi-sidecar-test-");
     try {
       const testFile = join(tempDir, "a-file");
       writeFileSync(testFile, "test");
@@ -85,7 +86,7 @@ describe("agent_dir integration validation", () => {
   });
 
   it("accepts valid existing directory", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "pi-sidecar-test-"));
+    const tempDir = makeTempDir("pi-sidecar-test-");
     try {
       const result = await validateAgentDir({ agent_dir: tempDir });
       assert.equal(result.status, 200);

@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startSidecar } from "../../src/index.js";
+import { makeTempDir } from "./helpers/temp-dirs.js";
 
 /** Find a free loopback port by briefly occupying it (providers-discovery pattern). */
 async function freePort(): Promise<number> {
@@ -35,7 +36,7 @@ describe("/transcripts/recording routes (#935)", () => {
   before(async () => {
     // Point transcripts at a temp dir so a stray enabled state cannot write
     // into the developer's real transcript directory.
-    dir = mkdtempSync(join(tmpdir(), "sidecar-recording-route-"));
+    dir = makeTempDir("sidecar-recording-route-");
     process.env.PI_SIDECAR_TRANSCRIPTS_DIR = dir;
     delete process.env.RECORD_TRANSCRIPTS;
     process.env.PI_OFFLINE = "1";

@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { startSidecar, isAllowedStreamRequest } from "../../src/index.js";
+import { makeTempDir } from "./helpers/temp-dirs.js";
 
 const PROVIDER = "sse-1019-provider";
 const MODEL = "sse-1019-model";
@@ -38,7 +39,7 @@ async function freePort(): Promise<number> {
 
 /** Agent dir with one offline provider so POST /sessions succeeds without a network call. */
 function writeOfflineAgentDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "sidecar-sse-1019-"));
+  const dir = makeTempDir("sidecar-sse-1019-");
   writeFileSync(
     join(dir, "models.json"),
     JSON.stringify({

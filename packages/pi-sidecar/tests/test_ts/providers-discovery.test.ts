@@ -10,6 +10,7 @@ import { startSidecar } from "../../src/index.js";
 import { SessionStore } from "../../src/sessions.js";
 import { logger } from "../../src/logger.js";
 import { buildAmbientLoginAuth } from "../../../../extensions/shared/create-runtime-provider.js";
+import { makeTempDir } from "./helpers/temp-dirs.js";
 
 describe("GET /providers", () => {
   let port: number;
@@ -87,7 +88,7 @@ describe("GET /providers", () => {
 describe("SessionStore provider discovery", () => {
   let runtime: ModelRuntime;
   let store: SessionStore;
-  const dir = mkdtempSync(join(tmpdir(), "sidecar-providers-"));
+  const dir = makeTempDir("sidecar-providers-");
   before(async () => {
     runtime = await ModelRuntime.create({ modelsPath: null, authPath: join(dir, "auth.json"), refreshOnCreate: false });
     const extension = fauxProvider({ provider: "extension-exact_ID", models: [] });
