@@ -384,6 +384,20 @@ describe("isRmInProjectTmp", () => {
     }
   });
 
+  it("still decides when the home directory does not exist", () => {
+    // A HOME pointing nowhere must not turn the gate into an exception: it just grants no exemption.
+    const cwd = makeTempDir("rm-nohome-");
+    const realHome = process.env.HOME;
+    process.env.HOME = join(cwd, "never-created", "home");
+    try {
+      assert.equal(isRmInProjectTmp("rm -rf /tmp/some-scratch", cwd), true, "the /tmp rule still applies");
+      assert.equal(isRmInProjectTmp("rm -rf /etc/hosts", cwd), false, "and nothing else is exempt");
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+    }
+  });
+
   it("allows the home scratch whether or not it is a symlink", (t) => {
     const neutral = neutralRoot();
     if (!neutral) {

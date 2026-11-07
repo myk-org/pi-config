@@ -1948,12 +1948,17 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
   // `~/.pi/tmp` often points into a dotfiles checkout) and where that path really lives. Matching
   // only the real root made a symlink's target trusted: with `~/.pi/tmp -> ~`, `rm -rf ~/.ssh`
   // resolves beneath it and would skip approval without ever naming the scratch.
-  const lexicalHomeTmp = path.resolve(realpathSync(homedir()), ".pi", "tmp").replace(/\/+$/, "");
-  let resolvedHomeTmp: string | null;
+  // Both resolutions live inside one try: `homedir()` itself can throw when HOME is unset or
+  // points nowhere, and this helper feeds the dangerous-command gate — an exception here would
+  // replace a decision with a crash instead of simply granting no exemption.
+  let lexicalHomeTmp: string | null = null;
+  let resolvedHomeTmp: string | null = null;
   try {
+    lexicalHomeTmp = path.resolve(realpathSync(homedir()), ".pi", "tmp").replace(/\/+$/, "");
     resolvedHomeTmp = realpathSync(lexicalHomeTmp);
   } catch {
-    resolvedHomeTmp = null; // never created — nothing to match
+    lexicalHomeTmp = null; // no home, or no scratch in it — nothing to match
+    resolvedHomeTmp = null;
   }
   const underHomeTmp = (pathname: string, root: string): boolean =>
     pathname === root || pathname.startsWith(root + path.sep);
@@ -1995,7 +2000,7 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
           // Parent also doesn't exist — safe (entire path is non-existent)
         }
         resolved = lexical;
-      } else if (resolvedHomeTmp !== null && underHomeTmp(lexical, lexicalHomeTmp)) {
+      } else if (resolvedHomeTmp !== null && lexicalHomeTmp !== null && underHomeTmp(lexical, lexicalHomeTmp)) {
         // Non-existent path under the home scratch — validate the parent the same way.
         if (expanded.includes("..")) return false;
         const parentDir = path.dirname(lexical);
@@ -2042,7 +2047,7 @@ export function isRmInProjectTmp(stmt: string, cwd: string): boolean {
 
     // The path as WRITTEN must name the scratch (a symlinked scratch cannot lend its target out),
     // and its real location must stay inside the scratch (a symlink inside it cannot escape).
-    const inHomeTmp = resolvedHomeTmp !== null &&
+    const inHomeTmp = lexicalHomeTmp !== null && resolvedHomeTmp !== null &&
       underHomeTmp(lexical, lexicalHomeTmp) && underHomeTmp(resolved, resolvedHomeTmp);
 
     if (!inProjectTmp && !inSystemTmp && !inHomeTmp) return false;
