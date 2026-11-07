@@ -526,6 +526,19 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.equal(existsSync(`${filePath}.bak.visit-${process.pid}`), false, "no leftover snapshot after the visit");
   });
 
+  it("takes over a lock directory that never got its pid file", () => {
+    const filePath = join(tempDir, "orphan-lock.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    // Crash between mkdir and writing the pid: the directory exists, the owner file does not.
+    mkdirSync(`${filePath}.bak.lock`, { recursive: true });
+    const started = Date.now();
+    writeSettingsFile(filePath, { pidash_port: 2 });
+    assert.ok(Date.now() - started < 1_000, "an orphaned lock must not burn the whole retry budget");
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 },
+      "the settings were saved despite the orphaned lock");
+    assert.equal(existsSync(`${filePath}.bak.lock`), false);
+  });
+
   it("takes over a lock whose owner is gone", () => {
     const filePath = join(tempDir, "stale-lock.json");
     writeSettingsFile(filePath, { pidash_port: 1 });

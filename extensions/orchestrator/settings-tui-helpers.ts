@@ -360,7 +360,10 @@ function withChainLock<T>(filePath: string, fn: () => T): T {
             stale = Date.now() - statSync(lockDir).mtimeMs > 30_000; // unreadable owner: age decides
           }
         } catch {
-          /* the owner vanished mid-read: treat as stale on the next attempt */
+          // No owner file at all: a process died between creating the directory and writing its
+          // pid, so nothing owns the lock. It is stale NOW — waiting for an age threshold would
+          // refuse every save from here on, and the rename below keeps the takeover safe.
+          stale = true;
         }
         if (stale) {
           // Atomic steal: rename first, so exactly one of several racing writers can claim the
