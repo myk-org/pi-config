@@ -1161,15 +1161,24 @@ export function isNoexecSyntaxCheck(statement: string): boolean {
   const WRAPPERS =
     /^(?:(?:[0-9]*>{1,2}|&>)\S*\s+)*(?:\s*(?:[A-Za-z_]\w*=\S*|(?:then|do|else|elif)\b|sudo(?:\s+-\S+(?:\s+\S+)?)*|rtk(?:\s+-\S+)*|(?:command|builtin|exec)\b|env(?:\s+(?:-\S+(?:\s+\S+)?|\S+=\S*))*|timeout\s+(?:-\S+(?:\s+\S+)?\s+)*\S+|nice(?:\s+(?:-\S+(?:\s+\S+)?))*|nohup\b)\s+)*/i;
   const SHELL = /^(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh\b/i;
+  // The calling shell expands `$(...)`, backticks, `<(...)` and `>(...)` BEFORE the syntax check
+  // runs, so `bash -n "$(rm -rf x)"` deletes first and parses second. Those are never exempt.
+  if (/\$\(|`|<(?=\()|>(?=\()/.test(statement)) return false;
   const rest = statement.replace(WRAPPERS, "").trim();
   const shellMatch = SHELL.exec(rest);
   if (!shellMatch) return false;
   const tokens = rest.slice(shellMatch[0].length).trim().split(/\s+/).filter(Boolean);
-  // `bash -c '…'` executes the string, so a `-n` that only appears INSIDE that string must not
-  // exempt it: the token has to be an argument of the shell itself.
-  const cIndex = tokens.indexOf("-c");
-  const ownTokens = cIndex === -1 ? tokens : tokens.slice(0, cIndex);
-  return ownTokens.includes("-n");
+
+  // `-n` only counts in the shell's OWN leading option block: `bash script.sh -n` runs the script
+  // and hands `-n` to it, so a flag after the first operand is an argument, not an option.
+  const ownFlags: string[] = [];
+  for (const token of tokens) {
+    if (!token.startsWith("-")) break;
+    ownFlags.push(token);
+    // `-c` takes the program text — whatever follows is executed as parsed, so never exempt it.
+    if (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(token)) return false;
+  }
+  return ownFlags.includes("-n");
 }
 
 export const DANGEROUS = [

@@ -2901,6 +2901,12 @@ describe("descriptor-duplication redirects survive the split (PR #948 R3)", () =
       "bash script.sh",              // executes
       "bash -c 'bash -n script.sh'", // -n belongs to the inner command
       "zsh script.sh",
+      "bash deploy-all.sh -n",       // executes the script, passes -n to it
+      "sh script.sh -n",
+      "bash -c 'x' -n",              // -c already executes a string
+      'bash -n "$(rm -rf /tmp/target)"', // the CALLING shell expands first
+      "bash -n <(echo hi)",          // process substitution runs
+      "bash -n `echo hi`",
     ]) {
       assert.equal(isNoexecSyntaxCheck(cmd), false, cmd);
     }

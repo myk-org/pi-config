@@ -459,8 +459,14 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
   const hasDangerous = statements.some((stmt) => {
     // Skip read-only commands with no dangerous subshells
     if (isReadOnlyStatement(stmt)) return false;
-    // `bash -n file` only parses: nothing executes, so there is nothing to approve.
-    if (isNoexecSyntaxCheck(stmt)) return false;
+    // `bash -n file` only parses: nothing executes, so there is nothing to approve. Logged —
+    // an exemption from the gate must leave a trail an operator can find.
+    if (isNoexecSyntaxCheck(stmt)) {
+      log.info("dangerous_gate_noexec_syntax_check", {
+        shell: stmt.trim().split(/\s+/).slice(0, 3).join(" ").slice(0, 40),
+      });
+      return false;
+    }
     return DANGEROUS.some((p) => p.test(stmt));
   });
   if (hasDangerous) {

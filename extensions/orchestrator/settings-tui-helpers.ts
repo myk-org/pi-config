@@ -3,7 +3,7 @@
  * No pi-coding-agent or pi-tui dependencies.
  */
 
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join as joinPath, resolve, sep } from "node:path";
 import stripJsonComments from "strip-json-comments";
@@ -332,10 +332,47 @@ function visitSnapshotPath(filePath: string): string {
   return `${filePath}.bak.visit-${process.pid}`;
 }
 
+/** Serialize chain mutations across processes: rotating or promoting shifts `.bak.N` files, and a
+ *  concurrent writer interleaving between the shift and the rename would lose a restore point. */
+function withChainLock<T>(filePath: string, fn: () => T): T {
+  const lockDir = `${filePath}.bak.lock`;
+  let locked = false;
+  try {
+    for (let attempt = 0; attempt < 100 && !locked; attempt++) {
+      try {
+        mkdirSync(lockDir);
+        locked = true;
+      } catch {
+        // A lock older than 30s belongs to a process that died holding it.
+        try {
+          if (Date.now() - statSync(lockDir).mtimeMs > 30_000) rmdirSync(lockDir);
+        } catch {
+          /* raced with its owner */
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      }
+    }
+    if (!locked) log.warn("settings_backup_lock_timeout", { filePath });
+    return fn();
+  } finally {
+    if (locked) {
+      try {
+        rmdirSync(lockDir);
+      } catch {
+        /* stale */
+      }
+    }
+  }
+}
+
 /** Promote one visit snapshot into the numbered chain (`.bak.1`), shifting older copies. */
 function promoteSnapshot(snapshotPath: string): void {
   const filePath = snapshotPath.replace(/\.bak\.visit-\d+$/, "");
   if (!existsSync(snapshotPath)) return;
+  withChainLock(filePath, () => promoteSnapshotLocked(snapshotPath, filePath));
+}
+
+function promoteSnapshotLocked(snapshotPath: string, filePath: string): void {
   const count = backupCountFor(filePath);
   if (count <= 0) {
     unlinkSync(snapshotPath);
@@ -364,7 +401,10 @@ function reapStaleVisitSnapshots(filePath: string): void {
   for (const name of entries) {
     if (!name.startsWith(marker)) continue;
     const pid = Number(name.slice(marker.length));
-    if (!Number.isInteger(pid) || pid === process.pid) continue;
+    if (!Number.isInteger(pid)) continue;
+    // Skip only a snapshot THIS process owns: a pid can be reused, and a reused pid must not
+    // cause a crashed editor's copy to be silently overwritten.
+    if (pid === process.pid && visitSnapshots.has(joinPath(dir, name))) continue;
     try {
       process.kill(pid, 0);
       continue; // owner still alive
@@ -428,6 +468,10 @@ export function settingsBackupPath(filePath: string, slot = 1): string {
  *  A count of 0 disables backups. Failures never block the write — they only log. */
 function rotateSettingsBackups(filePath: string, count: number): void {
   if (count <= 0) return;
+  withChainLock(filePath, () => rotateSettingsBackupsLocked(filePath, count));
+}
+
+function rotateSettingsBackupsLocked(filePath: string, count: number): void {
   try {
     const oldest = settingsBackupPath(filePath, count);
     if (existsSync(oldest)) unlinkSync(oldest);
