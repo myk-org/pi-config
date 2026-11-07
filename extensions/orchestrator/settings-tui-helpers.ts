@@ -3,7 +3,7 @@
  * No pi-coding-agent or pi-tui dependencies.
  */
 
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join as joinPath, resolve, sep } from "node:path";
 import stripJsonComments from "strip-json-comments";
@@ -347,30 +347,31 @@ function withChainLock<T>(filePath: string, fn: () => T): T {
       } catch {
         // Take over a lock only when its OWNER IS GONE. Age alone is not evidence: a paused or
         // slow owner could resume and mutate the chain alongside this process.
+        let stale = false;
         try {
           const ownerPid = Number(readFileSync(ownerFile, "utf-8").trim());
           if (Number.isInteger(ownerPid) && ownerPid > 0) {
             try {
               process.kill(ownerPid, 0); // alive — leave it alone
             } catch {
-              // Owner is gone: remove its lock including the pid file it left.
-              try {
-                unlinkSync(ownerFile);
-              } catch {
-                /* racing */
-              }
-              rmdirSync(lockDir);
+              stale = true; // owner is gone
             }
-          } else if (Date.now() - statSync(lockDir).mtimeMs > 30_000) {
-            try {
-              unlinkSync(ownerFile);
-            } catch {
-              /* racing */
-            }
-            rmdirSync(lockDir); // unreadable owner: only age can decide
+          } else {
+            stale = Date.now() - statSync(lockDir).mtimeMs > 30_000; // unreadable owner: age decides
           }
         } catch {
-          /* raced with its owner */
+          /* the owner vanished mid-read: treat as stale on the next attempt */
+        }
+        if (stale) {
+          // Atomic steal: rename first, so exactly one of several racing writers can claim the
+          // stale lock. Deleting in place let two writers remove each other's fresh lock.
+          const grave = `${lockDir}.stale-${process.pid}-${Date.now()}`;
+          try {
+            renameSync(lockDir, grave);
+            rmSync(grave, { recursive: true, force: true });
+          } catch {
+            /* another writer claimed it — retry the acquisition */
+          }
         }
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
       }

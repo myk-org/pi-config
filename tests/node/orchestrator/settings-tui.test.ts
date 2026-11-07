@@ -526,6 +526,18 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.equal(existsSync(`${filePath}.bak.visit-${process.pid}`), false, "no leftover snapshot after the visit");
   });
 
+  it("takes over a lock whose owner is gone", () => {
+    const filePath = join(tempDir, "stale-lock.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    // A dead process left its lock behind (pid 999999 is not running).
+    mkdirSync(`${filePath}.bak.lock`, { recursive: true });
+    writeFileSync(`${filePath}.bak.lock/pid`, "999999");
+    writeSettingsFile(filePath, { pidash_port: 2 });
+    assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 },
+      "the stale lock was taken over and the backup written");
+    assert.equal(existsSync(`${filePath}.bak.lock`), false, "lock released after the write");
+  });
+
   it("refuses the save when the backup lock cannot be taken", () => {
     // Fail closed: mutating the chain without the lock can lose another process's restore point.
     const filePath = join(tempDir, "locked.json");
