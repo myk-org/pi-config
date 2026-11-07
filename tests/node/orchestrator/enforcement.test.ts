@@ -2894,6 +2894,7 @@ describe("descriptor-duplication redirects survive the split (PR #948 R3)", () =
       "sudo bash -n script.sh",
       "timeout 5 bash -n script.sh",
       "bash -n",                     // stdin: parses only, nothing runs
+      "bash -xn script.sh",          // composite flag still means noexec
     ]) {
       assert.equal(isNoexecSyntaxCheck(cmd), true, cmd);
     }
@@ -2907,6 +2908,9 @@ describe("descriptor-duplication redirects survive the split (PR #948 R3)", () =
       'bash -n "$(rm -rf /tmp/target)"', // the CALLING shell expands first
       "bash -n <(echo hi)",          // process substitution runs
       "bash -n `echo hi`",
+      "bash -- -n",                  // -- ends options; -n is a file name
+      "bash -n +n script.sh",        // +n switches noexec back off
+      "bash +n -n script.sh",        // +n applies regardless of order
     ]) {
       assert.equal(isNoexecSyntaxCheck(cmd), false, cmd);
     }

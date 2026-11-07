@@ -1169,16 +1169,25 @@ export function isNoexecSyntaxCheck(statement: string): boolean {
   if (!shellMatch) return false;
   const tokens = rest.slice(shellMatch[0].length).trim().split(/\s+/).filter(Boolean);
 
-  // `-n` only counts in the shell's OWN leading option block: `bash script.sh -n` runs the script
-  // and hands `-n` to it, so a flag after the first operand is an argument, not an option.
-  const ownFlags: string[] = [];
+  // `-n` only counts in the shell's OWN leading option block, and only if nothing turns it back
+  // off. The invocation accepts the `set` options, so `+n` re-enables execution:
+  //   `bash script.sh -n`  — operand, the script runs
+  //   `bash -- -n`         — `--` ends the options; it runs a FILE called `-n`
+  //   `bash -n +n script`  — noexec is switched off again
+  let noexec = false;
   for (const token of tokens) {
-    if (!token.startsWith("-")) break;
-    ownFlags.push(token);
+    if (token === "--") break; // option terminator: everything after is an operand
+    if (token.startsWith("+")) {
+      // `+n` (or any composite containing it) cancels the syntax-check mode.
+      if (/^\+[a-zA-Z]*n/.test(token)) return false;
+      continue;
+    }
+    if (!token.startsWith("-")) break; // first operand (script name or argument)
     // `-c` takes the program text — whatever follows is executed as parsed, so never exempt it.
     if (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(token)) return false;
+    if (/^-[a-zA-Z]*n/.test(token)) noexec = true; // -n, -xn, -nx
   }
-  return ownFlags.includes("-n");
+  return noexec;
 }
 
 export const DANGEROUS = [
