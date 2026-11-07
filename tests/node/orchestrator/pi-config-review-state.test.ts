@@ -1078,3 +1078,33 @@ describe("only a commit-bearing review can exhaust the commit cap", () => {
     assert.equal(isCommitAllowed(cwd), true);
   });
 });
+
+describe("cold PR fallback is scoped to the branch", () => {
+  const silent = { debug() {}, info() {}, warn() {}, error() {}, isDebugEnabled: () => false } as any;
+  const head = "b".repeat(40);
+
+  it("does not reuse a PR number after the branch changes", () => {
+    // Two worktrees' worth of calls in one repo: the second branch must not inherit the first PR.
+    const repo = join(tmpdir(), `review-cold-${process.pid}-${Date.now()}`);
+    mkdirSync(repo, { recursive: true });
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: repo });
+      execFileSync("git", ["config", "user.email", "t@example.com"], { cwd: repo });
+      execFileSync("git", ["config", "user.name", "T"], { cwd: repo });
+      writeFileSync(join(repo, "f.txt"), "x\n");
+      execFileSync("git", ["add", "f.txt"], { cwd: repo });
+      execFileSync("git", ["commit", "-qm", "init"], { cwd: repo });
+      execFileSync("git", ["checkout", "-qb", "feat/one"], { cwd: repo });
+
+      const deps = { headSha: () => head, remoteUrl: () => "git@github.com:o/r.git" };
+      // No gh in this temp repo: the fallback caches "no PR" for feat/one …
+      assert.equal(resolveReviewSubject(repo, silent, deps)?.kind, "local");
+      // … and a switch to another branch must not be answered from that entry.
+      execFileSync("git", ["checkout", "-qb", "feat/two"], { cwd: repo });
+      const second = resolveReviewSubject(repo, silent, deps);
+      assert.equal(second?.kind, "local", "the second branch gets its own answer, not the first's");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});

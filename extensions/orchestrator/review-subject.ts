@@ -47,7 +47,11 @@ const COLD_LOOKUP_MS = 60_000;
 const coldPr = new Map<string, { number: number | null; at: number }>();
 
 function coldOpenPrNumber(cwd: string): number | null {
-  const entry = coldPr.get(cwd);
+  // Keyed by branch as well as cwd (like `getOpenPr`): a cached number must never survive the
+  // worktree switching branches, or the next round is attributed to the previous branch's PR.
+  const branch = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]) ?? "detached";
+  const key = `${cwd}\u0000${branch}`;
+  const entry = coldPr.get(key);
   if (entry && Date.now() - entry.at < COLD_LOOKUP_MS) return entry.number;
   let number: number | null = null;
   try {
@@ -60,7 +64,7 @@ function coldOpenPrNumber(cwd: string): number | null {
   } catch {
     number = null; // no PR, not a GitHub repo, or gh unavailable — the commit is the honest answer
   }
-  coldPr.set(cwd, { number, at: Date.now() });
+  coldPr.set(key, { number, at: Date.now() });
   return number;
 }
 
