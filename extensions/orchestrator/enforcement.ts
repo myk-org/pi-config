@@ -5,6 +5,7 @@
  * review state tracking and gitignore checks.
  */
 
+import { createHash } from "node:crypto";
 import { createLogger } from "../shared/logger.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -462,8 +463,10 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     // `bash -n file` only parses: nothing executes, so there is nothing to approve. Logged —
     // an exemption from the gate must leave a trail an operator can find.
     if (isNoexecSyntaxCheck(stmt)) {
+      // Audit trail without content: a statement can carry paths, tokens or credentials, so the
+      // log records a short hash an operator can match, never the words themselves.
       log.info("dangerous_gate_noexec_syntax_check", {
-        shell: stmt.trim().split(/\s+/).slice(0, 3).join(" ").slice(0, 40),
+        statementHash: createHash("sha256").update(stmt).digest("hex").slice(0, 12),
       });
       return false;
     }

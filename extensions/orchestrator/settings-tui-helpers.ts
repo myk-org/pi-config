@@ -336,26 +336,59 @@ function visitSnapshotPath(filePath: string): string {
  *  concurrent writer interleaving between the shift and the rename would lose a restore point. */
 function withChainLock<T>(filePath: string, fn: () => T): T {
   const lockDir = `${filePath}.bak.lock`;
+  const ownerFile = joinPath(lockDir, "pid");
   let locked = false;
   try {
     for (let attempt = 0; attempt < 100 && !locked; attempt++) {
       try {
         mkdirSync(lockDir);
+        writeFileSync(ownerFile, String(process.pid), { mode: 0o600 });
         locked = true;
       } catch {
-        // A lock older than 30s belongs to a process that died holding it.
+        // Take over a lock only when its OWNER IS GONE. Age alone is not evidence: a paused or
+        // slow owner could resume and mutate the chain alongside this process.
         try {
-          if (Date.now() - statSync(lockDir).mtimeMs > 30_000) rmdirSync(lockDir);
+          const ownerPid = Number(readFileSync(ownerFile, "utf-8").trim());
+          if (Number.isInteger(ownerPid) && ownerPid > 0) {
+            try {
+              process.kill(ownerPid, 0); // alive — leave it alone
+            } catch {
+              // Owner is gone: remove its lock including the pid file it left.
+              try {
+                unlinkSync(ownerFile);
+              } catch {
+                /* racing */
+              }
+              rmdirSync(lockDir);
+            }
+          } else if (Date.now() - statSync(lockDir).mtimeMs > 30_000) {
+            try {
+              unlinkSync(ownerFile);
+            } catch {
+              /* racing */
+            }
+            rmdirSync(lockDir); // unreadable owner: only age can decide
+          }
         } catch {
           /* raced with its owner */
         }
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
       }
     }
-    if (!locked) log.warn("settings_backup_lock_timeout", { filePath });
+    if (!locked) {
+      // NEVER mutate the chain without the lock: a concurrent shift-and-rename loses a restore
+      // point, which is worse than refusing the save.
+      log.error("settings_backup_lock_timeout", { filePath });
+      throw new SettingsBackupError(filePath, new Error("backup lock timeout"));
+    }
     return fn();
   } finally {
     if (locked) {
+      try {
+        unlinkSync(ownerFile);
+      } catch {
+        /* already gone */
+      }
       try {
         rmdirSync(lockDir);
       } catch {

@@ -526,6 +526,21 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.equal(existsSync(`${filePath}.bak.visit-${process.pid}`), false, "no leftover snapshot after the visit");
   });
 
+  it("refuses the save when the backup lock cannot be taken", () => {
+    // Fail closed: mutating the chain without the lock can lose another process's restore point.
+    const filePath = join(tempDir, "locked.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    mkdirSync(`${filePath}.bak.lock`, { recursive: true });
+    // A live owner: this very process, so the lock is never stolen.
+    writeFileSync(`${filePath}.bak.lock/pid`, String(process.pid));
+    try {
+      assert.throws(() => writeSettingsFile(filePath, { pidash_port: 2 }), /without a backup/);
+      assert.deepEqual(JSON.parse(readFileSync(filePath, "utf-8")), { pidash_port: 1 }, "file untouched");
+    } finally {
+      rmSync(`${filePath}.bak.lock`, { recursive: true, force: true });
+    }
+  });
+
   it("recovers a snapshot left by a crashed visit instead of overwriting it", () => {
     const filePath = join(tempDir, "crashed-visit.json");
     writeSettingsFile(filePath, { pidash_port: 1 }); // pre-crash state

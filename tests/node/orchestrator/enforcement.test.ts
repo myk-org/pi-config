@@ -11,6 +11,7 @@ import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { DANGEROUS, isNoexecSyntaxCheck, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
+import { getPiLogPath } from "../../../extensions/shared/file-logger.js";
 import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
 import { commitTrailerModelId, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import { getSettingsPath, setGlobalSettingsPath, getGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
@@ -3233,6 +3234,18 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
       assert.equal(res?.block, true, cmd);
       assert.match(res.reason, /ABSOLUTE/i);
     }
+  });
+
+  it("logs the noexec exemption with a hash, never the command text", async () => {
+    const logPath = getPiLogPath("enforcement");
+    const before = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").length : 0;
+
+    const result = await runBash("bash -n /tmp/secret-path-marker.sh");
+    assert.equal(result?.block, undefined, "a syntax check is not blocked");
+
+    const written = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").slice(before) : "";
+    assert.match(written, /dangerous_gate_noexec_syntax_check/, "the exemption must leave a trail");
+    assert.ok(!written.includes("secret-path-marker"), "the command text must not reach the log");
   });
 
   it("blocks quoted tilde targets — quoted ~ does not expand (Qodo #964)", async () => {
