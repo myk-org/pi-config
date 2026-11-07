@@ -1,5 +1,5 @@
 /** Local Trail-code integration: code-map tools, per-prompt retrieval, navigation gate. */
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -292,7 +292,18 @@ const GIT_VALUE_OPTIONS = new Set(["-c", "-C"]);
  * An absolute path OUTSIDE the checkout is not project navigation at all: the map
  * has nothing to say about it, so it is allowed.
  */
-function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string): boolean {
+/** True when `absolute` is covered by a .gitignore rule. Any failure (no git, no repo, bad
+ *  path) answers false, which keeps the gate closed — the safe direction. */
+function gitIgnored(absolute: string, root: string): boolean {
+  try {
+    execFileSync("git", ["-C", root, "check-ignore", "-q", "--", absolute], { stdio: "ignore", timeout: 2_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string): boolean {
   const search = searchCommand(command);
   if (!search) return false;
   const operands = search.operands.filter(token => !token.startsWith("-"));
@@ -304,11 +315,18 @@ function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string):
     const rel = relative(root, absolute);
     const outside = rel.startsWith("..") || isAbsolute(rel);
     let info; try { info = statSync(absolute); } catch { return false; }
-    // Outside the checkout only a FILE is safe to search: a parent directory such
-    // as `..` recurses back into this checkout, so `rg foo ..` is navigation.
-    if (outside) return info.isFile();
+    // Outside the checkout, only an ANCESTOR of it recurses back in (`rg foo ..`), so that
+    // stays navigation. A sibling checkout — or a plain non-git folder — is that project's
+    // business, and this map holds nothing the search could have been replaced by.
+    if (outside) return absolute !== root && !root.startsWith(absolute + sep);
     if (mapPaths.has(rel.split(sep).join("/"))) return false;
-    return info.isFile();
+    if (info.isFile()) return true;
+    if (!info.isDirectory()) return true;
+    // A GITIGNORED directory is never project navigation: `.pi/tmp`, logs, build output hold
+    // nothing the map indexes, and `cd /other/repo && grep … .pi/tmp` is about that dir, not this
+    // checkout. A tracked-but-unmapped dir (`src/v1.2/`) stays gated — the map may simply be
+    // stale, and that is what the gate exists for.
+    return gitIgnored(absolute, root);
   });
 }
 function searchTool(event: any, logger: Logger = log): boolean {

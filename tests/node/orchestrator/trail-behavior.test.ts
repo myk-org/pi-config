@@ -893,3 +893,52 @@ describe("Enablement callback logger", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+/**
+ * Searching a directory the map holds nothing beneath is not blind navigation. Gitignored
+ * scratch (`.pi/tmp`) and other checkouts are the two shapes that fired the gate wrongly.
+ */
+describe("unindexedSearch exempts directories the map does not cover", () => {
+  const root = makeTempDir("trail-unindexed-");
+  const mapPaths = new Set(["extensions/orchestrator/trail.ts", "docs/configuration.md"]);
+
+  beforeEach(() => {
+    for (const dir of [".pi/tmp/issue397", "extensions/orchestrator", "docs", "build", "src/v1.2"]) {
+      mkdirSync(join(root, dir), { recursive: true });
+    }
+    writeFileSync(join(root, ".gitignore"), ".pi/\nbuild/\n");
+    execFileSync("git", ["init", "-q"], { cwd: root });
+  });
+
+  const allowed = (cmd: string): boolean => trail.unindexedSearch(cmd, mapPaths, root);
+
+  it("allows a search of gitignored scratch", () => {
+    // The reported case: `cd /some/other/repo && grep -rn PATTERN .pi/tmp`.
+    assert.equal(allowed(`grep -rn "E1" .pi/tmp --include=*.md`), true);
+    assert.equal(allowed("grep -rn PATTERN build"), true, "build output is ignored too");
+  });
+
+  it("keeps the gate for a tracked directory the map does not cover", () => {
+    // The map may simply be stale; that is what the gate is for.
+    assert.equal(allowed("rg foo src/v1.2/"), false);
+  });
+
+  it("allows a search of a sibling checkout, but not of an ancestor that recurses back in", () => {
+    const sibling = makeTempDir("trail-sibling-");
+    assert.equal(allowed(`rg foo ${sibling}`), true);
+    assert.equal(allowed("rg foo .."), false, "a parent directory recurses back into this checkout");
+    assert.equal(allowed(`rg foo ${root}`), false, "the root covers everything the map holds");
+  });
+
+  it("still blocks a search of a tracked directory or an indexed file", () => {
+    assert.equal(allowed("rg foo extensions"), false);
+    assert.equal(allowed("rg foo extensions/orchestrator"), false);
+    assert.equal(allowed("rg foo ."), false);
+    assert.equal(allowed("rg foo extensions/orchestrator/trail.ts"), false);
+  });
+
+  it("leaves a search with no path operand to the gate", () => {
+    assert.equal(allowed("grep -c PATTERN package.json.bak"), false, "a missing path is not evidence of safety");
+    assert.equal(allowed("echo hello"), false);
+  });
+});
