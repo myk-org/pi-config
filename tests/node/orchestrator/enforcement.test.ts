@@ -2912,6 +2912,9 @@ describe("descriptor-duplication redirects survive the split (PR #948 R3)", () =
       "bash -- -n",                  // -- ends options; -n is a file name
       "bash -n +n script.sh",        // +n switches noexec back off
       "bash +n -n script.sh",        // +n applies regardless of order
+      "bash -n +o noexec script.sh", // named option re-enables execution
+      "bash -n${IFS}+n${IFS}-c 'rm -rf /tmp/target'", // ${IFS} word-splits into options
+      "bash -n $script.sh",          // any expansion may split or change the word
     ]) {
       assert.equal(isNoexecSyntaxCheck(cmd), false, cmd);
     }

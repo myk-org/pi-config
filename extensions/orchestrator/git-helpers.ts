@@ -1161,9 +1161,11 @@ export function isNoexecSyntaxCheck(statement: string): boolean {
   const WRAPPERS =
     /^(?:(?:[0-9]*>{1,2}|&>)\S*\s+)*(?:\s*(?:[A-Za-z_]\w*=\S*|(?:then|do|else|elif)\b|sudo(?:\s+-\S+(?:\s+\S+)?)*|rtk(?:\s+-\S+)*|(?:command|builtin|exec)\b|env(?:\s+(?:-\S+(?:\s+\S+)?|\S+=\S*))*|timeout\s+(?:-\S+(?:\s+\S+)?\s+)*\S+|nice(?:\s+(?:-\S+(?:\s+\S+)?))*|nohup\b)\s+)*/i;
   const SHELL = /^(?:\S*\/)?(?:ba|da|z|k|c|tc|fi)?sh\b/i;
-  // The calling shell expands `$(...)`, backticks, `<(...)` and `>(...)` BEFORE the syntax check
-  // runs, so `bash -n "$(rm -rf x)"` deletes first and parses second. Those are never exempt.
-  if (/\$\(|`|<(?=\()|>(?=\()/.test(statement)) return false;
+  // The calling shell expands and word-splits before the syntax check runs: `$(...)` executes,
+  // `${IFS}` splits one token into several options (`bash -n${IFS}+n${IFS}-c …`), backticks run,
+  // and `<(...)`/`>(...)` execute. ANY `$` is refused outright — a legitimate `bash -n script.sh`
+  // never needs one.
+  if (/\$|`|<(?=\()|>(?=\()/.test(statement)) return false;
   const rest = statement.replace(WRAPPERS, "").trim();
   const shellMatch = SHELL.exec(rest);
   if (!shellMatch) return false;
@@ -1177,11 +1179,9 @@ export function isNoexecSyntaxCheck(statement: string): boolean {
   let noexec = false;
   for (const token of tokens) {
     if (token === "--") break; // option terminator: everything after is an operand
-    if (token.startsWith("+")) {
-      // `+n` (or any composite containing it) cancels the syntax-check mode.
-      if (/^\+[a-zA-Z]*n/.test(token)) return false;
-      continue;
-    }
+    // `+` options enable modes again (`+n`, `+o noexec`, …). Refusing ALL of them keeps this
+    // predicate from having to model the whole `set` option table.
+    if (token.startsWith("+")) return false;
     if (!token.startsWith("-")) break; // first operand (script name or argument)
     // `-c` takes the program text — whatever follows is executed as parsed, so never exempt it.
     if (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(token)) return false;
