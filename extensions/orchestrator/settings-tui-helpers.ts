@@ -335,21 +335,22 @@ function visitSnapshotPath(filePath: string): string {
 /** Serialize chain mutations across processes: rotating or promoting shifts `.bak.N` files, and a
  *  concurrent writer interleaving between the shift and the rename would lose a restore point. */
 function withChainLock<T>(filePath: string, fn: () => T): T {
-  const lockDir = `${filePath}.bak.lock`;
-  const ownerFile = joinPath(lockDir, "pid");
+  // The lock is ONE file created with O_EXCL: creating it IS owning it. Splitting that into
+  // mkdir-then-write-pid left a window where the directory existed with no owner, and a reader
+  // could steal a lock a live writer was still acquiring — both then shifted the chain.
+  const lockPath = `${filePath}.bak.lock`;
   let locked = false;
   try {
     for (let attempt = 0; attempt < 100 && !locked; attempt++) {
       try {
-        mkdirSync(lockDir);
-        writeFileSync(ownerFile, String(process.pid), { mode: 0o600 });
+        writeFileSync(lockPath, String(process.pid), { flag: "wx", mode: 0o600 });
         locked = true;
       } catch {
         // Take over a lock only when its OWNER IS GONE. Age alone is not evidence: a paused or
         // slow owner could resume and mutate the chain alongside this process.
         let stale = false;
         try {
-          const ownerPid = Number(readFileSync(ownerFile, "utf-8").trim());
+          const ownerPid = Number(readFileSync(lockPath, "utf-8").trim());
           if (Number.isInteger(ownerPid) && ownerPid > 0) {
             try {
               process.kill(ownerPid, 0); // alive — leave it alone
@@ -357,21 +358,21 @@ function withChainLock<T>(filePath: string, fn: () => T): T {
               stale = true; // owner is gone
             }
           } else {
-            stale = Date.now() - statSync(lockDir).mtimeMs > 30_000; // unreadable owner: age decides
+            // Created but not yet written, or a crash mid-write. A live acquisition writes its pid
+            // immediately, so this grace never steals from a live writer, and it is far shorter
+            // than the retry budget — an orphaned lock clears inside the same save.
+            stale = Date.now() - statSync(lockPath).mtimeMs > 200;
           }
         } catch {
-          // No owner file at all: a process died between creating the directory and writing its
-          // pid, so nothing owns the lock. It is stale NOW — waiting for an age threshold would
-          // refuse every save from here on, and the rename below keeps the takeover safe.
-          stale = true;
+          // Vanished between the failed create and this read — retry immediately.
         }
         if (stale) {
-          // Atomic steal: rename first, so exactly one of several racing writers can claim the
-          // stale lock. Deleting in place let two writers remove each other's fresh lock.
-          const grave = `${lockDir}.stale-${process.pid}-${Date.now()}`;
+          // Atomic steal: rename first, so exactly one of several racing writers claims the stale
+          // lock. Deleting in place let two writers remove each other's fresh lock.
+          const grave = `${lockPath}.stale-${process.pid}-${Date.now()}`;
           try {
-            renameSync(lockDir, grave);
-            rmSync(grave, { recursive: true, force: true });
+            renameSync(lockPath, grave);
+            unlinkSync(grave);
           } catch {
             /* another writer claimed it — retry the acquisition */
           }
@@ -389,14 +390,10 @@ function withChainLock<T>(filePath: string, fn: () => T): T {
   } finally {
     if (locked) {
       try {
-        unlinkSync(ownerFile);
+        // Only release a lock we still own: if it was stolen, it now belongs to someone else.
+        if (readFileSync(lockPath, "utf-8").trim() === String(process.pid)) unlinkSync(lockPath);
       } catch {
         /* already gone */
-      }
-      try {
-        rmdirSync(lockDir);
-      } catch {
-        /* stale */
       }
     }
   }

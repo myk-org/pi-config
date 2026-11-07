@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import { StringListSubmenu } from "../../../extensions/orchestrator/settings-tui-submenus.js";
 import { SettingsList } from "@earendil-works/pi-tui";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getSettingsListState } from "../../../extensions/orchestrator/settings-tui.js";
@@ -526,11 +526,12 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.equal(existsSync(`${filePath}.bak.visit-${process.pid}`), false, "no leftover snapshot after the visit");
   });
 
-  it("takes over a lock directory that never got its pid file", () => {
+  it("takes over a lock file that never got its owner", () => {
     const filePath = join(tempDir, "orphan-lock.json");
     writeSettingsFile(filePath, { pidash_port: 1 });
-    // Crash between mkdir and writing the pid: the directory exists, the owner file does not.
-    mkdirSync(`${filePath}.bak.lock`, { recursive: true });
+    // Crash mid-write: the lock file exists with no usable owner, and is older than the grace.
+    writeFileSync(`${filePath}.bak.lock`, "");
+    utimesSync(`${filePath}.bak.lock`, new Date(Date.now() - 5_000), new Date(Date.now() - 5_000));
     const started = Date.now();
     writeSettingsFile(filePath, { pidash_port: 2 });
     assert.ok(Date.now() - started < 1_000, "an orphaned lock must not burn the whole retry budget");
@@ -539,12 +540,23 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.equal(existsSync(`${filePath}.bak.lock`), false);
   });
 
+  it("gives a lock being acquired time to publish its owner", () => {
+    // The window this protects: a live writer has created the lock and is writing its pid right
+    // now. A young lock is therefore left alone; only one past the grace may be taken over.
+    const filePath = join(tempDir, "acquiring-lock.json");
+    writeSettingsFile(filePath, { pidash_port: 1 });
+    writeFileSync(`${filePath}.bak.lock`, "");
+    const started = Date.now();
+    writeSettingsFile(filePath, { pidash_port: 2 });
+    assert.ok(Date.now() - started >= 190, "the young lock was left alone for its grace period");
+    assert.equal(existsSync(`${filePath}.bak.lock`), false, "and released once it aged out");
+  });
+
   it("takes over a lock whose owner is gone", () => {
     const filePath = join(tempDir, "stale-lock.json");
     writeSettingsFile(filePath, { pidash_port: 1 });
     // A dead process left its lock behind (pid 999999 is not running).
-    mkdirSync(`${filePath}.bak.lock`, { recursive: true });
-    writeFileSync(`${filePath}.bak.lock/pid`, "999999");
+    writeFileSync(`${filePath}.bak.lock`, "999999");
     writeSettingsFile(filePath, { pidash_port: 2 });
     assert.deepEqual(JSON.parse(readFileSync(`${filePath}.bak.1`, "utf-8")), { pidash_port: 1 },
       "the stale lock was taken over and the backup written");
@@ -555,14 +567,13 @@ describe("readSettingsFile / writeSettingsFile", () => {
     // Fail closed: mutating the chain without the lock can lose another process's restore point.
     const filePath = join(tempDir, "locked.json");
     writeSettingsFile(filePath, { pidash_port: 1 });
-    mkdirSync(`${filePath}.bak.lock`, { recursive: true });
     // A live owner: this very process, so the lock is never stolen.
-    writeFileSync(`${filePath}.bak.lock/pid`, String(process.pid));
+    writeFileSync(`${filePath}.bak.lock`, String(process.pid));
     try {
       assert.throws(() => writeSettingsFile(filePath, { pidash_port: 2 }), /without a backup/);
       assert.deepEqual(JSON.parse(readFileSync(filePath, "utf-8")), { pidash_port: 1 }, "file untouched");
     } finally {
-      rmSync(`${filePath}.bak.lock`, { recursive: true, force: true });
+      rmSync(`${filePath}.bak.lock`, { force: true });
     }
   });
 
