@@ -25,7 +25,7 @@ import {
   subjectLabel,
   type ReviewSubject,
 } from "../../../extensions/orchestrator/pi-config-review-state.js";
-import { resolveReviewSubject } from "../../../extensions/orchestrator/review-subject.js";
+import { parseOpenPr, resolveReviewSubject } from "../../../extensions/orchestrator/review-subject.js";
 
 /** Every round must name what it reviews; these suites review one local commit. */
 const SUBJECT: ReviewSubject = { kind: "local", head_sha: "0123456789abcdef0123456789abcdef01234567" }; // pragma: allowlist secret
@@ -453,9 +453,20 @@ describe("tests_passed", () => {
   });
 
   it("isCommitAllowed true when has_findings and max cycles exhausted", () => {
+    // The cap now also requires the subject to BE the current one, so this worktree must be a repo
+    // whose HEAD matches the reviewed subject.
+    execFileSync("git", ["init", "-q"], { cwd });
+    execFileSync("git", ["config", "user.email", "t@example.com"], { cwd });
+    execFileSync("git", ["config", "user.name", "T"], { cwd });
+    writeFileSync(join(cwd, "f.txt"), "x\n");
+    execFileSync("git", ["add", "f.txt"], { cwd });
+    execFileSync("git", ["commit", "-qm", "init"], { cwd });
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf-8" }).trim();
+    const subject: ReviewSubject = { kind: "local", head_sha: head };
+
     // Cycle 1: findings
     markNeedsReview(cwd);
-    addReviewerPending(cwd, "lint", SUBJECT);
+    addReviewerPending(cwd, "lint", subject);
     recordReviewerResult(cwd, "lint", 2);
     markTestsPassed(cwd);
     assert.equal(readReviewState(cwd).status, "has_findings");
@@ -465,7 +476,7 @@ describe("tests_passed", () => {
 
     // Cycle 2
     markNeedsReview(cwd);
-    addReviewerPending(cwd, "lint", SUBJECT);
+    addReviewerPending(cwd, "lint", subject);
     recordReviewerResult(cwd, "lint", 1);
     markTestsPassed(cwd);
     assert.equal(readReviewState(cwd).cycle, 2);
@@ -474,7 +485,7 @@ describe("tests_passed", () => {
 
     // Cycle 3 — at default max
     markNeedsReview(cwd);
-    addReviewerPending(cwd, "lint", SUBJECT);
+    addReviewerPending(cwd, "lint", subject);
     recordReviewerResult(cwd, "lint", 1);
     assert.equal(readReviewState(cwd).status, "has_findings");
     assert.equal(readReviewState(cwd).cycle, 3);
@@ -497,15 +508,26 @@ describe("tests_passed", () => {
   });
 
   it("isCommitAllowed true for needs_review when cycle >= max", () => {
+    // The cap requires the subject to be the CURRENT one — this worktree must be a repo.
+    execFileSync("git", ["init", "-q"], { cwd });
+    execFileSync("git", ["config", "user.email", "t@example.com"], { cwd });
+    execFileSync("git", ["config", "user.name", "T"], { cwd });
+    writeFileSync(join(cwd, "f.txt"), "x\n");
+    execFileSync("git", ["add", "f.txt"], { cwd });
+    execFileSync("git", ["commit", "-qm", "init"], { cwd });
+    const subject: ReviewSubject = {
+      kind: "local",
+      head_sha: execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf-8" }).trim(),
+    };
     // Reach max cycles with findings, then edit again → needs_review with empty pending
     markNeedsReview(cwd);
-    addReviewerPending(cwd, "lint", SUBJECT);
+    addReviewerPending(cwd, "lint", subject);
     recordReviewerResult(cwd, "lint", 1);
     markNeedsReview(cwd);
-    addReviewerPending(cwd, "lint", SUBJECT);
+    addReviewerPending(cwd, "lint", subject);
     recordReviewerResult(cwd, "lint", 1);
     markNeedsReview(cwd);
-    addReviewerPending(cwd, "lint", SUBJECT);
+    addReviewerPending(cwd, "lint", subject);
     recordReviewerResult(cwd, "lint", 1);
     assert.equal(readReviewState(cwd).cycle, 3);
     assert.equal(isCommitAllowed(cwd), true); // has_findings at max
@@ -520,7 +542,6 @@ describe("tests_passed", () => {
 
 // ── Worktree state isolation ──
 
-import { execFileSync } from "node:child_process";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -895,5 +916,69 @@ describe("resolveReviewSubject", () => {
     } finally {
       rmSync(plain, { recursive: true, force: true });
     }
+  });
+});
+
+describe("max-cycles cap is scoped to the reviewed subject", () => {
+  const atCap = (head_sha: string): ReviewSubject => ({ kind: "local", head_sha });
+  const currentHead = () => execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf-8" }).trim();
+
+  // The cap compares a commit-bearing subject with HEAD, so this worktree must be a repo.
+  beforeEach(() => {
+    execFileSync("git", ["init", "-q"], { cwd });
+    execFileSync("git", ["config", "user.email", "t@example.com"], { cwd });
+    execFileSync("git", ["config", "user.name", "T"], { cwd });
+    writeFileSync(join(cwd, "f.txt"), "x\n");
+    execFileSync("git", ["add", "f.txt"], { cwd });
+    execFileSync("git", ["commit", "-qm", "init"], { cwd });
+  });
+
+  it("allows the commit when the cap was reached on THIS head", () => {
+    markNeedsReview(cwd);
+    for (let i = 0; i < 3; i++) {
+      addReviewerPending(cwd, `r${i}`, atCap(currentHead()));
+      recordReviewerResult(cwd, `r${i}`, 1);
+      markNeedsReview(cwd);
+    }
+    const s = readReviewState(cwd);
+    assert.ok(s.cycle >= 3, `expected the cap to be reached, got ${s.cycle}`);
+    assert.equal(isCommitAllowed(cwd), true);
+  });
+
+  it("does NOT let that exhausted cap license a commit for a different head", () => {
+    markNeedsReview(cwd);
+    for (let i = 0; i < 3; i++) {
+      addReviewerPending(cwd, `r${i}`, atCap(currentHead()));
+      recordReviewerResult(cwd, `r${i}`, 1);
+      markNeedsReview(cwd);
+    }
+    assert.equal(isCommitAllowed(cwd), true);
+    // A round recorded for an older commit must not keep the cap open for the current one.
+    addReviewerPending(cwd, "stale", atCap("f".repeat(40)));
+    recordReviewerResult(cwd, "stale", 1);
+    markNeedsReview(cwd);
+    assert.equal(isCommitAllowed(cwd), false, "new head, new loop: the cap does not carry over");
+  });
+});
+
+describe("parseOpenPr", () => {
+  // Shaped like `gh pr view --json number,headRefOid,state` output.
+  const open = JSON.stringify({ number: 1056, headRefOid: "d1c6e7f072295b68ad0078736bf643779464e69e", state: "OPEN" }); // pragma: allowlist secret
+
+  it("keeps the PR number and head exactly as gh reports them", () => {
+    assert.deepEqual(parseOpenPr(open), { number: 1056, head_sha: "d1c6e7f072295b68ad0078736bf643779464e69e" }); // pragma: allowlist secret
+  });
+
+  it("ignores a PR that is not open", () => {
+    assert.equal(parseOpenPr(JSON.stringify({ number: 1, headRefOid: "a".repeat(40), state: "MERGED" })), null);
+  });
+
+  it("rejects an unusable payload instead of inventing an identity", () => {
+    assert.equal(parseOpenPr(""), null);
+    assert.equal(parseOpenPr("not json"), null);
+    assert.equal(parseOpenPr(JSON.stringify({ state: "OPEN" })), null);
+    assert.equal(parseOpenPr(JSON.stringify({ number: "1056", headRefOid: "x", state: "OPEN" })), null);
+    // The shape the jq filter produced before it was removed: a PR with no real number.
+    assert.equal(parseOpenPr(JSON.stringify({ number: null, headRefOid: "(.headRefOid)", state: "OPEN" })), null);
   });
 });

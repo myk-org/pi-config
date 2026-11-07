@@ -10,6 +10,7 @@
  * On first access, migrates any legacy pi-config-review-state.json automatically.
  */
 
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getSetting } from "./project-settings.js";
@@ -363,14 +364,35 @@ export function isReviewClean(cwd: string): boolean {
   return true;
 }
 
-/** Check if commit is allowed — clean review, no tracking, or max cycles exhausted. */
+/** HEAD of the worktree, or null when it cannot be read (not a repo, git missing). */
+function currentHeadSha(cwd: string): string | null {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf-8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when the stored subject is the one this worktree is reviewing now. A subject that carries a
+ *  commit must match HEAD; a plan or issue is not tied to a commit and is only replaced by a caller
+ *  naming a new one. Unknown HEAD answers false, so the cap never applies on a guess. */
+function subjectIsCurrent(cwd: string, subject: ReviewSubject | null): boolean {
+  if (!subject) return true; // legacy state: nothing to compare, keep the historical behaviour
+  if (subject.kind === "plan" || subject.kind === "issue" || subject.kind === "other") return true;
+  const head = currentHeadSha(cwd);
+  return head !== null && subject.head_sha === head;
+}
+
+/** Check if commit is allowed — clean review, no tracking, or max cycles exhausted FOR THIS
+ *  SUBJECT. Without the subject check, an exhausted cap from an earlier loop licensed commits on
+ *  new work that had never been reviewed. */
 export function isCommitAllowed(cwd: string): boolean {
   if (isReviewClean(cwd)) return true;
   const state = readReviewState(cwd);
   // Allow commit when max review cycles exhausted — cap reached, no reviewers running
   if ((state.status === "has_findings" || state.status === "clean" || state.status === "needs_review") && state.reviewers_pending.length === 0) {
     const maxCycles = getSetting(cwd, "review_loop_max_cycles");
-    if (state.cycle >= maxCycles) return true;
+    if (state.cycle >= maxCycles && subjectIsCurrent(cwd, state.subject)) return true;
   }
   return false;
 }

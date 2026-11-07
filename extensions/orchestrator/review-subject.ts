@@ -32,16 +32,31 @@ function repoSlug(cwd: string, logger: Logger): string | null {
   return match ? `${match[1]}/${match[2]}` : null;
 }
 
+/** Parse `gh pr view --json number,headRefOid,state`. Kept pure so the shape is tested without a
+ *  network call — and so no value ever travels through a jq filter (in JavaScript `"\(.x)"` loses
+ *  its backslash to string escaping, which silently turned the number into "(.number)"). */
+export function parseOpenPr(raw: string): { number: number; head_sha: string } | null {
+  try {
+    const data = JSON.parse(raw);
+    if (data?.state !== "OPEN") return null;
+    if (!Number.isInteger(data?.number) || data.number <= 0) return null;
+    if (typeof data?.headRefOid !== "string" || data.headRefOid.length === 0) return null;
+    return { number: data.number, head_sha: data.headRefOid };
+  } catch {
+    return null;
+  }
+}
+
 function openPr(cwd: string, logger: Logger): { number: number; head_sha: string } | null {
   try {
     const raw = execFileSync(
       "gh",
-      ["pr", "view", "--json", "number,headRefOid,state", "--jq", 'select(.state=="OPEN") | "\(.number) \(.headRefOid)"'],
+      ["pr", "view", "--json", "number,headRefOid,state"],
       { cwd, encoding: "utf-8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] },
-    ).trim();
-    const [number, head] = raw.split(/\s+/);
-    if (!number || !head) return null;
-    return { number: Number(number), head_sha: head };
+    );
+    const pr = parseOpenPr(raw);
+    if (!pr) logger.debug("review_subject_pr_unusable", { cwd });
+    return pr;
   } catch {
     logger.debug("review_subject_no_open_pr", { cwd });
     return null;
