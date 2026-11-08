@@ -32,12 +32,27 @@ export function emitIfLive(
   event: string,
   data: unknown,
 ): boolean {
+  const id = data && typeof data === "object" && "id" in (data as Record<string, unknown>)
+    ? String((data as Record<string, unknown>).id)
+    : undefined;
+  if (!piRef?.events?.emit) {
+    // Nothing was emitted: report the skip honestly instead of pretending success.
+    log.warn("emit skipped: no live extension instance", { event, id });
+    return false;
+  }
   try {
-    piRef?.events.emit(event, data);
+    piRef.events.emit(event, data);
     return true;
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    log.debug(`emit skipped on a stale instance: ${event}: ${msg.slice(0, 120)}`);
+    // A stale instance is expected after /reload — but the event (job completion/failure) is LOST,
+    // so it is a warning with the job id, never a debug line.
+    if (/stale after session replacement or reload|assertActive/i.test(msg)) {
+      log.warn("emit skipped on a stale instance — event lost", { event, id, reason: msg.slice(0, 120) });
+    } else {
+      // A live listener threw: that is a defect in the receiver, not a reload artefact.
+      log.error("emit failed on a live instance", { event, id, reason: msg.slice(0, 200) });
+    }
     return false;
   }
 }

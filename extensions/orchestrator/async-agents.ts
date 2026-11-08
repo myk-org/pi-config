@@ -186,6 +186,16 @@ export function formatDuration(ms: number): string {
 
 // ── Registration ─────────────────────────────────────────────────────────
 
+/** What the spawn-exit timer may do for a child that just exited.
+ *
+ *  Recording is independent of the extension instance: after /reload the ctx is gone, and gating the
+ *  status write on it made a failed agent vanish from the task list. Delivery needs a live ctx.
+ *  Pure so the decision is testable without spawning a process. */
+export function planSpawnExitRecovery(args: { status: string; hasLiveCtx: boolean }): { record: boolean; deliver: boolean } {
+  if (args.status === "complete" || args.status === "failed") return { record: false, deliver: false };
+  return { record: true, deliver: args.hasLiveCtx };
+}
+
 export function registerAsyncAgents(
   pi: ExtensionAPI,
   terminalNotify: (title: string, body: string) => void,
@@ -408,9 +418,10 @@ export function registerAsyncAgents(
   /** Emit on the extension's event bus, tolerating a stale instance. After /reload or a session
    *  replacement the captured `pi` is dead and `emit` throws (pi's assertActive); an unguarded
    *  emit from a surviving timer exits the whole process. */
-  function safeEmit(event: string, data: unknown): void {
+  /** Returns whether the event actually reached the bus, so a caller can react to a lost event. */
+  function safeEmit(event: string, data: unknown): boolean {
     // Shared guard: after a reload the captured pi is dead and emit throws (pi's assertActive).
-    emitIfLive(pi, event, data);
+    return emitIfLive(pi, event, data);
   }
 
   function updateAsyncWidget() {
@@ -1363,11 +1374,11 @@ export function registerAsyncAgents(
       if (code !== 0) {
         // Give 2s for result file to be written by async-runner
         setTimeout(() => {
-          // This timer outlives /reload: the captured pi is dead then, and anything it touches
-          // (emit, sendMessage, widget) throws assertActive. Bail out instead of crashing pi.
-          if (!getLiveAsyncCtx()) { log.debug("spawn_exit_timer_stale", { job: job.id }); return; }
+          // This timer outlives /reload. Recording the failure must NOT depend on the instance
+          // being alive (a failed agent would vanish); only delivery does.
+          const plan = planSpawnExitRecovery({ status: job.status, hasLiveCtx: Boolean(getLiveAsyncCtx()) });
+          if (!plan.record) return;
           try {
-          if (job.status === "complete" || job.status === "failed") return;
           log.info(`spawn-exit: ${job.id} — code=${code} signal=${signal}`);
           let stderrTail = "";
           try {
@@ -1395,6 +1406,10 @@ export function registerAsyncAgents(
           job.sideEffectsApplied = true;
           if (job.agent.startsWith("code-reviewer-")) {
             try { recordReviewerResult(jobCwd(job), job.agent, 0); } catch {}
+          }
+          if (!plan.deliver) {
+            log.warn("spawn_exit_delivery_skipped_stale_ctx", { job: job.id, status: job.status });
+            return;
           }
           if (job.groupId) {
             const groupJobs = Array.from(asyncState.jobs.values()).filter(j => j.groupId === job.groupId);

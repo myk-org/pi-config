@@ -47,8 +47,17 @@ describe("emitIfLive", () => {
     assert.deepEqual(seen, [{ event: "subagents:completed", data: { id: "y" } }]);
   });
 
-  it("tolerates a missing instance", () => {
-    assert.equal(emitIfLive(null, "subagents:ready", {}), true);
-    assert.equal(emitIfLive(undefined, "subagents:ready", {}), true);
+  it("reports a missing instance as NOT delivered", () => {
+    // Nothing was emitted, so claiming success would hide a lost event.
+    assert.equal(emitIfLive(null, "subagents:ready", {}), false);
+    assert.equal(emitIfLive(undefined, "subagents:ready", {}), false);
+  });
+
+  it("distinguishes a stale instance from a live listener that throws", () => {
+    const stale = { events: { emit() { throw new Error("This extension ctx is stale after session replacement or reload."); } } };
+    const listener = { events: { emit() { throw new Error("listener exploded"); } } };
+    assert.equal(emitIfLive(stale, "subagents:completed", { id: "s1" }), false);
+    assert.equal(emitIfLive(listener, "subagents:completed", { id: "s2" }), false);
+    // Both are reported; only the second is an error, and both carry the job id in the log line.
   });
 });
