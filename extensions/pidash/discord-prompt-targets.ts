@@ -173,6 +173,8 @@ export interface PromptTargetState {
   pendingPrompts?: Record<string, unknown>;
   dmChannelId?: string | null;
   responseChannelId?: string | null;
+  /** The session the user watches: its thread must never be evicted by background questions. */
+  watchedSessionId?: string | null;
 }
 
 /** A target for `sessionId`, created on demand and recorded on the user's state.
@@ -229,12 +231,27 @@ export async function ensurePromptTarget(
     );
     if (!resolved.target) return null;
 
+    // `switchWatch` may have installed its own thread for this session while Discord was being
+    // called; keep that one, or the watch and the prompt's routing diverge.
+    const installedWhileWorking = (state.threads ?? {})[sessionId];
+    if (installedWhileWorking) {
+      const adopted = { channelId: installedWhileWorking, threadId: installedWhileWorking };
+      state.targets = state.targets ?? {};
+      state.targets[sessionId] = adopted;
+      deps.persist();
+      return adopted;
+    }
     if (resolved.target.threadId) {
       state.threads = state.threads ?? {};
       state.threads[sessionId] = resolved.target.threadId;
-      // The session being created right now is not pending yet — exclude it explicitly, or a busy
-      // worktree could evict the very thread this question is about to use.
-      const waiting = new Set([...Object.keys(state.pendingPrompts ?? {}), sessionId]);
+      // Protect, in order: sessions waiting on an answer, the session being created right now (it
+      // is not pending yet), and the session the user actually watches — background questions must
+      // never take the watched session's thread away.
+      const waiting = new Set([
+        ...Object.keys(state.pendingPrompts ?? {}),
+        sessionId,
+        ...(state.watchedSessionId ? [state.watchedSessionId] : []),
+      ]);
       for (const stale of evictableSessions(state.threads, waiting, deps.maxThreads)) {
         delete state.threads[stale];
         // Drop the TARGET too, or the evicted session keeps being delivered into a dead thread.

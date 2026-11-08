@@ -795,7 +795,7 @@ export function setupDiscordBot(opts: {
         const known = state.targets?.[sessionId] ?? (state.watchedSessionId === sessionId ? state.target : null);
         const target = known ?? await ensureSessionTarget(userId, state, sessionId, name);
         if (!target) {
-          log.warn("prompt dropped: no delivery target", { userId, sessionId, method });
+          log.error("prompt dropped: no delivery target", { userId, sessionId, method });
           return;
         }
         // `/disconnect` or a withdrawal can land while the target was being created. Creation

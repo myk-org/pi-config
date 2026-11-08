@@ -210,3 +210,45 @@ describe("ensurePromptTarget (the wiring, with Discord injected)", () => {
     assert.equal(await ensurePromptTarget(deps(), state, { userId: "u", sessionId: "s4", name: "p" }), null);
   });
 });
+
+describe("eviction and selection races", () => {
+  const guild = { guildId: "g1", threads: { create: async () => ({ id: "x" }) } };
+  const deps = (over: any = {}) => ({
+    fetchChannel: async () => guild,
+    createThread: async () => "thread-new",
+    persist: () => {},
+    inFlight: new Map(),
+    maxThreads: 2,
+    ...over,
+  });
+
+  it("never evicts the session the user watches", async () => {
+    // Background questions must not take the watched session's thread away: after a restart its
+    // output would fall back to a different channel.
+    const state = {
+      responseChannelId: "guild-chan",
+      watchedSessionId: "watched",
+      threads: { watched: "t-watched", other: "t-other" },
+      targets: { watched: { channelId: "t-watched", threadId: "t-watched" } },
+      promptOnlyTargets: {},
+    };
+    await ensurePromptTarget(deps(), state, { userId: "u", sessionId: "bg", name: "p" });
+    assert.equal(state.threads.watched, "t-watched", "the watched thread survives");
+    assert.equal(state.targets.watched?.channelId, "t-watched", "and keeps its target");
+    assert.equal(state.threads.other, undefined, "an un-watched session gives up its mapping");
+  });
+
+  it("adopts a thread the user selected while Discord was working", async () => {
+    // switchWatch won the race; the prompt must route to THAT thread, not a second one.
+    const state: any = { responseChannelId: "guild-chan", threads: {}, targets: {}, promptOnlyTargets: {} };
+    const slow = deps({
+      createThread: async () => {
+        state.threads.s1 = "thread-from-watch";
+        return "thread-created";
+      },
+    });
+    const target = await ensurePromptTarget(slow, state, { userId: "u", sessionId: "s1", name: "p" });
+    assert.deepEqual(target, { channelId: "thread-from-watch", threadId: "thread-from-watch" });
+    assert.equal(state.threads.s1, "thread-from-watch", "the selected thread is not overwritten");
+  });
+});
