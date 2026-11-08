@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
+import { planSpawnExitRecovery, registerAsyncAgents } from "../../../extensions/orchestrator/async-agents.js";
 import { markNeedsReview, markTestsPassed, readReviewState } from "../../../extensions/orchestrator/pi-config-review-state.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -198,5 +198,21 @@ describe("async delivery formatter runtime wiring (issue #803)", () => {
       assert.equal(typeof reply.data.id, "string");
       assert.match(reply.data.id, /^worker-/);
     } finally { h.restore(); }
+  });
+});
+
+describe("spawn-exit recovery", () => {
+  it("records a failure even when the extension instance is gone", () => {
+    // The timer outlives /reload: gating the status write on a live ctx made a failed agent vanish.
+    assert.deepEqual(planSpawnExitRecovery({ status: "running", hasLiveCtx: false }), { record: true, deliver: false });
+  });
+
+  it("records and delivers when the instance is alive", () => {
+    assert.deepEqual(planSpawnExitRecovery({ status: "running", hasLiveCtx: true }), { record: true, deliver: true });
+  });
+
+  it("does nothing for a job that already reached a terminal state", () => {
+    assert.deepEqual(planSpawnExitRecovery({ status: "complete", hasLiveCtx: true }), { record: false, deliver: false });
+    assert.deepEqual(planSpawnExitRecovery({ status: "failed", hasLiveCtx: true }), { record: false, deliver: false });
   });
 });

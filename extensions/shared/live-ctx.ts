@@ -22,6 +22,41 @@ export function isLiveExtensionCtx(ctx: unknown): boolean {
   }
 }
 
+/** Emit on an extension's event bus, tolerating a dead instance.
+ *
+ *  After /reload or a session replacement the captured `pi` rejects every emit (pi's
+ *  assertActive), and an unguarded emit from a surviving setTimeout is an uncaughtException that
+ *  exits the whole process. Returns false when the emit was skipped. */
+export function emitIfLive(
+  piRef: { events: { emit: (event: string, data: unknown) => void } } | null | undefined,
+  event: string,
+  data: unknown,
+): boolean {
+  const id = data && typeof data === "object" && "id" in (data as Record<string, unknown>)
+    ? String((data as Record<string, unknown>).id)
+    : undefined;
+  if (!piRef?.events?.emit) {
+    // Nothing was emitted: report the skip honestly instead of pretending success.
+    log.warn("emit skipped: no live extension instance", { event, id });
+    return false;
+  }
+  try {
+    piRef.events.emit(event, data);
+    return true;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // A stale instance is expected after /reload — but the event (job completion/failure) is LOST,
+    // so it is a warning with the job id, never a debug line.
+    if (/stale after session replacement or reload|assertActive/i.test(msg)) {
+      log.warn("emit skipped on a stale instance — event lost", { event, id, reason: msg.slice(0, 120) });
+    } else {
+      // A live listener threw: that is a defect in the receiver, not a reload artefact.
+      log.error("emit failed on a live instance", { event, id, reason: msg.slice(0, 200) });
+    }
+    return false;
+  }
+}
+
 /**
  * Pidash session_start: keep a live incoming ctx as lastCtx so reconnect
  * after /new|/resume still has a context. Stale incoming does not wipe previous.
