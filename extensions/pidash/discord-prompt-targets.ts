@@ -149,3 +149,117 @@ export async function resolvePromptTarget(
   }
   return { target: null, used: "nowhere", firstFailure };
 }
+
+/** Everything `ensurePromptTarget` needs from the bot, injected so the wiring is testable. */
+export interface PromptTargetDeps {
+  /** Discord channel lookup (throws when the channel is gone or invisible). */
+  fetchChannel: (channelId: string) => Promise<any>;
+  /** Create a thread in a guild channel and return its id (throws on failure). */
+  createThread: (parentChannelId: string, name: string) => Promise<string>;
+  /** Persist user state after a mapping change. */
+  persist: () => void;
+  /** Creation promises already in flight, keyed by user+session. */
+  inFlight: Map<string, Promise<{ channelId: string; threadId?: string | null } | null>>;
+  maxThreads: number;
+  truncate?: (text: string, max: number) => string;
+}
+
+/** The mutable slice of user state this touches. */
+export interface PromptTargetState {
+  threads?: Record<string, string>;
+  targets?: Record<string, { channelId: string; threadId?: string | null }>;
+  promptOnlyTargets?: Record<string, true>;
+  /** Only the KEYS matter here: a session with a pending prompt keeps its thread. */
+  pendingPrompts?: Record<string, unknown>;
+  dmChannelId?: string | null;
+  responseChannelId?: string | null;
+}
+
+/** A target for `sessionId`, created on demand and recorded on the user's state.
+ *
+ *  This is the wiring behind "a session that asks a question gets a place to ask it": it reuses the
+ *  session's thread, resolves the routes through {@link resolvePromptTarget}, evicts stale maps and
+ *  marks the target prompt-only. Discord is reached only through the injected deps, so the whole
+ *  thing is testable — including the failure that used to drop a question. */
+export async function ensurePromptTarget(
+  deps: PromptTargetDeps,
+  state: PromptTargetState,
+  args: { userId: string; sessionId: string; name: string },
+): Promise<{ channelId: string; threadId?: string | null } | null> {
+  const { userId, sessionId, name } = args;
+  state.targets = state.targets ?? {};
+  const known = state.targets[sessionId];
+  if (known) return known;
+
+  const key = `${userId}:${sessionId}`;
+  const running = deps.inFlight.get(key);
+  if (running) return running;
+
+  const work = (async () => {
+    // A thread from an earlier question is reused, and re-marked prompt-only so its output does not
+    // stream for good after the answer.
+    const existingThread = (state.threads ?? {})[sessionId];
+    if (existingThread) {
+      const reused = { channelId: existingThread, threadId: existingThread };
+      state.targets = state.targets ?? {};
+      state.targets[sessionId] = reused;
+      state.promptOnlyTargets = { ...(state.promptOnlyTargets ?? {}), [sessionId]: true };
+      deps.persist();
+      return reused;
+    }
+
+    const parentId = await threadParent(state, deps);
+    const resolved = await resolvePromptTarget(
+      {
+        existingChannelId: null,
+        threadParentChannelId: parentId,
+        dmChannelId: state.dmChannelId ?? null,
+        plainChannelId: parentId && parentId !== foreignThread(state, parentId) ? parentId : null,
+      },
+      (parent) => deps.createThread(parent, deps.truncate ? deps.truncate(`pi · ${name}`, 90) : name),
+    );
+    if (!resolved.target) return null;
+
+    if (resolved.target.threadId) {
+      state.threads = state.threads ?? {};
+      state.threads[sessionId] = resolved.target.threadId;
+      const waiting = new Set(Object.keys(state.pendingPrompts ?? {}));
+      for (const stale of evictableSessions(state.threads, waiting, deps.maxThreads)) {
+        delete state.threads[stale];
+        // Drop the TARGET too, or the evicted session keeps being delivered into a dead thread.
+        if (state.targets) delete state.targets[stale];
+      }
+    }
+    state.targets = state.targets ?? {};
+    state.targets[sessionId] = resolved.target;
+    state.promptOnlyTargets = { ...(state.promptOnlyTargets ?? {}), [sessionId]: true };
+    deps.persist();
+    return resolved.target;
+  })().finally(() => deps.inFlight.delete(key));
+
+  deps.inFlight.set(key, work);
+  return work;
+}
+
+/** A guild channel that can hold a thread: never a DM, never another session's thread. */
+async function threadParent(state: PromptTargetState, deps: PromptTargetDeps): Promise<string | null> {
+  const candidate = state.responseChannelId ?? null;
+  if (!candidate) return null;
+  if (foreignThread(state, candidate) === candidate) return null;
+  try {
+    const channel = await deps.fetchChannel(candidate);
+    if (!channel?.guildId && !channel?.guild) return null;
+    if (typeof channel?.threads?.create !== "function") return null;
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
+/** The session that owns `channelId` when it is somebody's thread, else null. */
+function foreignThread(state: PromptTargetState, channelId: string): string | null {
+  for (const [sessionId, threadId] of Object.entries(state.threads ?? {})) {
+    if (threadId === channelId) return sessionId;
+  }
+  return null;
+}

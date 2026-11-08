@@ -33,7 +33,7 @@ import { compareCommandPayloads } from "./discord-commands.ts";
 import { MAX_LAST_PROMPTS, MAX_LAST_PROMPT_CHARS } from "../shared/chat/chat-state.ts";
 import { jobIdAt, renderJobsView } from "./discord-jobs-view.ts";
 import { planBoard } from "./discord-board.ts";
-import { evictableSessions, nudgeDue, promptById, resolvePromptTarget, shouldNudge } from "./discord-prompt-targets.ts";
+import { ensurePromptTarget, nudgeDue, promptById, shouldNudge } from "./discord-prompt-targets.ts";
 import { ownsChannel, ownsSession, reactionAction, sessionForChannel, sessionIdFromTopic } from "./discord-reactions.ts";
 import {
   buildSessionPage,
@@ -675,7 +675,7 @@ export function setupDiscordBot(opts: {
 
   /** Target creation in flight, keyed by USER and session: two users waiting on the same session
    *  need a target each, and sharing one promise gave the second user nothing. */
-  const targetInFlight = new Map<string, Promise<ChatTarget | null>>();
+  const targetInFlight = new Map<string, Promise<{ channelId: string; threadId: string | null } | null>>();
   /** Sessions whose question was answered or cancelled one line in the watched channel. */
   /** Throttled per USER and asking session: one user's nudge must not silence another's. */
   const lastNudgeAt = new Map<string, number>();
@@ -706,79 +706,34 @@ export function setupDiscordBot(opts: {
 
   /** A delivery target for `sessionId`, created on demand.
    *
-   *  Without this a question from a session the user never picked had nowhere to go. The routes and
-   *  their fallbacks live in `resolvePromptTarget` (pure, tested); this provides the Discord calls
-   *  and records the result. The target is marked `promptOnly`, so the session is not one the user
-   *  watches. */
+   *  The routing, fallbacks, reuse and eviction live in `ensurePromptTarget` (pure module, injected
+   *  Discord calls, tested); this supplies the real calls and the user state. */
   async function ensureSessionTarget(
     userId: string,
     state: RuntimeUserState,
     sessionId: string,
     name: string,
   ): Promise<ChatTarget | null> {
-    state.targets = state.targets ?? {};
-    const known = state.targets[sessionId];
-    if (known) return known;
-    const key = `${userId}:${sessionId}`;
-    const pendingWork = targetInFlight.get(key);
-    if (pendingWork) return pendingWork;
-
-    const work = (async () => {
-      // The session already has a thread from an earlier question: reuse it instead of creating a
-      // second one — and mark it prompt-only again, or its output keeps streaming for good.
-      const existingThread = (state.threads ?? {})[sessionId];
-      if (existingThread) {
-        const reused: ChatTarget = { channelId: existingThread, threadId: existingThread };
-        state.targets = state.targets ?? {};
-        state.targets[sessionId] = reused;
-        state.promptOnlyTargets = { ...(state.promptOnlyTargets ?? {}), [sessionId]: true };
-        persist();
-        return reused;
-      }
-
-      const parentId = await threadParentFor(state, sessionId);
-      const input = {
-        existingChannelId: null,
-        threadParentChannelId: parentId,
-        dmChannelId: state.dmChannelId ?? null,
-        plainChannelId: isForeignThread(state, parentId) ? null : parentId,
-      };
-      const resolved = await resolvePromptTarget(input, async (parentChannelId) => {
-        const parent: any = await discord.channels.fetch(parentChannelId);
-        const thread = await parent.threads.create({
-          name: truncateLine(`pi · ${name}`, 90),
-          autoArchiveDuration: 1440,
-          reason: `pi session ${name}`,
-        });
-        return thread.id as string;
-      });
-      if (resolved.firstFailure) {
-        log.warn("prompt thread creation failed, fell back", { sessionId, error: resolved.firstFailure, used: resolved.used });
-      }
-      if (!resolved.target) {
-        log.warn("no delivery route for prompt", { userId, sessionId });
-        return null;
-      }
-      if (resolved.target.threadId) {
-        state.threads = state.threads ?? {};
-        state.threads[sessionId] = resolved.target.threadId;
-        // Never evict a session that is waiting on an answer — and drop its TARGET too, or the
-        // evicted session keeps receiving questions through a thread nobody can reach.
-        const waiting = new Set(Object.keys(state.pendingPrompts ?? {}));
-        for (const stale of evictableSessions(state.threads, waiting, MAX_THREADS_PER_USER)) {
-          delete state.threads[stale];
-          if (state.targets) delete state.targets[stale];
-        }
-      }
-      state.targets = state.targets ?? {};
-      state.targets[sessionId] = resolved.target;
-      state.promptOnlyTargets = { ...(state.promptOnlyTargets ?? {}), [sessionId]: true };
-      persist();
-      log.info("created prompt target for session", { sessionId, used: resolved.used });
-      return resolved.target;
-    })().finally(() => targetInFlight.delete(key));
-    targetInFlight.set(key, work);
-    return work;
+    return ensurePromptTarget(
+      {
+        fetchChannel: (channelId) => discord.channels.fetch(channelId),
+        createThread: async (parentChannelId, threadName) => {
+          const parent: any = await discord.channels.fetch(parentChannelId);
+          const thread = await parent.threads.create({
+            name: threadName,
+            autoArchiveDuration: 1440,
+            reason: `pi session ${name}`,
+          });
+          return thread.id as string;
+        },
+        persist,
+        inFlight: targetInFlight,
+        maxThreads: MAX_THREADS_PER_USER,
+        truncate: truncateLine,
+      },
+      state,
+      { userId, sessionId, name },
+    );
   }
 
   async function isGuildChannel(channelId: string): Promise<boolean> {

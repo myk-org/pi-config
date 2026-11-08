@@ -2,9 +2,9 @@
  * Cross-session Discord prompts: where a question goes, when to nudge, and which thread mappings
  * may be evicted. Pure decisions, asserted without a Discord client.
  */
-import { describe, it } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { evictableSessions, fallbackPromptTarget, nudgeDue, planPromptTarget, promptById, resolvePromptTarget, shouldNudge } from "../../../extensions/pidash/discord-prompt-targets.ts";
+import { ensurePromptTarget, evictableSessions, fallbackPromptTarget, nudgeDue, planPromptTarget, promptById, resolvePromptTarget, shouldNudge } from "../../../extensions/pidash/discord-prompt-targets.ts";
 
 describe("planPromptTarget", () => {
   const base = { existingChannelId: null, threadParentChannelId: "chan", dmChannelId: "dm-1", plainChannelId: "chan" };
@@ -126,5 +126,63 @@ describe("resolvePromptTarget (the router, with an injected thread creator)", ()
     assert.deepEqual(resolved.target, { channelId: "thread-1", threadId: null });
     assert.equal(resolved.used, "existing");
     assert.equal(calls, 0);
+  });
+});
+
+describe("ensurePromptTarget (the wiring, with Discord injected)", () => {
+  const guildChannel = { guildId: "g1", threads: { create: async () => ({ id: "thread-new" }) } };
+  const deps = (over: any = {}) => ({
+    fetchChannel: async (id: string) => (id === "guild-chan" ? guildChannel : Promise.reject(new Error("gone"))),
+    createThread: async () => "thread-new",
+    persist: () => { calls.persist++; },
+    inFlight: new Map(),
+    maxThreads: 5,
+    truncate: (t: string) => t,
+    ...over,
+  });
+  let calls: { persist: number };
+  beforeEach(() => { calls = { persist: 0 }; });
+
+  it("creates a thread, records it and marks the target prompt-only", async () => {
+    const state = { responseChannelId: "guild-chan", threads: {}, targets: {}, promptOnlyTargets: {} };
+    const target = await ensurePromptTarget(deps(), state, { userId: "u", sessionId: "s1", name: "proj" });
+    assert.deepEqual(target, { channelId: "thread-new", threadId: "thread-new" });
+    assert.equal(state.threads.s1, "thread-new");
+    assert.deepEqual(state.targets.s1, target);
+    assert.equal(state.promptOnlyTargets.s1, true, "a delivery thread is not a subscription");
+    assert.ok(calls.persist > 0, "the mapping is persisted for the answer route");
+  });
+
+  it("reuses an existing thread instead of creating a second one", async () => {
+    let created = 0;
+    const state = { responseChannelId: "guild-chan", threads: { s1: "thread-old" }, targets: {}, promptOnlyTargets: {} };
+    const target = await ensurePromptTarget(deps({ createThread: async () => { created++; return "x"; } }), state,
+      { userId: "u", sessionId: "s1", name: "proj" });
+    assert.deepEqual(target, { channelId: "thread-old", threadId: "thread-old" });
+    assert.equal(created, 0);
+    assert.equal(state.promptOnlyTargets.s1, true, "reuse re-marks it, or output streams forever");
+  });
+
+  it("falls back to the DM when the guild channel cannot hold a thread", async () => {
+    const state = { responseChannelId: "guild-chan", dmChannelId: "dm-1", threads: {}, targets: {}, promptOnlyTargets: {} };
+    const target = await ensurePromptTarget(
+      deps({ fetchChannel: async () => Promise.reject(new Error("missing access")), createThread: async () => { throw new Error("no"); } }),
+      state, { userId: "u", sessionId: "s2", name: "proj" },
+    );
+    assert.deepEqual(target, { channelId: "dm-1", threadId: null }, "the question is not dropped");
+  });
+
+  it("evicts the thread AND the target mapping, never a session waiting on an answer", async () => {
+    const threads: Record<string, string> = { old1: "t1", waiting: "t2" };
+    const state = { responseChannelId: "guild-chan", threads, targets: { old1: { channelId: "t1", threadId: "t1" } }, pendingPrompts: { waiting: { id: "q" } } };
+    await ensurePromptTarget(deps({ maxThreads: 2 }), state, { userId: "u", sessionId: "s3", name: "proj" });
+    assert.equal(state.threads.old1, undefined, "the oldest mapping is evicted");
+    assert.equal(state.targets.old1, undefined, "and its target with it");
+    assert.equal(state.threads.waiting, "t2", "a session waiting on an answer keeps its thread");
+  });
+
+  it("returns null instead of inventing a delivery", async () => {
+    const state = { responseChannelId: null, dmChannelId: null, threads: {}, targets: {} };
+    assert.equal(await ensurePromptTarget(deps(), state, { userId: "u", sessionId: "s4", name: "p" }), null);
   });
 });
