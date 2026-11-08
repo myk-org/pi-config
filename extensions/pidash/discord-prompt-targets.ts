@@ -105,3 +105,47 @@ export function promptById<T extends { id: string; sessionId: string }>(
   }
   return matches.length === 1 ? matches[0]! : null;
 }
+
+/** What a resolved route turned into. */
+export interface ResolvedPromptTarget {
+  target: { channelId: string; threadId: string | null } | null;
+  /** The route that worked, or "nowhere" — logged so a dropped question is explainable. */
+  used: "existing" | "thread" | "dm" | "channel" | "nowhere";
+  /** Failure of the first route, when a fallback had to be taken. */
+  firstFailure: string | null;
+}
+
+/** Walk the routes until one produces a target.
+ *
+ *  `createThread` is injected: on a real bot it calls Discord, in a test it is a stub that can fail,
+ *  which is exactly the case that used to drop a question. A failure MOVES to the next route. */
+export async function resolvePromptTarget(
+  input: PromptTargetInput,
+  createThread: (parentChannelId: string) => Promise<string>,
+): Promise<ResolvedPromptTarget> {
+  if (input.existingChannelId) {
+    return { target: { channelId: input.existingChannelId, threadId: null }, used: "existing", firstFailure: null };
+  }
+  let plan = planPromptTarget(input);
+  let firstFailure: string | null = null;
+  while (plan.action !== "nowhere") {
+    if (plan.action === "create-thread") {
+      try {
+        const threadId = await createThread(plan.parentChannelId);
+        return { target: { channelId: threadId, threadId }, used: "thread", firstFailure };
+      } catch (error) {
+        firstFailure ??= String(error);
+        plan = fallbackPromptTarget(input, "thread");
+        continue;
+      }
+    }
+    if (plan.action === "use-dm") {
+      return { target: { channelId: plan.channelId, threadId: null }, used: "dm", firstFailure };
+    }
+    if (plan.action === "use-channel") {
+      return { target: { channelId: plan.channelId, threadId: null }, used: "channel", firstFailure };
+    }
+    break;
+  }
+  return { target: null, used: "nowhere", firstFailure };
+}
