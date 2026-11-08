@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.29.1] - 2026-11-08
+
+- A surviving `setTimeout` can no longer exit pi: the spawn-exit timer emitted `subagents:*` on the
+  extension instance replaced by `/reload`, whose `emit` throws `assertActive` inside a timer
+  callback. `emitIfLive` swallows exactly that throw (warn, with the job id) and every emit in
+  async-agents goes through it.
+- A child that fails around a reload is recorded instead of vanishing from the task list: recording
+  no longer depends on a live ctx, only delivery does, and the decision lives in a tested pure
+  function.
+- A skipped emit is reported as lost at warn with its job id, a live listener's exception is logged
+  as an error rather than blamed on staleness, and a missing emitter reports "not delivered".
+
 ## [4.29.0] - 2026-11-07
 
 - Every review round records WHAT it reviews: a `ReviewSubject` (`pr` with repo and head, `issue`,
