@@ -72,3 +72,18 @@ export function evictableSessions(
   }
   return candidates;
 }
+
+/** The pending prompt with this id, in WHICHEVER session it belongs to.
+ *
+ *  A prompt in another session's thread is still the user's prompt: resolving only the watched
+ *  session's one made Approve/Deny answer "that prompt is no longer waiting" — and answering must
+ *  never move the user's watch to the asking session. */
+export function promptById<T extends { id: string }>(
+  pendingPrompts: Record<string, T> | undefined,
+  promptId: string,
+): T | null {
+  for (const prompt of Object.values(pendingPrompts ?? {})) {
+    if (prompt?.id === promptId) return prompt;
+  }
+  return null;
+}

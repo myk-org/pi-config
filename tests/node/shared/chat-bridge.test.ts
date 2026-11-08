@@ -480,3 +480,55 @@ describe("late delivery failure", () => {
     assert.equal(state.pendingPrompts?.["s1"]?.id, "fast", "a late failure must not delete the newer question");
   });
 });
+
+/**
+ * Answering a prompt delivered from ANOTHER session is not a session switch.
+ *
+ * The thread is a delivery address: whatever the user was watching before the answer — nothing, or
+ * session A — is what they are watching after it. These assert the two states that must not move.
+ */
+describe("answering a cross-session prompt keeps the user's watch", () => {
+  function setupTwoSessions() {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("A", { channelId: "thread-a" });
+    state.threadId = "thread-a";
+    state.target = { channelId: "thread-a", threadId: "thread-a" };
+    state.targets = { A: { channelId: "thread-a", threadId: "thread-a" }, B: { channelId: "thread-b", threadId: "thread-b" } };
+    const states = new Map([["user", state]]);
+    const payloads: Array<{ sessionId: string; payload: Record<string, unknown> }> = [];
+    const bridge = createChatBridge({
+      adapter: mem.adapter, users: () => states.entries(),
+      sendToSession: (sessionId, payload) => { payloads.push({ sessionId, payload }); return true; },
+    });
+    return { bridge, state, payloads };
+  }
+
+  it("answers the asking session and leaves the watched session and thread untouched", () => {
+    const { bridge, state, payloads } = setupTwoSessions();
+    bridge.askUser("B", { id: "qB", method: "confirm", title: "Deploy?" }, state);
+    const before = { watched: state.watchedSessionId, thread: state.threadId, target: state.target };
+
+    assert.equal(bridge.answer(state, "yes", () => {}, "B"), true);
+
+    assert.equal(payloads.at(-1)?.sessionId, "B", "the answer reaches the session that asked");
+    assert.equal(state.watchedSessionId, before.watched, "still watching A");
+    assert.equal(state.threadId, before.thread, "still in A's thread");
+    assert.deepEqual(state.target, before.target, "output still goes to A");
+  });
+
+  it("does not invent a watch for a user who had none", () => {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime(null, null);
+    // This is what ensureSessionTarget creates for a never-watched session: a DELIVERY TARGET for
+    // B, with no watch, no current thread — a target is an address, not a subscription.
+    state.targets = { B: { channelId: "thread-b", threadId: "thread-b" } };
+    const states = new Map([["user", state]]);
+    const bridge = createChatBridge({
+      adapter: mem.adapter, users: () => states.entries(), sendToSession: () => true,
+    });
+    bridge.askUser("B", { id: "qB", method: "input", title: "Name?" }, state);
+    assert.equal(bridge.handleInbound(state, "meni", () => {}, "B"), "answered");
+    assert.equal(state.watchedSessionId, null, "answering does not subscribe the user to B");
+    assert.equal(state.threadId ?? null, null, "and does not make B's thread the current one");
+  });
+});

@@ -33,7 +33,7 @@ import { compareCommandPayloads } from "./discord-commands.ts";
 import { MAX_LAST_PROMPTS, MAX_LAST_PROMPT_CHARS } from "../shared/chat/chat-state.ts";
 import { jobIdAt, renderJobsView } from "./discord-jobs-view.ts";
 import { planBoard } from "./discord-board.ts";
-import { evictableSessions, planPromptTarget, shouldNudge } from "./discord-prompt-targets.ts";
+import { evictableSessions, planPromptTarget, promptById, shouldNudge } from "./discord-prompt-targets.ts";
 import { ownsChannel, ownsSession, reactionAction, sessionForChannel, sessionIdFromTopic } from "./discord-reactions.ts";
 import {
   buildSessionPage,
@@ -1020,12 +1020,12 @@ export function setupDiscordBot(opts: {
       const modalOpen = customId.match(/^answer-modal:([^:]+)$/);
       if (modalOpen) {
         const promptId = modalOpen[1];
-        const owned = Object.entries(state.pendingPrompts ?? {}).find(([, prompt]) => prompt.id === promptId);
+        const owned = promptById(state.pendingPrompts, promptId);
         if (!owned) {
           await acknowledge(interaction, "That prompt is no longer waiting.");
           return;
         }
-        const [, prompt] = owned;
+        const prompt = owned;
         const modal = new ModalBuilder()
           .setCustomId(`answer-submit:${promptId}`)
           .setTitle("Your answer")
@@ -1046,8 +1046,10 @@ export function setupDiscordBot(opts: {
       const answer = customId.match(/^answer:([^:]+):(.+)$/);
       if (answer) {
         const [, promptId, choice] = answer;
-        const prompt = state.pendingPrompt;
-        if (!prompt || prompt.id !== promptId) {
+        // Any session's prompt: answering must reach the asking session, and the bridge is told
+        // WHICH one, so the user's watch does not move to it.
+        const prompt = promptById(state.pendingPrompts, promptId);
+        if (!prompt) {
           await acknowledge(interaction, "That prompt is no longer waiting.");
           return;
         }
@@ -1097,14 +1099,16 @@ export function setupDiscordBot(opts: {
     if (interaction.isModalSubmit?.()) {
       const submit = String(interaction.customId || "").match(/^answer-submit:([^:]+)$/);
       if (!submit) return;
-      const owned = Object.entries(state.pendingPrompts ?? {}).find(([, prompt]) => prompt.id === submit[1]);
+      const owned = promptById(state.pendingPrompts, submit[1]);
       if (!owned) {
         await acknowledge(interaction, "That prompt is no longer waiting.");
         return;
       }
-      const [promptSession, prompt] = owned;
+      const prompt = owned;
       const value = interaction.fields.getTextInputValue("value");
-      bridge.answer(state, value, (content) => void acknowledge(interaction, content), promptSession || prompt.sessionId);
+      // Scoped to the PROMPT's session: answering in another session's thread must not move the
+      // user's watch to it (bridge.answer takes the session explicitly).
+      bridge.answer(state, value, (content) => void acknowledge(interaction, content), prompt.sessionId);
       return;
     }
 
