@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isLiveExtensionCtx } from "../../../extensions/shared/live-ctx.js";
+import { emitIfLive, isLiveExtensionCtx } from "../../../extensions/shared/live-ctx.js";
 
 describe("isLiveExtensionCtx", () => {
 	it("returns false for nullish and non-objects", () => {
@@ -24,4 +24,31 @@ describe("isLiveExtensionCtx", () => {
 		};
 		assert.equal(isLiveExtensionCtx(stale), false);
 	});
+});
+
+describe("emitIfLive", () => {
+  const throwing = {
+    events: {
+      emit() {
+        throw new Error("This extension ctx is stale after session replacement or reload.");
+      },
+    },
+  };
+
+  it("swallows the stale-instance throw that would otherwise exit pi", () => {
+    // The crash this guards: a surviving setTimeout emitting after /reload.
+    assert.equal(emitIfLive(throwing, "subagents:completed", { id: "x" }), false);
+  });
+
+  it("emits and reports success on a live instance", () => {
+    const seen: Array<{ event: string; data: unknown }> = [];
+    const live = { events: { emit: (event: string, data: unknown) => { seen.push({ event, data }); } } };
+    assert.equal(emitIfLive(live, "subagents:completed", { id: "y" }), true);
+    assert.deepEqual(seen, [{ event: "subagents:completed", data: { id: "y" } }]);
+  });
+
+  it("tolerates a missing instance", () => {
+    assert.equal(emitIfLive(null, "subagents:ready", {}), true);
+    assert.equal(emitIfLive(undefined, "subagents:ready", {}), true);
+  });
 });

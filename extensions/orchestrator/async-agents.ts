@@ -35,7 +35,7 @@ import { openAsyncStatusOverlay } from "./async-status-ui.js";
 import { setSlot } from "./status-bar.js";
 import { getSetting } from "./project-settings.js";
 import { substituteSettingsPlaceholders } from "./rule-placeholders.js";
-import { isLiveExtensionCtx } from "../shared/live-ctx.js";
+import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { sendSystemNote } from "../shared/system-note.js";
 
 const SETTINGS_KEYS: Record<string, unknown> = JSON.parse(
@@ -405,6 +405,14 @@ export function registerAsyncAgents(
     return ctx;
   }
 
+  /** Emit on the extension's event bus, tolerating a stale instance. After /reload or a session
+   *  replacement the captured `pi` is dead and `emit` throws (pi's assertActive); an unguarded
+   *  emit from a surviving timer exits the whole process. */
+  function safeEmit(event: string, data: unknown): void {
+    // Shared guard: after a reload the captured pi is dead and emit throws (pi's assertActive).
+    emitIfLive(pi, event, data);
+  }
+
   function updateAsyncWidget() {
     try {
       const ctx = getLiveAsyncCtx();
@@ -420,7 +428,7 @@ export function registerAsyncAgents(
         setSlot("async", ctx.ui.theme.fg("muted", `💤 async: 0`), ctx);
       }
       // Always emit to pidash — browser may have reconnected and needs fresh state
-      pi.events.emit("pidash:async-status", {
+      safeEmit("pidash:async-status", {
         count: running.length,
         agents: names,
         jobs: running.map(j => ({
@@ -658,9 +666,9 @@ export function registerAsyncAgents(
             );
             // Emit lifecycle events
             if (job.status === "complete") {
-              pi.events.emit("subagents:completed", { id: job.id, result: job.output || "" });
+              safeEmit("subagents:completed", { id: job.id, result: job.output || "" });
             } else {
-              pi.events.emit("subagents:failed", { id: job.id, error: job.output || "Agent failed", result: job.output || "", status: "failed" });
+              safeEmit("subagents:failed", { id: job.id, error: job.output || "Agent failed", result: job.output || "", status: "failed" });
             }
             const msgContent = `## Async Agent Result: ${displayName} ${resultStatus}\n\nTask: ${job.task}\nDuration: ${formatDuration(duration)}\n\n${output}${autoCompleteError}`;
             if (wasAlreadyDelivered(job.id)) {
@@ -777,9 +785,9 @@ export function registerAsyncAgents(
     // Emit lifecycle events for pitasks RPC bridge (one per job)
     for (const j of groupJobs) {
       if (j.status === "complete") {
-        pi.events.emit("subagents:completed", { id: j.id, result: j.output || "" });
+        safeEmit("subagents:completed", { id: j.id, result: j.output || "" });
       } else if (j.status === "failed") {
-        pi.events.emit("subagents:failed", { id: j.id, error: j.output || "Agent failed", result: j.output || "", status: "failed" });
+        safeEmit("subagents:failed", { id: j.id, error: j.output || "Agent failed", result: j.output || "", status: "failed" });
       }
     }
 
@@ -975,9 +983,9 @@ export function registerAsyncAgents(
 
       // Emit lifecycle events for pitasks RPC bridge
       if (data.success) {
-        pi.events.emit("subagents:completed", { id: job.id, result: data.output || "" });
+        safeEmit("subagents:completed", { id: job.id, result: data.output || "" });
       } else {
-        pi.events.emit("subagents:failed", { id: job.id, error: data.output || "Agent failed", result: data.output || "", status: "failed" });
+        safeEmit("subagents:failed", { id: job.id, error: data.output || "Agent failed", result: data.output || "", status: "failed" });
       }
 
       // Non-grouped job: deliver immediately (existing behavior)
@@ -1355,6 +1363,10 @@ export function registerAsyncAgents(
       if (code !== 0) {
         // Give 2s for result file to be written by async-runner
         setTimeout(() => {
+          // This timer outlives /reload: the captured pi is dead then, and anything it touches
+          // (emit, sendMessage, widget) throws assertActive. Bail out instead of crashing pi.
+          if (!getLiveAsyncCtx()) { log.debug("spawn_exit_timer_stale", { job: job.id }); return; }
+          try {
           if (job.status === "complete" || job.status === "failed") return;
           log.info(`spawn-exit: ${job.id} — code=${code} signal=${signal}`);
           let stderrTail = "";
@@ -1390,6 +1402,9 @@ export function registerAsyncAgents(
             if (pending.length === 0) deliverGroupResults(groupJobs);
           }
           updateAsyncWidget();
+          } catch (error: any) {
+            log.warn("spawn_exit_timer_failed", { job: job.id, error: String(error?.message ?? error).slice(0, 200) });
+          }
         }, 2000).unref();
       }
     });
@@ -1818,9 +1833,9 @@ export function registerAsyncAgents(
         const data = await fn(params);
         const reply: { success: true; data?: unknown } = { success: true };
         if (data !== undefined) reply.data = data;
-        pi.events.emit(`${channel}:reply:${params.requestId}`, reply);
+        safeEmit(`${channel}:reply:${params.requestId}`, reply);
       } catch (err: any) {
-        pi.events.emit(`${channel}:reply:${params.requestId}`, {
+        safeEmit(`${channel}:reply:${params.requestId}`, {
           success: false, error: err?.message ?? String(err),
         });
       }
@@ -1872,7 +1887,7 @@ export function registerAsyncAgents(
 
   // Emit subagents:ready so pitasks can discover us
   pi.on("session_start", () => {
-    pi.events.emit("subagents:ready", {});
+    safeEmit("subagents:ready", {});
   });
 
   return {

@@ -22,6 +22,26 @@ export function isLiveExtensionCtx(ctx: unknown): boolean {
   }
 }
 
+/** Emit on an extension's event bus, tolerating a dead instance.
+ *
+ *  After /reload or a session replacement the captured `pi` rejects every emit (pi's
+ *  assertActive), and an unguarded emit from a surviving setTimeout is an uncaughtException that
+ *  exits the whole process. Returns false when the emit was skipped. */
+export function emitIfLive(
+  piRef: { events: { emit: (event: string, data: unknown) => void } } | null | undefined,
+  event: string,
+  data: unknown,
+): boolean {
+  try {
+    piRef?.events.emit(event, data);
+    return true;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    log.debug(`emit skipped on a stale instance: ${event}: ${msg.slice(0, 120)}`);
+    return false;
+  }
+}
+
 /**
  * Pidash session_start: keep a live incoming ctx as lastCtx so reconnect
  * after /new|/resume still has a context. Stale incoming does not wipe previous.
