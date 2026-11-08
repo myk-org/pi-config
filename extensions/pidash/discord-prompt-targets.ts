@@ -209,11 +209,20 @@ export async function ensurePromptTarget(
     }
 
     const parentId = await threadParent(state, deps);
+    // A user recorded before `dmChannelId` existed still has a usable DM: the stored response
+    // channel is one when Discord reports no guild for it.
+    let dmChannelId = state.dmChannelId ?? null;
+    if (!dmChannelId && state.responseChannelId) {
+      try {
+        const channel = await deps.fetchChannel(state.responseChannelId);
+        if (channel && !channel.guildId) dmChannelId = state.responseChannelId;
+      } catch { /* gone: the remaining routes decide */ }
+    }
     const resolved = await resolvePromptTarget(
       {
         existingChannelId: null,
         threadParentChannelId: parentId,
-        dmChannelId: state.dmChannelId ?? null,
+        dmChannelId,
         plainChannelId: parentId && parentId !== foreignThread(state, parentId) ? parentId : null,
       },
       (parent) => deps.createThread(parent, deps.truncate ? deps.truncate(`pi · ${name}`, 90) : name),
@@ -223,7 +232,9 @@ export async function ensurePromptTarget(
     if (resolved.target.threadId) {
       state.threads = state.threads ?? {};
       state.threads[sessionId] = resolved.target.threadId;
-      const waiting = new Set(Object.keys(state.pendingPrompts ?? {}));
+      // The session being created right now is not pending yet — exclude it explicitly, or a busy
+      // worktree could evict the very thread this question is about to use.
+      const waiting = new Set([...Object.keys(state.pendingPrompts ?? {}), sessionId]);
       for (const stale of evictableSessions(state.threads, waiting, deps.maxThreads)) {
         delete state.threads[stale];
         // Drop the TARGET too, or the evicted session keeps being delivered into a dead thread.

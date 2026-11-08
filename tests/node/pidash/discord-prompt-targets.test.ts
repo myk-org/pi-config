@@ -97,11 +97,15 @@ describe("resolvePromptTarget (the router, with an injected thread creator)", ()
     assert.deepEqual(resolved, { target: { channelId: "thread-9", threadId: "thread-9" }, used: "thread", firstFailure: null });
   });
 
-  it("falls back to the DM when thread creation fails, and says why", async () => {
+  it("falls back to the DM when thread creation fails", async () => {
     // The case that used to drop the question: a permission error on threads.create.
     const resolved = await resolvePromptTarget(input, async () => { throw new Error("Missing Permissions"); });
     assert.deepEqual(resolved.target, { channelId: "dm-1", threadId: null });
     assert.equal(resolved.used, "dm");
+  });
+
+  it("reports why the first route failed", async () => {
+    const resolved = await resolvePromptTarget(input, async () => { throw new Error("Missing Permissions"); });
     assert.match(String(resolved.firstFailure), /Missing Permissions/);
   });
 
@@ -179,6 +183,26 @@ describe("ensurePromptTarget (the wiring, with Discord injected)", () => {
     assert.equal(state.threads.old1, undefined, "the oldest mapping is evicted");
     assert.equal(state.targets.old1, undefined, "and its target with it");
     assert.equal(state.threads.waiting, "t2", "a session waiting on an answer keeps its thread");
+  });
+
+  it("uses a stored response channel as the DM when no dmChannelId was recorded", async () => {
+    // Users saved before dmChannelId existed: Discord reports no guild for their DM, so the DM
+    // route is still available instead of losing the question.
+    const state = { responseChannelId: "legacy-dm", threads: {}, targets: {}, promptOnlyTargets: {} };
+    const target = await ensurePromptTarget(
+      deps({ fetchChannel: async (id: string) => (id === "legacy-dm" ? { id, type: 1 } : Promise.reject(new Error("gone"))) }),
+      state, { userId: "u", sessionId: "s5", name: "p" },
+    );
+    assert.deepEqual(target, { channelId: "legacy-dm", threadId: null });
+  });
+
+  it("never evicts the session whose question is being delivered", async () => {
+    // All slots taken by older sessions: the thread just created for THIS question must survive.
+    const threads: Record<string, string> = { a: "t1", b: "t2" };
+    const state = { responseChannelId: "guild-chan", threads, targets: {}, promptOnlyTargets: {} };
+    await ensurePromptTarget(deps({ maxThreads: 2, createThread: async () => "thread-fresh" }), state,
+      { userId: "u", sessionId: "fresh", name: "p" });
+    assert.equal(state.threads.fresh, "thread-fresh", "the new thread keeps its mapping");
   });
 
   it("returns null instead of inventing a delivery", async () => {

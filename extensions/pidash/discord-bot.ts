@@ -798,9 +798,14 @@ export function setupDiscordBot(opts: {
           log.warn("prompt dropped: no delivery target", { userId, sessionId, method });
           return;
         }
-        // `/disconnect` or a withdrawal can land while the target was being created.
+        // `/disconnect` or a withdrawal can land while the target was being created. Creation
+        // installs the target, so a mute now must UNDO it — otherwise the session keeps streaming
+        // into a thread the user disconnected from.
         if (state.deliveryMuted) {
-          log.debug("prompt skipped: user disconnected mid-delivery", { userId, sessionId });
+          if (state.targets) delete state.targets[sessionId];
+          delete (state.promptOnlyTargets ?? {})[sessionId];
+          persist();
+          log.info("prompt target withdrawn: user disconnected mid-delivery", { userId, sessionId });
           return;
         }
         if (endedPrompts.has(event?.id)) {
@@ -1410,8 +1415,10 @@ export function setupDiscordBot(opts: {
       return;
     }
     state.watchedSessionId = client.session.sessionId;
-    // Watching is an explicit request for updates: a previous /disconnect no longer applies.
+    // Watching is an explicit request for updates: a previous /disconnect no longer applies, and
+    // the session is no longer question-only — otherwise hydration would skip its target on restart.
     state.deliveryMuted = false;
+    if (state.promptOnlyTargets) delete state.promptOnlyTargets[sessionId];
     const name = sessionName(state.watchedSessionId);
     state.threads = state.threads ?? {};
 
