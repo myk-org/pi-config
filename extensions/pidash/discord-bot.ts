@@ -33,6 +33,7 @@ import { compareCommandPayloads } from "./discord-commands.ts";
 import { MAX_LAST_PROMPTS, MAX_LAST_PROMPT_CHARS } from "../shared/chat/chat-state.ts";
 import { jobIdAt, renderJobsView } from "./discord-jobs-view.ts";
 import { planBoard } from "./discord-board.ts";
+import { evictableSessions, planPromptTarget, shouldNudge } from "./discord-prompt-targets.ts";
 import { ownsChannel, ownsSession, reactionAction, sessionForChannel, sessionIdFromTopic } from "./discord-reactions.ts";
 import {
   buildSessionPage,
@@ -657,6 +658,91 @@ export function setupDiscordBot(opts: {
     bridge.onPiEvent(sessionId, event);
   });
 
+  /** Sessions whose target creation is already in flight, so two prompts arriving together do not
+   *  create two threads for one session. */
+  const targetInFlight = new Map<string, Promise<ChatTarget | null>>();
+
+  /** A delivery target for `sessionId`, created on demand.
+   *
+   *  Without this a question from a session the user never picked had nowhere to go — the prompt
+   *  was dropped, which is reported as "the agent is stuck". */
+  async function ensureSessionTarget(
+    userId: string,
+    state: RuntimeUserState,
+    sessionId: string,
+    sessionName: string,
+    fallbackChannelId: string | null,
+  ): Promise<ChatTarget | null> {
+    state.targets = state.targets ?? {};
+    const known = state.targets[sessionId];
+    if (known) return known;
+    const pending = targetInFlight.get(sessionId);
+    if (pending) return pending;
+    const work = (async () => {
+      const parentId = state.responseChannelId ?? fallbackChannelId ?? null;
+      let parentSupportsThreads = false;
+      if (parentId) {
+        try {
+          const parent: any = await discord.channels.fetch(parentId);
+          parentSupportsThreads = typeof parent?.threads?.create === "function" && !parent?.type?.toString().includes("15");
+        } catch { parentSupportsThreads = false; }
+      }
+      const plan = planPromptTarget({
+        existingChannelId: null,
+        parentChannelId: parentId,
+        parentSupportsThreads,
+        hasDm: Boolean(state.responseChannelId),
+        fallbackChannelId,
+      });
+      let target: ChatTarget | null = null;
+      if (plan.action === "create-thread") {
+        try {
+          const parent: any = await discord.channels.fetch(plan.parentChannelId);
+          const thread = await parent.threads.create({
+            name: truncateLine(`pi · ${sessionName}`, 90),
+            autoArchiveDuration: 1440,
+            reason: `pi session ${sessionName}`,
+          });
+          state.threads = state.threads ?? {};
+          state.threads[sessionId] = thread.id;
+          target = { channelId: thread.id, threadId: thread.id };
+          log.info("created prompt thread for session", { sessionId, threadId: thread.id });
+          // Never evict a session that is waiting on an answer.
+          const waiting = new Set(Object.keys(state.pendingPrompts ?? {}));
+          for (const stale of evictableSessions(state.threads, waiting, MAX_THREADS_PER_USER)) delete state.threads[stale];
+        } catch (error) {
+          log.warn("prompt thread creation failed", { sessionId, error: String(error) });
+        }
+      }
+      if (!target && plan.action === "use-dm" && state.responseChannelId) {
+        target = { channelId: state.responseChannelId, threadId: null };
+      } else if (!target && plan.action === "use-channel") {
+        target = { channelId: plan.channelId, threadId: null };
+      }
+      if (target) {
+        state.targets = state.targets ?? {};
+        state.targets[sessionId] = target;
+        persist();
+      }
+      return target;
+    })().finally(() => targetInFlight.delete(sessionId));
+    targetInFlight.set(sessionId, work);
+    return work;
+  }
+
+  /** One line in the watched channel when ANOTHER session asks something, so a user sitting in
+   *  session A notices session B without losing their place. */
+  async function nudgeWatchedChannel(state: RuntimeUserState, asked: string, name: string, target: ChatTarget): Promise<void> {
+    if (!shouldNudge({ watchedSessionId: state.watchedSessionId, askedSessionId: asked, askedChannelId: target.threadId ? target.channelId : null })) return;
+    const watchedTarget = state.target;
+    if (!watchedTarget) return;
+    try {
+      await sendText(watchedTarget.channelId, `❓ **${truncateLine(name, 60)}** is asking a question → <#${target.channelId}>`);
+    } catch (error) {
+      log.debug("nudge failed", { asked, error: String(error) });
+    }
+  }
+
   // ── ask-user prompts ─────────────────────────────────────────────────────
   /**
    * Rendering the native controls stays here (buttons/menus are Discord's), but
@@ -669,14 +755,37 @@ export function setupDiscordBot(opts: {
       return;
     }
     const method = (event.method || "input") as PromptMethod;
+    const name = sessionNameFor(sessionId);
     for (const [userId, state] of runtime) {
-      // Any session with a target gets its question, not just the watched one.
-      const target = state.targets?.[sessionId] ?? (state.watchedSessionId === sessionId ? state.target : null);
-      if (!target) continue;
-      const prompt = bridge.askUser(sessionId, event, state);
-      if (!prompt) continue;
-      // Delivery (with controls) happens in renderPrompt; this only records who was asked.
-      log.info("prompt forwarded to discord", { userId, sessionId, method, promptId: prompt.id });
+      // ANY session's question is delivered: a target is created on demand when the user never
+      // picked this session, so a background agent waiting for an answer is never invisible.
+      void (async () => {
+        const known = state.targets?.[sessionId] ?? (state.watchedSessionId === sessionId ? state.target : null);
+        const target = known ?? await ensureSessionTarget(userId, state, sessionId, name, state.target?.channelId ?? null);
+        if (!target) {
+          log.warn("prompt dropped: no delivery target", { userId, sessionId, method });
+          return;
+        }
+        const prompt = bridge.askUser(sessionId, event, state);
+        if (!prompt) return;
+        // Delivery (with controls) happens in renderPrompt; this only records who was asked.
+        log.info("prompt forwarded to discord", { userId, sessionId, method, promptId: prompt.id, created: !known });
+        if (!known) await nudgeWatchedChannel(state, sessionId, name, target);
+      })().catch((error: unknown) => {
+        log.error("prompt delivery failed", { userId, sessionId, error: String(error) });
+      });
+    }
+  }
+
+  /** A readable name for a session, for thread titles and nudges. */
+  function sessionNameFor(sessionId: string): string {
+    try {
+      const sessions = getActiveSessions() ?? [];
+      const found = sessions.find((session: any) => (session?.sessionId ?? session?.id) === sessionId);
+      const value = found?.name ?? found?.cwd ?? null;
+      return typeof value === "string" && value ? path.basename(value) || value : sessionId.slice(0, 8);
+    } catch {
+      return sessionId.slice(0, 8);
     }
   }
 
@@ -1659,7 +1768,11 @@ export function setupDiscordBot(opts: {
       return;
     }
 
-    if (state.pendingPrompt) {
+    // A prompt can be pending for the session this THREAD belongs to even though the user is
+    // watching a different one — that is the cross-session case: answering here must reach the
+    // asking session, not the watched one.
+    const threadHasPrompt = Boolean(threadSessionId && (state.pendingPrompts ?? {})[threadSessionId]);
+    if (state.pendingPrompt || threadHasPrompt) {
       const outcome = bridge.handleInbound(
         state, text,
         (content) => void message.reply(content).catch(() => {}),
@@ -1668,7 +1781,7 @@ export function setupDiscordBot(opts: {
       if (outcome === "answered" || outcome === "cancelled") return;
       if (outcome === "expired") {
         await message.reply("The waiting prompt expired; sending your message as a new prompt.").catch(() => {});
-      } else if (outcome === "not-an-answer" && state.pendingPrompt?.method === "confirm" && text) {
+      } else if (outcome === "not-an-answer" && (state.pendingPrompt?.method === "confirm" || threadHasPrompt) && text) {
         // Not an answer to a yes/no question, but it IS a message the user meant
         // to send: forward it and keep the prompt available (Qodo 85cacb2c).
         await message.reply("That isn't an answer to the pending question (still waiting). Forwarding it as a prompt.").catch(() => {});
