@@ -503,7 +503,7 @@ describe("answering a cross-session prompt keeps the user's watch", () => {
     return { bridge, state, payloads };
   }
 
-  it("answers the asking session and leaves the watched session and thread untouched", () => {
+  it("answers the asking session", () => {
     const { bridge, state, payloads } = setupTwoSessions();
     bridge.askUser("B", { id: "qB", method: "confirm", title: "Deploy?" }, state);
     const before = { watched: state.watchedSessionId, thread: state.threadId, target: state.target };
@@ -511,6 +511,15 @@ describe("answering a cross-session prompt keeps the user's watch", () => {
     assert.equal(bridge.answer(state, "yes", () => {}, "B"), true);
 
     assert.equal(payloads.at(-1)?.sessionId, "B", "the answer reaches the session that asked");
+  });
+
+  it("leaves the watched session and thread untouched", () => {
+    const { bridge, state } = setupTwoSessions();
+    bridge.askUser("B", { id: "qB2", method: "confirm", title: "Deploy?" }, state);
+    const before = { watched: state.watchedSessionId, thread: state.threadId, target: state.target };
+
+    assert.equal(bridge.answer(state, "yes", () => {}, "B"), true);
+
     assert.equal(state.watchedSessionId, before.watched, "still watching A");
     assert.equal(state.threadId, before.thread, "still in A's thread");
     assert.deepEqual(state.target, before.target, "output still goes to A");
