@@ -291,3 +291,21 @@ function foreignThread(state: PromptTargetState, channelId: string): string | nu
   }
   return null;
 }
+
+/** Threads that may become output targets on startup.
+ *
+ *  A muted user gets none (they disconnected), and a thread that exists only to deliver a question
+ *  is not a subscription. Both rules live here so hydration cannot drift from them. */
+export function hydratableTargets(state: {
+  threads?: Record<string, string>;
+  promptOnlyTargets?: Record<string, true>;
+  deliveryMuted?: boolean;
+}): Record<string, string> {
+  if (state.deliveryMuted) return {};
+  const targets: Record<string, string> = {};
+  for (const [sessionId, threadId] of Object.entries(state.threads ?? {})) {
+    if (state.promptOnlyTargets?.[sessionId]) continue;
+    targets[sessionId] = threadId;
+  }
+  return targets;
+}

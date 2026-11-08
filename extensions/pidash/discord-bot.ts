@@ -33,7 +33,7 @@ import { compareCommandPayloads } from "./discord-commands.ts";
 import { MAX_LAST_PROMPTS, MAX_LAST_PROMPT_CHARS } from "../shared/chat/chat-state.ts";
 import { jobIdAt, renderJobsView } from "./discord-jobs-view.ts";
 import { planBoard } from "./discord-board.ts";
-import { ensurePromptTarget, nudgeDue, promptById, shouldNudge } from "./discord-prompt-targets.ts";
+import { ensurePromptTarget, hydratableTargets, nudgeDue, promptById, shouldNudge } from "./discord-prompt-targets.ts";
 import { ownsChannel, ownsSession, reactionAction, sessionForChannel, sessionIdFromTopic } from "./discord-reactions.ts";
 import {
   buildSessionPage,
@@ -169,10 +169,8 @@ export function setupDiscordBot(opts: {
     // rebuilding targets from the stored thread ids, a thread could send prompts
     // and receive nothing (Qodo 8c6acae5).
     const targets: Record<string, { channelId: string; threadId: string | null }> = {};
-    for (const [sessionId, threadId] of Object.entries(stored?.threads ?? {})) {
-      // A thread created only to deliver a question is NOT a subscription: after a restart its
-      // session must not resume streaming output the user never asked to follow.
-      if (stored?.promptOnlyTargets?.[sessionId]) continue;
+    // Question-only threads are not subscriptions, and a muted user gets no target at all.
+    for (const [sessionId, threadId] of Object.entries(hydratableTargets(stored ?? {}))) {
       targets[sessionId] = { channelId: threadId, threadId };
     }
     if (watched && !targets[watched] && stored?.responseChannelId) {
@@ -803,6 +801,8 @@ export function setupDiscordBot(opts: {
         // into a thread the user disconnected from.
         if (state.deliveryMuted) {
           if (state.targets) delete state.targets[sessionId];
+          // The thread mapping too: leaving it behind made a restart hydrate it as an output target.
+          if (state.threads) delete state.threads[sessionId];
           delete (state.promptOnlyTargets ?? {})[sessionId];
           persist();
           log.info("prompt target withdrawn: user disconnected mid-delivery", { userId, sessionId });

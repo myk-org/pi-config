@@ -4,7 +4,7 @@
  */
 import { beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ensurePromptTarget, evictableSessions, fallbackPromptTarget, nudgeDue, planPromptTarget, promptById, resolvePromptTarget, shouldNudge } from "../../../extensions/pidash/discord-prompt-targets.ts";
+import { ensurePromptTarget, evictableSessions, hydratableTargets, fallbackPromptTarget, nudgeDue, planPromptTarget, promptById, resolvePromptTarget, shouldNudge } from "../../../extensions/pidash/discord-prompt-targets.ts";
 
 describe("planPromptTarget", () => {
   const base = { existingChannelId: null, threadParentChannelId: "chan", dmChannelId: "dm-1", plainChannelId: "chan" };
@@ -250,5 +250,20 @@ describe("eviction and selection races", () => {
     const target = await ensurePromptTarget(slow, state, { userId: "u", sessionId: "s1", name: "p" });
     assert.deepEqual(target, { channelId: "thread-from-watch", threadId: "thread-from-watch" });
     assert.equal(state.threads.s1, "thread-from-watch", "the selected thread is not overwritten");
+  });
+});
+
+describe("hydratableTargets", () => {
+  it("keeps a watched session's thread", () => {
+    assert.deepEqual(hydratableTargets({ threads: { s1: "t1" } }), { s1: "t1" });
+  });
+
+  it("drops question-only threads", () => {
+    assert.deepEqual(hydratableTargets({ threads: { s1: "t1", s2: "t2" }, promptOnlyTargets: { s2: true } }), { s1: "t1" });
+  });
+
+  it("gives a muted user no targets at all", () => {
+    // /disconnect survives a restart: nothing may be rebuilt that streams output to them.
+    assert.deepEqual(hydratableTargets({ threads: { s1: "t1" }, deliveryMuted: true }), {});
   });
 });
