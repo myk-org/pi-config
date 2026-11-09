@@ -267,3 +267,43 @@ describe("hydratableTargets", () => {
     assert.deepEqual(hydratableTargets({ threads: { s1: "t1" }, deliveryMuted: true }), {});
   });
 });
+
+describe("routing is logged", () => {
+  const guild = { guildId: "g1", threads: { create: async () => ({ id: "x" }) } };
+
+  it("records which route delivered the question, and what it fell back from", async () => {
+    // A silent route decision is how a live run delivered a question with no evidence of where.
+    const lines: Array<{ level: string; message: string; data?: Record<string, unknown> }> = [];
+    const log = {
+      debug: (message: string, data?: Record<string, unknown>) => lines.push({ level: "debug", message, data }),
+      info: (message: string, data?: Record<string, unknown>) => lines.push({ level: "info", message, data }),
+      warn: (message: string, data?: Record<string, unknown>) => lines.push({ level: "warn", message, data }),
+      error: (message: string, data?: Record<string, unknown>) => lines.push({ level: "error", message, data }),
+    };
+    const state = { responseChannelId: "guild-chan", dmChannelId: "dm-1", threads: {}, targets: {}, promptOnlyTargets: {} };
+    await ensurePromptTarget(
+      {
+        fetchChannel: async (id: string) => (id === "guild-chan" ? guild : Promise.reject(new Error("gone"))),
+        createThread: async () => { throw new Error("Missing Permissions"); },
+        persist: () => {}, inFlight: new Map(), maxThreads: 5, log,
+      },
+      state, { userId: "u", sessionId: "s1", name: "p" },
+    );
+    const resolved = lines.find((line) => line.message === "prompt target resolved");
+    assert.equal(resolved?.level, "info");
+    assert.equal(resolved?.data?.used, "dm");
+    assert.equal(resolved?.data?.fellBackFrom, "thread", "the failing route is named");
+  });
+
+  it("logs an error when there is no route at all", async () => {
+    const lines: Array<{ level: string; message: string }> = [];
+    const log = { debug: () => {}, info: () => {}, warn: () => {}, error: (message: string) => lines.push({ level: "error", message }) };
+    const state = { responseChannelId: null, dmChannelId: null, threads: {}, targets: {} };
+    await ensurePromptTarget(
+      { fetchChannel: async () => { throw new Error("gone"); }, createThread: async () => "x", persist: () => {}, inFlight: new Map(), maxThreads: 5, log },
+      state, { userId: "u", sessionId: "s2", name: "p" },
+    );
+    assert.equal(lines.at(-1)?.message, "prompt target unavailable");
+    assert.equal(lines.at(-1)?.level, "error");
+  });
+});

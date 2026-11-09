@@ -728,6 +728,7 @@ export function setupDiscordBot(opts: {
         inFlight: targetInFlight,
         maxThreads: MAX_THREADS_PER_USER,
         truncate: truncateLine,
+        log,
       },
       state,
       { userId, sessionId, name },

@@ -162,6 +162,8 @@ export interface PromptTargetDeps {
   inFlight: Map<string, Promise<{ channelId: string; threadId?: string | null } | null>>;
   maxThreads: number;
   truncate?: (text: string, max: number) => string;
+  /** Where route decisions go: a dropped question must be explainable from the log. */
+  log?: { debug: (message: string, data?: Record<string, unknown>) => void; info: (message: string, data?: Record<string, unknown>) => void; warn: (message: string, data?: Record<string, unknown>) => void; error: (message: string, data?: Record<string, unknown>) => void };
 }
 
 /** The mutable slice of user state this touches. */
@@ -191,7 +193,10 @@ export async function ensurePromptTarget(
   const { userId, sessionId, name } = args;
   state.targets = state.targets ?? {};
   const known = state.targets[sessionId];
-  if (known) return known;
+  if (known) {
+    deps.log?.debug("prompt target reused", { sessionId, channelId: known.channelId });
+    return known;
+  }
 
   const key = `${userId}:${sessionId}`;
   const running = deps.inFlight.get(key);
@@ -229,7 +234,17 @@ export async function ensurePromptTarget(
       },
       (parent) => deps.createThread(parent, deps.truncate ? deps.truncate(`pi · ${name}`, 90) : name),
     );
-    if (!resolved.target) return null;
+    if (!resolved.target) {
+      // No route at all: the agent waits forever, so this is an error, not a warning.
+      deps.log?.error("prompt target unavailable", { sessionId, threadParentId: parentId, failure: resolved.firstFailure });
+      return null;
+    }
+    deps.log?.info("prompt target resolved", {
+      sessionId,
+      used: resolved.used,
+      threadId: resolved.target.threadId ?? null,
+      fellBackFrom: resolved.firstFailure ? "thread" : null,
+    });
 
     // `switchWatch` may have installed its own thread for this session while Discord was being
     // called; keep that one, or the watch and the prompt's routing diverge.
@@ -252,11 +267,14 @@ export async function ensurePromptTarget(
         sessionId,
         ...(state.watchedSessionId ? [state.watchedSessionId] : []),
       ]);
+      const evicted: string[] = [];
       for (const stale of evictableSessions(state.threads, waiting, deps.maxThreads)) {
         delete state.threads[stale];
         // Drop the TARGET too, or the evicted session keeps being delivered into a dead thread.
         if (state.targets) delete state.targets[stale];
+        evicted.push(stale);
       }
+      if (evicted.length) deps.log?.info("prompt targets evicted", { evicted, maxThreads: deps.maxThreads });
     }
     state.targets = state.targets ?? {};
     state.targets[sessionId] = resolved.target;
