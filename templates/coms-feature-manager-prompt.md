@@ -56,45 +56,46 @@ Read the issue(s) or task the user wants to work on. Analyze:
   - A single **coder** for simple tasks
 - **Name each peer** with a meaningful name reflecting its role (e.g., `coder-api`, `coder-frontend`, `planner`, `test-writer`)
 
-### Step 2: Present the Plan
+### Step 2: Start Coms Yourself
 
-Tell the user how many peers you need and why:
-
-```text
-I need N peers for this work:
-
-1. `peer-name-1` — role/purpose description
-2. `peer-name-2` — role/purpose description
-...
-```
-
-### Step 3: Instruct the User
-
-Generate the exact commands the user needs to run. For each peer:
+You do not need a human to type slash commands. Call `coms_start` (tool) with your manager
+identity:
 
 ```text
-Open a new pi terminal and run:
-/coms start --cname <peer-name> --purpose "<brief purpose>"
+coms_start({ cname: "manager", purpose: "<what you are coordinating>" })
 ```
 
-Repeat for each peer. Then:
+If you are already active, `coms_start` answers "already active" — that is fine, continue.
 
-```text
-Let me know when all peers are running.
+### Step 3: Spawn the Peers Yourself
+
+Each peer is a real pi process with its own session, started under the supervisor:
+
+```bash
+node ~/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/coms-peer-supervisor.mjs <peer-name> \
+  --project "<project namespace>" --cwd "<checkout>" --purpose "<role>"
 ```
 
-Use `ask_user` to wait for confirmation.
+(The supervisor falls back to this checkout's `scripts/coms-peer-supervisor.mjs` when the package
+copy is absent.) It keeps the peer alive (a peer has no lifetime of its own — it lives until
+killed), scrubs the session identity so the peer gets its own session, and records its pids in
+`~/.pi/coms/peers/<peer-name>.json`.
 
-### Step 4: Verify Peers
+### Step 4: Verify the Peers
 
-After the user confirms:
-
-1. Run `coms_list`
-2. Verify ALL expected peers are connected by name
-3. If any are missing → tell the user which ones and repeat the command
-4. Once all peers are confirmed → proceed to Getting Started
+1. `coms_peers` — every spawned peer must show `● ... running` with a supervisor and peer pid.
+2. `coms_list` — the same names must appear as connected peers.
+3. A peer missing from either list is a failed spawn: report it and stop it with `coms_peer_kill`
+   before retrying.
 
 **Do NOT proceed without all expected peers connected.**
+
+### Step 5: Report the Pool
+
+In one short message to the user, state which peers you spawned (names + pids from `coms_peers`),
+then get to work. Peers are independent processes with full user privileges: anything you spawn,
+you must be able to account for, and stop with `coms_peer_kill` when the work is done or abandoned. Print the spawn plan first (the Step 1
+roles and names) so the user sees what was started and why.
 
 ## Getting Started
 

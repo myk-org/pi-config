@@ -101,9 +101,14 @@ export function createDeferredProxy(
 
             switch (prop) {
                 case 'registerFlag':
-                    return () => {};
+                    // MUST reach the real pi: flags are validated against what the loaded
+                    // extensions registered, and that validation happens at CLI parse time — long
+                    // before /coms start. Swallowing it made every coms flag an "Unknown option".
+                    return (name: string, options: unknown) => target.registerFlag(name, options);
                 case 'getFlag':
-                    return (name: string) => state.flagValues.get(name);
+                    // `/coms start --cname x` wins over the CLI flag, then the CLI flag, then pi's
+                    // own default. Keep both sources so either activation path works.
+                    return (name: string) => state.flagValues.get(name) ?? target.getFlag(name);
                 case 'registerCommand':
                     // Upstream /coms is owned by the wrapper — swallow it.
                     // Pass through utility commands (e.g. /coms-queue) so they
@@ -930,4 +935,24 @@ export function selectSenderBundle<T extends { sender_session: string; priority?
 
 export function formatBusyStr(busy: boolean | undefined | null): string {
 	return busy ? " ⚙busy" : "";
+}
+
+/** Peer cards whose endpoint is gone.
+ *
+ *  `coms_list` reads a memory cache, so a peer that exited (or was killed) kept being advertised
+ *  until some session happened to prune the registry — an agent could then message a corpse.
+ *  Returns the ids to drop; the caller deletes them from the cache. */
+export function deadPeerCardIds<T extends { endpoint?: string | null }>(
+  cards: Map<string, T>,
+  exists: (path: string) => boolean,
+  platform: string = process.platform,
+): string[] {
+  if (platform === "win32") return []; // named pipes: fs.existsSync does not apply
+  const dead: string[] = [];
+  for (const [id, card] of cards) {
+    const endpoint = card?.endpoint;
+    if (typeof endpoint !== "string" || !endpoint) continue; // no endpoint claim: leave it
+    if (!exists(endpoint)) dead.push(id);
+  }
+  return dead;
 }

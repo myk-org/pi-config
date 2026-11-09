@@ -156,7 +156,9 @@ Tell the user:
 >
 > Run `/reload` to register the new `/coms-feature-manager` command.
 >
-> To use it: start a coms session, then run `/coms-feature-manager` to activate the manager role.
+> To use it: run `/coms-feature-manager`. The manager starts coms itself (`coms_start`), spawns the
+> peers the work needs (`scripts/coms-peer-supervisor.mjs`), reports them via `coms_peers`, and stops
+> them with `coms_peer_kill` — no hand-started terminals, no slash commands from you.
 > The manager will coordinate with a coder peer via coms to implement features.
 
 List the key customizations made (test command, verification approach, included/excluded sections).

@@ -20,7 +20,7 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
 import {
-	buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, type BroadcastTargetResult } from "./coms-shared.js";
+	buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, type BroadcastTargetResult } from "./coms-shared.js";
 import { appendHistoryRecord, queryHistoryRecords, truncatePreview, type HistoryRecord } from "./coms-history.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import * as net from "node:net";
@@ -1681,6 +1681,8 @@ export default function (pi: ExtensionAPI) {
 - coms_task_list — list tasks on a peer's task list without sending a message
 - coms_task_get — get a specific task from a peer's task list
 - coms_task_update — update a task you created on a peer's task list
+- coms_peers — list every peer on this machine from the registry (all projects, live state); filter by project/name
+- coms_peer_kill — stop a peer by name (add project when ambiguous) or all peers (all:true)
 
 ## Task handling
 - Tasks may appear in your task widget at any time — check TaskList when prompted to work
@@ -2325,6 +2327,12 @@ Do not respond to this message.`;
 			const projectFilter = params.project ?? identity?.project ?? "default";
 			const projects = projectFilter === "*" ? listProjects() : [projectFilter];
 
+			// Drop cards whose socket is gone BEFORE listing: a killed peer must not be advertised.
+			for (const deadId of deadPeerCardIds(peerCards as Map<string, { endpoint?: string | null }>, (p) => fs.existsSync(p))) {
+				const card: any = peerCards.get(deadId);
+				peerCards.delete(deadId);
+				log.debug("coms_list dropped dead peer", { peer: card?.name ?? deadId, endpoint: card?.endpoint });
+			}
 			// Read from peerCards — no pinging needed
 			const agents = [...peerCards.entries()]
 				.filter(([sid]) => identity && sid !== identity.coms_session_id)
