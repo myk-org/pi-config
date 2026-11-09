@@ -406,8 +406,14 @@ export function registerComs(pi: ExtensionAPI) {
         return cwd.replace(/^[\\/]+/, "").replace(/[\\/]+/g, "__");
     };
 
-    const listPeers = (params: { project?: string; name?: string }): string =>
-        formatPeerTable(filterRegistry(attachCreatedBy(readRegistryRows()).filter(rowAlive), { project: params.project, name: params.name }));
+    const listPeers = (params: { project?: string; name?: string }): string => {
+        const rows = filterRegistry(attachCreatedBy(readRegistryRows()).filter(rowAlive), { project: params.project, name: params.name });
+        if (rows.length > 0) return formatPeerTable(rows);
+        // Say WHAT was searched: "no peers in the registry" when only this project was read is a lie
+        // the caller cannot act on.
+        const scope = params.project ? `project "${params.project}"` : "any project";
+        return `No peers in ${scope}.${params.project ? " Pass project:\"*\" for every project on this machine." : ""}`;
+    };
 
     /** Supervisor records, read from every location a peer may have used: the configured
      *  `coms_dir` AND `PI_COMS_DIR`. Reading one made a configured peer unkillable. */
