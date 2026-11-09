@@ -81,8 +81,14 @@ export function createDaemonServer(opts: DaemonServerOptions) {
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
     if (url.pathname === "/api/health") {
+      // A daemon whose startup hook failed is listening but degraded: sessions connect and their
+      // questions have no consumer. Report that instead of a flat "ok".
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", port, sessions: piClients.size, browsers: browserClients.size, uptime: process.uptime() }));
+      res.end(JSON.stringify({
+        status: startupError ? "degraded" : "ok",
+        ...(startupError ? { startupError } : {}),
+        port, sessions: piClients.size, browsers: browserClients.size, uptime: process.uptime(),
+      }));
       return;
     }
 
@@ -204,18 +210,36 @@ export function createDaemonServer(opts: DaemonServerOptions) {
 
   // ── Start ─────────────────────────────────────────────────────
 
-  function start() {
+  /** Set by the caller once listening succeeds; nothing with side effects (a Discord bot, a watcher)
+   *  may start before that, or a second daemon that loses the port leaves a duplicate bot running. */
+  let onListening: (() => void) | null = null;
+  /** Set when a startup hook threw: the daemon answers HTTP but one of its consumers is missing
+   *  (a Discord bot, a watcher), so /api/health must not claim to be healthy. */
+  let startupError: string | null = null;
+
+  function start(afterListen?: () => void) {
+    onListening = afterListen ?? null;
     server.listen(port, listenAddress, () => {
       log(`listening on http://${listenAddress}:${port}`);
+      try {
+        onListening?.();
+      } catch (error: any) {
+        startupError = String(error?.message ?? error);
+        log(`afterListen failed: ${startupError}`);
+      }
     });
 
     server.on("error", (err: any) => {
       if (err.code === "EADDRINUSE") {
         log(`port ${port} already in use — daemon likely already running`);
+        // `return` matters: relying on exit() to stop execution made a second daemon log a
+        // misleading "server error" and report failure when exit was intercepted (tests) or thrown.
         process.exit(0);
+        return;
       }
       log(`server error: ${err.message}`);
       process.exit(1);
+      return;
     });
 
     process.on("SIGHUP", () => {});

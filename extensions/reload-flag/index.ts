@@ -243,9 +243,27 @@ export async function runReloadFlagCommand(
   }
 }
 
+/** A headless `--mode rpc` session (a spawned coms peer) must NOT take part in the deploy
+ *  handshake: the flag is per-cwd, so a peer sitting in the same checkout consumed the deploy's
+ *  nonce before the operator's TUI session could — and a peer has no banner to show, so the reload
+ *  went silent for the human. Peers are restarted by their supervisor, not by /reload. */
+export function shouldSkipReloadFlag(argv: string[] = process.argv): boolean {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--mode" && argv[i + 1] === "rpc") return true;
+    if (arg === "--mode=rpc") return true;
+  }
+  return false;
+}
+
 export default function (pi: ExtensionAPI) {
   if (shouldSkipOneshotRegister(log)) {
     log.debug("skipping reload-flag registration (oneshot invocation)");
+    return;
+  }
+  if (shouldSkipReloadFlag()) {
+    // Never steal a deploy's nonce: a peer in the same cwd would consume it invisibly.
+    log.debug("skipping reload-flag registration (headless rpc session)");
     return;
   }
 

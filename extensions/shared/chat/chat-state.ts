@@ -39,6 +39,12 @@ export interface DiscordUserState {
   lastPrompts?: Record<string, LastPromptEntry>;
   /** Last interaction, used for pruning. */
   updatedAt: number;
+  /** `/disconnect` muted delivery; persisted so a restart does not start notifying again. */
+  deliveryMuted?: boolean;
+  /** Sessions whose thread exists only to deliver a question — not a subscription. */
+  promptOnlyTargets?: Record<string, true>;
+  /** responseChannelId when it is a DM, so it is never offered as a thread parent. */
+  dmChannelId?: string | null;
 }
 
 /** A remembered prompt is for retrying, not for storage: keep it small. */

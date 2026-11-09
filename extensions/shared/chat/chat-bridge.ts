@@ -47,6 +47,13 @@ export interface ChatRuntimeState {
    * nowhere (Qodo 721fc807).
    */
   targets?: Record<string, ChatTarget>;
+  /** Sessions whose target exists only to deliver a question — NOT sessions to stream output for.
+   *  Without this, a question answered outside the chat left its target behind and the session's
+   *  whole output streamed into Discord. */
+  promptOnlyTargets?: Record<string, true>;
+  /** `/disconnect`: stream no output for this user. Questions are still delivered — a user with no
+   *  session is exactly who needs to know something is asking. */
+  deliveryMuted?: boolean;
   /** Pending prompts per session: two sessions can each be waiting on an answer. */
   pendingPrompts?: Record<string, PendingPrompt>;
   /**
@@ -163,7 +170,22 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
   }
 
   function sessionsFor(state: ChatRuntimeState): string[] {
-    const ids = new Set(Object.keys(state.targets ?? {}));
+    // `/disconnect` silences OUTPUT only. Questions still arrive — a user with no session is
+    // exactly who must be told that something is asking.
+    if (state.deliveryMuted) return [];
+    // A prompt-only target is an ADDRESS for a question, not a subscription: streaming its session
+    // into the chat showed output the user never asked to follow (and never stopped, when the
+    // question was answered outside the chat). Only output for sessions the user actually watches
+    // (or has a real target for) is streamed.
+    const promptOnly = state.promptOnlyTargets ?? {};
+    const streamed = Object.keys(state.targets ?? {}).filter((sessionId) => !promptOnly[sessionId]);
+    const suppressed = Object.keys(state.targets ?? {}).filter((sessionId) => promptOnly[sessionId]);
+    if (suppressed.length) {
+      // This filter decides what reaches the chat: a silent skip made a leaked stream impossible to
+      // trace back to the target that caused it.
+      log.debug("prompt-only sessions excluded from streaming", { suppressed });
+    }
+    const ids = new Set(streamed);
     if (state.watchedSessionId) ids.add(state.watchedSessionId);
     return [...ids];
   }

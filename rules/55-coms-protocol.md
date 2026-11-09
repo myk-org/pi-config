@@ -9,12 +9,44 @@ P2P communication system for talking to other pi sessions on the same machine.
 
 | System | Activation | Tool prefix | Transport |
 |--------|-----------|-------------|-----------|
-| **P2P** (coms) | `/coms start` | `coms_` | Direct peer-to-peer |
+| **P2P** (coms) | `coms_start` tool (or `/coms start`, or `pi --coms`) | `coms_` | Direct peer-to-peer |
 
 ## Activation
 
-Tools are unavailable until the user runs `/coms start`.
-Use `coms_list` to see connected peers.
+Call `coms_start` yourself when a task needs another agent — an already-open session enables coms
+with no slash command and no new process. `coms_stop` ends it. `/coms start` and `pi --coms
+--cname <name> --project <p>` do the same for humans and for spawned sessions.
+
+## Two different things — do not confuse them
+
+| You want | Call | What happens |
+|---|---|---|
+| **This** chat to become a peer | `coms_start` | The session you are already in registers an identity and gains `coms_send`/`coms_list`. No new process, no new model. |
+| **Another** pi to work for you | supervisor + `scripts/coms-peer-supervisor.mjs` | A NEW pi process with its own session, model and context. It is a peer, not this session. |
+
+Starting coms costs nothing and is reversible with `coms_stop`. Spawning a peer costs a process and
+a model context that stays warm until it is killed.
+
+**Never spawn a peer without work to give it.** A peer that is not told what to do is not dead — it
+is idle: it holds a process and a model session, answers nothing, and quietly disappears from
+anyone's attention. Spawn with a `--purpose` AND assign tasks (`coms_tasks_create`) or send the first
+prompt in the same breath; otherwise do not spawn.
+
+## Spawning more agents
+
+You can grow the pool instead of doing everything yourself:
+
+| Action | How |
+|---|---|
+| Start a peer as its own real pi, with its own session | `pi --mode rpc --coms --cname <name> --project <p>` under `scripts/coms-peer-supervisor.mjs` (`~/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/`, falling back to this checkout): it holds the peer's stdin, records pids in `~/.pi/coms/peers/<name>.json`, and has no lifetime of its own |
+| See spawned peers | `coms_peers` (human: `/coms list` — overlay like `/async-status`: ↑↓ navigate, x kill, X kill all; plain text when there is no UI) |
+| Stop one peer / all peers | `coms_peer_kill` with `name` (add `project` when the name exists in several) or `all:true` (human: `/coms kill <name>` / `/coms kill all`). Only peers a supervisor started are killable — never your own session. |
+
+Rules for spawning: a peer is an independent process that outlives this session, so **always**
+report what you spawned (`coms_peers` output) and stop peers you no longer need. Never spawn more
+than the task justifies — each peer is a real model burning real tokens. Scrub
+`__PI_CONFIG_SESSION_ID` from the peer's env or coms adopts your session id and its socket bind
+fails. Use `coms_list` for connected peers.
 
 ## Tool Reference
 

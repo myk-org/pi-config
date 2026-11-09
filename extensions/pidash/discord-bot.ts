@@ -33,6 +33,7 @@ import { compareCommandPayloads } from "./discord-commands.ts";
 import { MAX_LAST_PROMPTS, MAX_LAST_PROMPT_CHARS } from "../shared/chat/chat-state.ts";
 import { jobIdAt, renderJobsView } from "./discord-jobs-view.ts";
 import { planBoard } from "./discord-board.ts";
+import { ensurePromptTarget, hydratableTargets, nudgeChannelId, nudgeDue, promptById, promptHeader, shouldNudge } from "./discord-prompt-targets.ts";
 import { ownsChannel, ownsSession, reactionAction, sessionForChannel, sessionIdFromTopic } from "./discord-reactions.ts";
 import {
   buildSessionPage,
@@ -60,6 +61,7 @@ import {
   type PersistedDiscordState,
 } from "../shared/chat/chat-state.ts";
 import { parseEnvFile, resolveDiscordConfig } from "./discord-config.ts";
+import { checkoutName } from "../shared/chat/chat-sessions.ts";
 
 const log = createLogger("pidash-discord");
 
@@ -82,6 +84,12 @@ interface RuntimeUserState extends DiscordUserState, ChatRuntimeState {
   typingInterval: ReturnType<typeof setInterval> | null;
   typingSafety: ReturnType<typeof setTimeout> | null;
   unauthorizedNotifiedAt: number;
+  /** Sessions whose target exists only to deliver a question — not ones the user watches. */
+  promptOnlyTargets?: Record<string, true>;
+  /** Set by /disconnect: no prompts, no thread creation, nothing until the user interacts again. */
+  deliveryMuted?: boolean;
+  /** responseChannelId that is a DM (threads cannot be created there). */
+  dmChannelId?: string | null;
 }
 
 export function setupDiscordBot(opts: {
@@ -162,7 +170,8 @@ export function setupDiscordBot(opts: {
     // rebuilding targets from the stored thread ids, a thread could send prompts
     // and receive nothing (Qodo 8c6acae5).
     const targets: Record<string, { channelId: string; threadId: string | null }> = {};
-    for (const [sessionId, threadId] of Object.entries(stored?.threads ?? {})) {
+    // Question-only threads are not subscriptions, and a muted user gets no target at all.
+    for (const [sessionId, threadId] of Object.entries(hydratableTargets(stored ?? {}))) {
       targets[sessionId] = { channelId: threadId, threadId };
     }
     if (watched && !targets[watched] && stored?.responseChannelId) {
@@ -178,6 +187,9 @@ export function setupDiscordBot(opts: {
       typingInterval: null,
       typingSafety: null,
       unauthorizedNotifiedAt: 0,
+      deliveryMuted: stored?.deliveryMuted === true,
+      promptOnlyTargets: { ...(stored?.promptOnlyTargets ?? {}) },
+      dmChannelId: stored?.dmChannelId ?? null,
     };
   }
 
@@ -232,6 +244,9 @@ export function setupDiscordBot(opts: {
         threads: state.threads ?? {},
         // Without this the 🔁 shortcut forgets every prompt on restart.
         lastPrompts: prunablePrompts(state),
+        deliveryMuted: state.deliveryMuted === true,
+        promptOnlyTargets: { ...(state.promptOnlyTargets ?? {}) },
+        dmChannelId: state.dmChannelId ?? null,
         updatedAt: state.updatedAt,
       };
     }
@@ -657,6 +672,107 @@ export function setupDiscordBot(opts: {
     bridge.onPiEvent(sessionId, event);
   });
 
+  /** Target creation in flight, keyed by USER and session: two users waiting on the same session
+   *  need a target each, and sharing one promise gave the second user nothing. */
+  const targetInFlight = new Map<string, Promise<{ channelId: string; threadId: string | null } | null>>();
+  /** Sessions whose question was answered or cancelled one line in the watched channel. */
+  /** Throttled per USER and asking session: one user's nudge must not silence another's. */
+  const lastNudgeAt = new Map<string, number>();
+  /** Prompt ids that ended while their target was still being created. */
+  const endedPrompts = new Set<string>();
+
+  /** A GUILD channel that can hold a thread for `sessionId`, or null.
+   *  Never a DM (threads cannot be created in one) and never another session's thread (an answer
+   *  there would be routed to THAT session). */
+  async function threadParentFor(state: RuntimeUserState, sessionId: string): Promise<string | null> {
+    const candidates = [state.responseChannelId].filter((id): id is string => Boolean(id));
+    for (const channelId of candidates) {
+      const owners = Object.values(state.threads ?? {});
+      if (owners.includes(channelId)) continue; // somebody's thread, not a parent
+      try {
+        const channel: any = await discord.channels.fetch(channelId);
+        if (channel?.guildId && typeof channel?.threads?.create === "function") return channelId;
+      } catch { /* missing or not a guild channel */ }
+    }
+    return null;
+  }
+
+  /** True when `channelId` is another session's thread, so it must never be reused as a fallback. */
+  function isForeignThread(state: RuntimeUserState, channelId: string | null): boolean {
+    if (!channelId) return false;
+    return Object.values(state.threads ?? {}).includes(channelId);
+  }
+
+  /** A delivery target for `sessionId`, created on demand.
+   *
+   *  The routing, fallbacks, reuse and eviction live in `ensurePromptTarget` (pure module, injected
+   *  Discord calls, tested); this supplies the real calls and the user state. */
+  async function ensureSessionTarget(
+    userId: string,
+    state: RuntimeUserState,
+    sessionId: string,
+    name: string,
+  ): Promise<ChatTarget | null> {
+    return ensurePromptTarget(
+      {
+        fetchChannel: (channelId) => discord.channels.fetch(channelId),
+        createThread: async (parentChannelId, threadName) => {
+          const parent: any = await discord.channels.fetch(parentChannelId);
+          const thread = await parent.threads.create({
+            name: threadName,
+            autoArchiveDuration: 1440,
+            reason: `pi session ${name}`,
+          });
+          return thread.id as string;
+        },
+        persist,
+        inFlight: targetInFlight,
+        maxThreads: MAX_THREADS_PER_USER,
+        truncate: truncateLine,
+        log,
+      },
+      state,
+      { userId, sessionId, name },
+    );
+  }
+
+  async function isGuildChannel(channelId: string): Promise<boolean> {
+    try {
+      const channel: any = await discord.channels.fetch(channelId);
+      return Boolean(channel?.guildId);
+    } catch (error) {
+      // A deleted or invisible channel is not proof that this was a DM: log it and let the caller
+      // fall through its routes instead of silently choosing the DM one.
+      log.warn("channel lookup failed while routing a prompt", { channelId, error: String(error) });
+      return false;
+    }
+  }
+
+  /** One line in the watched channel when ANOTHER session asks, throttled per asking session. */
+  async function nudgeWatchedChannel(userId: string, state: RuntimeUserState, asked: string, name: string, target: ChatTarget): Promise<void> {
+    if (!shouldNudge({ watchedSessionId: state.watchedSessionId, askedSessionId: asked })) return;
+    // A watch without a channel (DM watch, or a thread that was never created) must still notify.
+    const channelId = nudgeChannelId({
+      watchedTargetChannelId: state.target?.channelId ?? null,
+      responseChannelId: state.responseChannelId ?? null,
+      askedChannelId: target.channelId,
+    });
+    if (!channelId) {
+      log.warn("nudge skipped: no channel to write to", { asked, watched: state.watchedSessionId });
+      return;
+    }
+    const now = Date.now();
+    const nudgeKey = `${userId}:${asked}`;
+    if (!nudgeDue(lastNudgeAt.get(nudgeKey), now)) return;
+    lastNudgeAt.set(nudgeKey, now);
+    try {
+      await sendText(channelId, `❓ **${truncateLine(name, 60)}** is asking a question → <#${target.channelId}>`);
+      log.info("nudged watched channel", { asked, watched: state.watchedSessionId });
+    } catch (error) {
+      log.debug("nudge failed", { asked, error: String(error) });
+    }
+  }
+
   // ── ask-user prompts ─────────────────────────────────────────────────────
   /**
    * Rendering the native controls stays here (buttons/menus are Discord's), but
@@ -666,17 +782,87 @@ export function setupDiscordBot(opts: {
   function onUiRequest(sessionId: string, event: any): void {
     if (event?.type === "ui-dismiss" || event?.type === "ui_prompt_end") {
       bridge.onUiEvent(sessionId, event);
+      // The question may still be waiting on a target: remember that it ended so the delivery
+      // below does not post a prompt nobody can answer.
+      if (typeof event?.id === "string") {
+        endedPrompts.add(event.id);
+        if (endedPrompts.size > 200) endedPrompts.delete(endedPrompts.values().next().value as string);
+      }
       return;
     }
     const method = (event.method || "input") as PromptMethod;
+    const name = sessionNameFor(sessionId);
+    // Name the asking session in the prompt itself: a DM has no thread title, so a bare question
+    // left the user guessing which session asked.
+    const cwd = sessionCwdFor(sessionId);
+    const titled = { ...event, title: promptHeader({ name, cwd, title: event.title, sessionId }) };
+    // A fresh request reuses ids across sessions; an old "ended" marker must not hide it.
+    if (typeof event?.id === "string") endedPrompts.delete(event.id);
     for (const [userId, state] of runtime) {
-      // Any session with a target gets its question, not just the watched one.
-      const target = state.targets?.[sessionId] ?? (state.watchedSessionId === sessionId ? state.target : null);
-      if (!target) continue;
-      const prompt = bridge.askUser(sessionId, event, state);
-      if (!prompt) continue;
-      // Delivery (with controls) happens in renderPrompt; this only records who was asked.
-      log.info("prompt forwarded to discord", { userId, sessionId, method, promptId: prompt.id });
+      // `/disconnect` stops OUTPUT, never questions: a user with no session is exactly who needs
+      // to be told that a session is asking something.
+      // ANY session's question is delivered: a target is created on demand when the user never
+      // picked this session, so a background agent waiting for an answer is never invisible.
+      void (async () => {
+        const known = state.targets?.[sessionId] ?? (state.watchedSessionId === sessionId ? state.target : null);
+        const target = known ?? await ensureSessionTarget(userId, state, sessionId, name);
+        if (!target) {
+          log.error("prompt dropped: no delivery target", { userId, sessionId, method });
+          return;
+        }
+        // The target is prompt-only, so a muted user still gets the question and no output.
+        if (endedPrompts.has(event?.id)) {
+          log.debug("prompt skipped: ended while creating its target", { userId, sessionId });
+          return;
+        }
+        const prompt = bridge.askUser(sessionId, titled, state);
+        if (!prompt) return;
+        // Delivery (with controls) happens in renderPrompt; this only records who was asked.
+        log.info("prompt forwarded to discord", { userId, sessionId, method, promptId: prompt.id, created: !known });
+        // Nudge on EVERY question from another session (throttled), not only the first one.
+        await nudgeWatchedChannel(userId, state, sessionId, name, target);
+      })().catch((error: unknown) => {
+        log.error("prompt delivery failed", { userId, sessionId, error: String(error) });
+      });
+    }
+  }
+
+  /** The session whose thread an interaction arrived in, if any. Two sessions sharing a prompt id
+   *  are told apart by the thread the button was posted in. */
+  function interactionThreadSession(interaction: any): string | null {
+    const channelId = interaction?.channelId ?? interaction?.channel?.id ?? null;
+    if (!channelId) return null;
+    for (const [userId, state] of runtime) {
+      for (const [sessionId, threadId] of Object.entries(state.threads ?? {})) {
+        if (threadId === channelId && state.pendingPrompts?.[sessionId]) return sessionId;
+      }
+    }
+    return null;
+  }
+
+  /** The checkout a session runs in, for the prompt header. */
+  function sessionCwdFor(sessionId: string): string | null {
+    try {
+      const sessions = getActiveSessions() ?? [];
+      const found = sessions.find((session: any) => (session?.sessionId ?? session?.id) === sessionId);
+      return typeof found?.cwd === "string" && found.cwd ? found.cwd : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** A readable name for a session, for thread titles and nudges. */
+  function sessionNameFor(sessionId: string): string {
+    try {
+      const sessions = getActiveSessions() ?? [];
+      const found = sessions.find((session: any) => (session?.sessionId ?? session?.id) === sessionId);
+      // Reuses the sessions-view rule: the checkout leads, because pi names a session after its
+      // first user message ("handoff-2026-11-06.md"), which says nothing about the project.
+      if (typeof found?.cwd === "string" && found.cwd) return checkoutName(found as any);
+      const named = typeof found?.name === "string" && found.name ? path.basename(found.name) : "";
+      return named || sessionId.slice(0, 8);
+    } catch {
+      return sessionId.slice(0, 8);
     }
   }
 
@@ -911,12 +1097,12 @@ export function setupDiscordBot(opts: {
       const modalOpen = customId.match(/^answer-modal:([^:]+)$/);
       if (modalOpen) {
         const promptId = modalOpen[1];
-        const owned = Object.entries(state.pendingPrompts ?? {}).find(([, prompt]) => prompt.id === promptId);
+        const owned = promptById(state.pendingPrompts, promptId, interactionThreadSession(interaction));
         if (!owned) {
           await acknowledge(interaction, "That prompt is no longer waiting.");
           return;
         }
-        const [, prompt] = owned;
+        const prompt = owned;
         const modal = new ModalBuilder()
           .setCustomId(`answer-submit:${promptId}`)
           .setTitle("Your answer")
@@ -937,8 +1123,10 @@ export function setupDiscordBot(opts: {
       const answer = customId.match(/^answer:([^:]+):(.+)$/);
       if (answer) {
         const [, promptId, choice] = answer;
-        const prompt = state.pendingPrompt;
-        if (!prompt || prompt.id !== promptId) {
+        // Any session's prompt: answering must reach the asking session, and the bridge is told
+        // WHICH one, so the user's watch does not move to it.
+        const prompt = promptById(state.pendingPrompts, promptId, interactionThreadSession(interaction));
+        if (!prompt) {
           await acknowledge(interaction, "That prompt is no longer waiting.");
           return;
         }
@@ -988,14 +1176,16 @@ export function setupDiscordBot(opts: {
     if (interaction.isModalSubmit?.()) {
       const submit = String(interaction.customId || "").match(/^answer-submit:([^:]+)$/);
       if (!submit) return;
-      const owned = Object.entries(state.pendingPrompts ?? {}).find(([, prompt]) => prompt.id === submit[1]);
+      const owned = promptById(state.pendingPrompts, submit[1], interactionThreadSession(interaction));
       if (!owned) {
         await acknowledge(interaction, "That prompt is no longer waiting.");
         return;
       }
-      const [promptSession, prompt] = owned;
+      const prompt = owned;
       const value = interaction.fields.getTextInputValue("value");
-      bridge.answer(state, value, (content) => void acknowledge(interaction, content), promptSession || prompt.sessionId);
+      // Scoped to the PROMPT's session: answering in another session's thread must not move the
+      // user's watch to it (bridge.answer takes the session explicitly).
+      bridge.answer(state, value, (content) => void acknowledge(interaction, content), prompt.sessionId);
       return;
     }
 
@@ -1194,6 +1384,10 @@ export function setupDiscordBot(opts: {
     state.threadId = null;
     state.target = null;
     state.targets = {};
+    // No prompts for a disconnected user until they talk to the bot again: otherwise the next
+    // question from any session would create a thread and notify them anyway.
+    state.deliveryMuted = true;
+    state.promptOnlyTargets = {};
     // Hydration rebuilds targets from threads and streams point at messages in
     // those threads, so both must go or a restart resurrects the watch.
     state.threads = {};
@@ -1210,7 +1404,19 @@ export function setupDiscordBot(opts: {
   function resolvePrompt(prompt: PendingPrompt, raw: string, state: RuntimeUserState, interaction: any): void {
     // Scoped to the prompt's session: cancelling in one thread must not stop
     // another session's waiting agent (Qodo 1eec9a4d).
-    bridge.answer(state, raw, (content) => void acknowledge(interaction, content), prompt.sessionId);
+    const answered = bridge.answer(state, raw, (content) => void acknowledge(interaction, content), prompt.sessionId);
+    if (answered) releasePromptOnlyTarget(state, prompt.sessionId);
+  }
+
+  /** A session that asked a question is not a session the user watches: once the answer is in, its
+   *  target goes away so its output stops streaming into a thread nobody asked to follow. The
+   *  thread itself is kept and reused by the next question. */
+  function releasePromptOnlyTarget(state: RuntimeUserState, sessionId: string): void {
+    if (!state.promptOnlyTargets?.[sessionId]) return;
+    delete state.promptOnlyTargets[sessionId];
+    if (state.watchedSessionId !== sessionId && state.targets) delete state.targets[sessionId];
+    persist();
+    log.debug("prompt-only target released", { sessionId });
   }
 
   /**
@@ -1226,6 +1432,10 @@ export function setupDiscordBot(opts: {
       return;
     }
     state.watchedSessionId = client.session.sessionId;
+    // Watching is an explicit request for updates: a previous /disconnect no longer applies, and
+    // the session is no longer question-only — otherwise hydration would skip its target on restart.
+    state.deliveryMuted = false;
+    if (state.promptOnlyTargets) delete state.promptOnlyTargets[sessionId];
     const name = sessionName(state.watchedSessionId);
     state.threads = state.threads ?? {};
 
@@ -1269,6 +1479,8 @@ export function setupDiscordBot(opts: {
     if (!threadId) {
       try {
         state.responseChannelId = (await interaction.user.createDM()).id;
+        // A DM cannot hold a thread: record it so it is never offered as a thread parent.
+        state.dmChannelId = state.responseChannelId;
       } catch {
         log.warn("could not open DM", { user: interaction.user.username });
       }
@@ -1610,6 +1822,8 @@ export function setupDiscordBot(opts: {
     }
 
     const state = userState(userId);
+    // Talking to the bot again re-enables delivery after a /disconnect.
+    state.deliveryMuted = false;
     // Threads are guild channels; only ours are accepted. A message is routed by
     // the SESSION its thread belongs to, so writing in an older session's thread
     // cannot spill into whichever session is currently watched (Qodo 0d2dca6d).
@@ -1625,6 +1839,7 @@ export function setupDiscordBot(opts: {
     state.updatedAt = Date.now();
     if (!message.guildId) {
       state.responseChannelId = message.channelId;
+      state.dmChannelId = message.channelId;
       if (!state.threadId) {
         state.target = { channelId: message.channelId, threadId: null };
         state.targets = state.targets ?? {};
@@ -1659,7 +1874,11 @@ export function setupDiscordBot(opts: {
       return;
     }
 
-    if (state.pendingPrompt) {
+    // A prompt can be pending for the session this THREAD belongs to even though the user is
+    // watching a different one — that is the cross-session case: answering here must reach the
+    // asking session, not the watched one.
+    const threadHasPrompt = Boolean(threadSessionId && (state.pendingPrompts ?? {})[threadSessionId]);
+    if (state.pendingPrompt || threadHasPrompt) {
       const outcome = bridge.handleInbound(
         state, text,
         (content) => void message.reply(content).catch(() => {}),
@@ -1668,7 +1887,7 @@ export function setupDiscordBot(opts: {
       if (outcome === "answered" || outcome === "cancelled") return;
       if (outcome === "expired") {
         await message.reply("The waiting prompt expired; sending your message as a new prompt.").catch(() => {});
-      } else if (outcome === "not-an-answer" && state.pendingPrompt?.method === "confirm" && text) {
+      } else if (outcome === "not-an-answer" && (state.pendingPrompt?.method === "confirm" || threadHasPrompt) && text) {
         // Not an answer to a yes/no question, but it IS a message the user meant
         // to send: forward it and keep the prompt available (Qodo 85cacb2c).
         await message.reply("That isn't an answer to the pending question (still waiting). Forwarding it as a prompt.").catch(() => {});

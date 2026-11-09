@@ -20,7 +20,7 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
 import {
-	buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, type BroadcastTargetResult } from "./coms-shared.js";
+	buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, type BroadcastTargetResult } from "./coms-shared.js";
 import { appendHistoryRecord, queryHistoryRecords, truncatePreview, type HistoryRecord } from "./coms-history.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import * as net from "node:net";
@@ -133,6 +133,8 @@ interface ProgressEnvelope extends Envelope {
 
 interface AgentCard {
 	name: string;
+	/** Socket of the peer: a card without it cannot be recognised as dead. */
+	endpoint?: string;
 	purpose: string;
 	model: string;
 	color: string;
@@ -150,6 +152,8 @@ interface Pong {
 }
 
 interface RegistryEntry {
+	/** Entry point that activated coms: `user` (/coms start) or `agent` (coms_start tool). */
+	origin?: string | null;
 	coms_session_id: string;
 	name: string;
 	purpose: string;
@@ -658,6 +662,7 @@ export default function (pi: ExtensionAPI) {
 		model: string;
 		endpoint: string;
 		registryFile: string;
+		origin?: string | null;
 		pi_session_id: string;
 	} | null = null;
 	const peerCards: Map<string, AgentCard & { staleCount: number }> = new Map();
@@ -735,6 +740,9 @@ export default function (pi: ExtensionAPI) {
 				busy: processingInbound,
 				heartbeat_at: nowIso(),
 				pi_session_id: (globalThis as any).__piConfigSessionId || identity.pi_session_id || "",
+				// Rebuilt fields win: this writer rewrites the whole entry on every heartbeat, so a
+				// field missing here vanishes from the registry a few seconds after activation.
+				origin: identity.origin ?? null,
 			};
 			writeRegistryAtomic(live, identity.project);
 			updatePingWorkerCard();
@@ -1570,6 +1578,11 @@ export default function (pi: ExtensionAPI) {
 
 		// 4. Build + write registry entry atomically.
 		const piSessionId = (globalThis as any).__piConfigSessionId || "";
+		/** Which entry point activated coms: the `coms_start` tool, `/coms start`, or `pi --coms`. */
+		const activationOrigin = (() => {
+			const entry = (globalThis as any).__comsSelfOrigin;
+			return entry === "tool" || entry === "cli" ? entry : "slash";
+		})();
 		const entry: RegistryEntry = {
 			coms_session_id: comsSessionId,
 			name,
@@ -1583,6 +1596,7 @@ export default function (pi: ExtensionAPI) {
 			explicit,
 			version: 1,
 			pi_session_id: piSessionId,
+			origin: activationOrigin,
 		};
 		let registryFile: string;
 		try {
@@ -1605,7 +1619,11 @@ export default function (pi: ExtensionAPI) {
 			endpoint,
 			registryFile,
 			pi_session_id: piSessionId,
+			origin: activationOrigin,
 		};
+		// Publish who we are so an activation path can VERIFY that a peer really exists (a socket
+		// bind can fail and be swallowed upstream, which used to look like a successful start).
+		(globalThis as any).__comsSelf = { sessionId: comsSessionId, name, project, endpoint, origin: activationOrigin };
 		includeExplicit = false;
 		displayProject = project;
 
@@ -1636,6 +1654,7 @@ export default function (pi: ExtensionAPI) {
 			if (entry.explicit && !includeExplicit) continue;
 			peerCards.set(entry.coms_session_id, {
 				name: entry.name,
+				endpoint: entry.endpoint,
 				purpose: entry.purpose,
 				model: entry.model,
 				color: entry.color,
@@ -1681,6 +1700,8 @@ export default function (pi: ExtensionAPI) {
 - coms_task_list — list tasks on a peer's task list without sending a message
 - coms_task_get — get a specific task from a peer's task list
 - coms_task_update — update a task you created on a peer's task list
+- coms_peers — list every peer on this machine from the registry (all projects, live state); filter by project/name
+- coms_peer_kill — stop a peer by name (add project when ambiguous) or all peers (all:true)
 
 ## Task handling
 - Tasks may appear in your task widget at any time — check TaskList when prompted to work
@@ -1743,7 +1764,7 @@ Do not respond to this message.`;
 								} else {
 									// New peer
 									const card: AgentCard & { staleCount: number } = {
-										name: entry.name, purpose: entry.purpose, model: entry.model,
+										name: entry.name, endpoint: entry.endpoint, purpose: entry.purpose, model: entry.model,
 										color: entry.color, context_used_pct: entry.context_used_pct ?? 0,
 										queue_depth: entry.queue_depth ?? 0, busy: entry.busy ?? false, tasks_summary: null, staleCount: 0,
 									};
@@ -1811,7 +1832,7 @@ Do not respond to this message.`;
 							emitComsPeers();
 						} else if (entry && entry.coms_session_id && !peerCards.has(entry.coms_session_id)) {
 							const card: AgentCard & { staleCount: number } = {
-								name: entry.name, purpose: entry.purpose, model: entry.model,
+								name: entry.name, endpoint: entry.endpoint, purpose: entry.purpose, model: entry.model,
 								color: entry.color, context_used_pct: entry.context_used_pct ?? 0,
 								queue_depth: entry.queue_depth ?? 0, busy: entry.busy ?? false, tasks_summary: null, staleCount: 0,
 							};
@@ -2325,6 +2346,12 @@ Do not respond to this message.`;
 			const projectFilter = params.project ?? identity?.project ?? "default";
 			const projects = projectFilter === "*" ? listProjects() : [projectFilter];
 
+			// Drop cards whose socket is gone BEFORE listing: a killed peer must not be advertised.
+			for (const deadId of deadPeerCardIds(peerCards as Map<string, { endpoint?: string | null }>, (p) => fs.existsSync(p))) {
+				const card: any = peerCards.get(deadId);
+				peerCards.delete(deadId);
+				log.debug("coms_list dropped dead peer", { peer: card?.name ?? deadId, endpoint: card?.endpoint });
+			}
 			// Read from peerCards — no pinging needed
 			const agents = [...peerCards.entries()]
 				.filter(([sid]) => identity && sid !== identity.coms_session_id)
@@ -3891,7 +3918,8 @@ Do not respond to this message.`;
 
 	const handleSigint = () => { log.info("signal_received", { signal: "SIGINT" }); void cleanShutdown(); };
 	const handleSigterm = () => { log.info("signal_received", { signal: "SIGTERM" }); void cleanShutdown(); };
-	pi.on("session_shutdown", async () => { await cleanShutdown(); });
+	pi.on("session_shutdown", async () => {
+		(globalThis as any).__comsSelf = null; await cleanShutdown(); });
 	process.on("SIGINT", handleSigint);
 	process.on("SIGTERM", handleSigterm);
 }

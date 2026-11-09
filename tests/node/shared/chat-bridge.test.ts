@@ -480,3 +480,147 @@ describe("late delivery failure", () => {
     assert.equal(state.pendingPrompts?.["s1"]?.id, "fast", "a late failure must not delete the newer question");
   });
 });
+
+/**
+ * Answering a prompt delivered from ANOTHER session is not a session switch.
+ *
+ * The thread is a delivery address: whatever the user was watching before the answer — nothing, or
+ * session A — is what they are watching after it. These assert the two states that must not move.
+ */
+describe("answering a cross-session prompt keeps the user's watch", () => {
+  function setupTwoSessions() {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("A", { channelId: "thread-a" });
+    state.threadId = "thread-a";
+    state.target = { channelId: "thread-a", threadId: "thread-a" };
+    state.targets = { A: { channelId: "thread-a", threadId: "thread-a" }, B: { channelId: "thread-b", threadId: "thread-b" } };
+    const states = new Map([["user", state]]);
+    const payloads: Array<{ sessionId: string; payload: Record<string, unknown> }> = [];
+    const bridge = createChatBridge({
+      adapter: mem.adapter, users: () => states.entries(),
+      sendToSession: (sessionId, payload) => { payloads.push({ sessionId, payload }); return true; },
+    });
+    return { bridge, state, payloads };
+  }
+
+  it("answers the asking session", () => {
+    const { bridge, state, payloads } = setupTwoSessions();
+    bridge.askUser("B", { id: "qB", method: "confirm", title: "Deploy?" }, state);
+    const before = { watched: state.watchedSessionId, thread: state.threadId, target: state.target };
+
+    assert.equal(bridge.answer(state, "yes", () => {}, "B"), true);
+
+    assert.equal(payloads.at(-1)?.sessionId, "B", "the answer reaches the session that asked");
+  });
+
+  it("leaves the watched session and thread untouched", () => {
+    const { bridge, state } = setupTwoSessions();
+    bridge.askUser("B", { id: "qB2", method: "confirm", title: "Deploy?" }, state);
+    const before = { watched: state.watchedSessionId, thread: state.threadId, target: state.target };
+
+    assert.equal(bridge.answer(state, "yes", () => {}, "B"), true);
+
+    assert.equal(state.watchedSessionId, before.watched, "still watching A");
+    assert.equal(state.threadId, before.thread, "still in A's thread");
+    assert.deepEqual(state.target, before.target, "output still goes to A");
+  });
+
+  it("does not invent a watch for a user who had none", () => {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime(null, null);
+    // This is what ensureSessionTarget creates for a never-watched session: a DELIVERY TARGET for
+    // B, with no watch, no current thread — a target is an address, not a subscription.
+    state.targets = { B: { channelId: "thread-b", threadId: "thread-b" } };
+    const states = new Map([["user", state]]);
+    const bridge = createChatBridge({
+      adapter: mem.adapter, users: () => states.entries(), sendToSession: () => true,
+    });
+    bridge.askUser("B", { id: "qB", method: "input", title: "Name?" }, state);
+    assert.equal(bridge.handleInbound(state, "meni", () => {}, "B"), "answered");
+    assert.equal(state.watchedSessionId, null, "answering does not subscribe the user to B");
+    assert.equal(state.threadId ?? null, null, "and does not make B's thread the current one");
+  });
+});
+
+describe("a prompt-only target is not a subscription", () => {
+  function setup() {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("A", { channelId: "thread-a" });
+    state.threadId = "thread-a";
+    state.target = { channelId: "thread-a", threadId: "thread-a" };
+    state.targets = { A: { channelId: "thread-a", threadId: "thread-a" } };
+    state.promptOnlyTargets = {};
+    const states = new Map([["user", state]]);
+    const bridge = createChatBridge({ adapter: mem.adapter, users: () => states.entries(), sendToSession: () => true });
+    return { bridge, state, mem };
+  }
+
+  it("does not stream a session that only received a question target", async () => {
+    // The leak: a session that asked a question got a target, and its whole output streamed.
+    const { bridge, state, mem } = setup();
+    state.targets!.B = { channelId: "thread-b", threadId: "thread-b" };
+    state.promptOnlyTargets = { B: true };
+
+    bridge.onPiEvent("B", { type: "agent_start" });
+    bridge.onPiEvent("B", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "leaked" } });
+    bridge.onPiEvent("B", { type: "message_end", message: { role: "assistant" } });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+
+    assert.equal(mem.sent.filter((m) => m.target.channelId === "thread-b").length, 0, "nothing from B reaches its thread");
+  });
+
+  it("still streams the session the user watches", async () => {
+    const { bridge, mem } = setup();
+    bridge.onPiEvent("A", { type: "agent_start" });
+    bridge.onPiEvent("A", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hello" } });
+    bridge.onPiEvent("A", { type: "message_end", message: { role: "assistant" } });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.ok(mem.sent.length > 0, "the watched session still streams");
+  });
+
+  it("streams a prompt-only session once the user actually selects it", async () => {
+    // Watching is the explicit opt-in that overrides the prompt-only marker.
+    const { bridge, state, mem } = setup();
+    state.targets!.B = { channelId: "thread-b", threadId: "thread-b" };
+    state.promptOnlyTargets = { B: true };
+    state.watchedSessionId = "B";
+    state.target = state.targets!.B;
+    bridge.onPiEvent("B", { type: "agent_start" });
+    bridge.onPiEvent("B", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "watched" } });
+    bridge.onPiEvent("B", { type: "message_end", message: { role: "assistant" } });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.ok(mem.sent.some((m) => m.target.channelId === "thread-b"), "a watched session streams");
+  });
+});
+
+describe("disconnect silences output, not questions", () => {
+  it("streams nothing for a muted user", async () => {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("A", { channelId: "c" });
+    state.target = { channelId: "c", threadId: null };
+    state.targets = { A: { channelId: "c", threadId: null } };
+    state.deliveryMuted = true;
+    const states = new Map([["u", state]]);
+    const bridge = createChatBridge({ adapter: mem.adapter, users: () => states.entries(), sendToSession: () => true });
+
+    bridge.onPiEvent("A", { type: "agent_start" });
+    bridge.onPiEvent("A", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hidden" } });
+    bridge.onPiEvent("A", { type: "message_end", message: { role: "assistant" } });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+
+    assert.equal(mem.sent.length, 0, "a disconnected user gets no output");
+  });
+
+  it("still forwards a question while muted", () => {
+    // The point of the feature: no session watched must not mean no notification.
+    const mem = memoryAdapter();
+    const state = initialChatRuntime(null, null);
+    state.deliveryMuted = true;
+    state.targets = { B: { channelId: "dm", threadId: null } };
+    const states = new Map([["u", state]]);
+    const bridge = createChatBridge({ adapter: mem.adapter, users: () => states.entries(), sendToSession: () => true });
+
+    const prompt = bridge.askUser("B", { id: "q1", method: "input", title: "Anyone?" }, state);
+    assert.equal(prompt?.sessionId, "B", "the question is delivered even though output is muted");
+  });
+});
