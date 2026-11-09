@@ -109,6 +109,14 @@ export function registerComs(pi: ExtensionAPI) {
         }
         try {
             await state.capturedSessionStart({}, ctx);
+            // The upstream start handler catches socket-bind and registry failures and returns, so
+            // a normal return is not proof of a peer. Verify the identity it published.
+            const self = (globalThis as any).__comsSelf;
+            if (!self?.endpoint || (process.platform !== "win32" && !existsSync(self.endpoint))) {
+                log.error("coms_activation_unverified", { name: self?.name ?? null, endpoint: self?.endpoint ?? null });
+                setComsActive(false);
+                return { ok: false, message: "📡 coms start failed: no peer socket was created (see ~/.pi/logs/coms)." };
+            }
             state.active = true;
             setComsActive(true);
             persistState(pi, PERSIST_KEY, state);
@@ -328,8 +336,12 @@ export function registerComs(pi: ExtensionAPI) {
         return rows;
     };
     const rowAlive = (row: RegistryRow): boolean => {
-        // Heartbeat first: a reused pid would otherwise make a dead peer look alive.
-        if (!isFreshHeartbeat(row.heartbeatAt, Date.now())) return false;
+        // Heartbeat first: a reused pid would otherwise make a dead peer look alive. The FIRST
+        // registry write has no heartbeat yet, so a just-spawned peer falls back to its start time
+        // instead of vanishing for a keepalive interval.
+        const fresh = isFreshHeartbeat(row.heartbeatAt, Date.now()) ||
+            (!row.heartbeatAt && isFreshHeartbeat(row.startedAt, Date.now()));
+        if (!fresh) return false;
         // On Windows the endpoint is a named pipe, which fs.existsSync cannot see.
         if (process.platform !== "win32" && row.endpoint && !existsSync(row.endpoint)) return false;
         if (!row.pid) return true; // no pid claim: socket + heartbeat decided
@@ -376,6 +388,8 @@ export function registerComs(pi: ExtensionAPI) {
                 try {
                     const supervision = JSON.parse(readFileSync(path.join(supervisedPeersDir(), file), "utf-8"));
                     if (supervision?.project && supervision.project !== row.project) continue;
+                    // Stopped/exited supervisors keep their record; its pid may already be reused.
+                    if (supervision?.stoppedAt || supervision?.exitedAt || supervision?.failedAt) continue;
                     // Only signal a supervisor whose recorded child IS this peer: a reused pid would
                     // otherwise make us kill an unrelated process.
                     if (Number.isInteger(supervision?.pid) && supervision?.childPid === row.pid) {

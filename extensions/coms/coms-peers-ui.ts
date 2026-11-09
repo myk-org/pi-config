@@ -101,7 +101,7 @@ export async function openComsPeersOverlay(
               `socket    ${current.endpoint || "?"}`,
               `heartbeat ${age === null || age === undefined ? "unknown" : `${age}s ago`} (last keep-alive)`,
               `context   ${current.contextUsedPct === null ? "?" : `${Math.round(current.contextUsedPct)}%`}`,
-              `started   ${current.startedAt ?? "?"}`,
+              // The registry rewrites started_at on every heartbeat, so it is not a real start time.
               "",
             ];
             if (status) lines.push(status);

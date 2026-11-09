@@ -559,6 +559,8 @@ export function formatComsResponseText(targetName: string, response: any, error:
 /** #968 C: pidash browser peer-list payload — pure projection of live cards. */
 export interface ComsPeerCard {
 	name: string;
+	/** The peer's socket: without it, a vanished peer cannot be told from a live one. */
+	endpoint?: string;
 	purpose: string;
 	model: string;
 	color: string;

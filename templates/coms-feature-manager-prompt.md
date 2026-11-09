@@ -77,8 +77,10 @@ nohup node "$SUPERVISOR" <peer-name> --project "<project namespace>" --cwd "<che
   --purpose "<role>" >/dev/null 2>&1 &
 ```
 
-where `SUPERVISOR` is `~/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/coms-peer-supervisor.mjs`
-when installed from npm, else `scripts/coms-peer-supervisor.mjs` in this checkout.
+```bash
+SUPERVISOR="$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/coms-peer-supervisor.mjs"
+[ -f "$SUPERVISOR" ] || SUPERVISOR="$PWD/scripts/coms-peer-supervisor.mjs"
+```
 
 (The supervisor falls back to this checkout's `scripts/coms-peer-supervisor.mjs` when the package
 copy is absent.) It keeps the peer alive (a peer has no lifetime of its own — it lives until
@@ -87,7 +89,9 @@ killed), scrubs the session identity so the peer gets its own session, and recor
 
 ### Step 4: Verify the Peers
 
-1. `coms_peers` — every spawned peer must show `● ... running` with a supervisor and peer pid.
+1. `coms_peers` — every spawned peer must appear as `● <name> · <project> (idle|busy ctx:N% pid:<peer pid>)`.
+   The list shows the PEER's pid, not the supervisor's; the supervisor pid lives in
+   `~/.pi/coms/peers/<name>@<project>.json`.
 2. `coms_list` — the same names must appear as connected peers.
 3. `~/.pi/logs/coms-peers/<name>@<project>.log` — the supervisor's own account of the start; a peer
    has no screen to watch, so this log and the live state in `coms_peers` are what you inspect.

@@ -133,6 +133,8 @@ interface ProgressEnvelope extends Envelope {
 
 interface AgentCard {
 	name: string;
+	/** Socket of the peer: a card without it cannot be recognised as dead. */
+	endpoint?: string;
 	purpose: string;
 	model: string;
 	color: string;
@@ -1606,6 +1608,9 @@ export default function (pi: ExtensionAPI) {
 			registryFile,
 			pi_session_id: piSessionId,
 		};
+		// Publish who we are so an activation path can VERIFY that a peer really exists (a socket
+		// bind can fail and be swallowed upstream, which used to look like a successful start).
+		(globalThis as any).__comsSelf = { sessionId: comsSessionId, name, project, endpoint };
 		includeExplicit = false;
 		displayProject = project;
 
@@ -1636,6 +1641,7 @@ export default function (pi: ExtensionAPI) {
 			if (entry.explicit && !includeExplicit) continue;
 			peerCards.set(entry.coms_session_id, {
 				name: entry.name,
+				endpoint: entry.endpoint,
 				purpose: entry.purpose,
 				model: entry.model,
 				color: entry.color,
@@ -1745,7 +1751,7 @@ Do not respond to this message.`;
 								} else {
 									// New peer
 									const card: AgentCard & { staleCount: number } = {
-										name: entry.name, purpose: entry.purpose, model: entry.model,
+										name: entry.name, endpoint: entry.endpoint, purpose: entry.purpose, model: entry.model,
 										color: entry.color, context_used_pct: entry.context_used_pct ?? 0,
 										queue_depth: entry.queue_depth ?? 0, busy: entry.busy ?? false, tasks_summary: null, staleCount: 0,
 									};
@@ -1813,7 +1819,7 @@ Do not respond to this message.`;
 							emitComsPeers();
 						} else if (entry && entry.coms_session_id && !peerCards.has(entry.coms_session_id)) {
 							const card: AgentCard & { staleCount: number } = {
-								name: entry.name, purpose: entry.purpose, model: entry.model,
+								name: entry.name, endpoint: entry.endpoint, purpose: entry.purpose, model: entry.model,
 								color: entry.color, context_used_pct: entry.context_used_pct ?? 0,
 								queue_depth: entry.queue_depth ?? 0, busy: entry.busy ?? false, tasks_summary: null, staleCount: 0,
 							};
@@ -3899,7 +3905,8 @@ Do not respond to this message.`;
 
 	const handleSigint = () => { log.info("signal_received", { signal: "SIGINT" }); void cleanShutdown(); };
 	const handleSigterm = () => { log.info("signal_received", { signal: "SIGTERM" }); void cleanShutdown(); };
-	pi.on("session_shutdown", async () => { await cleanShutdown(); });
+	pi.on("session_shutdown", async () => {
+		(globalThis as any).__comsSelf = null; await cleanShutdown(); });
 	process.on("SIGINT", handleSigint);
 	process.on("SIGTERM", handleSigterm);
 }
