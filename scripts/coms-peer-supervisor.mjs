@@ -16,6 +16,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+// Provenance, read before the env is scrubbed below: a supervisor started from an agent's bash
+// tool inherits the parent session id, a human's own shell does not.
+const spawnerSessionId = process.env.__PI_CONFIG_SESSION_ID || process.env.__PI_PARENT_SESSION_ID || null;
+const createdBy = spawnerSessionId ? "agent" : "user";
+
 const [cname, ...rest] = process.argv.slice(2);
 if (!cname) {
   console.error("usage: coms-peer-supervisor.mjs <cname> [--project p] [--cwd d] [--purpose text]");
@@ -72,6 +77,8 @@ const startedAt = new Date().toISOString();
 const record = (extra = {}) => {
   const state = {
     cname,
+    createdBy,
+    createdBySession: spawnerSessionId,
     pid: process.pid,
     childPid: child.pid ?? null,
     project,

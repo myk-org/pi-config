@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { deadPeerCardIds } from "../../../extensions/coms/coms-shared.js";
-import { filterRegistry, formatPeerTable, isFreshHeartbeat, planPeerKills, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
+import { describePeerOrigin, filterRegistry, formatPeerTable, isFreshHeartbeat, planPeerKills, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
 
 describe("deadPeerCardIds", () => {
   const cards = () => new Map<string, { endpoint?: string | null; name?: string }>([
@@ -137,5 +137,26 @@ describe("planPeerKills", () => {
     const rows = [row(), row({ project: "p2", name: "peer2", pid: 200 })];
     const plan = planPeerKills({ ...base, rows, request: { all: true, project: "p2" }, supervisedKeys: new Set(["p1::peer1", "p2::peer2"]) });
     assert.deepEqual(plan.map((e) => e.project), ["p2"]);
+  });
+});
+
+describe("describePeerOrigin", () => {
+  const row = (over: Partial<RegistryRow> = {}): RegistryRow => ({
+    project: "p", name: "peer", pid: 1, cwd: "/w", purpose: "", endpoint: "/s",
+    busy: false, queueDepth: null, contextUsedPct: null, startedAt: null, heartbeatAt: null, ...over,
+  });
+
+  it("prefers the supervisor record over the registry's activation origin", () => {
+    assert.deepEqual(describePeerOrigin(row({ createdBy: "agent", origin: "user" })), { by: "agent", via: "supervisor" });
+  });
+
+  it("falls back to how coms was activated", () => {
+    assert.deepEqual(describePeerOrigin(row({ origin: "agent" })), { by: "agent", via: "coms_start" });
+    assert.deepEqual(describePeerOrigin(row({ origin: "user" })), { by: "user", via: "/coms start" });
+  });
+
+  it("says unknown rather than guessing user for a peer predating both fields", () => {
+    assert.deepEqual(describePeerOrigin(row()), { by: "unknown", via: "no record" });
+    assert.deepEqual(describePeerOrigin(row({ createdBy: "", origin: "garbage" })), { by: "unknown", via: "no record" });
   });
 });

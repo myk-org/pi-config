@@ -91,7 +91,7 @@ export function registerComs(pi: ExtensionAPI) {
     /** Activate coms for THIS session — the one path used by `/coms start`, `pi --coms …` and the
      *  `coms_start` tool. A tool is how an already-open session (or an agent) enables coms without a
      *  slash command and without spawning a new pi. */
-    const activateComs = async (flagParts: string[], ctx: any): Promise<{ ok: boolean; message: string }> => {
+    const activateComs = async (flagParts: string[], ctx: any, origin: "user" | "agent" = "user"): Promise<{ ok: boolean; message: string }> => {
         if (state.active) return { ok: true, message: "📡 coms already active" };
         state.flagValues = new Map();
         parseFlags(flagParts, state.flagValues);
@@ -108,6 +108,7 @@ export function registerComs(pi: ExtensionAPI) {
             return { ok: false, message: "📡 coms: internal error — no session handler captured" };
         }
         try {
+            (globalThis as any).__comsSelfOrigin = origin;
             await state.capturedSessionStart({}, ctx);
             // The upstream start handler catches socket-bind and registry failures and returns, so
             // a normal return is not proof of a peer. Verify the identity it published.
@@ -166,7 +167,7 @@ export function registerComs(pi: ExtensionAPI) {
             const projectFilter = parts.includes("--project") ? projectFlag : undefined;
             if (ctx?.hasUI) {
                 await openComsPeersOverlay(ctx, {
-                    listPeers: () => filterRegistry(readRegistryRows().filter(rowAlive), { project: projectFilter }),
+                    listPeers: () => filterRegistry(attachCreatedBy(readRegistryRows()).filter(rowAlive), { project: projectFilter }),
                     killPeer: (row) => killPeers({ name: row.name, project: row.project }).text,
                     killAll: () => killPeers({ all: true, project: projectFilter }).text,
                 });
@@ -212,7 +213,7 @@ export function registerComs(pi: ExtensionAPI) {
                 ]);
             }
             if (completed[0] === "kill") {
-                const names = readRegistryRows().filter(rowAlive).map((row) => row.name);
+                const names = attachCreatedBy(readRegistryRows()).filter(rowAlive).map((row) => row.name);
                 return mk([...names.map((n) => ({ v: n, l: n, d: "Stop this peer" })), { v: "all", l: "all", d: "Stop every running peer" }]);
             }
             if (completed[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
@@ -251,7 +252,7 @@ export function registerComs(pi: ExtensionAPI) {
                 if (params?.explicit === true) parts.push("--explicit");
                 const useCtx = ctx ?? liveCtx;
                 if (!useCtx) return { content: [{ type: "text" as const, text: "coms_start: no live session context — try again once the session is ready." }], details: { ok: false, active: false } };
-                const result = await activateComs(parts, useCtx);
+                const result = await activateComs(parts, useCtx, "agent");
                 return { content: [{ type: "text" as const, text: result.message }], details: { ok: result.ok, active: state.active } };
             },
         });
@@ -317,9 +318,20 @@ export function registerComs(pi: ExtensionAPI) {
                         contextUsedPct: typeof entry.context_used_pct === "number" ? entry.context_used_pct : null,
                         startedAt: typeof entry.started_at === "string" ? entry.started_at : null,
                         heartbeatAt: typeof entry.heartbeat_at === "string" ? entry.heartbeat_at : null,
+                        origin: typeof entry.origin === "string" ? entry.origin : null,
+                        createdBy: null,
                     });
                 } catch { /* malformed entry: skip, never fail the list */ }
             }
+        }
+        return rows;
+    };
+    /** Provenance lives in the supervisor record; attach it so the list and its detail can show it. */
+    const attachCreatedBy = (rows: RegistryRow[]): RegistryRow[] => {
+        const records = readSupervisionRecords();
+        for (const row of rows) {
+            const record = records.find((r: any) => r?.cname === row.name && (r?.project ?? "default") === row.project);
+            if (record && typeof record.createdBy === "string") row.createdBy = record.createdBy;
         }
         return rows;
     };
@@ -337,7 +349,7 @@ export function registerComs(pi: ExtensionAPI) {
     };
 
     const listPeers = (params: { project?: string; name?: string }): string =>
-        formatPeerTable(filterRegistry(readRegistryRows().filter(rowAlive), { project: params.project, name: params.name }));
+        formatPeerTable(filterRegistry(attachCreatedBy(readRegistryRows()).filter(rowAlive), { project: params.project, name: params.name }));
 
     /** Supervisor records, read from every location a peer may have used: the configured
      *  `coms_dir` AND `PI_COMS_DIR`. Reading one made a configured peer unkillable. */
@@ -358,7 +370,7 @@ export function registerComs(pi: ExtensionAPI) {
     };
 
     const killPeers = (params: { name?: string; project?: string; all?: boolean }): { text: string; killed: number } => {
-        const rows = readRegistryRows();
+        const rows = attachCreatedBy(readRegistryRows());
         const records = readSupervisionRecords();
         const plan = planPeerKills({
             rows,

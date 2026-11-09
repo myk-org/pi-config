@@ -7,6 +7,7 @@
  * headless peer can actually expose — it has no screen to watch.
  */
 import type { Component } from "@earendil-works/pi-tui";
+import { describePeerOrigin } from "./coms-peers.js";
 import { OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -93,10 +94,12 @@ export async function openComsPeersOverlay(
           getBodyLines: () => {
             const current = deps.listPeers().find((p) => `${p.project}:${p.name}` === peerId) || row;
             const age = deps.heartbeatAgeSeconds?.(current);
+            const origin = describePeerOrigin(current);
             const lines = [
               `cwd       ${current.cwd || "?"}`,
               `purpose   ${current.purpose || "—"}`,
               `state     ${current.busy ? "busy" : "idle"}${current.queueDepth ? ` · queue ${current.queueDepth}` : ""}`,
+              `created   ${origin.by === "unknown" ? "unknown (no record)" : origin.by} · via ${origin.via}`,
               `pid       ${current.pid ?? "?"}`,
               `socket    ${current.endpoint || "?"}`,
               `heartbeat ${age === null || age === undefined ? "unknown" : `${age}s ago`} (last keep-alive)`,

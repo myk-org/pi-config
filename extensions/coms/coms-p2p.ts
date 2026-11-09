@@ -152,6 +152,8 @@ interface Pong {
 }
 
 interface RegistryEntry {
+	/** Entry point that activated coms: `user` (/coms start) or `agent` (coms_start tool). */
+	origin?: string | null;
 	coms_session_id: string;
 	name: string;
 	purpose: string;
@@ -660,6 +662,7 @@ export default function (pi: ExtensionAPI) {
 		model: string;
 		endpoint: string;
 		registryFile: string;
+		origin?: string | null;
 		pi_session_id: string;
 	} | null = null;
 	const peerCards: Map<string, AgentCard & { staleCount: number }> = new Map();
@@ -737,6 +740,9 @@ export default function (pi: ExtensionAPI) {
 				busy: processingInbound,
 				heartbeat_at: nowIso(),
 				pi_session_id: (globalThis as any).__piConfigSessionId || identity.pi_session_id || "",
+				// Rebuilt fields win: this writer rewrites the whole entry on every heartbeat, so a
+				// field missing here vanishes from the registry a few seconds after activation.
+				origin: identity.origin ?? null,
 			};
 			writeRegistryAtomic(live, identity.project);
 			updatePingWorkerCard();
@@ -1572,6 +1578,8 @@ export default function (pi: ExtensionAPI) {
 
 		// 4. Build + write registry entry atomically.
 		const piSessionId = (globalThis as any).__piConfigSessionId || "";
+		/** Which entry point activated coms: the coms_start tool (agent) or /coms start (user). */
+		const activationOrigin = (globalThis as any).__comsSelfOrigin === "agent" ? "agent" : "user";
 		const entry: RegistryEntry = {
 			coms_session_id: comsSessionId,
 			name,
@@ -1585,6 +1593,7 @@ export default function (pi: ExtensionAPI) {
 			explicit,
 			version: 1,
 			pi_session_id: piSessionId,
+			origin: activationOrigin,
 		};
 		let registryFile: string;
 		try {
@@ -1607,10 +1616,11 @@ export default function (pi: ExtensionAPI) {
 			endpoint,
 			registryFile,
 			pi_session_id: piSessionId,
+			origin: activationOrigin,
 		};
 		// Publish who we are so an activation path can VERIFY that a peer really exists (a socket
 		// bind can fail and be swallowed upstream, which used to look like a successful start).
-		(globalThis as any).__comsSelf = { sessionId: comsSessionId, name, project, endpoint };
+		(globalThis as any).__comsSelf = { sessionId: comsSessionId, name, project, endpoint, origin: activationOrigin };
 		includeExplicit = false;
 		displayProject = project;
 

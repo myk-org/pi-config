@@ -20,6 +20,11 @@ export interface RegistryRow {
   contextUsedPct: number | null;
   startedAt: string | null;
   heartbeatAt: string | null;
+  /** Who activated coms in this session: `user` (slash command) or `agent` (coms_start tool). */
+  origin?: string | null;
+  /** Who spawned this peer as a process, from the supervisor's record, which is the more
+   *  authoritative answer when both exist. */
+  createdBy?: string | null;
 }
 
 export interface PeerFilter {
@@ -162,4 +167,21 @@ export function planPeerKills(args: {
     }
     return { name: row.name, project: row.project, signalPid: row.pid ?? null, reason: "peer" };
   });
+}
+
+/** Explain who created a peer, preferring the supervisor's record.
+ *
+ *  Both sources are self-reports: the supervisor records whether a pi session's env was present when
+ *  it was launched (an agent's bash tool), the registry records which entry point activated coms.
+ *  `unknown` is honest for a peer that predates either field rather than guessing "user". */
+export function describePeerOrigin(row: RegistryRow): { by: string; via: string } {
+  const record = (row.createdBy ?? "").trim();
+  if (record === "agent" || record === "user") {
+    return { by: record, via: "supervisor" };
+  }
+  const origin = (row.origin ?? "").trim();
+  if (origin === "agent" || origin === "user") {
+    return { by: origin, via: origin === "agent" ? "coms_start" : "/coms start" };
+  }
+  return { by: "unknown", via: "no record" };
 }
