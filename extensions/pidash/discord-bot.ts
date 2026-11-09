@@ -61,6 +61,7 @@ import {
   type PersistedDiscordState,
 } from "../shared/chat/chat-state.ts";
 import { parseEnvFile, resolveDiscordConfig } from "./discord-config.ts";
+import { checkoutName } from "../shared/chat/chat-sessions.ts";
 
 const log = createLogger("pidash-discord");
 
@@ -866,11 +867,11 @@ export function setupDiscordBot(opts: {
     try {
       const sessions = getActiveSessions() ?? [];
       const found = sessions.find((session: any) => (session?.sessionId ?? session?.id) === sessionId);
-      // The CHECKOUT is what a user recognises; an auto session name ("handoff-2026-11-06.md") does
-      // not say which project is asking. The pid in the header separates two sessions of one project.
-      const checkout = typeof found?.cwd === "string" && found.cwd ? path.basename(found.cwd) : "";
+      // Reuses the sessions-view rule: the checkout leads, because pi names a session after its
+      // first user message ("handoff-2026-11-06.md"), which says nothing about the project.
+      if (typeof found?.cwd === "string" && found.cwd) return checkoutName(found as any);
       const named = typeof found?.name === "string" && found.name ? path.basename(found.name) : "";
-      return checkout || named || sessionId.slice(0, 8);
+      return named || sessionId.slice(0, 8);
     } catch {
       return sessionId.slice(0, 8);
     }
