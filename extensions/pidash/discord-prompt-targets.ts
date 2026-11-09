@@ -327,3 +327,31 @@ export function hydratableTargets(state: {
   }
   return targets;
 }
+
+/** Where to nudge a user about another session's question.
+ *
+ *  The watched session may have no channel of its own (watched from a DM, or a thread that was never
+ *  created), and bailing there meant the user was never told — they had to notice by luck. Falls
+ *  back to the channel the user last spoke from, and never returns the question's own channel. */
+export function nudgeChannelId(args: {
+  watchedTargetChannelId: string | null;
+  responseChannelId: string | null;
+  askedChannelId: string | null;
+}): string | null {
+  for (const candidate of [args.watchedTargetChannelId, args.responseChannelId]) {
+    if (!candidate) continue;
+    if (candidate === args.askedChannelId) continue;
+    return candidate;
+  }
+  return null;
+}
+
+/** The prompt header: WHO is asking, then the question.
+ *
+ *  A DM has no thread title to look at, so without this the user sees a bare question and has to
+ *  guess which session asked it. The checkout path disambiguates two sessions of the same name. */
+export function promptHeader(args: { name: string; cwd: string | null; title: string | undefined }): string {
+  const who = args.cwd ? `${args.name} · ${args.cwd}` : args.name;
+  const question = (args.title ?? "").trim() || "The agent is asking";
+  return `${who} — ${question}`;
+}

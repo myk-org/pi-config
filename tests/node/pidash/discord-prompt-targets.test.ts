@@ -4,7 +4,7 @@
  */
 import { beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ensurePromptTarget, evictableSessions, hydratableTargets, fallbackPromptTarget, nudgeDue, planPromptTarget, promptById, resolvePromptTarget, shouldNudge } from "../../../extensions/pidash/discord-prompt-targets.ts";
+import { ensurePromptTarget, evictableSessions, hydratableTargets, nudgeChannelId, promptHeader, fallbackPromptTarget, nudgeDue, planPromptTarget, promptById, resolvePromptTarget, shouldNudge } from "../../../extensions/pidash/discord-prompt-targets.ts";
 
 describe("planPromptTarget", () => {
   const base = { existingChannelId: null, threadParentChannelId: "chan", dmChannelId: "dm-1", plainChannelId: "chan" };
@@ -305,5 +305,40 @@ describe("routing is logged", () => {
     );
     assert.equal(lines.at(-1)?.message, "prompt target unavailable");
     assert.equal(lines.at(-1)?.level, "error");
+  });
+});
+
+describe("nudgeChannelId", () => {
+  it("prefers the watched session's own channel", () => {
+    assert.equal(nudgeChannelId({ watchedTargetChannelId: "watch-chan", responseChannelId: "dm", askedChannelId: "other" }), "watch-chan");
+  });
+
+  it("falls back to where the user last spoke when the watch has no channel", () => {
+    // The live gap: watching a session with no channel meant no notification at all.
+    assert.equal(nudgeChannelId({ watchedTargetChannelId: null, responseChannelId: "dm", askedChannelId: "other" }), "dm");
+  });
+
+  it("never nudges into the channel that already has the question", () => {
+    assert.equal(nudgeChannelId({ watchedTargetChannelId: "same", responseChannelId: "same", askedChannelId: "same" }), null);
+    assert.equal(nudgeChannelId({ watchedTargetChannelId: null, responseChannelId: null, askedChannelId: "x" }), null);
+  });
+});
+
+describe("promptHeader", () => {
+  it("names the asking session and its checkout", () => {
+    // Without this a DM user saw a bare question and had to guess the session.
+    assert.equal(
+      promptHeader({ name: "pi-config", cwd: "/home/myakove/git/pi-config", title: "Proceed?" }),
+      "pi-config · /home/myakove/git/pi-config — Proceed?",
+    );
+  });
+
+  it("works without a known checkout", () => {
+    assert.equal(promptHeader({ name: "rootcoz", cwd: null, title: "Proceed?" }), "rootcoz — Proceed?");
+  });
+
+  it("falls back to a default question instead of an empty header", () => {
+    assert.equal(promptHeader({ name: "x", cwd: null, title: "   " }), "x — The agent is asking");
+    assert.equal(promptHeader({ name: "x", cwd: null, title: undefined }), "x — The agent is asking");
   });
 });

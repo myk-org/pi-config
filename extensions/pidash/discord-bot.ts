@@ -33,7 +33,7 @@ import { compareCommandPayloads } from "./discord-commands.ts";
 import { MAX_LAST_PROMPTS, MAX_LAST_PROMPT_CHARS } from "../shared/chat/chat-state.ts";
 import { jobIdAt, renderJobsView } from "./discord-jobs-view.ts";
 import { planBoard } from "./discord-board.ts";
-import { ensurePromptTarget, hydratableTargets, nudgeDue, promptById, shouldNudge } from "./discord-prompt-targets.ts";
+import { ensurePromptTarget, hydratableTargets, nudgeChannelId, nudgeDue, promptById, promptHeader, shouldNudge } from "./discord-prompt-targets.ts";
 import { ownsChannel, ownsSession, reactionAction, sessionForChannel, sessionIdFromTopic } from "./discord-reactions.ts";
 import {
   buildSessionPage,
@@ -750,14 +750,22 @@ export function setupDiscordBot(opts: {
   /** One line in the watched channel when ANOTHER session asks, throttled per asking session. */
   async function nudgeWatchedChannel(userId: string, state: RuntimeUserState, asked: string, name: string, target: ChatTarget): Promise<void> {
     if (!shouldNudge({ watchedSessionId: state.watchedSessionId, askedSessionId: asked })) return;
-    const watchedTarget = state.target;
-    if (!watchedTarget || watchedTarget.channelId === target.channelId) return;
+    // A watch without a channel (DM watch, or a thread that was never created) must still notify.
+    const channelId = nudgeChannelId({
+      watchedTargetChannelId: state.target?.channelId ?? null,
+      responseChannelId: state.responseChannelId ?? null,
+      askedChannelId: target.channelId,
+    });
+    if (!channelId) {
+      log.warn("nudge skipped: no channel to write to", { asked, watched: state.watchedSessionId });
+      return;
+    }
     const now = Date.now();
     const nudgeKey = `${userId}:${asked}`;
     if (!nudgeDue(lastNudgeAt.get(nudgeKey), now)) return;
     lastNudgeAt.set(nudgeKey, now);
     try {
-      await sendText(watchedTarget.channelId, `❓ **${truncateLine(name, 60)}** is asking a question → <#${target.channelId}>`);
+      await sendText(channelId, `❓ **${truncateLine(name, 60)}** is asking a question → <#${target.channelId}>`);
       log.info("nudged watched channel", { asked, watched: state.watchedSessionId });
     } catch (error) {
       log.debug("nudge failed", { asked, error: String(error) });
@@ -783,6 +791,10 @@ export function setupDiscordBot(opts: {
     }
     const method = (event.method || "input") as PromptMethod;
     const name = sessionNameFor(sessionId);
+    // Name the asking session in the prompt itself: a DM has no thread title, so a bare question
+    // left the user guessing which session asked.
+    const cwd = sessionCwdFor(sessionId);
+    const titled = { ...event, title: promptHeader({ name, cwd, title: event.title }) };
     // A fresh request reuses ids across sessions; an old "ended" marker must not hide it.
     if (typeof event?.id === "string") endedPrompts.delete(event.id);
     for (const [userId, state] of runtime) {
@@ -813,7 +825,7 @@ export function setupDiscordBot(opts: {
           log.debug("prompt skipped: ended while creating its target", { userId, sessionId });
           return;
         }
-        const prompt = bridge.askUser(sessionId, event, state);
+        const prompt = bridge.askUser(sessionId, titled, state);
         if (!prompt) return;
         // Delivery (with controls) happens in renderPrompt; this only records who was asked.
         log.info("prompt forwarded to discord", { userId, sessionId, method, promptId: prompt.id, created: !known });
@@ -836,6 +848,17 @@ export function setupDiscordBot(opts: {
       }
     }
     return null;
+  }
+
+  /** The checkout a session runs in, for the prompt header. */
+  function sessionCwdFor(sessionId: string): string | null {
+    try {
+      const sessions = getActiveSessions() ?? [];
+      const found = sessions.find((session: any) => (session?.sessionId ?? session?.id) === sessionId);
+      return typeof found?.cwd === "string" && found.cwd ? found.cwd : null;
+    } catch {
+      return null;
+    }
   }
 
   /** A readable name for a session, for thread titles and nudges. */
