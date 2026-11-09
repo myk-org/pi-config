@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { deadPeerCardIds } from "../../../extensions/coms/coms-shared.js";
-import { describePeerOrigin, filterRegistry, formatPeerTable, isFreshHeartbeat, planPeerKills, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
+import { activationVerified, describePeerOrigin, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, planPeerKills, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
 
 describe("deadPeerCardIds", () => {
   const cards = () => new Map<string, { endpoint?: string | null; name?: string }>([
@@ -150,13 +150,58 @@ describe("describePeerOrigin", () => {
     assert.deepEqual(describePeerOrigin(row({ createdBy: "agent", origin: "user" })), { by: "agent", via: "supervisor" });
   });
 
-  it("falls back to how coms was activated", () => {
-    assert.deepEqual(describePeerOrigin(row({ origin: "agent" })), { by: "agent", via: "coms_start" });
-    assert.deepEqual(describePeerOrigin(row({ origin: "user" })), { by: "user", via: "/coms start" });
+  it("names the actual entry point, which is not always a slash command", () => {
+    assert.deepEqual(describePeerOrigin(row({ origin: "tool" })), { by: "agent", via: "coms_start tool" });
+    assert.deepEqual(describePeerOrigin(row({ origin: "slash" })), { by: "user", via: "/coms start" });
+    assert.deepEqual(describePeerOrigin(row({ origin: "cli" })), { by: "user", via: "pi --coms" });
   });
 
   it("says unknown rather than guessing user for a peer predating both fields", () => {
     assert.deepEqual(describePeerOrigin(row()), { by: "unknown", via: "no record" });
     assert.deepEqual(describePeerOrigin(row({ createdBy: "", origin: "garbage" })), { by: "unknown", via: "no record" });
+  });
+});
+
+describe("pickSupervisionRecord", () => {
+  const row = (over: Partial<RegistryRow> = {}): RegistryRow => ({
+    project: "p", name: "peer", pid: 100, cwd: "/w", purpose: "", endpoint: "/s",
+    busy: false, queueDepth: null, contextUsedPct: null, startedAt: null, heartbeatAt: null, ...over,
+  });
+
+  it("picks the record whose child is this pid, not the first name match", () => {
+    const records = [
+      { cname: "peer", project: "p", childPid: 999, startedAt: "2026-01-01T00:00:00Z", createdBy: "user" },
+      { cname: "peer", project: "p", childPid: 100, startedAt: "2026-01-02T00:00:00Z", createdBy: "agent" },
+    ];
+    assert.equal(pickSupervisionRecord(records, row())?.createdBy, "agent");
+  });
+
+  it("ignores retired records: a new peer must not inherit an old creator", () => {
+    const records = [{ cname: "peer", project: "p", childPid: 555, startedAt: "2026-01-01T00:00:00Z", createdBy: "user", stoppedAt: "x" }];
+    assert.equal(pickSupervisionRecord(records, row()), null);
+  });
+
+  it("falls back to the newest live record when no child pid matches", () => {
+    const records = [
+      { cname: "peer", project: "p", childPid: 1, startedAt: "2026-01-01T00:00:00Z", createdBy: "user" },
+      { cname: "peer", project: "p", childPid: 2, startedAt: "2026-02-01T00:00:00Z", createdBy: "agent" },
+    ];
+    assert.equal(pickSupervisionRecord(records, row())?.createdBy, "agent");
+  });
+});
+
+describe("activationVerified", () => {
+  it("rejects an activation that published no socket", () => {
+    assert.equal(activationVerified(null, "linux", () => true), false);
+    assert.equal(activationVerified({ endpoint: "" }, "linux", () => true), false);
+  });
+
+  it("rejects a socket path that does not exist on disk", () => {
+    assert.equal(activationVerified({ endpoint: "/s" }, "linux", () => false), false);
+    assert.equal(activationVerified({ endpoint: "/s" }, "linux", () => true), true);
+  });
+
+  it("accepts a Windows named pipe, which the filesystem cannot see", () => {
+    assert.equal(activationVerified({ endpoint: "\\.\pipe\coms" }, "win32", () => false), true);
   });
 });

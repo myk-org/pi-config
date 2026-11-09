@@ -17,7 +17,7 @@ import { setComsActive } from "../shared/coms-active.js";
 import { createLogger } from "../shared/logger.js";
 import { Type } from "typebox";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { filterRegistry, formatPeerTable, isFreshHeartbeat, planPeerKills, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
+import { activationVerified, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, planPeerKills, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
 
 const log = createLogger("coms");
@@ -72,7 +72,7 @@ export function registerComs(pi: ExtensionAPI) {
             }
             if (pi.getFlag("explicit") === true) parts.push("--explicit");
             log.info("coms autostart from --coms", { args: parts.join(" ") });
-            await comsCmdHandler(parts.join(" "), ctx);
+            await comsCmdHandler(parts.join(" "), ctx, "cli");
         }
     });
 
@@ -91,7 +91,7 @@ export function registerComs(pi: ExtensionAPI) {
     /** Activate coms for THIS session — the one path used by `/coms start`, `pi --coms …` and the
      *  `coms_start` tool. A tool is how an already-open session (or an agent) enables coms without a
      *  slash command and without spawning a new pi. */
-    const activateComs = async (flagParts: string[], ctx: any, origin: "user" | "agent" = "user"): Promise<{ ok: boolean; message: string }> => {
+    const activateComs = async (flagParts: string[], ctx: any, entry: "tool" | "slash" | "cli" = "slash"): Promise<{ ok: boolean; message: string }> => {
         if (state.active) return { ok: true, message: "📡 coms already active" };
         state.flagValues = new Map();
         parseFlags(flagParts, state.flagValues);
@@ -108,12 +108,12 @@ export function registerComs(pi: ExtensionAPI) {
             return { ok: false, message: "📡 coms: internal error — no session handler captured" };
         }
         try {
-            (globalThis as any).__comsSelfOrigin = origin;
+            (globalThis as any).__comsSelfOrigin = entry;
             await state.capturedSessionStart({}, ctx);
             // The upstream start handler catches socket-bind and registry failures and returns, so
             // a normal return is not proof of a peer. Verify the identity it published.
             const self = (globalThis as any).__comsSelf;
-            if (!self?.endpoint || (process.platform !== "win32" && !existsSync(self.endpoint))) {
+            if (!activationVerified(self, process.platform, existsSync)) {
                 log.error("coms_activation_unverified", { name: self?.name ?? null, endpoint: self?.endpoint ?? null });
                 setComsActive(false);
                 return { ok: false, message: "📡 coms start failed: no peer socket was created (see ~/.pi/logs/coms)." };
@@ -133,13 +133,13 @@ export function registerComs(pi: ExtensionAPI) {
         }
     };
 
-    const comsCmdHandler = async (args: string, ctx: any) => {
+    const comsCmdHandler = async (args: string, ctx: any, entry: "tool" | "slash" | "cli" = "slash") => {
         const trimmed = (args || "").trim();
         const parts = tokenizeArgs(trimmed);
         const subcommand = parts[0] || "status";
 
         if (subcommand === "start") {
-            const result = await activateComs(parts.slice(1), ctx);
+            const result = await activateComs(parts.slice(1), ctx, entry);
             try { ctx.ui.notify(result.message, result.ok ? "info" : "error"); } catch {}
             return;
         }
@@ -252,7 +252,7 @@ export function registerComs(pi: ExtensionAPI) {
                 if (params?.explicit === true) parts.push("--explicit");
                 const useCtx = ctx ?? liveCtx;
                 if (!useCtx) return { content: [{ type: "text" as const, text: "coms_start: no live session context — try again once the session is ready." }], details: { ok: false, active: false } };
-                const result = await activateComs(parts, useCtx, "agent");
+                const result = await activateComs(parts, useCtx, "tool");
                 return { content: [{ type: "text" as const, text: result.message }], details: { ok: result.ok, active: state.active } };
             },
         });
@@ -330,8 +330,8 @@ export function registerComs(pi: ExtensionAPI) {
     const attachCreatedBy = (rows: RegistryRow[]): RegistryRow[] => {
         const records = readSupervisionRecords();
         for (const row of rows) {
-            const record = records.find((r: any) => r?.cname === row.name && (r?.project ?? "default") === row.project);
-            if (record && typeof record.createdBy === "string") row.createdBy = record.createdBy;
+            const record = pickSupervisionRecord(records, row);
+            if (record && typeof (record as any).createdBy === "string") row.createdBy = (record as any).createdBy;
         }
         return rows;
     };

@@ -1578,8 +1578,11 @@ export default function (pi: ExtensionAPI) {
 
 		// 4. Build + write registry entry atomically.
 		const piSessionId = (globalThis as any).__piConfigSessionId || "";
-		/** Which entry point activated coms: the coms_start tool (agent) or /coms start (user). */
-		const activationOrigin = (globalThis as any).__comsSelfOrigin === "agent" ? "agent" : "user";
+		/** Which entry point activated coms: the `coms_start` tool, `/coms start`, or `pi --coms`. */
+		const activationOrigin = (() => {
+			const entry = (globalThis as any).__comsSelfOrigin;
+			return entry === "tool" || entry === "cli" ? entry : "slash";
+		})();
 		const entry: RegistryEntry = {
 			coms_session_id: comsSessionId,
 			name,

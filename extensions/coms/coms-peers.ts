@@ -169,19 +169,49 @@ export function planPeerKills(args: {
   });
 }
 
-/** Explain who created a peer, preferring the supervisor's record.
+/** Explain who created a peer.
  *
- *  Both sources are self-reports: the supervisor records whether a pi session's env was present when
- *  it was launched (an agent's bash tool), the registry records which entry point activated coms.
- *  `unknown` is honest for a peer that predates either field rather than guessing "user". */
+ *  The supervisor record wins because it describes the process. Otherwise the activation entry point
+ *  is used, and they are genuinely different: `pi --coms` is a CLI start, not somebody typing a
+ *  slash command. `unknown` is honest for a peer that predates either field rather than guessing
+ *  "user". */
 export function describePeerOrigin(row: RegistryRow): { by: string; via: string } {
   const record = (row.createdBy ?? "").trim();
   if (record === "agent" || record === "user") {
     return { by: record, via: "supervisor" };
   }
-  const origin = (row.origin ?? "").trim();
-  if (origin === "agent" || origin === "user") {
-    return { by: origin, via: origin === "agent" ? "coms_start" : "/coms start" };
-  }
+  const entry = (row.origin ?? "").trim();
+  if (entry === "tool") return { by: "agent", via: "coms_start tool" };
+  if (entry === "slash") return { by: "user", via: "/coms start" };
+  if (entry === "cli") return { by: "user", via: "pi --coms" };
   return { by: "unknown", via: "no record" };
+}
+
+/** The supervision record that belongs to THIS peer instance.
+ *
+ *  Records outlive the peer and accumulate per name+project, so "the first match" would label a new
+ *  peer with an old creator. The live record whose child is this pid wins; otherwise the newest
+ *  non-retired one; otherwise nothing — a retired record describes a peer that is gone. */
+export function pickSupervisionRecord<T extends { cname?: string; project?: string; childPid?: number | null; startedAt?: string; stoppedAt?: string; exitedAt?: string; failedAt?: string }>(
+  records: T[],
+  row: Pick<RegistryRow, "name" | "project" | "pid">,
+): T | null {
+  const same = records.filter((r) => r?.cname === row.name && (r?.project ?? "default") === row.project);
+  const live = same.filter((r) => !r.stoppedAt && !r.exitedAt && !r.failedAt);
+  const exact = live.find((r) => typeof row.pid === "number" && r.childPid === row.pid);
+  if (exact) return exact;
+  if (live.length === 0) return null;
+  return live.sort((a, b) => String(b.startedAt ?? "").localeCompare(String(a.startedAt ?? "")))[0];
+}
+
+/** Did activation actually produce a peer? The upstream start handler swallows socket-bind and
+ *  registry failures, so a normal return is not proof. */
+export function activationVerified(
+  self: { endpoint?: string | null } | null | undefined,
+  platform: string,
+  exists: (path: string) => boolean,
+): boolean {
+  if (!self?.endpoint) return false;
+  if (platform === "win32") return true; // named pipe: not on the filesystem
+  return exists(self.endpoint);
 }
