@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { deadPeerCardIds } from "../../../extensions/coms/coms-shared.js";
-import { activationVerified, describePeerOrigin, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, planPeerKills, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
+import { activationVerified, describeActiveClaim, describePeerOrigin, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, planPeerKills, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
 
 describe("deadPeerCardIds", () => {
   const cards = () => new Map<string, { endpoint?: string | null; name?: string }>([
@@ -209,5 +209,22 @@ describe("activationVerified", () => {
 
   it("accepts a Windows named pipe, which the filesystem cannot see", () => {
     assert.equal(activationVerified({ endpoint: "\\.\pipe\coms" }, "win32", () => false), true);
+  });
+});
+
+describe("describeActiveClaim", () => {
+  it("confirms an active claim that has a socket behind it", () => {
+    assert.deepEqual(describeActiveClaim({ endpoint: "/s" }, "linux", () => true), { verified: true, message: "📡 coms already active" });
+  });
+
+  it("refuses to claim active when no socket exists", () => {
+    const claim = describeActiveClaim({ endpoint: "/gone" }, "linux", () => false);
+    assert.equal(claim.verified, false);
+    assert.match(claim.message, /no peer socket exists/);
+    assert.match(claim.message, /\/coms stop, then \/coms start/);
+  });
+
+  it("refuses the claim when activation published nothing", () => {
+    assert.equal(describeActiveClaim(null, "linux", () => true).verified, false);
   });
 });

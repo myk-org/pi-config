@@ -17,7 +17,7 @@ import { setComsActive } from "../shared/coms-active.js";
 import { createLogger } from "../shared/logger.js";
 import { Type } from "typebox";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { activationVerified, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, planPeerKills, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
+import { activationVerified, describeActiveClaim, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, planPeerKills, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
 
 const log = createLogger("coms");
@@ -109,7 +109,11 @@ export function registerComs(pi: ExtensionAPI) {
     };
 
     const runActivation = async (flagParts: string[], ctx: any, entry: "tool" | "slash" | "cli"): Promise<{ ok: boolean; message: string }> => {
-        if (state.active) return { ok: true, message: "📡 coms already active" };
+        if (state.active) {
+            const claim = describeActiveClaim((globalThis as any).__comsSelf, process.platform, existsSync);
+            if (!claim.verified) log.warn("coms_active_claim_unverified", {});
+            return { ok: claim.verified, message: claim.message };
+        }
         state.flagValues = new Map();
         parseFlags(flagParts, state.flagValues);
         if (state.flagValues.has("name")) {

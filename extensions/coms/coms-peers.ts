@@ -218,3 +218,22 @@ export function activationVerified(
   if (platform === "win32") return true; // named pipe: not on the filesystem
   return exists(self.endpoint);
 }
+
+/** What to tell a caller when coms already claims to be active.
+ *
+ *  `active` is a persisted flag, not proof: right after a reload the peer boots for a couple of
+ *  seconds, and a claim without a socket is a lie the caller will act on ("already active" while no
+ *  peer exists). Verified the same way activation is. */
+export function describeActiveClaim(
+  self: { endpoint?: string | null } | null | undefined,
+  platform: string,
+  exists: (path: string) => boolean,
+): { verified: boolean; message: string } {
+  if (activationVerified(self, platform, exists)) {
+    return { verified: true, message: "📡 coms already active" };
+  }
+  return {
+    verified: false,
+    message: "📡 coms is marked active but no peer socket exists — run /coms stop, then /coms start",
+  };
+}
