@@ -63,28 +63,6 @@ export function registerComs(pi: ExtensionAPI) {
             state.active = false;
             setComsActive(false);
             persistState(pi, PERSIST_KEY, state);
-        } else if (state.active) {
-            // A reload keeps `active` because the peer is expected to re-register. Nobody did, so
-            // /coms claimed active with no socket: peers could not reach this session and a start
-            // was refused as "already active". Re-register, and drop the claim if it fails.
-            try {
-                (globalThis as any).__comsSelfOrigin = state.extra?.entry ?? "slash";
-                await state.capturedSessionStart?.({}, ctx);
-                const self = (globalThis as any).__comsSelf;
-                if (!activationVerified(self, process.platform, existsSync)) {
-                    log.warn("coms_reregister_after_reload_failed", { name: self?.name ?? null });
-                    state.active = false;
-                    setComsActive(false);
-                    persistState(pi, PERSIST_KEY, state);
-                } else {
-                    log.info("coms_reregistered_after_reload", { name: self?.name ?? null });
-                }
-            } catch (error: any) {
-                log.warn("coms_reregister_after_reload_threw", { error: String(error?.message ?? error) });
-                state.active = false;
-                setComsActive(false);
-                persistState(pi, PERSIST_KEY, state);
-            }
         }
         // `pi --coms …`: a headless peer boots itself, no slash command and no terminal.
         if (evt?.reason !== "reload" && pi.getFlag("coms") === true) {
@@ -158,7 +136,6 @@ export function registerComs(pi: ExtensionAPI) {
                 return { ok: false, message: "📡 coms start failed: no peer socket was created (see ~/.pi/logs/coms)." };
             }
             state.active = true;
-            state.extra = { ...(state.extra ?? {}), entry };
             setComsActive(true);
             persistState(pi, PERSIST_KEY, state);
             const name = String(state.flagValues.get("cname") ?? state.flagValues.get("name") ?? "peer");
