@@ -922,6 +922,30 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
     assert.equal(allowed(`rtk grep -rn "E1" .pi/tmp --include=*.md 2>/dev/null`), true);
   });
 
+  it("judges the BASE directory when a search has no path operand", () => {
+    // The reported command: a chained `cd` into another checkout, no path argument. The search runs
+    // in that base, so the base is what has to be classified.
+    const foreign = makeTempDir("trail-foreign-repo-");
+    mkdirSync(join(foreign, "src"), { recursive: true });
+    assert.equal(allowed(`cd ${foreign} && rg -n "build.?arg" --iglob '!**/node_modules/**' -i | head -25`), true);
+    // The sibling checkout: `cd ../other` is the same situation written relatively.
+    assert.equal(allowed(`cd ${sibling} && grep -rn "E1"`), true);
+  });
+
+  it("still gates a no-operand search that lands in this checkout", () => {
+    assert.equal(allowed(`cd ${root} && rg -n "E1"`), false);
+    assert.equal(allowed(`grep -rn "E1"`), false);
+  });
+
+  it("gates a no-operand search whose base is an ancestor of the checkout", () => {
+    // `rg foo ..` recurses back into the map from above.
+    assert.equal(allowed(`cd ${join(root, "..")} && grep -rn "E1"`), false);
+  });
+
+  it("allows a no-operand search in an unindexed directory of this checkout", () => {
+    assert.equal(allowed(`cd .pi/tmp && grep -rn "E1"`), true);
+  });
+
   it("allows a search of a directory the map holds nothing beneath", () => {
     assert.equal(allowed("grep -rn PATTERN build"), true, "build output holds nothing mapped");
     assert.equal(allowed("rg foo src/v1.2/"), true, "so does an unmapped source subdirectory");

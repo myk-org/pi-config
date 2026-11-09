@@ -266,6 +266,15 @@ const BARE_REDIRECT = /^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/;
 /** Operands of a search: quote-stripped, with redirections and their destinations dropped.
  *  The redirect test runs on the RAW token — `'<'` is a quoted pattern, not an operator, and
  *  stripping the quotes first turned it into one and shifted every later operand. */
+/** Flags whose VALUE is the next token: without this, the value of `--iglob` (an exclusion glob)
+ *  is handed to the path check as if it were a directory. Only flags taking a separate value belong
+ *  here — `-e PATTERN` and friends — never boolean ones like `-i` or `-n`. */
+const SEARCH_VALUE_FLAGS = new Set([
+  "-e", "-f", "-g", "--glob", "--iglob", "--include", "--include-dir", "--exclude", "--exclude-dir",
+  "--type", "--type-not", "-t", "-T", "-m", "--max-count", "--max-depth", "-A", "-B", "-C", "--context",
+  "--color", "--colors", "--sort", "--threads", "-j", "--encoding", "-E", "-M",
+]);
+
 function searchOperands(raw: string[]): string[] {
   const operands: string[] = [];
   for (let i = 0; i < raw.length; i++) {
@@ -274,6 +283,8 @@ function searchOperands(raw: string[]): string[] {
       if (BARE_REDIRECT.test(token)) i++; // `> /dev/null`: drop the destination too
       continue;
     }
+    // `--iglob=x` carries its value inline; `--iglob x` in the next token.
+    if (SEARCH_VALUE_FLAGS.has(token) && i + 1 < raw.length) i++;
     operands.push(token.replace(/^["']|["']$/g, ""));
   }
   return operands;
@@ -419,8 +430,11 @@ export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: s
   if (!search) return false;
   const operands = search.operands.filter(token => !token.startsWith("-"));
   // `find` names a path first; every other search binary takes the pattern first.
-  const paths = search.binary === "find" ? operands : operands.slice(1);
-  if (!paths.length) return false;
+  const operands2 = search.binary === "find" ? operands : operands.slice(1);
+  // No path operand means the search runs in its BASE directory — which is exactly what
+  // `searchBaseDir` resolves, including a chained `cd`. Returning early here skipped that and gated
+  // `cd /other/repo && rg pattern` while `rg pattern /other/repo` was exempt.
+  const paths = operands2.length ? operands2 : ["."];
   const base = searchBaseDir(command, root, logger);
   if (!base) return false;
   const verdict = (path: string, allowed: boolean, reason: string): boolean => {
