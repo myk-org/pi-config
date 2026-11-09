@@ -218,3 +218,25 @@ export function activationVerified(
   if (platform === "win32") return true; // named pipe: not on the filesystem
   return exists(self.endpoint);
 }
+
+/** What to do with a persisted "active" claim.
+ *
+ *  The flag is not proof: right after a reload the peer needs a couple of seconds to register, and a
+ *  claim without a socket is a lie the caller acts on. A verified claim is reused; an unverified one
+ *  is treated as stale and the caller STARTS a fresh peer, because "run /coms stop first" made a
+ *  reload recovery manual for no reason. */
+export function planActiveClaim(
+  self: { endpoint?: string | null } | null | undefined,
+  platform: string,
+  exists: (path: string) => boolean,
+  logger?: { warn: (msg: string, data?: unknown) => void },
+): { action: "reuse" | "restart"; message: string } {
+  if (activationVerified(self, platform, exists)) {
+    return { action: "reuse", message: "📡 coms already active" };
+  }
+  logger?.warn("coms_active_claim_unverified", { endpoint: self?.endpoint ?? null });
+  return {
+    action: "restart",
+    message: "📡 coms: the previous peer is gone (no socket) — starting a fresh one",
+  };
+}

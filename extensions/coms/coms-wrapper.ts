@@ -17,7 +17,7 @@ import { setComsActive } from "../shared/coms-active.js";
 import { createLogger } from "../shared/logger.js";
 import { Type } from "typebox";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { activationVerified, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, planPeerKills, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
+import { activationVerified, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, planActiveClaim, planPeerKills, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
 
 const log = createLogger("coms");
@@ -109,8 +109,30 @@ export function registerComs(pi: ExtensionAPI) {
     };
 
     const runActivation = async (flagParts: string[], ctx: any, entry: "tool" | "slash" | "cli"): Promise<{ ok: boolean; message: string }> => {
-        if (state.active) return { ok: true, message: "📡 coms already active" };
-        state.flagValues = new Map();
+        // Captured before the stale-claim branch can clear it: only a reload keeps the restored flags.
+        const restoredFromReload = state.active === true;
+        if (state.active) {
+            const claim = planActiveClaim((globalThis as any).__comsSelf, process.platform, existsSync, log);
+            if (claim.action === "reuse") return { ok: true, message: claim.message };
+            // Stale claim: drop it and fall through to a real start rather than making the caller
+            // run `/coms stop` first.
+            log.info("coms_active_claim_cleared", {});
+            // The socket file is gone but its server may still be open (an unlinked Unix socket
+            // keeps running). Close it before a new lifecycle overwrites the reference, or the old
+            // server is stranded and later shutdown closes only the new one.
+            try {
+                await state.capturedSessionShutdown?.();
+            } catch (error: any) {
+                log.warn("coms_stale_claim_shutdown_threw", { error: String(error?.message ?? error) });
+            }
+            state.active = false;
+            setComsActive(false);
+            persistState(pi, PERSIST_KEY, state);
+        }
+        // A retry after a reload may carry no flags, so restored values are kept — but ONLY for the
+        // reload case. After an explicit /coms stop, carrying them over would resurrect the old
+        // identity (and an --explicit opt-out) that the user just dropped.
+        state.flagValues = restoredFromReload ? new Map(state.flagValues ?? []) : new Map();
         parseFlags(flagParts, state.flagValues);
         if (state.flagValues.has("name")) {
             return { ok: false, message: "📡 coms: use --cname instead of --name" };

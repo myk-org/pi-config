@@ -922,6 +922,118 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
     assert.equal(allowed(`rtk grep -rn "E1" .pi/tmp --include=*.md 2>/dev/null`), true);
   });
 
+  it("judges the BASE directory when a search has no path operand", () => {
+    // The reported command: a chained `cd` into another checkout, no path argument. The search runs
+    // in that base, so the base is what has to be classified.
+    const foreign = makeTempDir("trail-foreign-repo-");
+    mkdirSync(join(foreign, "src"), { recursive: true });
+    assert.equal(allowed(`cd ${foreign} && rg -n "build.?arg" --iglob '!**/node_modules/**' -i | head -25`), true);
+    // The sibling checkout: `cd ../other` is the same situation written relatively.
+    assert.equal(allowed(`cd ${sibling} && grep -rn "E1"`), true);
+  });
+
+  it("still gates a no-operand search that lands in this checkout", () => {
+    assert.equal(allowed(`cd ${root} && rg -n "E1"`), false);
+    assert.equal(allowed(`grep -rn "E1"`), false);
+  });
+
+  it("gates a no-operand search whose base is an ancestor of the checkout", () => {
+    // `rg foo ..` recurses back into the map from above.
+    assert.equal(allowed(`cd ${join(root, "..")} && grep -rn "E1"`), false);
+  });
+
+  it("allows a no-operand search in an unindexed directory of this checkout", () => {
+    assert.equal(allowed(`cd .pi/tmp && grep -rn "E1"`), true);
+  });
+
+  it("does not let a pattern flag hide an indexed path", () => {
+    // `-e PATTERN` means every remaining operand is a path: dropping the first as "the pattern"
+    // exempted an indexed file search on the strength of a foreign base.
+    const foreign = makeTempDir("trail-foreign-e-");
+    assert.equal(allowed(`cd ${foreign} && rg -e PATTERN ${root}/extensions/orchestrator/trail.ts`), false);
+    assert.equal(allowed(`cd ${foreign} && grep --regexp=PATTERN ${root}/extensions/orchestrator/trail.ts`), false);
+  });
+
+  it("reads -E per binary: boolean for grep, a value for rg", () => {
+    const foreign = makeTempDir("trail-foreign-E-");
+    // grep -E is extended-regexp, so the next token is the pattern and the path must still be judged.
+    assert.equal(allowed(`cd ${foreign} && grep -E PATTERN ${root}/extensions/orchestrator/trail.ts`), false);
+    // rg -E takes an encoding, so the token after it is not the pattern.
+    assert.equal(allowed(`cd ${foreign} && rg -E utf-8 PATTERN ${root}/extensions/orchestrator/trail.ts`), false);
+  });
+
+  it("classifies every search segment, not just the first", () => {
+    const foreign = makeTempDir("trail-foreign-multi-");
+    assert.equal(allowed(`cd ${foreign}; rg needle; rg secret ${root}/README.md`), false, "a later indexed search cannot ride the first exemption");
+    assert.equal(allowed(`cd ${foreign}; rg one; grep two`), true, "all exempt segments stay exempt");
+  });
+
+  it("keeps a quoted alternation inside one segment", () => {
+    // Splitting `|` naively made `rg 'foo|bar' /indexed.ts` two searches: a pathless one in the
+    // foreign base (exempt) and the rest, losing the indexed path.
+    const foreign = makeTempDir("trail-foreign-quote-");
+    assert.equal(allowed(`cd ${foreign} && rg 'foo|bar' ${root}/extensions/orchestrator/trail.ts`), false);
+    assert.equal(allowed(`cd ${foreign} && grep -rn 'a|b' ${root}/docs/configuration.md`), false);
+  });
+
+  it("gates when a cd is conditional on an earlier command", () => {
+    const foreign = makeTempDir("trail-foreign-cond-");
+    // The cd never runs (`false` fails first), so the trailing search happens in the checkout.
+    assert.equal(allowed(`cd ${root} && false && cd ${foreign}; rg secret .`), false);
+    assert.equal(allowed(`cd ${foreign} || cd ${root}; rg secret .`), false);
+  });
+
+  it("consumes the value of long pattern flags", () => {
+    const foreign = makeTempDir("trail-foreign-long-");
+    // `--regexp needle` supplies the pattern; treating `needle` as a path blocked a valid search.
+    assert.equal(allowed(`cd ${foreign} && grep --regexp needle .`), true);
+    assert.equal(allowed(`cd ${foreign} && rg --regexp needle .`), true);
+  });
+
+  it("treats a pipeline stage as a filter, not a second search", () => {
+    // `grep match` reads stdin: it searches no directory, so it must not gate the call on its own.
+    assert.equal(allowed(`grep -rn "E1" .pi/tmp | grep match`), true);
+    // A `cd` on the right of a pipe never moves this shell, so the trailing search keeps its base.
+    assert.equal(allowed(`grep -rn "E1" .pi/tmp | cd /tmp; grep -rn "E1"`), false);
+  });
+
+  it("treats a quoted ampersand as part of the pattern", () => {
+    const foreign = makeTempDir("trail-foreign-amp-");
+    assert.equal(allowed(`cd ${foreign} && rg 'a&b'`), true);
+    // A real background job still gates: the cd happens in a subshell.
+    assert.equal(allowed(`cd ${foreign} & rg secret .`), false);
+  });
+
+  it("consumes ripgrep's ignore-file value", () => {
+    assert.equal(allowed(`rg --ignore-file .gitignore extensions/orchestrator/trail.ts`), false);
+  });
+
+  it("classifies a pipeline stage that names an explicit path", () => {
+    // A stage usually reads stdin, but `… | rg secret <indexed file>` really does search that file.
+    assert.equal(allowed(`grep -rn "E1" .pi/tmp | grep secret extensions/orchestrator/trail.ts`), false);
+    // A pure filter still passes: it searches no directory.
+    assert.equal(allowed(`grep -rn "E1" .pi/tmp | grep secret`), true);
+  });
+
+  it("keeps a quoted flag value in one token", () => {
+    // `--ignore-file '/tmp/ignore rules'`: the second whitespace token belongs to the flag value,
+    // so the following operand is not mistaken for the pattern.
+    assert.equal(allowed(`rg --ignore-file "/tmp/ignore rules" extensions/orchestrator/trail.ts`), false);
+  });
+
+  it("does not treat an escaped quote as opening a value", () => {
+    const foreign = makeTempDir("trail-foreign-esc-");
+    // `foo\'s` is one word: an escaped quote must not swallow the indexed path that follows it.
+    assert.equal(allowed(`cd ${foreign} && rg -e foo\\'s ${root}/extensions/orchestrator/trail.ts`), false);
+  });
+
+  it("applies git -C to a pipeline stage's base", () => {
+    const foreign = makeTempDir("trail-foreign-gitc-");
+    writeFileSync(join(foreign, "notes.txt"), "x\n");
+    // The file exists under the -C repository, not under this checkout: exempt, not unresolvable.
+    assert.equal(allowed(`grep -rn "E1" .pi/tmp | git -C ${foreign} grep needle notes.txt`), true);
+  });
+
   it("allows a search of a directory the map holds nothing beneath", () => {
     assert.equal(allowed("grep -rn PATTERN build"), true, "build output holds nothing mapped");
     assert.equal(allowed("rg foo src/v1.2/"), true, "so does an unmapped source subdirectory");

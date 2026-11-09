@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { unquotedSegments, type ShellSegment } from "./enforcement-helpers.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger, type Logger } from "../shared/logger.js";
@@ -202,8 +203,17 @@ function toolText(content: unknown): string { return Array.isArray(content) ? co
  * the previous command's stdout, so `cat log | grep x` never navigates.
  */
 function firstCommand(command: unknown): string | null {
-  const segments = String(command ?? "").split("|")[0]!.split(/&&|;|&/).map(part => part.trim()).filter(Boolean);
-  return segments.find(part => !/^cd(\s|$)/.test(part)) ?? null;
+  const text = String(command ?? "").trim();
+  // A DEFINITION runs nothing: `f() { rg foo src; }` only declares a body.
+  if (/^(?:function\s|[A-Za-z_]\w*\s*\(\))/.test(text)) return null;
+  // Quote-aware: splitting `|` by hand cut `rg 'foo|bar' /indexed.ts` at the alternation, so the
+  // search looked pathless and its indexed path vanished from the gate's view. The first segment is
+  // the producer; anything after a pipe only filters its stdout.
+  const segments = unquotedSegments(text)
+    .filter(segment => segment.depth === 0)
+    .map(segment => segment.text.trim())
+    .filter(part => part.length > 0 && !/^cd(\s|$)/.test(part));
+  return segments[0] ?? null;
 }
 export function classifyToolUse(name: unknown, input?: any): "trail" | "source" | null {
   const tool = typeof name === "string" ? name.toLowerCase() : "";
@@ -266,20 +276,77 @@ const BARE_REDIRECT = /^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/;
 /** Operands of a search: quote-stripped, with redirections and their destinations dropped.
  *  The redirect test runs on the RAW token — `'<'` is a quoted pattern, not an operator, and
  *  stripping the quotes first turned it into one and shifted every later operand. */
-function searchOperands(raw: string[]): string[] {
+/** Flags whose VALUE is the next token, PER BINARY: `grep -E` is a boolean (extended regexp) while
+ *  `rg -E` takes an encoding, and `grep -r` is recursive while `rg -r` takes a replacement. One shared
+ *  set got that wrong and turned a following path into a flag value, exempting an indexed search. */
+const GREP_VALUE_FLAGS = new Set([
+  "-e", "-f", "--regexp", "--file", "-m", "--max-count", "-A", "-B", "-C", "--context", "-d", "-D", "--devices",
+  "--directories", "--include", "--include-dir", "--exclude", "--exclude-dir", "--label",
+  "--binary-files",
+]);
+const RG_VALUE_FLAGS = new Set([
+  "-e", "-f", "--regexp", "--file", "-g", "--glob", "--iglob", "-t", "-T", "--type", "--type-not", "-m", "--max-count",
+  "--max-depth", "-A", "-B", "-C", "--context", "--color", "--colors", "--sort", "--sortr",
+  "--threads", "-j", "--encoding", "-E", "-r", "--replace", "-M", "--max-columns", "--max-filesize",
+  "--pre", "--pre-glob", "--ignore-file", "--path-separator", "--field-match-separator",
+  "--field-context-separator", "--max-filesize", "--dfa-size-limit", "--regexp-size-limit",
+]);
+/** `-e PATTERN` / `-f FILE` supply the pattern, so EVERY remaining operand is a path. Without this the
+ *  first path was discarded as "the pattern" and an indexed search looked patternless. */
+const PATTERN_FLAGS = new Set(["-e", "-f", "--regexp", "--file"]);
+
+function valueFlagsFor(binary: string): Set<string> {
+  if (binary === "rg") return RG_VALUE_FLAGS;
+  if (binary === "grep" || binary === "git grep" || binary === "egrep" || binary === "fgrep") return GREP_VALUE_FLAGS;
+  // find/fd/ag/ack: skip nothing, so nothing can be mistaken for a path operand.
+  return new Set<string>();
+}
+
+/** The quote a string leaves open, or null when it is balanced: `--ignore-file '/tmp/ignore rules'`
+ *  splits on whitespace into two tokens, and the second one belongs to the flag's value. */
+function openQuote(text: string): string | null {
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (quote) {
+      if (ch === quote) { quote = null; continue; }
+      // Inside double quotes a backslash escapes the next character; inside single quotes it is
+      // literal. Either way an escaped quote does not open or close anything.
+      if (ch === "\\" && quote === '"') i++;
+      continue;
+    }
+    if (ch === "\\") { i++; continue; } // `\'` is a literal quote, not an opening one
+    if (ch === "'" || ch === '"') quote = ch;
+  }
+  return quote;
+}
+
+function searchOperands(raw: string[], binary: string): { operands: string[]; patternFromFlag: boolean } {
+  const valueFlags = valueFlagsFor(binary);
   const operands: string[] = [];
+  let patternFromFlag = false;
   for (let i = 0; i < raw.length; i++) {
     const token = raw[i]!;
     if (REDIRECT_TOKEN.test(token)) {
       if (BARE_REDIRECT.test(token)) i++; // `> /dev/null`: drop the destination too
       continue;
     }
+    // `-ePATTERN` / `--regexp=PATTERN` carry the pattern inline.
+    if (PATTERN_FLAGS.has(token) || /^-[ef]./.test(token) || /^--(?:regexp|file)=/.test(token)) {
+      patternFromFlag = true;
+    }
+    if (valueFlags.has(token) && i + 1 < raw.length) {
+      // `--iglob x`, `-e PATTERN` — and a quoted value that whitespace split into several tokens.
+      i++;
+      let joined = raw[i]!;
+      while (openQuote(joined) && i + 1 < raw.length) joined += " " + raw[++i]!;
+    }
     operands.push(token.replace(/^["']|["']$/g, ""));
   }
-  return operands;
+  return { operands, patternFromFlag };
 }
 
-function searchCommand(command: unknown): { binary: string; operands: string[]; directories: string[] } | null {
+function searchCommand(command: unknown): { binary: string; operands: string[]; directories: string[]; patternFromFlag: boolean } | null {
   const first = firstCommand(command);
   if (!first) return null;
   const raw = first.trim().split(/\s+/);
@@ -317,16 +384,16 @@ function searchCommand(command: unknown): { binary: string; operands: string[]; 
         continue;
       }
       // A bare `grep` subcommand searches; `--grep=x` on another subcommand is a filter.
-      return token.toLowerCase() === "grep"
-        ? { binary: "git grep", operands: searchOperands(raw.slice(i + 1)), directories }
-        : null;
+      if (token.toLowerCase() !== "grep") return null;
+      const gitGrep = searchOperands(raw.slice(i + 1), "git grep");
+      return { binary: "git grep", operands: gitGrep.operands, directories, patternFromFlag: gitGrep.patternFromFlag };
     }
     return null;
   }
   // Redirections are plumbing, not operands: `grep -rn E1 .pi/tmp 2>/dev/null` searches `.pi/tmp`.
-  return SEARCH_BINARIES.has(binary)
-    ? { binary, operands: searchOperands(raw.slice(index + 1)), directories: [] }
-    : null;
+  if (!SEARCH_BINARIES.has(binary)) return null;
+  const parsed = searchOperands(raw.slice(index + 1), binary);
+  return { binary, operands: parsed.operands, directories: [], patternFromFlag: parsed.patternFromFlag };
 }
 function searchBinary(command: unknown): string | null { return searchCommand(command)?.binary ?? null; }
 /** `git` options whose value is the following token. */
@@ -414,15 +481,133 @@ function dirPrefix(directory: string): string {
  *  of the root still gates (`rg foo ..` recurses back in); a sibling checkout, a plain non-git
  *  folder, or this repo's gitignored scratch (`.pi/tmp`) is another directory's business.
  *  Real paths are compared, so an external symlink into the checkout resolves back inside. */
+/** Shell segments that can each run a search, with the facts the gate needs: whether the segment only
+ *  runs conditionally, whether it is a PIPELINE STAGE (reads stdin — its `cd` does not move this
+ *  shell and its `grep` searches no directory), and whether anything was backgrounded.
+ *
+ *  Quote-aware: splitting `|` by hand cut `rg 'a|b' /f.ts` in half. The shared splitter marks a
+ *  pipeline stage and a `&` job the same way (`backgrounded`), because both run in a subshell, so the
+ *  separator is inspected here to tell them apart. */
+function commandSegments(command: unknown, logger: Logger = log): {
+  segments: { text: string; conditional: boolean; pipelineStage: boolean }[];
+  backgroundJob: boolean;
+} {
+  const raw = String(command ?? "");
+  const segments: { text: string; conditional: boolean; pipelineStage: boolean }[] = [];
+  let backgroundJob = false;
+  let previousEnd: number | null = null;
+  for (const segment of unquotedSegments(raw)) {
+    if (segment.depth !== 0) continue;
+    const text = segment.text.trim();
+    if (text.length === 0) continue;
+    const separator = previousEnd === null ? "" : raw.slice(previousEnd, segment.start).trim();
+    previousEnd = segment.start + segment.text.length;
+    if (separator === "&") backgroundJob = true;
+    segments.push({
+      text,
+      conditional: segment.conditional === true,
+      pipelineStage: separator.startsWith("|") && !separator.startsWith("||"),
+    });
+  }
+  logger.debug("gate_search_segments", { count: segments.length, backgroundJob, command: raw.slice(0, 200) });
+  return { segments, backgroundJob };
+}
+
+/** The directory a `cd <target>` moves to, or null when it cannot be known statically. */
+function cdBase(current: string, targetRaw: string, logger: Logger): string | null {
+  const target = String(targetRaw ?? "").trim().replace(/^["']|["']$/g, "");
+  if (!target || target === "-" || /[$`*?~]/.test(target)) {
+    logger.debug("gate_search_base", { reason: "unmodellable_cd", target });
+    return null;
+  }
+  try {
+    // Physically, like the process: entering a symlink moves the shell to its target.
+    const next = realpathSync(resolve(current, target));
+    if (!statSync(next).isDirectory()) throw new Error("not a directory");
+    return next;
+  } catch {
+    logger.debug("gate_search_base", { reason: "cd_target_unusable", target });
+    return null;
+  }
+}
+
 export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string, logger: Logger = log): boolean {
-  const search = searchCommand(command);
-  if (!search) return false;
+  const split = commandSegments(command, logger);
+  // `cd build & rg foo .` runs the cd in a subshell: not worth modelling. Detected from the separator
+  // rather than by regex on raw text — `rg 'a&b'` is a pattern, not a background job.
+  if (split.backgroundJob) {
+    logger.debug("gate_search_base", { reason: "background_job", command: String(command ?? "").slice(0, 200) });
+    return false;
+  }
+  // EVERY search segment is classified. Reading only the first let `cd /foreign; rg x; rg secret
+  // /checkout/f` exempt the whole call on the first search's foreign base.
+  let base = root;
+  let sawSearch = false;
+  for (const segment of split.segments) {
+    if (segment.pipelineStage) {
+      // A pipeline stage never moves this shell, so its `cd` is ignored. Its search usually reads
+      // stdin, but `rg foo . | rg secret /indexed/file` DOES search the file it names — classify any
+      // stage that carries an explicit path, and skip only the pure filters.
+      if (/^cd(\s|$)/.test(segment.text)) continue;
+      const staged = searchCommand(segment.text);
+      if (!staged) continue;
+      const stagedOperands = staged.operands.filter(token => !token.startsWith("-"));
+      const stagedPaths = staged.binary === "find" || staged.patternFromFlag
+        ? stagedOperands
+        : stagedOperands.slice(1);
+      if (stagedPaths.length === 0) continue; // a filter: searches no directory
+      // `git -C repo grep …` searches repo, which the stage's own base must reflect.
+      let stagedBase = base;
+      for (const directory of staged.directories) {
+        const next = cdBase(stagedBase, directory, logger);
+        if (next === null) return false;
+        stagedBase = next;
+      }
+      if (!exemptSegment(staged, stagedBase, mapPaths, root, logger)) return false;
+      continue;
+    }
+    const cd = /^cd(?:\s+(.*))?$/.exec(segment.text);
+    if (cd) {
+      // A `cd` that only runs when an earlier command succeeded cannot be modelled:
+      // `rg foo /tmp && false && cd /tmp; rg secret .` searches the checkout, not /tmp.
+      if (segment.conditional) {
+        logger.debug("gate_search_base", { reason: "conditional_cd", command: String(command).slice(0, 200) });
+        return false;
+      }
+      const next = cdBase(base, cd[1] ?? "", logger);
+      if (next === null) return false;
+      base = next;
+      continue;
+    }
+    const search = searchCommand(segment.text);
+    if (!search) continue; // not a search: it neither navigates nor excuses one
+    sawSearch = true;
+    // `git -C dir grep …` searches dir: compose it onto this segment's base.
+    let segBase = base;
+    for (const directory of search.directories) {
+      const next = cdBase(segBase, directory, logger);
+      if (next === null) return false;
+      segBase = next;
+    }
+    if (!exemptSegment(search, segBase, mapPaths, root, logger)) return false;
+  }
+  return sawSearch;
+}
+
+/** Is this one search segment answerable by the map, i.e. safe to let through? */
+function exemptSegment(
+  search: { binary: string; operands: string[]; patternFromFlag: boolean },
+  base: string,
+  mapPaths: Set<string>,
+  root: string,
+  logger: Logger,
+): boolean {
   const operands = search.operands.filter(token => !token.startsWith("-"));
-  // `find` names a path first; every other search binary takes the pattern first.
-  const paths = search.binary === "find" ? operands : operands.slice(1);
-  if (!paths.length) return false;
-  const base = searchBaseDir(command, root, logger);
-  if (!base) return false;
+  // `find` names a path first; a search with `-e`/`-f` has no positional pattern; otherwise the
+  // first operand is the pattern.
+  const positional = search.binary === "find" || search.patternFromFlag ? operands : operands.slice(1);
+  // No path operand means the search runs in its BASE directory, which the caller has resolved.
+  const paths = positional.length ? positional : ["."];
   const verdict = (path: string, allowed: boolean, reason: string): boolean => {
     logger.debug("gate_search_unindexed", { path, allowed, reason, base });
     return allowed;
