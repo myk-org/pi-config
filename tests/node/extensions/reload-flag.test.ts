@@ -8,12 +8,13 @@
  * may ever let an exception escape (an unhandled rejection kills pi).
  */
 
-import { test, describe, afterEach } from "node:test";
+import { test, describe, afterEach, it } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 
 import path from "node:path";
 import reloadExtension, {
+  shouldSkipReloadFlag,
   RELOAD_COMMAND,
   runReloadFlagCommand,
   parkReloadNonce,
@@ -489,5 +490,20 @@ describe("reload-flag", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+});
+
+describe("shouldSkipReloadFlag", () => {
+  it("skips a headless rpc session", () => {
+    // The bug: a spawned peer in the same checkout consumed the deploy nonce, so the operator's
+    // TUI session never reloaded and no banner appeared.
+    assert.equal(shouldSkipReloadFlag(["node", "pi", "--mode", "rpc", "--coms"]), true);
+    assert.equal(shouldSkipReloadFlag(["node", "pi", "--mode=rpc"]), true);
+  });
+
+  it("does not skip a TUI or oneshot session", () => {
+    assert.equal(shouldSkipReloadFlag(["node", "pi"]), false);
+    assert.equal(shouldSkipReloadFlag(["node", "pi", "--mode", "json"]), false);
+    assert.equal(shouldSkipReloadFlag(["node", "pi", "-p", "hi"]), false);
   });
 });

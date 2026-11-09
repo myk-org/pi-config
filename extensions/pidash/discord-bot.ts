@@ -799,8 +799,8 @@ export function setupDiscordBot(opts: {
     // A fresh request reuses ids across sessions; an old "ended" marker must not hide it.
     if (typeof event?.id === "string") endedPrompts.delete(event.id);
     for (const [userId, state] of runtime) {
-      // `/disconnect` means "stop sending me anything": no target is created for a muted user.
-      if (state.deliveryMuted) continue;
+      // `/disconnect` stops OUTPUT, never questions: a user with no session is exactly who needs
+      // to be told that a session is asking something.
       // ANY session's question is delivered: a target is created on demand when the user never
       // picked this session, so a background agent waiting for an answer is never invisible.
       void (async () => {
@@ -810,18 +810,7 @@ export function setupDiscordBot(opts: {
           log.error("prompt dropped: no delivery target", { userId, sessionId, method });
           return;
         }
-        // `/disconnect` or a withdrawal can land while the target was being created. Creation
-        // installs the target, so a mute now must UNDO it — otherwise the session keeps streaming
-        // into a thread the user disconnected from.
-        if (state.deliveryMuted) {
-          if (state.targets) delete state.targets[sessionId];
-          // The thread mapping too: leaving it behind made a restart hydrate it as an output target.
-          if (state.threads) delete state.threads[sessionId];
-          delete (state.promptOnlyTargets ?? {})[sessionId];
-          persist();
-          log.info("prompt target withdrawn: user disconnected mid-delivery", { userId, sessionId });
-          return;
-        }
+        // The target is prompt-only, so a muted user still gets the question and no output.
         if (endedPrompts.has(event?.id)) {
           log.debug("prompt skipped: ended while creating its target", { userId, sessionId });
           return;

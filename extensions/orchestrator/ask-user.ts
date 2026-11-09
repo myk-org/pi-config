@@ -119,9 +119,19 @@ export function registerAskUser(
 
     async execute(_id, params, _signal, _onUpdate, ctx) {
       if (!ctx.hasUI) {
+        // A headless session (a spawned coms peer, a print/rpc run) has no human attached. A bare
+        // "no UI" left it guessing — so name the route that does exist: its manager, over coms.
+        log.info("ask_user_unattended", { reason: "no_ui" });
         return {
           content: [
-            { type: "text", text: "No UI available for user interaction" },
+            {
+              type: "text",
+              text:
+                "No UI is attached to this session, so no human can answer here. " +
+                "You are running unattended: send the question to your manager over coms " +
+                "(coms_send if coms is active) and continue with what does not depend on the answer, " +
+                "or stop and report the blocker. Never invent an approval.",
+            },
           ],
           details: undefined,
           isError: true,

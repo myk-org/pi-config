@@ -592,3 +592,35 @@ describe("a prompt-only target is not a subscription", () => {
     assert.ok(mem.sent.some((m) => m.target.channelId === "thread-b"), "a watched session streams");
   });
 });
+
+describe("disconnect silences output, not questions", () => {
+  it("streams nothing for a muted user", async () => {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("A", { channelId: "c" });
+    state.target = { channelId: "c", threadId: null };
+    state.targets = { A: { channelId: "c", threadId: null } };
+    state.deliveryMuted = true;
+    const states = new Map([["u", state]]);
+    const bridge = createChatBridge({ adapter: mem.adapter, users: () => states.entries(), sendToSession: () => true });
+
+    bridge.onPiEvent("A", { type: "agent_start" });
+    bridge.onPiEvent("A", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hidden" } });
+    bridge.onPiEvent("A", { type: "message_end", message: { role: "assistant" } });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+
+    assert.equal(mem.sent.length, 0, "a disconnected user gets no output");
+  });
+
+  it("still forwards a question while muted", () => {
+    // The point of the feature: no session watched must not mean no notification.
+    const mem = memoryAdapter();
+    const state = initialChatRuntime(null, null);
+    state.deliveryMuted = true;
+    state.targets = { B: { channelId: "dm", threadId: null } };
+    const states = new Map([["u", state]]);
+    const bridge = createChatBridge({ adapter: mem.adapter, users: () => states.entries(), sendToSession: () => true });
+
+    const prompt = bridge.askUser("B", { id: "q1", method: "input", title: "Anyone?" }, state);
+    assert.equal(prompt?.sessionId, "B", "the question is delivered even though output is muted");
+  });
+});
