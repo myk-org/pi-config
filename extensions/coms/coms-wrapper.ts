@@ -17,7 +17,8 @@ import { setComsActive } from "../shared/coms-active.js";
 import { createLogger } from "../shared/logger.js";
 import { Type } from "typebox";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { activationVerified, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, planActiveClaim, planPeerKills, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
+import { spawn } from "node:child_process";
+import { activationVerified, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, planPeerKills, resolvePeerScope, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
 
 const log = createLogger("coms");
@@ -202,17 +203,24 @@ export function registerComs(pi: ExtensionAPI) {
             try { ctx.ui.notify("📡 coms stopped", "info"); } catch {}
         } else if (subcommand === "list" || subcommand === "peers") {
             // Same interaction as /async-status: navigate, x kills the focused peer, X kills all.
+            // Scope is THIS project: a peer in another project cannot be addressed from here, so
+            // listing it only invites a failed send. `--all` / `--project <p>` opt out explicitly.
             const projectFlag = parts[parts.indexOf("--project") + 1];
-            const projectFilter = parts.includes("--project") ? projectFlag : undefined;
+            const projectScope = parts.includes("--all")
+                ? undefined
+                : parts.includes("--project") && projectFlag
+                    ? projectFlag
+                    : ownProject();
+            log.debug("coms_list_scope", { project: projectScope ?? "*" });
             if (ctx?.hasUI) {
                 await openComsPeersOverlay(ctx, {
-                    listPeers: () => filterRegistry(attachCreatedBy(readRegistryRows()).filter(rowAlive), { project: projectFilter }),
+                    listPeers: () => filterRegistry(attachCreatedBy(readRegistryRows()).filter(rowAlive), { project: projectScope }),
                     killPeer: (row) => killPeers({ name: row.name, project: row.project }).text,
-                    killAll: () => killPeers({ all: true, project: projectFilter }).text,
+                    killAll: () => killPeers({ all: true, project: projectScope }).text,
                 });
                 return;
             }
-            try { ctx.ui.notify(listPeers({ project: projectFilter }), "info"); } catch {}
+            try { ctx.ui.notify(listPeers({ project: projectScope }), "info"); } catch {}
         } else if (subcommand === "kill") {
             const what = (parts[1] ?? "").trim();
             const projectIdx = parts.indexOf("--project");
@@ -231,7 +239,7 @@ export function registerComs(pi: ExtensionAPI) {
         }
     };
     pi.registerCommand("coms", {
-        description: "P2P agent communication: /coms start | stop | status | list | kill <name|all>",
+        description: "P2P agent communication: /coms start | stop | status | list [--all] | kill <name|all>",
         getArgumentCompletions: (prefix: string) => {
             // Parse: split on whitespace, trailing space means "next token position"
             const tokens = prefix.trim().split(/\s+/).filter(Boolean);
@@ -389,6 +397,15 @@ export function registerComs(pi: ExtensionAPI) {
         try { process.kill(row.pid, 0); return true; } catch { return false; }
     };
 
+    /** This session's project namespace: the active flag when coms is on, else derived from cwd
+     *  exactly as activation derives it. */
+    const ownProject = (): string => {
+        const active = String(state.flagValues?.get("project") ?? "").trim();
+        if (state.active && active) return active;
+        const cwd = liveCtx?.cwd || process.cwd();
+        return cwd.replace(/^[\\/]+/, "").replace(/[\\/]+/g, "__");
+    };
+
     const listPeers = (params: { project?: string; name?: string }): string =>
         formatPeerTable(filterRegistry(attachCreatedBy(readRegistryRows()).filter(rowAlive), { project: params.project, name: params.name }));
 
@@ -454,13 +471,56 @@ export function registerComs(pi: ExtensionAPI) {
         pi.registerTool({
             name: "coms_peers",
             label: "coms peers",
-            description: "List EVERY pi peer on this machine from the coms registry — all projects — with name, project, busy/idle, queue depth, context usage and pid. Works even when coms is not active here. Live STATE only: a peer is a headless process, so watching its screen needs an interactive attach (rex), not this list. Filter with project and/or name.",
+            description: "List pi peers from the coms registry with name, project, busy/idle, queue depth, context usage and pid. Defaults to THIS session's project: a peer in another project cannot be addressed from here, so it is noise. Pass project:\"*\" for every project on the machine. Works even when coms is not active here. Live STATE only: a peer is a headless process, so watching its screen needs an interactive attach (rex), not this list.",
             parameters: Type.Object({
-                project: Type.Optional(Type.String({ description: "Only peers in this project namespace" })),
+                project: Type.Optional(Type.String({ description: "Project namespace, or \"*\" for all projects (default: this session's project)" })),
                 name: Type.Optional(Type.String({ description: "Only this peer name" })),
             }),
             async execute(_id: string, params: any) {
-                return { content: [{ type: "text" as const, text: listPeers({ project: params?.project, name: params?.name }) }], details: {} };
+                const scope = resolvePeerScope(params?.project, ownProject());
+                log.debug("coms_peers_scope", { project: scope.project, everyProject: scope.everyProject });
+                return { content: [{ type: "text" as const, text: listPeers({ project: scope.project ?? undefined, name: params?.name }) }], details: {} };
+            },
+        });
+        pi.registerTool({
+            name: "coms_peer_spawn",
+            label: "coms peer spawn",
+            description: "Start another agent as its own pi peer: a supervised `pi --coms` process with its own session, addressable by name from coms_send. THIS is how you create a peer — you do not need a human to type anything. The peer boots in ~20-30s before it appears in coms_peers; it has no lifetime of its own, so stop it with coms_peer_kill when done.",
+            parameters: Type.Object({
+                cname: Type.String({ description: "Peer name, e.g. `reviewer` or `builder-2` (letters, digits, dot, dash, underscore)" }),
+                purpose: Type.Optional(Type.String({ description: "One line describing what this peer is for" })),
+                project: Type.Optional(Type.String({ description: "Project namespace (default: this session's project)" })),
+                cwd: Type.Optional(Type.String({ description: "Working directory (default: this session's cwd)" })),
+            }),
+            async execute(_id: string, params: any) {
+                const supervisor = [
+                    path.join(os.homedir(), ".pi", "agent", "npm", "node_modules", "pi-orchestrator-config", "scripts", "coms-peer-supervisor.mjs"),
+                    path.join(liveCtx?.cwd || process.cwd(), "scripts", "coms-peer-supervisor.mjs"),
+                ].find(candidate => existsSync(candidate)) ?? "";
+                const plan = buildPeerSpawn(supervisor, {
+                    cname: params?.cname,
+                    purpose: params?.purpose,
+                    project: params?.project ?? ownProject(),
+                    cwd: params?.cwd ?? (liveCtx?.cwd || process.cwd()),
+                });
+                if (!plan.ok) {
+                    log.warn("coms_peer_spawn_rejected", { message: plan.message });
+                    return { content: [{ type: "text" as const, text: plan.message }], details: { ok: false, pid: null } };
+                }
+                try {
+                    // Deliberately detached: a peer must outlive this session (the user's explicit
+                    // call — peers are independent processes, so killing them is explicit too).
+                    const child = spawn(plan.command[0]!, plan.command.slice(1), { detached: true, stdio: "ignore" });
+                    child.unref();
+                    log.info("coms_peer_spawned", { cname: params?.cname, pid: child.pid ?? null, args: plan.command.slice(2).join(" ") });
+                    return {
+                        content: [{ type: "text" as const, text: `Started peer "${params?.cname}" (supervisor pid ${child.pid ?? "?"}). It registers in ~20-30s — then coms_peers lists it and coms_send can reach it.` }],
+                        details: { ok: true, pid: child.pid ?? null },
+                    };
+                } catch (error: any) {
+                    log.error("coms_peer_spawn_failed", { cname: params?.cname, error: String(error?.message ?? error) });
+                    return { content: [{ type: "text" as const, text: `coms peer spawn failed: ${error?.message ?? error}` }], details: { ok: false, pid: null } };
+                }
             },
         });
         pi.registerTool({
@@ -473,7 +533,9 @@ export function registerComs(pi: ExtensionAPI) {
                 all: Type.Optional(Type.Boolean({ description: "Stop every running peer on this machine" })),
             }),
             async execute(_id: string, params: any) {
-                const result = killPeers({ name: params?.name, project: params?.project, all: params?.all });
+                const scope = resolvePeerScope(params?.project, ownProject());
+                // `all` means "all in scope": this session's project unless asked for every one.
+                const result = killPeers({ name: params?.name, project: params?.all ? scope.project ?? undefined : (params?.project ?? scope.project ?? undefined), all: params?.all });
                 return { content: [{ type: "text" as const, text: result.text }], details: { killed: result.killed } };
             },
         });

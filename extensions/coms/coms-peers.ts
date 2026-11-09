@@ -240,3 +240,43 @@ export function planActiveClaim(
     message: "📡 coms: the previous peer is gone (no socket) — starting a fresh one",
   };
 }
+
+/** Which project a tool call should see.
+ *
+ *  A human running `/coms list` wants the whole machine, but an LLM must not be shown peers from a
+ *  project it cannot address — it will try to message them, and "who is this peer?" costs a turn.
+ *  Default scope is therefore the caller's own project; `*` (or `all`) asks for every project. */
+export function resolvePeerScope(
+  requested: string | null | undefined,
+  ownProject: string,
+): { project: string | null; everyProject: boolean } {
+  const wanted = (requested ?? "").trim();
+  if (wanted === "*" || wanted.toLowerCase() === "all") return { project: null, everyProject: true };
+  if (wanted) return { project: wanted, everyProject: false };
+  return { project: ownProject || null, everyProject: false };
+}
+
+/** Validate a peer name and build the supervisor invocation.
+ *
+ *  Spawning a peer is a plain `node <supervisor> <name> …` call, which is exactly why a model could
+ *  not discover it: no tool named it. The command is built here so it is testable, and the checks
+ *  keep a name from becoming a shell/argv surprise in the supervisor. */
+export function buildPeerSpawn(
+  supervisorPath: string,
+  args: { cname?: string | null; project?: string | null; cwd?: string | null; purpose?: string | null },
+): { ok: true; command: string[] } | { ok: false; message: string } {
+  const cname = (args.cname ?? "").trim();
+  if (!cname) return { ok: false, message: "coms peer spawn: cname is required" };
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(cname)) {
+    return { ok: false, message: "coms peer spawn: cname must be 1-64 chars of letters, digits, dot, dash or underscore" };
+  }
+  if (!supervisorPath) return { ok: false, message: "coms peer spawn: supervisor script not found (is pi-orchestrator-config installed?)" };
+  const command = ["node", supervisorPath, cname];
+  const project = (args.project ?? "").trim();
+  if (project) command.push("--project", project);
+  const cwd = (args.cwd ?? "").trim();
+  if (cwd) command.push("--cwd", cwd);
+  const purpose = (args.purpose ?? "").trim();
+  if (purpose) command.push("--purpose", purpose);
+  return { ok: true, command };
+}

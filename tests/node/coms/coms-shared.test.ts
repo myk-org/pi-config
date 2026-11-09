@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { deadPeerCardIds } from "../../../extensions/coms/coms-shared.js";
-import { activationVerified, describePeerOrigin, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, planActiveClaim, planPeerKills, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
+import { activationVerified, describePeerOrigin, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, planPeerKills, resolvePeerScope, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
 
 describe("deadPeerCardIds", () => {
   const cards = () => new Map<string, { endpoint?: string | null; name?: string }>([
@@ -228,5 +228,44 @@ describe("planActiveClaim", () => {
     const claim = planActiveClaim(null, "linux", () => true, { warn: (m) => warnings.push(m) });
     assert.equal(claim.action, "restart");
     assert.deepEqual(warnings, ["coms_active_claim_unverified"]);
+  });
+});
+
+describe("resolvePeerScope", () => {
+  it("defaults a tool call to its own project", () => {
+    assert.deepEqual(resolvePeerScope(undefined, "home__myakove__git__pi-config"), { project: "home__myakove__git__pi-config", everyProject: false });
+    assert.deepEqual(resolvePeerScope("", "own"), { project: "own", everyProject: false });
+  });
+
+  it("shows every project only when asked", () => {
+    assert.deepEqual(resolvePeerScope("*", "own"), { project: null, everyProject: true });
+    assert.deepEqual(resolvePeerScope("all", "own"), { project: null, everyProject: true });
+  });
+
+  it("honours an explicit project namespace", () => {
+    assert.deepEqual(resolvePeerScope("pi-config", "own"), { project: "pi-config", everyProject: false });
+  });
+});
+
+describe("buildPeerSpawn", () => {
+  const supervisor = "/opt/sup/coms-peer-supervisor.mjs";
+
+  it("builds the supervisor invocation with the flags it understands", () => {
+    assert.deepEqual(
+      buildPeerSpawn(supervisor, { cname: "builder", project: "p", cwd: "/w", purpose: "builds" }),
+      { ok: true, command: ["node", supervisor, "builder", "--project", "p", "--cwd", "/w", "--purpose", "builds"] },
+    );
+  });
+
+  it("omits empty optional flags rather than passing blank values", () => {
+    assert.deepEqual(buildPeerSpawn(supervisor, { cname: "builder" }), { ok: true, command: ["node", supervisor, "builder"] });
+  });
+
+  it("refuses a missing name, a shell-hostile name, and a missing supervisor", () => {
+    assert.equal(buildPeerSpawn(supervisor, {}).ok, false);
+    for (const bad of ["a b", "x;rm -rf /", "../escape", "-leading", ""]) {
+      assert.equal(buildPeerSpawn(supervisor, { cname: bad }).ok, false, bad);
+    }
+    assert.equal(buildPeerSpawn("", { cname: "ok" }).ok, false);
   });
 });
