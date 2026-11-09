@@ -271,7 +271,7 @@ describe("hydratableTargets", () => {
 describe("routing is logged", () => {
   const guild = { guildId: "g1", threads: { create: async () => ({ id: "x" }) } };
 
-  it("records which route delivered the question, and what it fell back from", async () => {
+  it("records the fallback route and why", async () => {
     // A silent route decision is how a live run delivered a question with no evidence of where.
     const lines: Array<{ level: string; message: string; data?: Record<string, unknown> }> = [];
     const log = {
@@ -289,10 +289,11 @@ describe("routing is logged", () => {
       },
       state, { userId: "u", sessionId: "s1", name: "p" },
     );
-    const resolved = lines.find((line) => line.message === "prompt target resolved");
-    assert.equal(resolved?.level, "info");
-    assert.equal(resolved?.data?.used, "dm");
-    assert.equal(resolved?.data?.fellBackFrom, "thread", "the failing route is named");
+    // A fallback is a warning that names the route taken and the failure — not an info line.
+    const warned = lines.find((line) => line.message === "prompt target fell back");
+    assert.equal(warned?.level, "warn");
+    assert.equal(warned?.data?.used, "dm");
+    assert.match(String(warned?.data?.failure), /Missing Permissions/, "the failing route is named");
   });
 
   it("logs an error when there is no route at all", async () => {
@@ -325,12 +326,17 @@ describe("nudgeChannelId", () => {
 });
 
 describe("promptHeader", () => {
-  it("names the asking session and its checkout", () => {
+  it("names the asking session", () => {
     // Without this a DM user saw a bare question and had to guess the session.
-    assert.equal(
-      promptHeader({ name: "pi-config", cwd: "/home/myakove/git/pi-config", title: "Proceed?" }),
-      "pi-config · /home/myakove/git/pi-config — Proceed?",
-    );
+    assert.equal(promptHeader({ name: "pi-config", cwd: "/home/u/git/pi-config", title: "Proceed?" }), "pi-config — Proceed?");
+  });
+
+  it("never puts the checkout path in the title", () => {
+    // A guild-visible thread must not leak a private filesystem path, and 500 characters of path
+    // would crowd the question out of Discord's title.
+    const header = promptHeader({ name: "pi", cwd: "/home/someone/secret/project", title: "Deploy?", sessionId: "42:/home/someone/secret/project" });
+    assert.ok(!header.includes("/home/someone"), "no absolute path");
+    assert.equal(header, "pi (#42) — Deploy?");
   });
 
   it("distinguishes two sessions in the same checkout by pid", () => {
@@ -349,5 +355,54 @@ describe("promptHeader", () => {
   it("falls back to a default question instead of an empty header", () => {
     assert.equal(promptHeader({ name: "x", cwd: null, title: "   " }), "x — The agent is asking");
     assert.equal(promptHeader({ name: "x", cwd: null, title: undefined }), "x — The agent is asking");
+  });
+});
+
+describe("eviction and reuse are logged", () => {
+  const guild = { guildId: "g1", threads: { create: async () => ({ id: "fresh" }) } };
+  function collector() {
+    const lines: Array<{ level: string; message: string; data?: Record<string, unknown> }> = [];
+    const push = (level: string) => (message: string, data?: Record<string, unknown>) => lines.push({ level, message, data });
+    return { lines, log: { debug: push("debug"), info: push("info"), warn: push("warn"), error: push("error") } };
+  }
+
+  it("logs a reused target at debug", async () => {
+    const { lines, log } = collector();
+    const state = { responseChannelId: "guild-chan", threads: {}, targets: { s1: { channelId: "c", threadId: "t" } } };
+    await ensurePromptTarget(
+      { fetchChannel: async () => guild, createThread: async () => "x", persist: () => {}, inFlight: new Map(), maxThreads: 5, log },
+      state, { userId: "u", sessionId: "s1", name: "p" },
+    );
+    assert.equal(lines.at(-1)?.message, "prompt target reused");
+    assert.equal(lines.at(-1)?.level, "debug");
+  });
+
+  it("names the sessions it evicted", async () => {
+    const { lines, log } = collector();
+    const state = {
+      responseChannelId: "guild-chan",
+      threads: { old: "t-old", older: "t-older" },
+      targets: { old: { channelId: "t-old", threadId: "t-old" } },
+    };
+    await ensurePromptTarget(
+      { fetchChannel: async () => guild, createThread: async () => "fresh", persist: () => {}, inFlight: new Map(), maxThreads: 2, log },
+      state, { userId: "u", sessionId: "s9", name: "p" },
+    );
+    const evicted = lines.find((line) => line.message === "prompt targets evicted");
+    assert.ok(evicted, "eviction is logged");
+    assert.equal(evicted?.level, "info");
+    assert.ok(Array.isArray(evicted?.data?.evicted), "the evicted sessions are named");
+  });
+
+  it("warns when a route failed and the question fell back", async () => {
+    const { lines, log } = collector();
+    const state = { responseChannelId: "guild-chan", dmChannelId: "dm", threads: {}, targets: {} };
+    await ensurePromptTarget(
+      { fetchChannel: async () => guild, createThread: async () => { throw new Error("Missing Permissions"); }, persist: () => {}, inFlight: new Map(), maxThreads: 5, log },
+      state, { userId: "u", sessionId: "s5", name: "p" },
+    );
+    const fellBack = lines.find((line) => line.message === "prompt target fell back");
+    assert.equal(fellBack?.level, "warn", "a failed route is a warning, not info");
+    assert.match(String(fellBack?.data?.failure), /Missing Permissions/);
   });
 });

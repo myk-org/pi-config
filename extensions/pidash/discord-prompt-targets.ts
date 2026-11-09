@@ -239,17 +239,19 @@ export async function ensurePromptTarget(
       deps.log?.error("prompt target unavailable", { sessionId, threadParentId: parentId, failure: resolved.firstFailure });
       return null;
     }
-    deps.log?.info("prompt target resolved", {
-      sessionId,
-      used: resolved.used,
-      threadId: resolved.target.threadId ?? null,
-      fellBackFrom: resolved.firstFailure ? "thread" : null,
-    });
+    if (resolved.firstFailure) {
+      // A route failed and we fell back: that is a recoverable problem worth a warning, not a
+      // cheerful info line.
+      deps.log?.warn("prompt target fell back", { sessionId, used: resolved.used, failure: resolved.firstFailure });
+    } else {
+      deps.log?.info("prompt target resolved", { sessionId, used: resolved.used, threadId: resolved.target.threadId ?? null });
+    }
 
     // `switchWatch` may have installed its own thread for this session while Discord was being
     // called; keep that one, or the watch and the prompt's routing diverge.
     const installedWhileWorking = (state.threads ?? {})[sessionId];
     if (installedWhileWorking) {
+      deps.log?.info("prompt target adopted selected thread", { sessionId, threadId: installedWhileWorking });
       const adopted = { channelId: installedWhileWorking, threadId: installedWhileWorking };
       state.targets = state.targets ?? {};
       state.targets[sessionId] = adopted;
@@ -352,14 +354,16 @@ export function nudgeChannelId(args: {
  *  guess which session asked it. The checkout path disambiguates two sessions of the same name. */
 export function promptHeader(args: {
   name: string;
+  /** Only used to shorten an ambiguous name — NEVER emitted: an absolute checkout path leaks to
+   *  guild-visible threads and, at 500 characters, can crowd the question out of the title. */
   cwd: string | null;
   title: string | undefined;
   /** The session id (`<pid>:<cwd>`): two sessions in ONE checkout are otherwise identical. */
   sessionId?: string | null;
 }): string {
   const pid = args.sessionId?.includes(":") ? args.sessionId.split(":")[0] : args.sessionId;
-  const where = args.cwd ? `${args.name} · ${args.cwd}` : args.name;
-  const who = pid ? `${where} (#${pid})` : where;
+  const name = args.name.trim() || "pi";
+  const who = pid ? `${name} (#${pid})` : name;
   const question = (args.title ?? "").trim() || "The agent is asking";
   return `${who} — ${question}`;
 }

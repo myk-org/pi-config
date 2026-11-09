@@ -172,9 +172,14 @@ export function createChatBridge(host: ChatBridgeHost): ChatBridge {
     // question was answered outside the chat). Only output for sessions the user actually watches
     // (or has a real target for) is streamed.
     const promptOnly = state.promptOnlyTargets ?? {};
-    const ids = new Set(
-      Object.keys(state.targets ?? {}).filter((sessionId) => !promptOnly[sessionId]),
-    );
+    const streamed = Object.keys(state.targets ?? {}).filter((sessionId) => !promptOnly[sessionId]);
+    const suppressed = Object.keys(state.targets ?? {}).filter((sessionId) => promptOnly[sessionId]);
+    if (suppressed.length) {
+      // This filter decides what reaches the chat: a silent skip made a leaked stream impossible to
+      // trace back to the target that caused it.
+      log.debug("prompt-only sessions excluded from streaming", { suppressed });
+    }
+    const ids = new Set(streamed);
     if (state.watchedSessionId) ids.add(state.watchedSessionId);
     return [...ids];
   }
