@@ -39,7 +39,7 @@ You can grow the pool instead of doing everything yourself:
 | Action | How |
 |---|---|
 | Start a peer as its own real pi, with its own session | `pi --mode rpc --coms --cname <name> --project <p>` under `scripts/coms-peer-supervisor.mjs` (`~/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/`, falling back to this checkout): it holds the peer's stdin, records pids in `~/.pi/coms/peers/<name>.json`, and has no lifetime of its own |
-| See spawned peers | `coms_peers` (human: `/coms-status`, same overlay style as `/async-status` — ↑↓ navigate, x kill, X kill all; `/coms list` opens it too) |
+| See spawned peers | `coms_peers` (human: `/coms list` — overlay like `/async-status`: ↑↓ navigate, x kill, X kill all; plain text when there is no UI) |
 | Stop one peer / all peers | `coms_peer_kill` with `name` (add `project` when the name exists in several) or `all:true` (human: `/coms kill <name>` / `/coms kill all`). Only peers a supervisor started are killable — never your own session. |
 
 Rules for spawning: a peer is an independent process that outlives this session, so **always**

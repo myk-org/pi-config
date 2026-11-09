@@ -168,7 +168,7 @@ export function registerComs(pi: ExtensionAPI) {
                 await openComsPeersOverlay(ctx, {
                     listPeers: () => filterRegistry(readRegistryRows().filter(rowAlive), { project: projectFilter }),
                     killPeer: (row) => killPeers({ name: row.name, project: row.project }).text,
-                    killAll: () => killPeers({ all: true }).text,
+                    killAll: () => killPeers({ all: true, project: projectFilter }).text,
                 });
                 return;
             }
@@ -190,18 +190,6 @@ export function registerComs(pi: ExtensionAPI) {
             try { ctx.ui.notify(`📡 coms: unknown subcommand "${subcommand}". Use: start | stop | status`, "warning"); } catch {}
         }
     };
-    // Dedicated entry point, named like /async-status: one keystroke to the peer overlay.
-    pi.registerCommand("coms-status", {
-        description: "Fullscreen overlay: list coms peers, see live state, kill with x / X",
-        handler: async (_args: string, ctx: any) => {
-            await openComsPeersOverlay(ctx, {
-                listPeers: () => readRegistryRows().filter(rowAlive),
-                killPeer: (row) => killPeers({ name: row.name, project: row.project }).text,
-                killAll: () => killPeers({ all: true }).text,
-            });
-        },
-    });
-
     pi.registerCommand("coms", {
         description: "P2P agent communication: /coms start | stop | status | list | kill <name|all>",
         getArgumentCompletions: (prefix: string) => {

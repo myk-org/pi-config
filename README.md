@@ -117,12 +117,13 @@ Two systems for Pi agents to communicate with each other, activated on-demand vi
 | `coms_peers`         | List every peer on the machine from the registry (all projects) with live state |
 | `coms_peer_kill`     | Stop a peer by `name` (+`project` when ambiguous) or `all: true` — supervised peers only |
 
-Peers as processes (`/coms list`, `/coms kill`, `/coms-status`):
+Peers as processes (`/coms list`, `/coms kill`):
 
 - `scripts/coms-peer-supervisor.mjs` starts a peer as its own `pi` process with its own session,
   holds its stdin, records pids in `~/.pi/coms/peers/<name>@<project>.json` and lives as long as the
   peer. A peer has **no lifetime of its own** — kill it, or it stays.
-- `/coms-status` is the fullscreen counterpart of `/async-status`: navigate, `x` kill, `X` kill all.
+- `/coms list` opens a fullscreen overlay like `/async-status` (`x` kill, `X` kill all) when there is a
+  UI, and prints plain text otherwise — one command, no second entry point.
 - Only peers a supervisor started are killable; your own session and other human sessions never are.
 
 Messaging semantics (#924):
