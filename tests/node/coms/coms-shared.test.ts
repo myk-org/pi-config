@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { deadPeerCardIds } from "../../../extensions/coms/coms-shared.js";
-import { activationVerified, describePeerOrigin, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, planPeerKills, resolvePeerScope, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
+import { activationVerified, describePeerOrigin, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
 
 describe("deadPeerCardIds", () => {
   const cards = () => new Map<string, { endpoint?: string | null; name?: string }>([
@@ -267,5 +267,40 @@ describe("buildPeerSpawn", () => {
       assert.equal(buildPeerSpawn(supervisor, { cname: bad }).ok, false, bad);
     }
     assert.equal(buildPeerSpawn("", { cname: "ok" }).ok, false);
+  });
+});
+
+describe("resolveKillScope", () => {
+  it("scopes kill-all to the caller's project, widening only when asked", () => {
+    assert.deepEqual(resolveKillScope({ all: true }, "own"), { all: true, project: "own" });
+    assert.deepEqual(resolveKillScope({ all: true, project: "*" }, "own"), { all: true, project: "*" });
+  });
+
+  it("looks a NAMED peer up across projects, since naming one is already specific", () => {
+    assert.deepEqual(resolveKillScope({ name: "builder" }, "own"), { name: "builder", project: undefined });
+    assert.deepEqual(resolveKillScope({ name: "builder", project: "other" }, "own"), { name: "builder", project: "other" });
+  });
+});
+
+describe("resolveListScope", () => {
+  it("defaults to the caller's project", () => {
+    assert.equal(resolveListScope(["list"], "own"), "own");
+  });
+
+  it("widens with --all and honours --project", () => {
+    assert.equal(resolveListScope(["list", "--all"], "own"), undefined);
+    assert.equal(resolveListScope(["list", "--project", "other"], "own"), "other");
+  });
+});
+
+describe("buildPeerSpawn project validation", () => {
+  const supervisor = "/opt/sup/coms-peer-supervisor.mjs";
+  it("refuses a project that could escape the coms root", () => {
+    for (const bad of ["../etc", "a/b", "..", ".hidden"]) {
+      assert.equal(buildPeerSpawn(supervisor, { cname: "peer", project: bad }).ok, false, bad);
+    }
+  });
+  it("accepts a normal namespace", () => {
+    assert.equal(buildPeerSpawn(supervisor, { cname: "peer", project: "pi-config" }).ok, true);
   });
 });

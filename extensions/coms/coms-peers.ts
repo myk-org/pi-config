@@ -273,10 +273,43 @@ export function buildPeerSpawn(
   if (!supervisorPath) return { ok: false, message: "coms peer spawn: supervisor script not found (is pi-orchestrator-config installed?)" };
   const command = ["node", supervisorPath, cname];
   const project = (args.project ?? "").trim();
-  if (project) command.push("--project", project);
+  // A project namespace becomes a DIRECTORY NAME inside the coms root, so it is validated like a
+  // filename: no separators, no `..`, nothing that could place registry files elsewhere.
+  if (project) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(project) || project.includes("..")) {
+      return { ok: false, message: "coms peer spawn: project must be letters, digits, dot, dash or underscore (no path separators or '..')" };
+    }
+    command.push("--project", project);
+  }
   const cwd = (args.cwd ?? "").trim();
   if (cwd) command.push("--cwd", cwd);
   const purpose = (args.purpose ?? "").trim();
   if (purpose) command.push("--purpose", purpose);
   return { ok: true, command };
+}
+
+/** What a kill request may touch.
+ *
+ *  `all` is scoped to the caller's project — a tool must not wipe the machine — while a NAMED peer is
+ *  looked up across projects (with ambiguity refused), because naming one is already specific and a
+ *  peer in another project may legitimately be the one the caller means. */
+export function resolveKillScope(
+  request: { name?: string | null; project?: string | null; all?: boolean | null },
+  ownProject: string,
+): { name?: string; project?: string; all?: boolean } {
+  if (request.all === true) {
+    const project = (request.project ?? "").trim() || ownProject;
+    return { all: true, project: project || undefined };
+  }
+  const name = (request.name ?? "").trim();
+  const project = (request.project ?? "").trim();
+  return { name, project: project || undefined };
+}
+
+/** The `--all` / `--project` / default scope of `/coms list`. */
+export function resolveListScope(parts: string[], ownProject: string): string | undefined {
+  if (parts.includes("--all")) return undefined;
+  const index = parts.indexOf("--project");
+  const explicit = index >= 0 ? (parts[index + 1] ?? "").trim() : "";
+  return explicit || ownProject || undefined;
 }

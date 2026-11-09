@@ -1700,8 +1700,10 @@ export default function (pi: ExtensionAPI) {
 - coms_task_list — list tasks on a peer's task list without sending a message
 - coms_task_get — get a specific task from a peer's task list
 - coms_task_update — update a task you created on a peer's task list
-- coms_peers — list every peer on this machine from the registry (all projects, live state); filter by project/name
-- coms_peer_kill — stop a peer by name (add project when ambiguous) or all peers (all:true)
+- coms_peer_spawn — start another agent as its own peer: a supervised "pi --coms" process with its
+  own session; it registers in about 20-30s, then coms_send can reach it
+- coms_peers — list peers with live state; scoped to THIS project by default (project "*" for the machine)
+- coms_peer_kill — stop a peer by name (add project when ambiguous) or all:true for every peer in this project
 
 ## Task handling
 - Tasks may appear in your task widget at any time — check TaskList when prompted to work

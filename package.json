@@ -59,7 +59,8 @@
     "prompts/",
     "templates/",
     "skills/",
-    "settings-keys.json"
+    "settings-keys.json",
+    "scripts/coms-peer-supervisor.mjs"
   ],
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

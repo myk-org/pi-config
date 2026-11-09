@@ -18,7 +18,8 @@ import { createLogger } from "../shared/logger.js";
 import { Type } from "typebox";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { activationVerified, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, planPeerKills, resolvePeerScope, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
+import { fileURLToPath } from "node:url";
+import { activationVerified, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
 
 const log = createLogger("coms");
@@ -205,12 +206,7 @@ export function registerComs(pi: ExtensionAPI) {
             // Same interaction as /async-status: navigate, x kills the focused peer, X kills all.
             // Scope is THIS project: a peer in another project cannot be addressed from here, so
             // listing it only invites a failed send. `--all` / `--project <p>` opt out explicitly.
-            const projectFlag = parts[parts.indexOf("--project") + 1];
-            const projectScope = parts.includes("--all")
-                ? undefined
-                : parts.includes("--project") && projectFlag
-                    ? projectFlag
-                    : ownProject();
+            const projectScope = resolveListScope(parts, ownProject());
             log.debug("coms_list_scope", { project: projectScope ?? "*" });
             if (ctx?.hasUI) {
                 await openComsPeersOverlay(ctx, {
@@ -228,7 +224,8 @@ export function registerComs(pi: ExtensionAPI) {
                 try { ctx.ui.notify("Usage: /coms kill <peer-name|all> [--project <p>]", "warning"); } catch {}
                 return;
             }
-            const result = killPeers({ name: what === "all" ? undefined : what, project: projectIdx >= 0 ? parts[projectIdx + 1] : undefined, all: what === "all" });
+            const scope = resolveKillScope({ name: what === "all" ? undefined : what, project: projectIdx >= 0 ? parts[projectIdx + 1] : undefined, all: what === "all" }, ownProject());
+            const result = killPeers(scope);
             try { ctx.ui.notify(result.text, result.killed > 0 ? "info" : "warning"); } catch {}
         } else if (subcommand === "status") {
             try {
@@ -499,10 +496,15 @@ export function registerComs(pi: ExtensionAPI) {
                 cwd: Type.Optional(Type.String({ description: "Working directory (default: this session's cwd)" })),
             }),
             async execute(_id: string, params: any) {
+                // The supervisor ships inside the package (package.json `files`). Resolve it next to
+                // THIS extension rather than trusting the cwd, which made spawn fail for every
+                // installed user whose project is not this checkout.
+                const here = path.dirname(fileURLToPath(import.meta.url));
                 const supervisor = [
+                    path.join(here, "..", "..", "scripts", "coms-peer-supervisor.mjs"),
                     path.join(os.homedir(), ".pi", "agent", "npm", "node_modules", "pi-orchestrator-config", "scripts", "coms-peer-supervisor.mjs"),
                     path.join(liveCtx?.cwd || process.cwd(), "scripts", "coms-peer-supervisor.mjs"),
-                ].find(candidate => existsSync(candidate)) ?? "";
+                ].map(candidate => path.resolve(candidate)).find(candidate => existsSync(candidate)) ?? "";
                 const plan = buildPeerSpawn(supervisor, {
                     cname: params?.cname,
                     purpose: params?.purpose,
@@ -514,13 +516,25 @@ export function registerComs(pi: ExtensionAPI) {
                     return { content: [{ type: "text" as const, text: plan.message }], details: { ok: false, pid: null } };
                 }
                 try {
-                    // Deliberately detached: a peer must outlive this session (the user's explicit
-                    // call — peers are independent processes, so killing them is explicit too).
-                    const child = spawn(plan.command[0]!, plan.command.slice(1), { detached: true, stdio: "ignore" });
+                    // The supervisor writes its ownership record under the configured coms_dir, so it
+                    // has to be told which one this session uses — otherwise the peer is visible but
+                    // unkillable because the record lives elsewhere.
+                    const env = { ...process.env };
+                    const configuredComsDir = comsRoot().replace(/[\\/]projects$/, "");
+                    if (configuredComsDir) env.PI_COMS_DIR = configuredComsDir;
+                    // Deliberately detached: a peer must outlive this session (peers are independent
+                    // processes, so killing them is explicit too). An async launch error arrives as an
+                    // event, not a throw, and would otherwise kill the session.
+                    const child = spawn(plan.command[0]!, plan.command.slice(1), { detached: true, stdio: "ignore", env });
+                    child.on("error", (error: any) => {
+                        log.error("coms_peer_spawn_async_error", { cname: params?.cname, error: String(error?.message ?? error) });
+                    });
                     child.unref();
                     log.info("coms_peer_spawned", { cname: params?.cname, pid: child.pid ?? null, args: plan.command.slice(2).join(" ") });
                     return {
-                        content: [{ type: "text" as const, text: `Started peer "${params?.cname}" (supervisor pid ${child.pid ?? "?"}). It registers in ~20-30s — then coms_peers lists it and coms_send can reach it.` }],
+                        // "Started" means the supervisor launched, not that the peer is alive: the peer
+                        // boots `pi` afterwards, so point at the only place a startup failure shows up.
+                        content: [{ type: "text" as const, text: `Started supervisor for peer "${params?.cname}" (pid ${child.pid ?? "?"}). The peer registers in ~20-30s — check coms_peers; if it never appears, read ~/.pi/logs/coms-peers/${params?.cname}@${params?.project ?? ownProject()}.log` }],
                         details: { ok: true, pid: child.pid ?? null },
                     };
                 } catch (error: any) {
@@ -539,9 +553,9 @@ export function registerComs(pi: ExtensionAPI) {
                 all: Type.Optional(Type.Boolean({ description: "Stop every running peer on this machine" })),
             }),
             async execute(_id: string, params: any) {
-                const scope = resolvePeerScope(params?.project, ownProject());
-                // `all` means "all in scope": this session's project unless asked for every one.
-                const result = killPeers({ name: params?.name, project: params?.all ? scope.project ?? undefined : (params?.project ?? scope.project ?? undefined), all: params?.all });
+                const scope = resolveKillScope({ name: params?.name, project: params?.project, all: params?.all }, ownProject());
+                log.debug("coms_peer_kill_scope", scope);
+                const result = killPeers(scope);
                 return { content: [{ type: "text" as const, text: result.text }], details: { killed: result.killed } };
             },
         });
