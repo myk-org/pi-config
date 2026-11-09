@@ -263,7 +263,7 @@ export default function (pi: ExtensionAPI) {
   }
   if (shouldSkipReloadFlag()) {
     // Never steal a deploy's nonce: a peer in the same cwd would consume it invisibly.
-    log.info("skipping reload-flag registration (headless rpc session)");
+    log.debug("skipping reload-flag registration (headless rpc session)");
     return;
   }
 

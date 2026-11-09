@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { deadPeerCardIds } from "../../../extensions/coms/coms-shared.js";
-import { filterRegistry, formatPeerTable, isFreshHeartbeat, selectKillTargets, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
+import { filterRegistry, formatPeerTable, isFreshHeartbeat, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
 
 describe("deadPeerCardIds", () => {
   const cards = () => new Map<string, { endpoint?: string | null; name?: string }>([
@@ -66,5 +66,21 @@ describe("isFreshHeartbeat", () => {
     assert.equal(isFreshHeartbeat("2026-11-09T13:50:00.000Z", now), false);
     assert.equal(isFreshHeartbeat(null, now), false);
     assert.equal(isFreshHeartbeat("not-a-date", now), false);
+  });
+});
+
+describe("supervisedPeerKeys", () => {
+  it("keys peers by project and name so same-name peers stay separate", () => {
+    // Two projects may use one name (rootcoz ↔ pi-sidecar share a project name deliberately).
+    const keys = supervisedPeerKeys([
+      { cname: "coder", project: "proj-a", pid: 1 },
+      { cname: "coder", project: "proj-b", pid: 2 },
+    ]);
+    assert.deepEqual([...keys].sort(), ["proj-a::coder", "proj-b::coder"]);
+  });
+
+  it("ignores records without a live supervisor pid", () => {
+    // The registry lists human sessions too; only supervised peers may be killed.
+    assert.equal(supervisedPeerKeys([{ cname: "manager" }, { cname: "x", pid: 0 }]).size, 0);
   });
 });

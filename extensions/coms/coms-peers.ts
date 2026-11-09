@@ -92,3 +92,20 @@ export function isFreshHeartbeat(
   if (Number.isNaN(parsed)) return false;
   return now - parsed <= maxAgeMs;
 }
+
+/** Keys (`project::name`) of peers a supervisor is running.
+ *
+ *  Kill operations are scoped to these: the registry lists EVERY peer, including the caller's own
+ *  session and other human sessions, so "kill all" over the raw registry would terminate them. */
+export function supervisedPeerKeys(
+  records: Array<{ cname?: string; project?: string; pid?: number; childPid?: number | null }>,
+): Set<string> {
+  const keys = new Set<string>();
+  for (const record of records) {
+    if (typeof record?.cname !== "string" || !record.cname) continue;
+    // pid 0 is not a process: a record without a real supervisor pid is not killable.
+    if (!Number.isInteger(record?.pid) || (record?.pid ?? 0) <= 0) continue;
+    keys.add(`${record.project ?? "default"}::${record.cname}`);
+  }
+  return keys;
+}

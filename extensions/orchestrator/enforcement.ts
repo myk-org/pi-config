@@ -935,6 +935,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
 
     if (asyncRouteAvailable && !hasLoop && sleepMatch && parseInt(sleepMatch[1], 10) > getSetting(ctx.cwd, "enforcement_sleep_threshold_s")) {
+      log.info("dangerous_gate_sleep_blocked", { seconds: Number(sleepMatch[1]), threshold: getSetting(ctx.cwd, "enforcement_sleep_threshold_s") });
       return {
         block: true,
         reason: `⚠️ sleep ${sleepMatch[1]}s blocked — too long. Use subagent with async: true instead of blocking the session.`,

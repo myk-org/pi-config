@@ -72,9 +72,13 @@ If you are already active, `coms_start` answers "already active" — that is fin
 Each peer is a real pi process with its own session, started under the supervisor:
 
 ```bash
-node ~/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/coms-peer-supervisor.mjs <peer-name> \
-  --project "<project namespace>" --cwd "<checkout>" --purpose "<role>"
+# background it: the supervisor lives as long as the peer, so a foreground call never returns
+nohup node "$SUPERVISOR" <peer-name> --project "<project namespace>" --cwd "<checkout>" \
+  --purpose "<role>" >/dev/null 2>&1 &
 ```
+
+where `SUPERVISOR` is `~/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/coms-peer-supervisor.mjs`
+when installed from npm, else `scripts/coms-peer-supervisor.mjs` in this checkout.
 
 (The supervisor falls back to this checkout's `scripts/coms-peer-supervisor.mjs` when the package
 copy is absent.) It keeps the peer alive (a peer has no lifetime of its own — it lives until
@@ -85,7 +89,9 @@ killed), scrubs the session identity so the peer gets its own session, and recor
 
 1. `coms_peers` — every spawned peer must show `● ... running` with a supervisor and peer pid.
 2. `coms_list` — the same names must appear as connected peers.
-3. A peer missing from either list is a failed spawn: report it and stop it with `coms_peer_kill`
+3. `~/.pi/logs/coms-peers/<name>@<project>.log` — the supervisor's own account of the start; a peer
+   has no screen to watch, so this log and the live state in `coms_peers` are what you inspect.
+4. A peer missing from either list is a failed spawn: report it and stop it with `coms_peer_kill`
    before retrying.
 
 **Do NOT proceed without all expected peers connected.**

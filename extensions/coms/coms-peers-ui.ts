@@ -99,7 +99,7 @@ export async function openComsPeersOverlay(
               `state     ${current.busy ? "busy" : "idle"}${current.queueDepth ? ` · queue ${current.queueDepth}` : ""}`,
               `pid       ${current.pid ?? "?"}`,
               `socket    ${current.endpoint || "?"}`,
-              `heartbeat ${age === null || age === undefined ? "unknown" : `${age}s ago`}`,
+              `heartbeat ${age === null || age === undefined ? "unknown" : `${age}s ago`} (last keep-alive)`,
               `context   ${current.contextUsedPct === null ? "?" : `${Math.round(current.contextUsedPct)}%`}`,
               `started   ${current.startedAt ?? "?"}`,
               "",
