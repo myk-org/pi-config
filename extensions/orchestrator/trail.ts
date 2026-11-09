@@ -288,7 +288,8 @@ const RG_VALUE_FLAGS = new Set([
   "-e", "-f", "--regexp", "--file", "-g", "--glob", "--iglob", "-t", "-T", "--type", "--type-not", "-m", "--max-count",
   "--max-depth", "-A", "-B", "-C", "--context", "--color", "--colors", "--sort", "--sortr",
   "--threads", "-j", "--encoding", "-E", "-r", "--replace", "-M", "--max-columns", "--max-filesize",
-  "--pre", "--pre-glob",
+  "--pre", "--pre-glob", "--ignore-file", "--path-separator", "--field-match-separator",
+  "--field-context-separator", "--max-filesize", "--dfa-size-limit", "--regexp-size-limit",
 ]);
 /** `-e PATTERN` / `-f FILE` supply the pattern, so EVERY remaining operand is a path. Without this the
  *  first path was discarded as "the pattern" and an indexed search looked patternless. */
@@ -456,14 +457,36 @@ function dirPrefix(directory: string): string {
  *  of the root still gates (`rg foo ..` recurses back in); a sibling checkout, a plain non-git
  *  folder, or this repo's gitignored scratch (`.pi/tmp`) is another directory's business.
  *  Real paths are compared, so an external symlink into the checkout resolves back inside. */
-/** Shell segments that can each run a search, quote-aware and quote-preserving: splitting `|`
- *  naively turned `rg 'foo|bar' /indexed.ts` into two segments and lost the real path. Pipeline
- *  filters (`cat log | grep x`) are dropped — they filter stdout, they do not navigate. */
-function commandSegments(command: unknown): { text: string; conditional: boolean }[] {
-  return unquotedSegments(String(command ?? ""))
-    .filter(segment => segment.depth === 0)
-    .map(segment => ({ text: segment.text.trim(), conditional: segment.conditional === true }))
-    .filter(segment => segment.text.length > 0);
+/** Shell segments that can each run a search, with the facts the gate needs: whether the segment only
+ *  runs conditionally, whether it is a PIPELINE STAGE (reads stdin — its `cd` does not move this
+ *  shell and its `grep` searches no directory), and whether anything was backgrounded.
+ *
+ *  Quote-aware: splitting `|` by hand cut `rg 'a|b' /f.ts` in half. The shared splitter marks a
+ *  pipeline stage and a `&` job the same way (`backgrounded`), because both run in a subshell, so the
+ *  separator is inspected here to tell them apart. */
+function commandSegments(command: unknown, logger: Logger = log): {
+  segments: { text: string; conditional: boolean; pipelineStage: boolean }[];
+  backgroundJob: boolean;
+} {
+  const raw = String(command ?? "");
+  const segments: { text: string; conditional: boolean; pipelineStage: boolean }[] = [];
+  let backgroundJob = false;
+  let previousEnd: number | null = null;
+  for (const segment of unquotedSegments(raw)) {
+    if (segment.depth !== 0) continue;
+    const text = segment.text.trim();
+    if (text.length === 0) continue;
+    const separator = previousEnd === null ? "" : raw.slice(previousEnd, segment.start).trim();
+    previousEnd = segment.start + segment.text.length;
+    if (separator === "&") backgroundJob = true;
+    segments.push({
+      text,
+      conditional: segment.conditional === true,
+      pipelineStage: separator.startsWith("|") && !separator.startsWith("||"),
+    });
+  }
+  logger.debug("gate_search_segments", { count: segments.length, backgroundJob, command: raw.slice(0, 200) });
+  return { segments, backgroundJob };
 }
 
 /** The directory a `cd <target>` moves to, or null when it cannot be known statically. */
@@ -485,9 +508,10 @@ function cdBase(current: string, targetRaw: string, logger: Logger): string | nu
 }
 
 export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string, logger: Logger = log): boolean {
-  if (/(^|[^&>])&([^&=]|$)/.test(String(command ?? "").split("|")[0]!)) {
-    // `cd build & rg foo .` runs the cd in a subshell: not worth modelling. Log WHAT was gated, or
-    // an operator cannot tell which search the debug trail is talking about.
+  const split = commandSegments(command, logger);
+  // `cd build & rg foo .` runs the cd in a subshell: not worth modelling. Detected from the separator
+  // rather than by regex on raw text — `rg 'a&b'` is a pattern, not a background job.
+  if (split.backgroundJob) {
     logger.debug("gate_search_base", { reason: "background_job", command: String(command ?? "").slice(0, 200) });
     return false;
   }
@@ -495,7 +519,9 @@ export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: s
   // /checkout/f` exempt the whole call on the first search's foreign base.
   let base = root;
   let sawSearch = false;
-  for (const segment of commandSegments(command)) {
+  for (const segment of split.segments) {
+    // A pipeline stage reads stdin: its `cd` does not move this shell and its grep searches nothing.
+    if (segment.pipelineStage) continue;
     const cd = /^cd(?:\s+(.*))?$/.exec(segment.text);
     if (cd) {
       // A `cd` that only runs when an earlier command succeeded cannot be modelled:

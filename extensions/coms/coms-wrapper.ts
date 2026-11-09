@@ -109,6 +109,8 @@ export function registerComs(pi: ExtensionAPI) {
     };
 
     const runActivation = async (flagParts: string[], ctx: any, entry: "tool" | "slash" | "cli"): Promise<{ ok: boolean; message: string }> => {
+        // Captured before the stale-claim branch can clear it: only a reload keeps the restored flags.
+        const restoredFromReload = state.active === true;
         if (state.active) {
             const claim = planActiveClaim((globalThis as any).__comsSelf, process.platform, existsSync, log);
             if (claim.action === "reuse") return { ok: true, message: claim.message };
@@ -127,9 +129,10 @@ export function registerComs(pi: ExtensionAPI) {
             setComsActive(false);
             persistState(pi, PERSIST_KEY, state);
         }
-        // A retry after a reload may carry no flags: start from what was restored so the peer keeps
-        // its name, project, purpose, colour and explicit setting instead of becoming anonymous.
-        state.flagValues = new Map(state.flagValues ?? []);
+        // A retry after a reload may carry no flags, so restored values are kept — but ONLY for the
+        // reload case. After an explicit /coms stop, carrying them over would resurrect the old
+        // identity (and an --explicit opt-out) that the user just dropped.
+        state.flagValues = restoredFromReload ? new Map(state.flagValues ?? []) : new Map();
         parseFlags(flagParts, state.flagValues);
         if (state.flagValues.has("name")) {
             return { ok: false, message: "📡 coms: use --cname instead of --name" };

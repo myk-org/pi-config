@@ -990,6 +990,24 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
     assert.equal(allowed(`cd ${foreign} && rg --regexp needle .`), true);
   });
 
+  it("treats a pipeline stage as a filter, not a second search", () => {
+    // `grep match` reads stdin: it searches no directory, so it must not gate the call on its own.
+    assert.equal(allowed(`grep -rn "E1" .pi/tmp | grep match`), true);
+    // A `cd` on the right of a pipe never moves this shell, so the trailing search keeps its base.
+    assert.equal(allowed(`grep -rn "E1" .pi/tmp | cd /tmp; grep -rn "E1"`), false);
+  });
+
+  it("treats a quoted ampersand as part of the pattern", () => {
+    const foreign = makeTempDir("trail-foreign-amp-");
+    assert.equal(allowed(`cd ${foreign} && rg 'a&b'`), true);
+    // A real background job still gates: the cd happens in a subshell.
+    assert.equal(allowed(`cd ${foreign} & rg secret .`), false);
+  });
+
+  it("consumes ripgrep's ignore-file value", () => {
+    assert.equal(allowed(`rg --ignore-file .gitignore extensions/orchestrator/trail.ts`), false);
+  });
+
   it("allows a search of a directory the map holds nothing beneath", () => {
     assert.equal(allowed("grep -rn PATTERN build"), true, "build output holds nothing mapped");
     assert.equal(allowed("rg foo src/v1.2/"), true, "so does an unmapped source subdirectory");
