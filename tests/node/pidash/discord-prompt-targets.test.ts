@@ -333,6 +333,15 @@ describe("promptHeader", () => {
     );
   });
 
+  it("distinguishes two sessions in the same checkout by pid", () => {
+    // Two playground sessions produced identical headers; the pid is what makes a session unique.
+    const a = promptHeader({ name: "pg", cwd: "/home/u/pg", title: "Q?", sessionId: "850486:/home/u/pg" });
+    const b = promptHeader({ name: "pg", cwd: "/home/u/pg", title: "Q?", sessionId: "320698:/home/u/pg" });
+    assert.match(a, /#850486/);
+    assert.match(b, /#320698/);
+    assert.notEqual(a, b, "the header tells the two sessions apart");
+  });
+
   it("works without a known checkout", () => {
     assert.equal(promptHeader({ name: "rootcoz", cwd: null, title: "Proceed?" }), "rootcoz — Proceed?");
   });

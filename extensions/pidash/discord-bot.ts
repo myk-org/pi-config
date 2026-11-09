@@ -794,7 +794,7 @@ export function setupDiscordBot(opts: {
     // Name the asking session in the prompt itself: a DM has no thread title, so a bare question
     // left the user guessing which session asked.
     const cwd = sessionCwdFor(sessionId);
-    const titled = { ...event, title: promptHeader({ name, cwd, title: event.title }) };
+    const titled = { ...event, title: promptHeader({ name, cwd, title: event.title, sessionId }) };
     // A fresh request reuses ids across sessions; an old "ended" marker must not hide it.
     if (typeof event?.id === "string") endedPrompts.delete(event.id);
     for (const [userId, state] of runtime) {

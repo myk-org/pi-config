@@ -350,8 +350,16 @@ export function nudgeChannelId(args: {
  *
  *  A DM has no thread title to look at, so without this the user sees a bare question and has to
  *  guess which session asked it. The checkout path disambiguates two sessions of the same name. */
-export function promptHeader(args: { name: string; cwd: string | null; title: string | undefined }): string {
-  const who = args.cwd ? `${args.name} · ${args.cwd}` : args.name;
+export function promptHeader(args: {
+  name: string;
+  cwd: string | null;
+  title: string | undefined;
+  /** The session id (`<pid>:<cwd>`): two sessions in ONE checkout are otherwise identical. */
+  sessionId?: string | null;
+}): string {
+  const pid = args.sessionId?.includes(":") ? args.sessionId.split(":")[0] : args.sessionId;
+  const where = args.cwd ? `${args.name} · ${args.cwd}` : args.name;
+  const who = pid ? `${where} (#${pid})` : where;
   const question = (args.title ?? "").trim() || "The agent is asking";
   return `${who} — ${question}`;
 }
