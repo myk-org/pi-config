@@ -421,13 +421,17 @@ if (cleanupInterval.unref) cleanupInterval.unref();
 
 // ── Discord bot ─────────────────────────────────────────────────────
 
-setupDiscordBot({
-  piClients,
-  piEventHooks,
-  getActiveSessions,
-  log,
-});
-
 // ── Start ───────────────────────────────────────────────────────────
+//
+// The Discord bot starts only AFTER the port is ours. A second daemon that loses the port exits
+// inside `start()`, and starting the bot at module scope meant it had already connected with the
+// same token — two bots answering the same user, duplicate prompts.
 
-start();
+start(() => {
+  setupDiscordBot({
+    piClients,
+    piEventHooks,
+    getActiveSessions,
+    log,
+  });
+});

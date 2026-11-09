@@ -204,9 +204,15 @@ export function createDaemonServer(opts: DaemonServerOptions) {
 
   // ── Start ─────────────────────────────────────────────────────
 
-  function start() {
+  /** Set by the caller once listening succeeds; nothing with side effects (a Discord bot, a watcher)
+   *  may start before that, or a second daemon that loses the port leaves a duplicate bot running. */
+  let onListening: (() => void) | null = null;
+
+  function start(afterListen?: () => void) {
+    onListening = afterListen ?? null;
     server.listen(port, listenAddress, () => {
       log(`listening on http://${listenAddress}:${port}`);
+      try { onListening?.(); } catch (error: any) { log(`afterListen failed: ${error?.message ?? error}`); }
     });
 
     server.on("error", (err: any) => {
