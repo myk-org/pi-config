@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { deadPeerCardIds } from "../../../extensions/coms/coms-shared.js";
-import { filterRegistry, formatPeerTable, isFreshHeartbeat, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
+import { filterRegistry, formatPeerTable, isFreshHeartbeat, planPeerKills, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
 
 describe("deadPeerCardIds", () => {
   const cards = () => new Map<string, { endpoint?: string | null; name?: string }>([
@@ -82,5 +82,42 @@ describe("supervisedPeerKeys", () => {
   it("ignores records without a live supervisor pid", () => {
     // The registry lists human sessions too; only supervised peers may be killed.
     assert.equal(supervisedPeerKeys([{ cname: "manager" }, { cname: "x", pid: 0 }]).size, 0);
+  });
+});
+
+describe("planPeerKills", () => {
+  const row = (over: Partial<RegistryRow> = {}): RegistryRow => ({
+    project: "p1", name: "peer1", pid: 100, cwd: "/w", purpose: "", endpoint: "/sock",
+    busy: false, queueDepth: null, contextUsedPct: null, startedAt: null, heartbeatAt: null, ...over,
+  });
+  const base = {
+    rows: [row()],
+    supervisedKeys: new Set(["p1::peer1"]),
+    records: [{ cname: "peer1", project: "p1", pid: 900, childPid: 100 }],
+    request: { name: "peer1" },
+    isAlive: () => true,
+  };
+
+  it("signals the supervisor only when its child is this peer", () => {
+    assert.deepEqual(planPeerKills(base), [{ name: "peer1", project: "p1", signalPid: 900, reason: "supervisor" }]);
+  });
+
+  it("falls back to the peer when the record belongs to a different child", () => {
+    // A reused supervisor pid must never be signalled.
+    const plan = planPeerKills({ ...base, records: [{ cname: "peer1", project: "p1", pid: 900, childPid: 999 }] });
+    assert.deepEqual(plan.map((e) => [e.signalPid, e.reason]), [[100, "peer"]]);
+  });
+
+  it("refuses a peer no supervisor started, and a retired record", () => {
+    const unsupervised = planPeerKills({ ...base, supervisedKeys: new Set() });
+    assert.deepEqual(unsupervised.map((e) => [e.signalPid, e.reason]), [[null, "not-supervised"]]);
+    const retired = planPeerKills({ ...base, records: [{ cname: "peer1", project: "p1", pid: 900, childPid: 100, stoppedAt: "t" }] });
+    assert.deepEqual(retired.map((e) => [e.signalPid, e.reason]), [[null, "stale-record"]]);
+  });
+
+  it("scopes kill-all to the requested project", () => {
+    const rows = [row(), row({ project: "p2", name: "peer2", pid: 200 })];
+    const plan = planPeerKills({ ...base, rows, request: { all: true, project: "p2" }, supervisedKeys: new Set(["p1::peer1", "p2::peer2"]) });
+    assert.deepEqual(plan.map((e) => e.project), ["p2"]);
   });
 });

@@ -109,3 +109,50 @@ export function supervisedPeerKeys(
   }
   return keys;
 }
+
+/** One entry per requested kill, with the process to signal and why that process is the right one. */
+export interface KillPlanEntry {
+  name: string;
+  project: string;
+  /** Supervisor pid when one owns this peer, else the peer pid. */
+  signalPid: number | null;
+  reason: "supervisor" | "peer" | "not-supervised" | "stale-record";
+}
+
+/** Decide what a kill request may signal.
+ *
+ *  Scope decisions are the dangerous part, so they are pure and reported per peer: a peer with no
+ *  live supervisor record is `not-supervised` (never signalled — that would hit a human session or a
+ *  reused pid), and a retired record is `stale-record`. */
+export function planPeerKills(args: {
+  rows: RegistryRow[];
+  supervisedKeys: Set<string>;
+  records: Array<{ cname?: string; project?: string; pid?: number; childPid?: number | null; stoppedAt?: string; exitedAt?: string; failedAt?: string }>;
+  request: { name?: string | null; project?: string | null; all?: boolean | null };
+  isAlive: (row: RegistryRow) => boolean;
+}): KillPlanEntry[] {
+  const scope = args.request.project
+    ? args.rows.filter((row) => row.project === args.request.project)
+    : args.rows;
+  const name = (args.request.name ?? "").trim();
+  const candidates = args.request.all === true
+    ? scope
+    : name ? scope.filter((row) => row.name === name) : [];
+
+  return candidates.map((row) => {
+    const key = `${row.project}::${row.name}`;
+    if (!args.supervisedKeys.has(key)) return { name: row.name, project: row.project, signalPid: null, reason: "not-supervised" };
+    if (!args.isAlive(row)) return { name: row.name, project: row.project, signalPid: null, reason: "stale-record" };
+    const record = args.records.find(
+      (r) => r?.cname === row.name && (r?.project ?? "default") === row.project,
+    );
+    if (!record || record.stoppedAt || record.exitedAt || record.failedAt) {
+      return { name: row.name, project: row.project, signalPid: null, reason: "stale-record" };
+    }
+    // Signal the supervisor only when its recorded child IS this peer.
+    if (Number.isInteger(record.pid) && record.childPid === row.pid) {
+      return { name: row.name, project: row.project, signalPid: record.pid as number, reason: "supervisor" };
+    }
+    return { name: row.name, project: row.project, signalPid: row.pid ?? null, reason: "peer" };
+  });
+}

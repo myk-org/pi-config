@@ -17,7 +17,7 @@ import { setComsActive } from "../shared/coms-active.js";
 import { createLogger } from "../shared/logger.js";
 import { Type } from "typebox";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { filterRegistry, formatPeerTable, isFreshHeartbeat, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
+import { filterRegistry, formatPeerTable, isFreshHeartbeat, planPeerKills, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
 
 const log = createLogger("coms");
@@ -351,61 +351,53 @@ export function registerComs(pi: ExtensionAPI) {
     const listPeers = (params: { project?: string; name?: string }): string =>
         formatPeerTable(filterRegistry(readRegistryRows().filter(rowAlive), { project: params.project, name: params.name }));
 
-    /** Peers this tool may kill: only those a supervisor started.
-     *  `kill all` over the registry would also signal the caller's own session and every human TUI
-     *  session sharing the project — the registry lists every peer, not every disposable one. */
-    const killableRows = (): RegistryRow[] => {
-        let files: string[] = [];
+    /** Supervisor records, read from every location a peer may have used: the configured
+     *  `coms_dir` AND `PI_COMS_DIR`. Reading one made a configured peer unkillable. */
+    const readSupervisionRecords = (): any[] => {
+        const dirs = new Set<string>([supervisedPeersDir()]);
+        const envDir = (process.env.PI_COMS_DIR || "").trim();
+        if (envDir) dirs.add(path.join(envDir, "peers"));
         const records: any[] = [];
-        try { files = readdirSync(supervisedPeersDir()); } catch { return []; }
-        for (const file of files) {
-            if (!file.endsWith(".json")) continue;
-            try { records.push(JSON.parse(readFileSync(path.join(supervisedPeersDir(), file), "utf-8"))); } catch { /* skip */ }
+        for (const dir of dirs) {
+            let files: string[] = [];
+            try { files = readdirSync(dir); } catch { continue; }
+            for (const file of files) {
+                if (!file.endsWith(".json")) continue;
+                try { records.push(JSON.parse(readFileSync(path.join(dir, file), "utf-8"))); } catch { /* skip */ }
+            }
         }
-        const supervised = supervisedPeerKeys(records);
-        return readRegistryRows().filter((row) => supervised.has(`${row.project}::${row.name}`));
+        return records;
     };
 
     const killPeers = (params: { name?: string; project?: string; all?: boolean }): { text: string; killed: number } => {
-        // Only supervised peers are candidates — never the caller, never a human session.
-        const rows = killableRows();
-        const inScope = params.project ? rows.filter((row) => row.project === params.project) : rows;
-        const selection = selectKillTargets(inScope, params, rowAlive);
-        if (selection.ambiguous.length > 0) {
-            const where = selection.ambiguous.map((row) => row.project).join(", ");
-            return { text: `"${params.name}" exists in several projects (${where}). Say which: coms_peer_kill with project, or /coms kill ${params.name} --project <p>.`, killed: 0 };
+        const rows = readRegistryRows();
+        const records = readSupervisionRecords();
+        const plan = planPeerKills({
+            rows,
+            supervisedKeys: supervisedPeerKeys(records),
+            records,
+            request: params,
+            isAlive: rowAlive,
+        });
+        if (plan.length === 0) {
+            return { text: params.name ? `No peer matches "${params.name}"${params.project ? ` in ${params.project}` : ""}.` : "Nothing to kill.", killed: 0 };
         }
-        if (selection.missing.length > 0) {
-            return { text: `No running peer named "${selection.missing[0]}". Use coms_peers to list them.`, killed: 0 };
+        // Scope decisions are logged: "kill all did nothing" must be explainable.
+        for (const entry of plan.filter((e) => e.reason !== "supervisor" && e.reason !== "peer")) {
+            log.info("coms_peer_kill_skipped", { name: entry.name, project: entry.project, reason: entry.reason });
         }
-        if (selection.targets.length === 0) return { text: "Nothing to kill: no matching running peers.", killed: 0 };
         const killed: string[] = [];
-        for (const row of selection.targets) {
-            // Prefer the SUPERVISOR: it kills the peer, records the stop and exits. Killing the peer
-            // directly leaves the supervisor holding a dead child and rewrites the record wrongly.
-            let target = row.pid as number;
-            for (const file of [`${row.name}@${row.project}.json`, `${row.name}.json`]) {
-                try {
-                    const supervision = JSON.parse(readFileSync(path.join(supervisedPeersDir(), file), "utf-8"));
-                    if (supervision?.project && supervision.project !== row.project) continue;
-                    // Stopped/exited supervisors keep their record; its pid may already be reused.
-                    if (supervision?.stoppedAt || supervision?.exitedAt || supervision?.failedAt) continue;
-                    // Only signal a supervisor whose recorded child IS this peer: a reused pid would
-                    // otherwise make us kill an unrelated process.
-                    if (Number.isInteger(supervision?.pid) && supervision?.childPid === row.pid) {
-                        try { process.kill(supervision.pid, 0); target = supervision.pid; } catch { /* gone: kill the peer */ }
-                    }
-                    break;
-                } catch { /* try the next shape */ }
-            }
+        for (const entry of plan) {
+            if (entry.signalPid === null) continue;
             try {
-                process.kill(target, "SIGTERM");
-                killed.push(`${row.name}·${row.project}`);
-                log.info("coms_peer_kill", { name: row.name, project: row.project, pid: row.pid });
+                process.kill(entry.signalPid, "SIGTERM");
+                killed.push(`${entry.name}·${entry.project}`);
+                log.info("coms_peer_kill", { name: entry.name, project: entry.project, pid: entry.signalPid, via: entry.reason });
             } catch (error: any) {
-                log.warn("coms_peer_kill failed", { name: row.name, pid: row.pid, error: String(error?.message ?? error) });
+                log.warn("coms_peer_kill failed", { name: entry.name, pid: entry.signalPid, error: String(error?.message ?? error) });
             }
         }
+        if (killed.length === 0) return { text: "Nothing to kill: no supervised peer matched (see logs for why).", killed: 0 };
         return { text: `Stopped: ${killed.join(", ")}`, killed: killed.length };
     };
 
