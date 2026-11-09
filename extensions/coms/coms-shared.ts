@@ -77,6 +77,8 @@ export interface DeferredUpstream {
     flagValues: Map<string, any>;
     /** Whether the upstream extension is active */
     active: boolean;
+    /** In-flight activation, so two starts cannot share the process-wide origin/identity cell. */
+    activation?: Promise<{ ok: boolean; message: string }> | null;
     /** Extra persisted state */
     extra?: Record<string, any>;
 }

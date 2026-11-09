@@ -34,6 +34,7 @@ export function registerComs(pi: ExtensionAPI) {
         capturedSessionShutdown: null,
         flagValues: new Map(),
         active: false,
+        activation: null,
     };
 
     const PERSIST_KEY = "coms-state";
@@ -92,6 +93,22 @@ export function registerComs(pi: ExtensionAPI) {
      *  `coms_start` tool. A tool is how an already-open session (or an agent) enables coms without a
      *  slash command and without spawning a new pi. */
     const activateComs = async (flagParts: string[], ctx: any, entry: "tool" | "slash" | "cli" = "slash"): Promise<{ ok: boolean; message: string }> => {
+        // One activation at a time: the entry point and the published identity are process-wide, so
+        // overlapping starts could label a peer with the other's origin, or verify its socket after
+        // their own bind failed.
+        if (state.activation) {
+            log.debug("coms_activation_joined", { entry });
+            return state.activation;
+        }
+        state.activation = runActivation(flagParts, ctx, entry);
+        try {
+            return await state.activation;
+        } finally {
+            state.activation = null;
+        }
+    };
+
+    const runActivation = async (flagParts: string[], ctx: any, entry: "tool" | "slash" | "cli"): Promise<{ ok: boolean; message: string }> => {
         if (state.active) return { ok: true, message: "📡 coms already active" };
         state.flagValues = new Map();
         parseFlags(flagParts, state.flagValues);
@@ -321,7 +338,9 @@ export function registerComs(pi: ExtensionAPI) {
                         origin: typeof entry.origin === "string" ? entry.origin : null,
                         createdBy: null,
                     });
-                } catch { /* malformed entry: skip, never fail the list */ }
+                } catch (error: any) {
+                    log.warn("coms_registry_entry_unreadable", { file: path.join(comsRoot(), project, "agents", file), error: String(error?.message ?? error) });
+                }
             }
         }
         return rows;
@@ -363,7 +382,11 @@ export function registerComs(pi: ExtensionAPI) {
             try { files = readdirSync(dir); } catch { continue; }
             for (const file of files) {
                 if (!file.endsWith(".json")) continue;
-                try { records.push(JSON.parse(readFileSync(path.join(dir, file), "utf-8"))); } catch { /* skip */ }
+                try {
+                    records.push(JSON.parse(readFileSync(path.join(dir, file), "utf-8")));
+                } catch (error: any) {
+                    log.warn("coms_supervision_record_unreadable", { file: path.join(dir, file), error: String(error?.message ?? error) });
+                }
             }
         }
         return records;

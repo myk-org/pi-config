@@ -156,6 +156,12 @@ describe("describePeerOrigin", () => {
     assert.deepEqual(describePeerOrigin(row({ origin: "cli" })), { by: "user", via: "pi --coms" });
   });
 
+  it("keeps the attribution of a peer started before the entry-point vocabulary", () => {
+    // A running peer keeps writing the legacy value through its heartbeats until it restarts.
+    assert.deepEqual(describePeerOrigin(row({ origin: "agent" })), { by: "agent", via: "coms_start (legacy record)" });
+    assert.deepEqual(describePeerOrigin(row({ origin: "user" })), { by: "user", via: "/coms start (legacy record)" });
+  });
+
   it("says unknown rather than guessing user for a peer predating both fields", () => {
     assert.deepEqual(describePeerOrigin(row()), { by: "unknown", via: "no record" });
     assert.deepEqual(describePeerOrigin(row({ createdBy: "", origin: "garbage" })), { by: "unknown", via: "no record" });
