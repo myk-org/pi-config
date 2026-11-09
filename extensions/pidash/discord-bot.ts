@@ -866,8 +866,11 @@ export function setupDiscordBot(opts: {
     try {
       const sessions = getActiveSessions() ?? [];
       const found = sessions.find((session: any) => (session?.sessionId ?? session?.id) === sessionId);
-      const value = found?.name ?? found?.cwd ?? null;
-      return typeof value === "string" && value ? path.basename(value) || value : sessionId.slice(0, 8);
+      // The CHECKOUT is what a user recognises; an auto session name ("handoff-2026-11-06.md") does
+      // not say which project is asking. The pid in the header separates two sessions of one project.
+      const checkout = typeof found?.cwd === "string" && found.cwd ? path.basename(found.cwd) : "";
+      const named = typeof found?.name === "string" && found.name ? path.basename(found.name) : "";
+      return checkout || named || sessionId.slice(0, 8);
     } catch {
       return sessionId.slice(0, 8);
     }
