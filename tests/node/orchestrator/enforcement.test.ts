@@ -331,10 +331,27 @@ describe("isReadOnlyStatement", () => {
 
 describe("isRmInProjectTmp", () => {
 
-  it("allows rm -rf on a literal path inside the home scratch", () => {
-    // The user's own report: a literal absolute path inside ~/.pi/tmp.
+  it("allows rm -rf on a literal path inside the home scratch", (t) => {
+    const neutral = neutralRoot();
+    if (!neutral) {
+      t.skip("no neutral temp root writable on this host");
+      return;
+    }
     const cwd = makeTempDir("rm-home-tmp-");
-    assert.equal(isRmInProjectTmp(`rm -rf ${homedir()}/.pi/tmp/docsbuild-test`, cwd), true);
+    // A fake HOME with a REAL scratch: on a machine where ~/.pi is a symlink (dotfiles), the
+    // resolved scratch differs from the written one and the exemption is correctly refused, so
+    // asserting against the developer's own home made this test depend on machine layout.
+    const fakeHome = mkdtempSync(join(neutral, "rm-home-scratch-"));
+    const realHome = process.env.HOME;
+    mkdirSync(join(fakeHome, ".pi", "tmp"), { recursive: true });
+    process.env.HOME = fakeHome;
+    try {
+      assert.equal(isRmInProjectTmp(`rm -rf ${fakeHome}/.pi/tmp/docsbuild-test`, cwd), true);
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 
   it("refuses home-scratch deletions that are not literal paths inside it", () => {
