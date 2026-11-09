@@ -541,3 +541,54 @@ describe("answering a cross-session prompt keeps the user's watch", () => {
     assert.equal(state.threadId ?? null, null, "and does not make B's thread the current one");
   });
 });
+
+describe("a prompt-only target is not a subscription", () => {
+  function setup() {
+    const mem = memoryAdapter();
+    const state = initialChatRuntime("A", { channelId: "thread-a" });
+    state.threadId = "thread-a";
+    state.target = { channelId: "thread-a", threadId: "thread-a" };
+    state.targets = { A: { channelId: "thread-a", threadId: "thread-a" } };
+    state.promptOnlyTargets = {};
+    const states = new Map([["user", state]]);
+    const bridge = createChatBridge({ adapter: mem.adapter, users: () => states.entries(), sendToSession: () => true });
+    return { bridge, state, mem };
+  }
+
+  it("does not stream a session that only received a question target", async () => {
+    // The leak: a session that asked a question got a target, and its whole output streamed.
+    const { bridge, state, mem } = setup();
+    state.targets!.B = { channelId: "thread-b", threadId: "thread-b" };
+    state.promptOnlyTargets = { B: true };
+
+    bridge.onPiEvent("B", { type: "agent_start" });
+    bridge.onPiEvent("B", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "leaked" } });
+    bridge.onPiEvent("B", { type: "message_end", message: { role: "assistant" } });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+
+    assert.equal(mem.sent.filter((m) => m.target.channelId === "thread-b").length, 0, "nothing from B reaches its thread");
+  });
+
+  it("still streams the session the user watches", async () => {
+    const { bridge, mem } = setup();
+    bridge.onPiEvent("A", { type: "agent_start" });
+    bridge.onPiEvent("A", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hello" } });
+    bridge.onPiEvent("A", { type: "message_end", message: { role: "assistant" } });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.ok(mem.sent.length > 0, "the watched session still streams");
+  });
+
+  it("streams a prompt-only session once the user actually selects it", async () => {
+    // Watching is the explicit opt-in that overrides the prompt-only marker.
+    const { bridge, state, mem } = setup();
+    state.targets!.B = { channelId: "thread-b", threadId: "thread-b" };
+    state.promptOnlyTargets = { B: true };
+    state.watchedSessionId = "B";
+    state.target = state.targets!.B;
+    bridge.onPiEvent("B", { type: "agent_start" });
+    bridge.onPiEvent("B", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "watched" } });
+    bridge.onPiEvent("B", { type: "message_end", message: { role: "assistant" } });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.ok(mem.sent.some((m) => m.target.channelId === "thread-b"), "a watched session streams");
+  });
+});
