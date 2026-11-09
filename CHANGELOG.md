@@ -1,5 +1,23 @@
 # Changelog
 
+## [4.30.0] - 2026-11-09
+
+- Coms can be started by an agent (`coms_start`), not only by a slash command, and peers run as
+  supervised `pi --coms` processes with their own sessions: spawn, list every peer on the machine,
+  and stop one or all. Only supervised peers are killable — never your own session or another human's.
+- The peer detail view says who created a peer and through which entry point (`coms_start`,
+  `/coms start`, `pi --coms`), preferring the supervisor's record; peers predating the field read
+  `unknown` rather than being guessed.
+- A Discord question reaches you even when its session is not the one you watch: it gets its own
+  thread and the answer never moves your watch. Thread, then DM, then channel.
+- The Trail gate judges a search with no path argument by its base directory, which it previously
+  skipped: `cd /other/repo && rg pattern` is exempt again while `rg pattern /other/repo` stays gated.
+  Flag values, quoted patterns, `&&` conditions, pipelines and `git -C` are parsed by the shared
+  splitter instead of a private one.
+- Coms no longer answers "already active" without a socket: a stale claim is verified, the old server
+  shut down, and a fresh peer started. Activation, peer provenance and kill scope are all decided in
+  tested pure functions.
+
 ## [4.29.1] - 2026-11-08
 
 - A surviving `setTimeout` can no longer exit pi: the spawn-exit timer emitted `subagents:*` on the
