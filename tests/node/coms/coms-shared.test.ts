@@ -108,11 +108,29 @@ describe("planPeerKills", () => {
     assert.deepEqual(plan.map((e) => [e.signalPid, e.reason]), [[100, "peer"]]);
   });
 
-  it("refuses a peer no supervisor started, and a retired record", () => {
-    const unsupervised = planPeerKills({ ...base, supervisedKeys: new Set() });
-    assert.deepEqual(unsupervised.map((e) => [e.signalPid, e.reason]), [[null, "not-supervised"]]);
-    const retired = planPeerKills({ ...base, records: [{ cname: "peer1", project: "p1", pid: 900, childPid: 100, stoppedAt: "t" }] });
-    assert.deepEqual(retired.map((e) => [e.signalPid, e.reason]), [[null, "stale-record"]]);
+  it("refuses a peer no supervisor started", () => {
+    const plan = planPeerKills({ ...base, supervisedKeys: new Set() });
+    assert.deepEqual(plan.map((e) => [e.signalPid, e.reason]), [[null, "not-supervised"]]);
+  });
+
+  it("still stops a live peer whose record is retired bookkeeping", () => {
+    // A leftover stoppedAt must not leave a running peer unstoppable.
+    const plan = planPeerKills({ ...base, records: [{ cname: "peer1", project: "p1", pid: 900, childPid: 100, stoppedAt: "t" }] });
+    assert.deepEqual(plan.map((e) => [e.signalPid, e.reason]), [[100, "peer"]]);
+  });
+
+  it("refuses an ambiguous name instead of stopping both", () => {
+    const rows = [row(), row({ project: "p2", pid: 200 })];
+    const plan = planPeerKills({ ...base, rows, supervisedKeys: new Set(["p1::peer1", "p2::peer1"]) });
+    assert.deepEqual(plan.map((e) => [e.signalPid, e.reason]), [[null, "ambiguous"], [null, "ambiguous"]]);
+    const chosen = planPeerKills({
+      ...base,
+      rows,
+      request: { name: "peer1", project: "p2" },
+      supervisedKeys: new Set(["p1::peer1", "p2::peer1"]),
+      records: [{ cname: "peer1", project: "p2", pid: 900, childPid: 200 }],
+    });
+    assert.deepEqual(chosen.map((e) => [e.project, e.reason]), [["p2", "supervisor"]]);
   });
 
   it("scopes kill-all to the requested project", () => {

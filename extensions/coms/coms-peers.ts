@@ -116,7 +116,7 @@ export interface KillPlanEntry {
   project: string;
   /** Supervisor pid when one owns this peer, else the peer pid. */
   signalPid: number | null;
-  reason: "supervisor" | "peer" | "not-supervised" | "stale-record";
+  reason: "supervisor" | "peer" | "not-supervised" | "stale-record" | "ambiguous";
 }
 
 /** Decide what a kill request may signal.
@@ -139,6 +139,11 @@ export function planPeerKills(args: {
     ? scope
     : name ? scope.filter((row) => row.name === name) : [];
 
+  // Two peers sharing a name across projects: refusing beats stopping the wrong one.
+  if (!args.request.all && name && !args.request.project && candidates.length > 1) {
+    return candidates.map((row) => ({ name: row.name, project: row.project, signalPid: null, reason: "ambiguous" as const }));
+  }
+
   return candidates.map((row) => {
     const key = `${row.project}::${row.name}`;
     if (!args.supervisedKeys.has(key)) return { name: row.name, project: row.project, signalPid: null, reason: "not-supervised" };
@@ -146,8 +151,10 @@ export function planPeerKills(args: {
     const record = args.records.find(
       (r) => r?.cname === row.name && (r?.project ?? "default") === row.project,
     );
-    if (!record || record.stoppedAt || record.exitedAt || record.failedAt) {
-      return { name: row.name, project: row.project, signalPid: null, reason: "stale-record" };
+    if (!record) return { name: row.name, project: row.project, signalPid: null, reason: "stale-record" };
+    // A retired record is leftover bookkeeping, not a reason to leave a LIVE peer running.
+    if (record.stoppedAt || record.exitedAt || record.failedAt) {
+      return { name: row.name, project: row.project, signalPid: row.pid ?? null, reason: "peer" };
     }
     // Signal the supervisor only when its recorded child IS this peer.
     if (Number.isInteger(record.pid) && record.childPid === row.pid) {

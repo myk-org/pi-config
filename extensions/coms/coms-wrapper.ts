@@ -379,12 +379,16 @@ export function registerComs(pi: ExtensionAPI) {
             request: params,
             isAlive: rowAlive,
         });
+        const ambiguous = plan.filter((entry) => entry.reason === "ambiguous");
+        if (ambiguous.length > 1) {
+            return { text: `"${params.name}" exists in ${ambiguous.map((e) => e.project).join(", ")} — pass project to choose.`, killed: 0 };
+        }
         if (plan.length === 0) {
             return { text: params.name ? `No peer matches "${params.name}"${params.project ? ` in ${params.project}` : ""}.` : "Nothing to kill.", killed: 0 };
         }
         // Scope decisions are logged: "kill all did nothing" must be explainable.
         for (const entry of plan.filter((e) => e.reason !== "supervisor" && e.reason !== "peer")) {
-            log.info("coms_peer_kill_skipped", { name: entry.name, project: entry.project, reason: entry.reason });
+            log.debug("coms_peer_kill_skipped", { name: entry.name, project: entry.project, reason: entry.reason });
         }
         const killed: string[] = [];
         for (const entry of plan) {
