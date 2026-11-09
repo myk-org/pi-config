@@ -160,7 +160,12 @@ describe("coms_queue_inspect execute result", { concurrency: false }, () => {
 			target: "receiver", prompt: "reply now", tasks: [{ subject: "task", description: "task" }],
 		});
 		assert.equal(result.details.msg_id.length > 0, true);
-		await new Promise((resolve) => setTimeout(resolve, 25));
+		// Poll for the reply instead of waiting a fixed 25 ms: under full-suite load the microtask
+		// reply arrives later and the assertion failed in the pre-commit hook (test-only flake).
+		const deadline = Date.now() + 2_000;
+		while (Date.now() < deadline && !sender.messages.some((message) => /fast/.test(message.content))) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
 		assert.match(sender.messages.map((message) => message.content).join("\n"), /fast/);
 	});
 
