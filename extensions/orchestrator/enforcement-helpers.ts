@@ -76,7 +76,7 @@ export function commandHasTrailerByName(command: string, trailerName: string): b
  * shell from one inside a subshell or behind a short-circuit, which change
  * nothing for a later command.
  */
-interface ShellSegment {
+export interface ShellSegment {
   text: string;
   start: number;
   depth: number;
@@ -85,7 +85,7 @@ interface ShellSegment {
   backgrounded?: boolean;
 }
 
-function unquotedSegments(command: string): ShellSegment[] {
+export function unquotedSegments(command: string): ShellSegment[] {
   const segments: ShellSegment[] = [];
   let start = 0;
   let quote: string | null = null;

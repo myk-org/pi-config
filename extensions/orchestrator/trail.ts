@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { unquotedSegments, type ShellSegment } from "./enforcement-helpers.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger, type Logger } from "../shared/logger.js";
@@ -202,8 +203,17 @@ function toolText(content: unknown): string { return Array.isArray(content) ? co
  * the previous command's stdout, so `cat log | grep x` never navigates.
  */
 function firstCommand(command: unknown): string | null {
-  const segments = String(command ?? "").split("|")[0]!.split(/&&|;|&/).map(part => part.trim()).filter(Boolean);
-  return segments.find(part => !/^cd(\s|$)/.test(part)) ?? null;
+  const text = String(command ?? "").trim();
+  // A DEFINITION runs nothing: `f() { rg foo src; }` only declares a body.
+  if (/^(?:function\s|[A-Za-z_]\w*\s*\(\))/.test(text)) return null;
+  // Quote-aware: splitting `|` by hand cut `rg 'foo|bar' /indexed.ts` at the alternation, so the
+  // search looked pathless and its indexed path vanished from the gate's view. The first segment is
+  // the producer; anything after a pipe only filters its stdout.
+  const segments = unquotedSegments(text)
+    .filter(segment => segment.depth === 0)
+    .map(segment => segment.text.trim())
+    .filter(part => part.length > 0 && !/^cd(\s|$)/.test(part));
+  return segments[0] ?? null;
 }
 export function classifyToolUse(name: unknown, input?: any): "trail" | "source" | null {
   const tool = typeof name === "string" ? name.toLowerCase() : "";
@@ -270,12 +280,12 @@ const BARE_REDIRECT = /^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/;
  *  `rg -E` takes an encoding, and `grep -r` is recursive while `rg -r` takes a replacement. One shared
  *  set got that wrong and turned a following path into a flag value, exempting an indexed search. */
 const GREP_VALUE_FLAGS = new Set([
-  "-e", "-f", "-m", "--max-count", "-A", "-B", "-C", "--context", "-d", "-D", "--devices",
+  "-e", "-f", "--regexp", "--file", "-m", "--max-count", "-A", "-B", "-C", "--context", "-d", "-D", "--devices",
   "--directories", "--include", "--include-dir", "--exclude", "--exclude-dir", "--label",
   "--binary-files",
 ]);
 const RG_VALUE_FLAGS = new Set([
-  "-e", "-f", "-g", "--glob", "--iglob", "-t", "-T", "--type", "--type-not", "-m", "--max-count",
+  "-e", "-f", "--regexp", "--file", "-g", "--glob", "--iglob", "-t", "-T", "--type", "--type-not", "-m", "--max-count",
   "--max-depth", "-A", "-B", "-C", "--context", "--color", "--colors", "--sort", "--sortr",
   "--threads", "-j", "--encoding", "-E", "-r", "--replace", "-M", "--max-columns", "--max-filesize",
   "--pre", "--pre-glob",
@@ -446,15 +456,14 @@ function dirPrefix(directory: string): string {
  *  of the root still gates (`rg foo ..` recurses back in); a sibling checkout, a plain non-git
  *  folder, or this repo's gitignored scratch (`.pi/tmp`) is another directory's business.
  *  Real paths are compared, so an external symlink into the checkout resolves back inside. */
-/** Split a command into the shell segments that can each run a search, dropping pipeline filters
- *  (`cat log | grep x` filters stdout, it does not navigate). */
-function commandSegments(command: unknown): string[] {
-  return String(command ?? "")
-    .split("|")
-    .map(part => part.split(/&&|;|&/))
-    .flat()
-    .map(part => part.trim())
-    .filter(Boolean);
+/** Shell segments that can each run a search, quote-aware and quote-preserving: splitting `|`
+ *  naively turned `rg 'foo|bar' /indexed.ts` into two segments and lost the real path. Pipeline
+ *  filters (`cat log | grep x`) are dropped — they filter stdout, they do not navigate. */
+function commandSegments(command: unknown): { text: string; conditional: boolean }[] {
+  return unquotedSegments(String(command ?? ""))
+    .filter(segment => segment.depth === 0)
+    .map(segment => ({ text: segment.text.trim(), conditional: segment.conditional === true }))
+    .filter(segment => segment.text.length > 0);
 }
 
 /** The directory a `cd <target>` moves to, or null when it cannot be known statically. */
@@ -477,22 +486,30 @@ function cdBase(current: string, targetRaw: string, logger: Logger): string | nu
 
 export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string, logger: Logger = log): boolean {
   if (/(^|[^&>])&([^&=]|$)/.test(String(command ?? "").split("|")[0]!)) {
-    logger.debug("gate_search_base", { reason: "background_job" });
-    return false; // `cd build & rg foo .` runs the cd in a subshell: not worth modelling
+    // `cd build & rg foo .` runs the cd in a subshell: not worth modelling. Log WHAT was gated, or
+    // an operator cannot tell which search the debug trail is talking about.
+    logger.debug("gate_search_base", { reason: "background_job", command: String(command ?? "").slice(0, 200) });
+    return false;
   }
   // EVERY search segment is classified. Reading only the first let `cd /foreign; rg x; rg secret
   // /checkout/f` exempt the whole call on the first search's foreign base.
   let base = root;
   let sawSearch = false;
   for (const segment of commandSegments(command)) {
-    const cd = /^cd(?:\s+(.*))?$/.exec(segment);
+    const cd = /^cd(?:\s+(.*))?$/.exec(segment.text);
     if (cd) {
+      // A `cd` that only runs when an earlier command succeeded cannot be modelled:
+      // `rg foo /tmp && false && cd /tmp; rg secret .` searches the checkout, not /tmp.
+      if (segment.conditional) {
+        logger.debug("gate_search_base", { reason: "conditional_cd", command: String(command).slice(0, 200) });
+        return false;
+      }
       const next = cdBase(base, cd[1] ?? "", logger);
       if (next === null) return false;
       base = next;
       continue;
     }
-    const search = searchCommand(segment);
+    const search = searchCommand(segment.text);
     if (!search) continue; // not a search: it neither navigates nor excuses one
     sawSearch = true;
     // `git -C dir grep …` searches dir: compose it onto this segment's base.

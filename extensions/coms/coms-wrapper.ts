@@ -115,11 +115,21 @@ export function registerComs(pi: ExtensionAPI) {
             // Stale claim: drop it and fall through to a real start rather than making the caller
             // run `/coms stop` first.
             log.info("coms_active_claim_cleared", {});
+            // The socket file is gone but its server may still be open (an unlinked Unix socket
+            // keeps running). Close it before a new lifecycle overwrites the reference, or the old
+            // server is stranded and later shutdown closes only the new one.
+            try {
+                await state.capturedSessionShutdown?.();
+            } catch (error: any) {
+                log.warn("coms_stale_claim_shutdown_threw", { error: String(error?.message ?? error) });
+            }
             state.active = false;
             setComsActive(false);
             persistState(pi, PERSIST_KEY, state);
         }
-        state.flagValues = new Map();
+        // A retry after a reload may carry no flags: start from what was restored so the peer keeps
+        // its name, project, purpose, colour and explicit setting instead of becoming anonymous.
+        state.flagValues = new Map(state.flagValues ?? []);
         parseFlags(flagParts, state.flagValues);
         if (state.flagValues.has("name")) {
             return { ok: false, message: "📡 coms: use --cname instead of --name" };

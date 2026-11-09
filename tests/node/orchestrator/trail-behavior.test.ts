@@ -968,6 +968,28 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
     assert.equal(allowed(`cd ${foreign}; rg one; grep two`), true, "all exempt segments stay exempt");
   });
 
+  it("keeps a quoted alternation inside one segment", () => {
+    // Splitting `|` naively made `rg 'foo|bar' /indexed.ts` two searches: a pathless one in the
+    // foreign base (exempt) and the rest, losing the indexed path.
+    const foreign = makeTempDir("trail-foreign-quote-");
+    assert.equal(allowed(`cd ${foreign} && rg 'foo|bar' ${root}/extensions/orchestrator/trail.ts`), false);
+    assert.equal(allowed(`cd ${foreign} && grep -rn 'a|b' ${root}/docs/configuration.md`), false);
+  });
+
+  it("gates when a cd is conditional on an earlier command", () => {
+    const foreign = makeTempDir("trail-foreign-cond-");
+    // The cd never runs (`false` fails first), so the trailing search happens in the checkout.
+    assert.equal(allowed(`cd ${root} && false && cd ${foreign}; rg secret .`), false);
+    assert.equal(allowed(`cd ${foreign} || cd ${root}; rg secret .`), false);
+  });
+
+  it("consumes the value of long pattern flags", () => {
+    const foreign = makeTempDir("trail-foreign-long-");
+    // `--regexp needle` supplies the pattern; treating `needle` as a path blocked a valid search.
+    assert.equal(allowed(`cd ${foreign} && grep --regexp needle .`), true);
+    assert.equal(allowed(`cd ${foreign} && rg --regexp needle .`), true);
+  });
+
   it("allows a search of a directory the map holds nothing beneath", () => {
     assert.equal(allowed("grep -rn PATTERN build"), true, "build output holds nothing mapped");
     assert.equal(allowed("rg foo src/v1.2/"), true, "so does an unmapped source subdirectory");
