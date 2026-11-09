@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive, isLiveLegacyDaemonFile } from "../../../extensions/shared/daemon-manager.js";
+import { writeLockfile, readLockfile, findLiveLockfile, removeLockfile, findFreePort, killDaemonByPid, findJitiUnder, findJitiPath, spawnDaemon, legacyLockfileOwnerAlive, isLiveLegacyDaemonFile, parseHealth } from "../../../extensions/shared/daemon-manager.js";
 import { createServer, type Server } from "node:http";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -419,5 +419,25 @@ describe("spawnDaemon", () => {
     });
     assert.ok(logs.some((m) => m.includes("jiti-cli.mjs not found")));
     assert.ok(!logs.some((m) => m.startsWith("spawning daemon:")));
+  });
+});
+
+describe("parseHealth", () => {
+  it("treats a degraded daemon as running", () => {
+    // The regression: a bot-setup failure made callers spawn a second daemon that lost the port.
+    const health = parseHealth(JSON.stringify({ status: "degraded", startupError: "discord setup failed", port: 19190 }));
+    assert.equal(health.running, true);
+    assert.equal(health.degraded, true);
+    assert.match(String(health.startupError), /discord setup failed/);
+  });
+
+  it("accepts a healthy daemon", () => {
+    assert.deepEqual(parseHealth(JSON.stringify({ status: "ok", port: 19190 })), { running: true, degraded: false, startupError: null });
+  });
+
+  it("rejects anything that is not a health response", () => {
+    assert.equal(parseHealth("not json").running, false);
+    assert.equal(parseHealth(JSON.stringify({ status: "stopped" })).running, false);
+    assert.equal(parseHealth(JSON.stringify({})).running, false);
   });
 });

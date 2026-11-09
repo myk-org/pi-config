@@ -20,6 +20,25 @@ const HEALTH_CHECK_TIMEOUT_MS = 2000;
 
 // ── Health check ────────────────────────────────────────────────────
 
+/** Statuses that mean "a daemon is listening here".
+ *
+ *  `degraded` is one of them: the server bound its port but a startup hook failed (the Discord bot
+ *  could not be created). Treating it as "not running" made callers spawn a SECOND daemon, which
+ *  then lost the occupied port and waited on a health check that never passed. */
+export const DAEMON_UP_STATUSES = new Set(["ok", "degraded"]);
+
+/** Parse a /api/health body into the daemon's state, or null when it is not a health response. */
+export function parseHealth(body: string): { running: boolean; degraded: boolean; startupError: string | null } {
+  try {
+    const data = JSON.parse(body);
+    const status = typeof data?.status === "string" ? data.status : "";
+    const startupError = typeof data?.startupError === "string" ? data.startupError : null;
+    return { running: DAEMON_UP_STATUSES.has(status), degraded: status === "degraded" || Boolean(startupError), startupError };
+  } catch {
+    return { running: false, degraded: false, startupError: null };
+  }
+}
+
 export function checkHealth(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const req = http.request(
@@ -27,9 +46,7 @@ export function checkHealth(port: number): Promise<boolean> {
       (res) => {
         let body = "";
         res.on("data", (d) => { body += d; });
-        res.on("end", () => {
-          try { resolve(JSON.parse(body).status === "ok"); } catch { resolve(false); }
-        });
+        res.on("end", () => resolve(parseHealth(body).running));
       },
     );
     req.on("error", () => resolve(false));
