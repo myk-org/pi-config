@@ -302,6 +302,17 @@ function valueFlagsFor(binary: string): Set<string> {
   return new Set<string>();
 }
 
+/** The quote a string leaves open, or null when it is balanced: `--ignore-file '/tmp/ignore rules'`
+ *  splits on whitespace into two tokens, and the second one belongs to the flag's value. */
+function openQuote(text: string): string | null {
+  let quote: string | null = null;
+  for (const ch of text) {
+    if (quote) { if (ch === quote) quote = null; continue; }
+    if (ch === "'" || ch === '"') quote = ch;
+  }
+  return quote;
+}
+
 function searchOperands(raw: string[], binary: string): { operands: string[]; patternFromFlag: boolean } {
   const valueFlags = valueFlagsFor(binary);
   const operands: string[] = [];
@@ -316,7 +327,12 @@ function searchOperands(raw: string[], binary: string): { operands: string[]; pa
     if (PATTERN_FLAGS.has(token) || /^-[ef]./.test(token) || /^--(?:regexp|file)=/.test(token)) {
       patternFromFlag = true;
     }
-    if (valueFlags.has(token) && i + 1 < raw.length) i++; // `--iglob x`, `-e PATTERN`
+    if (valueFlags.has(token) && i + 1 < raw.length) {
+      // `--iglob x`, `-e PATTERN` — and a quoted value that whitespace split into several tokens.
+      i++;
+      let joined = raw[i]!;
+      while (openQuote(joined) && i + 1 < raw.length) joined += " " + raw[++i]!;
+    }
     operands.push(token.replace(/^["']|["']$/g, ""));
   }
   return { operands, patternFromFlag };
@@ -520,8 +536,21 @@ export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: s
   let base = root;
   let sawSearch = false;
   for (const segment of split.segments) {
-    // A pipeline stage reads stdin: its `cd` does not move this shell and its grep searches nothing.
-    if (segment.pipelineStage) continue;
+    if (segment.pipelineStage) {
+      // A pipeline stage never moves this shell, so its `cd` is ignored. Its search usually reads
+      // stdin, but `rg foo . | rg secret /indexed/file` DOES search the file it names — classify any
+      // stage that carries an explicit path, and skip only the pure filters.
+      if (/^cd(\s|$)/.test(segment.text)) continue;
+      const staged = searchCommand(segment.text);
+      if (!staged) continue;
+      const stagedOperands = staged.operands.filter(token => !token.startsWith("-"));
+      const stagedPaths = staged.binary === "find" || staged.patternFromFlag
+        ? stagedOperands
+        : stagedOperands.slice(1);
+      if (stagedPaths.length === 0) continue; // a filter: searches no directory
+      if (!exemptSegment(staged, base, mapPaths, root, logger)) return false;
+      continue;
+    }
     const cd = /^cd(?:\s+(.*))?$/.exec(segment.text);
     if (cd) {
       // A `cd` that only runs when an earlier command succeeded cannot be modelled:

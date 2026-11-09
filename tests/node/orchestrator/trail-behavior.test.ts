@@ -1008,6 +1008,19 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
     assert.equal(allowed(`rg --ignore-file .gitignore extensions/orchestrator/trail.ts`), false);
   });
 
+  it("classifies a pipeline stage that names an explicit path", () => {
+    // A stage usually reads stdin, but `… | rg secret <indexed file>` really does search that file.
+    assert.equal(allowed(`grep -rn "E1" .pi/tmp | grep secret extensions/orchestrator/trail.ts`), false);
+    // A pure filter still passes: it searches no directory.
+    assert.equal(allowed(`grep -rn "E1" .pi/tmp | grep secret`), true);
+  });
+
+  it("keeps a quoted flag value in one token", () => {
+    // `--ignore-file '/tmp/ignore rules'`: the second whitespace token belongs to the flag value,
+    // so the following operand is not mistaken for the pattern.
+    assert.equal(allowed(`rg --ignore-file "/tmp/ignore rules" extensions/orchestrator/trail.ts`), false);
+  });
+
   it("allows a search of a directory the map holds nothing beneath", () => {
     assert.equal(allowed("grep -rn PATTERN build"), true, "build output holds nothing mapped");
     assert.equal(allowed("rg foo src/v1.2/"), true, "so does an unmapped source subdirectory");
