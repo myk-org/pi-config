@@ -306,8 +306,16 @@ function valueFlagsFor(binary: string): Set<string> {
  *  splits on whitespace into two tokens, and the second one belongs to the flag's value. */
 function openQuote(text: string): string | null {
   let quote: string | null = null;
-  for (const ch of text) {
-    if (quote) { if (ch === quote) quote = null; continue; }
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (quote) {
+      if (ch === quote) { quote = null; continue; }
+      // Inside double quotes a backslash escapes the next character; inside single quotes it is
+      // literal. Either way an escaped quote does not open or close anything.
+      if (ch === "\\" && quote === '"') i++;
+      continue;
+    }
+    if (ch === "\\") { i++; continue; } // `\'` is a literal quote, not an opening one
     if (ch === "'" || ch === '"') quote = ch;
   }
   return quote;
@@ -548,7 +556,14 @@ export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: s
         ? stagedOperands
         : stagedOperands.slice(1);
       if (stagedPaths.length === 0) continue; // a filter: searches no directory
-      if (!exemptSegment(staged, base, mapPaths, root, logger)) return false;
+      // `git -C repo grep …` searches repo, which the stage's own base must reflect.
+      let stagedBase = base;
+      for (const directory of staged.directories) {
+        const next = cdBase(stagedBase, directory, logger);
+        if (next === null) return false;
+        stagedBase = next;
+      }
+      if (!exemptSegment(staged, stagedBase, mapPaths, root, logger)) return false;
       continue;
     }
     const cd = /^cd(?:\s+(.*))?$/.exec(segment.text);

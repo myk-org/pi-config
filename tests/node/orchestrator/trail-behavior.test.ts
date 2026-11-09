@@ -1021,6 +1021,19 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
     assert.equal(allowed(`rg --ignore-file "/tmp/ignore rules" extensions/orchestrator/trail.ts`), false);
   });
 
+  it("does not treat an escaped quote as opening a value", () => {
+    const foreign = makeTempDir("trail-foreign-esc-");
+    // `foo\'s` is one word: an escaped quote must not swallow the indexed path that follows it.
+    assert.equal(allowed(`cd ${foreign} && rg -e foo\\'s ${root}/extensions/orchestrator/trail.ts`), false);
+  });
+
+  it("applies git -C to a pipeline stage's base", () => {
+    const foreign = makeTempDir("trail-foreign-gitc-");
+    writeFileSync(join(foreign, "notes.txt"), "x\n");
+    // The file exists under the -C repository, not under this checkout: exempt, not unresolvable.
+    assert.equal(allowed(`grep -rn "E1" .pi/tmp | git -C ${foreign} grep needle notes.txt`), true);
+  });
+
   it("allows a search of a directory the map holds nothing beneath", () => {
     assert.equal(allowed("grep -rn PATTERN build"), true, "build output holds nothing mapped");
     assert.equal(allowed("rg foo src/v1.2/"), true, "so does an unmapped source subdirectory");
