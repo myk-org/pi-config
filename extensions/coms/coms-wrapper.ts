@@ -17,7 +17,7 @@ import { setComsActive } from "../shared/coms-active.js";
 import { createLogger } from "../shared/logger.js";
 import { Type } from "typebox";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { activationVerified, describeActiveClaim, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, planPeerKills, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
+import { activationVerified, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, planActiveClaim, planPeerKills, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
 
 const log = createLogger("coms");
@@ -110,9 +110,14 @@ export function registerComs(pi: ExtensionAPI) {
 
     const runActivation = async (flagParts: string[], ctx: any, entry: "tool" | "slash" | "cli"): Promise<{ ok: boolean; message: string }> => {
         if (state.active) {
-            const claim = describeActiveClaim((globalThis as any).__comsSelf, process.platform, existsSync);
-            if (!claim.verified) log.warn("coms_active_claim_unverified", {});
-            return { ok: claim.verified, message: claim.message };
+            const claim = planActiveClaim((globalThis as any).__comsSelf, process.platform, existsSync, log);
+            if (claim.action === "reuse") return { ok: true, message: claim.message };
+            // Stale claim: drop it and fall through to a real start rather than making the caller
+            // run `/coms stop` first.
+            log.info("coms_active_claim_cleared", {});
+            state.active = false;
+            setComsActive(false);
+            persistState(pi, PERSIST_KEY, state);
         }
         state.flagValues = new Map();
         parseFlags(flagParts, state.flagValues);

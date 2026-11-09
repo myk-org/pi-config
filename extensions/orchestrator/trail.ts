@@ -266,31 +266,52 @@ const BARE_REDIRECT = /^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/;
 /** Operands of a search: quote-stripped, with redirections and their destinations dropped.
  *  The redirect test runs on the RAW token — `'<'` is a quoted pattern, not an operator, and
  *  stripping the quotes first turned it into one and shifted every later operand. */
-/** Flags whose VALUE is the next token: without this, the value of `--iglob` (an exclusion glob)
- *  is handed to the path check as if it were a directory. Only flags taking a separate value belong
- *  here — `-e PATTERN` and friends — never boolean ones like `-i` or `-n`. */
-const SEARCH_VALUE_FLAGS = new Set([
-  "-e", "-f", "-g", "--glob", "--iglob", "--include", "--include-dir", "--exclude", "--exclude-dir",
-  "--type", "--type-not", "-t", "-T", "-m", "--max-count", "--max-depth", "-A", "-B", "-C", "--context",
-  "--color", "--colors", "--sort", "--threads", "-j", "--encoding", "-E", "-M",
+/** Flags whose VALUE is the next token, PER BINARY: `grep -E` is a boolean (extended regexp) while
+ *  `rg -E` takes an encoding, and `grep -r` is recursive while `rg -r` takes a replacement. One shared
+ *  set got that wrong and turned a following path into a flag value, exempting an indexed search. */
+const GREP_VALUE_FLAGS = new Set([
+  "-e", "-f", "-m", "--max-count", "-A", "-B", "-C", "--context", "-d", "-D", "--devices",
+  "--directories", "--include", "--include-dir", "--exclude", "--exclude-dir", "--label",
+  "--binary-files",
 ]);
+const RG_VALUE_FLAGS = new Set([
+  "-e", "-f", "-g", "--glob", "--iglob", "-t", "-T", "--type", "--type-not", "-m", "--max-count",
+  "--max-depth", "-A", "-B", "-C", "--context", "--color", "--colors", "--sort", "--sortr",
+  "--threads", "-j", "--encoding", "-E", "-r", "--replace", "-M", "--max-columns", "--max-filesize",
+  "--pre", "--pre-glob",
+]);
+/** `-e PATTERN` / `-f FILE` supply the pattern, so EVERY remaining operand is a path. Without this the
+ *  first path was discarded as "the pattern" and an indexed search looked patternless. */
+const PATTERN_FLAGS = new Set(["-e", "-f", "--regexp", "--file"]);
 
-function searchOperands(raw: string[]): string[] {
+function valueFlagsFor(binary: string): Set<string> {
+  if (binary === "rg") return RG_VALUE_FLAGS;
+  if (binary === "grep" || binary === "git grep" || binary === "egrep" || binary === "fgrep") return GREP_VALUE_FLAGS;
+  // find/fd/ag/ack: skip nothing, so nothing can be mistaken for a path operand.
+  return new Set<string>();
+}
+
+function searchOperands(raw: string[], binary: string): { operands: string[]; patternFromFlag: boolean } {
+  const valueFlags = valueFlagsFor(binary);
   const operands: string[] = [];
+  let patternFromFlag = false;
   for (let i = 0; i < raw.length; i++) {
     const token = raw[i]!;
     if (REDIRECT_TOKEN.test(token)) {
       if (BARE_REDIRECT.test(token)) i++; // `> /dev/null`: drop the destination too
       continue;
     }
-    // `--iglob=x` carries its value inline; `--iglob x` in the next token.
-    if (SEARCH_VALUE_FLAGS.has(token) && i + 1 < raw.length) i++;
+    // `-ePATTERN` / `--regexp=PATTERN` carry the pattern inline.
+    if (PATTERN_FLAGS.has(token) || /^-[ef]./.test(token) || /^--(?:regexp|file)=/.test(token)) {
+      patternFromFlag = true;
+    }
+    if (valueFlags.has(token) && i + 1 < raw.length) i++; // `--iglob x`, `-e PATTERN`
     operands.push(token.replace(/^["']|["']$/g, ""));
   }
-  return operands;
+  return { operands, patternFromFlag };
 }
 
-function searchCommand(command: unknown): { binary: string; operands: string[]; directories: string[] } | null {
+function searchCommand(command: unknown): { binary: string; operands: string[]; directories: string[]; patternFromFlag: boolean } | null {
   const first = firstCommand(command);
   if (!first) return null;
   const raw = first.trim().split(/\s+/);
@@ -328,16 +349,16 @@ function searchCommand(command: unknown): { binary: string; operands: string[]; 
         continue;
       }
       // A bare `grep` subcommand searches; `--grep=x` on another subcommand is a filter.
-      return token.toLowerCase() === "grep"
-        ? { binary: "git grep", operands: searchOperands(raw.slice(i + 1)), directories }
-        : null;
+      if (token.toLowerCase() !== "grep") return null;
+      const gitGrep = searchOperands(raw.slice(i + 1), "git grep");
+      return { binary: "git grep", operands: gitGrep.operands, directories, patternFromFlag: gitGrep.patternFromFlag };
     }
     return null;
   }
   // Redirections are plumbing, not operands: `grep -rn E1 .pi/tmp 2>/dev/null` searches `.pi/tmp`.
-  return SEARCH_BINARIES.has(binary)
-    ? { binary, operands: searchOperands(raw.slice(index + 1)), directories: [] }
-    : null;
+  if (!SEARCH_BINARIES.has(binary)) return null;
+  const parsed = searchOperands(raw.slice(index + 1), binary);
+  return { binary, operands: parsed.operands, directories: [], patternFromFlag: parsed.patternFromFlag };
 }
 function searchBinary(command: unknown): string | null { return searchCommand(command)?.binary ?? null; }
 /** `git` options whose value is the following token. */
@@ -425,18 +446,81 @@ function dirPrefix(directory: string): string {
  *  of the root still gates (`rg foo ..` recurses back in); a sibling checkout, a plain non-git
  *  folder, or this repo's gitignored scratch (`.pi/tmp`) is another directory's business.
  *  Real paths are compared, so an external symlink into the checkout resolves back inside. */
+/** Split a command into the shell segments that can each run a search, dropping pipeline filters
+ *  (`cat log | grep x` filters stdout, it does not navigate). */
+function commandSegments(command: unknown): string[] {
+  return String(command ?? "")
+    .split("|")
+    .map(part => part.split(/&&|;|&/))
+    .flat()
+    .map(part => part.trim())
+    .filter(Boolean);
+}
+
+/** The directory a `cd <target>` moves to, or null when it cannot be known statically. */
+function cdBase(current: string, targetRaw: string, logger: Logger): string | null {
+  const target = String(targetRaw ?? "").trim().replace(/^["']|["']$/g, "");
+  if (!target || target === "-" || /[$`*?~]/.test(target)) {
+    logger.debug("gate_search_base", { reason: "unmodellable_cd", target });
+    return null;
+  }
+  try {
+    // Physically, like the process: entering a symlink moves the shell to its target.
+    const next = realpathSync(resolve(current, target));
+    if (!statSync(next).isDirectory()) throw new Error("not a directory");
+    return next;
+  } catch {
+    logger.debug("gate_search_base", { reason: "cd_target_unusable", target });
+    return null;
+  }
+}
+
 export function unindexedSearch(command: unknown, mapPaths: Set<string>, root: string, logger: Logger = log): boolean {
-  const search = searchCommand(command);
-  if (!search) return false;
+  if (/(^|[^&>])&([^&=]|$)/.test(String(command ?? "").split("|")[0]!)) {
+    logger.debug("gate_search_base", { reason: "background_job" });
+    return false; // `cd build & rg foo .` runs the cd in a subshell: not worth modelling
+  }
+  // EVERY search segment is classified. Reading only the first let `cd /foreign; rg x; rg secret
+  // /checkout/f` exempt the whole call on the first search's foreign base.
+  let base = root;
+  let sawSearch = false;
+  for (const segment of commandSegments(command)) {
+    const cd = /^cd(?:\s+(.*))?$/.exec(segment);
+    if (cd) {
+      const next = cdBase(base, cd[1] ?? "", logger);
+      if (next === null) return false;
+      base = next;
+      continue;
+    }
+    const search = searchCommand(segment);
+    if (!search) continue; // not a search: it neither navigates nor excuses one
+    sawSearch = true;
+    // `git -C dir grep …` searches dir: compose it onto this segment's base.
+    let segBase = base;
+    for (const directory of search.directories) {
+      const next = cdBase(segBase, directory, logger);
+      if (next === null) return false;
+      segBase = next;
+    }
+    if (!exemptSegment(search, segBase, mapPaths, root, logger)) return false;
+  }
+  return sawSearch;
+}
+
+/** Is this one search segment answerable by the map, i.e. safe to let through? */
+function exemptSegment(
+  search: { binary: string; operands: string[]; patternFromFlag: boolean },
+  base: string,
+  mapPaths: Set<string>,
+  root: string,
+  logger: Logger,
+): boolean {
   const operands = search.operands.filter(token => !token.startsWith("-"));
-  // `find` names a path first; every other search binary takes the pattern first.
-  const operands2 = search.binary === "find" ? operands : operands.slice(1);
-  // No path operand means the search runs in its BASE directory — which is exactly what
-  // `searchBaseDir` resolves, including a chained `cd`. Returning early here skipped that and gated
-  // `cd /other/repo && rg pattern` while `rg pattern /other/repo` was exempt.
-  const paths = operands2.length ? operands2 : ["."];
-  const base = searchBaseDir(command, root, logger);
-  if (!base) return false;
+  // `find` names a path first; a search with `-e`/`-f` has no positional pattern; otherwise the
+  // first operand is the pattern.
+  const positional = search.binary === "find" || search.patternFromFlag ? operands : operands.slice(1);
+  // No path operand means the search runs in its BASE directory, which the caller has resolved.
+  const paths = positional.length ? positional : ["."];
   const verdict = (path: string, allowed: boolean, reason: string): boolean => {
     logger.debug("gate_search_unindexed", { path, allowed, reason, base });
     return allowed;

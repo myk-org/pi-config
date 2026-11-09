@@ -946,6 +946,28 @@ describe("unindexedSearch exempts directories the map cannot answer for", () => 
     assert.equal(allowed(`cd .pi/tmp && grep -rn "E1"`), true);
   });
 
+  it("does not let a pattern flag hide an indexed path", () => {
+    // `-e PATTERN` means every remaining operand is a path: dropping the first as "the pattern"
+    // exempted an indexed file search on the strength of a foreign base.
+    const foreign = makeTempDir("trail-foreign-e-");
+    assert.equal(allowed(`cd ${foreign} && rg -e PATTERN ${root}/extensions/orchestrator/trail.ts`), false);
+    assert.equal(allowed(`cd ${foreign} && grep --regexp=PATTERN ${root}/extensions/orchestrator/trail.ts`), false);
+  });
+
+  it("reads -E per binary: boolean for grep, a value for rg", () => {
+    const foreign = makeTempDir("trail-foreign-E-");
+    // grep -E is extended-regexp, so the next token is the pattern and the path must still be judged.
+    assert.equal(allowed(`cd ${foreign} && grep -E PATTERN ${root}/extensions/orchestrator/trail.ts`), false);
+    // rg -E takes an encoding, so the token after it is not the pattern.
+    assert.equal(allowed(`cd ${foreign} && rg -E utf-8 PATTERN ${root}/extensions/orchestrator/trail.ts`), false);
+  });
+
+  it("classifies every search segment, not just the first", () => {
+    const foreign = makeTempDir("trail-foreign-multi-");
+    assert.equal(allowed(`cd ${foreign}; rg needle; rg secret ${root}/README.md`), false, "a later indexed search cannot ride the first exemption");
+    assert.equal(allowed(`cd ${foreign}; rg one; grep two`), true, "all exempt segments stay exempt");
+  });
+
   it("allows a search of a directory the map holds nothing beneath", () => {
     assert.equal(allowed("grep -rn PATTERN build"), true, "build output holds nothing mapped");
     assert.equal(allowed("rg foo src/v1.2/"), true, "so does an unmapped source subdirectory");

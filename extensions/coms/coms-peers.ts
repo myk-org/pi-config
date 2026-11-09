@@ -219,21 +219,24 @@ export function activationVerified(
   return exists(self.endpoint);
 }
 
-/** What to tell a caller when coms already claims to be active.
+/** What to do with a persisted "active" claim.
  *
- *  `active` is a persisted flag, not proof: right after a reload the peer boots for a couple of
- *  seconds, and a claim without a socket is a lie the caller will act on ("already active" while no
- *  peer exists). Verified the same way activation is. */
-export function describeActiveClaim(
+ *  The flag is not proof: right after a reload the peer needs a couple of seconds to register, and a
+ *  claim without a socket is a lie the caller acts on. A verified claim is reused; an unverified one
+ *  is treated as stale and the caller STARTS a fresh peer, because "run /coms stop first" made a
+ *  reload recovery manual for no reason. */
+export function planActiveClaim(
   self: { endpoint?: string | null } | null | undefined,
   platform: string,
   exists: (path: string) => boolean,
-): { verified: boolean; message: string } {
+  logger?: { warn: (msg: string, data?: unknown) => void },
+): { action: "reuse" | "restart"; message: string } {
   if (activationVerified(self, platform, exists)) {
-    return { verified: true, message: "📡 coms already active" };
+    return { action: "reuse", message: "📡 coms already active" };
   }
+  logger?.warn("coms_active_claim_unverified", { endpoint: self?.endpoint ?? null });
   return {
-    verified: false,
-    message: "📡 coms is marked active but no peer socket exists — run /coms stop, then /coms start",
+    action: "restart",
+    message: "📡 coms: the previous peer is gone (no socket) — starting a fresh one",
   };
 }
