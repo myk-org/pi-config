@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.31.1] - 2026-11-10
+
+- A killed peer now shuts down before its supervisor exits: `stop()` ends stdin deliberately, sends
+  SIGTERM, waits for the child to exit and escalates to SIGKILL only after a bounded timeout
+  (`PI_COMS_STOP_TIMEOUT_MS`, default 5s). The record carries `stoppedAt` and `exitedAt`, so a peer can
+  no longer leave a ghost registry entry or a stale socket behind.
+- A peer that ignores SIGTERM is killed and recorded as `forced: true`, instead of looking like a clean
+  stop.
+- An invalid `PI_COMS_STOP_TIMEOUT_MS` (empty, NaN, zero, negative) no longer fires the escalation
+  immediately and cuts the peer's cleanup short — it means the 5s default.
+- A replacement peer's record survives: the exiting supervisor rewrites the record only when it still
+  belongs to it, so a peer restarted under the same name and project is not erased.
+
 ## [4.31.0] - 2026-11-10
 
 - Peer listings are scoped to the caller's project: a peer in another project cannot be addressed from
