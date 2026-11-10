@@ -1,5 +1,24 @@
 # Changelog
 
+## [4.31.0] - 2026-11-10
+
+- Peer listings are scoped to the caller's project: a peer in another project cannot be addressed from
+  here, so `coms_peers` and `/coms list` show only this one. `project:"*"` / `--all` widen to the
+  machine, kill-all follows the same scope, and a scope that cannot be determined refuses instead of
+  signalling every project.
+- `coms_peer_spawn` exists: an agent can create a peer itself — a supervised `pi --coms` process with
+  its own session, addressable by name, registering in about 20-30s. Creation used to require a human
+  to run a script path documented in a rules file.
+- The peer supervisor ships in the npm tarball and is resolved relative to the extension, so spawning
+  works from an installed copy instead of only from a checkout.
+- A peer under a configured `coms_dir` is killable: the configured directory reaches the supervisor, so
+  its ownership record lands where the wrapper reads.
+- "Every project" has one definition, consulted by the kill plan, its ambiguity guard, the list and the
+  kill: a wildcard kill with an ambiguous name refuses instead of stopping two peers.
+- Refusals are traceable and safe: spawn and kill decisions log their scope and reason, project names
+  that cannot exist as a directory (dots-only, `CON`, `NUL`, `:`) are refused up front, and an async
+  launch error can no longer crash the session.
+
 ## [4.30.0] - 2026-11-09
 
 - Coms can be started by an agent (`coms_start`), not only by a slash command, and peers run as
