@@ -136,8 +136,10 @@ export function planPeerKills(args: {
   request: { name?: string | null; project?: string | null; all?: boolean | null };
   isAlive: (row: RegistryRow) => boolean;
 }): KillPlanEntry[] {
-  const scope = args.request.project
-    ? args.rows.filter((row) => row.project === args.request.project)
+  const requestedProject = (args.request.project ?? "").trim();
+  // `*` asks for every project explicitly; an absent/empty filter is NOT the same thing.
+  const scope = requestedProject && requestedProject !== "*"
+    ? args.rows.filter((row) => row.project === requestedProject)
     : args.rows;
   const name = (args.request.name ?? "").trim();
   const candidates = args.request.all === true
@@ -281,20 +283,25 @@ export function projectProblem(project: string): string | null {
 export function buildPeerSpawn(
   supervisorPath: string,
   args: { cname?: string | null; project?: string | null; cwd?: string | null; purpose?: string | null },
+  logger?: { warn: (msg: string, data?: unknown) => void },
 ): { ok: true; command: string[] } | { ok: false; message: string } {
+  const refuse = (reason: string, message: string) => {
+    logger?.warn("coms_spawn_refused", { reason, cname: args.cname ?? null, project: args.project ?? null });
+    return { ok: false as const, message };
+  };
   const cname = (args.cname ?? "").trim();
-  if (!cname) return { ok: false, message: "coms peer spawn: cname is required" };
+  if (!cname) return refuse("missing_cname", "coms peer spawn: cname is required");
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(cname)) {
-    return { ok: false, message: "coms peer spawn: cname must be 1-64 chars of letters, digits, dot, dash or underscore" };
+    return refuse("invalid_cname", "coms peer spawn: cname must be 1-64 chars of letters, digits, dot, dash or underscore");
   }
-  if (!supervisorPath) return { ok: false, message: "coms peer spawn: supervisor script not found (is pi-orchestrator-config installed?)" };
+  if (!supervisorPath) return refuse("missing_supervisor", "coms peer spawn: supervisor script not found (is pi-orchestrator-config installed?)");
   const command = ["node", supervisorPath, cname];
   const project = (args.project ?? "").trim();
   // A project namespace becomes a DIRECTORY NAME inside the coms root, so it is validated like a
   // filename: no separators, no `..`, nothing that could place registry files elsewhere.
   if (project) {
     const problem = projectProblem(project);
-    if (problem) return { ok: false, message: `coms peer spawn: ${problem}` };
+    if (problem) return refuse("invalid_project", `coms peer spawn: ${problem}`);
     command.push("--project", project);
   }
   const cwd = (args.cwd ?? "").trim();
@@ -315,7 +322,13 @@ export function resolveKillScope(
   logger?: { debug: (msg: string, data?: unknown) => void; warn: (msg: string, data?: unknown) => void },
 ): { name?: string; project?: string; all?: boolean; refused?: string } {
   if (request.all === true) {
-    const project = (request.project ?? "").trim() || (ownProject ?? "").trim();
+    const requested = (request.project ?? "").trim();
+    // `*` is the "every project" view, not a project name: killing in it must cover what it shows.
+    if (requested === "*") {
+      logger?.debug("coms_kill_scope", { all: true, project: "*" });
+      return { all: true, project: "*" };
+    }
+    const project = requested || (ownProject ?? "").trim();
     // No scope means NO kill: falling open here stopped every project's peers.
     if (!project) {
       const refused = "coms peer kill: cannot tell which project to scope all to — pass project explicitly";

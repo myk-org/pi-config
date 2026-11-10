@@ -261,6 +261,16 @@ describe("buildPeerSpawn", () => {
     assert.deepEqual(buildPeerSpawn(supervisor, { cname: "builder" }), { ok: true, command: ["node", supervisor, "builder"] });
   });
 
+  it("logs why a spawn was refused", () => {
+    const events: string[] = [];
+    const logger = { warn: (m: string) => events.push(m) };
+    buildPeerSpawn(supervisor, {}, logger);
+    buildPeerSpawn(supervisor, { cname: "bad name" }, logger);
+    buildPeerSpawn(supervisor, { cname: "peer", project: ".." }, logger);
+    buildPeerSpawn("", { cname: "peer" }, logger);
+    assert.deepEqual(events, ["coms_spawn_refused", "coms_spawn_refused", "coms_spawn_refused", "coms_spawn_refused"]);
+  });
+
   it("refuses a missing name, a shell-hostile name, and a missing supervisor", () => {
     assert.equal(buildPeerSpawn(supervisor, {}).ok, false);
     for (const bad of ["a b", "x;rm -rf /", "../escape", "-leading", ""]) {
@@ -273,6 +283,10 @@ describe("buildPeerSpawn", () => {
 describe("resolveKillScope", () => {
   it("scopes kill-all to the caller's project, widening only when asked", () => {
     assert.deepEqual(resolveKillScope({ all: true }, "own"), { all: true, project: "own" });
+    assert.deepEqual(resolveKillScope({ all: true, project: "*" }, "own"), { all: true, project: "*" });
+  });
+
+  it("lets an explicit every-project view kill what it shows", () => {
     assert.deepEqual(resolveKillScope({ all: true, project: "*" }, "own"), { all: true, project: "*" });
   });
 

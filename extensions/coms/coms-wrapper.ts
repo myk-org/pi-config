@@ -527,7 +527,7 @@ export function registerComs(pi: ExtensionAPI) {
                     purpose: params?.purpose,
                     project: params?.project ?? ownProject(),
                     cwd: params?.cwd ?? (liveCtx?.cwd || process.cwd()),
-                });
+                }, log);
                 if (!plan.ok) {
                     log.warn("coms_peer_spawn_rejected", { message: plan.message });
                     return { content: [{ type: "text" as const, text: plan.message }], details: { ok: false, pid: null } };
