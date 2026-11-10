@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { deadPeerCardIds } from "../../../extensions/coms/coms-shared.js";
-import { activationVerified, describePeerOrigin, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, planActiveClaim, planPeerKills, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
+import { activationVerified, describePeerOrigin, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, projectProblem, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
 
 describe("deadPeerCardIds", () => {
   const cards = () => new Map<string, { endpoint?: string | null; name?: string }>([
@@ -138,6 +138,36 @@ describe("planPeerKills", () => {
     const plan = planPeerKills({ ...base, rows, request: { all: true, project: "p2" }, supervisedKeys: new Set(["p1::peer1", "p2::peer2"]) });
     assert.deepEqual(plan.map((e) => e.project), ["p2"]);
   });
+
+  it("treats project * as every project", () => {
+    const rows = [row(), row({ project: "p2", name: "peer2", pid: 200 })];
+    const plan = planPeerKills({
+      ...base,
+      rows,
+      request: { all: true, project: "*" },
+      supervisedKeys: new Set(["p1::peer1", "p2::peer2"]),
+    });
+    assert.deepEqual(plan.map((e) => e.project).sort(), ["p1", "p2"]);
+  });
+
+  it("logs the kill-plan scope it applied", () => {
+    const rows = [row(), row({ project: "p2", name: "peer2", pid: 200 })];
+    const events: unknown[] = [];
+    planPeerKills({
+      ...base,
+      rows,
+      request: { all: true, project: "*" },
+      supervisedKeys: new Set(["p1::peer1", "p2::peer2"]),
+      logger: { debug: (m, data) => events.push({ m, data }) },
+    });
+    assert.deepEqual(events, [{ m: "coms_kill_plan_scope", data: { project: "*", everyProject: true, rows: 2 } }]);
+  });
+
+  it("refuses an ambiguous name even in the every-project view", () => {
+    const rows = [row(), row({ project: "p2", pid: 200 })];
+    const plan = planPeerKills({ ...base, rows, request: { name: "peer1", project: "*" }, supervisedKeys: new Set(["p1::peer1", "p2::peer1"]) });
+    assert.deepEqual(plan.map((e) => [e.signalPid, e.reason]), [[null, "ambiguous"], [null, "ambiguous"]]);
+  });
 });
 
 describe("describePeerOrigin", () => {
@@ -228,5 +258,136 @@ describe("planActiveClaim", () => {
     const claim = planActiveClaim(null, "linux", () => true, { warn: (m) => warnings.push(m) });
     assert.equal(claim.action, "restart");
     assert.deepEqual(warnings, ["coms_active_claim_unverified"]);
+  });
+});
+
+describe("resolvePeerScope", () => {
+  it("defaults a tool call to its own project", () => {
+    assert.deepEqual(resolvePeerScope(undefined, "home__myakove__git__pi-config"), { project: "home__myakove__git__pi-config", everyProject: false });
+    assert.deepEqual(resolvePeerScope("", "own"), { project: "own", everyProject: false });
+  });
+
+  it("shows every project only when asked", () => {
+    assert.deepEqual(resolvePeerScope("*", "own"), { project: null, everyProject: true });
+    assert.deepEqual(resolvePeerScope("all", "own"), { project: null, everyProject: true });
+  });
+
+  it("honours an explicit project namespace", () => {
+    assert.deepEqual(resolvePeerScope("pi-config", "own"), { project: "pi-config", everyProject: false });
+  });
+});
+
+describe("buildPeerSpawn", () => {
+  const supervisor = "/opt/sup/coms-peer-supervisor.mjs";
+
+  it("builds the supervisor invocation with the flags it understands", () => {
+    assert.deepEqual(
+      buildPeerSpawn(supervisor, { cname: "builder", project: "p", cwd: "/w", purpose: "builds" }),
+      { ok: true, command: ["node", supervisor, "builder", "--project", "p", "--cwd", "/w", "--purpose", "builds"] },
+    );
+  });
+
+  it("omits empty optional flags rather than passing blank values", () => {
+    assert.deepEqual(buildPeerSpawn(supervisor, { cname: "builder" }), { ok: true, command: ["node", supervisor, "builder"] });
+  });
+
+  it("logs why a spawn was refused", () => {
+    const events: string[] = [];
+    const logger = { warn: (m: string) => events.push(m) };
+    buildPeerSpawn(supervisor, {}, logger);
+    buildPeerSpawn(supervisor, { cname: "bad name" }, logger);
+    buildPeerSpawn(supervisor, { cname: "peer", project: ".." }, logger);
+    buildPeerSpawn("", { cname: "peer" }, logger);
+    assert.deepEqual(events, ["coms_spawn_refused", "coms_spawn_refused", "coms_spawn_refused", "coms_spawn_refused"]);
+  });
+
+  it("refuses a missing peer name", () => {
+    assert.equal(buildPeerSpawn(supervisor, {}).ok, false);
+  });
+
+  it("refuses a shell-hostile peer name", () => {
+    for (const bad of ["a b", "x;rm -rf /", "../escape", "-leading", ""]) {
+      assert.equal(buildPeerSpawn(supervisor, { cname: bad }).ok, false, bad);
+    }
+  });
+
+  it("refuses a missing supervisor", () => {
+    assert.equal(buildPeerSpawn("", { cname: "ok" }).ok, false);
+  });
+});
+
+describe("resolveKillScope", () => {
+  it("scopes kill-all to the caller's project, widening only when asked", () => {
+    assert.deepEqual(resolveKillScope({ all: true }, "own"), { all: true, project: "own" });
+    assert.deepEqual(resolveKillScope({ all: true, project: "*" }, "own"), { all: true, project: "*" });
+  });
+
+  it("lets an explicit every-project view kill what it shows", () => {
+    assert.deepEqual(resolveKillScope({ all: true, project: "*" }, "own"), { all: true, project: "*" });
+  });
+
+  it("refuses kill-all when no project can be derived, and logs the refusal", () => {
+    const events: string[] = [];
+    const scope = resolveKillScope({ all: true }, "", { debug: (m) => events.push(`debug:${m}`), warn: (m) => events.push(`warn:${m}`) });
+    assert.equal(scope.project, undefined);
+    assert.match(scope.refused ?? "", /cannot tell which project/);
+    assert.deepEqual(events, ["warn:coms_kill_refused"]);
+  });
+
+  it("logs the scope it settled on, including the every-project wildcard", () => {
+    const events: string[] = [];
+    resolveKillScope({ all: true }, "own", { debug: (m) => events.push(m), warn: (m) => events.push(m) });
+    resolveKillScope({ name: "peer" }, "own", { debug: (m) => events.push(m), warn: (m) => events.push(m) });
+    resolveKillScope({ all: true, project: "*" }, "own", { debug: (m) => events.push(m), warn: (m) => events.push(m) });
+    assert.deepEqual(events, ["coms_kill_scope", "coms_kill_scope", "coms_kill_scope"]);
+  });
+
+  it("looks a NAMED peer up across projects, since naming one is already specific", () => {
+    assert.deepEqual(resolveKillScope({ name: "builder" }, "own"), { name: "builder", project: undefined });
+    assert.deepEqual(resolveKillScope({ name: "builder", project: "other" }, "own"), { name: "builder", project: "other" });
+  });
+});
+
+describe("resolveListScope", () => {
+  it("defaults to the caller's project", () => {
+    assert.equal(resolveListScope(["list"], "own"), "own");
+  });
+
+  it("widens to every project with --all", () => {
+    assert.equal(resolveListScope(["list", "--all"], "own"), undefined);
+  });
+
+  it("treats --project * as every project, so the view and its kill-all agree", () => {
+    assert.equal(resolveListScope(["list", "--project", "*"], "own"), undefined);
+  });
+
+  it("honours an explicit --project namespace", () => {
+    assert.equal(resolveListScope(["list", "--project", "other"], "own"), "other");
+  });
+});
+
+describe("buildPeerSpawn project validation", () => {
+  const supervisor = "/opt/sup/coms-peer-supervisor.mjs";
+  it("refuses a project that could escape the coms root", () => {
+    for (const bad of ["../etc", "a/b", "..", "a\\b"]) {
+      assert.equal(buildPeerSpawn(supervisor, { cname: "peer", project: bad }).ok, false, bad);
+    }
+  });
+
+  it("accepts a namespace activation would derive from a real directory, spaces included", () => {
+    assert.equal(buildPeerSpawn(supervisor, { cname: "peer", project: "work__My Projects" }).ok, true);
+  });
+
+  it("refuses projects that cannot become a directory, on any platform", () => {
+    // Dots only resolves to projects/agents (the peer would register under the scanner's own name),
+    // and Windows cannot create these directories at all.
+    for (const bad of [".", "...", "CON", "nul.txt", "lpt9", "a:b"]) {
+      assert.notEqual(projectProblem(bad), null, bad);
+    }
+    assert.equal(projectProblem("pi-config"), null);
+    assert.equal(projectProblem("work__My Projects"), null);
+  });
+  it("accepts a normal namespace", () => {
+    assert.equal(buildPeerSpawn(supervisor, { cname: "peer", project: "pi-config" }).ok, true);
   });
 });

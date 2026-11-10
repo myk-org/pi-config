@@ -114,7 +114,8 @@ Two systems for Pi agents to communicate with each other, activated on-demand vi
 | `coms_queue_inspect` | Preview owned queued P2P messages before recovery               |
 | `coms_queue_clear`   | Irreversibly clear only an inspect preview                      |
 | `coms_start` / `coms_stop` | Start or stop coms for THIS session from a tool call — no slash command, no new process |
-| `coms_peers`         | List every peer on the machine from the registry (all projects) with live state |
+| `coms_peer_spawn`    | Start a peer: a supervised `pi --coms` process with its own session, addressable by name |
+| `coms_peers`         | List peers with live state — this session's project by default, `project: "*"` for the machine |
 | `coms_peer_kill`     | Stop a peer by `name` (+`project` when ambiguous) or `all: true` — supervised peers only |
 
 Peers as processes (`/coms list`, `/coms kill`):
@@ -122,8 +123,9 @@ Peers as processes (`/coms list`, `/coms kill`):
 - `scripts/coms-peer-supervisor.mjs` starts a peer as its own `pi` process with its own session,
   holds its stdin, records pids in `~/.pi/coms/peers/<name>@<project>.json` and lives as long as the
   peer. A peer has **no lifetime of its own** — kill it, or it stays.
-- `/coms list` opens a fullscreen overlay like `/async-status` (`x` kill, `X` kill all) when there is a
-  UI, and prints plain text otherwise — one command, no second entry point.
+- `/coms list` shows THIS project's peers (a peer elsewhere cannot be addressed from here); `--all`
+  widens it to the machine. With a UI it is a fullscreen overlay like `/async-status` (`x` kill,
+  `X` kill all), otherwise plain text.
 - Only peers a supervisor started are killable; your own session and other human sessions never are.
 
 Messaging semantics (#924):

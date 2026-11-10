@@ -135,17 +135,22 @@ export function planPeerKills(args: {
   records: Array<{ cname?: string; project?: string; pid?: number; childPid?: number | null; stoppedAt?: string; exitedAt?: string; failedAt?: string }>;
   request: { name?: string | null; project?: string | null; all?: boolean | null };
   isAlive: (row: RegistryRow) => boolean;
+  logger?: { debug: (msg: string, data?: unknown) => void };
 }): KillPlanEntry[] {
-  const scope = args.request.project
-    ? args.rows.filter((row) => row.project === args.request.project)
-    : args.rows;
+  const requestedProject = (args.request.project ?? "").trim();
+  // `*` is the "every project" view, not a project name. Anything else is a literal filter.
+  const everyProject = !requestedProject || requestedProject === "*";
+  const scope = everyProject
+    ? args.rows
+    : args.rows.filter((row) => row.project === requestedProject);
+  args.logger?.debug("coms_kill_plan_scope", { project: requestedProject || "<none>", everyProject, rows: scope.length });
   const name = (args.request.name ?? "").trim();
   const candidates = args.request.all === true
     ? scope
     : name ? scope.filter((row) => row.name === name) : [];
 
   // Two peers sharing a name across projects: refusing beats stopping the wrong one.
-  if (!args.request.all && name && !args.request.project && candidates.length > 1) {
+  if (!args.request.all && name && everyProject && candidates.length > 1) {
     return candidates.map((row) => ({ name: row.name, project: row.project, signalPid: null, reason: "ambiguous" as const }));
   }
 
@@ -239,4 +244,116 @@ export function planActiveClaim(
     action: "restart",
     message: "📡 coms: the previous peer is gone (no socket) — starting a fresh one",
   };
+}
+
+/** Which project a tool call should see.
+ *
+ *  A human running `/coms list` wants the whole machine, but an LLM must not be shown peers from a
+ *  project it cannot address — it will try to message them, and "who is this peer?" costs a turn.
+ *  Default scope is therefore the caller's own project; `*` (or `all`) asks for every project. */
+export function resolvePeerScope(
+  requested: string | null | undefined,
+  ownProject: string,
+): { project: string | null; everyProject: boolean } {
+  const wanted = (requested ?? "").trim();
+  if (wanted === "*" || wanted.toLowerCase() === "all") return { project: null, everyProject: true };
+  if (wanted) return { project: wanted, everyProject: false };
+  return { project: ownProject || null, everyProject: false };
+}
+
+/** Windows refuses these as directory names, so a project that reaches `projects/<name>` fails before
+ *  the peer can register. Checked on every platform so a peer started here still works there. */
+const WINDOWS_RESERVED = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+
+/** Why a project namespace cannot be used, or null when it can. */
+export function projectProblem(project: string): string | null {
+  if (/[\/\\]/.test(project)) return "project must not contain path separators";
+  if (project.includes("..")) return "project must not contain '..'";
+  if (/[\x00-\x1f]/.test(project)) return "project must not contain control characters";
+  // `.` alone (and any all-dots name) resolves to `projects/agents`, so the peer registers under the
+  // scanner's own directory name instead of a project and disappears from listings.
+  if (/^\.+$/.test(project)) return "project must not be dots only";
+  if (WINDOWS_RESERVED.test(project)) return `"${project}" is reserved on Windows`;
+  if (project.includes(":")) return "project must not contain ':'";
+  return null;
+}
+
+/** Validate a peer name and build the supervisor invocation.
+ *
+ *  Spawning a peer is a plain `node <supervisor> <name> …` call, which is exactly why a model could
+ *  not discover it: no tool named it. The command is built here so it is testable, and the checks
+ *  keep a name from becoming a shell/argv surprise in the supervisor. */
+export function buildPeerSpawn(
+  supervisorPath: string,
+  args: { cname?: string | null; project?: string | null; cwd?: string | null; purpose?: string | null },
+  logger?: { warn: (msg: string, data?: unknown) => void },
+): { ok: true; command: string[] } | { ok: false; message: string } {
+  const refuse = (reason: string, message: string) => {
+    logger?.warn("coms_spawn_refused", { reason, cname: args.cname ?? null, project: args.project ?? null });
+    return { ok: false as const, message };
+  };
+  const cname = (args.cname ?? "").trim();
+  if (!cname) return refuse("missing_cname", "coms peer spawn: cname is required");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(cname)) {
+    return refuse("invalid_cname", "coms peer spawn: cname must be 1-64 chars of letters, digits, dot, dash or underscore");
+  }
+  if (!supervisorPath) return refuse("missing_supervisor", "coms peer spawn: supervisor script not found (is pi-orchestrator-config installed?)");
+  const command = ["node", supervisorPath, cname];
+  const project = (args.project ?? "").trim();
+  // A project namespace becomes a DIRECTORY NAME inside the coms root, so it is validated like a
+  // filename: no separators, no `..`, nothing that could place registry files elsewhere.
+  if (project) {
+    const problem = projectProblem(project);
+    if (problem) return refuse("invalid_project", `coms peer spawn: ${problem}`);
+    command.push("--project", project);
+  }
+  const cwd = (args.cwd ?? "").trim();
+  if (cwd) command.push("--cwd", cwd);
+  const purpose = (args.purpose ?? "").trim();
+  if (purpose) command.push("--purpose", purpose);
+  return { ok: true, command };
+}
+
+/** What a kill request may touch.
+ *
+ *  `all` is scoped to the caller's project — a tool must not wipe the machine — while a NAMED peer is
+ *  looked up across projects (with ambiguity refused), because naming one is already specific and a
+ *  peer in another project may legitimately be the one the caller means. */
+export function resolveKillScope(
+  request: { name?: string | null; project?: string | null; all?: boolean | null },
+  ownProject: string,
+  logger?: { debug: (msg: string, data?: unknown) => void; warn: (msg: string, data?: unknown) => void },
+): { name?: string; project?: string; all?: boolean; refused?: string } {
+  if (request.all === true) {
+    const requested = (request.project ?? "").trim();
+    // `*` is the "every project" view, not a project name: killing in it must cover what it shows.
+    if (requested === "*") {
+      logger?.debug("coms_kill_scope", { all: true, project: "*" });
+      return { all: true, project: "*" };
+    }
+    const project = requested || (ownProject ?? "").trim();
+    // No scope means NO kill: falling open here stopped every project's peers.
+    if (!project) {
+      const refused = "coms peer kill: cannot tell which project to scope all to — pass project explicitly";
+      logger?.warn("coms_kill_refused", { reason: "no_project_scope", request: { all: true } });
+      return { all: true, refused };
+    }
+    logger?.debug("coms_kill_scope", { all: true, project });
+    return { all: true, project };
+  }
+  const name = (request.name ?? "").trim();
+  const project = (request.project ?? "").trim();
+  logger?.debug("coms_kill_scope", { name, project: project || "*" });
+  return { name, project: project || undefined };
+}
+
+/** The `--all` / `--project` / default scope of `/coms list`. */
+export function resolveListScope(parts: string[], ownProject: string): string | undefined {
+  if (parts.includes("--all")) return undefined;
+  const index = parts.indexOf("--project");
+  const explicit = index >= 0 ? (parts[index + 1] ?? "").trim() : "";
+  // `--project *` is the same request as `--all`; treating it as a literal project name showed an
+  // empty view while kill-all in that view covered every project.
+  if (explicit === "*") return undefined;
+  return explicit || ownProject || undefined;
 }
