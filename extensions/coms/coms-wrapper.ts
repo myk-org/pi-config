@@ -212,7 +212,13 @@ export function registerComs(pi: ExtensionAPI) {
                 await openComsPeersOverlay(ctx, {
                     listPeers: () => filterRegistry(attachCreatedBy(readRegistryRows()).filter(rowAlive), { project: projectScope }),
                     killPeer: (row) => killPeers({ name: row.name, project: row.project }).text,
-                    killAll: () => killPeers({ all: true, project: projectScope }).text,
+                    killAll: () => {
+                        const scope = resolveKillScope({ all: true, project: projectScope }, ownProject(), log);
+                        // Same refusal as /coms kill all: `X` in a view with no derivable project
+                        // must not stop every project's peers.
+                        if (scope.refused) return scope.refused;
+                        return killPeers(scope).text;
+                    },
                 });
                 return;
             }
@@ -224,7 +230,7 @@ export function registerComs(pi: ExtensionAPI) {
                 try { ctx.ui.notify("Usage: /coms kill <peer-name|all> [--project <p>]", "warning"); } catch {}
                 return;
             }
-            const scope = resolveKillScope({ name: what === "all" ? undefined : what, project: projectIdx >= 0 ? parts[projectIdx + 1] : undefined, all: what === "all" }, ownProject());
+            const scope = resolveKillScope({ name: what === "all" ? undefined : what, project: projectIdx >= 0 ? parts[projectIdx + 1] : undefined, all: what === "all" }, ownProject(), log);
             if (scope.refused) {
                 try { ctx.ui.notify(scope.refused, "warning"); } catch {}
                 return;
@@ -564,8 +570,7 @@ export function registerComs(pi: ExtensionAPI) {
                 all: Type.Optional(Type.Boolean({ description: "Stop every running peer on this machine" })),
             }),
             async execute(_id: string, params: any) {
-                const scope = resolveKillScope({ name: params?.name, project: params?.project, all: params?.all }, ownProject());
-                log.debug("coms_peer_kill_scope", scope);
+                const scope = resolveKillScope({ name: params?.name, project: params?.project, all: params?.all }, ownProject(), log);
                 if (scope.refused) return { content: [{ type: "text" as const, text: scope.refused }], details: { ok: false, killed: 0 } };
                 const result = killPeers(scope);
                 return { content: [{ type: "text" as const, text: result.text }], details: { ok: result.killed > 0, killed: result.killed } };

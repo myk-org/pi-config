@@ -256,6 +256,23 @@ export function resolvePeerScope(
   return { project: ownProject || null, everyProject: false };
 }
 
+/** Windows refuses these as directory names, so a project that reaches `projects/<name>` fails before
+ *  the peer can register. Checked on every platform so a peer started here still works there. */
+const WINDOWS_RESERVED = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+
+/** Why a project namespace cannot be used, or null when it can. */
+export function projectProblem(project: string): string | null {
+  if (/[\/\\]/.test(project)) return "project must not contain path separators";
+  if (project.includes("..")) return "project must not contain '..'";
+  if (/[\x00-\x1f]/.test(project)) return "project must not contain control characters";
+  // `.` alone (and any all-dots name) resolves to `projects/agents`, so the peer registers under the
+  // scanner's own directory name instead of a project and disappears from listings.
+  if (/^\.+$/.test(project)) return "project must not be dots only";
+  if (WINDOWS_RESERVED.test(project)) return `"${project}" is reserved on Windows`;
+  if (project.includes(":")) return "project must not contain ':'";
+  return null;
+}
+
 /** Validate a peer name and build the supervisor invocation.
  *
  *  Spawning a peer is a plain `node <supervisor> <name> …` call, which is exactly why a model could
@@ -276,11 +293,8 @@ export function buildPeerSpawn(
   // A project namespace becomes a DIRECTORY NAME inside the coms root, so it is validated like a
   // filename: no separators, no `..`, nothing that could place registry files elsewhere.
   if (project) {
-    // Only what could ESCAPE the coms root is refused. Spaces are legitimate: activation derives a
-    // namespace from any real cwd, so `/work/My Projects` becomes `work__My Projects`.
-    if (/[\/\\]/.test(project) || project.includes("..") || /[\x00-\x1f]/.test(project)) {
-      return { ok: false, message: "coms peer spawn: project must not contain path separators, '..' or control characters" };
-    }
+    const problem = projectProblem(project);
+    if (problem) return { ok: false, message: `coms peer spawn: ${problem}` };
     command.push("--project", project);
   }
   const cwd = (args.cwd ?? "").trim();
@@ -298,17 +312,22 @@ export function buildPeerSpawn(
 export function resolveKillScope(
   request: { name?: string | null; project?: string | null; all?: boolean | null },
   ownProject: string,
+  logger?: { debug: (msg: string, data?: unknown) => void; warn: (msg: string, data?: unknown) => void },
 ): { name?: string; project?: string; all?: boolean; refused?: string } {
   if (request.all === true) {
     const project = (request.project ?? "").trim() || (ownProject ?? "").trim();
     // No scope means NO kill: falling open here stopped every project's peers.
     if (!project) {
-      return { all: true, refused: "coms peer kill: cannot tell which project to scope all to — pass project explicitly" };
+      const refused = "coms peer kill: cannot tell which project to scope all to — pass project explicitly";
+      logger?.warn("coms_kill_refused", { reason: "no_project_scope", request: { all: true } });
+      return { all: true, refused };
     }
+    logger?.debug("coms_kill_scope", { all: true, project });
     return { all: true, project };
   }
   const name = (request.name ?? "").trim();
   const project = (request.project ?? "").trim();
+  logger?.debug("coms_kill_scope", { name, project: project || "*" });
   return { name, project: project || undefined };
 }
 
