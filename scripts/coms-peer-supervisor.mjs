@@ -114,7 +114,13 @@ child.stderr.on("data", (data) => {
 child.stdout.on("data", () => { /* protocol stream: kept drained so the peer never blocks */ });
 
 /** How long a peer gets to finish its own shutdown before SIGKILL. */
-const STOP_TIMEOUT_MS = Number(process.env.PI_COMS_STOP_TIMEOUT_MS ?? 5000);
+const STOP_TIMEOUT_DEFAULT_MS = 5000;
+const STOP_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.PI_COMS_STOP_TIMEOUT_MS ?? STOP_TIMEOUT_DEFAULT_MS);
+  // A bad override (empty, NaN, 0, negative) would fire the escalation timer immediately and cut the
+  // peer's cleanup short — the very thing this wait exists to protect.
+  return Number.isFinite(raw) && raw > 0 ? raw : STOP_TIMEOUT_DEFAULT_MS;
+})();
 
 let stopping = false;
 let stopSignal = null;
@@ -148,6 +154,14 @@ process.on("SIGHUP", () => stop("SIGHUP"));
 child.on("exit", (code, signal) => {
   if (stopTimer) clearTimeout(stopTimer);
   say(`peer ${cname} exited code=${code} signal=${signal}`);
+  // A replacement peer may already own this record path (same name and project, started after the
+  // kill was reported). Writing our final state would erase ITS live record.
+  let owner = null;
+  try { owner = JSON.parse(fs.readFileSync(statePath, "utf8")); } catch { /* no record yet */ }
+  if (owner && owner.pid !== process.pid) {
+    say(`record ${statePath} belongs to supervisor ${owner.pid}, not rewriting it`);
+    process.exit(0);
+  }
   // One record shape either way, but a stop records WHEN it was asked and WHEN it finished, and a
   // peer that had to be killed says so.
   record({
