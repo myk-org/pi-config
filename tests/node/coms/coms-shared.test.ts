@@ -138,6 +138,26 @@ describe("planPeerKills", () => {
     const plan = planPeerKills({ ...base, rows, request: { all: true, project: "p2" }, supervisedKeys: new Set(["p1::peer1", "p2::peer2"]) });
     assert.deepEqual(plan.map((e) => e.project), ["p2"]);
   });
+
+  it("treats project * as every project, and logs the scope it applied", () => {
+    const rows = [row(), row({ project: "p2", name: "peer2", pid: 200 })];
+    const events: unknown[] = [];
+    const plan = planPeerKills({
+      ...base,
+      rows,
+      request: { all: true, project: "*" },
+      supervisedKeys: new Set(["p1::peer1", "p2::peer2"]),
+      logger: { debug: (m, data) => events.push({ m, data }) },
+    });
+    assert.deepEqual(plan.map((e) => e.project).sort(), ["p1", "p2"]);
+    assert.deepEqual(events, [{ m: "coms_kill_plan_scope", data: { project: "*", everyProject: true, rows: 2 } }]);
+  });
+
+  it("refuses an ambiguous name even in the every-project view", () => {
+    const rows = [row(), row({ project: "p2", pid: 200 })];
+    const plan = planPeerKills({ ...base, rows, request: { name: "peer1", project: "*" }, supervisedKeys: new Set(["p1::peer1", "p2::peer1"]) });
+    assert.deepEqual(plan.map((e) => [e.signalPid, e.reason]), [[null, "ambiguous"], [null, "ambiguous"]]);
+  });
 });
 
 describe("describePeerOrigin", () => {
@@ -298,11 +318,12 @@ describe("resolveKillScope", () => {
     assert.deepEqual(events, ["warn:coms_kill_refused"]);
   });
 
-  it("logs the scope it settled on", () => {
+  it("logs the scope it settled on, including the every-project wildcard", () => {
     const events: string[] = [];
     resolveKillScope({ all: true }, "own", { debug: (m) => events.push(m), warn: (m) => events.push(m) });
     resolveKillScope({ name: "peer" }, "own", { debug: (m) => events.push(m), warn: (m) => events.push(m) });
-    assert.deepEqual(events, ["coms_kill_scope", "coms_kill_scope"]);
+    resolveKillScope({ all: true, project: "*" }, "own", { debug: (m) => events.push(m), warn: (m) => events.push(m) });
+    assert.deepEqual(events, ["coms_kill_scope", "coms_kill_scope", "coms_kill_scope"]);
   });
 
   it("looks a NAMED peer up across projects, since naming one is already specific", () => {
@@ -318,6 +339,10 @@ describe("resolveListScope", () => {
 
   it("widens to every project with --all", () => {
     assert.equal(resolveListScope(["list", "--all"], "own"), undefined);
+  });
+
+  it("treats --project * as every project, so the view and its kill-all agree", () => {
+    assert.equal(resolveListScope(["list", "--project", "*"], "own"), undefined);
   });
 
   it("honours an explicit --project namespace", () => {

@@ -460,6 +460,7 @@ export function registerComs(pi: ExtensionAPI) {
             records,
             request: params,
             isAlive: rowAlive,
+            logger: log,
         });
         const ambiguous = plan.filter((entry) => entry.reason === "ambiguous");
         if (ambiguous.length > 1) {

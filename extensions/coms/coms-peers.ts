@@ -135,19 +135,22 @@ export function planPeerKills(args: {
   records: Array<{ cname?: string; project?: string; pid?: number; childPid?: number | null; stoppedAt?: string; exitedAt?: string; failedAt?: string }>;
   request: { name?: string | null; project?: string | null; all?: boolean | null };
   isAlive: (row: RegistryRow) => boolean;
+  logger?: { debug: (msg: string, data?: unknown) => void };
 }): KillPlanEntry[] {
   const requestedProject = (args.request.project ?? "").trim();
-  // `*` asks for every project explicitly; an absent/empty filter is NOT the same thing.
-  const scope = requestedProject && requestedProject !== "*"
-    ? args.rows.filter((row) => row.project === requestedProject)
-    : args.rows;
+  // `*` is the "every project" view, not a project name. Anything else is a literal filter.
+  const everyProject = !requestedProject || requestedProject === "*";
+  const scope = everyProject
+    ? args.rows
+    : args.rows.filter((row) => row.project === requestedProject);
+  args.logger?.debug("coms_kill_plan_scope", { project: requestedProject || "<none>", everyProject, rows: scope.length });
   const name = (args.request.name ?? "").trim();
   const candidates = args.request.all === true
     ? scope
     : name ? scope.filter((row) => row.name === name) : [];
 
   // Two peers sharing a name across projects: refusing beats stopping the wrong one.
-  if (!args.request.all && name && !args.request.project && candidates.length > 1) {
+  if (!args.request.all && name && everyProject && candidates.length > 1) {
     return candidates.map((row) => ({ name: row.name, project: row.project, signalPid: null, reason: "ambiguous" as const }));
   }
 
@@ -349,5 +352,8 @@ export function resolveListScope(parts: string[], ownProject: string): string | 
   if (parts.includes("--all")) return undefined;
   const index = parts.indexOf("--project");
   const explicit = index >= 0 ? (parts[index + 1] ?? "").trim() : "";
+  // `--project *` is the same request as `--all`; treating it as a literal project name showed an
+  // empty view while kill-all in that view covered every project.
+  if (explicit === "*") return undefined;
   return explicit || ownProject || undefined;
 }
