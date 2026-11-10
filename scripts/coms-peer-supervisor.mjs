@@ -113,18 +113,49 @@ child.stderr.on("data", (data) => {
 });
 child.stdout.on("data", () => { /* protocol stream: kept drained so the peer never blocks */ });
 
+/** How long a peer gets to finish its own shutdown before SIGKILL. */
+const STOP_TIMEOUT_MS = Number(process.env.PI_COMS_STOP_TIMEOUT_MS ?? 5000);
+
+let stopping = false;
+let stopSignal = null;
+let stoppedAt = null;
+let forced = false;
+let stopTimer = null;
+
 const stop = (signal) => {
+  if (stopping) return; // a second signal must not restart the wait or double-record
+  stopping = true;
+  stopSignal = signal;
+  stoppedAt = new Date().toISOString();
   say(`peer ${cname} stopping (${signal})`);
+  // Orderly sequence: end stdin FIRST (pi treats EOF as "shut down", and since pi 1.5.1 it completes
+  // its cleanup instead of losing it to the stdin+signal race), then ask it to stop.
+  try { child.stdin.end(); } catch { /* already gone */ }
   try { child.kill("SIGTERM"); } catch { /* already gone */ }
-  record({ stoppedAt: new Date().toISOString(), signal });
-  process.exit(0);
+  // The supervisor used to exit right here, which closed the pipe again and never observed the child
+  // finishing: no `exitedAt`, and a ghost registry entry left behind when the peer died mid-cleanup.
+  stopTimer = setTimeout(() => {
+    forced = true;
+    say(`peer ${cname} did not exit within ${STOP_TIMEOUT_MS}ms — sending SIGKILL`);
+    try { child.kill("SIGKILL"); } catch { /* already gone */ }
+  }, STOP_TIMEOUT_MS);
+  stopTimer.unref?.();
 };
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 process.on("SIGHUP", () => stop("SIGHUP"));
 
 child.on("exit", (code, signal) => {
+  if (stopTimer) clearTimeout(stopTimer);
   say(`peer ${cname} exited code=${code} signal=${signal}`);
-  record({ exitedAt: new Date().toISOString(), exitCode: code, exitSignal: signal });
+  // One record shape either way, but a stop records WHEN it was asked and WHEN it finished, and a
+  // peer that had to be killed says so.
+  record({
+    ...(stopping ? { stoppedAt, stopSignal } : {}),
+    exitedAt: new Date().toISOString(),
+    exitCode: code,
+    exitSignal: signal,
+    ...(forced ? { forced: true } : {}),
+  });
   process.exit(0);
 });
