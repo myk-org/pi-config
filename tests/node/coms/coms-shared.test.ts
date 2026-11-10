@@ -139,17 +139,27 @@ describe("planPeerKills", () => {
     assert.deepEqual(plan.map((e) => e.project), ["p2"]);
   });
 
-  it("treats project * as every project, and logs the scope it applied", () => {
+  it("treats project * as every project", () => {
+    const rows = [row(), row({ project: "p2", name: "peer2", pid: 200 })];
+    const plan = planPeerKills({
+      ...base,
+      rows,
+      request: { all: true, project: "*" },
+      supervisedKeys: new Set(["p1::peer1", "p2::peer2"]),
+    });
+    assert.deepEqual(plan.map((e) => e.project).sort(), ["p1", "p2"]);
+  });
+
+  it("logs the kill-plan scope it applied", () => {
     const rows = [row(), row({ project: "p2", name: "peer2", pid: 200 })];
     const events: unknown[] = [];
-    const plan = planPeerKills({
+    planPeerKills({
       ...base,
       rows,
       request: { all: true, project: "*" },
       supervisedKeys: new Set(["p1::peer1", "p2::peer2"]),
       logger: { debug: (m, data) => events.push({ m, data }) },
     });
-    assert.deepEqual(plan.map((e) => e.project).sort(), ["p1", "p2"]);
     assert.deepEqual(events, [{ m: "coms_kill_plan_scope", data: { project: "*", everyProject: true, rows: 2 } }]);
   });
 
@@ -291,11 +301,17 @@ describe("buildPeerSpawn", () => {
     assert.deepEqual(events, ["coms_spawn_refused", "coms_spawn_refused", "coms_spawn_refused", "coms_spawn_refused"]);
   });
 
-  it("refuses a missing name, a shell-hostile name, and a missing supervisor", () => {
+  it("refuses a missing peer name", () => {
     assert.equal(buildPeerSpawn(supervisor, {}).ok, false);
+  });
+
+  it("refuses a shell-hostile peer name", () => {
     for (const bad of ["a b", "x;rm -rf /", "../escape", "-leading", ""]) {
       assert.equal(buildPeerSpawn(supervisor, { cname: bad }).ok, false, bad);
     }
+  });
+
+  it("refuses a missing supervisor", () => {
     assert.equal(buildPeerSpawn("", { cname: "ok" }).ok, false);
   });
 });
