@@ -398,18 +398,25 @@ export function registerComs(pi: ExtensionAPI) {
      *  exactly as activation derives it. */
     const ownProject = (): string => {
         const active = String(state.flagValues?.get("project") ?? "").trim();
-        if (state.active && active) return active;
+        if (state.active && active) {
+            log.debug("coms_own_project", { project: active, source: "active-flag" });
+            return active;
+        }
         const cwd = liveCtx?.cwd || process.cwd();
-        return cwd.replace(/^[\\/]+/, "").replace(/[\\/]+/g, "__");
+        const derived = cwd.replace(/^[\\/]+/, "").replace(/[\\/]+/g, "__");
+        log.debug("coms_own_project", { project: derived, source: "cwd" });
+        return derived;
     };
 
     const listPeers = (params: { project?: string; name?: string }): string => {
         const rows = filterRegistry(attachCreatedBy(readRegistryRows()).filter(rowAlive), { project: params.project, name: params.name });
+        log.debug("coms_list_peers", { project: params.project ?? "*", name: params.name ?? null, count: rows.length });
         if (rows.length > 0) return formatPeerTable(rows);
-        // Say WHAT was searched: "no peers in the registry" when only this project was read is a lie
-        // the caller cannot act on.
+        // Say WHAT was searched: an empty list that names neither scope nor name cannot be acted on.
         const scope = params.project ? `project "${params.project}"` : "any project";
-        return `No peers in ${scope}.${params.project ? " Pass project:\"*\" for every project on this machine." : ""}`;
+        const sought = params.name ? `peer "${params.name}"` : "peers";
+        const hint = params.project ? " Pass project:\"*\" for every project on this machine." : "";
+        return `No ${sought} in ${scope}.${hint}`;
     };
 
     /** Supervisor records, read from every location a peer may have used: the configured
