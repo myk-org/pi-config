@@ -276,8 +276,10 @@ export function buildPeerSpawn(
   // A project namespace becomes a DIRECTORY NAME inside the coms root, so it is validated like a
   // filename: no separators, no `..`, nothing that could place registry files elsewhere.
   if (project) {
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(project) || project.includes("..")) {
-      return { ok: false, message: "coms peer spawn: project must be letters, digits, dot, dash or underscore (no path separators or '..')" };
+    // Only what could ESCAPE the coms root is refused. Spaces are legitimate: activation derives a
+    // namespace from any real cwd, so `/work/My Projects` becomes `work__My Projects`.
+    if (/[\/\\]/.test(project) || project.includes("..") || /[\x00-\x1f]/.test(project)) {
+      return { ok: false, message: "coms peer spawn: project must not contain path separators, '..' or control characters" };
     }
     command.push("--project", project);
   }
@@ -296,10 +298,14 @@ export function buildPeerSpawn(
 export function resolveKillScope(
   request: { name?: string | null; project?: string | null; all?: boolean | null },
   ownProject: string,
-): { name?: string; project?: string; all?: boolean } {
+): { name?: string; project?: string; all?: boolean; refused?: string } {
   if (request.all === true) {
-    const project = (request.project ?? "").trim() || ownProject;
-    return { all: true, project: project || undefined };
+    const project = (request.project ?? "").trim() || (ownProject ?? "").trim();
+    // No scope means NO kill: falling open here stopped every project's peers.
+    if (!project) {
+      return { all: true, refused: "coms peer kill: cannot tell which project to scope all to — pass project explicitly" };
+    }
+    return { all: true, project };
   }
   const name = (request.name ?? "").trim();
   const project = (request.project ?? "").trim();

@@ -225,6 +225,10 @@ export function registerComs(pi: ExtensionAPI) {
                 return;
             }
             const scope = resolveKillScope({ name: what === "all" ? undefined : what, project: projectIdx >= 0 ? parts[projectIdx + 1] : undefined, all: what === "all" }, ownProject());
+            if (scope.refused) {
+                try { ctx.ui.notify(scope.refused, "warning"); } catch {}
+                return;
+            }
             const result = killPeers(scope);
             try { ctx.ui.notify(result.text, result.killed > 0 ? "info" : "warning"); } catch {}
         } else if (subcommand === "status") {
@@ -562,8 +566,9 @@ export function registerComs(pi: ExtensionAPI) {
             async execute(_id: string, params: any) {
                 const scope = resolveKillScope({ name: params?.name, project: params?.project, all: params?.all }, ownProject());
                 log.debug("coms_peer_kill_scope", scope);
+                if (scope.refused) return { content: [{ type: "text" as const, text: scope.refused }], details: { ok: false, killed: 0 } };
                 const result = killPeers(scope);
-                return { content: [{ type: "text" as const, text: result.text }], details: { killed: result.killed } };
+                return { content: [{ type: "text" as const, text: result.text }], details: { ok: result.killed > 0, killed: result.killed } };
             },
         });
     } catch (e: any) {

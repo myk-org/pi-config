@@ -276,6 +276,12 @@ describe("resolveKillScope", () => {
     assert.deepEqual(resolveKillScope({ all: true, project: "*" }, "own"), { all: true, project: "*" });
   });
 
+  it("refuses kill-all when no project can be derived, instead of falling open to every project", () => {
+    const scope = resolveKillScope({ all: true }, "");
+    assert.equal(scope.project, undefined);
+    assert.match(scope.refused ?? "", /cannot tell which project/);
+  });
+
   it("looks a NAMED peer up across projects, since naming one is already specific", () => {
     assert.deepEqual(resolveKillScope({ name: "builder" }, "own"), { name: "builder", project: undefined });
     assert.deepEqual(resolveKillScope({ name: "builder", project: "other" }, "own"), { name: "builder", project: "other" });
@@ -287,8 +293,11 @@ describe("resolveListScope", () => {
     assert.equal(resolveListScope(["list"], "own"), "own");
   });
 
-  it("widens with --all and honours --project", () => {
+  it("widens to every project with --all", () => {
     assert.equal(resolveListScope(["list", "--all"], "own"), undefined);
+  });
+
+  it("honours an explicit --project namespace", () => {
     assert.equal(resolveListScope(["list", "--project", "other"], "own"), "other");
   });
 });
@@ -296,9 +305,13 @@ describe("resolveListScope", () => {
 describe("buildPeerSpawn project validation", () => {
   const supervisor = "/opt/sup/coms-peer-supervisor.mjs";
   it("refuses a project that could escape the coms root", () => {
-    for (const bad of ["../etc", "a/b", "..", ".hidden"]) {
+    for (const bad of ["../etc", "a/b", "..", "a\\b"]) {
       assert.equal(buildPeerSpawn(supervisor, { cname: "peer", project: bad }).ok, false, bad);
     }
+  });
+
+  it("accepts a namespace activation would derive from a real directory, spaces included", () => {
+    assert.equal(buildPeerSpawn(supervisor, { cname: "peer", project: "work__My Projects" }).ok, true);
   });
   it("accepts a normal namespace", () => {
     assert.equal(buildPeerSpawn(supervisor, { cname: "peer", project: "pi-config" }).ok, true);
