@@ -1,6 +1,6 @@
 # Feature Manager Prompt — Template
 
-> **Usage:** Copy this template into your project (e.g., `.dev/feature-manager-prompt.md`).
+> **Usage:** Copy this template into your project (e.g., `prompts/feature-manager.md`).
 > Replace all `{{PLACEHOLDER}}` values with project-specific details.
 > Delete sections marked `[OPTIONAL]` if they don't apply.
 > Delete this usage block when done.
