@@ -280,6 +280,10 @@ progress. It does not commit, push, create a PR, or post results.
   `priority: true` (jump the peer's queued backlog). `coms_broadcast(targets, prompt)` fans out to multiple peers (`["*"]` = project);
   `coms_history` queries the per-session JSONL trail in `~/.pi/coms/history.jsonl`. Peers emit `⚙busy` state and ~60s progress signals
   while processing inbound work.
+- User-authored messages (#1077): `/coms tell <peer> <message>` and the `m` composer in `/coms list` stamp envelope `origin: "user"`
+  through the `globalThis.__comsUserSend` bridge coms-p2p publishes; `coms_send`/`coms_broadcast` never pass it (schemas carry no
+  `origin`), and `resolvePromptOrigin` accepts only the literal `true`, so tool input cannot claim human authority. Receiver marks the
+  header `(from the USER)` and history `(USER)`.
 - COMS queue recovery is irreversible: call `coms_queue_inspect`, review its body-free result, then pass its one-time `preview_id` to
   `coms_queue_clear` or `coms_queue_delete`. Never use `coms_send.clearPrevious`; it is rejected. Preview tokens are owner-bound and
   expire after five minutes. RPC recovery providers retain at most 20 previews per provider and must implement an atomic

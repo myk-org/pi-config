@@ -484,13 +484,44 @@ export async function readTaskSummary(_cwd: string, _sessionId?: string): Promis
 	} catch { return null; }
 }
 
+/** Who authored an inbound prompt: a human (only the command layer knows that) or another
+ *  agent's model. "peer" is the default so a missing or unrecognised value can never claim
+ *  human authority. */
+export type PromptOrigin = "user" | "peer";
+
+/** Decide the envelope `origin`. Only the CALLER'S ROLE produces `user`, and only as the literal
+ *  boolean `true`: a value that merely looks like an origin (a JSON string from tool input, an
+ *  absent field) degrades to `peer`, so a tool cannot spoof human authority (#1077). */
+export function resolvePromptOrigin(userAuthored: unknown): PromptOrigin {
+	return userAuthored === true ? "user" : "peer";
+}
+
+/** True when a received envelope claims human authorship — the receiver trusts the literal only. */
+export function isUserOrigin(value: unknown): boolean {
+	return value === "user";
+}
+
+/** Parse `/coms tell [--project <p>] <peer> <message…>` (the text after "tell"). The message is
+ *  taken from the raw argument, not from tokens, so its original spacing and dashes survive. */
+export function parseComsTell(detail: string): { peer: string; message: string; project?: string } | null {
+	const match = detail.trim().match(/^(?:--project\s+(\S+)\s+)?(\S+)\s+([\s\S]+)$/);
+	if (!match) return null;
+	const [, project, peer, message] = match;
+	const text = message.trim();
+	if (!text) return null;
+	return { peer, message: text, ...(project ? { project } : {}) };
+}
+
 /** Build the customType string for coms inbound display (shown as the header by pi).
  *  Sanitizes all inputs since senderName/senderCwd come from untrusted peers. */
-export function formatComsInboundType(senderName: string, selfName: string, senderCwd: string): string {
+export function formatComsInboundType(senderName: string, selfName: string, senderCwd: string, origin?: PromptOrigin): string {
 	const safeSender = sanitizeComsName(senderName);
 	const safeSelf = sanitizeComsName(selfName);
 	const safeCwd = senderCwd.replace(/[\x00-\x1f\x7f-\x9f\[\]]/g, "").trim() || "?";
-	return `from ${safeSender} → ${safeSelf} @ ${safeCwd}`;
+	// Only a user-authored message gets a marker: peer is the norm and a marker on every
+	// inbound would just be noise to read past.
+	const originTag = origin === "user" ? " (from the USER)" : "";
+	return `from ${safeSender} → ${safeSelf} @ ${safeCwd}${originTag}`;
 }
 
 export function buildInboundContent(
@@ -499,12 +530,15 @@ export function buildInboundContent(
 	tasks?: Array<{ subject: string; description: string }> | null,
 	senderName?: string,
 	senderCwd?: string,
+	origin?: PromptOrigin,
 ): string {
 	// Sanitize peer-controlled values — strip control chars and limit length
 	const safeName = senderName ? senderName.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 100) : undefined;
 	const safeCwd = senderCwd ? senderCwd.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 200) : undefined;
-	// Machine-readable prefix so the LLM can distinguish coms messages from user input
-	const fromTag = safeName ? `[from ${safeName}${safeCwd ? ` @ ${safeCwd}` : ''}] ` : '';
+	// Machine-readable prefix so the LLM can distinguish coms messages from user input. The
+	// origin comes before the name: "a human decided this" is the part that changes the reply.
+	const originTag = origin === "user" ? "USER (a human), via " : "";
+	const fromTag = safeName ? `[from ${originTag}${safeName}${safeCwd ? ` @ ${safeCwd}` : ''}] ` : '';
 	let content = header ? `${fromTag}${header}\n\n${prompt}` : `${fromTag}${prompt}`;
 	if (safeName) {
 		content += `\n\nReply to me via coms_send(target="${safeName}")`;
