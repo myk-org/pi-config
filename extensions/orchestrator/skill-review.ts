@@ -377,8 +377,11 @@ export function registerSkillReview(
         ctx.cwd,
         agents,
         {
-          // Silent on purpose: the reply text is not consumed — the notice and the
-          // provenance trail come from the filesystem diff below, not from the agent.
+          // Documented fireAndForget exception #2 (dreaming is #1 — rules/35-memory.md):
+          // the child's text output is never consumed. Provenance and the one-line notice
+          // are derived from the before/after filesystem diff below, not from the agent's
+          // report, so delivering a raw async agent result would only duplicate the notice.
+          // Any other async agent must leave this unset.
           fireAndForget: true,
           name: "Skill review",
           parentModelId: sidecar?.model,

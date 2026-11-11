@@ -17,7 +17,9 @@ the turn contradicts one of the project's own skills, and patches it when it doe
 | The session is a subagent child, an oneshot (`-p`, `--mode json`), or has no async LLM path | No review. |
 
 The review runs as the `skill-reviewer` agent in the background. It reads the turn digest (what the
-assistant said, which tools ran) and the skills under `.pi/skills/`.
+assistant said, which tools ran) and the skills under `.pi/skills/`. Its text output is never consumed —
+provenance and the notice come from a filesystem diff — so it is one of the two documented `fireAndForget`
+agents (dreaming is the other, see `rules/35-memory.md`).
 
 ## Ownership: Whose File May Be Patched
 

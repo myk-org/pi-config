@@ -338,7 +338,8 @@ progress. It does not commit, push, create a PR, or post results.
   is under `<project>/.pi/skills/`. Shipped package skills, `~/.pi/agent/skills/`, and symlinks resolving outside are never
   touched; the child is denied bash and every write tool outside that tree. Provenance (`.pi/data/skill-review.jsonl`) and the
   one-line notice come from a before/after snapshot, not from the agent's report — see `docs/skill-self-improvement.md`.
-  Disable with `skill_review: false`.
+  Disable with `skill_review: false`. It is the **second documented `fireAndForget` exception** (dreaming is the first,
+  `rules/35-memory.md`): its child's text is never consumed, so surfacing a raw agent result would only duplicate the notice.
 - Project settings: see `docs/project-settings.md`
 - Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.
