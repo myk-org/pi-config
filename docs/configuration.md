@@ -466,6 +466,24 @@ export PI_DREAM_INTERVAL_HOURS=6
 
 See [Background Memory Consolidation (Dreaming)](background-dreaming.html) for details.
 
+### `skill_review`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `skill_review` | bool | `true` | `PI_SKILL_REVIEW` | Post-turn review of this project's own skills. | After a substantive, unblocked turn, a review agent may patch `.pi/skills/<name>/` and reports one line. Shipped package skills, `~/.pi/agent/skills/`, and symlinks resolving outside are never touched. |
+
+```json
+{
+  "skill_review": false
+}
+```
+
+```bash
+export PI_SKILL_REVIEW=false
+```
+
+See [Skill Self-Improvement](skill-self-improvement.html) for details.
+
 ### Memory tuning keys
 
 These keys tune the memory system's budgets and similarity gates (issue #915).

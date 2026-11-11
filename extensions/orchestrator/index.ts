@@ -32,6 +32,7 @@ import { registerCron } from "./cron.js";
 import { registerStatus } from "./status.js";
 import { registerNvim } from "./nvim.js";
 import { registerPreferenceExtractor } from "./preference-extractor.js";
+import { registerSkillReview } from "./skill-review.js";
 import { registerMemoryTools } from "./memory-tools.js";
 import { registerReviewUI } from "./review-ui.js";
 import { registerSessionSearch } from "./session-search.js";
@@ -140,6 +141,7 @@ export default function (pi: ExtensionAPI) {
 
   registerStatusLine(pi, IN_CONTAINER, terminalNotify);
   registerDreaming(pi, spawnAsyncAgent);
+  registerSkillReview(pi, spawnAsyncAgent);
   const { getCronTasks } = registerCron(pi, spawnAsyncAgent);
   registerSessionValidation(pi);
   registerGithubAutocomplete(pi);

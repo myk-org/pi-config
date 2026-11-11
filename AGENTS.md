@@ -333,6 +333,12 @@ progress. It does not commit, push, create a PR, or post results.
   `overrideConflicts`
 - Enforcement honesty (code vs injected): see `contributing/enforcement-honesty-map.md`
 - Memory inventory CLI: `uv run myk-pi-tools memory status`
+- Post-turn skill review (issue #1074): `extensions/orchestrator/skill-review.ts` runs the `skill-reviewer` agent after a
+  substantive, unblocked turn and may patch `SKILL.md`/`references/*.md` — **only** for skills whose real path (after `realpath`)
+  is under `<project>/.pi/skills/`. Shipped package skills, `~/.pi/agent/skills/`, and symlinks resolving outside are never
+  touched; the child is denied bash and every write tool outside that tree. Provenance (`.pi/data/skill-review.jsonl`) and the
+  one-line notice come from a before/after snapshot, not from the agent's report — see `docs/skill-self-improvement.md`.
+  Disable with `skill_review: false`.
 - Project settings: see `docs/project-settings.md`
 - Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.

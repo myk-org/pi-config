@@ -26,6 +26,7 @@ pi-config/
 │   ├── reviewer.md
 │   ├── scout.md
 │   ├── security-auditor.md
+│   ├── skill-reviewer.md
 │   ├── technical-documentation-writer.md
 │   ├── test-automator.md
 │   ├── test-runner.md
@@ -51,6 +52,7 @@ pi-config/
 │   │   ├── async-wait.ts            # Shared helper for waiting on async result files
 │   │   ├── cron.ts                   # /cron scheduled tasks and session/project scope handling
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
+│   │   ├── skill-review.ts          # Post-turn review that may patch only project-owned skills (.pi/skills), with provenance
 │   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous) + memory-based enforcement rules
 │   │   ├── enforcement-helpers.ts   # Pure helpers for dangerous-command enforcement (read-only detection, .pi/tmp/ path validation)
 │   │   ├── enforcement-rules.ts     # Enforcement rules engine — trigger matching + action execution for memory-based enforcement
