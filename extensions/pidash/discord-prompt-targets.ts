@@ -367,3 +367,57 @@ export function promptHeader(args: {
   const question = (args.title ?? "").trim() || "The agent is asking";
   return `${who} — ${question}`;
 }
+
+/** Where an inbound Discord message belongs.
+ *
+ *  Inbound used to look only at the thread and the watched session, while outbound delivers through
+ *  a session's target. Whenever the watch was lost but a target survived (a bot restart, a session
+ *  switch, a prompt-only target), a channel kept streaming a session's output while every message
+ *  typed in it was refused with "not watching any session" — two answers to the same question.
+ *
+ *  A channel that is receiving a session's output is addressable for that session, so the delivery
+ *  target is the last resort. Routing through it never moves the watch: the channel is an address,
+ *  not a subscription (the #1060 rule). */
+export type InboundSource = "thread" | "watch" | "target" | "none";
+
+export interface InboundSession {
+  sessionId: string | null;
+  source: InboundSource;
+  /** The stored watch points at a session that is gone; the caller should clear it. */
+  deadWatch?: boolean;
+  /** More than one live session delivers into this channel — refuse instead of guessing. */
+  ambiguous?: boolean;
+}
+
+export function resolveInboundSession(input: {
+  channelId: string;
+  threadSessionId?: string | null;
+  watchedSessionId?: string | null;
+  targets?: Record<string, { channelId: string; threadId?: string | null }> | null;
+  isLive: (sessionId: string) => boolean;
+}): InboundSession {
+  const { channelId, isLive } = input;
+  const thread = (input.threadSessionId ?? "").trim();
+  const watched = (input.watchedSessionId ?? "").trim();
+  const deadWatch = Boolean(watched) && !isLive(watched);
+
+  if (thread && isLive(thread)) return { sessionId: thread, source: "thread", ...(deadWatch ? { deadWatch } : {}) };
+  if (watched && isLive(watched)) return { sessionId: watched, source: "watch" };
+  if (deadWatch) return { sessionId: null, source: "none", deadWatch: true };
+
+  // A target whose channel is exactly this channel, preferring a thread match over a channel match:
+  // a thread is a narrower address than the channel that contains it.
+  const delivering = Object.entries(input.targets ?? {})
+    .filter(([sessionId, target]) => {
+      if (!target || !isLive(sessionId)) return false;
+      return target.threadId === channelId || target.channelId === channelId;
+    })
+    .map(([sessionId, target]) => ({ sessionId, exactThread: target.threadId === channelId }))
+    .sort((a, b) => Number(b.exactThread) - Number(a.exactThread));
+
+  if (delivering.length === 0) return { sessionId: null, source: "none" };
+  if (delivering.length > 1 && delivering[0]!.exactThread === delivering[1]!.exactThread) {
+    return { sessionId: null, source: "none", ambiguous: true };
+  }
+  return { sessionId: delivering[0]!.sessionId, source: "target" };
+}

@@ -33,7 +33,7 @@ import { compareCommandPayloads } from "./discord-commands.ts";
 import { MAX_LAST_PROMPTS, MAX_LAST_PROMPT_CHARS } from "../shared/chat/chat-state.ts";
 import { jobIdAt, renderJobsView } from "./discord-jobs-view.ts";
 import { planBoard } from "./discord-board.ts";
-import { ensurePromptTarget, hydratableTargets, nudgeChannelId, nudgeDue, promptById, promptHeader, shouldNudge } from "./discord-prompt-targets.ts";
+import { ensurePromptTarget, hydratableTargets, nudgeChannelId, nudgeDue, promptById, promptHeader, resolveInboundSession, shouldNudge } from "./discord-prompt-targets.ts";
 import { ownsChannel, ownsSession, reactionAction, sessionForChannel, sessionIdFromTopic } from "./discord-reactions.ts";
 import {
   buildSessionPage,
@@ -1852,11 +1852,18 @@ export function setupDiscordBot(opts: {
     // Control words come BEFORE a pending prompt: /stop must never be blocked by
     // a question the agent is waiting on (Qodo a611b293).
     if (/^\/stop$/i.test(text)) {
-      if (!state.watchedSessionId) {
+      const stopTarget = resolveInboundSession({
+        channelId: message.channelId,
+        threadSessionId,
+        watchedSessionId: state.watchedSessionId ?? null,
+        targets: state.targets ?? {},
+        isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
+      }).sessionId;
+      if (!stopTarget) {
         await message.reply("Not watching any session.").catch(() => {});
         return;
       }
-      const sent = command(state.watchedSessionId, { command: "abort" });
+      const sent = command(stopTarget, { command: "abort" });
       await message.reply(sent ? "⏹️ Stop sent." : "Session is not connected.").catch(() => {});
       return;
     }
@@ -1870,7 +1877,14 @@ export function setupDiscordBot(opts: {
       // Only a THREAD names a session. A DM is session-agnostic: passing the
       // watched session made an older session's question unreachable (Qodo
       // d9b80852).
-      bridge.answer(state, "/cancel", (content) => void message.reply(content).catch(() => {}), threadSessionId ?? undefined);
+      const cancelTarget = threadSessionId ?? resolveInboundSession({
+        channelId: message.channelId,
+        threadSessionId,
+        watchedSessionId: state.watchedSessionId ?? null,
+        targets: state.targets ?? {},
+        isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
+      }).sessionId ?? undefined;
+      bridge.answer(state, "/cancel", (content) => void message.reply(content).catch(() => {}), cancelTarget);
       return;
     }
 
@@ -1894,10 +1908,32 @@ export function setupDiscordBot(opts: {
       }
     }
 
-    const targetSessionId = threadSessionId ?? state.watchedSessionId;
+    // Inbound and outbound must agree on WHICH session a channel is. Outbound delivers through
+    // `targets`; inbound used to look only at the thread and the watch, so a channel that was
+    // streaming a session's output could still be told "not watching any session".
+    const inbound = resolveInboundSession({
+      channelId: message.channelId,
+      threadSessionId,
+      watchedSessionId: state.watchedSessionId ?? null,
+      targets: state.targets ?? {},
+      isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
+    });
+    if (inbound.deadWatch && state.watchedSessionId) {
+      log.warn("discord_watch_cleared_dead", { sessionId: state.watchedSessionId });
+      state.watchedSessionId = null;
+    }
+    if (inbound.ambiguous) {
+      await message.reply("This channel carries more than one session. Send in that session's thread or use `/sessions`.").catch(() => {});
+      return;
+    }
+    const targetSessionId = inbound.sessionId;
     if (!targetSessionId) {
       await message.reply("Not watching any session. Use `/sessions` and pick one.").catch(() => {});
       return;
+    }
+    if (inbound.source === "target") {
+      // Addressing, not subscribing: the watch stays where the user put it.
+      log.debug("discord_prompt_via_target", { sessionId: targetSessionId, channelId: message.channelId });
     }
     const client = piClients.get(targetSessionId);
     if (!client?.ws) {
