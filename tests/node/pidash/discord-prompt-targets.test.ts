@@ -442,6 +442,22 @@ describe("resolveInboundSession", () => {
     assert.equal(healthy.deadTarget, undefined);
   });
 
+  it("keeps a disconnected thread's message on that thread's session", () => {
+    // Spilling it into the live watch would deliver a thread's text to another agent.
+    const r = resolveInboundSession({ channelId: "ch", threadSessionId: "gone", watchedSessionId: "s2", isLive: live("s2") });
+    assert.deepEqual([r.sessionId, r.source], ["gone", "thread"]);
+  });
+
+  it("does not let a dead watch hide a live target on the same channel", () => {
+    const r = resolveInboundSession({
+      channelId: "ch",
+      watchedSessionId: "gone",
+      targets: { s3: { channelId: "ch", threadId: null } },
+      isLive: live("s3"),
+    });
+    assert.deepEqual([r.sessionId, r.source, r.deadWatch], ["s3", "target", true]);
+  });
+
   it("reports a dead watch so the caller can clear it", () => {
     const r = resolveInboundSession({ channelId: "ch", watchedSessionId: "gone", isLive: live() });
     assert.equal(r.deadWatch, true);

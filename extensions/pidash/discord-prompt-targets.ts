@@ -402,11 +402,14 @@ export function resolveInboundSession(input: {
   const thread = (input.threadSessionId ?? "").trim();
   const watched = (input.watchedSessionId ?? "").trim();
   const deadWatch = Boolean(watched) && !isLive(watched);
+  const dead = deadWatch ? { deadWatch } : {};
 
-  if (thread && isLive(thread)) return { sessionId: thread, source: "thread", ...(deadWatch ? { deadWatch } : {}) };
+  // A thread IS its session: identity, not liveness, decides. Falling back to the watch when a
+  // thread's session is disconnected delivers that thread's text into a different session.
+  if (thread) return { sessionId: thread, source: "thread", ...dead };
   if (watched && isLive(watched)) return { sessionId: watched, source: "watch" };
-  if (deadWatch) return { sessionId: null, source: "none", deadWatch: true };
 
+  // A dead watch must not hide a live target: the channel still carries that session's output.
   // A target whose channel is exactly this channel, preferring a thread match over a channel match:
   // a thread is a narrower address than the channel that contains it.
   const onChannel = Object.entries(input.targets ?? {}).flatMap(([sessionId, target]) =>
@@ -416,9 +419,11 @@ export function resolveInboundSession(input: {
   const delivering = onChannel.filter((match) => match.live).sort((a, b) => Number(b.exactThread) - Number(a.exactThread));
 
   // A channel whose session died says so: "not watching" would hide that the output stopped for a reason.
-  if (delivering.length === 0) return { sessionId: null, source: "none", ...(onChannel.length ? { deadTarget: true } : {}) };
-  if (delivering.length > 1 && delivering[0]!.exactThread === delivering[1]!.exactThread) {
-    return { sessionId: null, source: "none", ambiguous: true };
+  if (delivering.length === 0) {
+    return { sessionId: null, source: "none", ...dead, ...(onChannel.length ? { deadTarget: true } : {}) };
   }
-  return { sessionId: delivering[0]!.sessionId, source: "target" };
+  if (delivering.length > 1 && delivering[0]!.exactThread === delivering[1]!.exactThread) {
+    return { sessionId: null, source: "none", ambiguous: true, ...dead };
+  }
+  return { sessionId: delivering[0]!.sessionId, source: "target", ...dead };
 }

@@ -1849,21 +1849,28 @@ export function setupDiscordBot(opts: {
 
     const text = (message.content || "").trim();
 
+    // Inbound and outbound must agree on WHICH session a channel is. Outbound delivers through
+    // `targets`; inbound used to look only at the thread and the watch, so a channel that was
+    // streaming a session's output could still be told "not watching any session".
+    const inbound = resolveInboundSession({
+      channelId: message.channelId,
+      threadSessionId,
+      watchedSessionId: state.watchedSessionId ?? null,
+      targets: state.targets ?? {},
+      isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
+    });
+    const noTargetReply = () => message.reply(inbound.deadTarget
+      ? "The session that was sending its output here is gone. Use `/sessions` and pick one."
+      : "Not watching any session. Use `/sessions` and pick one.").catch(() => {});
+
     // Control words come BEFORE a pending prompt: /stop must never be blocked by
     // a question the agent is waiting on (Qodo a611b293).
     if (/^\/stop$/i.test(text)) {
-      const stopTarget = resolveInboundSession({
-        channelId: message.channelId,
-        threadSessionId,
-        watchedSessionId: state.watchedSessionId ?? null,
-        targets: state.targets ?? {},
-        isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
-      }).sessionId;
-      if (!stopTarget) {
-        await message.reply("Not watching any session.").catch(() => {});
+      if (!inbound.sessionId) {
+        await noTargetReply();
         return;
       }
-      const sent = command(stopTarget, { command: "abort" });
+      const sent = command(inbound.sessionId, { command: "abort" });
       await message.reply(sent ? "⏹️ Stop sent." : "Session is not connected.").catch(() => {});
       return;
     }
@@ -1874,16 +1881,9 @@ export function setupDiscordBot(opts: {
       }
       // Clearing locally left the agent waiting forever: the cancelled response
       // has to travel back through ui-bridge (Qodo 7e102371).
-      // Only a THREAD names a session. A DM is session-agnostic: passing the
-      // watched session made an older session's question unreachable (Qodo
-      // d9b80852).
-      const cancelTarget = threadSessionId ?? resolveInboundSession({
-        channelId: message.channelId,
-        threadSessionId,
-        watchedSessionId: state.watchedSessionId ?? null,
-        targets: state.targets ?? {},
-        isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
-      }).sessionId ?? undefined;
+      // A DM is session-agnostic: passing a session made an older session's question unreachable
+      // (Qodo d9b80852, again as a1c4f7e2). Only a guild channel names a session.
+      const cancelTarget = message.guildId ? inbound.sessionId ?? undefined : undefined;
       bridge.answer(state, "/cancel", (content) => void message.reply(content).catch(() => {}), cancelTarget);
       return;
     }
@@ -1908,16 +1908,6 @@ export function setupDiscordBot(opts: {
       }
     }
 
-    // Inbound and outbound must agree on WHICH session a channel is. Outbound delivers through
-    // `targets`; inbound used to look only at the thread and the watch, so a channel that was
-    // streaming a session's output could still be told "not watching any session".
-    const inbound = resolveInboundSession({
-      channelId: message.channelId,
-      threadSessionId,
-      watchedSessionId: state.watchedSessionId ?? null,
-      targets: state.targets ?? {},
-      isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
-    });
     // A dead watch is cleared HERE, on the first inbound message that proves it dead — not at hydration.
     // `setupDiscordBot` runs while `piClients` is still empty, so a startup liveness check would clear
     // every restored watch and undo the fix that saved watches come back alive after a restart.
@@ -1931,9 +1921,7 @@ export function setupDiscordBot(opts: {
     }
     const targetSessionId = inbound.sessionId;
     if (!targetSessionId) {
-      await message.reply(inbound.deadTarget
-        ? "The session that was sending its output here is gone. Use `/sessions` and pick one."
-        : "Not watching any session. Use `/sessions` and pick one.").catch(() => {});
+      await noTargetReply();
       return;
     }
     if (inbound.source === "target") {
@@ -1942,7 +1930,9 @@ export function setupDiscordBot(opts: {
     }
     const client = piClients.get(targetSessionId);
     if (!client?.ws) {
-      await message.reply("The watched session is disconnected.").catch(() => {});
+      await message.reply(inbound.source === "thread"
+        ? "That thread's session is not connected."
+        : "The watched session is disconnected.").catch(() => {});
       return;
     }
 
