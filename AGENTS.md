@@ -286,7 +286,7 @@ progress. It does not commit, push, create a PR, or post results.
   `clearQueueIfSnapshot(snapshot)` operation; clients never call an unconditional clear after validating a preview.
 - Async agents, async-only list, acpx `supportsAsyncLlm` + sidecar settings, temp dirs: see `docs/async-internals.md`
 - CLI providers (`cli-*`): see `docs/cli-provider.md`
-- **Self-reload after deploy**: `.dev/deploy-all.sh` (and standalone `deploy-extensions.sh`) writes a nonce to `.pi/run/reload.flag`.
+- **Self-reload after a deploy**: the deploy tooling writes a nonce to `.pi/run/reload.flag`.
   The `extensions/reload-flag/` extension consumes it and calls `ctx.reload()` — the same public API `/reload` uses,
   nothing in pi is patched — then the new runtime publishes the nonce to `.pi/run/reload.done`
   (mirrored into `.pi/tmp/reload.done` so a pre-#1020 requester polling the old path still sees it).
