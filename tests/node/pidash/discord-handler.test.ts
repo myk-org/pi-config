@@ -20,11 +20,14 @@ function anyBuilder(): any {
   return new Proxy({}, { get: (_t, key) => (key === "toJSON" ? () => ({}) : () => anyBuilder()) });
 }
 
+const DM = "dm-1";
 const built: FakeClient[] = [];
 
 class FakeClient extends EventEmitter {
   user = { id: "bot-user" };
   guilds = { cache: new Map() };
+  /** Only the DM exists; anything else is a channel the bot cannot see. */
+  channels = { fetch: async (id: string) => (id === DM ? { id, guildId: null } : null) };
   constructor(_opts?: unknown) {
     super();
     built.push(this);
@@ -67,50 +70,63 @@ process.env.DISCORD_BOT_TOKEN = "test-token";
 process.env.DISCORD_ALLOWED_USERS = USER;
 process.env.DISCORD_ALLOW_ALL = "false";
 
-interface Sent { sessionId: string; type: string; command?: string }
+interface Sent { sessionId: string; type: string; command?: string; id?: string; cancelled?: boolean }
 
-/** A bot whose user watches s2 and owns thread chan-3 for s3; `live` decides which sessions are connected. */
-function startBot(live: string[]): { handler: (m: any) => Promise<void>; sends: Sent[] } {
+interface Bot {
+  handler: (m: any) => Promise<void>;
+  sends: Sent[];
+  /** pi -> bot events, as the daemon feeds them. */
+  hooks: Array<(sessionId: string, event: any) => void>;
+}
+
+/** A bot whose user watches `watchedSessionId` and owns thread chan-3 for s3; `live` decides what is connected. */
+function startBot(opts: { live: string[]; watchedSessionId?: string | null; threads?: Record<string, string> }): Bot {
   fs.writeFileSync(stateFile, JSON.stringify({
     users: {
       [USER]: {
-        watchedSessionId: "s2",
-        responseChannelId: "dm-1",
-        threads: { s3: THREAD },
+        watchedSessionId: opts.watchedSessionId === undefined ? "s2" : opts.watchedSessionId,
+        responseChannelId: DM,
+        dmChannelId: DM,
+        threads: opts.threads ?? { s3: THREAD },
         updatedAt: Date.now(),
       },
     },
   }));
   const sends: Sent[] = [];
   const piClients = new Map<string, any>();
-  for (const sessionId of live) {
+  for (const sessionId of opts.live) {
     piClients.set(sessionId, {
       session: { sessionId, active: true },
       ws: { send: (raw: string) => sends.push(JSON.parse(raw)) },
       replaying: false,
     });
   }
+  const hooks: Array<(sessionId: string, event: any) => void> = [];
   const before = built.length;
   setupDiscordBot({
     piClients,
-    piEventHooks: [],
+    piEventHooks: hooks,
     getActiveSessions: () => [...piClients.values()].map((client) => client.session),
     log: () => {},
   });
-  const client = built[built.length - 1];
   assert.equal(built.length, before + 1, "setupDiscordBot built no client");
-  return { handler: client!.listeners("messageCreate")[0] as (m: any) => Promise<void>, sends };
+  return { handler: built[built.length - 1]!.listeners("messageCreate")[0] as (m: any) => Promise<void>, sends, hooks };
 }
 
-function message(id: string, content: string, replies: string[]): any {
+function message(id: string, content: string, replies: string[], opts: { dm?: boolean } = {}): any {
   return {
     id,
-    guildId: "g1",
-    channelId: THREAD,
+    guildId: opts.dm ? null : "g1",
+    channelId: opts.dm ? DM : THREAD,
     content,
     author: { id: USER, bot: false },
     reply: async (text: string) => { replies.push(text); },
   };
+}
+
+/** onUiRequest delivers questions inside a floating promise; give it turns to settle. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
 describe("discord messageCreate routing", () => {
@@ -120,7 +136,7 @@ describe("discord messageCreate routing", () => {
   });
 
   it("/stop reaches the thread's session, not the watched one", async () => {
-    const bot = startBot(["s2", "s3"]);
+    const bot = startBot({ live: ["s2", "s3"] });
     const replies: string[] = [];
     await bot.handler(message("m1", "/stop", replies));
     assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.command]), [["s3", "abort"]]);
@@ -128,10 +144,23 @@ describe("discord messageCreate routing", () => {
   });
 
   it("refuses a dead thread instead of spilling into the watched session", async () => {
-    const bot = startBot(["s2"]);
+    const bot = startBot({ live: ["s2"] });
     const replies: string[] = [];
     await bot.handler(message("m2", "hello", replies));
     assert.deepEqual(bot.sends, []);
     assert.deepEqual(replies, ["That thread's session is not connected."]);
+  });
+
+  it("a DM /cancel dismisses the newest question, not the watched session's", async () => {
+    // The DM carries s9's question while the user watches s2 — s9's target is this DM channel.
+    const bot = startBot({ live: ["s2", "s9"], watchedSessionId: "s2", threads: {} });
+    bot.hooks[0]!("s9", { type: "extension_ui_request", id: "q1", method: "confirm", title: "Proceed?" });
+    await settle();
+
+    const replies: string[] = [];
+    await bot.handler(message("m3", "/cancel", replies, { dm: true }));
+    // Pinning the cancel to the watch would leave s9's question pending and never reach it.
+    assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.id, s.cancelled]), [["s9", "q1", true]]);
+    assert.deepEqual(replies, ["Dismissed."]);
   });
 });

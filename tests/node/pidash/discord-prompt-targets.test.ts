@@ -458,6 +458,14 @@ describe("resolveInboundSession", () => {
     assert.deepEqual([r.sessionId, r.source, r.deadWatch], ["s3", "target", true]);
   });
 
+  it("resolves nothing for a DM that carries no session", () => {
+    // A DM is session-agnostic, so /cancel must not be pinned to one: with no thread, no watch and no
+    // target the resolver has no answer and the bot passes no session, letting the engine cancel the
+    // newest question (Qodo a1c4f7e2).
+    const r = resolveInboundSession({ channelId: "dm-1", isLive: live() });
+    assert.deepEqual([r.sessionId, r.source], [null, "none"]);
+  });
+
   it("reports a dead watch so the caller can clear it", () => {
     const r = resolveInboundSession({ channelId: "ch", watchedSessionId: "gone", isLive: live() });
     assert.equal(r.deadWatch, true);
