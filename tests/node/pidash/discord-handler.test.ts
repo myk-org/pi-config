@@ -213,8 +213,7 @@ describe("discord messageCreate routing", () => {
     assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.id, s.confirmed]), [["s9", "q2", true]]);
   });
 
-  it("answers in a plain channel shared by two users' fallback targets", async () => {
-    // Both users fall back to the same channel; matching the FIRST owner dropped the other's reply.
+  it("answers in a plain channel shared by two users' fallback targets", async () => {    // Both users fall back to the same channel; matching the FIRST owner dropped the other's reply.
     const previousAllowAll = process.env.DISCORD_ALLOW_ALL;
     process.env.DISCORD_ALLOW_ALL = "true";
     try {
@@ -236,5 +235,25 @@ describe("discord messageCreate routing", () => {
     } finally {
       process.env.DISCORD_ALLOW_ALL = previousAllowAll;
     }
+  });
+
+  it("a reply in a channel answers only that channel's session", async () => {
+    // s9's question lives in the plain channel, s5's in its own thread and it asked LAST. Answering
+    // "the newest question" from s9's channel would approve s5.
+    const bot = startBot({
+      live: ["s9", "s5"],
+      watchedSessionId: null,
+      threads: { s5: THREAD },
+      responseChannelId: PLAIN,
+      dmChannelId: null,
+    });
+    bot.hooks[0]!("s9", { type: "extension_ui_request", id: "q9", method: "confirm", title: "Proceed?" });
+    await settle();
+    bot.hooks[0]!("s5", { type: "extension_ui_request", id: "q5", method: "confirm", title: "Proceed?" });
+    await settle();
+
+    const replies: string[] = [];
+    await bot.handler(message("m6", "yes", replies, { channelId: PLAIN }));
+    assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.id]), [["s9", "q9"]]);
   });
 });

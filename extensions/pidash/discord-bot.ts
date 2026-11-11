@@ -1895,20 +1895,22 @@ export function setupDiscordBot(opts: {
       return;
     }
 
-    // A prompt can be pending for the session this THREAD belongs to even though the user is
-    // watching a different one — that is the cross-session case: answering here must reach the
-    // asking session, not the watched one.
-    const threadHasPrompt = Boolean(threadSessionId && (state.pendingPrompts ?? {})[threadSessionId]);
-    if (state.pendingPrompt || threadHasPrompt) {
+    // A prompt can be pending for the session this channel belongs to even though the user is watching
+    // a different one — that is the cross-session case: answering here must reach the asking session,
+    // not the watched one. A DM names no session, so it answers the newest question; a guild channel
+    // answers only for the session it IS, or a reply here could approve another session's question.
+    const answerSession = message.guildId ? inbound.sessionId ?? undefined : undefined;
+    const hasPrompt = answerSession ? Boolean((state.pendingPrompts ?? {})[answerSession]) : Boolean(state.pendingPrompt);
+    if (hasPrompt) {
       const outcome = bridge.handleInbound(
         state, text,
         (content) => void message.reply(content).catch(() => {}),
-        threadSessionId ?? undefined,
+        answerSession,
       );
       if (outcome === "answered" || outcome === "cancelled") return;
       if (outcome === "expired") {
         await message.reply("The waiting prompt expired; sending your message as a new prompt.").catch(() => {});
-      } else if (outcome === "not-an-answer" && (state.pendingPrompt?.method === "confirm" || threadHasPrompt) && text) {
+      } else if (outcome === "not-an-answer" && (state.pendingPrompt?.method === "confirm" || hasPrompt) && text) {
         // Not an answer to a yes/no question, but it IS a message the user meant
         // to send: forward it and keep the prompt available (Qodo 85cacb2c).
         await message.reply("That isn't an answer to the pending question (still waiting). Forwarding it as a prompt.").catch(() => {});
