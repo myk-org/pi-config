@@ -19,7 +19,7 @@ import { Type } from "typebox";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { activationVerified, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
+import { activationVerified, completeTellArgs, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
 
 const log = createLogger("coms");
@@ -249,7 +249,7 @@ export function registerComs(pi: ExtensionAPI) {
                         if (scope.refused) return scope.refused;
                         return killPeers(scope).text;
                     },
-                    tellPeer: (row, text) => tellPeer(row.name, text, row.project),
+                    tellPeer: (request) => tellPeer(request.target, request.prompt, request.project),
                 });
                 return;
             }
@@ -303,11 +303,10 @@ export function registerComs(pi: ExtensionAPI) {
                 return mk([...names.map((n) => ({ v: n, l: n, d: "Stop this peer" })), { v: "all", l: "all", d: "Stop every running peer" }]);
             }
             if (completed[0] === "tell") {
-                if (completed.length === 1) {
-                    const names = attachCreatedBy(readRegistryRows()).filter(rowAlive).map((row) => row.name);
-                    return mk(names.map((n) => ({ v: n, l: n, d: "Message this peer as the user" })));
-                }
-                return null;
+                // Same live-row enumeration as kill (a gone peer must not complete), extended with
+                // the --project scope for a name that exists in several projects.
+                const options = completeTellArgs(attachCreatedBy(readRegistryRows()).filter(rowAlive), completed);
+                return options ? mk(options) : null;
             }
             if (completed[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
                 const used = new Set(completed.filter(p => p.startsWith("--")));

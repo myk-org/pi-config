@@ -20,9 +20,10 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
 import {
-	buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, type BroadcastTargetResult, resolvePromptOrigin, isUserOrigin, type PromptOrigin } from "./coms-shared.js";
+	buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, type BroadcastTargetResult, resolvePromptOrigin, receivedPromptOrigin, type PromptOrigin } from "./coms-shared.js";
 import { appendHistoryRecord, queryHistoryRecords, truncatePreview, type HistoryRecord } from "./coms-history.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
+import { userTargetProblem } from "./coms-peers.js";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -82,7 +83,7 @@ interface PromptEnvelope extends Envelope {
 /** A received origin counts only as the exact literal: a forged or malformed value is a peer
  *  message, so an unknown cannot claim human authority. */
 function inboundOrigin(env: { origin?: unknown }): PromptOrigin {
-	return isUserOrigin(env.origin) ? "user" : "peer";
+	return receivedPromptOrigin(env.origin);
 }
 
 interface ResponseEnvelope extends Envelope {
@@ -2176,10 +2177,10 @@ Do not respond to this message.`;
 		}
 	}
 
-	async function resolveTarget(target: string, project?: string): Promise<RegistryEntry | null> {
+	async function resolveTarget(target: string): Promise<RegistryEntry | null> {
 		// Prefer exact session_id match first (unambiguous).
 		if (identity) {
-			const localEntries = await pruneDeadEntries(project ?? identity.project, process.cwd());
+			const localEntries = await pruneDeadEntries(identity.project, process.cwd());
 			// Try session_id match first (always unambiguous)
 			const bySession = localEntries.find((e) => e.coms_session_id === target);
 			if (bySession) { log.debug("resolveTarget", target, "→", bySession.name, "by_session"); return bySession; }
@@ -2199,11 +2200,6 @@ Do not respond to this message.`;
 				log.warn("ambiguous_target", target, "matches", byName.length, "selected", byName[0].coms_session_id);
 				return byName[0];
 			}
-		}
-		// An explicit project is a SCOPE, not a hint: never resolve the name elsewhere.
-		if (project) {
-			log.debug("resolveTarget", target, "→ not_found_in_project", project);
-			return null;
 		}
 		// Fall back to scanning all projects by session_id.
 		for (const proj of listProjects()) {
@@ -2358,17 +2354,44 @@ Do not respond to this message.`;
 		return { msg_id, hops };
 	}
 
+	/** #1077: the user path refuses ambiguity — a human aiming at one peer must never land on
+	 *  another, so unlike the agent tools (which pick the freshest match) this returns a message
+	 *  that names the candidates and points at `--project`. */
+	async function resolveUserTarget(name: string, project?: string): Promise<{ target?: RegistryEntry; error?: string }> {
+		if (!identity) return { error: "coms is not active — run /coms start first." };
+		const ident = identity;
+		const projects = project ? [project] : [ident.project, ...listProjects().filter((p) => p !== ident.project)];
+		const matches: Array<{ project: string; entry: RegistryEntry }> = [];
+		for (const proj of projects) {
+			let entries: RegistryEntry[] = [];
+			try { entries = await pruneDeadEntries(proj, process.cwd()); } catch { continue; }
+			for (const entry of entries) {
+				if (entry.coms_session_id === name || entry.name === name) matches.push({ project: proj, entry });
+			}
+			// A session id is unique by construction: stop before a name scan reaches other projects.
+			if (matches.some((m) => m.entry.coms_session_id === name)) break;
+		}
+		const bySession = matches.filter((m) => m.entry.coms_session_id === name);
+		const found = bySession.length > 0 ? bySession : matches;
+		const problem = userTargetProblem(found.map((m) => ({ name: m.entry.name, project: m.project })), name, project);
+		if (problem) {
+			log.warn("user_send_refused", { target: name, matches: found.length, reason: problem });
+			return { error: problem };
+		}
+		return { target: found[0].entry };
+	}
+
 	/** #1077 command-layer bridge: `/coms tell` and the peers overlay composer deliver through the
 	 *  SAME path as coms_send, but they are the only callers that stamp origin "user" — the wrapper
 	 *  that owns `/coms` cannot reach this closure. Returns text and never throws, so a delivery
 	 *  failure reaches the user instead of being dropped on the floor. */
 	(globalThis as any).__comsUserSend = async (params: { target: string; prompt: string; project?: string }): Promise<{ ok: boolean; message: string }> => {
-		if (!identity) return { ok: false, message: "coms is not active — run /coms start first." };
-		const target = await resolveTarget(params.target, params.project);
-		if (!target) {
+		const resolved = await resolveUserTarget(params.target, params.project);
+		if (!resolved.target) {
 			log.warn("user_send_target_missing", { target: params.target, project: params.project ?? null });
-			return { ok: false, message: `no live peer "${params.target}"${params.project ? ` in project "${params.project}"` : ""}` };
+			return { ok: false, message: resolved.error ?? `no live peer "${params.target}"` };
 		}
+		const target = resolved.target;
 		try {
 			const { msg_id } = await deliverPrompt(target, { prompt: params.prompt, userAuthored: true });
 			log.info("user_send", msg_id, "to", target.name, "chars", params.prompt.length);

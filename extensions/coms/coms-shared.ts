@@ -501,6 +501,23 @@ export function isUserOrigin(value: unknown): boolean {
 	return value === "user";
 }
 
+/** The origin a RECEIVER reads off an envelope: only the exact literal "user" counts, so a missing
+ *  field (older sender), a forged value, or a malformed one all read as a peer message. */
+export function receivedPromptOrigin(value: unknown): PromptOrigin {
+	return isUserOrigin(value) ? "user" : "peer";
+}
+
+/** Build the command-layer send request from the peers overlay composer. A blank line means
+ *  "nothing to send" (Esc and empty input are the same decision), so it yields null. */
+export function buildTellRequest(
+	peer: { name: string; project?: string | null },
+	text: string,
+): { target: string; prompt: string; project?: string } | null {
+	const prompt = text.trim();
+	if (!prompt) return null;
+	return { target: peer.name, prompt, ...(peer.project ? { project: peer.project } : {}) };
+}
+
 /** Parse `/coms tell [--project <p>] <peer> <message…>` (the text after "tell"). The message is
  *  taken from the raw argument, not from tokens, so its original spacing and dashes survive. */
 export function parseComsTell(detail: string): { peer: string; message: string; project?: string } | null {

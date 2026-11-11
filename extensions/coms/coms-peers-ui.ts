@@ -14,6 +14,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
 import { openListDetailOverlay } from "../orchestrator/overlay-dashboard.js";
+import { buildTellRequest } from "./coms-shared.js";
 import type { RegistryRow } from "./coms-peers.js";
 
 const log = createLogger("coms-peers-ui");
@@ -26,7 +27,7 @@ export interface ComsPeersOverlayDeps {
   /** Kill every live peer. */
   killAll: () => string;
   /** Send the user's own message to a peer (#1077). Absent means no composer is offered. */
-  tellPeer?: (row: RegistryRow, text: string) => Promise<string>;
+  tellPeer?: (request: { target: string; prompt: string; project?: string }) => Promise<string>;
   heartbeatAgeSeconds?: (row: RegistryRow) => number | null;
   emptyMessage?: string;
 }
@@ -130,13 +131,15 @@ export async function openComsPeersOverlay(
     const target = composeQueue.pop();
     if (!target || !deps.tellPeer) return;
     // Same one-line dialog the rest of pi uses; Esc or an empty line means "nothing to send" and
-    // returns to the list rather than dropping the user back into the session.
+    // returns to the list rather than dropping the user back into the session. The list is closed
+    // while the dialog is up and re-opens after the send — the composer needs the whole terminal.
     const text = await ctx.ui.input(`Message ${target.name} (sent as you)`, "one line to the peer");
-    if (!text?.trim()) {
+    const request = buildTellRequest(target, text ?? "");
+    if (!request) {
       log.debug("overlay_tell_cancelled", { name: target.name, project: target.project });
       continue;
     }
-    status = await deps.tellPeer(target, text.trim());
-    log.info("overlay_tell_peer", { name: target.name, project: target.project, chars: text.trim().length });
+    status = await deps.tellPeer(request);
+    log.info("overlay_tell_peer", { name: request.target, project: request.project ?? null, chars: request.prompt.length });
   }
 }
