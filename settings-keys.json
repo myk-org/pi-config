@@ -57,13 +57,6 @@
     "default": 3,
     "group": "Memory"
   },
-  "skill_review": {
-    "description": "Post-turn review that may patch this project's own skills in .pi/skills (never shipped or user-global skills)",
-    "type": "bool",
-    "env": "PI_SKILL_REVIEW",
-    "default": true,
-    "group": "Memory"
-  },
   "memory_token_budget": {
     "description": "Token budget for the memory situation report injected into the system prompt (0 disables the report)",
     "type": "number",

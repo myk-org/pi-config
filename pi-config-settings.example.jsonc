@@ -32,10 +32,6 @@
   // Hours between automatic memory consolidation (dreaming). Range: 0.5-24
   "dream_interval_hours": 3,
 
-  // Post-turn review that may patch this project's own skills (.pi/skills/ only),
-  // reporting one line per changed skill. Never touches shipped or user-global skills.
-  "skill_review": true,
-
   // ── Orchestrator ──────────────────────────────────────────────────────────
 
   // Block orchestrator from using edit/write tools directly (must delegate to subagents)

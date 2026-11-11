@@ -239,7 +239,11 @@ export function buildDreamPrompt(
     `   ---\n` +
     `   name: <name>\n` +
     `   description: "What this skill does and when to use it"\n` +
+    `   skill-maintenance: auto\n` +
     `   ---\n` +
+    `   skill-maintenance: auto is mandatory: an unmarked skill is refused by the write guard\n` +
+    `   (issue #1074), so a creation without it fails. Marked skills may be patched later by an\n` +
+    `   agent that finds them wrong.\n` +
     `   Only create skills for workflows with 3+ steps that are likely to recur.\n` +
     `8. Write the current timestamp to ${topicsDir}/../.dream-watermark to track progress.\n` +
     `9. Memory rules: one line per entry, max ~100 chars, specific and actionable, no fluff.\n` +

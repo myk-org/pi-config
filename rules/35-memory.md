@@ -216,11 +216,10 @@ Background async agent that reads the session, extracts things worth remembering
 Triggered by `/dream` (manual) or session shutdown (automatic).
 **Dreaming ONLY: run as async + fireAndForget** — never block the session. Dream's
 output is not consumed by anything, so it must stay silent.
-**Documented `fireAndForget` exceptions — exactly two:** dreaming (above), and the post-turn skill
-review (`extensions/orchestrator/skill-review.ts`), whose child's text is never consumed because the
-parent derives provenance and the one-line notice from a filesystem diff. Every other async agent
+**This is the sole fireAndForget agent in pi-config.** Every other async agent
 returns a result you act on and must leave `fireAndForget` unset — a silent agent
-cannot tell you anything. Never copy this pattern to a watcher or poll agent.
+cannot tell you anything. Never copy this pattern to a watcher, poll, or review
+agent.
 
 **Dreaming follows the same NEVER memorize rules as per-turn self-improvement:**
 do NOT extract rejected/abandoned ideas, unfinished conversations, or unimplemented requirements.

@@ -188,8 +188,10 @@ Creates a reusable skill from the current conversation.
 
 | Scope | Location | Effect |
 | :--- | :--- | :--- |
-| Global | `~/.agents/skills/<name>/SKILL.md` | Skill is available across projects |
+| Global | `~/.agents/skills/<name>/SKILL.md` (copied by you — the skill write guard refuses agent writes outside the project) | Skill is available across projects |
 | Project | `.pi/skills/<name>/SKILL.md` | Skill is available only in the current project |
+
+Both forms carry `skill-maintenance: auto` in the frontmatter, which is what lets a later agent patch the skill when it drifts (see [Skill Self-Improvement](skill-self-improvement.html)).
 
 **Return value / effect:** Extracts the completed workflow from the current conversation and writes a `SKILL.md` file with frontmatter and step-by-step instructions.
 

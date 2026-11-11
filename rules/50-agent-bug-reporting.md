@@ -37,7 +37,6 @@ This rule applies ONLY to agents defined in this repository (`agents/` directory
 - reviewer
 - scout
 - security-auditor
-- skill-reviewer
 - technical-documentation-writer
 - test-automator
 - test-runner
