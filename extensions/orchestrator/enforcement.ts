@@ -35,7 +35,7 @@ import {
   DANGEROUS,
   isNoexecSyntaxCheck,
   dangerousPatternLabel,
-  dangerousPatternExplanation,
+  dangerousPatternExplanations,
   getCurrentBranch,
   isInsideGitWorkTree,
   getMainBranch,
@@ -458,13 +458,15 @@ async function notifyApprovalResults(
   }
 }
 
-/** Session id for session-scoped approvals; "" when the caller has none
- *  (headless/test contexts) — the grant then lasts the process only. */
-function sessionIdOf(ctx: any): string {
+/** Session id for session-scoped approvals, or null when this context has
+ *  none. Null means the gate offers NO session scope: an id-less bucket
+ *  would be shared by every context in the process (review of #1073). */
+function sessionIdOf(ctx: any): string | null {
   try {
-    return ctx?.sessionManager?.getSessionId?.() ?? "";
+    const id = ctx?.sessionManager?.getSessionId?.();
+    return typeof id === "string" && id.trim() !== "" ? id : null;
   } catch {
-    return "";
+    return null;
   }
 }
 
@@ -571,8 +573,12 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
       // Session scope (issue #1073) — checked BEFORE the prompt, like a
       // stored entry: the user already answered for this session.
       if (hasDangerousSessionApproval(sessionId, stmt)) {
-        log.warn("dangerous_command_allowed_session", {
-          dangerousPattern: String(DANGEROUS.find((p) => p.test(stmt)) ?? "unknown"),
+        // info, not warn: honoring a grant the user already gave is a normal
+        // state, and this fires on every later run (review of #1073).
+        log.info("dangerous_command_allowed_session", {
+          dangerousPattern: DANGEROUS.filter((p) => p.test(stmt))
+            .map((p) => dangerousPatternLabel(p))
+            .join(", "),
           hashPrefix: dangerousCommandHash(stmt).slice(0, 12),
           persisted: false,
         });
@@ -612,11 +618,18 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     const decide = async (remaining: string[]): Promise<EnforcementResult | undefined> => {
       const list = remaining
         .map((stmt) => {
-          const explanation = dangerousPatternExplanation(DANGEROUS.find((p) => p.test(stmt)) ?? /./);
+          // EVERY rule the statement trips, each with its own risk and reach —
+          // one statement can be both a recursive delete and an escalation.
+          const rules = dangerousPatternExplanations(DANGEROUS.filter((p) => p.test(stmt)))
+            .map(
+              (e) =>
+                `    ↳ ${e.why}\n      · can be lost: ${e.consequence}\n      · approval covers: ${e.grants}`,
+            )
+            .join("\n");
           const stdinFed = isStdinFedShellStatement(stmt)
             ? "\n    ↳ reads its script from stdin — run-once only, never approvable beyond this run"
             : "";
-          return `  ${stmt}\n    ↳ ${explanation.why}\n    ↳ can be lost: ${explanation.consequence}${stdinFed}`;
+          return `  ${stmt}\n${rules}${stdinFed}`;
         })
         .join("\n");
       const scopeNote = projectTrustable
@@ -631,6 +644,7 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
       const offeredScopes = dangerousApprovalScopes({
         approvableBeyondRun: persistable.length > 0,
         projectTrustable,
+        sessionAvailable: sessionId !== null,
       });
       const grants = offeredScopes.map((s) => `  • ${DANGEROUS_SCOPE_GRANTS[s]}`).join("\n");
       // Option labels are truncated for the menu; keep them unique.
@@ -646,7 +660,7 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
       const options = [
         "Yes — run once",
         ...labeled.flatMap(({ label }) => [
-          `Allow for this session: ${label}`,
+          ...(offeredScopes.includes("session") ? [`Allow for this session: ${label}`] : []),
           ...(projectTrustable ? [`Always allow (this project): ${label}`] : []),
           `Always allow (everywhere): ${label}`,
         ]),
@@ -692,7 +706,9 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
           // Memory only — no settings write exists on this path at all.
           grantDangerousSessionApproval(sessionId, chosen);
           log.info("dangerous_command_session_approval_granted", {
-            dangerousPattern: dangerousPatternLabel(DANGEROUS.find((p) => p.test(chosen)) ?? /./),
+            dangerousPattern: DANGEROUS.filter((p) => p.test(chosen))
+              .map((p) => dangerousPatternLabel(p))
+              .join(", "),
             hashPrefix: dangerousCommandHash(chosen).slice(0, 12),
             persisted: false,
           });
@@ -758,7 +774,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     if (event?.reason === "reload") return;
     const sessionId = sessionIdOf(ctx);
     clearDangerousSessionApprovals(sessionId);
-    log.debug("dangerous_session_approvals_cleared", { reason: event?.reason, hasSessionId: sessionId !== "" });
+    log.debug("dangerous_session_approvals_cleared", { reason: event?.reason, hasSessionId: sessionId !== null });
   });
 
   pi.on("tool_call", async (event, ctx) => {

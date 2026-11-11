@@ -1438,9 +1438,11 @@ export function dangerousCommandHash(command: string): string {
 // so it survives `ctx.reload()`: a reload rebinds the extension instance
 // while the process and the user's session stay alive.
 const SESSION_GRANTS = Symbol.for("pi-config.dangerousSessionApprovals");
-/** Key for a session whose id is unknown (headless callers, tests). Grants
- *  then live for the process — never longer, and never on disk. */
-const NO_SESSION_ID = "";
+/** Buckets kept at once. A session that never emits `session_shutdown`
+ *  (a sidecar `AgentSession.dispose()` does not) is evicted once this many
+ *  newer sessions have taken grants — the store can never grow without
+ *  bound in a long-lived process. */
+const MAX_SESSION_BUCKETS = 64;
 
 function sessionGrantStore(): Map<string, Set<string>> {
   const g = globalThis as unknown as Record<symbol, unknown>;
@@ -1448,28 +1450,43 @@ function sessionGrantStore(): Map<string, Set<string>> {
   return g[SESSION_GRANTS] as Map<string, Set<string>>;
 }
 
-/** Approve one statement for the rest of this session (memory only). */
-export function grantDangerousSessionApproval(sessionId: string | undefined, statement: string): void {
+/** Approve one statement for the rest of this session (memory only).
+ *  A null session id stores NOTHING: an id-less bucket would be shared by
+ *  every context in the process (#1073 review). */
+export function grantDangerousSessionApproval(sessionId: string | null, statement: string): void {
+  if (!sessionId) return;
   const store = sessionGrantStore();
-  const key = sessionId || NO_SESSION_ID;
-  const set = store.get(key) ?? new Set<string>();
+  const set = store.get(sessionId) ?? new Set<string>();
   set.add(normalizeDangerousStatement(statement));
-  store.set(key, set);
+  // Re-insert so Map order stays least-recently-used-first.
+  store.delete(sessionId);
+  store.set(sessionId, set);
+  while (store.size > MAX_SESSION_BUCKETS) {
+    const oldest = store.keys().next().value;
+    if (oldest === undefined) break;
+    store.delete(oldest);
+  }
 }
 
 /** True when this session already approved the statement. Never true for a
  *  stdin-fed shell — the same rule that keeps it out of persisted approvals
  *  (it carries none of the script it will run). */
-export function hasDangerousSessionApproval(sessionId: string | undefined, statement: string): boolean {
-  if (isStdinFedShellStatement(statement)) return false;
-  const set = sessionGrantStore().get(sessionId || NO_SESSION_ID);
-  return set !== undefined && set.has(normalizeDangerousStatement(statement));
+export function hasDangerousSessionApproval(sessionId: string | null, statement: string): boolean {
+  if (!sessionId || isStdinFedShellStatement(statement)) return false;
+  const store = sessionGrantStore();
+  const set = store.get(sessionId);
+  if (set === undefined) return false;
+  // Touch: an active session must not be the next bucket evicted.
+  store.delete(sessionId);
+  store.set(sessionId, set);
+  return set.has(normalizeDangerousStatement(statement));
 }
 
 /** Drop this session's grants (session end / new / fork / resume). Called
  *  outside a reload — a reload keeps the same running session. */
-export function clearDangerousSessionApprovals(sessionId: string | undefined): void {
-  sessionGrantStore().delete(sessionId || NO_SESSION_ID);
+export function clearDangerousSessionApprovals(sessionId: string | null): void {
+  if (!sessionId) return;
+  sessionGrantStore().delete(sessionId);
 }
 
 /** Test hook: wipe every session's grants. */
@@ -1489,9 +1506,16 @@ export type DangerousApprovalScope = "once" | "session" | "project" | "everywher
 export function dangerousApprovalScopes(opts: {
   approvableBeyondRun: boolean;
   projectTrustable: boolean;
+  sessionAvailable: boolean;
 }): DangerousApprovalScope[] {
   if (!opts.approvableBeyondRun) return ["once", "deny"];
-  return ["once", "session", ...(opts.projectTrustable ? (["project"] as const) : []), "everywhere", "deny"];
+  return [
+    "once",
+    ...(opts.sessionAvailable ? (["session"] as const) : []),
+    ...(opts.projectTrustable ? (["project"] as const) : []),
+    "everywhere",
+    "deny",
+  ];
 }
 
 /** What each scope grants, and for how long — shown on the prompt so the

@@ -155,10 +155,15 @@ for example — the prompt offers session and persistent approvals per statement
 
   sudo zsh
     ↳ sudo — escalates to root
-    ↳ can be lost: any file, service or user on the machine can be changed, and the logs name root, not you
+      · can be lost: any file, service or user on the machine can be changed, and the logs name root, not you
+      · approval covers: this exact command — any other command behind sudo still prompts
+    ↳ shell invocation — a shell runs a script whose effects the command line does not bound
+      · can be lost: an arbitrary, unreviewed script runs with your full user rights
+      · approval covers: this exact command — a different script still prompts
   bash .dev/deploy-all.sh
-    ↳ shell invocation — a shell runs a script whose contents this prompt never showed
-    ↳ can be lost: an arbitrary, unreviewed script runs with your full user rights
+    ↳ shell invocation — a shell runs a script whose effects the command line does not bound
+      · can be lost: an arbitrary, unreviewed script runs with your full user rights
+      · approval covers: this exact command — a different script still prompts
 
 What each answer grants:
   • run once — this command, now, nothing else
@@ -181,10 +186,12 @@ Allow?
     No
 ```
 
-Every statement carries its own `why` (which rule fired) and `consequence`
-(what can be lost), so a chain is judged statement by statement instead of as
-one blob. The rules and their explanations live in one table beside the
-pattern list (`DANGEROUS` / `DANGEROUS_EXPLANATIONS` in
+Every statement carries its own `why` (which rule fired), `consequence` (what
+can be lost) and `grants` (what approving that statement permits), so a chain
+is judged statement by statement instead of as one blob — and a statement that
+trips several rules (`sudo rm -rf /srv/data` is both a recursive delete and an
+escalation) shows every one of them. The rules and their explanations live in
+one table beside the pattern list (`DANGEROUS` / `DANGEROUS_EXPLANATIONS` in
 `extensions/orchestrator/git-helpers.ts`).
 
 **"Allow for this session"** is the middle scope (#1073): the statement is
@@ -192,8 +199,12 @@ approved for the rest of the running session and **never written to any
 settings file** — approvals live in memory, keyed by session id, and evaporate
 when the session ends. They survive `/reload` (the store lives on `globalThis`,
 not in the extension instance) and are cleared on session shutdown, new
-session, fork or resume. Later runs log a `dangerous_command_allowed_session`
-warning, distinct from the persisted `dangerous_command_allowlisted` path.
+session, fork or resume, and they are capped so a session that never emits a
+shutdown (a sidecar session disposed without one) cannot grow the store
+without bound. A context with no usable session id is offered no session
+scope at all — an id-less bucket would be shared by every context in the
+process. Later runs log an info line `dangerous_command_allowed_session`,
+distinct from the persisted `dangerous_command_allowlisted` path.
 A stdin-fed shell (`x | bash`, `bash <<EOF`) is offered run-once only: it
 carries none of the script it will run, so no approval — session or persistent
 — can bind it to anything.

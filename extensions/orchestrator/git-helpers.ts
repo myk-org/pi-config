@@ -1246,59 +1246,98 @@ export function dangerousPatternLabel(pattern: RegExp): string {
 /**
  * Per-pattern explanation shown on the dangerous-command prompt (issue
  * #1073): `why` names the rule that fired, `consequence` says what can be
- * lost or exposed. A terse label alone left the user guessing.
+ * lost or exposed, and `grants` says what approving this statement permits.
+ * One table beside the pattern list, so the prompt never explains a rule
+ * with text that belongs to another. A statement that trips several rules
+ * shows every one of them (dangerousPatternExplanations).
  * MUST stay index-aligned with DANGEROUS above, like DANGEROUS_LABELS.
  */
-export const DANGEROUS_EXPLANATIONS: { why: string; consequence: string }[] = [
+export interface DangerousExplanation {
+  why: string;
+  consequence: string;
+  grants: string;
+}
+
+export const DANGEROUS_EXPLANATIONS: DangerousExplanation[] = [
   {
     why: "recursive delete — removes a directory tree",
     consequence: "every file under it is gone; there is no recovery path",
+    grants: "this exact command — another target still prompts",
   },
   {
     why: "sudo — escalates to root",
     consequence: "any file, service or user on the machine can be changed, and the logs name root, not you",
+    grants: "this exact command — any other command behind sudo still prompts",
   },
   {
-    why: "world-writable permissions (777)",
-    consequence: "every local user and process can read, replace or execute the target",
+    why: "chmod/chown with a 777 argument",
+    consequence: "the target ends up world-writable or owned by someone else, so other local users can change it",
+    grants: "this exact command — other permission changes still prompt",
   },
   {
     why: "mkfs — formats a filesystem",
     consequence: "every file on that device is destroyed; there is no recovery path",
+    grants: "this exact command — the device or filesystem is not remembered",
   },
   {
     why: "dd writing to a raw device",
     consequence: "a mistyped of= erases a disk, a partition table or a boot sector",
+    grants: "this exact command — the target device is not remembered",
   },
   {
     why: "git reset --hard — discards working-tree changes",
     consequence: "uncommitted edits are lost; git cannot restore them",
+    grants: "this exact command — other resets still prompt",
   },
   {
     why: "git clean --force — deletes untracked files",
     consequence: "work that was never committed is removed; git cannot restore it",
+    grants: "this exact command — other cleans still prompt",
   },
   {
     why: "find -delete — deletes every match",
     consequence: "the matched set is usually larger than it looks; deleted files have no recovery path",
+    grants: "this exact command — a different search still prompts",
   },
   {
     why: "find -exec rm — runs rm on every match",
     consequence: "the matched set is usually larger than it looks; deleted files have no recovery path",
+    grants: "this exact command — a different search still prompts",
   },
   {
     why: "xargs rm — deletes whatever is piped in",
     consequence: "the input can be any file your user can see; deleted files have no recovery path",
+    grants: "this exact command — another pipeline still prompts",
   },
   {
-    why: "shell invocation — a shell runs a script whose contents this prompt never showed",
+    why: "shell invocation — a shell runs a script whose effects the command line does not bound",
     consequence: "an arbitrary, unreviewed script runs with your full user rights",
+    grants: "this exact command — a different script still prompts",
   },
 ];
 
 /** Explanation for a DANGEROUS pattern object (index lookup). */
-export function dangerousPatternExplanation(pattern: RegExp): { why: string; consequence: string } {
+export function dangerousPatternExplanation(pattern: RegExp): DangerousExplanation {
   const idx = DANGEROUS.indexOf(pattern);
   const known = idx >= 0 ? DANGEROUS_EXPLANATIONS[idx] : undefined;
-  return known ?? { why: `matched ${String(pattern)}`, consequence: "the matched command runs unchecked" };
+  return known ?? {
+    why: `matched ${String(pattern)}`,
+    consequence: "the matched command runs unchecked",
+    grants: "this exact command",
+  };
+}
+
+/** Every distinct explanation for the rules a statement trips — a chain (or
+ *  one statement) judged as a whole must not show only the first rule
+ *  (#1073 review: `sudo rm -rf /srv/data` hides one of the two risks). */
+export function dangerousPatternExplanations(patterns: RegExp[]): DangerousExplanation[] {
+  const seen = new Set<string>();
+  const out: DangerousExplanation[] = [];
+  for (const pattern of patterns) {
+    const ex = dangerousPatternExplanation(pattern);
+    if (seen.has(ex.why)) continue;
+    seen.add(ex.why);
+    out.push(ex);
+  }
+  return out;
 }

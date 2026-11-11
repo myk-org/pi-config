@@ -10,7 +10,7 @@ import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { DANGEROUS, DANGEROUS_EXPLANATIONS, DANGEROUS_LABELS, dangerousPatternExplanation, isNoexecSyntaxCheck, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
+import { DANGEROUS, DANGEROUS_EXPLANATIONS, DANGEROUS_LABELS, dangerousPatternExplanation, dangerousPatternExplanations, isNoexecSyntaxCheck, segmentRunsGit } from "../../../extensions/orchestrator/git-helpers.js";
 import { getPiLogPath } from "../../../extensions/shared/file-logger.js";
 import { makeFileTempDir, makeTempDir } from "../helpers/temp-dirs.js";
 import { commitTrailerModelId, registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
@@ -3323,11 +3323,12 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   let promptCalls: { msg: string; opts: string[] }[];
   let choice: string | undefined;
 
-  const mkCtx = (hasUI: boolean, sessionId = "") => ({
+  const mkCtx = (hasUI: boolean, sessionId: string | null = "test-session") => ({
     cwd,
     model: { id: "test-model", provider: "openai" },
     hasUI,
-    sessionManager: { getSessionId: () => sessionId },
+    // null = a context with no usable session manager (headless callers).
+    ...(sessionId === null ? {} : { sessionManager: { getSessionId: () => sessionId } }),
     ui: {
       select: async (msg: string, opts: string[]) => {
         promptCalls.push({ msg, opts });
@@ -3336,7 +3337,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     },
   });
 
-  const runBash = async (command: string, hasUI = true, sessionId = "") =>
+  const runBash = async (command: string, hasUI = true, sessionId: string | null = "test-session") =>
     hooks.get("tool_call")!({ type: "tool_call", toolName: "bash", input: { command } }, mkCtx(hasUI, sessionId));
 
   const seedSettings = (allowlist: string[]) => {
@@ -3593,7 +3594,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     assert.equal(promptCalls.length, 1, "mutation must re-prompt");
   });
 
-  it("the prompt offers run-once, session, per-statement always-allow, allow-all, and No", async () => {
+  it("the prompt offers every approval scope for each statement", async () => {
     choice = "No";
     await runBash("sudo reboot");
     assert.deepEqual(promptCalls[0].opts, [
@@ -4032,22 +4033,29 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
   // ── Issue #1073: session scope + per-pattern explanation ────────
 
-  it("a session approval silences the rest of the session and writes NO settings file", async () => {
-    choice = "Allow for this session: sudo mount /dev/sdb1";
-    const res = await runBash("sudo mount /dev/sdb1");
-    assert.equal(res?.block, undefined, "the approved statement runs");
-    assert.equal(existsSync(getSettingsPath(cwd)), false, "a session approval never creates a settings file");
+  /** Grant one statement for `sessionId` through the real prompt path. */
+  const grantForSession = async (sessionId: string, statement: string): Promise<void> => {
+    choice = `Allow for this session: ${statement}`;
+    const res = await runBash(statement, true, sessionId);
+    assert.equal(res?.block, undefined, `${statement} must run after the grant`);
+  };
+
+  it("a session approval silences later runs of the same statement", async () => {
+    await grantForSession("session-silence", "sudo mount /dev/sdb1");
     // Same session, now headless: the grant is honored with no UI at all.
-    const headless = await runBash("sudo mount /dev/sdb1", false);
+    const headless = await runBash("sudo mount /dev/sdb1", false, "session-silence");
     assert.equal(headless?.block, undefined, "the session grant works headless too");
     assert.equal(promptCalls.length, 1, "the second run must not prompt");
-    assert.equal(existsSync(getSettingsPath(cwd)), false, "still no settings write");
+  });
+
+  it("a session approval never writes a settings file", async () => {
+    await grantForSession("session-nowrite", "sudo modprobe dummy");
+    assert.equal(existsSync(getSettingsPath(cwd)), false, "a session approval never creates a settings file");
   });
 
   it("a session approval survives an extension reload in the same process", async () => {
     const session = "reload-session";
-    choice = "Allow for this session: sudo systemctl restart nginx";
-    assert.equal((await runBash("sudo systemctl restart nginx", true, session))?.block, undefined);
+    await grantForSession(session, "sudo systemctl restart nginx");
     // Reload = the old instance shuts down (reason "reload"), a fresh one binds.
     await hooks.get("session_shutdown")!({ reason: "reload" }, mkCtx(true, session));
     const reloaded = new Map<string, Function>();
@@ -4066,28 +4074,60 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     hooks = reloaded;
   });
 
-  it("session shutdown (quit) clears the grants; another session never inherits them", async () => {
-    choice = "Allow for this session: sudo iptables -F";
-    assert.equal((await runBash("sudo iptables -F", true, "session-a"))?.block, undefined);
-    // A different session in the same process must still be prompted.
-    promptCalls.length = 0;
-    await runBash("sudo iptables -F", true, "session-b");
-    assert.equal(promptCalls.length, 1, "grants are keyed by session");
-    // Session end drops them.
-    await hooks.get("session_shutdown")!({ reason: "quit" }, mkCtx(true, "session-a"));
-    assert.equal(hasDangerousSessionApproval("session-a", "sudo iptables -F"), false);
-  });
-
-  it("the grant and the session hit are logged under distinct event names", async () => {
+  it("session shutdown (quit) clears the grants, leaving an audit line", async () => {
+    await grantForSession("session-quit", "sudo iptables -F");
     const logPath = getPiLogPath("enforcement");
     const before = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").length : 0;
-    choice = "Allow for this session: sudo journalctl -xe";
-    assert.equal((await runBash("sudo journalctl -xe"))?.block, undefined);
-    assert.equal((await runBash("sudo journalctl -xe"))?.block, undefined);
+    await hooks.get("session_shutdown")!({ reason: "quit" }, mkCtx(true, "session-quit"));
+    assert.equal(hasDangerousSessionApproval("session-quit", "sudo iptables -F"), false, "grant dropped");
+    const written = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").slice(before) : "";
+    assert.match(written, /dangerous_session_approvals_cleared/);
+    assert.match(written, /"reason":"quit"/);
+    assert.match(written, /"hasSessionId":true/);
+  });
+
+  // A NEW/RESUME/FORK shutdown ends the old session, so a reused id starts
+  // with nothing (orchestrator check on #1073): only "reload" keeps grants.
+  it("a reused session id does not inherit the previous session's grants", async () => {
+    for (const reason of ["new", "resume", "fork"]) {
+      const id = `reused-${reason}`;
+      await grantForSession(id, `sudo dmidecode -t ${reason}`);
+      await hooks.get("session_shutdown")!({ reason }, mkCtx(true, id));
+      promptCalls.length = 0;
+      choice = "No";
+      await runBash(`sudo dmidecode -t ${reason}`, true, id);
+      assert.equal(promptCalls.length, 1, `${reason} must not keep the grant`);
+      clearAllDangerousSessionApprovals();
+    }
+  });
+
+  it("another session never inherits a grant", async () => {
+    await grantForSession("session-a", "sudo swapoff -a");
+    promptCalls.length = 0;
+    choice = "No";
+    await runBash("sudo swapoff -a", true, "session-b");
+    assert.equal(promptCalls.length, 1, "grants are keyed by session");
+  });
+
+  it("a grant vanishes with the process — the store is memory, never a file", () => {
+    grantDangerousSessionApproval("process-session", "sudo reboot now");
+    assert.ok(hasDangerousSessionApproval("process-session", "sudo reboot now"));
+    // A new process starts with an empty globalThis: nothing to carry over.
+    delete (globalThis as any)[Symbol.for("pi-config.dangerousSessionApprovals")];
+    assert.equal(hasDangerousSessionApproval("process-session", "sudo reboot now"), false, "no persistence");
+  });
+
+  it("distinct log events distinguish a session grant from its later hits", async () => {
+    const logPath = getPiLogPath("enforcement");
+    const before = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").length : 0;
+    await grantForSession("session-log", "sudo journalctl -xe");
+    assert.equal((await runBash("sudo journalctl -xe", true, "session-log"))?.block, undefined);
     const written = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").slice(before) : "";
     assert.match(written, /dangerous_command_session_approval_granted/);
     assert.match(written, /dangerous_command_allowed_session/, "the silent pass must leave an audit line");
     assert.doesNotMatch(written, /dangerous_command_allowlisted|dangerous_command_allowlist_entry_added/, "not the persisted path");
+    // Same vocabulary on both events, so an operator can join them.
+    assert.match(written, /"dangerousPattern":"sudo"/);
   });
 
   it("a stdin-fed shell is never offered a session grant", async () => {
@@ -4095,6 +4135,21 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     await runBash("echo payload | bash");
     assert.deepEqual(promptCalls[0].opts, ["Yes — run once", "No"]);
     assert.match(promptCalls[0].msg, /run-once only/);
+  });
+
+  it("a context with no session id is offered no session scope", async () => {
+    choice = "No";
+    await hooks.get("tool_call")!(
+      { type: "tool_call", toolName: "bash", input: { command: "sudo timedatectl set-timezone UTC" } },
+      mkCtx(true, null),
+    );
+    assert.deepEqual(promptCalls[0].opts, [
+      "Yes — run once",
+      "Always allow (this project): sudo timedatectl set-timezone UTC",
+      "Always allow (everywhere): sudo timedatectl set-timezone UTC",
+      "No",
+    ]);
+    assert.doesNotMatch(promptCalls[0].msg, /this session — every later run/, "no session scope promised");
   });
 
   it("the prompt explains each statement: why it fired, what can be lost, what each answer grants", async () => {
@@ -4106,51 +4161,77 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     assert.match(msg, /sudo — escalates to root/);
     assert.match(msg, /can be lost: every file under it is gone/);
     assert.match(msg, /can be lost: any file, service or user on the machine/);
+    // Every statement says what an approval would cover.
+    assert.match(msg, /approval covers: this exact command/);
     // The scope sentence names the lifetime of every answer offered.
     assert.match(msg, /What each answer grants:/);
     assert.match(msg, /this session — every later run of the SAME statement/);
     assert.match(msg, /memory only, never written to settings/);
     assert.match(msg, /everywhere — stored in your global settings/);
   });
+
+  it("a statement that trips several rules shows every one of them", async () => {
+    choice = "No";
+    await runBash("sudo rm -rf /srv/data");
+    const msg = promptCalls[0].msg;
+    assert.match(msg, /recursive delete — removes a directory tree/);
+    assert.match(msg, /sudo — escalates to root/);
+    assert.deepEqual(promptCalls[0].opts.filter((o) => o.startsWith("Allow for this session:")).length, 1, "one session option per statement");
+  });
+
 });
 
 // Issue #1073: the scope menu, its grants text and the per-pattern
 // explanations are pure — tested without a UI or a hook.
 describe("dangerous approval scopes + explanations (#1073)", () => {
   it("offers once/session/project/everywhere/deny when the project file is trustable", () => {
-    assert.deepEqual(dangerousApprovalScopes({ approvableBeyondRun: true, projectTrustable: true }), [
-      "once",
-      "session",
-      "project",
-      "everywhere",
-      "deny",
-    ]);
+    assert.deepEqual(
+      dangerousApprovalScopes({ approvableBeyondRun: true, projectTrustable: true, sessionAvailable: true }),
+      ["once", "session", "project", "everywhere", "deny"],
+    );
   });
 
   it("drops the project scope when the project settings file is not trustable", () => {
-    assert.deepEqual(dangerousApprovalScopes({ approvableBeyondRun: true, projectTrustable: false }), [
-      "once",
-      "session",
-      "everywhere",
-      "deny",
-    ]);
+    assert.deepEqual(
+      dangerousApprovalScopes({ approvableBeyondRun: true, projectTrustable: false, sessionAvailable: true }),
+      ["once", "session", "everywhere", "deny"],
+    );
+  });
+
+  it("drops the session scope when the context has no session id", () => {
+    assert.deepEqual(
+      dangerousApprovalScopes({ approvableBeyondRun: true, projectTrustable: true, sessionAvailable: false }),
+      ["once", "project", "everywhere", "deny"],
+    );
   });
 
   it("offers only once and deny for a statement that cannot outlive the run", () => {
-    assert.deepEqual(dangerousApprovalScopes({ approvableBeyondRun: false, projectTrustable: true }), ["once", "deny"]);
+    assert.deepEqual(
+      dangerousApprovalScopes({ approvableBeyondRun: false, projectTrustable: true, sessionAvailable: true }),
+      ["once", "deny"],
+    );
   });
 
-  it("every DANGEROUS pattern carries a label, a why and a consequence", () => {
+  it("every DANGEROUS pattern carries a label, a why, a consequence and its grant", () => {
     assert.equal(DANGEROUS_LABELS.length, DANGEROUS.length, "labels stay index-aligned");
     assert.equal(DANGEROUS_EXPLANATIONS.length, DANGEROUS.length, "explanations stay index-aligned");
     for (const idx of DANGEROUS.keys()) {
       const ex = dangerousPatternExplanation(DANGEROUS[idx]);
       assert.ok(ex.why.trim(), `why missing for pattern ${idx}`);
       assert.ok(ex.consequence.trim(), `consequence missing for pattern ${idx}`);
+      assert.ok(ex.grants.trim(), `grants missing for pattern ${idx}`);
       assert.equal(ex.why, DANGEROUS_EXPLANATIONS[idx].why, `index lookup broken at ${idx}`);
     }
     // An unknown pattern still explains itself instead of printing a regex.
     assert.match(dangerousPatternExplanation(/never-in-the-table/).why, /matched/);
+  });
+
+  it("explains every rule a statement trips, once each", () => {
+    const both = dangerousPatternExplanations(DANGEROUS.filter((p) => p.test("sudo rm -rf /srv/data")));
+    assert.equal(both.length, 2, "recursive delete + escalation");
+    assert.match(both.map((e) => e.why).join("|"), /recursive delete/);
+    assert.match(both.map((e) => e.why).join("|"), /escalates to root/);
+    assert.equal(dangerousPatternExplanations([DANGEROUS[1], DANGEROUS[1]]).length, 1, "duplicates collapse");
   });
 
   it("session grants are memory-only: normalized, session-keyed, and closed to stdin-fed shells", () => {
@@ -4160,6 +4241,22 @@ describe("dangerous approval scopes + explanations (#1073)", () => {
     assert.equal(hasDangerousSessionApproval("s2", "sudo reboot"), false, "another session never inherits it");
     grantDangerousSessionApproval("s1", "bash");
     assert.equal(hasDangerousSessionApproval("s1", "bash"), false, "a stdin-fed shell is never approved this way");
+    clearAllDangerousSessionApprovals();
+  });
+
+  it("a null session id stores and honors nothing — no shared bucket", () => {
+    clearAllDangerousSessionApprovals();
+    grantDangerousSessionApproval(null, "sudo reboot now");
+    assert.equal(hasDangerousSessionApproval(null, "sudo reboot now"), false);
+    assert.equal(hasDangerousSessionApproval("", "sudo reboot now"), false, "an empty id is not a session");
+    clearAllDangerousSessionApprovals();
+  });
+
+  it("the store stays bounded when sessions never emit a shutdown (sidecar dispose)", () => {
+    clearAllDangerousSessionApprovals();
+    for (let i = 0; i < 70; i++) grantDangerousSessionApproval(`s${i}`, "sudo reboot now");
+    assert.equal(hasDangerousSessionApproval("s0", "sudo reboot now"), false, "oldest bucket evicted");
+    assert.ok(hasDangerousSessionApproval("s69", "sudo reboot now"), "newest bucket kept");
     clearAllDangerousSessionApprovals();
   });
 });
