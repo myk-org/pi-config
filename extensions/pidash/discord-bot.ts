@@ -1918,6 +1918,9 @@ export function setupDiscordBot(opts: {
       targets: state.targets ?? {},
       isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
     });
+    // A dead watch is cleared HERE, on the first inbound message that proves it dead — not at hydration.
+    // `setupDiscordBot` runs while `piClients` is still empty, so a startup liveness check would clear
+    // every restored watch and undo the fix that saved watches come back alive after a restart.
     if (inbound.deadWatch && state.watchedSessionId) {
       log.warn("discord_watch_cleared_dead", { sessionId: state.watchedSessionId });
       state.watchedSessionId = null;
