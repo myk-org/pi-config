@@ -70,6 +70,7 @@ const discordJsPath = require_.resolve("discord.js");
 };
 
 const USER = "u1";
+const USER2 = "u2";
 const THREAD = "chan-3";
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pidash-handler-"));
 const stateFile = path.join(tmp, "discord-state.json");
@@ -100,18 +101,28 @@ function startBot(opts: {
   threads?: Record<string, string>;
   responseChannelId?: string;
   dmChannelId?: string | null;
+  /** More users in the same guild channel — a shared fallback channel is a real case. */
+  extraUsers?: string[];
 }): Bot {
-  fs.writeFileSync(stateFile, JSON.stringify({
-    users: {
-      [USER]: {
-        watchedSessionId: opts.watchedSessionId === undefined ? "s2" : opts.watchedSessionId,
-        responseChannelId: opts.responseChannelId ?? DM,
-        dmChannelId: opts.dmChannelId === undefined ? DM : opts.dmChannelId,
-        threads: opts.threads ?? { s3: THREAD },
-        updatedAt: Date.now(),
-      },
+  const users: Record<string, unknown> = {
+    [USER]: {
+      watchedSessionId: opts.watchedSessionId === undefined ? "s2" : opts.watchedSessionId,
+      responseChannelId: opts.responseChannelId ?? DM,
+      dmChannelId: opts.dmChannelId === undefined ? DM : opts.dmChannelId,
+      threads: opts.threads ?? { s3: THREAD },
+      updatedAt: Date.now(),
     },
-  }));
+  };
+  for (const extra of opts.extraUsers ?? []) {
+    users[extra] = {
+      watchedSessionId: null,
+      responseChannelId: opts.responseChannelId ?? DM,
+      dmChannelId: opts.dmChannelId === undefined ? DM : opts.dmChannelId,
+      threads: {},
+      updatedAt: Date.now(),
+    };
+  }
+  fs.writeFileSync(stateFile, JSON.stringify({ users }));
   const sends: Sent[] = [];
   const piClients = new Map<string, any>();
   for (const sessionId of opts.live) {
@@ -133,13 +144,13 @@ function startBot(opts: {
   return { handler: built[built.length - 1]!.listeners("messageCreate")[0] as (m: any) => Promise<void>, sends, hooks };
 }
 
-function message(id: string, content: string, replies: string[], opts: { dm?: boolean; channelId?: string } = {}): any {
+function message(id: string, content: string, replies: string[], opts: { dm?: boolean; channelId?: string; author?: string } = {}): any {
   return {
     id,
     guildId: opts.dm ? null : "g1",
     channelId: opts.dm ? DM : opts.channelId ?? THREAD,
     content,
-    author: { id: USER, bot: false },
+    author: { id: opts.author ?? USER, bot: false },
     reply: async (text: string) => { replies.push(text); },
   };
 }
@@ -200,5 +211,30 @@ describe("discord messageCreate routing", () => {
     const replies: string[] = [];
     await bot.handler(message("m4", "yes", replies, { channelId: PLAIN }));
     assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.id, s.confirmed]), [["s9", "q2", true]]);
+  });
+
+  it("answers in a plain channel shared by two users' fallback targets", async () => {
+    // Both users fall back to the same channel; matching the FIRST owner dropped the other's reply.
+    const previousAllowAll = process.env.DISCORD_ALLOW_ALL;
+    process.env.DISCORD_ALLOW_ALL = "true";
+    try {
+      const bot = startBot({
+        live: ["s9"],
+        watchedSessionId: null,
+        threads: {},
+        responseChannelId: PLAIN,
+        dmChannelId: null,
+        extraUsers: [USER2],
+      });
+      bot.hooks[0]!("s9", { type: "extension_ui_request", id: "q3", method: "confirm", title: "Proceed?" });
+      await settle();
+
+      const replies: string[] = [];
+      // The second stored user: the first owner of the channel is somebody else.
+      await bot.handler(message("m5", "yes", replies, { channelId: PLAIN, author: USER2 }));
+      assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.id, s.confirmed]), [["s9", "q3", true]]);
+    } finally {
+      process.env.DISCORD_ALLOW_ALL = previousAllowAll;
+    }
   });
 });

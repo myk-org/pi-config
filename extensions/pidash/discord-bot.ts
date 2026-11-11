@@ -264,18 +264,6 @@ export function setupDiscordBot(opts: {
     return null;
   }
 
-  /** userId whose delivery target is this channel. A fallback target is a plain channel with no
-   *  thread, so `userForThread` misses it and its questions were unanswerable. */
-  function userForTarget(channelId: string): [string, RuntimeUserState] | null {
-    for (const [userId, state] of runtime) {
-      if (state.target?.channelId === channelId) return [userId, state];
-      for (const target of Object.values(state.targets ?? {})) {
-        if (target?.channelId === channelId) return [userId, state];
-      }
-    }
-    return null;
-  }
-
   const seenMessages = new Set<string>();
   function firstSighting(key: string): boolean {
     if (!key) return true;
@@ -1841,15 +1829,19 @@ export function setupDiscordBot(opts: {
     // cannot spill into whichever session is currently watched (Qodo 0d2dca6d).
     let threadSessionId: string | null = null;
     if (message.guildId) {
+      const byThread = userForThread(message.channelId);
+      // Somebody else's thread is never this author's channel.
+      if (byThread && byThread[0] !== userId) return;
+      // A plain channel can be a fallback target for SEVERAL users, so the target is looked up in the
+      // author's own state: taking the first owner dropped everyone else's replies.
+      const ownsTarget = state.target?.channelId === message.channelId
+        || Object.values(state.targets ?? {}).some((target) => target?.channelId === message.channelId);
+      if (!byThread && !ownsTarget) return;
       // A message is routed by the SESSION its thread belongs to, so writing in an older session's
-      // thread cannot spill into whichever session is currently watched (Qodo 0d2dca6d). A plain
-      // channel is accepted when it is a delivery target for this user: a fallback target has no
-      // thread, and rejecting it made the questions delivered there unanswerable.
-      const owner = userForThread(message.channelId) ?? userForTarget(message.channelId);
-      if (!owner || owner[0] !== userId) return;
-      const [, ownerState] = owner;
-      threadSessionId = Object.entries(ownerState.threads ?? {})
-        .find(([, threadId]) => threadId === message.channelId)?.[0] ?? null;
+      // thread cannot spill into whichever session is currently watched (Qodo 0d2dca6d).
+      threadSessionId = byThread
+        ? Object.entries(byThread[1].threads ?? {}).find(([, threadId]) => threadId === message.channelId)?.[0] ?? null
+        : null;
     }
     state.updatedAt = Date.now();
     if (!message.guildId) {
