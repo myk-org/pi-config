@@ -1928,7 +1928,9 @@ export function setupDiscordBot(opts: {
     }
     const targetSessionId = inbound.sessionId;
     if (!targetSessionId) {
-      await message.reply("Not watching any session. Use `/sessions` and pick one.").catch(() => {});
+      await message.reply(inbound.deadTarget
+        ? "The session that was sending its output here is gone. Use `/sessions` and pick one."
+        : "Not watching any session. Use `/sessions` and pick one.").catch(() => {});
       return;
     }
     if (inbound.source === "target") {

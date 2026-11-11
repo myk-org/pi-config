@@ -435,6 +435,13 @@ describe("resolveInboundSession", () => {
     assert.deepEqual([r.sessionId, r.source], [null, "none"]);
   });
 
+  it("says the channel's session died instead of calling the channel unwatched", () => {
+    const r = resolveInboundSession({ channelId: "ch", targets: { s3: { channelId: "ch" } }, isLive: live() });
+    assert.equal(r.deadTarget, true);
+    const healthy = resolveInboundSession({ channelId: "other", isLive: live() });
+    assert.equal(healthy.deadTarget, undefined);
+  });
+
   it("reports a dead watch so the caller can clear it", () => {
     const r = resolveInboundSession({ channelId: "ch", watchedSessionId: "gone", isLive: live() });
     assert.equal(r.deadWatch, true);

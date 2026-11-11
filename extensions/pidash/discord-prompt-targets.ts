@@ -385,6 +385,8 @@ export interface InboundSession {
   source: InboundSource;
   /** The stored watch points at a session that is gone; the caller should clear it. */
   deadWatch?: boolean;
+  /** This channel carried a session's output, but that session is gone. */
+  deadTarget?: boolean;
   /** More than one live session delivers into this channel — refuse instead of guessing. */
   ambiguous?: boolean;
 }
@@ -407,15 +409,14 @@ export function resolveInboundSession(input: {
 
   // A target whose channel is exactly this channel, preferring a thread match over a channel match:
   // a thread is a narrower address than the channel that contains it.
-  const delivering = Object.entries(input.targets ?? {})
-    .filter(([sessionId, target]) => {
-      if (!target || !isLive(sessionId)) return false;
-      return target.threadId === channelId || target.channelId === channelId;
-    })
-    .map(([sessionId, target]) => ({ sessionId, exactThread: target.threadId === channelId }))
-    .sort((a, b) => Number(b.exactThread) - Number(a.exactThread));
+  const onChannel = Object.entries(input.targets ?? {}).flatMap(([sessionId, target]) =>
+    target && (target.threadId === channelId || target.channelId === channelId)
+      ? [{ sessionId, exactThread: target.threadId === channelId, live: isLive(sessionId) }]
+      : []);
+  const delivering = onChannel.filter((match) => match.live).sort((a, b) => Number(b.exactThread) - Number(a.exactThread));
 
-  if (delivering.length === 0) return { sessionId: null, source: "none" };
+  // A channel whose session died says so: "not watching" would hide that the output stopped for a reason.
+  if (delivering.length === 0) return { sessionId: null, source: "none", ...(onChannel.length ? { deadTarget: true } : {}) };
   if (delivering.length > 1 && delivering[0]!.exactThread === delivering[1]!.exactThread) {
     return { sessionId: null, source: "none", ambiguous: true };
   }
