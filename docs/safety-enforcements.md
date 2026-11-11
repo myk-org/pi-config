@@ -154,8 +154,8 @@ for example — the prompt offers session and persistent approvals per statement
 ⚠️ Dangerous statements (of the full command):
 
   sudo zsh
-    ↳ sudo — escalates to root
-      · can be lost: any file, service or user on the machine can be changed, and the logs name root, not you
+    ↳ sudo — runs the command as another user
+      · can be lost: it can change any file, service or user that user can reach, and the audit log names that user, not you
       · approval covers: this exact command — any other command behind sudo still prompts
     ↳ shell invocation — a shell runs a script whose effects the command line does not bound
       · can be lost: an arbitrary, unreviewed script runs with your full user rights

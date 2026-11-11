@@ -1465,6 +1465,9 @@ export function grantDangerousSessionApproval(sessionId: string | null, statemen
     const oldest = store.keys().next().value;
     if (oldest === undefined) break;
     store.delete(oldest);
+    // Never silently: a user whose grant vanished gets re-prompted, and the
+    // operator must be able to tell eviction from a clear (review of #1073).
+    enfLog.warn("dangerous_session_grants_evicted", { bucketHash: createHash("sha256").update(oldest).digest("hex").slice(0, 12), buckets: store.size });
   }
 }
 

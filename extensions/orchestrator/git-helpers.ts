@@ -1265,8 +1265,8 @@ export const DANGEROUS_EXPLANATIONS: DangerousExplanation[] = [
     grants: "this exact command — another target still prompts",
   },
   {
-    why: "sudo — escalates to root",
-    consequence: "any file, service or user on the machine can be changed, and the logs name root, not you",
+    why: "sudo — runs the command as another user",
+    consequence: "it can change any file, service or user that user can reach, and the audit log names that user, not you",
     grants: "this exact command — any other command behind sudo still prompts",
   },
   {
@@ -1290,7 +1290,7 @@ export const DANGEROUS_EXPLANATIONS: DangerousExplanation[] = [
     grants: "this exact command — other resets still prompt",
   },
   {
-    why: "git clean --force — deletes untracked files",
+    why: "git clean --force — deletes untracked files; -n/--dry-run deletes nothing",
     consequence: "work that was never committed is removed; git cannot restore it",
     grants: "this exact command — other cleans still prompt",
   },

@@ -3620,7 +3620,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
       "No",
     ]);
     // The prompt explains the matched rule per statement
-    assert.match(promptCalls[1].msg, /sudo reboot\n\s+↳ sudo — escalates to root/);
+    assert.match(promptCalls[1].msg, /sudo reboot\n\s+↳ sudo — runs the command as another user/);
     assert.match(promptCalls[1].msg, /bash run.sh\n\s+↳ shell invocation/);
   });
 
@@ -4137,6 +4137,20 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     assert.match(promptCalls[0].msg, /run-once only/);
   });
 
+  it("a sudo command aimed at another user is not described as root access", async () => {
+    choice = "No";
+    await runBash("sudo -u deploy systemctl restart app");
+    const msg = promptCalls[0].msg;
+    assert.match(msg, /sudo — runs the command as another user/);
+    assert.doesNotMatch(msg, /root/, "the explanation must not claim root for a -u target");
+  });
+
+  it("a dry-run git clean does not promise a deletion it cannot cause", async () => {
+    choice = "No";
+    await runBash("git clean -n -f");
+    assert.match(promptCalls[0].msg, /-n\/--dry-run deletes nothing/);
+  });
+
   it("a context with no session id is offered no session scope", async () => {
     choice = "No";
     await hooks.get("tool_call")!(
@@ -4158,9 +4172,9 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     const msg = promptCalls[0].msg;
     // Per statement, not one blob for the chain.
     assert.match(msg, /recursive delete — removes a directory tree/);
-    assert.match(msg, /sudo — escalates to root/);
+    assert.match(msg, /sudo — runs the command as another user/);
     assert.match(msg, /can be lost: every file under it is gone/);
-    assert.match(msg, /can be lost: any file, service or user on the machine/);
+    assert.match(msg, /can be lost: it can change any file, service or user that user can reach/);
     // Every statement says what an approval would cover.
     assert.match(msg, /approval covers: this exact command/);
     // The scope sentence names the lifetime of every answer offered.
@@ -4175,7 +4189,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
     await runBash("sudo rm -rf /srv/data");
     const msg = promptCalls[0].msg;
     assert.match(msg, /recursive delete — removes a directory tree/);
-    assert.match(msg, /sudo — escalates to root/);
+    assert.match(msg, /sudo — runs the command as another user/);
     assert.deepEqual(promptCalls[0].opts.filter((o) => o.startsWith("Allow for this session:")).length, 1, "one session option per statement");
   });
 
@@ -4230,7 +4244,7 @@ describe("dangerous approval scopes + explanations (#1073)", () => {
     const both = dangerousPatternExplanations(DANGEROUS.filter((p) => p.test("sudo rm -rf /srv/data")));
     assert.equal(both.length, 2, "recursive delete + escalation");
     assert.match(both.map((e) => e.why).join("|"), /recursive delete/);
-    assert.match(both.map((e) => e.why).join("|"), /escalates to root/);
+    assert.match(both.map((e) => e.why).join("|"), /sudo — runs the command as another user/);
     assert.equal(dangerousPatternExplanations([DANGEROUS[1], DANGEROUS[1]]).length, 1, "duplicates collapse");
   });
 
@@ -4254,9 +4268,16 @@ describe("dangerous approval scopes + explanations (#1073)", () => {
 
   it("the store stays bounded when sessions never emit a shutdown (sidecar dispose)", () => {
     clearAllDangerousSessionApprovals();
+    const logPath = getPiLogPath("enforcement");
+    const before = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").length : 0;
     for (let i = 0; i < 70; i++) grantDangerousSessionApproval(`s${i}`, "sudo reboot now");
     assert.equal(hasDangerousSessionApproval("s0", "sudo reboot now"), false, "oldest bucket evicted");
     assert.ok(hasDangerousSessionApproval("s69", "sudo reboot now"), "newest bucket kept");
+    // An evicted grant is never silent: the user gets re-prompted, so the
+    // operator must be able to tell eviction from a clear.
+    const written = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").slice(before) : "";
+    assert.match(written, /dangerous_session_grants_evicted/);
+    assert.doesNotMatch(written, /"s0"/, "the session id itself must not reach the log");
     clearAllDangerousSessionApprovals();
   });
 });
