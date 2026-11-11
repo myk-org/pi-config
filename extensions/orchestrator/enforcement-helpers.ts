@@ -1430,6 +1430,80 @@ export function dangerousCommandHash(command: string): string {
   return createHash("sha256").update(command).digest("hex");
 }
 
+// ── Session-scoped dangerous-command approvals (issue #1073) ──────────
+// A middle scope between "run once" and a PERSISTED "always allow": the
+// grant lasts the session and then evaporates. Memory only — never written
+// to a settings file (that is what makes it safe to hand out for a need
+// that lasts minutes). The store lives on globalThis keyed by Symbol.for
+// so it survives `ctx.reload()`: a reload rebinds the extension instance
+// while the process and the user's session stay alive.
+const SESSION_GRANTS = Symbol.for("pi-config.dangerousSessionApprovals");
+/** Key for a session whose id is unknown (headless callers, tests). Grants
+ *  then live for the process — never longer, and never on disk. */
+const NO_SESSION_ID = "";
+
+function sessionGrantStore(): Map<string, Set<string>> {
+  const g = globalThis as unknown as Record<symbol, unknown>;
+  if (!(g[SESSION_GRANTS] instanceof Map)) g[SESSION_GRANTS] = new Map<string, Set<string>>();
+  return g[SESSION_GRANTS] as Map<string, Set<string>>;
+}
+
+/** Approve one statement for the rest of this session (memory only). */
+export function grantDangerousSessionApproval(sessionId: string | undefined, statement: string): void {
+  const store = sessionGrantStore();
+  const key = sessionId || NO_SESSION_ID;
+  const set = store.get(key) ?? new Set<string>();
+  set.add(normalizeDangerousStatement(statement));
+  store.set(key, set);
+}
+
+/** True when this session already approved the statement. Never true for a
+ *  stdin-fed shell — the same rule that keeps it out of persisted approvals
+ *  (it carries none of the script it will run). */
+export function hasDangerousSessionApproval(sessionId: string | undefined, statement: string): boolean {
+  if (isStdinFedShellStatement(statement)) return false;
+  const set = sessionGrantStore().get(sessionId || NO_SESSION_ID);
+  return set !== undefined && set.has(normalizeDangerousStatement(statement));
+}
+
+/** Drop this session's grants (session end / new / fork / resume). Called
+ *  outside a reload — a reload keeps the same running session. */
+export function clearDangerousSessionApprovals(sessionId: string | undefined): void {
+  sessionGrantStore().delete(sessionId || NO_SESSION_ID);
+}
+
+/** Test hook: wipe every session's grants. */
+export function clearAllDangerousSessionApprovals(): void {
+  sessionGrantStore().clear();
+}
+
+/** Approval scopes the gate OFFERS for a statement (issue #1073). Pure, so
+ *  the menu, the "what this grants" text and the grant handler all derive
+ *  from one tested source.
+ *  - a statement that cannot be approved beyond the current run (stdin-fed
+ *    shell) offers run-once and deny only;
+ *  - the project scope is offered only when the project settings file is
+ *    trustable to store it. */
+export type DangerousApprovalScope = "once" | "session" | "project" | "everywhere" | "deny";
+
+export function dangerousApprovalScopes(opts: {
+  approvableBeyondRun: boolean;
+  projectTrustable: boolean;
+}): DangerousApprovalScope[] {
+  if (!opts.approvableBeyondRun) return ["once", "deny"];
+  return ["once", "session", ...(opts.projectTrustable ? (["project"] as const) : []), "everywhere", "deny"];
+}
+
+/** What each scope grants, and for how long — shown on the prompt so the
+ *  user picks a scope knowing its lifetime. */
+export const DANGEROUS_SCOPE_GRANTS: Record<DangerousApprovalScope, string> = {
+  once: "run once — this command, now, nothing else",
+  session: "this session — every later run of the SAME statement until the session ends (memory only, never written to settings)",
+  project: "this project — stored in the project settings file, applies to future sessions in this folder",
+  everywhere: "everywhere — stored in your global settings, applies to every future session on this machine",
+  deny: "no — blocked, nothing is approved",
+};
+
 export interface DangerousAllowlistMatch {
   /** The matched settings entry (may contain wildcards). */
   entry: string;

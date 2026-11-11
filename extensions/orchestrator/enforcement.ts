@@ -25,11 +25,17 @@ import {
   messageFileTrailerState,
   maskQuotedRegions,
   isStdinFedShellStatement,
+  hasDangerousSessionApproval,
+  grantDangerousSessionApproval,
+  clearDangerousSessionApprovals,
+  dangerousApprovalScopes,
+  DANGEROUS_SCOPE_GRANTS,
 } from "./enforcement-helpers.js";
 import {
   DANGEROUS,
   isNoexecSyntaxCheck,
   dangerousPatternLabel,
+  dangerousPatternExplanation,
   getCurrentBranch,
   isInsideGitWorkTree,
   getMainBranch,
@@ -452,6 +458,16 @@ async function notifyApprovalResults(
   }
 }
 
+/** Session id for session-scoped approvals; "" when the caller has none
+ *  (headless/test contexts) — the grant then lasts the process only. */
+function sessionIdOf(ctx: any): string {
+  try {
+    return ctx?.sessionManager?.getSessionId?.() ?? "";
+  } catch {
+    return "";
+  }
+}
+
 /** Dangerous command confirmation with UI prompt */
 async function checkDangerousCommands(command: string, cwd: string, ctx: any): Promise<EnforcementResult> {
   // Split on statement separators AND pipes (incl. single `&` — background
@@ -546,9 +562,20 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     // perf): the per-statement findDangerousAllowlistEntry ran a synchronous
     // git exec per statement — batch the load and match in memory.
     const allowlists = loadDangerousAllowlists(cwd);
+    const sessionId = sessionIdOf(ctx);
     for (const stmt of dangerousStmts) {
       if (isStdinFedShellStatement(stmt)) {
         unapproved.push(stmt);
+        continue;
+      }
+      // Session scope (issue #1073) — checked BEFORE the prompt, like a
+      // stored entry: the user already answered for this session.
+      if (hasDangerousSessionApproval(sessionId, stmt)) {
+        log.warn("dangerous_command_allowed_session", {
+          dangerousPattern: String(DANGEROUS.find((p) => p.test(stmt)) ?? "unknown"),
+          hashPrefix: dangerousCommandHash(stmt).slice(0, 12),
+          persisted: false,
+        });
         continue;
       }
       const allowMatch = matchDangerousAllowlist(allowlists, stmt);
@@ -585,19 +612,27 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     const decide = async (remaining: string[]): Promise<EnforcementResult | undefined> => {
       const list = remaining
         .map((stmt) => {
-          const label = dangerousPatternLabel(DANGEROUS.find((p) => p.test(stmt)) ?? /./);
+          const explanation = dangerousPatternExplanation(DANGEROUS.find((p) => p.test(stmt)) ?? /./);
           const stdinFed = isStdinFedShellStatement(stmt)
-            ? "\n    ↳ reads its script from stdin — run-once only, never persistently approvable"
+            ? "\n    ↳ reads its script from stdin — run-once only, never approvable beyond this run"
             : "";
-          return `  ${stmt}\n    ↳ ${label}${stdinFed}`;
+          return `  ${stmt}\n    ↳ ${explanation.why}\n    ↳ can be lost: ${explanation.consequence}${stdinFed}`;
         })
         .join("\n");
       const scopeNote = projectTrustable
         ? ""
         : "\n\nℹ️ The project settings file is not trustable for approvals (git-tracked or\nsymlinked) — persistent approvals can only be stored globally.";
-      // Only statements that carry their own script are persistently
-      // approvable (Qodo PR #950 R6) — stdin-fed shells are run-once only.
+      // Only statements that carry their own script are approvable beyond
+      // this run (Qodo PR #950 R6) — stdin-fed shells are run-once only.
       const persistable = remaining.filter((stmt) => !isStdinFedShellStatement(stmt));
+      // Scope menu and its "what this grants" text come from ONE tested
+      // resolver (issue #1073) so the prompt cannot promise a scope the gate
+      // does not offer.
+      const offeredScopes = dangerousApprovalScopes({
+        approvableBeyondRun: persistable.length > 0,
+        projectTrustable,
+      });
+      const grants = offeredScopes.map((s) => `  • ${DANGEROUS_SCOPE_GRANTS[s]}`).join("\n");
       // Option labels are truncated for the menu; keep them unique.
       // Computed ONCE — the choice handler looks up by the same objects.
       const seen = new Map<string, number>();
@@ -611,6 +646,7 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
       const options = [
         "Yes — run once",
         ...labeled.flatMap(({ label }) => [
+          `Allow for this session: ${label}`,
           ...(projectTrustable ? [`Always allow (this project): ${label}`] : []),
           `Always allow (everywhere): ${label}`,
         ]),
@@ -622,7 +658,7 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
           : []),
         "No",
       ];
-      const promptTitle = `⚠️ Dangerous statement${remaining.length > 1 ? "s" : ""} (of the full command):\n\n${list}${scopeNote}\n\nAllow?`;
+      const promptTitle = `⚠️ Dangerous statement${remaining.length > 1 ? "s" : ""} (of the full command):\n\n${list}${scopeNote}\n\nWhat each answer grants:\n${grants}\n\nAllow?`;
       const ok = bridgedUi
         ? await bridgedUi.select(ctx, promptTitle, options)
         : await ctx.ui.select(promptTitle, options);
@@ -649,6 +685,21 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
           await notifyApprovalResults(saved.length, failed, scopes, ctx.ui);
         }
         return undefined;
+      }
+      if (ok.startsWith("Allow for this session: ")) {
+        const chosen = labeled.find(({ label }) => ok === `Allow for this session: ${label}`)?.stmt;
+        if (chosen !== undefined) {
+          // Memory only — no settings write exists on this path at all.
+          grantDangerousSessionApproval(sessionId, chosen);
+          log.info("dangerous_command_session_approval_granted", {
+            dangerousPattern: dangerousPatternLabel(DANGEROUS.find((p) => p.test(chosen)) ?? /./),
+            hashPrefix: dangerousCommandHash(chosen).slice(0, 12),
+            persisted: false,
+          });
+          const still = remaining.filter((s) => s !== chosen);
+          if (still.length === 0) return undefined;
+          return decide(still);
+        }
       }
       if (ok.startsWith("Always allow (this project): ") || ok.startsWith("Always allow (everywhere): ")) {
         const scope = ok.startsWith("Always allow (everywhere): ") ? "global" : "project";
@@ -697,6 +748,17 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     } else {
       delete process.env.PI_COMMENT_SIGNATURE;
     }
+  });
+
+  // Session-scoped dangerous-command approvals die with the session (issue
+  // #1073). "reload" is the one reason that must NOT clear them: it rebinds
+  // the extension while the same session keeps running, and the store lives
+  // on globalThis precisely so the grants survive that.
+  pi.on("session_shutdown", (event: any, ctx: any) => {
+    if (event?.reason === "reload") return;
+    const sessionId = sessionIdOf(ctx);
+    clearDangerousSessionApprovals(sessionId);
+    log.debug("dangerous_session_approvals_cleared", { reason: event?.reason, hasSessionId: sessionId !== "" });
   });
 
   pi.on("tool_call", async (event, ctx) => {

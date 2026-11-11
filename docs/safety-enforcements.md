@@ -148,27 +148,55 @@ their silent exemption.
 The dangerous-command gate (background shells, `sudo`, recursive `rm`, …) asks
 for confirmation every time it sees a matching command. For commands you run
 over and over — a debug skill that starts `nohup bash -c … | nc 127.0.0.1 4444`,
-for example — the prompt offers persistent approvals per statement:
+for example — the prompt offers session and persistent approvals per statement:
 
 ```text
 ⚠️ Dangerous statements (of the full command):
 
   sudo zsh
-    ↳ sudo
+    ↳ sudo — escalates to root
+    ↳ can be lost: any file, service or user on the machine can be changed, and the logs name root, not you
   bash .dev/deploy-all.sh
-    ↳ bare shell invocation
+    ↳ shell invocation — a shell runs a script whose contents this prompt never showed
+    ↳ can be lost: an arbitrary, unreviewed script runs with your full user rights
+
+What each answer grants:
+  • run once — this command, now, nothing else
+  • this session — every later run of the SAME statement until the session ends (memory only, never written to settings)
+  • this project — stored in the project settings file, applies to future sessions in this folder
+  • everywhere — stored in your global settings, applies to every future session on this machine
+  • no — blocked, nothing is approved
 
 Allow?
 
   → Yes — run once
+    Allow for this session: sudo zsh
     Always allow (this project): sudo zsh
     Always allow (everywhere): sudo zsh
+    Allow for this session: bash .dev/deploy-all.sh
     Always allow (this project): bash .dev/deploy-all.sh
     Always allow (everywhere): bash .dev/deploy-all.sh
     Always allow all of the above (this project)
     Always allow all of the above (everywhere)
     No
 ```
+
+Every statement carries its own `why` (which rule fired) and `consequence`
+(what can be lost), so a chain is judged statement by statement instead of as
+one blob. The rules and their explanations live in one table beside the
+pattern list (`DANGEROUS` / `DANGEROUS_EXPLANATIONS` in
+`extensions/orchestrator/git-helpers.ts`).
+
+**"Allow for this session"** is the middle scope (#1073): the statement is
+approved for the rest of the running session and **never written to any
+settings file** — approvals live in memory, keyed by session id, and evaporate
+when the session ends. They survive `/reload` (the store lives on `globalThis`,
+not in the extension instance) and are cleared on session shutdown, new
+session, fork or resume. Later runs log a `dangerous_command_allowed_session`
+warning, distinct from the persisted `dangerous_command_allowlisted` path.
+A stdin-fed shell (`x | bash`, `bash <<EOF`) is offered run-once only: it
+carries none of the script it will run, so no approval — session or persistent
+— can bind it to anything.
 
 You choose the SCOPE of a persistent approval explicitly: **this project**
 stores it in the project's settings file, **everywhere** stores it in your
