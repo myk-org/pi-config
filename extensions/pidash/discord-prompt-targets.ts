@@ -385,7 +385,7 @@ export interface InboundSession {
   source: InboundSource;
   /** The stored watch points at a session that is gone; the caller should clear it. */
   deadWatch?: boolean;
-  /** This channel carried a session's output, but that session is gone. */
+  /** This channel carried a session's target, but that session is gone. */
   deadTarget?: boolean;
   /** More than one live session delivers into this channel — refuse instead of guessing. */
   ambiguous?: boolean;
@@ -418,7 +418,7 @@ export function resolveInboundSession(input: {
       : []);
   const delivering = onChannel.filter((match) => match.live).sort((a, b) => Number(b.exactThread) - Number(a.exactThread));
 
-  // A channel whose session died says so: "not watching" would hide that the output stopped for a reason.
+  // A channel whose session died says so: "not watching" would hide why it went quiet.
   if (delivering.length === 0) {
     return { sessionId: null, source: "none", ...dead, ...(onChannel.length ? { deadTarget: true } : {}) };
   }

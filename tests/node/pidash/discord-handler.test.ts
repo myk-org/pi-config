@@ -21,13 +21,27 @@ function anyBuilder(): any {
 }
 
 const DM = "dm-1";
+/** A guild channel that can hold a thread, but thread creation fails here — the fallback target route. */
+const PLAIN = "chan-plain";
 const built: FakeClient[] = [];
 
 class FakeClient extends EventEmitter {
   user = { id: "bot-user" };
   guilds = { cache: new Map() };
-  /** Only the DM exists; anything else is a channel the bot cannot see. */
-  channels = { fetch: async (id: string) => (id === DM ? { id, guildId: null } : null) };
+  /** Only the DM and the plain guild channel exist; anything else is a channel the bot cannot see. */
+  channels = {
+    fetch: async (id: string) => {
+      if (id === DM) return { id, guildId: null };
+      if (id === PLAIN) {
+        return {
+          id,
+          guildId: "g1",
+          threads: { create: async () => { throw new Error("Missing Permissions"); } },
+        };
+      }
+      return null;
+    },
+  };
   constructor(_opts?: unknown) {
     super();
     built.push(this);
@@ -80,13 +94,19 @@ interface Bot {
 }
 
 /** A bot whose user watches `watchedSessionId` and owns thread chan-3 for s3; `live` decides what is connected. */
-function startBot(opts: { live: string[]; watchedSessionId?: string | null; threads?: Record<string, string> }): Bot {
+function startBot(opts: {
+  live: string[];
+  watchedSessionId?: string | null;
+  threads?: Record<string, string>;
+  responseChannelId?: string;
+  dmChannelId?: string | null;
+}): Bot {
   fs.writeFileSync(stateFile, JSON.stringify({
     users: {
       [USER]: {
         watchedSessionId: opts.watchedSessionId === undefined ? "s2" : opts.watchedSessionId,
-        responseChannelId: DM,
-        dmChannelId: DM,
+        responseChannelId: opts.responseChannelId ?? DM,
+        dmChannelId: opts.dmChannelId === undefined ? DM : opts.dmChannelId,
         threads: opts.threads ?? { s3: THREAD },
         updatedAt: Date.now(),
       },
@@ -113,11 +133,11 @@ function startBot(opts: { live: string[]; watchedSessionId?: string | null; thre
   return { handler: built[built.length - 1]!.listeners("messageCreate")[0] as (m: any) => Promise<void>, sends, hooks };
 }
 
-function message(id: string, content: string, replies: string[], opts: { dm?: boolean } = {}): any {
+function message(id: string, content: string, replies: string[], opts: { dm?: boolean; channelId?: string } = {}): any {
   return {
     id,
     guildId: opts.dm ? null : "g1",
-    channelId: opts.dm ? DM : THREAD,
+    channelId: opts.dm ? DM : opts.channelId ?? THREAD,
     content,
     author: { id: USER, bot: false },
     reply: async (text: string) => { replies.push(text); },
@@ -162,5 +182,23 @@ describe("discord messageCreate routing", () => {
     // Pinning the cancel to the watch would leave s9's question pending and never reach it.
     assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.id, s.cancelled]), [["s9", "q1", true]]);
     assert.deepEqual(replies, ["Dismissed."]);
+  });
+
+  it("answers a question delivered to a plain channel when no thread could be created", async () => {
+    // Thread creation fails, so s9's question lands in the plain guild channel. Only the registered
+    // threads are routable by thread, so this channel has to be accepted as a delivery target.
+    const bot = startBot({
+      live: ["s9"],
+      watchedSessionId: null,
+      threads: {},
+      responseChannelId: PLAIN,
+      dmChannelId: null,
+    });
+    bot.hooks[0]!("s9", { type: "extension_ui_request", id: "q2", method: "confirm", title: "Proceed?" });
+    await settle();
+
+    const replies: string[] = [];
+    await bot.handler(message("m4", "yes", replies, { channelId: PLAIN }));
+    assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.id, s.confirmed]), [["s9", "q2", true]]);
   });
 });

@@ -458,10 +458,9 @@ describe("resolveInboundSession", () => {
     assert.deepEqual([r.sessionId, r.source, r.deadWatch], ["s3", "target", true]);
   });
 
-  it("resolves nothing for a DM that carries no session", () => {
-    // A DM is session-agnostic, so /cancel must not be pinned to one: with no thread, no watch and no
-    // target the resolver has no answer and the bot passes no session, letting the engine cancel the
-    // newest question (Qodo a1c4f7e2).
+  it("resolves nothing for a channel that carries no session", () => {
+    // Only the empty case: the DM rule (the bot passes no session, so the engine cancels the newest
+    // question) lives in the handler and is pinned in discord-handler.test.ts.
     const r = resolveInboundSession({ channelId: "dm-1", isLive: live() });
     assert.deepEqual([r.sessionId, r.source], [null, "none"]);
   });
