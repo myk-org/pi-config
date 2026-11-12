@@ -33,6 +33,7 @@ import { publishWorkloadSources, clearWorkloadSources } from "../shared/workload
 import { registerStatus } from "./status.js";
 import { registerNvim } from "./nvim.js";
 import { registerPreferenceExtractor } from "./preference-extractor.js";
+import { registerSkillMaintenance } from "./skill-maintenance.js";
 import { registerMemoryTools } from "./memory-tools.js";
 import { registerReviewUI } from "./review-ui.js";
 import { registerSessionSearch } from "./session-search.js";
@@ -141,6 +142,7 @@ export default function (pi: ExtensionAPI) {
 
   registerStatusLine(pi, IN_CONTAINER, terminalNotify);
   registerDreaming(pi, spawnAsyncAgent);
+  registerSkillMaintenance(pi);
   const { getCronTasks } = registerCron(pi, spawnAsyncAgent);
   // #1083: peers report their OWN workload — session crons live only in this process, so the
   // coms extension must read them here rather than scan for them.

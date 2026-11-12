@@ -51,6 +51,7 @@ pi-config/
 │   │   ├── async-wait.ts            # Shared helper for waiting on async result files
 │   │   ├── cron.ts                   # /cron scheduled tasks and session/project scope handling
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
+│   │   ├── skill-maintenance.ts     # /adopt-skill, marked-skill write guard, in-turn nudge, provenance + one-line notice
 │   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous) + memory-based enforcement rules
 │   │   ├── enforcement-helpers.ts   # Pure helpers for dangerous-command enforcement (read-only detection, .pi/tmp/ path validation)
 │   │   ├── enforcement-rules.ts     # Enforcement rules engine — trigger matching + action execution for memory-based enforcement

@@ -17,7 +17,7 @@ After completing a task that involved a non-obvious workflow:
 ## How to Create a Skill
 
 1. **Identify the workflow** — what steps did you follow? What worked?
-2. **Write the SKILL.md** — save to `~/.agents/skills/<name>/SKILL.md`
+2. **Write the SKILL.md** — save to `.pi/skills/<name>/SKILL.md` (the project's own skills dir)
 3. **Keep it specific and actionable** — steps, commands, verification
 
 ## SKILL.md Format
@@ -26,6 +26,7 @@ After completing a task that involved a non-obvious workflow:
 ---
 name: skill-name
 description: "One-line description of what this skill does and when to use it."
+skill-maintenance: auto
 ---
 
 # Skill Title
@@ -50,6 +51,7 @@ description: "One-line description of what this skill does and when to use it."
 
 - **name**: lowercase, hyphenated, max 64 chars
 - **description**: one line, max 1024 chars, explains WHEN to use it
+- **skill-maintenance**: always `auto` — it is what lets a later agent patch this skill when it drifts (an unmarked project skill is refused by the write guard)
 - **Body**: concrete steps, exact commands, verification
 - **No fluff**: skip background, motivation, history — just the procedure
 - **Include pitfalls**: what goes wrong and how to avoid it
@@ -58,11 +60,19 @@ description: "One-line description of what this skill does and when to use it."
 ## Where to Save
 
 ```bash
-mkdir -p ~/.agents/skills/<skill-name>
-# Write SKILL.md there
+mkdir -p .pi/skills/<skill-name>
+# Write SKILL.md there, with skill-maintenance: auto in the frontmatter
 ```
 
-Skills in `~/.agents/skills/` are user-local and automatically discovered by pi.
+Project skills under `.pi/skills/` are automatically discovered in this project.
+
+**Global skills are not written by an agent.** `~/.agents/skills/` and `~/.pi/agent/skills/`
+are shared by every project, so the write guard refuses agent writes there. Write the skill
+in `.pi/skills/` and hand the user the copy:
+
+```bash
+mkdir -p ~/.agents/skills/<skill-name> && cp -r .pi/skills/<skill-name>/. ~/.agents/skills/<skill-name>/
+```
 
 ## Good vs Bad Skills
 

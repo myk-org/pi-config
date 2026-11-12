@@ -148,27 +148,66 @@ their silent exemption.
 The dangerous-command gate (background shells, `sudo`, recursive `rm`, …) asks
 for confirmation every time it sees a matching command. For commands you run
 over and over — a debug skill that starts `nohup bash -c … | nc 127.0.0.1 4444`,
-for example — the prompt offers persistent approvals per statement:
+for example — the prompt offers session and persistent approvals per statement:
 
 ```text
 ⚠️ Dangerous statements (of the full command):
 
   sudo zsh
-    ↳ sudo
+    ↳ sudo — runs the command as another user
+      · can be lost: it can change any file, service or user that user can reach, and the audit log names that user, not you
+      · approval covers: this exact command — any other command behind sudo still prompts
+    ↳ shell invocation — a shell runs a script whose effects the command line does not bound
+      · can be lost: an arbitrary, unreviewed script runs with your full user rights
+      · approval covers: this exact command — a different script still prompts
   bash scripts/build-extension-uis.sh
-    ↳ bare shell invocation
+    ↳ shell invocation — a shell runs a script whose effects the command line does not bound
+      · can be lost: an arbitrary, unreviewed script runs with your full user rights
+      · approval covers: this exact command — a different script still prompts
+
+What each answer grants:
+  • run once — this command, now, nothing else
+  • this session — every later run of the SAME statement until the session ends (memory only, never written to settings)
+  • this project — stored in the project settings file, applies to future sessions in this folder
+  • everywhere — stored in your global settings, applies to every future session on this machine
+  • no — blocked, nothing is approved
 
 Allow?
 
   → Yes — run once
+    Allow for this session: sudo zsh
     Always allow (this project): sudo zsh
     Always allow (everywhere): sudo zsh
+    Allow for this session: bash scripts/build-extension-uis.sh
     Always allow (this project): bash scripts/build-extension-uis.sh
     Always allow (everywhere): bash scripts/build-extension-uis.sh
     Always allow all of the above (this project)
     Always allow all of the above (everywhere)
     No
 ```
+
+Every statement carries its own `why` (which rule fired), `consequence` (what
+can be lost) and `grants` (what approving that statement permits), so a chain
+is judged statement by statement instead of as one blob — and a statement that
+trips several rules (`sudo rm -rf /srv/data` is both a recursive delete and an
+escalation) shows every one of them. The rules and their explanations live in
+one table beside the pattern list (`DANGEROUS` / `DANGEROUS_EXPLANATIONS` in
+`extensions/orchestrator/git-helpers.ts`).
+
+**"Allow for this session"** is the middle scope (#1073): the statement is
+approved for the rest of the running session and **never written to any
+settings file** — approvals live in memory, keyed by session id, and evaporate
+when the session ends. They survive `/reload` (the store lives on `globalThis`,
+not in the extension instance) and are cleared on session shutdown, new
+session, fork or resume, and they are capped so a session that never emits a
+shutdown (a sidecar session disposed without one) cannot grow the store
+without bound. A context with no usable session id is offered no session
+scope at all — an id-less bucket would be shared by every context in the
+process. Later runs log an info line `dangerous_command_allowed_session`,
+distinct from the persisted `dangerous_command_allowlisted` path.
+A stdin-fed shell (`x | bash`, `bash <<EOF`) is offered run-once only: it
+carries none of the script it will run, so no approval — session or persistent
+— can bind it to anything.
 
 You choose the SCOPE of a persistent approval explicitly: **this project**
 stores it in the project's settings file, **everywhere** stores it in your

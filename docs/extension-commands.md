@@ -18,6 +18,7 @@ the internals that are not visible from usage alone.
 | `/async-status` | `async-agents.ts` + `async-status-ui.ts` | Fullscreen overlay: list async agents → live output; `x` kills the focused job (or the whole `Space` multi-selection), `X` kills all running/queued immediately (no confirmation) |
 | `/dream` | `dreaming.ts` | Memory consolidation |
 | `/dream-auto` | `dreaming.ts` | Toggle automatic dreaming |
+| `/adopt-skill <name>` | `skill-maintenance.ts` | Mark a project skill as maintained (`skill-maintenance: auto`) so agents may patch it; autocompletes unmarked skills |
 | `/cron` | `cron.ts` + `cron-store.ts` + `cron-status-ui.ts` | Schedule session tasks, or persistent tasks with `--persist` |
 | `/pi-config-settings [project\|global]` | `settings-tui.ts` + `settings-tui-helpers.ts` | Interactive settings editor overlay |
 | `/nvim-changed-files` | `nvim.ts` | Send changed files to nvim quickfix |
