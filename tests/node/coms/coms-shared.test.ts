@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { deadPeerCardIds } from "../../../extensions/coms/coms-shared.js";
-import { activationVerified, describePeerOrigin, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, projectProblem, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
+import { activationVerified, describePeerOrigin, filterRegistry, formatPeerDetailLines, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, projectProblem, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, selectKillTargets, supervisedPeerKeys, type RegistryRow } from "../../../extensions/coms/coms-peers.js";
 
 describe("deadPeerCardIds", () => {
   const cards = () => new Map<string, { endpoint?: string | null; name?: string }>([
@@ -67,6 +67,22 @@ describe("registry-wide peer view", () => {
       ["peerone"],
       "the stripped form is a render artifact, not an address",
     );
+  });
+
+  // Render-only, same boundary as the table (#1084): cwd and socket are peer-supplied too.
+  it("strips control characters from the detail pane's cwd and socket", () => {
+    const rows = [row({ cwd: "/w\u0007orc\x1b[2J", endpoint: "/sock\u0007et\x1b]0;title\x07" })];
+    const pane = formatPeerDetailLines(rows[0], { heartbeatAgeSeconds: 12 }).join("\n");
+    assert.equal(pane.includes("\u0007"), false, "no BEL may reach the pane");
+    assert.equal(pane.includes("\x1b"), false, "no escape sequence may reach the pane");
+    assert.match(pane, /cwd {7}\/worc/);
+    assert.match(pane, /socket {4}\/socket/);
+  });
+
+  it("caps an over-long cwd and socket", () => {
+    const pane = formatPeerDetailLines(row({ cwd: `/w/${"x".repeat(400)}`, endpoint: `/s/${"y".repeat(400)}` })).join("\n");
+    assert.match(pane, new RegExp(`cwd {7}/w/${"x".repeat(117)}`));
+    assert.match(pane, new RegExp(`socket {4}/s/${"y".repeat(77)}`));
   });
 
   it("shows the live state that makes the list worth watching", () => {

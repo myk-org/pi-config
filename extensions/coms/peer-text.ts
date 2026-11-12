@@ -3,9 +3,12 @@
  * sequence could move the cursor, clear the screen or forge a prompt in the viewer's terminal,
  * so every peer-supplied string is normalized here before it is rendered.
  *
- * Pure, no dependencies: strip escape sequences, collapse whitespace, drop control characters,
- * then cap the field.
+ * Pure and log-free beyond one debug line: strip escape sequences, collapse whitespace, drop
+ * control characters, then cap the field. Only lengths are logged — the text never is.
  */
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("coms-peer-text");
 
 /** OSC: `ESC ] … BEL` / `ESC ] … ESC \` — window titles, hyperlinks, clipboard writes. */
 const ANSI_OSC = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
@@ -32,5 +35,8 @@ export function sanitizePeerText(text: unknown, max = 120): string {
     .replace(CONTROL, "")
     .replace(/\s+/g, " ")
     .trim();
-  return stripped.length > max ? stripped.slice(0, max).trimEnd() : stripped;
+  const out = stripped.length > max ? stripped.slice(0, max).trimEnd() : stripped;
+  // A count, never the content: a hostile name is exactly what must not land in the log.
+  if (out !== raw) log.debug("peer_text_sanitized", { before: raw.length, after: out.length });
+  return out;
 }

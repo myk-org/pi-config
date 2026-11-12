@@ -62,14 +62,14 @@ Each peer reports its **own** active work: async agents that are *running* (a qu
 
 The pool widget and peer list append `⏳2 ✓5 ⏰1` (agents, tasks, crons), showing only non-zero counts. A peer that reports no workload field renders `unknown`, never `0`: absence is not idleness.
 
-Every peer-supplied string is sanitized before rendering: escape sequences and control characters are stripped, whitespace collapsed, and each field capped (purpose/subject 120, id/state 40). A peer cannot move the viewer's cursor, clear its screen, or forge a prompt.
+Every peer-supplied string is sanitized before rendering — name, purpose, subject, cwd, socket path, task ids and states: escape sequences and control characters are stripped, whitespace collapsed, and each field capped (purpose/subject/cwd 120, id/state 40, socket 80). A peer cannot move the viewer's cursor, clear its screen, or forge a prompt, and sanitization is render-only: a peer is still addressed by its raw name.
 
 Selecting a peer in the `/coms` peer overlay asks that peer directly for the detail — agent identity and elapsed time, task rows in the same format `/tasks` uses, and cron schedules. The peer answers over its own socket from its own memory, with a projected payload (no job output, no worker directories); nothing scans another process's files.
 
 Three answers are kept apart:
 - the peer answered with work → the sections it reported; a section trimmed by the 50-row cap ends with `… N more`, so a truncated list never looks complete
 - the peer answered with nothing active → `workload  none active`
-- no usable answer → `unknown`, with the reason kept distinct: `(not reported)` for a peer with no workload support, `(no reply within 2s)` for silence or a dead connection, `(malformed reply)` for a reply that could not be parsed, `(reply too large)` beyond the 1 MiB cap
+- no usable answer → `unknown`, with the reason kept distinct: `(not reported)` for a peer with no workload support, `(no reply within 2s)` for silence or a dead connection, `(malformed reply)` for a reply that could not be parsed, `(reply too large)` beyond the 1 MiB cap, and `(error: <code>)` when the peer rejected the request or failed internally — a local code such as `internal-error`, never the peer's own error text
 
 In the pidash browser the peer list shows the same workload counts (`⏳n ✓n ⏰n`, or `unknown`), and a browser-sent `/tasks` returns the task rows as text; the drilldown overlay and its detail lines are terminal-only.
 

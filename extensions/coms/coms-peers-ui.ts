@@ -7,7 +7,7 @@
  * headless peer can actually expose — it has no screen to watch.
  */
 import type { Component } from "@earendil-works/pi-tui";
-import { describePeerOrigin } from "./coms-peers.js";
+import { formatPeerDetailLines } from "./coms-peers.js";
 import { renderWorkloadPart, workloadSectionLines, workloadUnknownLine } from "./coms-workload.js";
 import { sanitizePeerText } from "./peer-text.js";
 import type { DescribeResult } from "./coms-describe.js";
@@ -121,26 +121,16 @@ export async function openComsPeersOverlay(
           },
           getBodyLines: () => {
             const current = deps.listPeers().find((p) => `${p.project}:${p.name}` === peerId) || row;
-            const age = deps.heartbeatAgeSeconds?.(current);
-            const origin = describePeerOrigin(current);
-            const lines = [
-              `cwd       ${current.cwd || "?"}`,
-              `purpose   ${sanitizePeerText(current.purpose, 120) || "—"}`,
-              `state     ${current.busy ? "busy" : "idle"}${current.queueDepth ? ` · queue ${current.queueDepth}` : ""}`,
-              `created   ${origin.by === "unknown" ? "unknown (no record)" : origin.by} · via ${origin.via}`,
-              `pid       ${current.pid ?? "?"}`,
-              `socket    ${current.endpoint || "?"}`,
-              `heartbeat ${age === null || age === undefined ? "unknown" : `${age}s ago`} (last keep-alive)`,
-              `context   ${current.contextUsedPct === null ? "?" : `${Math.round(current.contextUsedPct)}%`}`,
-              // The registry rewrites started_at on every heartbeat, so it is not a real start time.
-              "",
-            ];
-            if (status) lines.push(status);
+            // One render boundary for every peer-supplied field (#1084).
+            const lines = formatPeerDetailLines(current, {
+              heartbeatAgeSeconds: deps.heartbeatAgeSeconds?.(current),
+              status,
+            });
             if (workload.state === "done") {
               lines.push("");
               const result = workload.result;
               // An answered peer with nothing active says so; only silence is `unknown`.
-              lines.push(...(result?.ok ? workloadSectionLines(result.detail, result.truncated) : [workloadUnknownLine(result?.reason ?? "timeout")]));
+              lines.push(...(result?.ok ? workloadSectionLines(result.detail, result.truncated) : [workloadUnknownLine(result?.reason ?? "timeout", result && !result.ok ? result.code : undefined)]));
             }
             return lines;
           },

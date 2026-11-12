@@ -19,7 +19,7 @@ import {
   workloadUnknownLine,
   type PeerWorkloadDetail,
 } from "../../../extensions/coms/coms-workload.js";
-import { requestDescribe, validateDetail, DESCRIBE_MAX_ENTRIES } from "../../../extensions/coms/coms-describe.js";
+import { classifyNack, requestDescribe, validateDetail, DESCRIBE_MAX_ENTRIES } from "../../../extensions/coms/coms-describe.js";
 import { sanitizePeerText } from "../../../extensions/coms/peer-text.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -261,6 +261,16 @@ describe("workload drilldown sections", () => {
     assert.equal(workloadUnknownLine("malformed"), "workload  unknown (malformed reply)");
     assert.equal(workloadUnknownLine("oversize"), "workload  unknown (reply too large)");
   });
+
+  it("renders a peer error with its local code", () => {
+    assert.equal(workloadUnknownLine("peer-error", "internal-error"), "workload  unknown (error: internal-error)");
+  });
+
+  it("never renders peer error text in the line", () => {
+    const line = workloadUnknownLine("peer-error", "\x1b[2Jpwned");
+    assert.equal(line.includes("\x1b"), false);
+    assert.equal(line, "workload  unknown (error: pwned)");
+  });
 });
 
 describe("describe reply validation (#1083)", () => {
@@ -427,6 +437,31 @@ describe("coms_describe is the only source of workload", () => {
     if (process.platform === "win32") return t.skip("unix sockets only");
     const endpoint = await replyWith({ type: "describe_reply", msg_id: "x", detail: { agents: [null], tasks: [], crons: [] } });
     assert.deepEqual(await requestDescribe(endpoint, { timeoutMs: 1_000 }), { ok: false, reason: "malformed" });
+  });
+
+  it("classifies an unsupported-describe nack as not reported", () => {
+    assert.deepEqual(classifyNack("unknown type"), { ok: false, reason: "not-reported" });
+  });
+
+  it("classifies a malformed-envelope nack as a peer error", () => {
+    assert.deepEqual(classifyNack("malformed envelope"), { ok: false, reason: "peer-error", code: "malformed-envelope" });
+  });
+
+  it("classifies an internal-failure nack as a peer error", () => {
+    assert.deepEqual(classifyNack("internal error"), { ok: false, reason: "peer-error", code: "internal-error" });
+  });
+
+  it("never echoes unrecognised nack text as a code", () => {
+    const result = classifyNack("\x1b[2J something odd");
+    assert.equal(result.reason, "peer-error");
+    assert.equal(result.ok, false);
+    assert.equal(String(result.code).includes("\x1b"), false);
+  });
+
+  it("returns the peer-error code over a socket", async (t) => {
+    if (process.platform === "win32") return t.skip("unix sockets only");
+    const endpoint = await replyWith({ type: "nack", msg_id: "x", error: "malformed envelope" });
+    assert.deepEqual(await requestDescribe(endpoint, { timeoutMs: 1_000 }), { ok: false, reason: "peer-error", code: "malformed-envelope" });
   });
 
   it("reports an older peer that nacks describe as not reported", async (t) => {

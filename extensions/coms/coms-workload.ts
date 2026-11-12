@@ -187,7 +187,7 @@ export function formatWorkloadSuffix(counts: PeerWorkloadCounts | null | undefin
 }
 
 /** Why a drilldown has no payload. An ANSWERED peer with no active work is not one of these. */
-export type DescribeFailure = "not-reported" | "timeout" | "unreachable" | "malformed" | "oversize";
+export type DescribeFailure = "not-reported" | "timeout" | "unreachable" | "malformed" | "oversize" | "peer-error";
 
 export const WORKLOAD_UNKNOWN_LINE = "workload  unknown (no reply within 2s)";
 export const WORKLOAD_NONE_LINE = "workload  none active";
@@ -196,7 +196,7 @@ export const WORKLOAD_NONE_LINE = "workload  none active";
  * One honest line per failure — never three invented ones. An older peer that has no workload
  * support at all is `not reported`, which is not the same claim as "did not answer".
  */
-export function workloadUnknownLine(reason: DescribeFailure): string {
+export function workloadUnknownLine(reason: DescribeFailure, code?: string): string {
   switch (reason) {
     case "not-reported":
       return "workload  unknown (not reported)";
@@ -204,6 +204,9 @@ export function workloadUnknownLine(reason: DescribeFailure): string {
       return "workload  unknown (malformed reply)";
     case "oversize":
       return "workload  unknown (reply too large)";
+    case "peer-error":
+      // A local code, capped and sanitized: never the peer's own error text.
+      return `workload  unknown (error: ${sanitizePeerText(code, 40) || "peer-error"})`;
     default:
       return WORKLOAD_UNKNOWN_LINE;
   }

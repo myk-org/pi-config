@@ -39,7 +39,26 @@ export interface DescribeReply {
 /** An answered peer (`ok`, possibly with nothing active) versus a failed drilldown. */
 export type DescribeResult =
   | { ok: true; detail: PeerWorkloadDetail; truncated: WorkloadTruncation }
-  | { ok: false; reason: DescribeFailure };
+  | { ok: false; reason: DescribeFailure; code?: string };
+
+/**
+ * Classify a peer's `nack`. Only "I do not know this request" means the peer cannot report;
+ * anything else (a rejected envelope, an internal failure) is an error, and it is reported as a
+ * local code — the peer's own text is never echoed into the pane or the log.
+ */
+export function classifyNack(error: unknown): { ok: false; reason: DescribeFailure; code?: string } {
+  const text = typeof error === "string" ? error.toLowerCase() : "";
+  if (/unknown (type|request)|unsupported|not supported/.test(text)) return { ok: false, reason: "not-reported" };
+  const code = /malformed|envelope/.test(text)
+    ? "malformed-envelope"
+    : /internal/.test(text)
+      ? "internal-error"
+      : /hops/.test(text)
+        ? "hops-exceeded"
+        : "peer-error";
+  log.debug("describe_nack", { code });
+  return { ok: false, reason: "peer-error", code };
+}
 
 /** Ask one peer for its active workload. */
 export function requestDescribe(
@@ -94,8 +113,8 @@ export function requestDescribe(
         return;
       }
       if (reply?.type === "nack") {
-        // An older peer does not know `describe`. It answered — it just has nothing to report.
-        finish({ ok: false, reason: "not-reported" }, "not_reported");
+        // An older peer does not know `describe`; any other nack is a real failure, not silence.
+        finish(classifyNack(reply.error), "nack");
         return;
       }
       if (reply?.type !== "describe_reply") {
