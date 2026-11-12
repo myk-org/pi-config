@@ -484,9 +484,6 @@ class SettingsOverlay implements Component {
           ? `${parsed.length} entr${parsed.length === 1 ? "y" : "ies"} (values not logged)`
           : String(parsed).slice(0, 60);
         log.info("settings_changed", id, logValue);
-        if (filePath.endsWith(".jsonc")) {
-          this.notify("Note: comments were stripped from .jsonc file", "info");
-        }
 
         // When provider changes, auto-clear the paired model to prevent stale cross-provider model
         if (id === "agent_provider") {

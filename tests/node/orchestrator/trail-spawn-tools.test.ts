@@ -32,7 +32,7 @@ afterEach(() => {
 function repo(trailEnable: boolean): string {
   const root = makeTempDir("trail-spawn-");
   mkdirSync(join(root, ".pi"), { recursive: true });
-  writeFileSync(join(root, ".pi/pi-config-settings.jsonc"), JSON.stringify({ trail_enable: trailEnable }));
+  writeFileSync(join(root, ".pi/pi-config-settings.json"), JSON.stringify({ trail_enable: trailEnable }));
   return root;
 }
 const QUERY_TOOLS = "trail_find_code,trail_find_all,trail_file_api,trail_trace_calls,trail_repo_map";

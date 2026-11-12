@@ -238,7 +238,7 @@ pi-config/
 ├── entrypoint.sh                    # Container entrypoint (gitignore + CLI agent symlinks, then pi)
 ├── README.md                        # Project README
 ├── AGENTS.md                        # Contributor rules (this repo)
-├── pi-config-settings.example.jsonc # Example project settings file (JSONC with comments)
+├── pi-config-settings.example.json  # Example project settings file (plain JSON)
 ├── tests/                           # Test suite
 │   ├── node/                        # Node.js tests (tsx + node:test)
 │   │   ├── acpx-provider/           # ACPX createProvider / runtime-model tests
