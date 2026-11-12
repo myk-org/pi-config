@@ -11,7 +11,7 @@ interface Row { id: string; status: string }
 function harness(options: { selectable?: boolean } = {}) {
   log.debug("create_harness", { selectable: options.selectable === true });
   const kills: string[][] = [];
-  const composes: string[][] = [];
+  const composes: Array<{ ids: string[]; missing: string[] }> = [];
   let killAllCalls = 0;
   let rows: Row[] = [
     { id: "a", status: "running" },
@@ -35,7 +35,9 @@ function harness(options: { selectable?: boolean } = {}) {
     onX: (job: Row) => { kills.push([job.id]); },
     onXSelected: (items: Row[]) => { kills.push(items.map((i) => i.id)); },
     onKillAll: () => { killAllCalls++; },
-    onCompose: (items: Row[]) => { composes.push(items.map((i) => i.id)); },
+    onCompose: (items: Row[], missingIds: string[]) => {
+      composes.push({ ids: items.map((i) => i.id), missing: missingIds });
+    },
   };
   const theme = {
     fg: (_c: string, v: string) => v,
@@ -204,7 +206,7 @@ describe("OverlayListDashboard compose key (#1084): the selection, like x", () =
     h.press("j");
     h.press(" "); // select c
     h.press("m");
-    assert.deepEqual(h.composes, [["a", "b", "c"]]);
+    assert.deepEqual(h.composes, [{ ids: ["a", "b", "c"], missing: [] }]);
     // Compose acts on the selection, so it must not also fire a per-row send.
     assert.deepEqual(h.kills, []);
   });
@@ -213,13 +215,33 @@ describe("OverlayListDashboard compose key (#1084): the selection, like x", () =
     const h = harness({ selectable: true });
     h.press("j"); // focus b, select nothing
     h.press("m");
-    assert.deepEqual(h.composes, [["b"]]);
+    assert.deepEqual(h.composes, [{ ids: ["b"], missing: [] }]);
   });
 
   it("uses the focused row on a non-selectable list", () => {
     const h = harness();
     h.press("j");
     h.press("m");
-    assert.deepEqual(h.composes, [["b"]]);
+    assert.deepEqual(h.composes, [{ ids: ["b"], missing: [] }]);
+  });
+
+  it("hands over the ids that vanished instead of dropping them (#1084 finding 2)", () => {
+    const h = harness({ selectable: true });
+    h.press(" "); // select a
+    h.press("j");
+    h.press(" "); // select b
+    h.setRows([{ id: "a", status: "running" }, { id: "c", status: "running" }]); // b left
+    h.press("m");
+    assert.deepEqual(h.composes, [{ ids: ["a"], missing: ["b"] }]);
+  });
+
+  it("still reports when every selected row is gone", () => {
+    const h = harness({ selectable: true });
+    h.press(" "); // select a
+    h.press("j");
+    h.press(" "); // select b
+    h.setRows([{ id: "c", status: "running" }]);
+    h.press("m");
+    assert.deepEqual(h.composes, [{ ids: [], missing: ["a", "b"] }]);
   });
 });
