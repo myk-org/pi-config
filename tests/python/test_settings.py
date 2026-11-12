@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from myk_pi_tools.settings import commands as settings_commands
 from myk_pi_tools.settings.commands import (
     ENV_BY_KEY,
     LEGACY_MIGRATED_SUFFIX,
@@ -285,6 +287,167 @@ def test_symlinked_legacy_is_refused(
     assert (pi_dir / LEGACY_SETTINGS_FILENAME).is_symlink()
     assert not (pi_dir / SETTINGS_FILENAMES[0]).exists()
     assert "settings_legacy_jsonc_symlink_refused" in caplog.text
+
+
+def test_symlinked_legacy_refused_when_swapped_in_after_the_check(
+    _isolated_settings: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The lstat pre-check can be raced; O_NOFOLLOW on the open is what actually refuses."""
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    outside = tmp_path / "outside-settings"
+    outside.write_text(json.dumps({"image_model": "from-outside"}), encoding="utf-8")
+    legacy = pi_dir / LEGACY_SETTINGS_FILENAME
+    legacy.symlink_to(outside)
+    # A racing process replaced the file after the pre-check saw a regular file.
+    monkeypatch.setattr(Path, "is_symlink", lambda _self: False)
+
+    with caplog.at_level(logging.WARNING, logger="myk_pi_tools.settings.commands"):
+        assert get_setting("image_model", cwd=_isolated_settings) != "from-outside"
+
+    assert os.path.islink(legacy)
+    assert not (pi_dir / SETTINGS_FILENAMES[0]).exists()
+    assert "settings_legacy_jsonc_symlink_refused" in caplog.text
+
+
+def test_symlinked_pi_dir_refused_in_project_scope(
+    _isolated_settings: Path,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    outside_pi = tmp_path / "outside-pi"
+    outside_pi.mkdir()
+    legacy = outside_pi / LEGACY_SETTINGS_FILENAME
+    legacy.write_text(json.dumps({"image_model": "from-outside"}), encoding="utf-8")
+    (Path(_isolated_settings) / ".pi").symlink_to(outside_pi, target_is_directory=True)
+
+    with caplog.at_level(logging.WARNING, logger="myk_pi_tools.settings.commands"):
+        assert get_setting("image_model", cwd=_isolated_settings) != "from-outside"
+
+    assert legacy.exists()
+    assert not (outside_pi / SETTINGS_FILENAMES[0]).exists()
+    assert not _migrated_path(outside_pi).exists()
+    assert "settings_legacy_jsonc_dir_symlink_refused" in caplog.text
+
+
+def test_symlinked_pi_dir_migrates_in_global_scope(
+    _isolated_settings: Path,
+    tmp_path: Path,
+) -> None:
+    # A dotfiles-managed `~/.pi` that links into a repo is the intended layout, not an attack.
+    dotfiles_pi = tmp_path / "dotfiles-pi"
+    dotfiles_pi.mkdir()
+    legacy = dotfiles_pi / LEGACY_SETTINGS_FILENAME
+    legacy.write_text(json.dumps({"image_model": "from-global-jsonc"}), encoding="utf-8")
+    (Path.home() / ".pi").symlink_to(dotfiles_pi, target_is_directory=True)
+
+    assert get_setting("image_model", cwd=_isolated_settings) == "from-global-jsonc"
+
+    assert not legacy.exists()
+    assert _migrated_path(dotfiles_pi).exists()
+    assert (dotfiles_pi / SETTINGS_FILENAMES[0]).exists()
+
+
+def test_deeply_nested_legacy_is_refused_not_raised(
+    _isolated_settings: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    legacy = pi_dir / LEGACY_SETTINGS_FILENAME
+    nested = '{"image_model": ' * 2000 + '"deep"' + "}" * 2000
+    legacy.write_text(nested, encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="myk_pi_tools.settings.commands"):
+        assert get_setting("image_model", cwd=_isolated_settings) != "deep"
+
+    assert legacy.exists()
+    assert not (pi_dir / SETTINGS_FILENAMES[0]).exists()
+    assert "settings_legacy_jsonc_corrupt" in caplog.text
+
+
+def test_non_finite_number_is_refused_not_published(
+    _isolated_settings: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`1e400` parses to inf, which dumps to `Infinity` — output Node cannot parse."""
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    legacy = pi_dir / LEGACY_SETTINGS_FILENAME
+    legacy.write_text('{"image_model": "from-jsonc", "pidash_port": 1e400}', encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="myk_pi_tools.settings.commands"):
+        assert get_setting("image_model", cwd=_isolated_settings) != "from-jsonc"
+
+    assert legacy.exists()
+    assert not (pi_dir / SETTINGS_FILENAMES[0]).exists()
+    assert not _migrated_path(pi_dir).exists()
+    assert "settings_legacy_jsonc_corrupt" in caplog.text
+
+
+def test_second_migration_keeps_the_first_backup(_isolated_settings: Path) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    first = _migrated_path(pi_dir)
+    first.write_text('{"image_model": "first"}', encoding="utf-8")
+    legacy = pi_dir / LEGACY_SETTINGS_FILENAME
+    legacy.write_text(json.dumps({"image_model": "second"}), encoding="utf-8")
+
+    assert get_setting("image_model", cwd=_isolated_settings) == "second"
+
+    assert first.read_text(encoding="utf-8") == '{"image_model": "first"}'
+    assert legacy.with_name(first.name + ".1").exists()
+
+
+def test_legacy_changed_during_migration_is_left_in_place(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    legacy = pi_dir / LEGACY_SETTINGS_FILENAME
+    legacy.write_text(json.dumps({"image_model": "first"}), encoding="utf-8")
+
+    real_read = settings_commands._read_legacy_bytes
+    calls = {"n": 0}
+
+    def racing_read(path: Path) -> bytes | None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # Another process edits the legacy file between our read and the rename.
+            path.write_text(json.dumps({"image_model": "edited"}), encoding="utf-8")
+        return real_read(path)
+
+    monkeypatch.setattr(settings_commands, "_read_legacy_bytes", racing_read)
+
+    with caplog.at_level(logging.WARNING, logger="myk_pi_tools.settings.commands"):
+        get_setting("image_model", cwd=_isolated_settings)
+
+    assert legacy.exists()
+    assert json.loads(legacy.read_text(encoding="utf-8")) == {"image_model": "edited"}
+    assert not _migrated_path(pi_dir).exists()
+    assert json.loads((pi_dir / SETTINGS_FILENAMES[0]).read_text(encoding="utf-8")) == {"image_model": "first"}
+    assert "settings_legacy_jsonc_changed_during_migration" in caplog.text
+
+
+def test_successful_migration_is_logged_at_info(
+    _isolated_settings: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    (pi_dir / LEGACY_SETTINGS_FILENAME).write_text(json.dumps({"image_model": "from-jsonc"}), encoding="utf-8")
+
+    with caplog.at_level(logging.INFO, logger="myk_pi_tools.settings.commands"):
+        assert get_setting("image_model", cwd=_isolated_settings) == "from-jsonc"
+
+    records = [r for r in caplog.records if "settings_legacy_jsonc_migrated" in r.getMessage()]
+    assert records, caplog.text
+    assert all(r.levelno == logging.INFO for r in records)
 
 
 def test_int_env_strict_parsing_rejects_malformed(
