@@ -160,7 +160,7 @@ for example — the prompt offers session and persistent approvals per statement
     ↳ shell invocation — a shell runs a script whose effects the command line does not bound
       · can be lost: an arbitrary, unreviewed script runs with your full user rights
       · approval covers: this exact command — a different script still prompts
-  bash .dev/deploy-all.sh
+  bash scripts/build-extension-uis.sh
     ↳ shell invocation — a shell runs a script whose effects the command line does not bound
       · can be lost: an arbitrary, unreviewed script runs with your full user rights
       · approval covers: this exact command — a different script still prompts
@@ -178,9 +178,9 @@ Allow?
     Allow for this session: sudo zsh
     Always allow (this project): sudo zsh
     Always allow (everywhere): sudo zsh
-    Allow for this session: bash .dev/deploy-all.sh
-    Always allow (this project): bash .dev/deploy-all.sh
-    Always allow (everywhere): bash .dev/deploy-all.sh
+    Allow for this session: bash scripts/build-extension-uis.sh
+    Always allow (this project): bash scripts/build-extension-uis.sh
+    Always allow (everywhere): bash scripts/build-extension-uis.sh
     Always allow all of the above (this project)
     Always allow all of the above (everywhere)
     No

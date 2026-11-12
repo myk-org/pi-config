@@ -1433,10 +1433,10 @@ describe("realGitSub / gitAddPathspecs — rtk wrapper and false positives", () 
     assert.ok(isRealGitCommitOrPush("echo $(git commit -m x)"));
   });
 
-  // Live false positive: `git add f.ts && bash .dev/x.sh` blocked on .dev/x.sh
+  // Live false positive: `git add f.ts && bash scripts/x.sh` blocked on scripts/x.sh
   it("gitAddPathspecs scopes to the git add statement (compound command)", () => {
     assert.deepEqual(
-      gitAddPathspecs("git add rules/35-memory.md && bash .dev/deploy-rules.sh"),
+      gitAddPathspecs("git add rules/35-memory.md && bash scripts/deploy-rules.sh"),
       ["rules/35-memory.md"],
     );
   });
@@ -3039,7 +3039,7 @@ describe("descriptor-duplication redirects survive the split (PR #948 R3)", () =
   it("treats bash -n as a noexec syntax check, not a shell execution", () => {
     for (const cmd of [
       "bash -n script.sh",
-      "sh -n .dev/deploy-all.sh",
+      "sh -n scripts/deploy.sh",
       "/bin/bash -n script.sh",
       "bash -x -n script.sh",
       "sudo bash -n script.sh",
@@ -3814,22 +3814,22 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
   });
 
   // User request (PR #950): the allowlist matches the DANGEROUS STATEMENT,
-  // not the whole chain — `bash .dev/deploy-all.sh` approved once covers any
+  // not the whole chain — `bash scripts/deploy.sh` approved once covers any
   // chain containing exactly that statement.
   it("a statement-level entry covers the dangerous part of a bigger chain", async () => {
-    seedSettings(["bash .dev/deploy-all.sh"]);
+    seedSettings(["bash scripts/deploy.sh"]);
     const chain =
       "cd ~/git/pi-config && npx tsx --test tests/node/**/*.test.ts 2>&1 | rtk rg \"^. pass|^. fail\"; " +
-      "uv run --group tests pytest -q 2>&1 | tail -1; echo ALL-OK; bash .dev/deploy-all.sh 2>&1 | tail -1";
+      "uv run --group tests pytest -q 2>&1 | tail -1; echo ALL-OK; bash scripts/deploy.sh 2>&1 | tail -1";
     const res = await runBash(chain);
     assert.equal(res?.block, undefined, "the only dangerous statement is allowlisted");
     assert.equal(promptCalls.length, 0);
   });
 
   it("a chain with an UNapproved dangerous statement still prompts for just that statement", async () => {
-    seedSettings(["bash .dev/deploy-all.sh"]);
+    seedSettings(["bash scripts/deploy.sh"]);
     choice = "No";
-    const res = await runBash("cat README.md; sudo reboot; bash .dev/deploy-all.sh");
+    const res = await runBash("cat README.md; sudo reboot; bash scripts/deploy.sh");
     assert.equal(res?.block, true);
     assert.equal(promptCalls.length, 1);
     // The prompt names the unapproved statement, not the whole chain
@@ -3839,10 +3839,10 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
 
   it("'always allow' on a chain stores the normalized dangerous statements only", async () => {
     choice = "Always allow all of the above (this project)";
-    const res = await runBash("echo start; bash .dev/deploy-all.sh 2>&1; echo done");
+    const res = await runBash("echo start; bash scripts/deploy.sh 2>&1; echo done");
     assert.equal(res?.block, undefined);
     const raw = JSON.parse(readFileSync(getSettingsPath(cwd), "utf-8"));
-    assert.deepEqual(raw.dangerous_command_allowlist, ["bash .dev/deploy-all.sh"]);
+    assert.deepEqual(raw.dangerous_command_allowlist, ["bash scripts/deploy.sh"]);
   });
 
   it("picking one statement's always-allow persists it and re-prompts the remainder", async () => {

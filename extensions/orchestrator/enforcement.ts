@@ -295,8 +295,8 @@ async function checkGitProtection(command: string, event: any, ctx: any, gitCwd:
 
   // Block staging gitignored files — pathspecs come from the REAL git add
   // invocation(s) only, statement-scoped and quote-aware. The old loose
-  // extraction captured across statements (`git add f.ts && bash .dev/x.sh`
-  // blocked on .dev/x.sh) and into -m message text (a commit message
+  // extraction captured across statements (`git add f.ts && bash scripts/x.sh`
+  // blocked on scripts/x.sh) and into -m message text (a commit message
   // mentioning an ignored path blocked the commit).
   {
     const staged = gitAddPathspecs(command);
@@ -545,7 +545,7 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     // approved. A chain where every dangerous statement matches an allowlist
     // entry runs silently, but never invisibly: every hit is logged.
     // "always allow" stores the dangerous STATEMENTS — the minimal reusable
-    // approval — so `bash .dev/deploy-all.sh` approved once covers any chain
+    // approval — so `bash scripts/deploy.sh` approved once covers any chain
     // that contains exactly that statement (user request, PR #950).
     //
     // EXCEPT stdin-fed shells (Qodo PR #950 R6): a bare `bash`/`sh` carries
