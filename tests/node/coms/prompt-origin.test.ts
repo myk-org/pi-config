@@ -15,6 +15,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+	buildBundledContent,
 	buildInboundContent,
 	buildTellRequest,
 	formatComsInboundType,
@@ -77,6 +78,40 @@ describe("buildTellRequest (#1077 composer)", () => {
 	it("treats a blank line as nothing to send", () => {
 		assert.equal(buildTellRequest({ name: "worker", project: "repo" }, ""), null);
 		assert.equal(buildTellRequest({ name: "worker", project: "repo" }, "   \n\t "), null);
+	});
+});
+
+describe("buildBundledContent (#1077, Qodo: bundle labelled as the user's)", () => {
+	it("tags each bundled message with its own origin", () => {
+		const bundle = buildBundledContent("sender", [
+			{ msg_id: "m1", prompt: "human words", origin: "user" },
+			{ msg_id: "m2", prompt: "agent guess", origin: "peer" },
+		]);
+		assert.match(bundle.content, /Message 1 of 2 \[m1\] ---\n\[from USER \(a human\), via sender\] human words/);
+		assert.match(bundle.content, /Message 2 of 2 \[m2\] ---\n\[from sender\] agent guess/);
+		// The agent's line must not sit under a USER tag.
+		assert.equal(/\[from USER[^\]]*\] agent guess/.test(bundle.content), false);
+	});
+
+	it("marks a mixed bundle instead of claiming one origin", () => {
+		const bundle = buildBundledContent("sender", [
+			{ msg_id: "m1", prompt: "a", origin: "user" },
+			{ msg_id: "m2", prompt: "b", origin: "peer" },
+		]);
+		assert.equal(bundle.origin, undefined);
+		assert.match(bundle.header, /ORIGINS ARE MIXED/);
+	});
+
+	it("keeps the shared origin when every message agrees, and defaults to peer", () => {
+		const userOnly = buildBundledContent("sender", [
+			{ msg_id: "m1", prompt: "a", origin: "user" },
+			{ msg_id: "m2", prompt: "b", origin: "user" },
+		]);
+		assert.equal(userOnly.origin, "user");
+		assert.doesNotMatch(userOnly.header, /MIXED/);
+		const peerOnly = buildBundledContent("sender", [{ msg_id: "m1", prompt: "a" }]);
+		assert.equal(peerOnly.origin, "peer");
+		assert.match(peerOnly.content, /\[from sender\] a/);
 	});
 });
 
@@ -238,13 +273,15 @@ async function startPeer(name: string, sessionId: string): Promise<FakePi> {
 		else process.env.PI_SUBAGENT_CHILD = subagentChild;
 	}
 	(globalThis as any).__piConfigSessionId = sessionId;
-	await pi.start({}, {
+	const ctx = {
 		cwd: workspace,
 		model: { id: "test-model" },
 		hasUI: false,
 		ui: { notify: () => {} },
 		sessionManager: { getSessionId: () => sessionId },
-	});
+	};
+	(pi as any).ctx = ctx;
+	await pi.start({}, ctx);
 	return pi;
 }
 
@@ -288,12 +325,11 @@ describe("envelope origin end to end (#1077)", { concurrency: false }, () => {
 		assert.doesNotMatch(inbound.customType, /USER/);
 		assert.doesNotMatch(String(inbound.content), /USER/);
 		assert.match(String(inbound.content), /^\[from sender @ /);
-		// The envelope on the wire still says peer — read it off the receiver's own view of history
-		// is not possible, so assert through the sender's outbound record: no origin means peer.
+		// The envelope on the wire says peer explicitly (Qodo: both directions machine-readable).
 		const records = readFileSync(join(workspace!, "coms", "history.jsonl"), "utf-8")
 			.trim().split("\n").map((line) => JSON.parse(line));
 		const outbound = records.find((record) => record.direction === "out");
-		assert.equal(outbound?.origin, undefined);
+		assert.equal(outbound?.origin, "peer");
 	});
 
 	it("the command layer's send arrives marked as the user, and history keeps it", async () => {
@@ -311,6 +347,48 @@ describe("envelope origin end to end (#1077)", { concurrency: false }, () => {
 			.trim().split("\n").map((line) => JSON.parse(line));
 		const outbound = records.find((record) => record.direction === "out");
 		assert.equal(outbound?.origin, "user");
+	});
+
+	it("a user send does not suppress the agent's own reply (Qodo: dropped reply)", async () => {
+		const { sender, receiver } = await startPair();
+		// The receiver asks the sender something: the sender is now processing that inbound.
+		await receiver.tools.get("coms_send").execute("ask", { target: "sender", prompt: "status?" });
+		const deadline = Date.now() + 3_000;
+		while (Date.now() < deadline && inboundMessages(sender).length === 0) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+
+		const send = (globalThis as any).__comsUserSend as (p: { target: string; prompt: string }) => Promise<{ ok: boolean; message: string }>;
+		assert.equal((await send({ target: "receiver", prompt: "carry on" })).ok, true);
+
+		// Same turn: the agent's answer to the receiver's question must still be captured.
+		const reply = "all green";
+		await sender.handlers.get("agent_end")(
+			{ messages: [{ role: "assistant", content: [{ type: "text", text: reply }] }] },
+			{
+				cwd: workspace, hasUI: false, ui: { notify: () => {} },
+				sessionManager: { getBranch: () => [{ type: "message", message: { role: "assistant", content: [{ type: "text", text: reply }] } }] },
+			},
+		);
+		const replied = Date.now() + 3_000;
+		while (Date.now() < replied && !receiver.messages.some((m) => /coms response from sender/.test(String(m?.customType)))) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.equal(receiver.messages.some((m) => /coms response from sender/.test(String(m?.customType))), true);
+		assert.equal(String(receiver.messages.find((m) => /coms response from sender/.test(String(m?.customType)))?.content).includes(reply), true);
+	});
+
+	it("re-publishes the user bridge after a stop and start (Qodo: dead after restart)", async () => {
+		workspace = makeTempDir("coms-prompt-origin-restart-");
+		mkdirSync(join(workspace, ".pi"));
+		writeFileSync(join(workspace, ".pi", "pi-config-settings.json"), JSON.stringify({ coms_dir: join(workspace, "coms") }));
+		const peer = await startPeer("solo", "solo-session");
+		assert.equal(typeof (globalThis as any).__comsUserSend, "function");
+		await peer.shutdown?.();
+		assert.equal((globalThis as any).__comsUserSend, null, "shutdown clears the bridge");
+		// `/coms stop` + `/coms start`: activation must publish it again, not only extension init.
+		await peer.start({}, (peer as any).ctx);
+		assert.equal(typeof (globalThis as any).__comsUserSend, "function");
 	});
 
 	it("reports a delivery failure instead of dropping it", async () => {

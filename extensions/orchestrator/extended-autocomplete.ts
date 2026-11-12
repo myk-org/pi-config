@@ -19,6 +19,10 @@
  *   /create-skill <Tab>          → (free-text name)
  *   /cron <Tab>                  → add, list, remove
  *   /dream-auto <Tab>            → on, off
+ *
+ * NOT here: `/coms` (start/stop/status/tell/list/kill). It registers its own
+ * getArgumentCompletions in extensions/coms/coms-wrapper.ts, because peer-name completion needs the
+ * live registry rows (a dead peer must never complete) — keep `kill` and `tell` consistent there.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

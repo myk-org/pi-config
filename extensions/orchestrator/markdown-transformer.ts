@@ -142,14 +142,18 @@ export function transformMemorySectionHeaders(markdown: string): string {
  * Transform coms message headers with styled formatting.
  * `[from peer @ /path/to/cwd]` → `📨 **peer** \`@ /path/to/cwd\``
  * `[from peer → self @ /path/to/cwd]` → `📨 **peer** → **self** \`@ /path/to/cwd\``
+ * `[from USER (a human), via peer → self @ /path/to/cwd]` → `👤 **USER** via **peer** → **self** \`@ /path/…\``
  */
 export function transformComsHeaders(markdown: string): string {
   return transformOutsideCodeBlocks(markdown, (text) =>
     text.replace(
-      /\[from (\S+)(?: → (\S+))? @ ([^\]]+)\]/g,
-      (_match, peer, self, cwd) => {
+      /\[from (USER \(a human\), via )?(\S+)(?: → (\S+))? @ ([^\]]+)\]/g,
+      (_match, fromUser, peer, self, cwd) => {
         const arrow = self ? ` → **${escapeMarkdown(self)}**` : "";
-        return `📨 **${escapeMarkdown(peer)}**${arrow} ${inlineCode(`@ ${cwd.trim()}`)}`;
+        const lead = fromUser
+          ? `👤 **USER** via **${escapeMarkdown(peer)}**`
+          : `📨 **${escapeMarkdown(peer)}**`;
+        return `${lead}${arrow} ${inlineCode(`@ ${cwd.trim()}`)}`;
       },
     ),
   );

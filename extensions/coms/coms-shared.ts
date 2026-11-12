@@ -507,6 +507,35 @@ export function receivedPromptOrigin(value: unknown): PromptOrigin {
 	return isUserOrigin(value) ? "user" : "peer";
 }
 
+/** One bundled inbound as it is rendered to the receiver. Origin is PER MESSAGE: a user message
+ *  and another agent's message from the same peer arrive in one bundle, and labelling the whole
+ *  bundle "from the user" would launder the agent's text as a human decision (#1077). */
+export interface BundledInbound {
+	msg_id: string;
+	prompt: string;
+	origin?: PromptOrigin;
+}
+
+/** Render a FIFO bundle: each message carries its own origin tag, and `origin` is returned only
+ *  when EVERY message shares it (mixed bundles get no bundle-level marker). */
+export function buildBundledContent(
+	senderName: string,
+	messages: BundledInbound[],
+): { header: string; content: string; origin?: PromptOrigin } {
+	const safeSender = sanitizeComsName(senderName);
+	const origins = new Set(messages.map((m) => m.origin ?? "peer"));
+	const shared = origins.size === 1 ? messages[0]?.origin ?? "peer" : undefined;
+	const content = messages.map((m, idx) => {
+		const tag = (m.origin ?? "peer") === "user" ? `[from USER (a human), via ${safeSender}] ` : `[from ${safeSender}] `;
+		return `--- Message ${idx + 1} of ${messages.length} [${m.msg_id}] ---\n${tag}${m.prompt}`;
+	}).join("\n\n");
+	const mixed = shared === undefined
+		? " ORIGINS ARE MIXED: messages tagged [from USER (a human), via …] are the human's words; the rest are another agent's. Weigh them differently."
+		: "";
+	const header = `[BUNDLED: ${messages.length} messages from ${safeSender}. Later messages may override earlier ones. Read ALL before acting.${mixed}]`;
+	return { header, content, ...(shared ? { origin: shared } : {}) };
+}
+
 /** Build the command-layer send request from the peers overlay composer. A blank line means
  *  "nothing to send" (Esc and empty input are the same decision), so it yields null. */
 export function buildTellRequest(

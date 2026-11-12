@@ -40,7 +40,7 @@ Start, stop, or inspect P2P inter-agent communication. Coms is off by default an
 /coms stop
 ```
 
-`/coms tell` sends the message as YOU: the envelope carries `origin: "user"`, so the peer can tell a human decided from another model guessing. Agent tools cannot set that (`coms_send` always sends `origin: "peer"`), and a failed delivery is reported rather than dropped.
+`/coms tell` sends the message as YOU: the envelope carries `origin: "user"`, so the peer can tell a human decided from another model guessing. Agent tools cannot set that (`coms_send` always sends `origin: "peer"`), and a failed delivery is reported rather than dropped. Argument completion lives with the command in `extensions/coms/coms-wrapper.ts` (peer names come from the live registry, so a dead peer never completes) — `tell` completes exactly like `kill`, including `--project`.
 
 See [Inter-Agent Communication](inter-agent-communication.html) for the peer protocol and message semantics.
 
