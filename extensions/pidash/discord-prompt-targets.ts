@@ -378,7 +378,7 @@ export function promptHeader(args: {
  *  A channel that is receiving a session's output is addressable for that session, so the delivery
  *  target is the last resort. Routing through it never moves the watch: the channel is an address,
  *  not a subscription (the #1060 rule). */
-export type InboundSource = "thread" | "watch" | "target" | "none";
+export type InboundSource = "thread" | "watch" | "target" | "active" | "none";
 
 export interface InboundSession {
   sessionId: string | null;

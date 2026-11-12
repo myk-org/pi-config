@@ -101,8 +101,11 @@ function startBot(opts: {
   live: string[];
   watchedSessionId?: string | null;
   threads?: Record<string, string>;
+  threadId?: string | null;
   responseChannelId?: string;
   dmChannelId?: string | null;
+  /** Per-session `lastActivity`, which decides the newest session when several are connected. */
+  lastActivity?: Record<string, number>;
   /** More users in the same guild channel — a shared fallback channel is a real case. */
   extraUsers?: string[];
 }): Bot {
@@ -112,6 +115,7 @@ function startBot(opts: {
       responseChannelId: opts.responseChannelId ?? DM,
       dmChannelId: opts.dmChannelId === undefined ? DM : opts.dmChannelId,
       threads: opts.threads ?? { s3: THREAD },
+      threadId: opts.threadId ?? null,
       updatedAt: Date.now(),
     },
   };
@@ -129,7 +133,7 @@ function startBot(opts: {
   const piClients = new Map<string, any>();
   for (const sessionId of opts.live) {
     piClients.set(sessionId, {
-      session: { sessionId, active: true, cwd: "/work", supportsImages: true },
+      session: { sessionId, active: true, cwd: "/work", supportsImages: true, lastActivity: opts.lastActivity?.[sessionId] ?? Date.now() },
       ws: { send: (raw: string) => sends.push({ sessionId, ...JSON.parse(raw) }) },
       replaying: false,
     });
@@ -363,10 +367,148 @@ describe("discord messageCreate routing", () => {
     }
   });
 
+  it("forwards a message in the channel streaming the watch, with no target for that channel", async () => {
+    // The owner's report: the bot streams s2's output into this DM, so it IS watching s2. Every
+    // message there was refused because the target map no longer named the channel.
+    const bot = startBot({ live: ["s2"], watchedSessionId: "s2", threads: { s2: THREAD }, dmChannelId: DM });
+    const replies: string[] = [];
+    await bot.handler(message("m30", "keep going", replies, { dm: true }));
+    assert.deepEqual(replies, []);
+    assert.equal(bot.sends.length, 1);
+    assert.equal(bot.sends[0]!.sessionId, "s2");
+  });
+
+  it("says which session is not connected in the channel streaming it", async () => {
+    // Same channel, but the watched client lost its connection: "not watching any session" would be
+    // false there — the bot still streams this session into that channel.
+    const bot = startBot({ live: [], watchedSessionId: "s2", threads: { s2: THREAD }, dmChannelId: DM });
+    const replies: string[] = [];
+    await bot.handler(message("m31", "hello", replies, { dm: true }));
+    assert.deepEqual(bot.sends, []);
+    assert.equal(replies.length, 1);
+    assert.match(replies[0]!, /^This channel streams .+, but that session is not connected to the daemon right now\.$/);
+    assert.doesNotMatch(replies[0]!, /Not watching any session/);
+  });
+
+  it("still refuses a channel that carries nothing", async () => {
+    // A guild channel that is neither the response channel nor any session's target: the fallback
+    // must not reach it. (A new DM sets the response channel, so only a guild channel is left.)
+    const bot = startBot({ live: ["s2"], watchedSessionId: "s2", threads: { s2: THREAD }, dmChannelId: DM });
+    const replies: string[] = [];
+    await bot.handler(message("m32", "hello", replies, { channelId: "chan-elsewhere" }));
+    assert.deepEqual(bot.sends, []);
+    assert.deepEqual(replies, []);
+  });
+
+  it("/stop works in the channel streaming the watch, without a target for it", async () => {
+    const bot = startBot({ live: ["s2"], watchedSessionId: "s2", threads: { s2: THREAD }, dmChannelId: DM });
+    const replies: string[] = [];
+    await bot.handler(message("m33", "/stop", replies, { dm: true }));
+    assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.command]), [["s2", "abort"]]);
+    assert.deepEqual(replies, ["⏹️ Stop sent."]);
+  });
+
+  it("routes to the only active session instead of refusing", async () => {
+    // The owner's rule: "Not watching any session" is false while a session is connected, so the
+    // message goes there — and the log says which one and why.
+    (globalThis as any).__piConfigSessionId = "inbound-fallback-single";
+    pinLevel("info");
+    try {
+      const bot = startBot({ live: ["s1"], watchedSessionId: null, threads: {} });
+      const replies: string[] = [];
+      await bot.handler(message("m40", "keep going", replies, { dm: true }));
+      assert.deepEqual(replies, []);
+      assert.deepEqual(bot.sends.map((s) => s.sessionId), ["s1"]);
+      const body = readLogs();
+      assert.match(body, /discord_inbound_fallback \{"reason":"fallback_single_active"/);
+      assert.match(body, /"sessionId":"s1","candidates":1/);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("routes to the most recently active session and logs the candidate count", async () => {
+    (globalThis as any).__piConfigSessionId = "inbound-fallback-newest";
+    pinLevel("info");
+    try {
+      const bot = startBot({
+        live: ["s1", "s2"],
+        watchedSessionId: null,
+        threads: {},
+        lastActivity: { s1: 1_000, s2: 2_000 },
+      });
+      const replies: string[] = [];
+      await bot.handler(message("m41", "hello", replies, { dm: true }));
+      assert.deepEqual(replies, []);
+      assert.deepEqual(bot.sends.map((s) => s.sessionId), ["s2"]);
+      const body = readLogs();
+      assert.match(body, /discord_inbound_fallback \{"reason":"fallback_newest_active"/);
+      assert.match(body, /"sessionId":"s2","candidates":2/);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("refuses with the exact sentence only when no session is active, and logs every refusal", async () => {
+    (globalThis as any).__piConfigSessionId = "inbound-refusal-none";
+    pinLevel("info");
+    try {
+      const bot = startBot({ live: [], watchedSessionId: null, threads: {} });
+      const replies: string[] = [];
+      await bot.handler(message("m42", "hello", replies, { dm: true }));
+      await bot.handler(message("m43", "hello again", replies, { dm: true }));
+      assert.deepEqual(bot.sends, []);
+      assert.deepEqual(replies, [
+        "Not watching any session. Use `/sessions` and pick one.",
+        "Not watching any session. Use `/sessions` and pick one.",
+      ]);
+      const body = readLogs();
+      // Two refusals, two lines: no throttling anywhere on this path.
+      assert.equal(body.match(/discord_inbound_dropped \{"reason":"no-target"/g)?.length, 2);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("routes to an active session when the watched one has no connection", async () => {
+    // The watch names s2, which is disconnected; s1 is running and this thread is not the channel that
+    // streams the watch. That is not "no session at all", so the text goes to the live session.
+    const bot = startBot({
+      live: ["s1"],
+      watchedSessionId: "s2",
+      threads: {},
+      threadId: PLAIN,
+      responseChannelId: DM,
+      dmChannelId: DM,
+    });
+    const replies: string[] = [];
+    await bot.handler(message("m44", "hello", replies, { channelId: PLAIN }));
+    assert.deepEqual(replies, []);
+    assert.deepEqual(bot.sends.map((s) => s.sessionId), ["s1"]);
+  });
+
+  it("/stop aborts the fallback session when the watched one has no connection", async () => {
+    const bot = startBot({
+      live: ["s1"],
+      watchedSessionId: "s2",
+      threads: {},
+      threadId: PLAIN,
+      responseChannelId: DM,
+      dmChannelId: DM,
+    });
+    const replies: string[] = [];
+    await bot.handler(message("m45", "/stop", replies, { channelId: PLAIN }));
+    assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.command]), [["s1", "abort"]]);
+    assert.deepEqual(replies, ["⏹️ Stop sent."]);
+  });
+
   it("logs a message dropped in a channel the user does not own, once per channel", async () => {
     // The refusal the owner reproduced had no log line at all; a silent drop is undiagnosable. It is
-    // routine traffic though, so it logs at INFO and is throttled: every message in every channel the
-    // bot can see reaches this handler.
+    // routine traffic, so it logs at INFO — but never throttled: a refusal that logs once and hides
+    // the second occurrence is how this bug survived several deploys.
     (globalThis as any).__piConfigSessionId = "inbound-route-log-test";
     pinLevel("info");
     try {
@@ -382,8 +524,8 @@ describe("discord messageCreate routing", () => {
       assert.match(body, /chan-not-owned/);
       // A routine refusal is not a degradation: this record is INFO, not WARN.
       assert.match(body, /\[info\] \[pidash-discord\] discord_inbound_dropped \{"reason":"channel-not-owned"/);
-      // One line for the pair: the same channel, reason and author inside the window is suppressed.
-      assert.equal(body.match(/"reason":"channel-not-owned","channelId":"chan-not-owned"/g)?.length, 1);
+      // Two refusals, two lines.
+      assert.equal(body.match(/"reason":"channel-not-owned","channelId":"chan-not-owned"/g)?.length, 2);
       // Ids only: the message body must never reach the log.
       assert.doesNotMatch(body, /hello there/);
       assert.doesNotMatch(body, /hello again/);

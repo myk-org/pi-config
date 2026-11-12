@@ -64,8 +64,6 @@ import { parseEnvFile, resolveDiscordConfig } from "./discord-config.ts";
 import { checkoutName } from "../shared/chat/chat-sessions.ts";
 
 const log = createLogger("pidash-discord");
-/** A hot refusal repeats per message; one line per channel+reason per minute is enough. */
-const INBOUND_DROP_LOG_WINDOW_MS = 60_000;
 
 const SEEN_MESSAGE_LIMIT = 500;
 const STREAM_EDIT_INTERVAL_MS = 1500;
@@ -352,29 +350,17 @@ export function setupDiscordBot(opts: {
     return null;
   }
 
-  /** Routine refusals arrive per message — every message in every channel the bot can see reaches
-   *  the handler — so warning on each one floods the log and pays synchronous I/O per message. One
-   *  line per channel and reason per minute is enough to diagnose a reproduction. */
-  const dropLoggedAt = new Map<string, number>();
   /** The routing decision last logged per channel. A busy channel repeats one decision for every
    *  message it carries, so only a NEW decision gets a line — bounded, no timer. */
   const routedDecisions = new Map<string, string>();
+  /** Every refusal logs, always: a refusal that logs once and hides the second occurrence is how a
+   *  broken route survived several deploys (issue #1075). */
   function logInboundDrop(
     facts: Omit<InboundRouteFacts, "reason"> & { reason: string },
     level: "info" | "warn" = "warn",
-    throttle = false,
     /** Which handler decided — merged into the same line, so one event is one line. */
     trace?: InboundTraceFacts,
   ): void {
-    if (throttle) {
-      // Per USER as well: a shared fallback channel would otherwise hide every later user's drop.
-      const key = `${facts.reason}:${facts.channelId}:${facts.userId ?? ""}`;
-      const last = dropLoggedAt.get(key);
-      const now = Date.now();
-      if (last !== undefined && now - last < INBOUND_DROP_LOG_WINDOW_MS) return;
-      if (dropLoggedAt.size > 500) dropLoggedAt.clear();
-      dropLoggedAt.set(key, now);
-    }
     const record = trace
       ? { ...inboundRouteRecord(facts), ...inboundTraceRecord(trace) }
       : inboundRouteRecord(facts);
@@ -1283,7 +1269,7 @@ export function setupDiscordBot(opts: {
           ownsTarget: false,
           userId: interaction.user.id,
           inbound,
-        }, "warn", false, {
+        }, "warn", {
           kind: "message-context-menu",
           handler: "message-context-menu",
           channelId: interaction.channelId,
@@ -1431,7 +1417,7 @@ export function setupDiscordBot(opts: {
         targets: state.targets,
         ownsTarget: false,
         userId: interaction.user.id,
-      }, "warn", false, {
+      }, "warn", {
         kind: "chat-input-command",
         handler: "slash-command",
         commandName: name,
@@ -2040,7 +2026,7 @@ export function setupDiscordBot(opts: {
           targets: state.targets,
           ownsTarget: false,
           userId,
-        }, "info", true);
+        }, "info");
         return;
       }
       // A plain channel can be a fallback target for SEVERAL users, so the target is looked up in the
@@ -2059,7 +2045,7 @@ export function setupDiscordBot(opts: {
           targets: state.targets,
           ownsTarget: false,
           userId,
-        }, "info", true);
+        }, "info");
         return;
       }
       // A message is routed by the SESSION its thread belongs to, so writing in an older session's
@@ -2084,13 +2070,45 @@ export function setupDiscordBot(opts: {
     // Inbound and outbound must agree on WHICH session a channel is. Outbound delivers through
     // `targets`; inbound used to look only at the thread and the watch, so a channel that was
     // streaming a session's output could still be told "not watching any session".
-    let inbound = resolveInboundSession({
+    const resolveInbound = () => resolveInboundSession({
       channelId: message.channelId,
       threadSessionId,
       watchedSessionId: state.watchedSessionId ?? null,
       targets: state.targets ?? {},
       isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
     });
+    // The channel the bot streams this session's output into IS watching it, whatever the resolver
+    // could establish this instant: a momentarily missing `client.ws`, a target released by a prompt
+    // answer, a stale thread map. "Not watching any session" is false there, and saying it to the
+    // owner of that channel is the bug this guards (issue #1072). The watch is not cleared either:
+    // a disconnect is not proof the session is gone.
+    const streamingChannelFallback = (resolved: InboundSession): InboundSession =>
+      resolved.sessionId || !state.watchedSessionId || state.responseChannelId !== message.channelId
+        ? resolved
+        : { sessionId: state.watchedSessionId, source: "watch" };
+    // The owner's rule: "Not watching any session" is true only when NO session is connected. A
+    // connected session is a session the text can go to, so refusing while something runs hides both
+    // the reason and the message the user meant to send. Nothing is picked blind: the choice carries
+    // its reason and the number of candidates. A live watch is already resolved as `watch` above, a
+    // thread is identity (never liveness), and one channel carrying two sessions is a real conflict.
+    const routeToActiveSession = (resolved: InboundSession): InboundSession => {
+      if (resolved.sessionId || resolved.ambiguous) return resolved;
+      const active = [...piClients.entries()].filter(([, client]) => Boolean(client?.ws)).map(([sessionId]) => sessionId);
+      if (!active.length) return resolved;
+      const lastActivity = (sessionId: string) => Number(piClients.get(sessionId)?.session?.lastActivity) || 0;
+      const sessionId = active.reduce((newest, id) => (lastActivity(id) > lastActivity(newest) ? id : newest));
+      log.info("discord_inbound_fallback", {
+        reason: active.length === 1 ? "fallback_single_active" : "fallback_newest_active",
+        sessionId,
+        candidates: active.length,
+        channelId: message.channelId,
+        guildId: message.guildId ?? null,
+        watchedSessionId: state.watchedSessionId ?? null,
+        userId,
+      });
+      return { ...resolved, sessionId, source: "active" };
+    };
+    let inbound = routeToActiveSession(streamingChannelFallback(resolveInbound()));
     const noTargetReply = () => message.reply(inbound.deadTarget
       ? "The session this channel belonged to is gone. Use `/sessions` and pick one."
       : "Not watching any session. Use `/sessions` and pick one.").catch(() => {});
@@ -2199,13 +2217,7 @@ export function setupDiscordBot(opts: {
         await message.reply("The waiting prompt expired; sending your message as a new prompt.").catch(() => {});
         // The question that named this channel is gone, so the routing decision must be taken again —
         // keeping it sent the text to a session that had already stopped asking (Qodo ce99abaf).
-        inbound = resolveInboundSession({
-          channelId: message.channelId,
-          threadSessionId,
-          watchedSessionId: state.watchedSessionId ?? null,
-          targets: state.targets ?? {},
-          isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
-        });
+        inbound = routeToActiveSession(streamingChannelFallback(resolveInbound()));
       } else if (outcome === "not-an-answer" && (state.pendingPrompt?.method === "confirm" || hasPrompt) && text) {
         // Not an answer to a yes/no question, but it IS a message the user meant
         // to send: forward it and keep the prompt available (Qodo 85cacb2c).
@@ -2238,9 +2250,14 @@ export function setupDiscordBot(opts: {
     const client = piClients.get(targetSessionId);
     if (!client?.ws) {
       drop("session-disconnected");
+      // A channel that streams the session says WHAT is wrong, so the reply is actionable and cannot
+      // be confused with "not watching" (issue #1072).
+      const streams = state.responseChannelId === message.channelId && state.watchedSessionId === targetSessionId;
       await message.reply(inbound.source === "thread"
         ? "That thread's session is not connected."
-        : "The watched session is disconnected.").catch(() => {});
+        : streams
+          ? `This channel streams ${sessionNameFor(targetSessionId)}, but that session is not connected to the daemon right now.`
+          : "The watched session is disconnected.").catch(() => {});
       return;
     }
 
