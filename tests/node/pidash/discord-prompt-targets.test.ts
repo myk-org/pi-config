@@ -4,7 +4,7 @@
  */
 import { beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ensurePromptTarget, evictableSessions, hydratableTargets, nudgeChannelId, promptHeader, fallbackPromptTarget, nudgeDue, planPromptTarget, promptById, resolvePromptTarget, shouldNudge } from "../../../extensions/pidash/discord-prompt-targets.ts";
+import { ensurePromptTarget, evictableSessions, hydratableTargets, nudgeChannelId, promptHeader, fallbackPromptTarget, nudgeDue, planPromptTarget, promptById, resolvePromptTarget, shouldNudge, resolveInboundSession } from "../../../extensions/pidash/discord-prompt-targets.ts";
 
 describe("planPromptTarget", () => {
   const base = { existingChannelId: null, threadParentChannelId: "chan", dmChannelId: "dm-1", plainChannelId: "chan" };
@@ -404,5 +404,86 @@ describe("eviction and reuse are logged", () => {
     const fellBack = lines.find((line) => line.message === "prompt target fell back");
     assert.equal(fellBack?.level, "warn", "a failed route is a warning, not info");
     assert.match(String(fellBack?.data?.failure), /Missing Permissions/);
+  });
+});
+
+describe("resolveInboundSession", () => {
+  const live = (...ids: string[]) => (id: string) => ids.includes(id);
+
+  it("prefers the thread's session", () => {
+    const r = resolveInboundSession({ channelId: "ch", threadSessionId: "s1", watchedSessionId: "s2", isLive: live("s1", "s2") });
+    assert.deepEqual([r.sessionId, r.source], ["s1", "thread"]);
+  });
+
+  it("falls back to the watched session", () => {
+    const r = resolveInboundSession({ channelId: "ch", watchedSessionId: "s2", isLive: live("s2") });
+    assert.deepEqual([r.sessionId, r.source], ["s2", "watch"]);
+  });
+
+  it("routes through the session whose output this channel carries", () => {
+    // The reported bug: the channel streams s3's output while the watch is gone.
+    const r = resolveInboundSession({
+      channelId: "ch",
+      targets: { s3: { channelId: "ch", threadId: null } },
+      isLive: live("s3"),
+    });
+    assert.deepEqual([r.sessionId, r.source], ["s3", "target"]);
+  });
+
+  it("never routes to a dead target", () => {
+    const r = resolveInboundSession({ channelId: "ch", targets: { s3: { channelId: "ch" } }, isLive: live() });
+    assert.deepEqual([r.sessionId, r.source], [null, "none"]);
+  });
+
+  it("says the channel's session died instead of calling the channel unwatched", () => {
+    const r = resolveInboundSession({ channelId: "ch", targets: { s3: { channelId: "ch" } }, isLive: live() });
+    assert.equal(r.deadTarget, true);
+    const healthy = resolveInboundSession({ channelId: "other", isLive: live() });
+    assert.equal(healthy.deadTarget, undefined);
+  });
+
+  it("keeps a disconnected thread's message on that thread's session", () => {
+    // Spilling it into the live watch would deliver a thread's text to another agent.
+    const r = resolveInboundSession({ channelId: "ch", threadSessionId: "gone", watchedSessionId: "s2", isLive: live("s2") });
+    assert.deepEqual([r.sessionId, r.source], ["gone", "thread"]);
+  });
+
+  it("does not let a dead watch hide a live target on the same channel", () => {
+    const r = resolveInboundSession({
+      channelId: "ch",
+      watchedSessionId: "gone",
+      targets: { s3: { channelId: "ch", threadId: null } },
+      isLive: live("s3"),
+    });
+    assert.deepEqual([r.sessionId, r.source, r.deadWatch], ["s3", "target", true]);
+  });
+
+  it("keeps the watched session ahead of a channel that only carries output", () => {
+    const r = resolveInboundSession({
+      channelId: "ch",
+      watchedSessionId: "s2",
+      targets: { s3: { channelId: "ch", threadId: null } },
+      isLive: live("s2", "s3"),
+    });
+    assert.deepEqual([r.sessionId, r.source], ["s2", "watch"]);
+  });
+
+  it("resolves nothing for a channel that carries no session", () => {
+    // Only the empty case: the DM rule (the bot passes no session, so the engine cancels the newest
+    // question) lives in the handler and is pinned in discord-handler.test.ts.
+    const r = resolveInboundSession({ channelId: "dm-1", isLive: live() });
+    assert.deepEqual([r.sessionId, r.source], [null, "none"]);
+  });
+
+  it("reports a dead watch so the caller can clear it", () => {
+    const r = resolveInboundSession({ channelId: "ch", watchedSessionId: "gone", isLive: live() });
+    assert.equal(r.deadWatch, true);
+    assert.equal(r.sessionId, null);
+  });
+
+  it("refuses two live sessions delivering into one channel", () => {
+    const r = resolveInboundSession({ channelId: "ch", targets: { a: { channelId: "ch" }, b: { channelId: "ch" } }, isLive: live("a", "b") });
+    assert.equal(r.ambiguous, true);
+    assert.equal(r.sessionId, null);
   });
 });
