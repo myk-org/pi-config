@@ -19,6 +19,7 @@ import type {
   DescribeFailure,
   DescribeTask,
   PeerWorkloadDetail,
+  WorkloadTruncation,
 } from "./coms-workload.js";
 
 const log = createLogger("coms-workload");
@@ -35,9 +36,9 @@ export interface DescribeReply {
   detail: PeerWorkloadDetail | null;
 }
 
-/** An answered peer (`ok`) versus one that never answered usefully (`reason`). */
+/** An answered peer (`ok`, possibly with nothing active) versus a failed drilldown. */
 export type DescribeResult =
-  | { ok: true; detail: PeerWorkloadDetail }
+  | { ok: true; detail: PeerWorkloadDetail; truncated: WorkloadTruncation }
   | { ok: false; reason: DescribeFailure };
 
 /** Ask one peer for its active workload. */
@@ -48,8 +49,8 @@ export function requestDescribe(
   const timeoutMs = opts.timeoutMs ?? DESCRIBE_TIMEOUT_MS;
   const msgId = opts.msgId ?? `describe-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   if (!endpoint) {
-    log.debug("describe_unknown", { peer: "", reason: "no-sources" });
-    return Promise.resolve({ ok: false, reason: "no-sources" });
+    log.debug("describe_unknown", { peer: "", reason: "not-reported" });
+    return Promise.resolve({ ok: false, reason: "not-reported" });
   }
   log.debug("describe_request", { peer: endpoint, timeoutMs });
   return new Promise((resolve) => {
@@ -92,23 +93,33 @@ export function requestDescribe(
         invalid("reply", "json", "malformed");
         return;
       }
+      if (reply?.type === "nack") {
+        // An older peer does not know `describe`. It answered — it just has nothing to report.
+        finish({ ok: false, reason: "not-reported" }, "not_reported");
+        return;
+      }
       if (reply?.type !== "describe_reply") {
         invalid("reply", "type", "malformed");
         return;
       }
       if (reply.detail === null) {
         // The peer answered, and said it cannot report — not the same as silence.
-        finish({ ok: false, reason: "no-sources" }, "no_sources");
+        finish({ ok: false, reason: "not-reported" }, "not_reported");
         return;
       }
-      const { detail, malformed } = validateDetail(reply.detail);
+      if (!reply.detail || typeof reply.detail !== "object" || Array.isArray(reply.detail)) {
+        // Anything that is not a detail object is unparseable, never "nothing active".
+        invalid("reply", "detail", "malformed");
+        return;
+      }
+      const { detail, malformed, truncated } = validateDetail(reply.detail);
       if (malformed) {
         finish({ ok: false, reason: "malformed" }, "malformed_sections");
         return;
       }
-      finish({ ok: true, detail }, "ok");
+      finish({ ok: true, detail, truncated }, "ok");
     });
-    socket.once("error", (err: Error) => finish({ ok: false, reason: "malformed" }, `error:${err.message}`));
+    socket.once("error", (err: Error) => finish({ ok: false, reason: "unreachable" }, `error:${err.message}`));
   });
 }
 
@@ -117,7 +128,11 @@ export function requestDescribe(
  * non-empty but yielded no valid entry marks the whole reply malformed (the caller renders
  * `unknown`, so missing rows are never mistaken for an idle peer).
  */
-export function validateDetail(raw: any): { detail: PeerWorkloadDetail; malformed: boolean } {
+export function validateDetail(raw: any): {
+  detail: PeerWorkloadDetail;
+  malformed: boolean;
+  truncated: WorkloadTruncation;
+} {
   const agents = readSection<DescribeAgent>("agents", raw?.agents, (entry) =>
     hasStrings(entry, ["id", "state", "elapsed"])
       ? {
@@ -149,18 +164,23 @@ export function validateDetail(raw: any): { detail: PeerWorkloadDetail; malforme
   const malformed = [agents, tasks, crons].some(
     (section) => section.invalidType || (section.received > 0 && section.items.length === 0),
   );
-  return { detail: { agents: agents.items, tasks: tasks.items, crons: crons.items }, malformed };
+  return {
+    detail: { agents: agents.items, tasks: tasks.items, crons: crons.items },
+    // A reply that names none of the three sections is not a workload report at all.
+    malformed: malformed || !["agents", "tasks", "crons"].some((key) => key in raw),
+    truncated: { agents: agents.truncated, tasks: tasks.truncated, crons: crons.truncated },
+  };
 }
 
 function readSection<T>(
   section: string,
   value: unknown,
   pick: (entry: any) => T | null,
-): { items: T[]; received: number; invalidType: boolean } {
-  if (value === undefined) return { items: [], received: 0, invalidType: false };
+): { items: T[]; received: number; invalidType: boolean; truncated: number } {
+  if (value === undefined) return { items: [], received: 0, invalidType: false, truncated: 0 };
   if (!Array.isArray(value)) {
     log.debug("describe_reply_invalid", { section, field: "type" });
-    return { items: [], received: 0, invalidType: true };
+    return { items: [], received: 0, invalidType: true, truncated: 0 };
   }
   const items: T[] = [];
   for (const entry of value.slice(0, DESCRIBE_MAX_ENTRIES)) {
@@ -171,7 +191,12 @@ function readSection<T>(
   if (value.length > DESCRIBE_MAX_ENTRIES) {
     log.debug("describe_entries_truncated", { section, kept: items.length, received: value.length });
   }
-  return { items, received: Math.min(value.length, DESCRIBE_MAX_ENTRIES), invalidType: false };
+  return {
+    items,
+    received: Math.min(value.length, DESCRIBE_MAX_ENTRIES),
+    invalidType: false,
+    truncated: Math.max(0, value.length - DESCRIBE_MAX_ENTRIES),
+  };
 }
 
 function hasStrings(entry: any, fields: readonly string[]): boolean {

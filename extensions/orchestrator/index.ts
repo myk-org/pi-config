@@ -144,7 +144,17 @@ export default function (pi: ExtensionAPI) {
   const { getCronTasks } = registerCron(pi, spawnAsyncAgent);
   // #1083: peers report their OWN workload — session crons live only in this process, so the
   // coms extension must read them here rather than scan for them.
-  publishWorkloadSources({ agents: getAsyncJobs, crons: getCronTasks });
+  const publishOwnWorkload = (): void => publishWorkloadSources({ agents: getAsyncJobs, crons: getCronTasks });
+  publishOwnWorkload();
+  // #1084: re-publish on every session transition. The getters themselves are live, but a
+  // session switch/reload must not leave peers reading a binding from the previous session.
+  pi.on("session_start", () => {
+    log.debug("workload_sources_republish", "session_start");
+    publishOwnWorkload();
+  });
+  // A watched-session switch or any other ctx change shows up as a turn in the new ctx, so
+  // re-publishing here keeps the getters bound to the session that is actually running.
+  pi.on("before_agent_start", () => publishOwnWorkload());
   // A torn-down runtime must not keep answering coms drilldowns from dead getters.
   pi.on("session_shutdown", () => {
     log.debug("session_shutdown", "clearing workload sources");

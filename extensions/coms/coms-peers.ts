@@ -7,6 +7,7 @@
  * coordinating.
  */
 import { formatWorkloadSuffix, type PeerWorkloadCounts } from "./coms-workload.js";
+import { sanitizePeerText } from "./peer-text.js";
 
 export interface RegistryRow {
   /** Project namespace (the registry directory name). */
@@ -81,7 +82,8 @@ export function formatPeerTable(rows: RegistryRow[]): string {
       const queue = row.queueDepth ? ` queue:${row.queueDepth}` : "";
       const ctx = row.contextUsedPct === null ? "" : ` ctx:${Math.round(row.contextUsedPct)}%`;
       const pid = row.pid ? ` pid:${row.pid}` : "";
-      return `● ${row.name} · ${row.project} (${state}${queue}${ctx}${pid})${formatWorkloadSuffix(row.workload)} — ${row.cwd || "?"}`;
+      // #1084: peer-supplied text is sanitized before it reaches a terminal.
+      return `● ${sanitizePeerText(row.name, 40)} · ${sanitizePeerText(row.project, 40)} (${state}${queue}${ctx}${pid})${formatWorkloadSuffix(row.workload)} — ${sanitizePeerText(row.cwd, 120) || "?"}`;
     });
   return `${rows.length} peer(s):\n${lines.join("\n")}`;
 }

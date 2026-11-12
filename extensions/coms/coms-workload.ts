@@ -14,6 +14,7 @@
 import { formatCronSchedule, formatNextRunLabel, toCronStatusTaskView } from "../orchestrator/cron-status-format.js";
 import { formatDuration } from "../orchestrator/async-agents.js";
 import { formatTaskRowLine } from "../pitasks/tasks-view.js";
+import { sanitizePeerText } from "./peer-text.js";
 import { createLogger } from "../shared/logger.js";
 import type { WorkloadAgent, WorkloadCron } from "../shared/workload-bridge.js";
 
@@ -73,6 +74,17 @@ export interface PeerWorkloadDetail {
   crons: DescribeCron[];
 }
 
+/** Field caps: a peer can send a field of any length, the pane cannot show it. */
+const ID_MAX = 40;
+const NAME_MAX = 40;
+const STATE_MAX = 40;
+const ELAPSED_MAX = 16;
+const PURPOSE_MAX = 120;
+const SUBJECT_MAX = 120;
+const SCHEDULE_MAX = 40;
+const NEXT_MAX = 24;
+const DESCRIPTION_MAX = 120;
+
 /** Active only: a `complete`/`failed` agent is history, and a queued one is waiting, not running. */
 export function isActiveAgent(agent: Pick<WorkloadAgent, "status">): boolean {
   return agent.status === "running";
@@ -86,6 +98,22 @@ export function isActiveTask(task: Pick<WorkloadTask, "status">): boolean {
 /** Active only: a scheduled cron this replica actually owns (a non-leader replica runs nothing). */
 export function isActiveCron(cron: Pick<WorkloadCron, "leader">): boolean {
   return cron.leader !== false;
+}
+
+/**
+ * Only OPEN blockers hold a task: a completed (or vanished) blocker must not mark the row
+ * `⛔ blocked`. `statusById` is the peer's own task statuses, so a deleted blocker is absent.
+ */
+export function openBlockers(
+  blockedBy: readonly string[] | undefined,
+  statusById: ReadonlyMap<string, string>,
+): string[] {
+  return (blockedBy ?? [])
+    .map(String)
+    .filter((id) => {
+      const status = statusById.get(id);
+      return status !== undefined && status !== "completed";
+    });
 }
 
 /** Filter each list to its active entries and count them. */
@@ -112,25 +140,25 @@ export function collectWorkload(
 export function toDescribeDetail(active: ActiveWorkload, now = Date.now()): PeerWorkloadDetail {
   const detail: PeerWorkloadDetail = {
     agents: active.agents.map((agent) => ({
-      id: agent.id,
-      name: agent.name || agent.agent || "",
-      state: agent.status,
+      id: sanitizePeerText(agent.id, ID_MAX),
+      name: sanitizePeerText(agent.name || agent.agent || "", NAME_MAX),
+      state: sanitizePeerText(agent.status, STATE_MAX),
       elapsed: typeof agent.startedAt === "number" ? formatDuration(Math.max(0, now - agent.startedAt)) : "?",
-      purpose: oneLine(agent.task),
+      purpose: sanitizePeerText(agent.task, PURPOSE_MAX),
     })),
     tasks: active.tasks.map((task) => ({
-      id: task.id,
-      status: task.status,
-      subject: oneLine(task.subject),
-      blockedBy: (task.blockedBy ?? []).map(String),
+      id: sanitizePeerText(task.id, ID_MAX),
+      status: sanitizePeerText(task.status, STATE_MAX),
+      subject: sanitizePeerText(task.subject, SUBJECT_MAX),
+      blockedBy: (task.blockedBy ?? []).map((id) => sanitizePeerText(id, ID_MAX)),
     })),
     crons: active.crons.map((cron) => {
       const view = toCronStatusTaskView(cron, { overlayId: cron.id });
       return {
-        id: cron.id,
-        schedule: formatCronSchedule(view),
-        next: formatNextRunLabel(view, now),
-        description: oneLine(cron.description || cron.task),
+        id: sanitizePeerText(cron.id, ID_MAX),
+        schedule: sanitizePeerText(formatCronSchedule(view), SCHEDULE_MAX),
+        next: sanitizePeerText(formatNextRunLabel(view, now), NEXT_MAX),
+        description: sanitizePeerText(cron.description || cron.task, DESCRIPTION_MAX),
       };
     }),
   };
@@ -159,54 +187,86 @@ export function formatWorkloadSuffix(counts: PeerWorkloadCounts | null | undefin
 }
 
 /** Why a drilldown has no payload. An ANSWERED peer with no active work is not one of these. */
-export type DescribeFailure = "timeout" | "oversize" | "malformed" | "no-sources";
+export type DescribeFailure = "not-reported" | "timeout" | "unreachable" | "malformed" | "oversize";
 
 export const WORKLOAD_UNKNOWN_LINE = "workload  unknown (no reply within 2s)";
 export const WORKLOAD_NONE_LINE = "workload  none active";
 
-/** One honest line per failure — never three invented ones. */
+/**
+ * One honest line per failure — never three invented ones. An older peer that has no workload
+ * support at all is `not reported`, which is not the same claim as "did not answer".
+ */
 export function workloadUnknownLine(reason: DescribeFailure): string {
   switch (reason) {
+    case "not-reported":
+      return "workload  unknown (not reported)";
     case "malformed":
       return "workload  unknown (malformed reply)";
     case "oversize":
       return "workload  unknown (reply too large)";
-    case "no-sources":
-      return "workload  unknown (peer cannot report its own workload)";
     default:
       return WORKLOAD_UNKNOWN_LINE;
   }
 }
 
-/** The drilldown body: three sections with the existing formatters, omitted when empty. */
-export function workloadSectionLines(detail: PeerWorkloadDetail): string[] {
+/** Rows trimmed by the 50-entry cap, per section. Truncation must never look like the whole list. */
+export interface WorkloadTruncation {
+  agents?: number;
+  tasks?: number;
+  crons?: number;
+}
+
+/** The drilldown body: three sections with the existing formatters, omitted when empty.
+ *  Every peer-supplied field is sanitized here — a reply can carry ANSI a pane must not obey. */
+export function workloadSectionLines(
+  detail: PeerWorkloadDetail,
+  truncated: WorkloadTruncation = {},
+): string[] {
   const lines: string[] = [];
   if (detail.agents.length > 0) {
     lines.push(`agents (${detail.agents.length})`);
     for (const agent of detail.agents) {
       // An agent without a purpose keeps its identity columns, without trailing blanks.
-      lines.push(`  ${agentLabel(agent)}  ${agent.state}  ${agent.elapsed}  ${agent.purpose}`.trimEnd());
+      lines.push(
+        `  ${agentLabel(agent)}  ${sanitizePeerText(agent.state, STATE_MAX)}  ${sanitizePeerText(agent.elapsed, ELAPSED_MAX)}  ${sanitizePeerText(agent.purpose, PURPOSE_MAX)}`.trimEnd(),
+      );
     }
+    pushTruncated(lines, truncated.agents);
   }
   if (detail.tasks.length > 0) {
     lines.push(`tasks (${detail.tasks.length})`);
-    for (const task of detail.tasks) lines.push(`  ${formatTaskRowLine(task)}`);
+    for (const task of detail.tasks) {
+      lines.push(
+        `  ${formatTaskRowLine({
+          id: sanitizePeerText(task.id, ID_MAX),
+          status: sanitizePeerText(task.status, STATE_MAX),
+          subject: sanitizePeerText(task.subject, SUBJECT_MAX),
+          blockedBy: (task.blockedBy ?? []).map((id) => sanitizePeerText(id, ID_MAX)),
+        })}`,
+      );
+    }
+    pushTruncated(lines, truncated.tasks);
   }
   if (detail.crons.length > 0) {
     lines.push(`crons (${detail.crons.length})`);
     for (const cron of detail.crons) {
-      lines.push(`  ${cron.id}  ${cron.schedule}  ${cron.next}  ${cron.description}`);
+      lines.push(
+        `  ${sanitizePeerText(cron.id, ID_MAX)}  ${sanitizePeerText(cron.schedule, SCHEDULE_MAX)}  ${sanitizePeerText(cron.next, NEXT_MAX)}  ${sanitizePeerText(cron.description, DESCRIPTION_MAX)}`.trimEnd(),
+      );
     }
+    pushTruncated(lines, truncated.crons);
   }
   if (lines.length === 0) lines.push(WORKLOAD_NONE_LINE);
   return lines;
 }
 
-/** Identity first: `name (id)` when the peer reported both, the id alone otherwise. */
-function agentLabel(agent: DescribeAgent): string {
-  return agent.name ? `${agent.name} (${agent.id})` : agent.id;
+function pushTruncated(lines: string[], more: number | undefined): void {
+  if (typeof more === "number" && more > 0) lines.push(`  … ${more} more`);
 }
 
-function oneLine(text: string): string {
-  return String(text ?? "").replace(/\s+/g, " ").trim();
+/** Identity first: `name (id)` when the peer reported both, the id alone otherwise. */
+function agentLabel(agent: DescribeAgent): string {
+  const id = sanitizePeerText(agent.id, ID_MAX);
+  const name = sanitizePeerText(agent.name, NAME_MAX);
+  return name ? `${name} (${id})` : id;
 }

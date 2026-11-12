@@ -177,9 +177,12 @@ describe("ui-bridge degrade path (no ctx.ui.custom)", () => {
 });
 
 describe("browser dispatch marker (#1082)", () => {
-  it("is false for a terminal command and for anything unmarked", () => {
+  it("is false for a terminal command", () => {
     assert.equal(isBrowserDispatch({ hasUI: true }), false);
     assert.equal(isBrowserDispatch({ hasUI: false }), false);
+  });
+
+  it("is false for an unmarked context", () => {
     assert.equal(isBrowserDispatch(undefined), false);
     assert.equal(isBrowserDispatch(null), false);
   });

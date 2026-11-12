@@ -10,6 +10,7 @@ import {
   isActiveAgent,
   isActiveCron,
   isActiveTask,
+  openBlockers,
   renderWorkloadPart,
   toDescribeDetail,
   WORKLOAD_NONE_LINE,
@@ -19,6 +20,7 @@ import {
   type PeerWorkloadDetail,
 } from "../../../extensions/coms/coms-workload.js";
 import { requestDescribe, validateDetail, DESCRIBE_MAX_ENTRIES } from "../../../extensions/coms/coms-describe.js";
+import { sanitizePeerText } from "../../../extensions/coms/peer-text.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 const agent = (over: Partial<{ id: string; agent: string; name: string; task: string; status: string; startedAt: number }> = {}) => ({
@@ -55,8 +57,8 @@ const detail = (over: Partial<PeerWorkloadDetail> = {}): PeerWorkloadDetail => (
   ...over,
 });
 
-describe("workload is active-only (#1083)", () => {
-  it("counts agents that are running — a queued one is waiting, not in flight", () => {
+describe("active counts (#1083)", () => {
+  it("counts only running agents", () => {
     assert.equal(isActiveAgent({ status: "running" }), true);
     assert.equal(isActiveAgent({ status: "queued" }), false);
     assert.equal(isActiveAgent({ status: "complete" }), false);
@@ -75,21 +77,45 @@ describe("workload is active-only (#1083)", () => {
     assert.equal(isActiveCron({ leader: false }), false);
   });
 
-  it("collects counts and the same active entries", () => {
-    const { counts, active } = collectWorkload(
+  it("collects the active counts", () => {
+    const { counts } = collectWorkload(
       [agent({ id: "a1" }), agent({ id: "a2", status: "queued" }), agent({ id: "a3", status: "complete" }), agent({ id: "a4", status: "failed" })],
       [task({ id: "1" }), task({ id: "2", status: "in_progress" }), task({ id: "3", status: "completed" })],
       [cron({ id: "session:c1" }), cron({ id: "persist:c2", scope: "project", leader: false })],
     );
     assert.deepEqual(counts, { agents: 1, tasks: 2, crons: 1 });
+  });
+
+  it("collects the active entries themselves", () => {
+    const { active } = collectWorkload(
+      [agent({ id: "a1" }), agent({ id: "a2", status: "queued" })],
+      [task({ id: "1" }), task({ id: "3", status: "completed" })],
+      [cron({ id: "session:c1" }), cron({ id: "persist:c2", scope: "project", leader: false })],
+    );
     assert.deepEqual(active.agents.map((a) => a.id), ["a1"]);
-    assert.deepEqual(active.tasks.map((t) => t.id), ["1", "2"]);
+    assert.deepEqual(active.tasks.map((t) => t.id), ["1"]);
     assert.deepEqual(active.crons.map((c) => c.id), ["session:c1"]);
   });
 });
 
-describe("drilldown payload is projected (#1083)", () => {
-  it("ships agents as id/name/state/elapsed/purpose and nothing else", () => {
+describe("blockers (#1084)", () => {
+  it("keeps a blocker that is still open", () => {
+    const status = new Map([["3", "in_progress"]]);
+    assert.deepEqual(openBlockers(["3"], status), ["3"]);
+  });
+
+  it("drops a blocker that is already completed", () => {
+    const status = new Map([["3", "completed"]]);
+    assert.deepEqual(openBlockers(["3"], status), []);
+  });
+
+  it("drops a blocker that no longer exists", () => {
+    assert.deepEqual(openBlockers(["9"], new Map()), []);
+  });
+});
+
+describe("drilldown payload (#1083)", () => {
+  it("ships the projected agent record", () => {
     const projected = toDescribeDetail(
       {
         agents: [agent({ id: "job-7", name: "ts-expert", status: "running", task: "migrate\nthe  widget", startedAt: 1_000 })],
@@ -101,21 +127,36 @@ describe("drilldown payload is projected (#1083)", () => {
     assert.deepEqual(projected.agents, [
       { id: "job-7", name: "ts-expert", state: "running", elapsed: "10m0s", purpose: "migrate the widget" },
     ]);
+  });
+
+  it("ships nothing but the five agent fields", () => {
+    const projected = toDescribeDetail({ agents: [agent()], tasks: [], crons: [] }, 1_000);
     // Job output, worker dirs and other internals never cross the socket.
     assert.deepEqual(Object.keys(projected.agents[0]).sort(), ["elapsed", "id", "name", "purpose", "state"]);
   });
 
-  it("keeps blockedBy so the drilldown marks blocked tasks", () => {
+  it("keeps the open blockers so the drilldown can mark a blocked task", () => {
     const projected = toDescribeDetail({ agents: [], tasks: [task({ id: "7", status: "pending", subject: "Wire heartbeat", blockedBy: ["1", "2"] })], crons: [] }, 0);
     assert.deepEqual(projected.tasks, [{ id: "7", status: "pending", subject: "Wire heartbeat", blockedBy: ["1", "2"] }]);
   });
 
-  it("pre-formats cron schedule and next run", () => {
-    const projected = toDescribeDetail({ agents: [], tasks: [], crons: [cron({ id: "session:c9", description: "nightly audit", intervalMs: 30 * 60_000 })] }, 10 * 60_000 + 1_000);
-    assert.equal(projected.crons[0].id, "session:c9");
+  it("pre-formats the cron schedule", () => {
+    const projected = toDescribeDetail({ agents: [], tasks: [], crons: [cron({ intervalMs: 30 * 60_000 })] }, 1_000);
     assert.equal(projected.crons[0].schedule, "every 30m");
+  });
+
+  it("pre-formats the cron next-run label", () => {
+    const projected = toDescribeDetail({ agents: [], tasks: [], crons: [cron({ intervalMs: 30 * 60_000 })] }, 10 * 60_000 + 1_000);
     assert.match(projected.crons[0].next, /^in \d+m$|^soon$/);
-    assert.equal(projected.crons[0].description, "nightly audit");
+  });
+
+  it("sanitizes whatever the peer sent", () => {
+    const projected = toDescribeDetail(
+      { agents: [agent({ task: "\x1b[2Jcleared" })], tasks: [task({ subject: "a\x1b]0;title\x07b" })], crons: [] },
+      1_000,
+    );
+    assert.equal(projected.agents[0].purpose, "cleared");
+    assert.equal(projected.tasks[0].subject, "ab");
   });
 });
 
@@ -141,8 +182,34 @@ describe("workload widget suffix", () => {
   });
 });
 
+describe("peer text sanitization (#1084)", () => {
+  it("strips a screen-clear sequence", () => {
+    assert.equal(sanitizePeerText("\x1b[2Jhello"), "hello");
+  });
+
+  it("strips a window-title sequence", () => {
+    assert.equal(sanitizePeerText("a\x1b]0;forged\x07b"), "ab");
+  });
+
+  it("collapses whitespace into one space", () => {
+    assert.equal(sanitizePeerText("a\nb\tc\r\nd"), "a b c d");
+  });
+
+  it("caps a very long field", () => {
+    assert.equal(sanitizePeerText("x".repeat(500), 120).length, 120);
+  });
+
+  it("drops C1 control characters", () => {
+    assert.equal(sanitizePeerText("a\u009bb"), "ab");
+  });
+
+  it("leaves ordinary text alone", () => {
+    assert.equal(sanitizePeerText("Wire the heartbeat"), "Wire the heartbeat");
+  });
+});
+
 describe("workload drilldown sections", () => {
-  it("renders agents, tasks and crons with the shared row format", () => {
+  it("renders all three sections with the shared row format", () => {
     const lines = workloadSectionLines(
       detail({
         agents: [{ id: "job-7", name: "ts-expert", state: "running", elapsed: "10m0s", purpose: "migrate the widget" }],
@@ -170,20 +237,34 @@ describe("workload drilldown sections", () => {
     assert.equal(lines[1], "  ◻ #4 [pending] wait on 3 ⛔ blocked");
   });
 
-  it("omits empty sections and says so when an answered peer has nothing active", () => {
+  it("strips control sequences a peer put in a row", () => {
+    const lines = workloadSectionLines(
+      detail({ agents: [{ id: "job-1", name: "", state: "running\x1b[2J", elapsed: "1m", purpose: "\x1b]0;x\x07purpose" }] }),
+    );
+    assert.equal(lines[1], "  job-1  running  1m  purpose");
+  });
+
+  it("says so when an answered peer has nothing active", () => {
     assert.deepEqual(workloadSectionLines(detail()), [WORKLOAD_NONE_LINE]);
   });
 
+  it("shows how many rows the cap trimmed", () => {
+    const tasks = Array.from({ length: 3 }, (_, i) => ({ id: String(i), status: "pending", subject: "s", blockedBy: [] }));
+    const lines = workloadSectionLines(detail({ tasks }), { tasks: 12 });
+    assert.equal(lines.at(-1), "  … 12 more");
+  });
+
   it("has one honest line per failure reason", () => {
+    assert.equal(workloadUnknownLine("not-reported"), "workload  unknown (not reported)");
     assert.equal(workloadUnknownLine("timeout"), WORKLOAD_UNKNOWN_LINE);
+    assert.equal(workloadUnknownLine("unreachable"), WORKLOAD_UNKNOWN_LINE);
     assert.equal(workloadUnknownLine("malformed"), "workload  unknown (malformed reply)");
     assert.equal(workloadUnknownLine("oversize"), "workload  unknown (reply too large)");
-    assert.match(workloadUnknownLine("no-sources"), /cannot report/);
   });
 });
 
 describe("describe reply validation (#1083)", () => {
-  it("keeps valid entries and drops invalid ones", () => {
+  it("keeps the valid entries", () => {
     const { detail: valid, malformed } = validateDetail({
       agents: [{ id: "a1", name: "worker", state: "running", elapsed: "2m", purpose: "p" }, null, { id: 7 }],
       tasks: [],
@@ -205,7 +286,11 @@ describe("describe reply validation (#1083)", () => {
   });
 
   it("treats a missing section as empty", () => {
-    assert.deepEqual(validateDetail({}), { detail: { agents: [], tasks: [], crons: [] }, malformed: false });
+    assert.deepEqual(validateDetail({ tasks: [] }), {
+      detail: { agents: [], tasks: [], crons: [] },
+      malformed: false,
+      truncated: { agents: 0, tasks: 0, crons: 0 },
+    });
   });
 
   it("calls a wrong-typed section malformed instead of empty", () => {
@@ -214,11 +299,20 @@ describe("describe reply validation (#1083)", () => {
     assert.equal(malformed, true);
   });
 
-  it("caps each section and keeps the first entries", () => {
+  it("calls a reply that names no section malformed", () => {
+    assert.equal(validateDetail({}).malformed, true);
+  });
+
+  it("caps each section at the entry limit", () => {
     const many = Array.from({ length: DESCRIBE_MAX_ENTRIES + 5 }, (_, i) => ({ id: `t${i}`, status: "pending", subject: "s" }));
     const { detail: capped } = validateDetail({ tasks: many });
     assert.equal(capped.tasks.length, DESCRIBE_MAX_ENTRIES);
     assert.equal(capped.tasks[0].id, "t0");
+  });
+
+  it("reports how many entries the cap trimmed", () => {
+    const many = Array.from({ length: DESCRIBE_MAX_ENTRIES + 5 }, (_, i) => ({ id: `t${i}`, status: "pending", subject: "s" }));
+    assert.equal(validateDetail({ tasks: many }).truncated.tasks, 5);
   });
 });
 
@@ -227,7 +321,7 @@ describe("coms_describe is the only source of workload", () => {
 
   // The whole point of #1083: the peer reports itself. A filesystem read here would be the
   // #1072/#1080 failure mode — two components disagreeing about another process's state.
-  it("keeps the workload and describe modules free of filesystem access", () => {
+  it("keeps the workload modules free of filesystem access", () => {
     for (const file of ["coms/coms-workload.ts", "coms/coms-describe.ts"]) {
       const source = readFileSync(join(root, file), "utf-8");
       assert.equal(/from\s+"node:fs/.test(source), false, `${file} must not import node:fs`);
@@ -264,26 +358,37 @@ describe("coms_describe is the only source of workload", () => {
     return path;
   };
 
+  const replyWith = async (reply: unknown): Promise<string> =>
+    listen((socket) => {
+      socket.on("data", () => socket.write(JSON.stringify(reply) + "\n"));
+    });
+
   it("returns the peer's detail from a describe_reply", async (t) => {
     if (process.platform === "win32") return t.skip("unix sockets only");
     const answered = detail({ agents: [{ id: "a1", name: "worker", state: "running", elapsed: "1m", purpose: "p" }] });
-    const endpoint = await listen((socket) => {
-      socket.on("data", (chunk) => {
-        assert.match(chunk.toString("utf-8"), /"type":"describe"/);
-        socket.write(JSON.stringify({ type: "describe_reply", msg_id: "x", detail: answered }) + "\n");
-      });
+    const endpoint = await replyWith({ type: "describe_reply", msg_id: "x", detail: answered });
+    assert.deepEqual(await requestDescribe(endpoint, { timeoutMs: 1_000 }), {
+      ok: true,
+      detail: answered,
+      truncated: { agents: 0, tasks: 0, crons: 0 },
     });
-    assert.deepEqual(await requestDescribe(endpoint, { timeoutMs: 1_000 }), { ok: true, detail: answered });
   });
 
-  it("reports an answered-but-idle peer as ok with empty sections, not unknown", async (t) => {
+  it("reports an answered-but-idle peer as ok with empty sections", async (t) => {
     if (process.platform === "win32") return t.skip("unix sockets only");
-    const endpoint = await listen((socket) => {
-      socket.on("data", () => socket.write(JSON.stringify({ type: "describe_reply", msg_id: "x", detail: detail() }) + "\n"));
-    });
+    const endpoint = await replyWith({ type: "describe_reply", msg_id: "x", detail: detail() });
     const result = await requestDescribe(endpoint, { timeoutMs: 1_000 });
     assert.equal(result.ok, true);
     assert.deepEqual(result.ok && workloadSectionLines(result.detail), [WORKLOAD_NONE_LINE]);
+  });
+
+  it("carries the truncation counts into the renderer", async (t) => {
+    if (process.platform === "win32") return t.skip("unix sockets only");
+    const many = Array.from({ length: DESCRIBE_MAX_ENTRIES + 2 }, (_, i) => ({ id: String(i), status: "pending", subject: "s", blockedBy: [] }));
+    const endpoint = await replyWith({ type: "describe_reply", msg_id: "x", detail: detail({ tasks: many }) });
+    const result = await requestDescribe(endpoint, { timeoutMs: 1_000 });
+    assert.equal(result.ok && result.truncated.tasks, 2);
+    assert.equal(result.ok && workloadSectionLines(result.detail, result.truncated).at(-1), "  … 2 more");
   });
 
   it("reads unknown when the peer does not answer in time", async (t) => {
@@ -296,38 +401,62 @@ describe("coms_describe is the only source of workload", () => {
 
   it("reads unknown when the peer answers with a malformed detail", async (t) => {
     if (process.platform === "win32") return t.skip("unix sockets only");
-    const endpoint = await listen((socket) => {
-      socket.on("data", () => socket.write(JSON.stringify({ type: "describe_reply", msg_id: "x", detail: { agents: 3 } }) + "\n"));
-    });
+    const endpoint = await replyWith({ type: "describe_reply", msg_id: "x", detail: { agents: 3 } });
+    assert.deepEqual(await requestDescribe(endpoint, { timeoutMs: 1_000 }), { ok: false, reason: "malformed" });
+  });
+
+  it("never reads a reply with no detail as an idle peer", async (t) => {
+    if (process.platform === "win32") return t.skip("unix sockets only");
+    const endpoint = await replyWith({ type: "describe_reply", msg_id: "x" });
+    assert.deepEqual(await requestDescribe(endpoint, { timeoutMs: 1_000 }), { ok: false, reason: "malformed" });
+  });
+
+  it("never reads a non-object detail as an idle peer", async (t) => {
+    if (process.platform === "win32") return t.skip("unix sockets only");
+    const endpoint = await replyWith({ type: "describe_reply", msg_id: "x", detail: "nope" });
+    assert.deepEqual(await requestDescribe(endpoint, { timeoutMs: 1_000 }), { ok: false, reason: "malformed" });
+  });
+
+  it("never reads an empty reply object as an idle peer", async (t) => {
+    if (process.platform === "win32") return t.skip("unix sockets only");
+    const endpoint = await replyWith({});
     assert.deepEqual(await requestDescribe(endpoint, { timeoutMs: 1_000 }), { ok: false, reason: "malformed" });
   });
 
   it("reads unknown when a non-empty section has no valid entry", async (t) => {
     if (process.platform === "win32") return t.skip("unix sockets only");
-    const endpoint = await listen((socket) => {
-      socket.on("data", () => socket.write(JSON.stringify({ type: "describe_reply", msg_id: "x", detail: { agents: [null], tasks: [], crons: [] } }) + "\n"));
-    });
+    const endpoint = await replyWith({ type: "describe_reply", msg_id: "x", detail: { agents: [null], tasks: [], crons: [] } });
     assert.deepEqual(await requestDescribe(endpoint, { timeoutMs: 1_000 }), { ok: false, reason: "malformed" });
+  });
+
+  it("reports an older peer that nacks describe as not reported", async (t) => {
+    if (process.platform === "win32") return t.skip("unix sockets only");
+    const endpoint = await replyWith({ type: "nack", msg_id: "x", error: "unknown type" });
+    assert.deepEqual(await requestDescribe(endpoint, { timeoutMs: 1_000 }), { ok: false, reason: "not-reported" });
+  });
+
+  it("reports a peer that says it cannot report as not reported", async (t) => {
+    if (process.platform === "win32") return t.skip("unix sockets only");
+    const endpoint = await replyWith({ type: "describe_reply", msg_id: "x", detail: null });
+    assert.deepEqual(await requestDescribe(endpoint, { timeoutMs: 1_000 }), { ok: false, reason: "not-reported" });
+  });
+
+  it("reports a withered connection as no reply", async (t) => {
+    if (process.platform === "win32") return t.skip("unix sockets only");
+    tmpDir = makeTempDir("coms-describe-dead-");
+    const endpoint = join(tmpDir, "absent.sock");
+    const result = await requestDescribe(endpoint, { timeoutMs: 1_000 });
+    assert.deepEqual(result, { ok: false, reason: "unreachable" });
   });
 
   it("refuses a reply larger than the buffer cap instead of growing memory", async (t) => {
     if (process.platform === "win32") return t.skip("unix sockets only");
     const huge = "x".repeat(1024 * 1024 + 16);
-    const endpoint = await listen((socket) => {
-      socket.on("data", () => socket.write(JSON.stringify({ type: "describe_reply", msg_id: "x", detail: { agents: [], tasks: [], crons: [], pad: huge } }) + "\n"));
-    });
+    const endpoint = await replyWith({ type: "describe_reply", msg_id: "x", detail: { agents: [], tasks: [], crons: [], pad: huge } });
     assert.deepEqual(await requestDescribe(endpoint, { timeoutMs: 2_000 }), { ok: false, reason: "oversize" });
   });
 
-  it("distinguishes a peer that answered null from one that never answered", async (t) => {
-    if (process.platform === "win32") return t.skip("unix sockets only");
-    const endpoint = await listen((socket) => {
-      socket.on("data", () => socket.write(JSON.stringify({ type: "describe_reply", msg_id: "x", detail: null }) + "\n"));
-    });
-    assert.deepEqual(await requestDescribe(endpoint, { timeoutMs: 1_000 }), { ok: false, reason: "no-sources" });
-  });
-
   it("reads unknown when there is no endpoint to ask", async () => {
-    assert.deepEqual(await requestDescribe(""), { ok: false, reason: "no-sources" });
+    assert.deepEqual(await requestDescribe(""), { ok: false, reason: "not-reported" });
   });
 });

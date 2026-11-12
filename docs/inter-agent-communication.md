@@ -62,12 +62,16 @@ Each peer reports its **own** active work: async agents that are *running* (a qu
 
 The pool widget and peer list append `⏳2 ✓5 ⏰1` (agents, tasks, crons), showing only non-zero counts. A peer that reports no workload field renders `unknown`, never `0`: absence is not idleness.
 
+Every peer-supplied string is sanitized before rendering: escape sequences and control characters are stripped, whitespace collapsed, and each field capped (purpose/subject 120, id/state 40). A peer cannot move the viewer's cursor, clear its screen, or forge a prompt.
+
 Selecting a peer in the `/coms` peer overlay asks that peer directly for the detail — agent identity and elapsed time, task rows in the same format `/tasks` uses, and cron schedules. The peer answers over its own socket from its own memory, with a projected payload (no job output, no worker directories); nothing scans another process's files.
 
 Three answers are kept apart:
-- the peer answered with work → the sections it reported
+- the peer answered with work → the sections it reported; a section trimmed by the 50-row cap ends with `… N more`, so a truncated list never looks complete
 - the peer answered with nothing active → `workload  none active`
-- no usable answer → `unknown`, with the reason: `(no reply within 2s)`, `(malformed reply)`, `(reply too large)`, or `(peer cannot report its own workload)`
+- no usable answer → `unknown`, with the reason kept distinct: `(not reported)` for a peer with no workload support, `(no reply within 2s)` for silence or a dead connection, `(malformed reply)` for a reply that could not be parsed, `(reply too large)` beyond the 1 MiB cap
+
+In the pidash browser the peer list shows the same workload counts (`⏳n ✓n ⏰n`, or `unknown`), and a browser-sent `/tasks` returns the task rows as text; the drilldown overlay and its detail lines are terminal-only.
 
 Dead peers are removed from the registry in two phases. A newly registered entry gets a grace period (`coms_entry_grace_period_ms`, default 30 seconds) so a just-booted session is never pruned early. After that, the entry is probed by connecting to its socket: peers that respond are kept, peers that do not are removed from the registry. Timestamp staleness alone never prunes an entry, which is what keeps laptop suspend/resume from wiping out live peers.
 

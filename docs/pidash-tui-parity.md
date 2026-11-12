@@ -15,7 +15,7 @@ This page documents the parity contract and the seamless-switch walkthrough
 | Commit-trailer selection | `ui.select` prompt | same prompt rendered inline | first answer wins |
 | Project-agent confirmation | `ui.confirm` prompt | same prompt rendered inline | first answer wins |
 | `/tasks` | fullscreen task list/detail overlay; text listing instead when the command comes from the browser | Tasks panel (dedicated); a browser-sent `/tasks` answers as text | both operate the same live TaskStore |
-| Coms peers | pool widget | Coms panel | same registry, same `deliverPrompt` path |
+| Coms peers | pool widget + terminal-only peer overlay with the workload drilldown | Coms panel: same peers, same workload counts; no drilldown overlay | same registry, same `deliverPrompt` path |
 | New session / compact | `/new`, `/compact` | sidebar `+`, InfoBar `compact` | session lifecycle events broadcast to all browsers |
 | Memory status | situation report (implicit) | Memory panel | read from the same scoring/topic modules |
 | MCP servers | `/mcp` | MCP panel | both drive `pi mcp` |

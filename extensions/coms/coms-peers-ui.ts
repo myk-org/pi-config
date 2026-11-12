@@ -9,6 +9,7 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { describePeerOrigin } from "./coms-peers.js";
 import { renderWorkloadPart, workloadSectionLines, workloadUnknownLine } from "./coms-workload.js";
+import { sanitizePeerText } from "./peer-text.js";
 import type { DescribeResult } from "./coms-describe.js";
 import { OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -97,7 +98,7 @@ export async function openComsPeersOverlay(
             log.warn("describe_failed", { peer: row.name, error: err instanceof Error ? err.message : String(err) });
           });
       } else {
-        workload.result = { ok: false, reason: "no-sources" };
+        workload.result = { ok: false, reason: "not-reported" };
         workload.state = "done";
       }
       // OverlayScrollDetail owns the detail contract: key handling, scrolling and done(). A bare
@@ -116,7 +117,7 @@ export async function openComsPeersOverlay(
           getHeader: (t) => {
             const current = deps.listPeers().find((p) => `${p.project}:${p.name}` === peerId) || row;
             const state = current.busy ? t.fg("warning", "busy") : t.fg("success", "idle");
-            return `${state} ${t.fg("accent", t.bold(current.name))} ${t.fg("dim", `· ${current.project}`)}`;
+            return `${state} ${t.fg("accent", t.bold(sanitizePeerText(current.name, 40)))} ${t.fg("dim", `· ${sanitizePeerText(current.project, 40)}`)}`;
           },
           getBodyLines: () => {
             const current = deps.listPeers().find((p) => `${p.project}:${p.name}` === peerId) || row;
@@ -124,7 +125,7 @@ export async function openComsPeersOverlay(
             const origin = describePeerOrigin(current);
             const lines = [
               `cwd       ${current.cwd || "?"}`,
-              `purpose   ${current.purpose || "—"}`,
+              `purpose   ${sanitizePeerText(current.purpose, 120) || "—"}`,
               `state     ${current.busy ? "busy" : "idle"}${current.queueDepth ? ` · queue ${current.queueDepth}` : ""}`,
               `created   ${origin.by === "unknown" ? "unknown (no record)" : origin.by} · via ${origin.via}`,
               `pid       ${current.pid ?? "?"}`,
@@ -139,7 +140,7 @@ export async function openComsPeersOverlay(
               lines.push("");
               const result = workload.result;
               // An answered peer with nothing active says so; only silence is `unknown`.
-              lines.push(...(result?.ok ? workloadSectionLines(result.detail) : [workloadUnknownLine(result?.reason ?? "timeout")]));
+              lines.push(...(result?.ok ? workloadSectionLines(result.detail, result.truncated) : [workloadUnknownLine(result?.reason ?? "timeout")]));
             }
             return lines;
           },

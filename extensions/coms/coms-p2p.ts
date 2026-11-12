@@ -35,9 +35,10 @@ import { setLogFilePrefix } from "../shared/file-logger.js";
 import { probeStaleSocket } from "./probe-socket.js";
 import { isUserMessageDuringInbound, computeMixedTurn } from "./mixed-turn.js";
 import { buildQueuePreview, clearLocalQueue, type QueueRecoveryItem, type QueueRecoveryPreview } from "./queue-recovery.js";
-import { collectWorkload, renderWorkloadPart, toDescribeDetail, type ActiveWorkload, type PeerWorkloadCounts, type WorkloadTask } from "./coms-workload.js";
+import { collectWorkload, openBlockers, renderWorkloadPart, toDescribeDetail, type ActiveWorkload, type PeerWorkloadCounts, type WorkloadTask } from "./coms-workload.js";
 import { publishedWorkloadSources } from "../shared/workload-bridge.js";
 import { publishedTaskStore } from "../shared/task-store-bridge.js";
+import { sanitizePeerText } from "./peer-text.js";
 
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -741,12 +742,16 @@ export default function (pi: ExtensionAPI) {
 			return null;
 		}
 		try {
-			const tasks: WorkloadTask[] = (store.list() ?? []).map((t: any) => ({
+			const all = (store.list() ?? []) as any[];
+			// #1084: a blocker that is completed (or gone from the store) no longer holds the task,
+			// so the flag is derived from the blocker's own status, not from the ids alone.
+			const statusById = new Map(all.map((t) => [String(t?.id ?? ""), String(t?.status ?? "")]));
+			const tasks: WorkloadTask[] = all.map((t) => ({
 				id: String(t?.id ?? "?"),
 				status: String(t?.status ?? ""),
 				subject: String(t?.subject ?? ""),
-				// #1082: the drilldown marks blocked tasks, so the flag must survive the projection.
-				blockedBy: Array.isArray(t?.blockedBy) ? t.blockedBy.map(String) : [],
+				// #1082: the drilldown marks blocked tasks, so the open blockers survive the projection.
+				blockedBy: openBlockers(Array.isArray(t?.blockedBy) ? t.blockedBy.map(String) : [], statusById),
 			}));
 			return collectWorkload(sources.agents(), tasks, sources.crons());
 		} catch (err) {
@@ -2175,13 +2180,13 @@ Do not respond to this message.`;
 			const pctLabel = r.pct == null ? "--%" : `${r.pct}%`;
 
 			if (r.stale) {
-				const dimRow = `✗ ${r.name.padEnd(12)} ${abbreviateModel(r.model).padEnd(14)} [${"-".repeat(15)}] ${pctLabel.padStart(4)}  —  ${r.purpose || ""}`;
+				const dimRow = `✗ ${sanitizePeerText(r.name, 40).padEnd(12)} ${abbreviateModel(r.model).padEnd(14)} [${"-".repeat(15)}] ${pctLabel.padStart(4)}  —  ${sanitizePeerText(r.purpose, 120)}`;
 				out.push(truncateToWidth(" " + theme.fg("dim", dimRow), width));
 				continue;
 			}
 
 			const swatch = r.pending ? theme.fg("dim", "●") : hexFg(r.color, "●");
-			const namePart = theme.fg("accent", r.name.padEnd(12));
+			const namePart = theme.fg("accent", sanitizePeerText(r.name, 40).padEnd(12));
 			const modelPart = theme.fg("dim", abbreviateModel(r.model).padEnd(14));
 			const barFill = r.pending
 				? theme.fg("dim", "-".repeat(15))
@@ -2189,7 +2194,8 @@ Do not respond to this message.`;
 			const bar = theme.fg("warning", "[") + barFill + theme.fg("warning", "]");
 			const pctPart = " " + theme.fg("accent", pctLabel.padStart(4));
 			const sep = theme.fg("dim", "  —  ");
-			const purposePart = theme.fg("muted", r.purpose || "");
+			// #1084: peer text is another process's input — never let it drive the terminal.
+			const purposePart = theme.fg("muted", sanitizePeerText(r.purpose, 120));
 
 			// #1083: active work the peer counted itself. The legacy `tasks_summary` part is
 			// replaced by this suffix: `✓N` is the same number, active-only, so showing both
