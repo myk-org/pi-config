@@ -175,7 +175,10 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
     if (decideCronArm(task) === "skip") { log.debug("cron_timer_skipped", { id: qualifyCronId(task), paused: task.paused === true, leader: task.leader !== false }); return; }
     const schedule = (runAt = task.nextRun ?? Date.now() + nextDelay(task)) => {
       const delay = Math.max(0, runAt - Date.now());
-      const timer = setTimeout(async () => { try { await execute(task); if (storedPaused(task)) { log.debug("cron_rearm_skipped", { id: qualifyCronId(task), reason: "paused_during_run" }); return; } if (!durable(task.scope) || (task.leader && owned.has(projectStore(task.cwd)))) schedule(Date.now() + nextDelay(task)); } catch (error: any) { log.error("cron_timer_failed", qualifyCronId(task), error?.message || error); } }, delay);
+      // A pause stored by a peer reaches this replica only through the store, so the CURRENT
+      // stored flag is read BEFORE dispatch: a post-run check cannot undo a run (#1087).
+      const fire = async () => { try { if (storedPaused(task)) { log.info("cron_skipped_paused", { id: qualifyCronId(task) }); return; } await execute(task); if (storedPaused(task)) { log.debug("cron_rearm_skipped", { id: qualifyCronId(task), reason: "paused_during_run" }); return; } if (!durable(task.scope) || (task.leader && owned.has(projectStore(task.cwd)))) schedule(Date.now() + nextDelay(task)); } catch (error: any) { log.error("cron_timer_failed", qualifyCronId(task), error?.message || error); } };
+      const timer = setTimeout(fire, delay);
       task.nextRun = runAt; persist(task); updateStatus(); timer.unref?.(); timers.set(task.id, timer);
     };
     schedule();

@@ -185,16 +185,49 @@ describe("togglePaused (#1089)", () => {
 });
 
 describe("pause across replicas (#1089)", () => {
-  it("keeps the stored pause when the leader writes its whole record", async () => {
+  it("does not dispatch a cron paused before its timer fires", async () => {
     const cwd = makeTempDir("pi-cron-pause-");
     const { h, store } = start(cwd, [{ ...projectTask(cwd), nextRun: 1 }]);
-    // A follower pauses; this replica is the leader and has not reloaded the store yet.
+    // A follower pauses: only the store knows, this replica's timer is still armed.
     fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ ...projectTask(cwd), nextRun: 1, paused: true }] }));
+
     await h.timeouts.find((timer) => timer.delay === 0)!.fn();
 
-    const stored = readDurableCronStore(store).tasks[0];
-    assert.equal(stored.paused, true, "the leader's write must not overwrite the pause");
-    assert.ok(Number.isFinite(stored.lastRun), "the leader still recorded its run");
+    assert.deepEqual(h.messages, [], "a stored pause must stop the run itself, not only the next one");
+  });
+
+  it("does not re-arm a cron paused before its timer fires", async () => {
+    const cwd = makeTempDir("pi-cron-pause-");
+    const { h, store } = start(cwd, [{ ...projectTask(cwd), nextRun: 1 }]);
+    fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ ...projectTask(cwd), nextRun: 1, paused: true }] }));
+    const before = h.timeouts.length;
+
+    await h.timeouts.find((timer) => timer.delay === 0)!.fn();
+
+    assert.equal(h.timeouts.length, before, "a skipped fire leaves the task disarmed until a resume");
+  });
+
+  it("keeps the stored pause when the leader's timer fires", async () => {
+    const cwd = makeTempDir("pi-cron-pause-");
+    const { h, store } = start(cwd, [{ ...projectTask(cwd), nextRun: 1 }]);
+    fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ ...projectTask(cwd), nextRun: 1, paused: true }] }));
+
+    await h.timeouts.find((timer) => timer.delay === 0)!.fn();
+
+    assert.equal(readDurableCronStore(store).tasks[0].paused, true, "the leader's write must not overwrite the pause");
+  });
+
+  it("dispatches when the store says not paused but the in-memory flag does", async () => {
+    const cwd = makeTempDir("pi-cron-pause-");
+    const { h, cron } = start(cwd, [{ ...projectTask(cwd), nextRun: 1 }]);
+    // The stale in-memory copy is the bug's own subject: the STORED value must win.
+    cron.getCronTasks()[0].paused = true;
+    const before = h.timeouts.length;
+
+    await h.timeouts.find((timer) => timer.delay === 0)!.fn();
+
+    assert.deepEqual(h.messages.map((m) => m.message), ["/status"]);
+    assert.equal(h.timeouts.length, before + 1, "an active cron still re-arms");
   });
 
   it("does not re-arm a cron paused while its execution was running", async () => {
