@@ -71,35 +71,19 @@ ambiguity included: a `~` target, a redirection glued to the path (`>/path`), a 
 into a skills directory, a path through a symlink out of every area, a `cp`/`mv` whose source and destination
 cannot be told apart, and a destructive verb (`rm`, `chmod`, `truncate`, `dd`).
 
-Chains are classified per command: a `;`, `&&`, `||` or `|` splits the line, and a segment that names a skill
-with a verb the guard cannot vouch for blocks the whole command. `mkdir` is allowed inside the owned tree, so a
-new skill directory can be created (the file itself still needs the marker). `mv` never passes — it removes the
-source — and a `cp` whose destination is moved by an option (`-t`, `--target-directory`) is refused, because
-source and destination can no longer be told apart by position.
+Chains are classified per command: a `;`, `&&`, `||` or `|` splits the line, and every segment must stand on
+its own. `mkdir` is allowed inside the owned tree, so a new skill directory can be created (the file itself
+still needs the marker).
+
+**No shell write to a skill is allowed at all** — `>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`,
+`install`, `dd`, `truncate`, `chmod` all block, whatever the shape. Earlier versions tried to classify shell
+writes (`cp` source vs destination, `-t`, `--target-directory=<path>`, pipelines, glued redirections) and each
+shape was another bypass, so the rule is now one line: the shell reads skills, `write`/`edit` writes them —
+where ownership, the marker, provenance and the notice already apply.
 
 Known limit, stated rather than guessed at: a path built by shell expansion — `t=…; … > "$t"`, `eval`,
 `find -exec` — carries no literal reference, so no text rule can see it. The change still reaches the turn-end
-notice, and every allowed shell write into a marked skill is audited (mtime and size are compared, so a
-same-length rewrite counts).
-
-The skills directory follows the **main checkout**, like `.pi/memory`: a session running in a linked worktree
-maintains the same `.pi/skills/` the project really has, so a worktree cannot reach an unguarded copy.
-
-## The In-Turn Nudge
-
-The agent is steered mid-turn when a maintained skill it used fails:
-
-1. a `/skill:<name>` invocation, or any tool touching a file inside a maintained skill's directory, counts as
-   using that skill;
-2. a later tool call in the same turn returns an error;
-3. Pi injects one line (`deliverAs: "steer"`, delivered after the tool batch, before the next model call):
-
-```text
-The guidance from skill `searxng` just failed. Fix the skill now, or state in one line why it still applies.
-```
-
-One nudge per skill per turn. This is the part that makes maintenance happen where the evidence is — the turn
-that just proved the skill wrong.
+notice.
 
 ## Provenance
 

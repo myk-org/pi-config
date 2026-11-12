@@ -314,13 +314,17 @@ describe("shell guard (Qodo #1079)", () => {
 
   it("blocks a shell write to a user-global skill", () => {
     const { cwd } = project();
-    const verdict = bashSkillVerdict(cwd, `echo hacked > ${globalSkill()}`);
-    assert.equal(verdict?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `echo hacked > ${globalSkill()}`)?.block, true);
   });
 
   it("blocks a redirection glued to the path", () => {
     const { cwd } = project();
     assert.equal(bashSkillVerdict(cwd, `echo hacked >${globalSkill()}`)?.block, true);
+  });
+
+  it("blocks the >& redirection form", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "cat README.md >& ~/.agents/skills/x/SKILL.md")?.block, true);
   });
 
   it("blocks a home-relative target", () => {
@@ -338,23 +342,51 @@ describe("shell guard (Qodo #1079)", () => {
     const outside = tempDir("skill-maint-outside-");
     fs.writeFileSync(path.join(outside, "SKILL.md"), "# Outside\n");
     fs.symlinkSync(outside, path.join(root, "linked"));
-    const link = path.join(root, "linked", "SKILL.md");
-    assert.equal(bashSkillVerdict(cwd, `printf x >> ${link}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `printf x >> ${path.join(root, "linked", "SKILL.md")}`)?.block, true);
   });
 
-  it("allows copying a global skill into a project file", () => {
-    const { cwd } = project();
-    assert.equal(bashSkillVerdict(cwd, `cp ${globalSkill()} ./notes.md`), null);
+  it("blocks every shell write into a skill, marked or not", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    writeSkill(root, "unmarked", UNMARKED);
+    for (const name of ["marked", "unmarked"]) {
+      assert.equal(bashSkillVerdict(cwd, `printf x >> ${path.join(root, name, "SKILL.md")}`)?.block, true);
+      assert.equal(bashSkillVerdict(cwd, `sed -i 's/a/b/' ${path.join(root, name, "SKILL.md")}`)?.block, true);
+    }
   });
 
-  it("blocks copying a project file over a global skill", () => {
-    const { cwd } = project();
-    assert.equal(bashSkillVerdict(cwd, `cp ./notes.md ${globalSkill()}`)?.block, true);
+  it("blocks cp into a skill whatever the option shape", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "unmarked", UNMARKED);
+    for (const command of [
+      `cp -t ${path.join(root, "unmarked")} /tmp/SKILL.md`,
+      `cp --target-directory=${path.join(root, "unmarked")} /tmp/SKILL.md`,
+      `cp -rt ${path.join(root, "unmarked")} /tmp/SKILL.md`,
+      `cp --target ${path.join(root, "unmarked")} /tmp/SKILL.md`,
+    ]) {
+      assert.equal(bashSkillVerdict(cwd, command)?.block, true, command);
+    }
   });
 
-  it("blocks a destructive command on a skill", () => {
+  it("blocks copying a skill anywhere, even out of it", () => {
     const { cwd } = project();
-    assert.equal(bashSkillVerdict(cwd, `rm ${globalSkill()}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `cp ${globalSkill()} ./notes.md`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `mv ${globalSkill()} ./notes.md`)?.block, true);
+  });
+
+  it("blocks a pipeline whose later stage writes a skill", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    const read = `cat ${path.join(root, "marked", "SKILL.md")}`;
+    assert.equal(bashSkillVerdict(cwd, read), null);
+    assert.equal(
+      bashSkillVerdict(cwd, `${read} | uv run python3 -c 'open("${path.join(root, "unmarked", "SKILL.md")}", "w")'`)?.block,
+      true,
+    );
+    assert.equal(
+      bashSkillVerdict(cwd, `${read} && uv run python3 -c 'open("${path.join(root, "unmarked", "SKILL.md")}", "w")'`)?.block,
+      true,
+    );
   });
 
   it("allows an allowlisted read of a skill", () => {
@@ -364,65 +396,19 @@ describe("shell guard (Qodo #1079)", () => {
     assert.equal(bashSkillVerdict(cwd, "ls -la ~/.agents/skills/x"), null);
   });
 
+  it("allows a read whose search term looks destructive", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "rg 'rm' ~/.agents/skills/x/SKILL.md"), null);
+  });
+
+  it("allows a glob pattern that merely names SKILL.md", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "rg --glob=SKILL.md TODO ."), null);
+  });
+
   it("blocks a command that touches a skill with a verb it cannot vouch for", () => {
     const { cwd } = project();
     assert.equal(bashSkillVerdict(cwd, `python3 -c 'open("${globalSkill()}", "w")'`)?.block, true);
-  });
-
-  it("allows an ordinary write that mentions no skills area", () => {
-    const { cwd } = project();
-    assert.equal(bashSkillVerdict(cwd, "echo hi > notes.txt"), null);
-    assert.equal(bashSkillVerdict(cwd, "git commit -m 'fix skill guard'"), null);
-  });
-
-  it("allows a shell write into a marked project skill", () => {
-    const { cwd, root } = project();
-    writeSkill(root, "marked", MARKED);
-    const target = path.join(root, "marked", "SKILL.md");
-    const verdict = bashSkillVerdict(cwd, `printf x >> ${target}`);
-    assert.equal(verdict?.block, false);
-    assert.deepEqual(verdict && !verdict.block ? verdict.writes.map((w) => w.file) : [], ["SKILL.md"]);
-  });
-
-  it("blocks every segment of a shell chain on its own", () => {
-    const { cwd, root } = project();
-    writeSkill(root, "marked", MARKED);
-    const read = `cat ${path.join(root, "marked", "SKILL.md")}`;
-    assert.equal(bashSkillVerdict(cwd, read), null);
-    // the second segment is an interpreter writing an unmarked skill
-    const chain = `${read} && uv run python3 -c 'open("${path.join(root, "unmarked", "SKILL.md")}", "w")'`;
-    assert.equal(bashSkillVerdict(cwd, chain)?.block, true);
-  });
-
-  it("blocks the >& redirection form", () => {
-    const { cwd } = project();
-    assert.equal(bashSkillVerdict(cwd, "cat README.md >& ~/.agents/skills/x/SKILL.md")?.block, true);
-  });
-
-  it("blocks a pipeline whose later stage writes a skill", () => {
-    const { cwd, root } = project();
-    writeSkill(root, "marked", MARKED);
-    const read = `cat ${path.join(root, "marked", "SKILL.md")}`;
-    const pipeline = `${read} | uv run python3 -c 'open("${path.join(root, "unmarked", "SKILL.md")}", "w")'`;
-    assert.equal(bashSkillVerdict(cwd, pipeline)?.block, true);
-  });
-
-  it("blocks cp with a target-directory option", () => {
-    const { cwd, root } = project();
-    writeSkill(root, "unmarked", UNMARKED);
-    assert.equal(bashSkillVerdict(cwd, `cp -t ${path.join(root, "unmarked")} /tmp/SKILL.md`)?.block, true);
-    assert.equal(bashSkillVerdict(cwd, `cp --target-directory=${path.join(root, "unmarked")} /tmp/SKILL.md`)?.block, true);
-  });
-
-  it("blocks a write redirection into a global skill", () => {
-    const { cwd } = project();
-    assert.equal(bashSkillVerdict(cwd, "cat README.md > ~/.agents/skills/x/SKILL.md")?.block, true);
-    assert.equal(bashSkillVerdict(cwd, "cat README.md 2> ~/.agents/skills/x/SKILL.md")?.block, true);
-  });
-
-  it("blocks mv of a global skill", () => {
-    const { cwd } = project();
-    assert.equal(bashSkillVerdict(cwd, "mv ~/.agents/skills/x/SKILL.md ./backup.md")?.block, true);
   });
 
   it("allows mkdir inside the owned skills tree", () => {
@@ -430,21 +416,10 @@ describe("shell guard (Qodo #1079)", () => {
     assert.equal(bashSkillVerdict(cwd, `mkdir -p ${path.join(root, "brand-new")}`), null);
   });
 
-  it("allows a read whose search term looks destructive", () => {
+  it("allows an ordinary write that mentions no skills area", () => {
     const { cwd } = project();
-    assert.equal(bashSkillVerdict(cwd, "rg 'rm' ~/.agents/skills/x/SKILL.md"), null);
-  });
-
-  it("blocks a bare SKILL.md after cd, which the audit could not follow", () => {
-    const { cwd, root } = project();
-    writeSkill(root, "marked", MARKED);
-    assert.equal(bashSkillVerdict(cwd, `cd ${path.join(root, "marked")} && printf x >> SKILL.md`)?.block, true);
-  });
-
-  it("blocks a shell write into an unmarked project skill", () => {
-    const { cwd, root } = project();
-    writeSkill(root, "unmarked", UNMARKED);
-    assert.equal(bashSkillVerdict(cwd, `printf x >> ${path.join(root, "unmarked", "SKILL.md")}`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, "echo hi > notes.txt"), null);
+    assert.equal(bashSkillVerdict(cwd, "git commit -m 'fix skill guard'"), null);
   });
 });
 
@@ -1019,69 +994,6 @@ describe("second-round findings (Qodo #1079)", () => {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
     }
-  });
-
-  it("audits a shell write into a marked skill", async () => {
-    const { cwd, root } = project();
-    const file = writeSkill(root, "marked", MARKED);
-    fs.utimesSync(file, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
-    const h = harness(cwd);
-    await h.emit("turn_start", { turnIndex: 1 });
-    const command = `printf 'more\\n' >> ${path.relative(cwd, file)}`;
-    const verdict = await h.emit("tool_call", { toolCallId: "s1", toolName: "bash", input: { command } });
-    assert.equal(verdict, undefined);
-    fs.writeFileSync(file, `${MARKED}\nshell edit\n`);
-    await h.emit("tool_result", { toolCallId: "s1", toolName: "bash", input: { command }, isError: false });
-
-    const [record] = provenanceRecords(cwd);
-    assert.equal(record.skill, "marked");
-    assert.equal(record.action, "patched");
-    assert.equal(record.file, "SKILL.md");
-  });
-
-  it("audits a same-length shell rewrite", async () => {
-    const { cwd, root } = project();
-    const file = writeSkill(root, "marked", MARKED);
-    fs.utimesSync(file, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
-    const h = harness(cwd);
-    await h.emit("turn_start", { turnIndex: 1 });
-    const command = `sed -i 's/Run the query/Run the query./' ${path.relative(cwd, file)}`;
-    await h.emit("tool_call", { toolCallId: "s2", toolName: "bash", input: { command } });
-    // same byte length, different content: only mtime distinguishes it
-    fs.writeFileSync(file, MARKED.replace("Run the query.", "Run the queri."));
-    assert.equal(fs.statSync(file).size, MARKED.length);
-    await h.emit("tool_result", { toolCallId: "s2", toolName: "bash", input: { command }, isError: false });
-
-    assert.equal(provenanceRecords(cwd).length, 1);
-  });
-
-  it("records two shell writes to one skill in a turn", async () => {
-    const { cwd, root } = project();
-    const file = writeSkill(root, "marked", MARKED);
-    const h = harness(cwd);
-    await h.emit("turn_start", { turnIndex: 1 });
-    const command = `printf 'x\\n' >> ${path.relative(cwd, file)}`;
-    for (const [index, content] of [`${MARKED}\none\n`, `${MARKED}\ntwo\n`].entries()) {
-      fs.utimesSync(file, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
-      await h.emit("tool_call", { toolCallId: `r${index}`, toolName: "bash", input: { command } });
-      fs.writeFileSync(file, content);
-      await h.emit("tool_result", { toolCallId: `r${index}`, toolName: "bash", input: { command }, isError: false });
-    }
-    assert.equal(provenanceRecords(cwd).length, 2);
-  });
-
-  it("records a skill file relative to its skill through a symlinked checkout", () => {
-    const real = tempDir("skill-maint-real-");
-    fs.mkdirSync(path.join(real, ".pi", "skills"), { recursive: true });
-    const root = path.join(real, ".pi", "skills");
-    writeSkill(root, "marked", MARKED);
-    const linkParent = tempDir("skill-maint-link-");
-    const linkedCwd = path.join(linkParent, "project");
-    fs.symlinkSync(real, linkedCwd);
-
-    const verdict = bashSkillVerdict(linkedCwd, `printf x >> ${path.join(linkedCwd, ".pi", "skills", "marked", "SKILL.md")}`);
-    assert.equal(verdict?.block, false);
-    assert.deepEqual(verdict && !verdict.block ? verdict.writes.map((w) => w.file) : [], ["SKILL.md"]);
   });
 
   it("nudges again after an aborted turn", async () => {
