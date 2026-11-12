@@ -524,4 +524,24 @@ describe("file-logger", () => {
       else process.env[envKey] = prev;
     }
   });
+
+  it("setLogLevelPin beats the environment and is released by null", async () => {
+    const name = `pin_level_${Date.now()}`;
+    const envKey = `PI_LOG_${name.toUpperCase()}`;
+    const prev = process.env[envKey];
+    // The environment says the opposite of the pin, so only the pin can decide.
+    process.env[envKey] = "off";
+    try {
+      const { isLevelEnabled, setLogLevelPin } = await import(
+        `../../../extensions/shared/file-logger.ts?t=${Date.now() + 18}`
+      );
+      setLogLevelPin(name, "debug");
+      assert.equal(isLevelEnabled(name, "debug"), true);
+      setLogLevelPin(name, null);
+      assert.equal(isLevelEnabled(name, "debug"), false);
+    } finally {
+      if (prev === undefined) delete process.env[envKey];
+      else process.env[envKey] = prev;
+    }
+  });
 });

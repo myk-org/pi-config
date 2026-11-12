@@ -157,6 +157,24 @@ describe("inboundTraceRecord", () => {
     assert.deepEqual(record.targetKeys, ["sess-a"]);
   });
 
+  it("names both sessions when the message answered a prompt in another one", () => {
+    // Routing says sess-a; the answer belongs to the session that asked HERE, and the bridge sends it
+    // there — a record with only inboundSessionId cannot be reconciled with what the bridge did.
+    const record = inboundTraceRecord({
+      kind: "message",
+      handler: "messageCreate",
+      channelId: "chan-1",
+      guildId: "guild-1",
+      watchedSessionId: "sess-a",
+      watchLive: true,
+      targets,
+      inbound: { sessionId: "sess-a", source: "watch" },
+      answerSessionId: "sess-b",
+    });
+    assert.equal(record.inboundSessionId, "sess-a");
+    assert.equal(record.answerSessionId, "sess-b");
+  });
+
   it("cannot carry free text", () => {
     // Only the fixed kind/handler labels, ids and booleans go in — never the message body.
     const record = inboundTraceRecord({
@@ -170,9 +188,9 @@ describe("inboundTraceRecord", () => {
       inbound: { sessionId: null, source: "none" },
     });
     assert.deepEqual(Object.keys(record).sort(), [
-      "channelId", "commandName", "handler", "hasThread", "inboundSessionId", "inboundSource", "isDm",
-      "kind", "targetKeys", "targetsCount", "threadSessionId", "watchLive", "watchedClientPresent",
-      "watchedSessionId",
+      "answerSessionId", "channelId", "commandName", "handler", "hasThread", "inboundSessionId",
+      "inboundSource", "isDm", "kind", "targetKeys", "targetsCount", "threadSessionId", "watchLive",
+      "watchedClientPresent", "watchedSessionId",
     ]);
     assert.doesNotMatch(JSON.stringify(record), /text|body|content|author|attach|username/i);
   });

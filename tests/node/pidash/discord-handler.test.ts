@@ -14,6 +14,7 @@ import { createRequire } from "node:module";
 import { after, describe, it, mock } from "node:test";
 
 import { setupDiscordBot } from "../../../extensions/pidash/discord-bot.ts";
+import { getLastFileLogError, getPiLogPath, setLogLevelPin } from "../../../extensions/shared/file-logger.ts";
 
 /** Anything the bot builds (buttons, menus, containers) is only touched by paths this test avoids. */
 function anyBuilder(): any {
@@ -89,6 +90,7 @@ interface Sent { sessionId: string; type: string; command?: string; id?: string;
 
 interface Bot {
   handler: (m: any) => Promise<void>;
+  interaction: (i: any) => Promise<void>;
   sends: Sent[];
   /** pi -> bot events, as the daemon feeds them. */
   hooks: Array<(sessionId: string, event: any) => void>;
@@ -141,7 +143,12 @@ function startBot(opts: {
     log: () => {},
   });
   assert.equal(built.length, before + 1, "setupDiscordBot built no client");
-  return { handler: built[built.length - 1]!.listeners("messageCreate")[0] as (m: any) => Promise<void>, sends, hooks };
+  return {
+    handler: built[built.length - 1]!.listeners("messageCreate")[0] as (m: any) => Promise<void>,
+    interaction: built[built.length - 1]!.listeners("interactionCreate")[0] as (i: any) => Promise<void>,
+    sends,
+    hooks,
+  };
 }
 
 function message(id: string, content: string, replies: string[], opts: { dm?: boolean; channelId?: string; author?: string } = {}): any {
@@ -158,6 +165,40 @@ function message(id: string, content: string, replies: string[], opts: { dm?: bo
 /** onUiRequest delivers questions inside a floating promise; give it turns to settle. */
 async function settle(): Promise<void> {
   for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Everything the bot logged for the current session — the file the logger itself resolved.
+ *  Reading a guessed path made these tests depend on the machine's HOME, session nesting and
+ *  write-failure fallback; `getPiLogPath` is the same source the writer uses. */
+const LOG_NAME = "pidash-discord";
+
+function readLogs(): string {
+  const logPath = getPiLogPath(LOG_NAME);
+  assert.ok(logPath, "no session id set: fileLog buffers, so nothing was written");
+  // Hermeticity: the HOME override must hold, or this reads another machine's log tree.
+  assert.ok(logPath.startsWith(tmp + path.sep), `log path escaped the test HOME: ${logPath}`);
+  if (!fs.existsSync(logPath)) {
+    assert.fail(`nothing was logged at ${logPath} (last write error: ${getLastFileLogError()})`);
+  }
+  return fs.readFileSync(logPath, "utf8");
+}
+
+/** Pin the bot's level explicitly: the routing trace is debug, the refusals are info, and neither
+ *  may depend on `PI_LOG_PIDASH_DISCORD` or a project/global log setting being what the test wants. */
+function pinLevel(level: "debug" | "info"): void {
+  setLogLevelPin(LOG_NAME, level);
+}
+
+/** A right-click "Ask pi about this message" interaction on a message in `channelId`. */
+function contextMenu(replies: string[], opts: { channelId?: string } = {}): any {
+  return {
+    user: { id: USER, username: "tester" },
+    channelId: opts.channelId ?? PLAIN,
+    guildId: "g1",
+    isMessageContextMenuCommand: () => true,
+    targetMessage: { content: "look at this", attachments: new Map() },
+    reply: async (payload: any) => { replies.push(String(payload?.content ?? "")); },
+  };
 }
 
 describe("discord messageCreate routing", () => {
@@ -327,6 +368,7 @@ describe("discord messageCreate routing", () => {
     // routine traffic though, so it logs at INFO and is throttled: every message in every channel the
     // bot can see reaches this handler.
     (globalThis as any).__piConfigSessionId = "inbound-route-log-test";
+    pinLevel("info");
     try {
       const bot = startBot({ live: ["s2"] });
       const replies: string[] = [];
@@ -334,14 +376,7 @@ describe("discord messageCreate routing", () => {
       await bot.handler(message("m11", "hello again", replies, { channelId: "chan-not-owned" }));
       assert.deepEqual(replies, []);
 
-      const dir = path.join(tmp, ".pi", "logs", "pidash-discord");
-      const readTree = (root: string): string => fs.readdirSync(root, { withFileTypes: true })
-        .map((entry) => {
-          const full = path.join(root, entry.name);
-          return entry.isDirectory() ? readTree(full) : fs.readFileSync(full, "utf8");
-        })
-        .join("");
-      const body = readTree(dir);
+      const body = readLogs();
       assert.match(body, /discord_inbound_dropped/);
       assert.match(body, /channel-not-owned/);
       assert.match(body, /chan-not-owned/);
@@ -353,6 +388,7 @@ describe("discord messageCreate routing", () => {
       assert.doesNotMatch(body, /hello there/);
       assert.doesNotMatch(body, /hello again/);
     } finally {
+      setLogLevelPin(LOG_NAME, null);
       delete (globalThis as any).__piConfigSessionId;
     }
   });
@@ -360,6 +396,7 @@ describe("discord messageCreate routing", () => {
   it("logs a shared channel's drop for each user of it", async () => {
     // Throttling per channel alone would hide the second user's drop; the key includes the author.
     (globalThis as any).__piConfigSessionId = "inbound-route-shared-log-test";
+    pinLevel("info");
     const previousAllowAll = process.env.DISCORD_ALLOW_ALL;
     process.env.DISCORD_ALLOW_ALL = "true";
     try {
@@ -369,24 +406,20 @@ describe("discord messageCreate routing", () => {
       await bot.handler(message("m13", "hi", replies, { channelId: "chan-shared", author: USER2 }));
       assert.deepEqual(replies, []);
 
-      const readTree = (root: string): string => fs.readdirSync(root, { withFileTypes: true })
-        .map((entry) => {
-          const full = path.join(root, entry.name);
-          return entry.isDirectory() ? readTree(full) : fs.readFileSync(full, "utf8");
-        })
-        .join("");
-      const body = readTree(path.join(tmp, ".pi", "logs", "pidash-discord"));
+      const body = readLogs();
       assert.equal(body.match(/"reason":"channel-not-owned","channelId":"chan-shared"/g)?.length, 2);
       assert.match(body, /"userId":"u1"/);
       assert.match(body, /"userId":"u2"/);
     } finally {
       process.env.DISCORD_ALLOW_ALL = previousAllowAll;
+      setLogLevelPin(LOG_NAME, null);
       delete (globalThis as any).__piConfigSessionId;
     }
   });
 
   it("logs the /stop and /cancel refusals", async () => {
     (globalThis as any).__piConfigSessionId = "inbound-route-refusal-log-test";
+    pinLevel("info");
     try {
       const bot = startBot({ live: [], watchedSessionId: null, threads: {}, dmChannelId: DM });
       const replies: string[] = [];
@@ -394,17 +427,96 @@ describe("discord messageCreate routing", () => {
       await bot.handler(message("m15", "/cancel", replies, { dm: true }));
       assert.deepEqual(replies, ["Not watching any session. Use `/sessions` and pick one.", "Nothing pending."]);
 
-      const readTree = (root: string): string => fs.readdirSync(root, { withFileTypes: true })
-        .map((entry) => {
-          const full = path.join(root, entry.name);
-          return entry.isDirectory() ? readTree(full) : fs.readFileSync(full, "utf8");
-        })
-        .join("");
-      const body = readTree(path.join(tmp, ".pi", "logs", "pidash-discord"));
+      const body = readLogs();
       assert.match(body, /\{"reason":"stop-no-target"/);
       assert.match(body, /\{"reason":"cancel-nothing-pending"/);
     } finally {
+      setLogLevelPin(LOG_NAME, null);
       delete (globalThis as any).__piConfigSessionId;
     }
+  });
+
+  it("logs the routing decision at debug, once per new decision", async () => {
+    (globalThis as any).__piConfigSessionId = "inbound-routed-debug-test";
+    pinLevel("debug");
+    try {
+      const bot = startBot({ live: ["s2", "s3"] });
+      const replies: string[] = [];
+      await bot.handler(message("m21", "one", replies));
+      await bot.handler(message("m22", "two", replies));
+      // A DM routes to the watch: a different decision for a different channel.
+      await bot.handler(message("m23", "three", replies, { dm: true }));
+      assert.deepEqual(replies, []);
+
+      const body = readLogs();
+      const routed = body.split("\n").filter((line) => line.includes("discord_inbound_routed"));
+      // Two decisions, three messages: repeating the same one is not an event, and an append per
+      // message on a busy channel is a stall (Qodo #1075).
+      assert.equal(routed.length, 2);
+      assert.match(routed[0]!, /\[debug\].*"inboundSessionId":"s3"/);
+      assert.match(routed[1]!, /\[debug\].*"inboundSessionId":"s2"/);
+      // A branch decision is control flow: INFO stays for lifecycle and for the refusals.
+      assert.doesNotMatch(body, /\[info\] \[pidash-discord\] discord_inbound_routed/);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("the routing trace names the session the answer actually went to", async () => {
+    (globalThis as any).__piConfigSessionId = "inbound-routed-answer-test";
+    pinLevel("debug");
+    try {
+      // s5's question fell back to the plain channel while the user watches s2: routing names s2,
+      // the bridge sends to s5. A trace that showed only the routed session could not be
+      // reconciled with what the bridge did (Qodo #1075).
+      const bot = startBot({ live: ["s2", "s5"], watchedSessionId: "s2", threads: {}, responseChannelId: PLAIN, dmChannelId: null });
+      bot.hooks[0]!("s5", { type: "extension_ui_request", id: "q5", method: "confirm", title: "Proceed?" });
+      await settle();
+
+      const replies: string[] = [];
+      await bot.handler(message("m24", "yes", replies, { channelId: PLAIN }));
+      assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.id]), [["s5", "q5"]]);
+
+      const routed = readLogs().split("\n").filter((line) => line.includes("discord_inbound_routed"));
+      assert.equal(routed.length, 1);
+      assert.match(routed[0]!, /"inboundSessionId":"s2"/);
+      assert.match(routed[0]!, /"answerSessionId":"s5"/);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("a context menu in a channel carrying a live session works without a watch", async () => {
+    // The owner's report: the bot streams s9's output into this channel, so the channel IS s9's
+    // address. Reading `watchedSessionId` alone refused a channel the bot was writing into
+    // (Qodo #1075).
+    const bot = startBot({ live: ["s9"], watchedSessionId: null, threads: {}, responseChannelId: PLAIN, dmChannelId: null });
+    bot.hooks[0]!("s9", { type: "extension_ui_request", id: "q4", method: "confirm", title: "Proceed?" });
+    await settle();
+
+    const replies: string[] = [];
+    await bot.interaction(contextMenu(replies));
+    assert.deepEqual(bot.sends.map((s) => s.sessionId), ["s9"]);
+    assert.match(replies[0] ?? "", /^Sent to /);
+  });
+
+  it("a context menu still refuses a channel nothing is watching or delivering into", async () => {
+    const bot = startBot({ live: ["s9"], watchedSessionId: null, threads: {} });
+    const replies: string[] = [];
+    await bot.interaction(contextMenu(replies, { channelId: PLAIN }));
+    assert.deepEqual(bot.sends, []);
+    assert.deepEqual(replies, ["Not watching any session. Use `/sessions` first."]);
+  });
+
+  it("a context menu says the session is gone when this channel's target died", async () => {
+    // The two refusals stay distinguishable: "not watching" hid why a channel that used to carry a
+    // session went quiet.
+    const bot = startBot({ live: [], watchedSessionId: "s2", threads: {}, responseChannelId: PLAIN, dmChannelId: null });
+    const replies: string[] = [];
+    await bot.interaction(contextMenu(replies));
+    assert.deepEqual(bot.sends, []);
+    assert.deepEqual(replies, ["The session this channel belonged to is gone. Use `/sessions` and pick one."]);
   });
 });

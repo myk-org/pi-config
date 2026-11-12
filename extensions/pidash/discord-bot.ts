@@ -149,6 +149,9 @@ export interface InboundTraceFacts {
   commandName?: string | null;
   watchedClientPresent?: boolean | null;
   inbound?: InboundSession | null;
+  /** Where the message actually went when it answered a pending prompt: that session, not the
+   *  routed one, is what gets the text. Differs from `inbound.sessionId` only in that case. */
+  answerSessionId?: string | null;
 }
 
 /** The record logged where an inbound message is routed, and at the interaction guards.
@@ -173,6 +176,7 @@ export function inboundTraceRecord(facts: InboundTraceFacts): Record<string, unk
     targetKeys,
     inboundSessionId: facts.inbound?.sessionId ?? null,
     inboundSource: facts.inbound?.source ?? null,
+    answerSessionId: facts.answerSessionId ?? null,
   };
 }
 
@@ -352,6 +356,9 @@ export function setupDiscordBot(opts: {
    *  the handler — so warning on each one floods the log and pays synchronous I/O per message. One
    *  line per channel and reason per minute is enough to diagnose a reproduction. */
   const dropLoggedAt = new Map<string, number>();
+  /** The routing decision last logged per channel. A busy channel repeats one decision for every
+   *  message it carries, so only a NEW decision gets a line — bounded, no timer. */
+  const routedDecisions = new Map<string, string>();
   function logInboundDrop(
     facts: Omit<InboundRouteFacts, "reason"> & { reason: string },
     level: "info" | "warn" = "warn",
@@ -1251,30 +1258,47 @@ export function setupDiscordBot(opts: {
 
     if (interaction.isMessageContextMenuCommand?.()) {
       const state = userState(interaction.user.id);
-      const targetSession = state.watchedSessionId;
+      const channelId = String(interaction.channelId ?? "");
+      // The SAME resolver every other inbound path uses. Asking "is a session watched" refused a
+      // channel that was delivering a live session's output — the bot was writing into it, so it is
+      // an address for that session (Qodo #1075).
+      const inbound = resolveInboundSession({
+        channelId,
+        threadSessionId: Object.entries(state.threads ?? {}).find(([, threadId]) => threadId === channelId)?.[0] ?? null,
+        watchedSessionId: state.watchedSessionId ?? null,
+        targets: state.targets ?? {},
+        isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
+      });
+      const targetSession = inbound.sessionId;
       if (!targetSession) {
         // WARN, with the handler and the state it looked at: this refusal reached the user twice
         // with nothing in the log naming which of the "Not watching any session" sites spoke.
         logInboundDrop({
-          reason: "interaction-no-watch",
+          reason: inbound.deadTarget ? "interaction-dead-target" : "interaction-no-watch",
           channelId: interaction.channelId,
           guildId: interaction.guildId,
-          watchedSessionId: null,
-          watchLive: false,
+          watchedSessionId: state.watchedSessionId ?? null,
+          watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
           targets: state.targets,
           ownsTarget: false,
           userId: interaction.user.id,
+          inbound,
         }, "warn", false, {
           kind: "message-context-menu",
           handler: "message-context-menu",
           channelId: interaction.channelId,
           guildId: interaction.guildId,
-          watchedSessionId: null,
-          watchLive: false,
+          watchedSessionId: state.watchedSessionId ?? null,
+          watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
           targets: state.targets,
           watchedClientPresent: false,
+          inbound,
         });
-        await interaction.reply({ content: "Not watching any session. Use `/sessions` first.", ephemeral: true }).catch(() => {});
+        // Two different refusals: a channel nobody watches and a channel whose session died both
+        // used to say "Not watching any session", which hid why it went quiet.
+        await interaction.reply({ content: inbound.deadTarget
+          ? "The session this channel belonged to is gone. Use `/sessions` and pick one."
+          : "Not watching any session. Use `/sessions` first.", ephemeral: true }).catch(() => {});
         return;
       }
       const client = piClients.get(targetSession);
@@ -2067,21 +2091,6 @@ export function setupDiscordBot(opts: {
       targets: state.targets ?? {},
       isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
     });
-    // One line per message at the DECISION point — routed where, and why. A screenshot from the
-    // user is all we get for a live report, and the state that produced it is gone by the time we
-    // look; the refusal lines below only cover the messages that stopped.
-    log.info("discord_inbound_routed", inboundTraceRecord({
-      kind: "message",
-      handler: "messageCreate",
-      channelId: message.channelId,
-      guildId: message.guildId,
-      threadSessionId,
-      watchedSessionId: state.watchedSessionId ?? null,
-      watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
-      targets: state.targets,
-      inbound,
-    }));
-
     const noTargetReply = () => message.reply(inbound.deadTarget
       ? "The session this channel belonged to is gone. Use `/sessions` and pick one."
       : "Not watching any session. Use `/sessions` and pick one.").catch(() => {});
@@ -2150,6 +2159,30 @@ export function setupDiscordBot(opts: {
     const hasPrompt = message.guildId
       ? Boolean(answerSession && (state.pendingPrompts ?? {})[answerSession])
       : Boolean(state.pendingPrompt);
+    // Routed where, and why — at DEBUG, once per DECISION: a branch decision is control flow, not a
+    // lifecycle event, and an append per message stalls a busy channel (Qodo #1075). The answer
+    // session is part of the decision: answering a pending prompt here sends the text THERE, so the
+    // record has to name both to be reconcilable with the bridge.
+    const decision = `${inbound.source}:${inbound.sessionId ?? ""}:${answerSession ?? ""}`;
+    if (routedDecisions.get(message.channelId) !== decision) {
+      if (routedDecisions.size > SEEN_MESSAGE_LIMIT) {
+        const oldest = routedDecisions.keys().next().value;
+        if (oldest !== undefined) routedDecisions.delete(oldest);
+      }
+      routedDecisions.set(message.channelId, decision);
+      log.debug("discord_inbound_routed", inboundTraceRecord({
+        kind: "message",
+        handler: "messageCreate",
+        channelId: message.channelId,
+        guildId: message.guildId,
+        threadSessionId,
+        watchedSessionId: state.watchedSessionId ?? null,
+        watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
+        targets: state.targets,
+        inbound,
+        answerSessionId: answerSession ?? null,
+      }));
+    }
     if (hasPrompt) {
       const outcome = bridge.handleInbound(
         state, text,
