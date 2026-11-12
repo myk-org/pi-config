@@ -769,7 +769,7 @@ const BASH_DESTRUCTIVE = /\brm\b|\bchmod\b|\btruncate\b|\bdd\b/;
 const MK_DIR = /^mkdir$/;
 
 /** Shell control operators that start a new command. */
-const SHELL_SEPARATORS = /(?:&&|\|\||;|\|\n)/;
+const SHELL_SEPARATORS = /(?:&&|\|\||;|\||\n)/;
 
 /** Replace quoted text with spaces: operators and verbs inside quotes are arguments. */
 function maskQuoted(command: string): string {
@@ -824,9 +824,20 @@ export function shellSkillReferences(
   let cdIntoSkills = false;
   for (const token of shellTokens(command)) {
     if (token === "cd") continue;
-    const abs = path.resolve(projectCwd, token);
+    // `--option=/path/to/skill` carries its path after the `=`: resolve that too.
+    const candidates = token.includes("=") ? [token, token.slice(token.indexOf("=") + 1)] : [token];
+    const hit = candidates.find((candidate) => {
+      const candidateAbs = path.resolve(projectCwd, candidate);
+      return (
+        skillAreaOf(projectCwd, candidateAbs) !== null ||
+        lexicallyUnderSkillsRoot(projectCwd, candidateAbs) ||
+        (path.basename(candidate) === "SKILL.md" && !candidate.includes("/"))
+      );
+    });
+    if (hit === undefined) continue;
+    const abs = path.resolve(projectCwd, hit);
     const area = skillAreaOf(projectCwd, abs);
-    const bare = path.basename(token) === "SKILL.md" && !token.includes("/");
+    const bare = path.basename(hit) === "SKILL.md" && !hit.includes("/");
     const isRef = area !== null || lexicallyUnderSkillsRoot(projectCwd, abs) || bare;
     if (!isRef) continue;
     if (bare) {
@@ -836,7 +847,7 @@ export function shellSkillReferences(
       }
       cdIntoSkills = true;
     }
-    refs.push({ token, abs, area, bare });
+    refs.push({ token: hit, abs, area, bare });
   }
   return { refs, cdIntoSkills };
 }
@@ -941,6 +952,11 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
     }
 
     if (/\bcp\b/.test(segmentMasked)) {
+      // `-t DIR` / `--target-directory` make the FIRST operand the destination — our
+      // positional read would call it a source and allow the write. Refuse the shape.
+      if (/\bcp\b[^|;&]*(?:\s-t\s|\s-t[^\s]|\s--target-directory[=\s]|\s-T\s)/.test(segmentMasked)) {
+        return block(`this cp moves the destination with an option the guard cannot follow. ${hint}`);
+      }
       const operands = shellTokens(segmentMasked).filter((token, index) => index > 0 && !token.startsWith("-"));
       if (operands.length !== 2) {
         return block(`cannot tell the source from the destination in this cp. ${hint}`);

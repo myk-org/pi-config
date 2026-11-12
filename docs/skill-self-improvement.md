@@ -71,10 +71,11 @@ ambiguity included: a `~` target, a redirection glued to the path (`>/path`), a 
 into a skills directory, a path through a symlink out of every area, a `cp`/`mv` whose source and destination
 cannot be told apart, and a destructive verb (`rm`, `chmod`, `truncate`, `dd`).
 
-Chains are classified per command: a `;`, `&&`, `||` or pipe splits the line, and a segment that names a skill
+Chains are classified per command: a `;`, `&&`, `||` or `|` splits the line, and a segment that names a skill
 with a verb the guard cannot vouch for blocks the whole command. `mkdir` is allowed inside the owned tree, so a
 new skill directory can be created (the file itself still needs the marker). `mv` never passes — it removes the
-source.
+source — and a `cp` whose destination is moved by an option (`-t`, `--target-directory`) is refused, because
+source and destination can no longer be told apart by position.
 
 Known limit, stated rather than guessed at: a path built by shell expansion — `t=…; … > "$t"`, `eval`,
 `find -exec` — carries no literal reference, so no text rule can see it. The change still reaches the turn-end

@@ -394,6 +394,26 @@ describe("shell guard (Qodo #1079)", () => {
     assert.equal(bashSkillVerdict(cwd, chain)?.block, true);
   });
 
+  it("blocks the >& redirection form", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "cat README.md >& ~/.agents/skills/x/SKILL.md")?.block, true);
+  });
+
+  it("blocks a pipeline whose later stage writes a skill", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    const read = `cat ${path.join(root, "marked", "SKILL.md")}`;
+    const pipeline = `${read} | uv run python3 -c 'open("${path.join(root, "unmarked", "SKILL.md")}", "w")'`;
+    assert.equal(bashSkillVerdict(cwd, pipeline)?.block, true);
+  });
+
+  it("blocks cp with a target-directory option", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "unmarked", UNMARKED);
+    assert.equal(bashSkillVerdict(cwd, `cp -t ${path.join(root, "unmarked")} /tmp/SKILL.md`)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, `cp --target-directory=${path.join(root, "unmarked")} /tmp/SKILL.md`)?.block, true);
+  });
+
   it("blocks a write redirection into a global skill", () => {
     const { cwd } = project();
     assert.equal(bashSkillVerdict(cwd, "cat README.md > ~/.agents/skills/x/SKILL.md")?.block, true);
