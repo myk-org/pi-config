@@ -144,12 +144,14 @@ Messaging semantics (#924):
   `coms_history`; defaults to this session's traffic, `all_sessions: true`
   shows the whole machine's trail.
 - **User messages** — `/coms tell <peer> <message>` (or `m` on the focused peer
-  in `/coms list`) delivers with `origin: "user"`, so the peer knows a human
-  said it. Only the command layer can set that: `coms_send`/`coms_broadcast`
+  in `/coms list`) delivers with `origin: "user"`, so the receiver reads it as a
+  human's words. Only the command layer can set that: `coms_send`/`coms_broadcast`
   always send `origin: "peer"` and their schemas have no `origin` field, so
-  tool input cannot claim human authority. Headers mark a user inbound
-  `(from the USER)`, `coms_history` marks the record `(USER)`, and a failed
-  delivery is notified instead of dropped.
+  tool input cannot claim human authority. The header marker `(from the USER)` and
+  history's `(USER)` are display only and unauthenticated — any process that can
+  write to the peer's socket can assert `origin: "user"`; verifying authorship
+  would need signed identities, which coms does not have. A failed delivery is
+  notified instead of dropped.
 
 Queue recovery is explicit. Run `coms_queue_inspect` first and review its
 body-free preview. Then pass its `preview_id` to `coms_queue_clear`.
@@ -729,9 +731,11 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - Collapsible thinking and tool blocks with copy buttons
 - ask_user tool bridging (answer from browser or TUI)
 - **Full TUI parity (#968)** — every interactive prompt and surface is answerable/operable from either TUI or browser, first answer wins:
-  - Dangerous-command approvals, commit-trailer selection, project-agent confirmations, and `/tasks` menus render in both surfaces
+  - Dangerous-command approvals, commit-trailer selection, project-agent confirmations, and `/tasks create` prompts render in both surfaces
+  - `/tasks` itself is a terminal-only overlay: list/view/`x` delete, with `create`, `start <id>`, `done <id>`, and `clear completed|all` as subcommands
+  - A browser-sent `/tasks` answers with the same rows as plain text (plus that subcommand list); the overlay is never opened in a browser
   - Tasks panel (view/create/start/complete/delete/clear) driven through the live TaskStore with live updates
-  - Coms peer list (busy state, queue depth, context %) + send message to a peer (same delivery path as `coms_send`)
+  - Coms peer list (busy state, queue depth, context %, own-workload counts) + send message to a peer (same delivery path as `coms_send`)
   - New-session creation (name + initial model) and `/compact` from the browser
   - Memory status (usage, topics, situation report)
   - MCP server management (list/login/logout)

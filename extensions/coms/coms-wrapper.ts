@@ -21,6 +21,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { activationVerified, completeTellArgs, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
+import { requestDescribe } from "./coms-describe.js";
+import type { PeerWorkloadCounts } from "./coms-workload.js";
 
 const log = createLogger("coms");
 
@@ -176,18 +178,33 @@ export function registerComs(pi: ExtensionAPI) {
 
     /** #1077: the user's own message to a peer. The command layer is the only place allowed to
      *  claim origin "user", so this calls the bridge coms-p2p publishes — never coms_send, whose
-     *  input an agent controls. Failures come back as text, never as a silent drop. */
-    const tellPeer = async (target: string, prompt: string, project?: string): Promise<string> => {
+     *  input an agent controls.
+     *
+     *  A union, not a sentence: "not active", a socket error, a refusal and a throw all mean the
+     *  message did NOT arrive, and a caller that sniffs an emoji to decide delivery counts them
+     *  as sent (#1084). `code` is the loggable token; `reason` is what the user reads. */
+    const tellPeer = async (
+        target: string,
+        prompt: string,
+        project?: string,
+    ): Promise<{ ok: true } | { ok: false; reason: string; code: string }> => {
         const send = (globalThis as any).__comsUserSend as
             | ((p: { target: string; prompt: string; project?: string }) => Promise<{ ok: boolean; message: string }>)
             | undefined;
         if (typeof send !== "function") {
             log.warn("coms_tell_unavailable", { target });
-            return "📡 coms is not active — run /coms start first.";
+            return { ok: false, code: "coms-inactive", reason: "coms is not active — run /coms start first." };
         }
-        const result = await send({ target, prompt, project });
-        log.info("coms_tell", { target, project: project ?? null, ok: result.ok });
-        return `${result.ok ? "📡" : "⚠️"} ${result.message}`;
+        try {
+            const result = await send({ target, prompt, project });
+            log.info("coms_tell", { target, project: project ?? null, ok: result.ok });
+            if (result.ok) return { ok: true };
+            return { ok: false, code: "send-failed", reason: result.message };
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            log.error("coms_tell_threw", { target, project: project ?? null, error: message });
+            return { ok: false, code: "threw", reason: message };
+        }
     };
 
     const comsCmdHandler = async (args: string, ctx: any, entry: "tool" | "slash" | "cli" = "slash") => {
@@ -206,7 +223,8 @@ export function registerComs(pi: ExtensionAPI) {
                 return;
             }
             const result = await tellPeer(tell.peer, tell.message, tell.project);
-            try { ctx.ui.notify(result, result.startsWith("⚠️") ? "error" : "info"); } catch {}
+            const text = result.ok ? `📡 sent to ${tell.peer}` : `⚠️ ${result.reason}`;
+            try { ctx.ui.notify(text, result.ok ? "info" : "error"); } catch {}
             return;
         }
         if (subcommand === "start") {
@@ -241,6 +259,9 @@ export function registerComs(pi: ExtensionAPI) {
             if (ctx?.hasUI) {
                 await openComsPeersOverlay(ctx, {
                     listPeers: () => filterRegistry(attachCreatedBy(readRegistryRows()).filter(rowAlive), { project: projectScope }),
+                    // #1083: the drilldown asks the PEER for its own state. No reply inside the
+                    // timeout is `unknown` — never a filesystem scan of another process.
+                    describePeer: (row) => requestDescribe(row.endpoint),
                     killPeer: (row) => killPeers({ name: row.name, project: row.project }).text,
                     killAll: () => {
                         const scope = resolveKillScope({ all: true, project: projectScope }, ownProject(), log);
@@ -386,6 +407,13 @@ export function registerComs(pi: ExtensionAPI) {
         } catch { /* default */ }
         return path.join(base, "peers");
     };
+    /** #1083: the registry's `workload` is reported by the peer, so a malformed or absent value
+     *  means `unknown` (null) rather than a zero count. */
+    const readWorkload = (value: any): PeerWorkloadCounts | null => {
+        const counts = (["agents", "tasks", "crons"] as const).every((key) => typeof value?.[key] === "number" && Number.isFinite(value[key]) && value[key] >= 0);
+        if (!counts) return null;
+        return { agents: value.agents, tasks: value.tasks, crons: value.crons };
+    };
     const readRegistryRows = (): RegistryRow[] => {
         const rows: RegistryRow[] = [];
         let projects: string[] = [];
@@ -412,6 +440,8 @@ export function registerComs(pi: ExtensionAPI) {
                         heartbeatAt: typeof entry.heartbeat_at === "string" ? entry.heartbeat_at : null,
                         origin: typeof entry.origin === "string" ? entry.origin : null,
                         createdBy: null,
+                        // #1083: a peer that reports nothing stays null — never 0.
+                        workload: readWorkload(entry.workload),
                     });
                 } catch (error: any) {
                     log.warn("coms_registry_entry_unreadable", { file: path.join(comsRoot(), project, "agents", file), error: String(error?.message ?? error) });

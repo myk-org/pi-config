@@ -6,6 +6,12 @@
  * (rootcoz ↔ pi-sidecar), so a project-scoped list would hide exactly the peers a user is
  * coordinating.
  */
+import { formatWorkloadSuffix, type PeerWorkloadCounts } from "./coms-workload.js";
+import { sanitizePeerText } from "./peer-text.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("coms-peers");
+
 export interface RegistryRow {
   /** Project namespace (the registry directory name). */
   project: string;
@@ -25,6 +31,8 @@ export interface RegistryRow {
   /** Who spawned this peer as a process, from the supervisor's record, which is the more
    *  authoritative answer when both exist. */
   createdBy?: string | null;
+  /** #1083: the peer's own active counts. `null`/absent = not reported = `unknown`, never 0. */
+  workload?: PeerWorkloadCounts | null;
 }
 
 export interface PeerFilter {
@@ -77,9 +85,43 @@ export function formatPeerTable(rows: RegistryRow[]): string {
       const queue = row.queueDepth ? ` queue:${row.queueDepth}` : "";
       const ctx = row.contextUsedPct === null ? "" : ` ctx:${Math.round(row.contextUsedPct)}%`;
       const pid = row.pid ? ` pid:${row.pid}` : "";
-      return `● ${row.name} · ${row.project} (${state}${queue}${ctx}${pid}) — ${row.cwd || "?"}`;
+      // #1084: peer-supplied text is sanitized before it reaches a terminal.
+      return `● ${sanitizePeerText(row.name, 40)} · ${sanitizePeerText(row.project, 40)} (${state}${queue}${ctx}${pid})${formatWorkloadSuffix(row.workload)} — ${sanitizePeerText(row.cwd, 120) || "?"}`;
     });
+  // Counts only: how many peers could not report, never what they said.
+  log.debug("peer_table_rendered", { rows: rows.length, unknown: rows.filter((row) => row.workload == null).length });
   return `${rows.length} peer(s):\n${lines.join("\n")}`;
+}
+
+export interface PeerDetailOptions {
+  /** Age of the last keep-alive, from the caller's clock (`null` when it cannot be computed). */
+  heartbeatAgeSeconds?: number | null;
+  /** Transient overlay message (e.g. the result of a kill), rendered as-is by the caller. */
+  status?: string | null;
+}
+
+/**
+ * The peer detail pane body. Every peer-supplied field is sanitized at THIS boundary and capped,
+ * because a purpose, cwd or socket carrying escape sequences would otherwise reach the terminal.
+ * Identity is never touched here — only what is displayed.
+ */
+export function formatPeerDetailLines(row: RegistryRow, options: PeerDetailOptions = {}): string[] {
+  const age = options.heartbeatAgeSeconds ?? null;
+  const origin = describePeerOrigin(row);
+  const lines = [
+    `cwd       ${sanitizePeerText(row.cwd, 120) || "?"}`,
+    `purpose   ${sanitizePeerText(row.purpose, 120) || "—"}`,
+    `state     ${row.busy ? "busy" : "idle"}${row.queueDepth ? ` · queue ${row.queueDepth}` : ""}`,
+    `created   ${origin.by === "unknown" ? "unknown (no record)" : sanitizePeerText(origin.by, 40)} · via ${sanitizePeerText(origin.via, 40)}`,
+    `pid       ${row.pid ?? "?"}`,
+    `socket    ${sanitizePeerText(row.endpoint, 80) || "?"}`,
+    `heartbeat ${age === null || age === undefined ? "unknown" : `${age}s ago`} (last keep-alive)`,
+    `context   ${row.contextUsedPct === null ? "?" : `${Math.round(row.contextUsedPct)}%`}`,
+    // The registry rewrites started_at on every heartbeat, so it is not a real start time.
+    "",
+  ];
+  if (options.status) lines.push(options.status);
+  return lines;
 }
 
 /** A peer is live only while it keeps writing its heartbeat.

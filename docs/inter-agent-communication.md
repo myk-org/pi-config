@@ -21,7 +21,7 @@
 | :--- | :--- | :--- |
 | Launcher wrapper | Registers a session with its name, purpose, model, color, and cwd | Each session appears as a named peer |
 | Registry files | One JSON entry per live session, grouped by project | Peers from other repos stay invisible |
-| Pool widget | Renders connected peers, queue depth, and context usage | You can see who is online and busy at a glance |
+| Pool widget | Renders connected peers, queue depth, context usage, and active workload | You can see who is online, busy, and how much work each peer is carrying |
 | Messaging tools | `coms_list`, `coms_send`, `coms_broadcast`, `coms_history`, `coms_get` | Agents can discover peers, delegate work, and inspect message state |
 | Queue and task tools | `coms_queue_*` and `coms_task_*` | Queued messages and delegated tasks can be inspected and edited |
 
@@ -54,7 +54,31 @@ This is what makes peer lists readable instead of showing only opaque session ID
 
 ### Heartbeats and Presence
 
-Every connected session sends heartbeat updates every 30 seconds. Those updates include context-window usage, queue depth, and optional task summary data.
+Every connected session sends heartbeat updates every 30 seconds. Those updates include context-window usage, queue depth, optional task summary data, and a `workload` block: how many async agents, open tasks, and scheduled crons the peer itself is running.
+
+### Peer Workload
+
+Each peer reports its **own** active work: async agents that are *running* (a queued job is waiting, not in flight), tasks that are not completed, and crons this replica actually runs (`leader !== false`) — session crons included, which is why the peer self-reports instead of a scanner reading files.
+
+The pool widget and peer list append `⏳2 ☰5 ⏰1` — running agents, **open** tasks, active crons, in that order — showing only non-zero counts. `☰` means open tasks including in-progress: the count is work still outstanding, so `✓` (done) never appears, and `◻`/`◼` are row glyphs inside `/tasks` only, never an aggregate. A peer that reports no workload field renders `unknown`, never `0`: absence is not idleness.
+
+Every peer-supplied string is sanitized before rendering — name, purpose, subject, cwd, socket path, task ids and states: escape sequences and control characters are stripped, whitespace collapsed, and each field capped (purpose/subject/cwd 120, id/state 40, socket 80). A peer cannot move the viewer's cursor, clear its screen, or forge a prompt, and sanitization is render-only: a peer is still addressed by its raw name.
+
+Selecting a peer in the `/coms` peer overlay opens a navigable drilldown: a `peer info` row first (name, project, cwd, purpose, creator, socket, heartbeat, state and the workload line — the registry fields the peer list already holds), then a list of that peer's sections with their counts (`async agents (3)`, `tasks (5)`, `crons (1)`), and Enter on a section
+opens the same overlay `/async-status`, `/tasks` and `/cron list` use, fed by that peer's answer —
+agent identity and elapsed time, task rows in the exact format `/tasks` renders, and cron schedules.
+Esc walks back one level (section → sections → peer list) and lands on the row you came from, not on the first one. The drilldown is **read-only**: acting on
+another session's tasks or crons would need a remote command protocol, and a key that silently does
+nothing is worse than no key, so the section footers say so. The peer answers over its own socket
+from its own memory, with a projected payload (no job output, no worker directories); nothing scans
+another process's files.
+
+Three answers are kept apart:
+- the peer answered with work → the sections it reported; a section trimmed by the 50-row cap ends with `… N more`, so a truncated list never looks complete
+- the peer answered with nothing active → `workload  none active`
+- no usable answer → `unknown`, with the reason kept distinct: `(not reported)` for a peer with no workload support, `(no reply within 2s)` for silence or a dead connection, `(malformed reply)` for a reply that could not be parsed, `(reply too large)` beyond the 1 MiB cap, and `(error: <code>)` when the peer rejected the request or failed internally — a local code such as `internal-error`, never the peer's own error text
+
+A browser-sent `/tasks` returns the task rows as text; the workload suffix and the drilldown overlay are terminal-only.
 
 Dead peers are removed from the registry in two phases. A newly registered entry gets a grace period (`coms_entry_grace_period_ms`, default 30 seconds) so a just-booted session is never pruned early. After that, the entry is probed by connecting to its socket: peers that respond are kept, peers that do not are removed from the registry. Timestamp staleness alone never prunes an entry, which is what keeps laptop suspend/resume from wiping out live peers.
 
@@ -126,9 +150,9 @@ Peer cards and `coms_list` include a busy indicator (`⚙busy`) whenever the pee
 
 ## Messaging a Peer as the User
 
-`/coms tell <peer> <message>` (or `/coms tell --project <p> <peer> <message>`) delivers a message to a peer with `origin: "user"` — the peer knows a human typed it, not another model. In `/coms list`, `m` opens a one-line composer for the focused peer and sends the same way. Delivery is synchronous: the overlay reports the `msg_id`, and a failure (no such peer, dead socket) is notified to you instead of being dropped.
+`/coms tell <peer> <message>` (or `/coms tell --project <p> <peer> <message>`) delivers a message to a peer with `origin: "user"`, so the receiver reads it as a human's words rather than another model's. In `/coms list`, `m` opens a one-line composer for the **selection** — every peer ticked with Space, or the focused peer when nothing is ticked — and sends the same text to each one. Delivery is synchronous and counted: you get one line, `sent 3 peers`, or `sent 2 of 3 · failed 1: beta (<reason>)`, and peers that left between selecting and sending are named rather than silently skipped (`nothing sent · 2 peers left before sending: beta, gamma`). A failure — no such peer, dead socket, coms stopped — is never reported as sent.
 
-Only the command layer can claim human authorship. `coms_send`, `coms_broadcast`, and the `tasks` path always send `origin: "peer"`, their schemas have no `origin` parameter, and a spoofed value in tool input is ignored — an agent cannot manufacture an approval it did not get. On the receiving side the inbound header and its machine-readable prefix say `USER (a human)`, and `coms_history` marks the record `(USER)`.
+Only the command layer can claim human authorship. `coms_send`, `coms_broadcast`, and the `tasks` path always send `origin: "peer"`, their schemas have no `origin` parameter, and a spoofed value in tool input is ignored — an agent's own tool calls cannot manufacture an approval it did not get, and that is the whole guarantee. On the receiving side the inbound header and its machine-readable prefix say `USER (a human)`, and `coms_history` marks the record `(USER)`: that marker is display only and unauthenticated, because any process that can write to the peer's socket can assert `origin: "user"`. Verifying authorship would need signed identities, which coms does not have.
 
 ## Message History
 
@@ -147,7 +171,7 @@ The internals mostly stay out of your way, but they explain several behaviors yo
 | `/coms` shows a different set of peers | You toggled `include_explicit` or switched the displayed project |
 | A peer shows `⚙busy` | It is currently processing an inbound message |
 | A pending reply shows a progress note | The peer sent a progress signal (~60s interval) while still working |
-| An inbound says `(from the USER)` | You sent it with `/coms tell` or the `m` composer — it is not another agent's guess |
+| An inbound says `(from the USER)` | A human sent it with `/coms tell` or the `m` composer. The marker is display only and unauthenticated — any local process can assert it |
 
 A few practical implications are worth remembering:
 

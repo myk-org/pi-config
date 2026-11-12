@@ -20,7 +20,7 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
 import {
-	buildBundledContent, buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderTasksPart, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, type BroadcastTargetResult, resolvePromptOrigin, receivedPromptOrigin, type PromptOrigin } from "./coms-shared.js";
+	buildBundledContent, buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, type BroadcastTargetResult, resolvePromptOrigin, receivedPromptOrigin, type PromptOrigin } from "./coms-shared.js";
 import { appendHistoryRecord, queryHistoryRecords, truncatePreview, type HistoryRecord } from "./coms-history.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import { projectProblem, userTargetProblem } from "./coms-peers.js";
@@ -36,10 +36,16 @@ import { setLogFilePrefix } from "../shared/file-logger.js";
 import { probeStaleSocket } from "./probe-socket.js";
 import { isUserMessageDuringInbound, computeMixedTurn } from "./mixed-turn.js";
 import { buildQueuePreview, clearLocalQueue, type QueueRecoveryItem, type QueueRecoveryPreview } from "./queue-recovery.js";
+import { collectWorkload, openBlockers, renderWorkloadPart, toDescribeDetail, type ActiveWorkload, type PeerWorkloadCounts, type WorkloadTask } from "./coms-workload.js";
+import { publishedWorkloadSources } from "../shared/workload-bridge.js";
+import { publishedTaskStore } from "../shared/task-store-bridge.js";
+import { sanitizePeerText } from "./peer-text.js";
 
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 const log = createLogger("coms");
+/** #1084: the tell path's own trail (resolve/completion); coms-shared logs parse/build. */
+const tellLog = createLogger("coms-tell");
 const RECOVERY_PREVIEW_TTL_MS = 5 * 60 * 1000;
 const MAX_RECOVERY_PREVIEWS_PER_SESSION = 20;
 let COMS_DIR = path.join(os.homedir(), ".pi", "coms");
@@ -52,7 +58,7 @@ const LINE_CAP_BYTES = 64 * 1024;
 
 // ━━ Types ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-type EnvelopeType = "prompt" | "response" | "ping" | "task_update" | "queue_manage" | "task_manage" | "presence" | "progress";
+type EnvelopeType = "prompt" | "response" | "ping" | "task_update" | "queue_manage" | "task_manage" | "presence" | "progress" | "describe";
 
 interface Envelope {
 	type: EnvelopeType;
@@ -153,12 +159,19 @@ interface AgentCard {
 	/** #924 §3: receiver is currently processing a peer inbound. */
 	busy: boolean;
 	tasks_summary?: { total: number; completed: number; in_progress: number } | null;
+	/** #1083: the peer's own active workload. Absent = not reported = `unknown` (never 0). */
+	workload?: PeerWorkloadCounts | null;
 }
 
 interface Pong {
 	type: "pong";
 	msg_id: string;
 	agent_card: AgentCard;
+}
+
+/** #1083: `/coms list` drilldown request. The reply is `{ type: "describe_reply", detail }`. */
+interface DescribeEnvelope extends Envelope {
+	type: "describe";
 }
 
 interface RegistryEntry {
@@ -184,6 +197,8 @@ interface RegistryEntry {
 	busy?: boolean;
 	heartbeat_at?: string;
 	pi_session_id?: string;
+	/** #1083: active-only workload counted by the peer itself; absent on older entries. */
+	workload?: PeerWorkloadCounts | null;
 }
 
 interface PendingReply {
@@ -729,6 +744,40 @@ export default function (pi: ExtensionAPI) {
 		writeLiveRegistry();
 	}
 
+	/** #1083: this peer's own active workload — agents from the orchestrator bridge, tasks from
+	 *  the published task store, crons from the orchestrator (session crons exist ONLY there).
+	 *  Null when any source is absent: a partial count would be a guess, and the viewer must show
+	 *  `unknown` instead. No filesystem fallback: this reads own in-process state only. */
+	function ownWorkload(): { counts: PeerWorkloadCounts; active: ActiveWorkload } | null {
+		const sources = publishedWorkloadSources();
+		const store = publishedTaskStore() as { list?: () => unknown[] } | null;
+		if (!sources || typeof store?.list !== "function") {
+			log.debug("workload_sources_missing", { agentsAndCrons: !!sources, tasks: typeof store?.list === "function" });
+			return null;
+		}
+		try {
+			const all = (store.list() ?? []) as any[];
+			// #1084: a blocker that is completed (or gone from the store) no longer holds the task,
+			// so the flag is derived from the blocker's own status, not from the ids alone.
+			const statusById = new Map(all.map((t) => [String(t?.id ?? ""), String(t?.status ?? "")]));
+			const tasks: WorkloadTask[] = all.map((t) => ({
+				id: String(t?.id ?? "?"),
+				status: String(t?.status ?? ""),
+				subject: String(t?.subject ?? ""),
+				// #1084: the requester's detail pane shows owner and description; both are the
+				// peer's own fields, so they travel with the projection instead of a second request.
+				owner: String(t?.owner ?? ""),
+				description: String(t?.description ?? ""),
+				// #1082: the drilldown marks blocked tasks, so the open blockers survive the projection.
+				blockedBy: openBlockers(Array.isArray(t?.blockedBy) ? t.blockedBy.map(String) : [], statusById),
+			}));
+			return collectWorkload(sources.agents(), tasks, sources.crons());
+		} catch (err) {
+			log.warn("workload_collect_failed", err instanceof Error ? err.message : String(err));
+			return null;
+		}
+	}
+
 	/** Write a live registry entry snapshot (shared by the keepalive timer and
 	 *  busy transitions). Fail-soft. */
 	function writeLiveRegistry(): void {
@@ -755,6 +804,9 @@ export default function (pi: ExtensionAPI) {
 				// Rebuilt fields win: this writer rewrites the whole entry on every heartbeat, so a
 				// field missing here vanishes from the registry a few seconds after activation.
 				origin: identity.origin ?? null,
+				// #1083: counted from THIS peer's own state. A missing source is reported as no
+				// field at all, so a viewer shows `unknown` instead of a fabricated 0.
+				workload: ownWorkload()?.counts ?? null,
 			};
 			writeRegistryAtomic(live, identity.project);
 			updatePingWorkerCard();
@@ -884,6 +936,7 @@ export default function (pi: ExtensionAPI) {
 								env.sender_name,
 								env.sender_cwd,
 								inboundOrigin(env),
+								env.sender_session,
 							),
 							display: true,
 							details: { msg_id: env.msg_id, steer: true, target_msg_id: currentInbound.msg_id },
@@ -994,7 +1047,7 @@ export default function (pi: ExtensionAPI) {
 			pi.sendMessage(
 				{
 					customType: formatComsInboundType(env.sender_name, sanitizeComsName(identity?.name ?? "?"), env.sender_cwd, env.origin),
-					content: buildInboundContent("", env.prompt, env.tasks, env.sender_name, env.sender_cwd, env.origin),
+					content: buildInboundContent("", env.prompt, env.tasks, env.sender_name, env.sender_cwd, env.origin, env.sender_session),
 					display: true,
 					details: {
 						msg_id: env.msg_id,
@@ -1113,6 +1166,7 @@ export default function (pi: ExtensionAPI) {
 			queue_depth: getPendingInboundCount(),
 			busy: processingInbound,
 			tasks_summary: await readTaskSummary(currentCtx?.cwd ?? process.cwd(), currentCtx?.sessionManager?.getSessionId?.()),
+			workload: ownWorkload()?.counts ?? null,
 		};
 	}
 
@@ -1125,6 +1179,21 @@ export default function (pi: ExtensionAPI) {
 			const pong: Pong = { type: "pong", msg_id: "", agent_card: card };
 			pingWorker.postMessage({ type: "update_card", pong });
 		} catch { /* ignore */ }
+	}
+
+	/** #1083: the drilldown answer, built from this peer's own state — never from files. The
+	 *  payload is projected (no job output, no worker dirs); a peer whose sources are missing
+	 *  answers `detail: null`, which the requester renders as `unknown` — not as `none active`. */
+	function handleDescribe(socket: net.Socket, env: DescribeEnvelope): void {
+		const workload = ownWorkload();
+		const detail = workload ? toDescribeDetail(workload.active) : null;
+		log.debug("describe_in", { msgId: env.msg_id, answered: workload !== null, agents: detail?.agents.length, tasks: detail?.tasks.length, crons: detail?.crons.length });
+		try {
+			socket.write(JSON.stringify({ type: "describe_reply", msg_id: env.msg_id, detail }) + "\n");
+		} catch {
+			// ignore
+		}
+		try { socket.end(); } catch { /* ignore */ }
 	}
 
 	async function handlePing(socket: net.Socket, env: PingEnvelope): Promise<void> {
@@ -1191,6 +1260,8 @@ export default function (pi: ExtensionAPI) {
 					handleResponse(socket, parsed as ResponseEnvelope);
 				} else if (parsed.type === "ping") {
 					void handlePing(socket, parsed as PingEnvelope).catch(() => nack(socket, parsed.msg_id, "internal error"));
+				} else if (parsed.type === "describe") {
+					handleDescribe(socket, parsed as DescribeEnvelope);
 				} else if (parsed.type === "task_update") {
 					handleTaskUpdate(socket, parsed as TaskUpdateEnvelope);
 				} else if (parsed.type === "queue_manage") {
@@ -1683,6 +1754,7 @@ export default function (pi: ExtensionAPI) {
 				busy: entry.busy ?? false,
 				tasks_summary: null,
 				staleCount: 0,
+				workload: entry.workload ?? null,
 			});
 			knownPeerSessions.set(entry.coms_session_id, entry.name);
 		}
@@ -1778,6 +1850,9 @@ Do not respond to this message.`;
 									existing.queue_depth = entry.queue_depth ?? existing.queue_depth;
 									existing.busy = entry.busy ?? existing.busy;
 									existing.model = entry.model ?? existing.model;
+									// #1083: `null` is a real answer (sources missing) and must overwrite a
+									// previous count — a stale number is worse than `unknown`.
+									existing.workload = entry.workload ?? null;
 									existing.staleCount = 0;
 									log.debug("fs_watch_heartbeat_rename", entry.name, "ctx", entry.context_used_pct, "busy", existing.busy);
 									// Heartbeats now carry busy transitions (#924 §3) — a card
@@ -1789,6 +1864,7 @@ Do not respond to this message.`;
 										name: entry.name, endpoint: entry.endpoint, purpose: entry.purpose, model: entry.model,
 										color: entry.color, context_used_pct: entry.context_used_pct ?? 0,
 										queue_depth: entry.queue_depth ?? 0, busy: entry.busy ?? false, tasks_summary: null, staleCount: 0,
+										workload: entry.workload ?? null,
 									};
 									peerCards.set(entry.coms_session_id, card);
 									log.info("fs_watch_peer_added", entry.name, entry.coms_session_id);
@@ -1847,6 +1923,7 @@ Do not respond to this message.`;
 							existing.busy = entry.busy ?? existing.busy;
 							existing.staleCount = 0;
 							existing.model = entry.model ?? existing.model;
+							existing.workload = entry.workload ?? null;
 							log.debug("fs_watch_heartbeat", entry.name, "ctx", entry.context_used_pct, "busy", existing.busy);
 							// Heartbeats mutate peer fields without touching the widget
 							// refresh snapshot key — re-emit so browser peer cards stay
@@ -1857,6 +1934,7 @@ Do not respond to this message.`;
 								name: entry.name, endpoint: entry.endpoint, purpose: entry.purpose, model: entry.model,
 								color: entry.color, context_used_pct: entry.context_used_pct ?? 0,
 								queue_depth: entry.queue_depth ?? 0, busy: entry.busy ?? false, tasks_summary: null, staleCount: 0,
+								workload: entry.workload ?? null,
 							};
 							peerCards.set(entry.coms_session_id, card);
 							log.info("fs_watch_peer_added_via_change", entry.name, entry.coms_session_id);
@@ -2034,6 +2112,8 @@ Do not respond to this message.`;
 			pending: boolean;
 			stale: boolean;
 			tasks?: { total: number; completed: number; in_progress: number } | null;
+			/** #1083: own-report of active work; null renders `unknown`, never 0. */
+			workload: PeerWorkloadCounts | null;
 			queue_depth: number;
 			busy: boolean;
 			progress?: string;
@@ -2064,6 +2144,7 @@ Do not respond to this message.`;
 				pending: false,
 				stale: (card.staleCount ?? 0) >= 3,
 				tasks: card.tasks_summary,
+				workload: card.workload ?? null,
 				queue_depth: card.queue_depth ?? 0,
 				busy: card.busy ?? false,
 				progress: progressByPeer.get(card.name)?.note,
@@ -2126,13 +2207,13 @@ Do not respond to this message.`;
 			const pctLabel = r.pct == null ? "--%" : `${r.pct}%`;
 
 			if (r.stale) {
-				const dimRow = `✗ ${r.name.padEnd(12)} ${abbreviateModel(r.model).padEnd(14)} [${"-".repeat(15)}] ${pctLabel.padStart(4)}  —  ${r.purpose || ""}`;
+				const dimRow = `✗ ${sanitizePeerText(r.name, 40).padEnd(12)} ${abbreviateModel(r.model).padEnd(14)} [${"-".repeat(15)}] ${pctLabel.padStart(4)}  —  ${sanitizePeerText(r.purpose, 120)}`;
 				out.push(truncateToWidth(" " + theme.fg("dim", dimRow), width));
 				continue;
 			}
 
 			const swatch = r.pending ? theme.fg("dim", "●") : hexFg(r.color, "●");
-			const namePart = theme.fg("accent", r.name.padEnd(12));
+			const namePart = theme.fg("accent", sanitizePeerText(r.name, 40).padEnd(12));
 			const modelPart = theme.fg("dim", abbreviateModel(r.model).padEnd(14));
 			const barFill = r.pending
 				? theme.fg("dim", "-".repeat(15))
@@ -2140,13 +2221,17 @@ Do not respond to this message.`;
 			const bar = theme.fg("warning", "[") + barFill + theme.fg("warning", "]");
 			const pctPart = " " + theme.fg("accent", pctLabel.padStart(4));
 			const sep = theme.fg("dim", "  —  ");
-			const purposePart = theme.fg("muted", r.purpose || "");
+			// #1084: peer text is another process's input — never let it drive the terminal.
+			const purposePart = theme.fg("muted", sanitizePeerText(r.purpose, 120));
 
-			const tasksPart = renderTasksPart(r.tasks, theme);
+			// #1083: active work the peer counted itself. The legacy `tasks_summary` part is
+			// replaced by this suffix: `✓N` is the same number, active-only, so showing both
+			// was one fact twice — and `unknown` must never sit next to a fabricated count.
+			const workloadPart = renderWorkloadPart(r.workload, theme);
 			const queuePart = renderQueuePart(r.queue_depth, theme);
 			const busyPart = r.busy ? " " + theme.fg("warning", "⚙busy") : "";
 			const progressPart = r.progress ? " " + theme.fg("dim", `⏳${r.progress}`) : "";
-			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + tasksPart + queuePart + busyPart + progressPart + sep + purposePart;
+			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + workloadPart + queuePart + busyPart + progressPart + sep + purposePart;
 			out.push(truncateToWidth(line, width));
 		}
 
@@ -2381,7 +2466,11 @@ Do not respond to this message.`;
 		const matches: Array<{ project: string; entry: RegistryEntry }> = [];
 		for (const proj of projects) {
 			let entries: RegistryEntry[] = [];
-			try { entries = await pruneDeadEntries(proj, process.cwd()); } catch { continue; }
+			try { entries = await pruneDeadEntries(proj, process.cwd()); } catch (err) {
+				// One unreadable project must not abort the scan, and must not vanish either.
+				log.warn("user_target_scan_failed", { project: proj, error: err instanceof Error ? err.message : String(err) });
+				continue;
+			}
 			for (const entry of entries) {
 				if (entry.coms_session_id === name || entry.name === name) matches.push({ project: proj, entry });
 			}
@@ -2406,18 +2495,22 @@ Do not respond to this message.`;
 		(globalThis as any).__comsUserSend = async (params: { target: string; prompt: string; project?: string }): Promise<{ ok: boolean; message: string }> => {
 			const resolved = await resolveUserTarget(params.target, params.project);
 			if (!resolved.target) {
-				log.warn("user_send_target_missing", { target: params.target, project: params.project ?? null });
+				// The decision and its one warn live in resolveUserTarget; this is the send path's trail.
+				log.debug("user_send_target_missing", { target: params.target, project: params.project ?? null });
+				tellLog.debug("tell_target_unresolved", { reason: resolved.error ?? "no match" });
 				return { ok: false, message: resolved.error ?? `no live peer "${params.target}"` };
 			}
 			const target = resolved.target;
+			const safeTarget = sanitizePeerText(target.name, 40);
 			try {
 				const { msg_id } = await deliverPrompt(target, { prompt: params.prompt, userAuthored: true });
 				log.info("user_send", msg_id, "to", target.name, "chars", params.prompt.length);
-				return { ok: true, message: `sent to ${target.name} (${msg_id})` };
+				tellLog.debug("tell_completion", { count: 1 });
+				return { ok: true, message: `sent to ${safeTarget} (${msg_id})` };
 			} catch (error) {
 				const reason = error instanceof Error ? error.message : String(error);
 				log.error("user_send_failed", target.name, reason);
-				return { ok: false, message: `delivery to ${target.name} failed: ${reason}` };
+				return { ok: false, message: `delivery to ${safeTarget} failed: ${reason}` };
 			}
 		};
 	}
@@ -3290,7 +3383,7 @@ Do not respond to this message.`;
 					pi.sendMessage(
 						{
 							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd, next.origin),
-							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin),
+							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin, next.sender_session),
 							display: true,
 							details: {
 								msg_id: next.msg_id,
@@ -3335,7 +3428,7 @@ Do not respond to this message.`;
 							content: buildInboundContent(
 								`[NOTE: your previous reply was not captured because a user message arrived in the same turn. ` +
 								`This is a re-injection — please reply to this peer message now.]`,
-								inbound.prompt, inbound.tasks ?? null, inbound.sender_name, inbound.sender_cwd, inbound.origin),
+								inbound.prompt, inbound.tasks ?? null, inbound.sender_name, inbound.sender_cwd, inbound.origin, inbound.sender_session),
 							display: true,
 							details: {
 								msg_id: inbound.msg_id,
@@ -3371,7 +3464,7 @@ Do not respond to this message.`;
 							pi.sendMessage(
 								{
 									customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd, next.origin),
-									content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin),
+									content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin, next.sender_session),
 									display: true,
 									details: {
 										msg_id: next.msg_id,
@@ -3439,7 +3532,7 @@ Do not respond to this message.`;
 					pi.sendMessage(
 						{
 							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd, next.origin),
-							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin),
+							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin, next.sender_session),
 							display: true,
 							details: {
 								msg_id: next.msg_id,
@@ -3535,7 +3628,7 @@ Do not respond to this message.`;
 					try {
 						pi.sendMessage({
 							customType: formatComsInboundType(senderPending[0].sender_name, sanitizeComsName(identity?.name ?? "?"), senderPending[0].sender_cwd, senderPending[0].origin),
-							content: buildInboundContent("", senderPending[0].prompt, senderPending[0].tasks, senderPending[0].sender_name, senderPending[0].sender_cwd, senderPending[0].origin),
+							content: buildInboundContent("", senderPending[0].prompt, senderPending[0].tasks, senderPending[0].sender_name, senderPending[0].sender_cwd, senderPending[0].origin, senderPending[0].sender_session),
 							display: true,
 							details: { msg_id: senderPending[0].msg_id, sender_session: senderPending[0].sender_session, response_schema: senderPending[0].response_schema ?? null },
 						}, { deliverAs: "followUp", triggerTurn: true });
@@ -3549,7 +3642,7 @@ Do not respond to this message.`;
 					try {
 						pi.sendMessage({
 							customType: formatComsInboundType(primary.sender_name, sanitizeComsName(identity?.name ?? "?"), primary.sender_cwd, bundle.origin),
-							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin),
+							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin, primary.sender_session),
 							display: true,
 							details: { msg_id: primary.msg_id, sender_session: primary.sender_session, response_schema: primary.response_schema ?? null, bundled_msg_ids: senderPending.map(i => i.msg_id) },
 						}, { deliverAs: "followUp", triggerTurn: true });
@@ -3655,7 +3748,7 @@ Do not respond to this message.`;
 					pi.sendMessage(
 						{
 							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd, next.origin),
-							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin),
+							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin, next.sender_session),
 							display: true,
 							details: {
 								msg_id: next.msg_id,
@@ -3686,7 +3779,7 @@ Do not respond to this message.`;
 					pi.sendMessage(
 						{
 							customType: formatComsInboundType(primary.sender_name, sanitizeComsName(identity?.name ?? "?"), primary.sender_cwd, bundle.origin),
-							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin),
+							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin, primary.sender_session),
 							display: true,
 							details: {
 								msg_id: primary.msg_id,
