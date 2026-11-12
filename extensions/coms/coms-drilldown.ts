@@ -53,16 +53,32 @@ export interface DrilldownItem {
   detail: Array<[string, string]>;
 }
 
+/** Mappings already reported, so the answer is logged once instead of on every redraw. */
+const SEEN_LABELS = new Set<string>();
+const SEEN_LABELS_MAX = 1_000;
+
+/** Test seam: the dedupe is process-wide by design, so a suite clears it between cases. */
+export function clearItemIdLabelSeen(): void {
+  SEEN_LABELS.clear();
+}
+
 /** What the row's id column shows. The composite identity is internal by contract (#1084).
- *  Logged because "which id did we display for this row" is otherwise unanswerable after the
- *  fact — the pane shows the answer but keeps no record of it. */
+ *
+ *  Logged ONCE per distinct `id → label` mapping per process, and only when the two differ: this
+ *  sits on the row renderer's hot path (twice per visible item, once a second per redraw), so a
+ *  line per call would be two synchronous file writes per row per tick. The interesting case is
+ *  exactly the one where display and identity disagree — that is what "which id did we display"
+ *  means — and a trivial pair says nothing worth a write. */
 export function itemIdLabel(item: { id?: string; displayId?: string }): string {
   const label = item.displayId ?? "";
-  // Ids only, truncated: the composite stays bookkeeping and no peer text is logged.
-  log.debug("item_id_label", {
-    id: String(item.id ?? "").slice(0, 40),
-    label: label.slice(0, 40),
-  });
+  const rawId = String(item.id ?? "");
+  const key = `${rawId}\u2192${label}`;
+  if (rawId !== label && !SEEN_LABELS.has(key)) {
+    if (SEEN_LABELS.size >= SEEN_LABELS_MAX) SEEN_LABELS.clear();
+    SEEN_LABELS.add(key);
+    // Ids only, truncated: the composite stays bookkeeping and no peer text is logged.
+    log.debug("item_id_label", { id: rawId.slice(0, 40), label: label.slice(0, 40) });
+  }
   return label;
 }
 

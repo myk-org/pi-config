@@ -12,7 +12,13 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
 import { sanitizePeerText } from "../../../extensions/coms/peer-text.ts";
-import { buildDrilldownRows, itemIdLabel, logDetailOpen, buildPeerInfoRow } from "../../../extensions/coms/coms-drilldown.ts";
+import {
+  buildDrilldownRows,
+  buildPeerInfoRow,
+  clearItemIdLabelSeen,
+  itemIdLabel,
+  logDetailOpen,
+} from "../../../extensions/coms/coms-drilldown.ts";
 import { formatPeerTable, type RegistryRow } from "../../../extensions/coms/coms-peers.ts";
 import { clearLogLevelCache, getPiLogPath, getPiLogsDir, setGlobalSessionId } from "../../../extensions/shared/file-logger.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -147,40 +153,69 @@ describe("peer logging", () => {
 });
 
 describe("drilldown logging (#1084 round 5)", () => {
-  // The peer-logging suite above restores HOME/env in its after(), so a sibling suite starts with
-  // debug gated off. Set the level for THIS suite instead of relying on the other one's hooks.
-  before(() => {
-    for (const key of ENV_KEYS) process.env[key] = "debug";
-    setGlobalSessionId(SESSION);
-    clearLogLevelCache();
-  });
-  after(() => clearLogLevelCache());
+  // Finding A: these assertions must not be able to read another session's lines. Every case gets
+  // its OWN home + session id, so the sink path is exact and a previous run cannot satisfy it.
+  let savedHome: string | undefined;
+  let savedParent: string | undefined;
+  const savedLevels: Record<string, string | undefined> = {};
+  let runs = 0;
 
-  const payloadsOf = (name: string, event: string): any[] => {
+  const freshSink = (): void => {
+    const dir = makeTempDir(`pi-drilldown-log-${runs++}-`);
+    process.env.HOME = dir;
+    process.env.USERPROFILE = dir;
+    // A nested path (subagent layout) would move the file; these cases want the simple one.
+    delete process.env.__PI_PARENT_SESSION_ID;
+    for (const key of ENV_KEYS) process.env[key] = "debug";
+    setGlobalSessionId(`drilldown-log-${runs}`);
+    clearLogLevelCache();
+    clearItemIdLabelSeen();
+  };
+
+  /** Only this run's exact sink — no tree scan, no fallback. */
+  const exactLines = (name: string, event: string): string[] => {
+    const logPath = getPiLogPath(name);
+    assert.ok(logPath, `${name} log path must resolve`);
+    if (!existsSync(logPath)) return [];
+    return readFileSync(logPath, "utf-8").split("\n").filter((line) => line.includes(event));
+  };
+
+  const exactPayloads = (name: string, event: string): any[] => {
     const marker = `${event} `;
-    const payloads: any[] = [];
-    for (const line of linesIn(name, event)) {
-      // Some lines mention an event name without carrying its payload; only parse JSON ones.
+    return exactLines(name, event).map((line) => {
       const json = line.slice(line.indexOf(marker) + marker.length);
-      const start = json.indexOf("{");
-      if (start < 0) continue;
-      try {
-        payloads.push(JSON.parse(json.slice(start)));
-      } catch {
-        continue;
-      }
+      return JSON.parse(json.slice(json.indexOf("{")));
+    });
+  };
+
+  before(() => {
+    savedHome = process.env.HOME;
+    savedParent = process.env.__PI_PARENT_SESSION_ID;
+    for (const key of ENV_KEYS) savedLevels[key] = process.env[key];
+  });
+
+  after(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedParent === undefined) delete process.env.__PI_PARENT_SESSION_ID;
+    else process.env.__PI_PARENT_SESSION_ID = savedParent;
+    process.env.USERPROFILE = savedHome;
+    for (const key of ENV_KEYS) {
+      if (savedLevels[key] === undefined) delete process.env[key];
+      else process.env[key] = savedLevels[key];
     }
-    assert.ok(payloads.length > 0, `${event} payload must be logged`);
-    return payloads;
-  };
-  /** One event fires for several rows in a suite, so a case names the payload it means. */
-  const payloadWhere = (name: string, event: string, match: (payload: any) => boolean): any => {
-    const hit = payloadsOf(name, event).find(match);
-    assert.ok(hit, `${event} with the expected payload must be logged`);
-    return hit;
-  };
+    clearLogLevelCache();
+    clearItemIdLabelSeen();
+  });
+
+  it("starts from an empty sink, so a stale line from another run cannot satisfy it", () => {
+    freshSink();
+    assert.deepEqual(exactLines("coms-drilldown", "item_id_label"), []);
+    assert.deepEqual(exactPayloads("coms-drilldown", "item_id_label"), []);
+  });
 
   it("logs which id a row displayed, and the composite it came from", () => {
+    freshSink();
     const rows = buildDrilldownRows({
       ok: true,
       detail: { agents: [], tasks: [{ id: "session:abc", status: "pending", subject: "s", blockedBy: [] }], crons: [] },
@@ -188,19 +223,39 @@ describe("drilldown logging (#1084 round 5)", () => {
     });
     const item = rows[0].items[0];
     assert.equal(itemIdLabel(item), "session:abc");
-    assert.deepEqual(payloadWhere("coms-drilldown", "item_id_label", (p) => p.id === "0:session:abc"), {
-      id: "0:session:abc",
-      label: "session:abc",
-    });
+    assert.deepEqual(exactPayloads("coms-drilldown", "item_id_label"), [
+      { id: "0:session:abc", label: "session:abc" },
+    ]);
   });
 
-  it("logs no label for a row that names nothing", () => {
+  it("logs a no-name row once, with an empty label", () => {
+    freshSink();
     const info = buildPeerInfoRow({ name: "w", project: "p", busy: false }).items[0];
     assert.equal(itemIdLabel(info), "");
-    assert.deepEqual(payloadWhere("coms-drilldown", "item_id_label", (p) => p.id === "0:peer"), { id: "0:peer", label: "" });
+    assert.equal(itemIdLabel(info), "");
+    assert.deepEqual(exactPayloads("coms-drilldown", "item_id_label"), [{ id: "0:peer", label: "" }]);
+  });
+
+  it("stays silent for a trivial pair where the label IS the id", () => {
+    freshSink();
+    assert.equal(itemIdLabel({ id: "abc", displayId: "abc" }), "abc");
+    assert.deepEqual(exactLines("coms-drilldown", "item_id_label"), []);
+  });
+
+  it("writes one line per mapping, not one per render tick", () => {
+    freshSink();
+    const item = { id: "0:peer", displayId: "" };
+    for (let tick = 0; tick < 5; tick++) {
+      const rows = buildDrilldownRows({ ok: false, reason: "timeout" });
+      itemIdLabel(rows[0].items[0]);
+      itemIdLabel(item);
+    }
+    // Two distinct mappings, five renders each.
+    assert.equal(exactLines("coms-drilldown", "item_id_label").length, 2);
   });
 
   it("logs a detail-pane construction with its path and pair count, and no peer text", () => {
+    freshSink();
     const rows = buildDrilldownRows({
       ok: true,
       detail: { agents: [], tasks: [{ id: "7", status: "pending", subject: "secret subject", blockedBy: [] }], crons: [] },
@@ -208,12 +263,10 @@ describe("drilldown logging (#1084 round 5)", () => {
     });
     const item = rows[0].items[0];
     logDetailOpen("direct", item);
-    assert.deepEqual(payloadWhere("coms-drilldown", "drilldown_detail_open", (p) => p.id === "0:7"), {
-      path: "direct",
-      id: "0:7",
-      pairs: item.detail.length,
-    });
-    for (const line of linesIn("coms-drilldown", "drilldown_detail_open")) {
+    assert.deepEqual(exactPayloads("coms-drilldown", "drilldown_detail_open"), [
+      { path: "direct", id: "0:7", pairs: item.detail.length },
+    ]);
+    for (const line of exactLines("coms-drilldown", "drilldown_detail_open")) {
       assert.equal(line.includes("secret subject"), false, "no peer text in the log");
     }
   });
