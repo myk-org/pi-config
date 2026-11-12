@@ -53,7 +53,7 @@ export async function openComsPeersOverlay(
   // list closes and is re-opened after each. The overlay hands the focused row over through these
   // queues (a bare variable would be narrowed to null across the await, since the assignment
   // happens inside its callback).
-  const composeQueue: Row[] = [];
+  const composeQueue: Row[][] = [];
   const peerQueue: Row[] = [];
   // #1084: Esc from the drilldown returns to the peer list focused on the peer it came from.
   let reselectPeer: string | undefined;
@@ -103,7 +103,8 @@ export async function openComsPeersOverlay(
           log.info("overlay_kill_all");
           try { ctx.ui.notify(sanitizePeerText(killed, 120), "info"); } catch {}
         },
-        onCompose: deps.tellPeer ? (row) => { composeQueue.push(row); } : undefined,
+        // Compose acts on the selection (the overlay hands over every selected row).
+        onCompose: deps.tellPeer ? (rows) => { composeQueue.push(rows); } : undefined,
         // #1084: Enter walks INTO the peer instead of opening a wall of text.
         onSelect: (row) => { peerQueue.push(row); },
       },
@@ -116,26 +117,54 @@ export async function openComsPeersOverlay(
       continue;
     }
 
-    const target = composeQueue.pop();
-    if (!target || !deps.tellPeer) return;
+    const picked = composeQueue.pop();
+    if (!picked || picked.length === 0 || !deps.tellPeer) return;
+    // Dedupe by id, keeping row order: the same peer twice must be sent to once, not twice.
+    const targets = [...new Map(picked.map((row) => [row.id, row])).values()];
     // Same one-line dialog the rest of pi uses; Esc or an empty line means "nothing to send" and
-    // returns to the list rather than dropping the user back into the session. The list is closed
-    // while the dialog is up and re-opens after the send — the composer needs the whole terminal.
-    const text = await ctx.ui.input(`Message ${sanitizePeerText(target.name, 40)} (sent as you)`, "one line to the peer");
-    const request = buildTellRequest(target, text ?? "");
-    if (!request) {
-      log.debug("overlay_tell_cancelled", { name: target.name, project: target.project });
+    // returns to the list rather than dropping the user back into the session.
+    const title = targets.length === 1
+      ? `Message ${sanitizePeerText(targets[0].name, 40)} (sent as you)`
+      : `Message ${targets.length} peers (sent as you)`;
+    const text = await ctx.ui.input(title, "one line to the peer");
+    const first = buildTellRequest(targets[0], text ?? "");
+    if (!first) {
+      log.debug("overlay_tell_cancelled", { count: targets.length });
       continue;
     }
-    const result = await deps.tellPeer(request);
-    log.info("overlay_tell_peer", { name: request.target, project: request.project ?? null, chars: request.prompt.length });
-    // A failed user send must reach the user where they are looking: the composer closed the list,
-    // so the reopened list's own lines are not on screen yet.
-    if (result.startsWith("⚠")) {
-      log.warn("overlay_tell_failed", { name: request.target, project: request.project ?? null });
-      // The status carries the peer's own error text; sanitize the whole line, not just the name.
-      try { ctx.ui.notify(sanitizePeerText(result, 120), "error"); } catch {}
+    // One request per peer, one result each: a partial send must never read as success.
+    let sent = 0;
+    const failed: string[] = [];
+    const failures: string[] = [];
+    for (const target of targets) {
+      const request = buildTellRequest(target, text ?? "");
+      if (!request) continue;
+      try {
+        const result = await deps.tellPeer(request);
+        if (result.startsWith("⚠")) {
+          failed.push(sanitizePeerText(target.name, 40));
+          failures.push(result);
+          log.warn("overlay_tell_failed", { name: request.target, project: request.project ?? null, peers: targets.length });
+        } else {
+          sent += 1;
+        }
+      } catch (err) {
+        failed.push(sanitizePeerText(target.name, 40));
+        log.error("overlay_tell_threw", { name: request.target, error: err instanceof Error ? err.message : String(err) });
+      }
     }
+    log.info("overlay_tell_peer", { peer: picked.length, unique: targets.length, sent, failed: failed.length, chars: first.prompt.length });
+    // ONE line for the whole send: per-peer notifies would bury the failures.
+    if (targets.length > 1 || failed.length > 0) {
+      // One failing peer keeps its reason (that is what the user acts on); several get names only,
+      // because N reasons in one line is unreadable.
+      const reason = failed.length === 1 && failures[0] ? ` (${failures[0]})` : "";
+      const summary = failed.length === 0
+        ? `📡 sent ${sent} peer${sent === 1 ? "" : "s"}`
+        : `⚠️ sent ${sent} · failed ${failed.length}: ${failed.join(", ")}${reason}`;
+      try { ctx.ui.notify(sanitizePeerText(summary, 120), failed.length === 0 ? "info" : "error"); } catch {}
+    }
+
   }
 }
 
