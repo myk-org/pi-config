@@ -14,10 +14,16 @@ default.
 `pi-config-settings.jsonc` used to win over the `.json` file, which silently hid settings written to
 `.json` — including `dangerous_command_allowlist` entries added by an approval, so the gate started
 prompting for commands it had already allowed. The legacy file is handled once: if its `.json`
-counterpart is absent its parsed content is written to `.json` and the file is renamed to
+counterpart is absent its parsed content is written to `.json` — published by an atomic rename, so a
+concurrent reader never parses a partial file — and the file is renamed to
 `pi-config-settings.jsonc.migrated`; if `.json` already exists it is left alone and ignored; if it
-cannot be parsed it is refused, never overwritten (same contract as a corrupt settings file). The
-migration logs paths only, never values.
+cannot be parsed it is refused, never overwritten (same contract as a corrupt settings file), and
+settings writes to that directory are refused until the file is repaired so a fresh `.json` cannot
+bypass it; a legacy file that git tracks or that is a symlink is never migrated, because a clone
+could otherwise ship a tracked `.jsonc` and have it laundered into the untracked `.json` that
+`projectSettingsTrust` accepts. That tracked-file refusal applies to the project scope only: a
+home directory cannot be attacked by a repo shipping a file, and refusing there would break a
+dotfiles-managed `~/.pi`. The migration logs paths only, never values.
 
 See [Configuration & Settings](configuration.html) for the full resolution walkthrough.
 

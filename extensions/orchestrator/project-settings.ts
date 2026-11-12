@@ -326,7 +326,7 @@ export function getGlobalSettingsPath(): string {
   if (process.env.NODE_TEST_CONTEXT !== undefined) {
     return join(tmpdir(), `pi-config-test-global-settings-${process.pid}.json`);
   }
-  return findSettingsFile(join(homedir(), ".pi")) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
+  return findSettingsFile(join(homedir(), ".pi"), { scope: "global" }) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
 }
 
 export function loadGlobalSettings(): ProjectSettings {

@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { constants, copyFileSync, existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import stripJsonComments from "strip-json-comments";
 
@@ -33,7 +33,33 @@ export const LEGACY_SETTINGS_FILENAME = "pi-config-settings.jsonc";
 /** Suffix the legacy file is moved to — it can never shadow the `.json` again. */
 const LEGACY_MIGRATED_SUFFIX = ".migrated";
 
-const legacyIgnoredLogged = new Set<string>();
+/** One warning per directory and reason: settings resolution runs on nearly every tool call, so a
+ *  file that stays ignored/refused/corrupt must not re-log on each read. Path only, never values. */
+const legacyWarned = new Set<string>();
+function warnLegacyOnce(reason: string, message: string, file: string): void {
+  const key = `${reason}\0${dirname(file)}`;
+  if (legacyWarned.has(key)) return;
+  legacyWarned.add(key);
+  log.warn(message, { path: file });
+}
+
+/** `realpath` of the nearest path that exists, so a symlinked parent cannot hide the target. */
+export function nearestRealPath(target: string): string {
+  const absolute = resolve(target);
+  const tail: string[] = [];
+  let current = absolute;
+  for (;;) {
+    try {
+      const real = realpathSync(current);
+      return tail.length > 0 ? join(real, ...tail.reverse()) : real;
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return absolute;
+      tail.push(basename(current));
+      current = parent;
+    }
+  }
+}
 
 export const SETTINGS_KEYS: Record<string, SettingsKeyDef> = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "settings-keys.json"), "utf8"),
@@ -44,9 +70,40 @@ export const SETTINGS_KEYS: Record<string, SettingsKeyDef> = JSON.parse(
  *  has. Production runs are unaffected. */
 function migrationAllowed(dir: string): boolean {
   if (process.env.NODE_TEST_CONTEXT === undefined) return true;
-  const base = resolve(tmpdir());
-  const target = resolve(dir);
+  // Compare REAL paths: a lexical check passes for a fixture whose `.pi` links into a real project.
+  // `nearestRealPath` on both sides, so a missing or bogus tmpdir cannot make resolution throw.
+  const base = nearestRealPath(tmpdir());
+  const target = nearestRealPath(dir);
   return target === base || target.startsWith(base + sep);
+}
+
+/** Whether git tracks the legacy file, in the repo that owns it. `"unknown"` (git failed for an
+ *  unrelated reason) counts as tracked: a migration that MIGHT launder a clone's settings must not
+ *  happen. Exit 1 means "not in the index" — the normal, migratable case. */
+function legacyTracked(dir: string, legacy: string): boolean {
+  try {
+    const out = execFileSync("git", ["ls-files", "--error-unmatch", "--", legacy], {
+      cwd: dir, encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return out !== "";
+  } catch (error) {
+    const { status, stderr } = error as { status?: number; stderr?: string };
+    if (status === 1) return false;
+    // No repo here: nothing could have been cloned in.
+    if (status === 128 && /not a git repository/i.test(String(stderr ?? ""))) return false;
+    log.warn("settings_legacy_jsonc_git_check_failed", { path: legacy, fallback: "not migrated" });
+    return true;
+  }
+}
+
+/** A legacy file that exists while its `.json` does not, and cannot be parsed. Writing `.json` now
+ *  would make the legacy file "ignored", so a file a human repairs afterwards could never be
+ *  migrated — settings writes to this directory are refused until the legacy file is fixed. */
+export function legacyMigrationBlocked(dir: string): boolean {
+  const legacy = join(dir, LEGACY_SETTINGS_FILENAME);
+  if (!existsSync(legacy) || existsSync(join(dir, SETTINGS_FILENAMES[0]))) return false;
+  // Vanished between the two checks: nothing left to protect.
+  return readLegacySettings(legacy) === null && existsSync(legacy);
 }
 
 /** Reads and parses the legacy file; `null` means "nothing to migrate".
@@ -64,7 +121,7 @@ export function readLegacySettings(file: string): Record<string, unknown> | null
   if (typeof data !== "object" || data === null || Array.isArray(data)) {
     // Same contract as the corrupt-file refusal on write: a file a human can still repair by
     // hand is never replaced by generated content. Path only — values never reach the log.
-    log.warn("settings_legacy_jsonc_corrupt", { path: file });
+    warnLegacyOnce("corrupt", "settings_legacy_jsonc_corrupt", file);
     return null;
   }
   return data as Record<string, unknown>;
@@ -76,28 +133,46 @@ export function readLegacySettings(file: string): Record<string, unknown> | null
  * `dangerous_command_allowlist` entries added by an approval, which made the gate re-prompt.
  *
  * - `.json` exists        → migrate nothing; the legacy file is ignored (logged once per dir).
- * - `.json` missing       → write its parsed content to `.json` (atomic create, temp + rename),
+ * - `.json` missing       → write its parsed content to `.json` (temp file, then atomic rename),
  *                           then move the legacy file to `*.jsonc.migrated`.
  * - legacy unparseable    → refuse: nothing written, nothing renamed, nothing read from it.
+ * - legacy tracked        → refuse, PROJECT scope only: laundering a clone's tracked file into a new
+ *                           untracked `.json` would hand it the trust `projectSettingsTrust` withholds.
+ * - legacy a symlink      → refuse: reading through it would copy a file from elsewhere into the
+ *                           settings dir as a real file.
  *
- * Race-safe: the `.json` create is exclusive (`COPYFILE_EXCL`), so a process that lost the
- * race keeps the winner's file, and a legacy file already gone counts as migrated.
+ * Race-safe: the `.json` is published by rename, so a concurrent reader never sees a partial
+ * file; a target that already exists (another process won) is kept, and a legacy file already
+ * gone counts as migrated.
  */
-export function migrateLegacySettingsFile(dir: string): void {
+export function migrateLegacySettingsFile(dir: string, options: FindSettingsOptions = {}): void {
   if (!migrationAllowed(dir)) return;
+  const scope = options.scope ?? "project";
   const legacy = join(dir, LEGACY_SETTINGS_FILENAME);
-  if (!existsSync(legacy)) return;
+  let legacyStat;
+  try { legacyStat = lstatSync(legacy); } catch { return; }
+  if (legacyStat.isSymbolicLink()) {
+    warnLegacyOnce("symlink", "settings_legacy_jsonc_symlink_refused", legacy);
+    return;
+  }
   const target = join(dir, SETTINGS_FILENAMES[0]);
   if (existsSync(target)) {
-    if (!legacyIgnoredLogged.has(dir)) {
-      legacyIgnoredLogged.add(dir);
-      log.warn("settings_legacy_jsonc_ignored", { path: legacy });
-    }
+    warnLegacyOnce("ignored", "settings_legacy_jsonc_ignored", legacy);
     return;
   }
 
+  // Parse BEFORE the git check: a corrupt legacy file never migrates, so it must not cost a git
+  // exec on every settings resolution.
   const data = readLegacySettings(legacy);
   if (data === null) return;
+  // Project scope only: a repo can hand itself approvals by shipping a tracked settings file, so
+  // its tracked legacy file must not be laundered into the untracked `.json`. The user's own home
+  // directory cannot be attacked that way, and refusing there breaks a dotfiles-managed `~/.pi`
+  // (this machine: `~/.pi` links into a repo that tracks `pi-config-settings.json`).
+  if (scope === "project" && legacyTracked(dir, legacy)) {
+    warnLegacyOnce("tracked", "settings_legacy_jsonc_tracked_refused", legacy);
+    return;
+  }
 
   const tmp = `${target}.${process.pid}.${Date.now().toString(36)}`;
   try {
@@ -107,14 +182,18 @@ export function migrateLegacySettingsFile(dir: string): void {
     return;
   }
   try {
-    copyFileSync(tmp, target, constants.COPYFILE_EXCL);
+    // Publish by RENAME, not by creating the target first: the `.json` pathname appears with its
+    // full content, so a concurrent reader never parses a partial file and falls back to defaults.
+    // A target that already exists means another process published it — keep theirs, and the
+    // legacy rename below is still ours to do (a racer that got there first reports ENOENT).
+    if (!existsSync(target)) renameSync(tmp, target);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+    // Windows refuses to replace an existing target instead of returning EEXIST on rename.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EEXIST" && code !== "EPERM") {
       log.warn("settings_legacy_jsonc_migrate_failed", { path: legacy });
       return;
     }
-    // Lost the race: the other process created `.json` and owns the migration. Renaming the
-    // legacy file away is still ours to do — a racer that got there first reports ENOENT.
   } finally {
     try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* temp file left behind */ }
   }
@@ -133,8 +212,16 @@ export function migrateLegacySettingsFile(dir: string): void {
   log.warn("settings_legacy_jsonc_migrated", { path: legacy });
 }
 
-export function findSettingsFile(dir: string): string | null {
-  migrateLegacySettingsFile(dir);
+export type SettingsScope = "project" | "global";
+
+export interface FindSettingsOptions {
+  /** Which settings root `dir` is. Defaults to `"project"`: every existing caller keeps its
+   *  behaviour, and only the global-scope callers opt into the weaker refusals. */
+  scope?: SettingsScope;
+}
+
+export function findSettingsFile(dir: string, options: FindSettingsOptions = {}): string | null {
+  migrateLegacySettingsFile(dir, options);
   for (const name of SETTINGS_FILENAMES) {
     const file = join(dir, name);
     if (existsSync(file)) {
@@ -229,7 +316,7 @@ export function getStandaloneSetting(cwd: string, key: string): unknown {
   const root = resolveRepoRoot(cwd);
   for (const [source, file] of [
     ["project", findSettingsFile(join(root, ".pi"))],
-    ["global", findSettingsFile(join(process.env.HOME || homedir(), ".pi"))],
+    ["global", findSettingsFile(join(process.env.HOME || homedir(), ".pi"), { scope: "global" })],
   ] as const) {
     const settings = readSettingsObject(file, key);
     if (key in settings && isValidCandidate(settings[key], definition)) {
