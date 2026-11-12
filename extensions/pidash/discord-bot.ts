@@ -135,6 +135,47 @@ export function inboundRouteRecord(facts: InboundRouteFacts): Record<string, unk
   };
 }
 
+export interface InboundTraceFacts {
+  /** "message" for a plain inbound message, otherwise the interaction kind. */
+  kind: string;
+  /** Which handler made the decision: messageCreate, message-context-menu, slash-command. */
+  handler: string;
+  channelId: string;
+  guildId?: string | null;
+  threadSessionId?: string | null;
+  watchedSessionId?: string | null;
+  watchLive: boolean;
+  targets?: Record<string, { channelId: string; threadId?: string | null }> | null;
+  commandName?: string | null;
+  watchedClientPresent?: boolean | null;
+  inbound?: InboundSession | null;
+}
+
+/** The record logged where an inbound message is routed, and at the interaction guards.
+ *
+ *  Same shape as {@link inboundRouteRecord}, plus which handler decided and what it was looking at.
+ *  Ids and state shape only — no message text, no user names. */
+export function inboundTraceRecord(facts: InboundTraceFacts): Record<string, unknown> {
+  const targetKeys = Object.keys(facts.targets ?? {});
+  return {
+    kind: facts.kind,
+    handler: facts.handler,
+    commandName: facts.commandName ?? null,
+    channelId: facts.channelId,
+    isDm: !facts.guildId,
+    // A channel is a thread only when a session claims it; an unknown thread routes nowhere anyway.
+    hasThread: Boolean(facts.threadSessionId),
+    threadSessionId: facts.threadSessionId ?? null,
+    watchedSessionId: facts.watchedSessionId ?? null,
+    watchLive: facts.watchLive,
+    watchedClientPresent: facts.watchedClientPresent ?? null,
+    targetsCount: targetKeys.length,
+    targetKeys,
+    inboundSessionId: facts.inbound?.sessionId ?? null,
+    inboundSource: facts.inbound?.source ?? null,
+  };
+}
+
 export function setupDiscordBot(opts: {
   piClients: Map<string, any>;
   piEventHooks: Array<(sessionId: string, event: any) => void>;
@@ -315,6 +356,8 @@ export function setupDiscordBot(opts: {
     facts: Omit<InboundRouteFacts, "reason"> & { reason: string },
     level: "info" | "warn" = "warn",
     throttle = false,
+    /** Which handler decided — merged into the same line, so one event is one line. */
+    trace?: InboundTraceFacts,
   ): void {
     if (throttle) {
       // Per USER as well: a shared fallback channel would otherwise hide every later user's drop.
@@ -325,7 +368,9 @@ export function setupDiscordBot(opts: {
       if (dropLoggedAt.size > 500) dropLoggedAt.clear();
       dropLoggedAt.set(key, now);
     }
-    const record = inboundRouteRecord(facts);
+    const record = trace
+      ? { ...inboundRouteRecord(facts), ...inboundTraceRecord(trace) }
+      : inboundRouteRecord(facts);
     // WARN is for a failure the user feels; a routine refusal is INFO (Qodo 52959087).
     if (level === "warn") log.warn("discord_inbound_dropped", record);
     else log.info("discord_inbound_dropped", record);
@@ -1208,6 +1253,8 @@ export function setupDiscordBot(opts: {
       const state = userState(interaction.user.id);
       const targetSession = state.watchedSessionId;
       if (!targetSession) {
+        // WARN, with the handler and the state it looked at: this refusal reached the user twice
+        // with nothing in the log naming which of the "Not watching any session" sites spoke.
         logInboundDrop({
           reason: "interaction-no-watch",
           channelId: interaction.channelId,
@@ -1217,7 +1264,16 @@ export function setupDiscordBot(opts: {
           targets: state.targets,
           ownsTarget: false,
           userId: interaction.user.id,
-        }, "info");
+        }, "warn", false, {
+          kind: "message-context-menu",
+          handler: "message-context-menu",
+          channelId: interaction.channelId,
+          guildId: interaction.guildId,
+          watchedSessionId: null,
+          watchLive: false,
+          targets: state.targets,
+          watchedClientPresent: false,
+        });
         await interaction.reply({ content: "Not watching any session. Use `/sessions` first.", ephemeral: true }).catch(() => {});
         return;
       }
@@ -1328,6 +1384,19 @@ export function setupDiscordBot(opts: {
       return;
     }
 
+    // /board aggregates EVERY session, so it needs no watched one: behind the guard below it
+    // answered "Not watching any session" to a command that would have worked (Qodo review).
+    if (name === "board") {
+      await interaction.deferReply({ ephemeral: true }).catch(() => {});
+      const { boardSessionIds, ...view } = await renderBoard();
+      const reply: any = await interaction.editReply(view).catch((error: any) => {
+        log.warn("board reply failed", { error: String(error) });
+        return null;
+      });
+      if (reply?.id && Array.isArray(boardSessionIds)) rememberBoard(reply.id, boardSessionIds);
+      return;
+    }
+
     if (!watched) {
       logInboundDrop({
         reason: "interaction-no-watch",
@@ -1337,7 +1406,18 @@ export function setupDiscordBot(opts: {
         watchLive: false,
         targets: state.targets,
         ownsTarget: false,
-      }, "info");
+        userId: interaction.user.id,
+      }, "warn", false, {
+        kind: "chat-input-command",
+        handler: "slash-command",
+        commandName: name,
+        channelId: interaction.channelId,
+        guildId: interaction.guildId,
+        watchedSessionId: null,
+        watchLive: false,
+        targets: state.targets,
+        watchedClientPresent: false,
+      });
       await acknowledge(interaction, "Not watching any session. Use `/sessions` first.");
       return;
     }
@@ -1453,17 +1533,6 @@ export function setupDiscordBot(opts: {
       await interaction.editReply({ content: view.content, components: rows })
         .catch((error: any) => log.warn(`${name} reply failed`, { error: String(error) }));
       log.info(`${name} listed`, { session: sessionId, stoppable: view.stoppable.length });
-      return;
-    }
-
-    if (name === "board") {
-      await interaction.deferReply({ ephemeral: true }).catch(() => {});
-      const { boardSessionIds, ...view } = await renderBoard();
-      const reply: any = await interaction.editReply(view).catch((error: any) => {
-        log.warn("board reply failed", { error: String(error) });
-        return null;
-      });
-      if (reply?.id && Array.isArray(boardSessionIds)) rememberBoard(reply.id, boardSessionIds);
       return;
     }
 
@@ -1998,6 +2067,21 @@ export function setupDiscordBot(opts: {
       targets: state.targets ?? {},
       isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
     });
+    // One line per message at the DECISION point — routed where, and why. A screenshot from the
+    // user is all we get for a live report, and the state that produced it is gone by the time we
+    // look; the refusal lines below only cover the messages that stopped.
+    log.info("discord_inbound_routed", inboundTraceRecord({
+      kind: "message",
+      handler: "messageCreate",
+      channelId: message.channelId,
+      guildId: message.guildId,
+      threadSessionId,
+      watchedSessionId: state.watchedSessionId ?? null,
+      watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
+      targets: state.targets,
+      inbound,
+    }));
+
     const noTargetReply = () => message.reply(inbound.deadTarget
       ? "The session this channel belonged to is gone. Use `/sessions` and pick one."
       : "Not watching any session. Use `/sessions` and pick one.").catch(() => {});
