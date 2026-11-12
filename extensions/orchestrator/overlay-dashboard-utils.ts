@@ -1,6 +1,9 @@
 /**
  * Pure overlay dashboard helpers — no TUI deps (unit-testable).
  */
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("overlay-dashboard");
 
 export type OverlayId = string | number;
 
@@ -32,9 +35,15 @@ export function enterAction(spec: {
   onSelect?: unknown;
   createDetail?: unknown;
 }): EnterAction {
-  if (typeof spec.onSelect === "function") return "navigate";
-  if (typeof spec.createDetail === "function") return "detail";
-  return "none";
+  const action: EnterAction =
+    typeof spec.onSelect === "function"
+      ? "navigate"
+      : typeof spec.createDetail === "function"
+        ? "detail"
+        : "none";
+  // The decision, never the item: Enter routing is what goes invisible when a level "does nothing".
+  log.debug("enter_action", { action, createDetail: typeof spec.createDetail === "function" });
+  return action;
 }
 
 /** The starting index for a list that is re-opened on a known row. An id that is gone (a peer
@@ -45,5 +54,10 @@ export function selectionIndexFor<TId extends OverlayId>(
 ): number {
   if (id === undefined || id === null) return 0;
   const index = items.findIndex((item) => item.id === id);
-  return index >= 0 ? index : 0;
+  if (index < 0) {
+    // Falling back to the first row is otherwise indistinguishable from "it was already there".
+    log.debug("selection_unknown", { id: String(id).slice(0, 40), rows: items.length });
+    return 0;
+  }
+  return index;
 }

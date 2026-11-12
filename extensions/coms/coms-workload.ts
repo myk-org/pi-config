@@ -194,6 +194,15 @@ export function renderWorkloadPart(
   return " " + parts.join(" ");
 }
 
+/** The workload as WORDS, for panes that have no room for glyphs (#1084). One place decides the
+ *  three cases so a pane cannot turn "nothing active" into "cannot find out":
+ *  not reported → `unknown`; reported and empty → `none active`; otherwise the suffix. */
+export function workloadStateLabel(counts: PeerWorkloadCounts | null | undefined): string {
+  if (!counts) return "unknown";
+  if (counts.agents === 0 && counts.tasks === 0 && counts.crons === 0) return "none active";
+  return renderWorkloadPart(counts).trim();
+}
+
 export function formatWorkloadSuffix(counts: PeerWorkloadCounts | null | undefined): string {
   return renderWorkloadPart(counts);
 }

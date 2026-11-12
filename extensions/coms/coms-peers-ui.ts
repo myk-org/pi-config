@@ -9,7 +9,7 @@
  */
 import type { Component } from "@earendil-works/pi-tui";
 import { renderWorkloadPart } from "./coms-workload.js";
-import { backTarget, buildDrilldownRows, buildPeerInfoRow, type DrilldownItem, type DrilldownRow } from "./coms-drilldown.js";
+import { backTarget, buildDrilldownRows, buildPeerInfoRow, sectionCountLabel, type DrilldownItem, type DrilldownRow } from "./coms-drilldown.js";
 import { sanitizePeerText } from "./peer-text.js";
 import type { DescribeResult } from "./coms-describe.js";
 import { OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
@@ -31,6 +31,9 @@ export interface ComsPeersOverlayDeps {
   killAll: () => string;
   /** Send the user's own message to a peer (#1077). Absent means no composer is offered. */
   tellPeer?: (request: { target: string; prompt: string; project?: string }) => Promise<string>;
+  /** The shared list→detail overlay. Injected only by tests, which need to drive Enter without a
+   *  TUI; production always uses the default. */
+  openOverlay?: typeof openListDetailOverlay;
   /** #1083: ask the focused peer for its own active workload. `ok` = it answered (possibly
    *  with nothing active); `reason` = it never did — rendered as `unknown`, never as zeros. */
   describePeer?: (row: RegistryRow) => Promise<DescribeResult>;
@@ -44,6 +47,7 @@ export async function openComsPeersOverlay(
   ctx: any,
   deps: ComsPeersOverlayDeps,
 ): Promise<void> {
+  const openOverlay = deps.openOverlay ?? openListDetailOverlay;
   const toRows = (): Row[] => deps.listPeers().map((row) => ({ ...row, id: `${row.project}:${row.name}` }));
   // `m` needs the whole terminal for a text dialog, and Enter navigates a level deeper, so the
   // list closes and is re-opened after each. The overlay hands the focused row over through these
@@ -55,7 +59,7 @@ export async function openComsPeersOverlay(
   let reselectPeer: string | undefined;
 
   for (;;) {
-    await openListDetailOverlay< string, Row>(ctx, {
+    await openOverlay<string, Row>(ctx, {
       emptyMessage: deps.emptyMessage ?? "No peers in the coms registry.",
       initialSelectionId: reselectPeer,
       listSpec: {
@@ -180,12 +184,12 @@ async function openPeerDrilldown(ctx: any, deps: ComsPeersOverlayDeps, row: Row)
   // #1084 finding 4: Esc from a section re-opens this list on that section, not on row 0.
   let reselectSection: string | undefined;
   for (;;) {
-    await openListDetailOverlay<string, DrilldownRow>(ctx, {
+    await (deps.openOverlay ?? openListDetailOverlay)<string, DrilldownRow>(ctx, {
       emptyMessage: "This peer reported no work.",
       initialSelectionId: reselectSection,
       listSpec: {
         title: `Peer ${sanitizePeerText(row.name, 40)}`,
-        countLabel: (items) => `${items.length} section${items.length === 1 ? "" : "s"}`,
+        countLabel: sectionCountLabel,
         borderTitle: () => header,
         footerHints: "↑↓/jk navigate · Enter open · Esc back · read-only (reported by the peer)",
         listItems: () => rows,
@@ -205,15 +209,20 @@ async function openPeerDrilldown(ctx: any, deps: ComsPeersOverlayDeps, row: Row)
       return;
     }
     reselectSection = section.id;
-    await openSectionOverlay(ctx, row, section);
+    await openSectionOverlay(ctx, row, section, deps.openOverlay ?? openListDetailOverlay);
   }
 }
 
 /** Level 3: one section's items, the detail pane reusing the fields the peer reported. */
-async function openSectionOverlay(ctx: any, row: Row, section: DrilldownRow): Promise<void> {
+async function openSectionOverlay(
+  ctx: any,
+  row: Row,
+  section: DrilldownRow,
+  openOverlay: typeof openListDetailOverlay,
+): Promise<void> {
   const title = `${section.label} · ${sanitizePeerText(row.name, 40)}`;
   log.debug("drilldown_section_open", { peer: row.name, section: section.section ?? "status", items: section.items.length });
-  await openListDetailOverlay<string, DrilldownItem>(ctx, {
+  await openOverlay<string, DrilldownItem>(ctx, {
     emptyMessage: `${section.label}: nothing to show.`,
     listSpec: {
       title,

@@ -13,7 +13,7 @@ import { formatTaskRowLine } from "../pitasks/tasks-view.js";
 import type { DescribeResult } from "./coms-describe.js";
 import {
   WORKLOAD_NONE_LINE,
-  renderWorkloadPart,
+  workloadStateLabel,
   workloadUnknownLine,
   type DescribeAgent,
   type DescribeCron,
@@ -231,7 +231,6 @@ export function buildPeerInfoRow(peer: PeerInfoSource): DrilldownRow {
   const origin = describePeerOrigin(peer as any);
   const dash = (value: string): string => value || "—";
   const age = peer.heartbeatAgeSeconds;
-  const workload = renderWorkloadPart(peer.workload).trim();
   const detail: Array<[string, string]> = [
     ["Name", dash(sanitizePeerText(peer.name, 40))],
     ["Project", dash(sanitizePeerText(peer.project, 40))],
@@ -242,8 +241,9 @@ export function buildPeerInfoRow(peer: PeerInfoSource): DrilldownRow {
     ["Socket", dash(sanitizePeerText(peer.endpoint ?? "", 80))],
     ["Heartbeat", typeof age === "number" ? `${age}s ago` : "unknown"],
     ["State", `${peer.busy ? "busy" : "idle"}${peer.queueDepth ? ` · queue ${peer.queueDepth}` : ""}${peer.contextUsedPct === null || peer.contextUsedPct === undefined ? "" : ` · ctx ${Math.round(peer.contextUsedPct)}%`}`],
-    // Same suffix the peer line shows: `unknown` when it did not report, never a fabricated 0.
-    ["Workload", workload || "unknown"],
+    // Three cases, decided once in coms-workload: not reported is `unknown`, reported-and-empty
+    // is `none active`. Turning the second into the first would claim ignorance we do not have.
+    ["Workload", workloadStateLabel(peer.workload)],
   ];
   const name = sanitizePeerText(peer.name, 40) || "?";
   const project = sanitizePeerText(peer.project, 40) || "?";
@@ -253,4 +253,14 @@ export function buildPeerInfoRow(peer: PeerInfoSource): DrilldownRow {
     label: "peer info",
     items: [{ id: rowId(0, "peer"), row: `${name} · ${project}`, detail }],
   };
+}
+
+/** The section list's count label. `peer info` is a row, not a section, so counting the rows
+ *  would inflate the number (an idle peer would read `2 sections`). Zero workload sections
+ *  returns an EMPTY label: the info row already fills the list and the status row already says
+ *  why there is nothing else, so `0 sections` would add noise, not information. */
+export function sectionCountLabel(rows: ReadonlyArray<{ section?: string }>): string {
+  const sections = rows.filter((row) => row.section !== undefined).length;
+  log.debug("section_count_label", { rows: rows.length, sections });
+  return sections === 0 ? "" : `${sections} section${sections === 1 ? "" : "s"}`;
 }

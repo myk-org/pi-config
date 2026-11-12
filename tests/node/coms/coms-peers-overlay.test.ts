@@ -134,3 +134,34 @@ describe("openComsPeersOverlay failure reporting (#1084)", () => {
     assert.deepEqual(notifications, []);
   });
 });
+
+describe("openComsPeersOverlay drilldown (#1084 finding 1)", () => {
+  it("Enter opens the peer's sections and Esc re-opens the list on that row", async () => {
+    const opened: any[] = [];
+    const described: string[] = [];
+    await openComsPeersOverlay({ hasUI: true, ui: { notify: () => {} } } as any, {
+      listPeers: () => [worker],
+      killPeer: () => "killed",
+      killAll: () => "killed all",
+      describePeer: async (row) => {
+        described.push(row.name);
+        return { ok: false, reason: "not-reported" };
+      },
+      // The overlay's Enter path without a TUI: pick the peer on the first call, then leave each
+      // deeper level immediately, which is what Esc does.
+      openOverlay: async (_ctx: any, options: any) => {
+        opened.push(options);
+        if (opened.length === 1) options.listSpec.onSelect({ ...worker, id: "repo:worker" });
+      },
+    } as any);
+
+    // 1) the drilldown really was opened for the selected row
+    assert.deepEqual(described, ["worker"]);
+    // 2) its first row is the peer info row, and the count ignores it (F2)
+    assert.equal(opened[1].listSpec.listItems()[0].label, "peer info");
+    assert.equal(opened[1].listSpec.countLabel(opened[1].listSpec.listItems()), "");
+    // 3) Esc came back to the peer list focused on the peer it came from
+    assert.equal(opened[2].initialSelectionId, "repo:worker");
+    assert.equal(opened[2].listSpec.title, "Coms peers");
+  });
+});

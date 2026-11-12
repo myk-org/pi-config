@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { backTarget, buildDrilldownRows, buildPeerInfoRow } from "../../../extensions/coms/coms-drilldown.js";
+import { backTarget, buildDrilldownRows, buildPeerInfoRow, sectionCountLabel } from "../../../extensions/coms/coms-drilldown.js";
 import type { DescribeResult } from "../../../extensions/coms/coms-describe.js";
 import { formatTaskRowLine } from "../../../extensions/pitasks/tasks-view.js";
 
@@ -252,5 +252,45 @@ describe("row identity survives truncation and duplicates (#1084 finding 5)", ()
     assert.notEqual(first.id, second.id);
     assert.match(first.row, /every 1h/);
     assert.match(second.row, /every 2h/);
+  });
+});
+
+describe("sectionCountLabel (#1084 finding 2): the info row is not a section", () => {
+  it("counts workload sections only", () => {
+    const rows = buildDrilldownRows(answered({
+      tasks: [{ id: "1", status: "pending", subject: "one" }],
+    }));
+    const info = buildPeerInfoRow({ name: "w", project: "p", busy: false });
+    assert.equal(sectionCountLabel([info, ...rows]), "1 section");
+    const three = buildDrilldownRows(answered({
+      agents: [{ id: "a", name: "x", state: "running", elapsed: "1s", purpose: "p" }],
+      tasks: [{ id: "1", status: "pending", subject: "one" }],
+      crons: [{ id: "c", schedule: "every 1h", next: "in 1h", description: "d" }],
+    }));
+    assert.equal(sectionCountLabel([info, ...three]), "3 sections");
+  });
+
+  it("omits the label for an idle peer instead of claiming `0 sections`", () => {
+    const info = buildPeerInfoRow({ name: "w", project: "p", busy: false });
+    assert.equal(sectionCountLabel([info]), "");
+    assert.equal(sectionCountLabel([]), "");
+  });
+});
+
+describe("peer info workload wording (#1084 finding 4): none active ≠ unknown", () => {
+  const workloadOf = (workload?: any) =>
+    new Map(buildPeerInfoRow({ name: "w", project: "p", busy: false, workload }).items[0].detail).get("Workload");
+
+  it("says `none active` when the peer reported zero counts", () => {
+    assert.equal(workloadOf({ agents: 0, tasks: 0, crons: 0 }), "none active");
+  });
+
+  it("says `unknown` when the peer never reported", () => {
+    assert.equal(workloadOf(null), "unknown");
+    assert.equal(workloadOf(undefined), "unknown");
+  });
+
+  it("shows the suffix when there is work", () => {
+    assert.equal(workloadOf({ agents: 0, tasks: 3, crons: 1 }), "☰3 ⏰1");
   });
 });
