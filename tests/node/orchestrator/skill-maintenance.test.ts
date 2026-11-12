@@ -315,24 +315,50 @@ describe("bash guard (Qodo #1079)", () => {
     const global = path.join(os.homedir(), ".pi", "agent", "skills", "x", "SKILL.md");
     const verdict = bashSkillVerdict(cwd, `echo hacked > ${global}`);
     assert.equal(verdict?.block, true);
-    assert.match(verdict?.reason ?? "", /does not own/);
+    assert.match(verdict?.reason ?? "", /Shell writes to skills are refused/);
   });
 
-  it("blocks a shell copy into the project's .agents/skills", () => {
+  it("blocks a redirection glued to the path", () => {
     const { cwd } = project();
-    const verdict = bashSkillVerdict(cwd, `cp SKILL.md ${path.join(cwd, ".agents", "skills", "x", "SKILL.md")}`);
-    assert.equal(verdict?.block, true);
+    const global = path.join(os.homedir(), ".agents", "skills", "x", "SKILL.md");
+    assert.equal(bashSkillVerdict(cwd, `echo hacked >${global}`)?.block, true);
   });
 
-  it("leaves a read of a global skill alone", () => {
+  it("blocks a home-relative target", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "echo hacked > ~/.agents/skills/x/SKILL.md")?.block, true);
+  });
+
+  it("blocks a write into an owned skill", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "sed -i 's/a/b/' .pi/skills/marked/SKILL.md")?.block, true);
+  });
+
+  it("blocks a write after cd into a skills directory", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "cd ~/.agents/skills/x && printf x >> SKILL.md")?.block, true);
+  });
+
+  it("blocks a copy whose source is a skill", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "cp ~/.agents/skills/x/SKILL.md ./notes.md")?.block, true);
+  });
+
+  it("leaves a read of a skill alone", () => {
     const { cwd } = project();
     const global = path.join(os.homedir(), ".pi", "agent", "skills", "x", "SKILL.md");
     assert.equal(bashSkillVerdict(cwd, `cat ${global}`), null);
+    assert.equal(bashSkillVerdict(cwd, "rg skill-maintenance .pi/skills"), null);
   });
 
   it("leaves an ordinary write alone", () => {
     const { cwd } = project();
     assert.equal(bashSkillVerdict(cwd, "echo hi > notes.txt"), null);
+  });
+
+  it("leaves an edit that merely mentions the word skill alone", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "sed -i 's/skill/guard/' src/index.ts"), null);
   });
 });
 
@@ -874,89 +900,6 @@ describe("second-round findings (Qodo #1079)", () => {
     assert.match(verdict.reason ?? "", /\/adopt-skill unmarked/);
   });
 
-  it("records a shell write into an owned skill", async () => {
-    const { cwd, root } = project();
-    const file = writeSkill(root, "marked", MARKED);
-    const h = harness(cwd);
-    await h.emit("turn_start", { turnIndex: 1 });
-    const command = `printf 'more\\n' >> ${path.relative(cwd, file)}`;
-    assert.equal(await h.emit("tool_call", { toolCallId: "b1", toolName: "bash", input: { command } }), undefined);
-    fs.writeFileSync(file, `${MARKED}\nshell edit\n`);
-    await h.emit("tool_result", { toolCallId: "b1", toolName: "bash", input: { command }, isError: false });
-
-    const [record] = provenanceRecords(cwd);
-    assert.equal(record.skill, "marked");
-    assert.equal(record.action, "patched");
-    assert.equal(record.file, "SKILL.md");
-  });
-
-  it("records nothing when a failed shell command changed no skill file", async () => {
-    const { cwd, root } = project();
-    const file = writeSkill(root, "marked", MARKED);
-    const h = harness(cwd);
-    await h.emit("turn_start", { turnIndex: 1 });
-    const command = `printf 'x' >> ${path.relative(cwd, file)}`;
-    await h.emit("tool_call", { toolCallId: "b2", toolName: "bash", input: { command } });
-    await h.emit("tool_result", { toolCallId: "b2", toolName: "bash", input: { command }, isError: true });
-    assert.deepEqual(provenanceRecords(cwd), []);
-  });
-
-  it("records a shell write that changed a skill before failing", async () => {
-    const { cwd, root } = project();
-    const file = writeSkill(root, "marked", MARKED);
-    const h = harness(cwd);
-    await h.emit("turn_start", { turnIndex: 1 });
-    const command = `printf 'more\\n' >> ${path.relative(cwd, file)} && false`;
-    await h.emit("tool_call", { toolCallId: "bf1", toolName: "bash", input: { command } });
-    fs.writeFileSync(file, `${MARKED}\nshell edit then failure\n`);
-    await h.emit("tool_result", { toolCallId: "bf1", toolName: "bash", input: { command }, isError: true });
-
-    const [record] = provenanceRecords(cwd);
-    assert.equal(record.skill, "marked");
-    assert.equal(record.action, "patched");
-  });
-
-  it("attributes each overlapping shell call to the file it named", async () => {
-    const { cwd, root } = project();
-    const fileA = writeSkill(root, "alpha", MARKED);
-    writeSkill(root, "beta", MARKED);
-    const refB = path.join(root, "beta", "references", "api.md");
-    const h = harness(cwd);
-    await h.emit("turn_start", { turnIndex: 1 });
-    const cmdA = `printf 'a\\n' >> ${path.relative(cwd, fileA)}`;
-    const cmdB = `printf 'b\\n' > ${path.relative(cwd, refB)}`;
-    await h.emit("tool_call", { toolCallId: "p1", toolName: "bash", input: { command: cmdA } });
-    await h.emit("tool_call", { toolCallId: "p2", toolName: "bash", input: { command: cmdB } });
-
-    // both commands run, then their results arrive out of order
-    fs.writeFileSync(fileA, `${MARKED}\nfrom A\n`);
-    fs.writeFileSync(refB, "# API\nfrom B\n");
-    await h.emit("tool_result", { toolCallId: "p2", toolName: "bash", input: { command: cmdB }, isError: false });
-    await h.emit("tool_result", { toolCallId: "p1", toolName: "bash", input: { command: cmdA }, isError: false });
-
-    const records = provenanceRecords(cwd);
-    assert.deepEqual(
-      records.map((record) => `${record.skill}:${record.file}`),
-      ["beta:references/api.md", "alpha:SKILL.md"],
-    );
-  });
-
-  it("records a shell-named file only once per turn", async () => {
-    const { cwd, root } = project();
-    const file = writeSkill(root, "marked", MARKED);
-    const h = harness(cwd);
-    await h.emit("turn_start", { turnIndex: 1 });
-    const command = `printf 'x\\n' >> ${path.relative(cwd, file)}`;
-    await h.emit("tool_call", { toolCallId: "d1", toolName: "bash", input: { command } });
-    fs.writeFileSync(file, `${MARKED}\nfirst\n`);
-    await h.emit("tool_result", { toolCallId: "d1", toolName: "bash", input: { command }, isError: false });
-    await h.emit("tool_call", { toolCallId: "d2", toolName: "bash", input: { command } });
-    fs.writeFileSync(file, `${MARKED}\nsecond\n`);
-    await h.emit("tool_result", { toolCallId: "d2", toolName: "bash", input: { command }, isError: false });
-
-    assert.equal(provenanceRecords(cwd).length, 1);
-  });
-
   it("notices a change below the depth cap", () => {
     const { cwd, root } = project();
     writeSkill(root, "searxng", MARKED);
@@ -990,6 +933,18 @@ describe("second-round findings (Qodo #1079)", () => {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
     }
+  });
+
+  it("never reaches provenance from a shell write, because it is refused", async () => {
+    const { cwd, root } = project();
+    const file = writeSkill(root, "marked", MARKED);
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    const command = `printf 'more\\n' >> ${path.relative(cwd, file)}`;
+    const blocked = await h.emit("tool_call", { toolCallId: "s1", toolName: "bash", input: { command } });
+    assert.equal(blocked?.block, true);
+    await h.emit("tool_result", { toolCallId: "s1", toolName: "bash", input: { command }, isError: false });
+    assert.deepEqual(provenanceRecords(cwd), []);
   });
 
   it("nudges again after an aborted turn", async () => {

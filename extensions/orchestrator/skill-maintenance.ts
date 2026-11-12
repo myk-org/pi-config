@@ -754,60 +754,37 @@ function pathFromInput(input: unknown): string | null {
   return null;
 }
 
-/** Write-ish shell tokens — enough to catch the simple forms a shell rewrite uses. */
-const BASH_WRITE_TOKENS = /(?:[^>]>>?)(?![=&])|\btee\b|\bcp\b|\bmv\b|\bsed\s+-i|\binstall\b/;
+/** Shell tokens that write, whatever the path syntax around them. */
+const BASH_WRITE_TOKENS = /(?:^|[^>])>>?(?![=&])|\btee\b|\bcp\b|\bmv\b|\bsed\s+-i|\binstall\b|\btruncate\b|\brm\b|\bchmod\b|\bdd\b/;
+
+/** Anything that names a skill file — a path under `skills/`, or a bare SKILL.md. */
+const BASH_SKILL_REFERENCE = /skills[\\/]|\bSKILL\.md\b/;
 
 /**
- * Conservative bash guard (Qodo #1079). A shell cannot be parsed here, so this only
- * covers the simple forms: a write-ish token plus a literal path inside a skills root
- * we do not own is blocked; anything else that looks like it might write a foreign
- * skill is logged as unchecked rather than silently allowed.
+ * Shell guard (Qodo #1079): fail closed.
+ *
+ * A shell cannot be parsed here — redirection prefixes, `~` expansion, symlinked
+ * directories, `cd` into a skills dir and `cp source dest` all defeat token-level
+ * classification, and each guess produced another way around the guard. So a shell
+ * command that both writes and names a skill is refused outright: skills are edited
+ * through `write`/`edit` (where the marker and ownership rule apply), or by the human.
+ * Reads are untouched.
  */
-/**
- * The literal skill paths a shell command names, split by ownership. Both sides are
- * literal tokens only: a variable-built or `eval`-driven path lands in neither and is
- * logged as unchecked instead of being guessed at.
- */
-export function bashSkillPaths(
-  projectCwd: string,
-  command: string,
-): { foreign: Array<{ token: string; area: SkillArea }>; owned: string[] } {
-  const foreign: Array<{ token: string; area: SkillArea }> = [];
-  const owned: string[] = [];
-  if (typeof command !== "string" || !command.includes("skills")) return { foreign, owned };
-  const tokens = command.split(/[\s;|&()"'`]+/).filter(Boolean);
-  for (const token of tokens) {
-    if (!token.includes("skills/") && !token.includes("skills\\")) continue;
-    const area = skillAreaOf(projectCwd, token);
-    if (area === null) continue;
-    if (area === "owned") owned.push(path.resolve(projectCwd, token));
-    else foreign.push({ token, area });
-  }
-  return { foreign, owned };
-}
-
 export function bashSkillVerdict(
   projectCwd: string,
   command: string,
 ): { block: true; reason: string } | null {
-  if (typeof command !== "string" || !command.includes("skills")) return null;
-  const { foreign } = bashSkillPaths(projectCwd, command);
-  const writeish = BASH_WRITE_TOKENS.test(command);
-  if (writeish && foreign.length > 0) {
-    const names = foreign.map((entry) => `${entry.token} (${entry.area})`).join(", ");
-    log.warn("skill_write_bash_blocked", { names: names.slice(0, 200) });
-    return {
-      block: true,
-      reason:
-        `⛔ bash write to a skill this project does not own: ${names}. ` +
-        `Owned, marked skills live under ${path.join(projectCwd, ".pi", "skills")}/ — copy the skill there and run /adopt-skill <name>.`,
-    };
-  }
-  if (writeish) {
-    // e.g. a variable-built path, or a write we cannot resolve — say so, never pretend.
-    log.warn("skill_write_bash_unchecked", { command: command.slice(0, 200) });
-  }
-  return null;
+  if (typeof command !== "string" || command === "") return null;
+  if (!BASH_WRITE_TOKENS.test(command)) return null;
+  if (!BASH_SKILL_REFERENCE.test(command)) return null;
+  log.warn("skill_write_bash_blocked", { command: command.slice(0, 200) });
+  return {
+    block: true,
+    reason:
+      `⛔ Shell writes to skills are refused: this command both writes and names a skill file. ` +
+      `Edit a marked skill in ${path.join(projectCwd, ".pi", "skills")}/ with the write/edit tools ` +
+      `(or run /adopt-skill <name> first); a shipped or user-global skill belongs to someone else — copy it into the project yourself.`,
+  };
 }
 
 export function registerSkillMaintenance(pi: ExtensionAPI): void {
@@ -823,8 +800,6 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
   let recordedThisTurn = new Set<string>();
   /** Writes allowed at tool_call and not yet confirmed by a successful tool_result. */
   const pendingWrites = new Map<string, { skill: string; file: string; path: string; written: boolean }>();
-  /** Owned skill files a tracked shell command names, with their pre-call state. */
-  const pendingBashWrites = new Map<string, Array<{ abs: string; size: number | null }>>();
   /** Skills named by `/skill:` since the last turn ended — they open the next turn. */
   let invokedBeforeTurn = new Set<string>();
   /** Set when a provenance append failed this turn, so the notice can say so. */
@@ -911,26 +886,7 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
 
     if (toolName === "bash") {
       const command = typeof (input as any)?.command === "string" ? (input as any).command : "";
-      const verdict = bashSkillVerdict(ctx.cwd, command);
-      if (verdict) return verdict;
-      // An allowed shell write into an owned skill still needs an audit line. Track the
-      // exact files the command names (never a whole-tree diff): overlapping calls then
-      // cannot record each other's work, and an editor change during the call stays out.
-      if (BASH_WRITE_TOKENS.test(command) && command.includes("skills")) {
-        const callId = String((event as any)?.toolCallId ?? "");
-        const targets = bashSkillPaths(ctx.cwd, command).owned.map((abs) => {
-          try {
-            return { abs, size: fs.statSync(abs).size };
-          } catch {
-            return { abs, size: null };
-          }
-        });
-        if (targets.length > 0) {
-          pendingBashWrites.set(callId, targets);
-          log.debug("skill_bash_write_tracked", { callId, files: targets.length });
-        }
-      }
-      return undefined;
+      return bashSkillVerdict(ctx.cwd, command) ?? undefined;
     }
     if (!WRITE_TOOLS.has(toolName)) return;
     const target = pathFromInput(input);
@@ -966,41 +922,6 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
     }
 
     const callId = String((event as any)?.toolCallId ?? "");
-    const bashTargets = pendingBashWrites.get(callId);
-    if (bashTargets) {
-      pendingBashWrites.delete(callId);
-      // The command's own exit status is irrelevant: if it changed a skill file, the
-      // change happened and must be audited (Qodo #1079).
-      const root = ownedSkillsRoot(ctx.cwd);
-      const sessionId = (ctx as any)?.sessionManager?.getSessionId?.() ?? "";
-      const records: SkillProvenance[] = [];
-      for (const target of bashTargets) {
-        if (recordedThisTurn.has(target.abs)) continue;
-        let size: number | null = null;
-        try {
-          size = fs.statSync(target.abs).size;
-        } catch {
-          continue; // the command did not create it
-        }
-        if (target.size !== null && size === target.size) continue; // unchanged
-        const skill = ownedSkillName(ctx.cwd, target.abs);
-        if (!skill || !root) continue;
-        records.push({
-          skill,
-          action: target.size === null ? "written" : "patched",
-          file: path.relative(path.join(root, skill), target.abs),
-          sessionId,
-          turnId: turnIdOf(sessionId),
-          at: new Date().toISOString(),
-        });
-        recordedThisTurn.add(target.abs);
-      }
-      if (records.length > 0) {
-        if (!appendProvenance(ctx.cwd, records)) provenanceFailed = true;
-        log.info("skill_bash_write_recorded", { records: records.length, isError: (event as any)?.isError === true });
-      }
-    }
-
     const pending = pendingWrites.get(callId);
     if (pending) {
       pendingWrites.delete(callId);
@@ -1056,7 +977,6 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
       invokedBeforeTurn = new Set();
       nudgedSkills = new Set();
       pendingWrites.clear();
-      pendingBashWrites.clear();
     }
   });
 
