@@ -5,7 +5,7 @@
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -13,12 +13,26 @@ import {
 	SETTINGS_FILENAMES,
 	findSettingsFile,
 	migrateLegacySettingsFile,
+	readLegacySettings,
+	setSettingsSourceLogger,
 } from "../../../extensions/orchestrator/settings-source.js";
 import { getSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 const JSON_NAME = "pi-config-settings.json";
 const MIGRATED_NAME = `${LEGACY_SETTINGS_FILENAME}.migrated`;
+
+/** Every warning the settings source emits while `body` runs. */
+function captureWarnings(body: () => void): string[] {
+	const messages: string[] = [];
+	setSettingsSourceLogger({ debug: () => {}, warn: (message) => messages.push(message) });
+	try {
+		body();
+	} finally {
+		setSettingsSourceLogger({ debug: () => {}, warn: () => {} });
+	}
+	return messages;
+}
 
 describe("single settings filename", () => {
 	let root: string;
@@ -86,6 +100,37 @@ describe("single settings filename", () => {
 		assert.equal(existsSync(join(piDir, JSON_NAME)), false, "no .json is written");
 		assert.equal(readFileSync(legacy, "utf-8"), corrupt, "bytes are exactly as they were");
 		assert.equal(existsSync(join(piDir, MIGRATED_NAME)), false);
+	});
+
+	it("does not report corruption when the legacy file vanishes between the check and the read", () => {
+		const legacy = join(piDir, LEGACY_SETTINGS_FILENAME);
+		writeFileSync(legacy, JSON.stringify({ dco: true }));
+		rmSync(legacy); // the racing process renamed it away after migrateLegacySettingsFile's existsSync
+
+		const warnings = captureWarnings(() => {
+			assert.equal(readLegacySettings(legacy), null, "a vanished file is nothing to migrate");
+			assert.doesNotThrow(() => migrateLegacySettingsFile(piDir));
+		});
+
+		assert.deepEqual(warnings, [], "no corrupt warning, and 'migrated' is not logged twice");
+		assert.equal(existsSync(join(piDir, JSON_NAME)), false, "nothing is written for a gone legacy file");
+	});
+
+	it("reports a legacy file that is there but unparseable as corrupt", () => {
+		writeFileSync(join(piDir, LEGACY_SETTINGS_FILENAME), '{ "dco": tru');
+
+		assert.deepEqual(captureWarnings(() => migrateLegacySettingsFile(piDir)), [
+			"settings_legacy_jsonc_corrupt",
+		]);
+	});
+
+	it("reports a non-ENOENT read error as corrupt, not as an already-migrated file", () => {
+		const other = join(root, "read-error");
+		mkdirSync(join(other, LEGACY_SETTINGS_FILENAME), { recursive: true }); // a directory: read gives EISDIR
+
+		assert.deepEqual(captureWarnings(() => migrateLegacySettingsFile(other)), [
+			"settings_legacy_jsonc_corrupt",
+		]);
 	});
 
 	it("is idempotent: a second call with the legacy gone is a no-op", () => {

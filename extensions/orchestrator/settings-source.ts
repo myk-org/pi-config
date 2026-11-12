@@ -49,6 +49,27 @@ function migrationAllowed(dir: string): boolean {
   return target === base || target.startsWith(base + sep);
 }
 
+/** Reads and parses the legacy file; `null` means "nothing to migrate".
+ *  Exported so the read-after-vanish window (a racing process renamed the file away between
+ *  the existence check and this read) is testable — the ENOENT branch is unreachable on disk. */
+export function readLegacySettings(file: string): Record<string, unknown> | null {
+  let data: unknown;
+  try {
+    data = JSON.parse(stripJsonComments(readFileSync(file, "utf8")));
+  } catch (error) {
+    // A racer got there first: the file is already migrated, so this is not corruption.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    data = null;
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    // Same contract as the corrupt-file refusal on write: a file a human can still repair by
+    // hand is never replaced by generated content. Path only — values never reach the log.
+    log.warn("settings_legacy_jsonc_corrupt", { path: file });
+    return null;
+  }
+  return data as Record<string, unknown>;
+}
+
 /**
  * ONE-TIME migration away from the legacy `.jsonc` file (issue #1086). The legacy file used
  * to win over `.json`, silently hiding settings written to `.json` — including
@@ -75,18 +96,8 @@ export function migrateLegacySettingsFile(dir: string): void {
     return;
   }
 
-  let data: unknown;
-  try {
-    data = JSON.parse(stripJsonComments(readFileSync(legacy, "utf8")));
-  } catch {
-    data = null;
-  }
-  if (typeof data !== "object" || data === null || Array.isArray(data)) {
-    // Same contract as the corrupt-file refusal on write: a file a human can still repair by
-    // hand is never replaced by generated content. Path only — values never reach the log.
-    log.warn("settings_legacy_jsonc_corrupt", { path: legacy });
-    return;
-  }
+  const data = readLegacySettings(legacy);
+  if (data === null) return;
 
   const tmp = `${target}.${process.pid}.${Date.now().toString(36)}`;
   try {
