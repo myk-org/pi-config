@@ -60,7 +60,7 @@ Every connected session sends heartbeat updates every 30 seconds. Those updates 
 
 Each peer reports its **own** active work: async agents that are *running* (a queued job is waiting, not in flight), tasks that are not completed, and crons this replica actually runs (`leader !== false`) — session crons included, which is why the peer self-reports instead of a scanner reading files.
 
-The pool widget and peer list append `⏳2 ✓5 ⏰1` (agents, tasks, crons), showing only non-zero counts. A peer that reports no workload field renders `unknown`, never `0`: absence is not idleness.
+The pool widget and peer list append `⏳2 ◻5 ⏰1` — running agents, **open** tasks, active crons, in that order — showing only non-zero counts. The task glyph is `◻`, the same open-task glyph `/tasks` uses; `✓` never appears here because this count is work still outstanding, not work done. A peer that reports no workload field renders `unknown`, never `0`: absence is not idleness.
 
 Every peer-supplied string is sanitized before rendering — name, purpose, subject, cwd, socket path, task ids and states: escape sequences and control characters are stripped, whitespace collapsed, and each field capped (purpose/subject/cwd 120, id/state 40, socket 80). A peer cannot move the viewer's cursor, clear its screen, or forge a prompt, and sanitization is render-only: a peer is still addressed by its raw name.
 
@@ -79,7 +79,7 @@ Three answers are kept apart:
 - the peer answered with nothing active → `workload  none active`
 - no usable answer → `unknown`, with the reason kept distinct: `(not reported)` for a peer with no workload support, `(no reply within 2s)` for silence or a dead connection, `(malformed reply)` for a reply that could not be parsed, `(reply too large)` beyond the 1 MiB cap, and `(error: <code>)` when the peer rejected the request or failed internally — a local code such as `internal-error`, never the peer's own error text
 
-In the pidash browser the peer list shows the same workload counts (`⏳n ✓n ⏰n`, or `unknown`), and a browser-sent `/tasks` returns the task rows as text; the drilldown overlay and its detail lines are terminal-only.
+A browser-sent `/tasks` returns the task rows as text; the workload suffix and the drilldown overlay are terminal-only.
 
 Dead peers are removed from the registry in two phases. A newly registered entry gets a grace period (`coms_entry_grace_period_ms`, default 30 seconds) so a just-booted session is never pruned early. After that, the entry is probed by connecting to its socket: peers that respond are kept, peers that do not are removed from the registry. Timestamp staleness alone never prunes an entry, which is what keeps laptop suspend/resume from wiping out live peers.
 

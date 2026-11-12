@@ -162,8 +162,11 @@ describe("drilldown payload (#1083)", () => {
 
 describe("workload widget suffix", () => {
   it("renders only the non-zero counts", () => {
-    assert.equal(formatWorkloadSuffix({ agents: 2, tasks: 5, crons: 1 }), " ⏳2 ✓5 ⏰1");
-    assert.equal(formatWorkloadSuffix({ agents: 0, tasks: 3, crons: 0 }), " ✓3");
+    assert.equal(formatWorkloadSuffix({ agents: 2, tasks: 5, crons: 1 }), " ⏳2 ◻5 ⏰1");
+    assert.equal(formatWorkloadSuffix({ agents: 0, tasks: 3, crons: 0 }), " ◻3");
+    // The task count is OPEN work: a tick would read as "done", so it must never appear.
+    assert.equal(formatWorkloadSuffix({ agents: 0, tasks: 3, crons: 0 }).includes("✓"), false);
+    assert.equal(formatWorkloadSuffix({ agents: 2, tasks: 5, crons: 1 }).includes("✓"), false);
     assert.equal(formatWorkloadSuffix({ agents: 1, tasks: 0, crons: 0 }), " ⏳1");
   });
 
