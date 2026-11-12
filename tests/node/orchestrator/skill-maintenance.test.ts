@@ -34,6 +34,7 @@ import {
   ownedSkillsRoot,
   provenancePath,
   readSkillFile,
+  realpathNearestExisting,
   registerSkillMaintenance,
   skillAreaOf,
   snapshotSkillTree,
@@ -574,7 +575,7 @@ function harness(cwd: string): Harness {
 }
 
 describe("write guard in the main session", () => {
-  it("blocks an unmarked project skill", async () => {
+  it("refuses an unmarked project skill write", async () => {
     const { cwd, root } = project();
     const unmarked = writeSkill(root, "unmarked", UNMARKED);
     const h = harness(cwd);
@@ -588,7 +589,7 @@ describe("write guard in the main session", () => {
     assert.match(blocked?.reason ?? "", /\/adopt-skill unmarked/);
   });
 
-  it("allows a marked skill (write recorded only after success)", async () => {
+  it("allows a marked project skill write", async () => {
     const { cwd, root } = project();
     const marked = writeSkill(root, "marked", MARKED);
     const h = harness(cwd);
@@ -599,6 +600,18 @@ describe("write guard in the main session", () => {
       input: { path: marked, edits: [{ oldText: "Run the query.", newText: "Run it." }] },
     });
     assert.equal(allowed, undefined);
+  });
+
+  it("records an allowed write in provenance once the tool succeeds", async () => {
+    const { cwd, root } = project();
+    const marked = writeSkill(root, "marked", MARKED);
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 3 });
+    await h.emit("tool_call", {
+      toolCallId: "c2",
+      toolName: "edit",
+      input: { path: marked, edits: [{ oldText: "Run the query.", newText: "Run it." }] },
+    });
     // nothing recorded before the tool ran
     assert.deepEqual(provenanceRecords(cwd), []);
 
@@ -888,7 +901,7 @@ describe("second-round findings (Qodo #1079)", () => {
     assert.deepEqual(provenanceRecords(cwd), []);
   });
 
-  it("records a shell write that changed a skill and then failed", async () => {
+  it("records a shell write that changed a skill before failing", async () => {
     const { cwd, root } = project();
     const file = writeSkill(root, "marked", MARKED);
     const h = harness(cwd);
@@ -1010,6 +1023,37 @@ describe("second-round findings (Qodo #1079)", () => {
       isError: true,
     });
     assert.equal(h.messages.filter((message) => message.customType === "skill-maintenance-nudge").length, 0);
+  });
+
+  it("logs the unresolved tail of a path that does not exist yet", async () => {
+    const home = makeTempDir("skill-maint-realpath-");
+    cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
+    const originalHome = process.env.HOME;
+    const originalLevel = process.env.PI_LOG_SKILL_MAINTENANCE;
+    process.env.HOME = home;
+    process.env.PI_LOG_SKILL_MAINTENANCE = "debug";
+    try {
+      const { clearLogLevelCache, getPiLogPath, setGlobalSessionId } = await import(
+        "../../../extensions/shared/file-logger.js"
+      );
+      clearLogLevelCache();
+      setGlobalSessionId("skill-maint-realpath-test");
+      const missing = path.join(home, "not", "created", "yet", "SKILL.md");
+      assert.equal(realpathNearestExisting(missing), missing);
+
+      const logPath = getPiLogPath("skill-maintenance");
+      assert.ok(logPath);
+      const body = fs.readFileSync(logPath, "utf-8");
+      assert.match(body, /realpath_missing_tail/);
+      assert.match(body, /"missing":4/);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalLevel === undefined) delete process.env.PI_LOG_SKILL_MAINTENANCE;
+      else process.env.PI_LOG_SKILL_MAINTENANCE = originalLevel;
+      const { clearLogLevelCache } = await import("../../../extensions/shared/file-logger.js");
+      clearLogLevelCache();
+    }
   });
 
   it("logs an unreadable skills tree without warning for an absent one", async () => {
