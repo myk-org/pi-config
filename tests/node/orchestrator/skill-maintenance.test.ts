@@ -877,7 +877,7 @@ describe("second-round findings (Qodo #1079)", () => {
     assert.equal(record.file, "SKILL.md");
   });
 
-  it("does not record a failed shell write", async () => {
+  it("records nothing when a failed shell command changed no skill file", async () => {
     const { cwd, root } = project();
     const file = writeSkill(root, "marked", MARKED);
     const h = harness(cwd);
@@ -886,6 +886,97 @@ describe("second-round findings (Qodo #1079)", () => {
     await h.emit("tool_call", { toolCallId: "b2", toolName: "bash", input: { command } });
     await h.emit("tool_result", { toolCallId: "b2", toolName: "bash", input: { command }, isError: true });
     assert.deepEqual(provenanceRecords(cwd), []);
+  });
+
+  it("records a shell write that changed a skill and then failed", async () => {
+    const { cwd, root } = project();
+    const file = writeSkill(root, "marked", MARKED);
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    const command = `printf 'more\\n' >> ${path.relative(cwd, file)} && false`;
+    await h.emit("tool_call", { toolCallId: "bf1", toolName: "bash", input: { command } });
+    fs.writeFileSync(file, `${MARKED}\nshell edit then failure\n`);
+    await h.emit("tool_result", { toolCallId: "bf1", toolName: "bash", input: { command }, isError: true });
+
+    const [record] = provenanceRecords(cwd);
+    assert.equal(record.skill, "marked");
+    assert.equal(record.action, "patched");
+  });
+
+  it("attributes each overlapping shell call to the file it named", async () => {
+    const { cwd, root } = project();
+    const fileA = writeSkill(root, "alpha", MARKED);
+    writeSkill(root, "beta", MARKED);
+    const refB = path.join(root, "beta", "references", "api.md");
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    const cmdA = `printf 'a\\n' >> ${path.relative(cwd, fileA)}`;
+    const cmdB = `printf 'b\\n' > ${path.relative(cwd, refB)}`;
+    await h.emit("tool_call", { toolCallId: "p1", toolName: "bash", input: { command: cmdA } });
+    await h.emit("tool_call", { toolCallId: "p2", toolName: "bash", input: { command: cmdB } });
+
+    // both commands run, then their results arrive out of order
+    fs.writeFileSync(fileA, `${MARKED}\nfrom A\n`);
+    fs.writeFileSync(refB, "# API\nfrom B\n");
+    await h.emit("tool_result", { toolCallId: "p2", toolName: "bash", input: { command: cmdB }, isError: false });
+    await h.emit("tool_result", { toolCallId: "p1", toolName: "bash", input: { command: cmdA }, isError: false });
+
+    const records = provenanceRecords(cwd);
+    assert.deepEqual(
+      records.map((record) => `${record.skill}:${record.file}`),
+      ["beta:references/api.md", "alpha:SKILL.md"],
+    );
+  });
+
+  it("records a shell-named file only once per turn", async () => {
+    const { cwd, root } = project();
+    const file = writeSkill(root, "marked", MARKED);
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    const command = `printf 'x\\n' >> ${path.relative(cwd, file)}`;
+    await h.emit("tool_call", { toolCallId: "d1", toolName: "bash", input: { command } });
+    fs.writeFileSync(file, `${MARKED}\nfirst\n`);
+    await h.emit("tool_result", { toolCallId: "d1", toolName: "bash", input: { command }, isError: false });
+    await h.emit("tool_call", { toolCallId: "d2", toolName: "bash", input: { command } });
+    fs.writeFileSync(file, `${MARKED}\nsecond\n`);
+    await h.emit("tool_result", { toolCallId: "d2", toolName: "bash", input: { command }, isError: false });
+
+    assert.equal(provenanceRecords(cwd).length, 1);
+  });
+
+  it("notices a change below the depth cap", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "searxng", MARKED);
+    const deep = path.join(root, "searxng", "references", "a", "b", "c", "d", "e", "note.md");
+    fs.mkdirSync(path.dirname(deep), { recursive: true });
+    const owned = ownedSkillsRoot(cwd);
+    const before = snapshotSkillTree(owned);
+    fs.writeFileSync(deep, "# deep note\n");
+    const changes = diffSkillTree(owned, before, snapshotSkillTree(owned));
+    assert.deepEqual(changes, [
+      { skill: "searxng", action: "patched", file: path.join("references", "a", "b", "c", "d", "e", "note.md") },
+    ]);
+  });
+
+  it("logs the depth cap when a tree goes past it", async () => {
+    const home = makeTempDir("skill-maint-depth-");
+    cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
+    const originalHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const { getPiLogPath, setGlobalSessionId } = await import("../../../extensions/shared/file-logger.js");
+      setGlobalSessionId("skill-maint-depth-test");
+      const deepRoot = path.join(home, "skills");
+      const segments = Array.from({ length: 40 }, (_, i) => `d${i}`);
+      fs.mkdirSync(path.join(deepRoot, ...segments), { recursive: true });
+      snapshotSkillTree(deepRoot);
+      const logPath = getPiLogPath("skill-maintenance");
+      assert.ok(logPath);
+      assert.match(fs.readFileSync(logPath, "utf-8"), /skill_snapshot_depth_cap/);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+    }
   });
 
   it("nudges again after an aborted turn", async () => {
