@@ -374,3 +374,30 @@ describe("overlay_tell_failed (#1084 finding 3): one event, error level", () => 
     assert.equal(failLines().length, before);
   });
 });
+
+describe("openComsPeersOverlay keeps the ticks across a drilldown (#1084)", () => {
+  const peer = (name: string): Row => ({ ...worker, name, endpoint: `/tmp/${name}.sock`, id: `repo:${name}` });
+
+  it("re-opens the peer list with the selection it reported earlier", async () => {
+    const opened: any[] = [];
+    await openComsPeersOverlay({ hasUI: true, ui: { notify: () => {} } } as any, {
+      listPeers: () => [peer("alpha"), peer("beta")],
+      killPeer: () => "killed",
+      killAll: () => "killed all",
+      describePeer: async () => ({ ok: false, reason: "not-reported" }),
+      openOverlay: async (_ctx: any, options: any) => {
+        opened.push(options);
+        if (opened.length === 1) {
+          // Tick two peers, then Enter into one — the round trip that used to lose them.
+          options.listSpec.onSelectionChange(["repo:alpha", "repo:beta"]);
+          options.listSpec.onSelect(peer("alpha"));
+        }
+      },
+    } as any);
+
+    // 1 = peer list, 2 = the drilldown's sections (left immediately), 3 = the peer list again
+    assert.equal(opened.length, 3);
+    assert.deepEqual(opened[2].initialSelectionIds, ["repo:alpha", "repo:beta"]);
+    assert.equal(typeof opened[0].listSpec.onSelectionChange, "function", "the overlay reports ticks back");
+  });
+});
