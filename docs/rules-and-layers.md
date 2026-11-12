@@ -210,5 +210,3 @@ A few constraints from the loader worth keeping in mind:
 Rule files are read from disk on every `before_agent_start` hook, so **editing a rule file does not require a new pi session** — the next agent start picks up the new content.
 
 Settings are cached in memory, but the cache is invalidated by an `mtime` check on the settings files at most once every 30 seconds. So a settings change that gates a rule can take up to roughly 30 seconds to be reflected, and an immediate check may still see the old value. If a rule you just toggled on does not appear, wait and retry rather than restarting.
-
-What genuinely does require a new session: `/reload` is not sufficient for extension *code* changes, since the extension module is loaded once at startup.
