@@ -1900,7 +1900,9 @@ export function setupDiscordBot(opts: {
     // not the watched one. A DM names no session, so it answers the newest question; a guild channel
     // answers only for the session it IS, or a reply here could approve another session's question.
     const answerSession = message.guildId ? inbound.sessionId ?? undefined : undefined;
-    const hasPrompt = answerSession ? Boolean((state.pendingPrompts ?? {})[answerSession]) : Boolean(state.pendingPrompt);
+    const hasPrompt = message.guildId
+      ? Boolean(answerSession && (state.pendingPrompts ?? {})[answerSession])
+      : Boolean(state.pendingPrompt);
     if (hasPrompt) {
       const outcome = bridge.handleInbound(
         state, text,

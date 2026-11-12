@@ -407,9 +407,9 @@ export function resolveInboundSession(input: {
   // A thread IS its session: identity, not liveness, decides. Falling back to the watch when a
   // thread's session is disconnected delivers that thread's text into a different session.
   if (thread) return { sessionId: thread, source: "thread", ...dead };
-  if (watched && isLive(watched)) return { sessionId: watched, source: "watch" };
 
-  // A dead watch must not hide a live target: the channel still carries that session's output.
+  // The channel's own target outranks the watch: a message is typed WHERE that session put its output
+  // or question, so answering the watched session instead approved the wrong agent's prompt.
   // A target whose channel is exactly this channel, preferring a thread match over a channel match:
   // a thread is a narrower address than the channel that contains it.
   const onChannel = Object.entries(input.targets ?? {}).flatMap(([sessionId, target]) =>
@@ -417,13 +417,13 @@ export function resolveInboundSession(input: {
       ? [{ sessionId, exactThread: target.threadId === channelId, live: isLive(sessionId) }]
       : []);
   const delivering = onChannel.filter((match) => match.live).sort((a, b) => Number(b.exactThread) - Number(a.exactThread));
-
-  // A channel whose session died says so: "not watching" would hide why it went quiet.
-  if (delivering.length === 0) {
-    return { sessionId: null, source: "none", ...dead, ...(onChannel.length ? { deadTarget: true } : {}) };
-  }
   if (delivering.length > 1 && delivering[0]!.exactThread === delivering[1]!.exactThread) {
     return { sessionId: null, source: "none", ambiguous: true, ...dead };
   }
-  return { sessionId: delivering[0]!.sessionId, source: "target", ...dead };
+  if (delivering.length > 0) return { sessionId: delivering[0]!.sessionId, source: "target", ...dead };
+
+  if (watched && isLive(watched)) return { sessionId: watched, source: "watch", ...dead };
+
+  // A channel whose session died says so: "not watching" would hide why it went quiet.
+  return { sessionId: null, source: "none", ...dead, ...(onChannel.length ? { deadTarget: true } : {}) };
 }

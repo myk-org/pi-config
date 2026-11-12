@@ -256,4 +256,45 @@ describe("discord messageCreate routing", () => {
     await bot.handler(message("m6", "yes", replies, { channelId: PLAIN }));
     assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.id]), [["s9", "q9"]]);
   });
+
+  it("answers the session whose question this channel carries, not the watched one", async () => {
+    // s5's question fell back to the plain channel; s2 is watched and asked LAST, in its own thread.
+    const bot = startBot({
+      live: ["s2", "s5"],
+      watchedSessionId: "s2",
+      threads: { s2: THREAD },
+      responseChannelId: PLAIN,
+      dmChannelId: null,
+    });
+    bot.hooks[0]!("s5", { type: "extension_ui_request", id: "q5", method: "confirm", title: "Proceed?" });
+    await settle();
+    bot.hooks[0]!("s2", { type: "extension_ui_request", id: "q2", method: "confirm", title: "Proceed?" });
+    await settle();
+
+    const replies: string[] = [];
+    await bot.handler(message("m7", "yes", replies, { channelId: PLAIN }));
+    // Preferring the watch answered s2's question from a channel that never carried it.
+    assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.id]), [["s5", "q5"]]);
+  });
+
+  it("refuses to answer in a channel two sessions deliver into", async () => {
+    // No session can be named for this channel, so answering "the newest question" would approve one
+    // of them blind.
+    const bot = startBot({
+      live: ["s2", "s9"],
+      watchedSessionId: "s2",
+      threads: {},
+      responseChannelId: PLAIN,
+      dmChannelId: null,
+    });
+    bot.hooks[0]!("s9", { type: "extension_ui_request", id: "q9", method: "confirm", title: "Proceed?" });
+    await settle();
+    bot.hooks[0]!("s2", { type: "extension_ui_request", id: "q2", method: "confirm", title: "Proceed?" });
+    await settle();
+
+    const replies: string[] = [];
+    await bot.handler(message("m8", "yes", replies, { channelId: PLAIN }));
+    assert.deepEqual(bot.sends, []);
+    assert.deepEqual(replies, ["This channel carries more than one session. Send in that session's thread or use `/sessions`."]);
+  });
 });
