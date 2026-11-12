@@ -19,6 +19,8 @@ import {
 	applyTaskAction,
 	formatTasksPlainText,
 	parseTasksCommand,
+	selectTaskRows,
+	taskCompletionNotice,
 	tasksOverlayDeps,
 } from "./tasks-view.js";
 import { isBrowserDispatch } from "../shared/ui-bridge.js";
@@ -29,8 +31,9 @@ import {
 	oldestPendingAt,
 	pendingReminderContent,
 	staleReminderContent,
-	shouldFireReminder,
 	selectActiveTasks,
+	selectStaleTasks,
+	shouldFireReminder,
 } from "./reminders.js";
 
 // Re-export reminder pure helpers so consumers (and tests) can import from index.
@@ -39,8 +42,9 @@ export {
 	oldestPendingAt,
 	pendingReminderContent,
 	staleReminderContent,
-	shouldFireReminder,
 	selectActiveTasks,
+	selectStaleTasks,
+	shouldFireReminder,
 };
 
 const log = createLogger("pitasks");
@@ -377,11 +381,7 @@ export default function (pi: ExtensionAPI) {
 				const now2 = Date.now();
 				if (now2 - lastStaleReminderAt < staleThreshold) return;
 				const allTasks = store.list();
-				const staleTasks = allTasks.filter(t =>
-					t.status === "in_progress" &&
-					t.statusHistory?.in_progress_at &&
-					now2 - new Date(t.statusHistory.in_progress_at).getTime() > staleThreshold
-				);
+				const staleTasks = selectStaleTasks(allTasks, now2, staleThreshold);
 				if (staleTasks.length > 0) {
 					if (!shouldFireReminder(agentBusy, staleTasks.length)) {
 						log.debug("reminder_skipped", "busy");
@@ -536,14 +536,19 @@ export default function (pi: ExtensionAPI) {
 				// list — the fullscreen overlay needs a real terminal. No UI, or a command dispatched
 				// from the pidash browser (whose user cannot see the terminal), gets the same plain text.
 				if (!ctx.hasUI || isBrowserDispatch(ctx)) {
-					log.debug("tasks_list_plain_text", { hasUI: !!ctx.hasUI, browser: isBrowserDispatch(ctx), count: taskStore.list().length });
-					ctx.ui?.notify(formatTasksPlainText(taskStore.list()), "info");
+					const tasks = selectTaskRows(taskStore.list(), { mine: cmd.mine });
+					log.debug("tasks_list_plain_text", { hasUI: !!ctx.hasUI, browser: isBrowserDispatch(ctx), count: tasks.length, mine: !!cmd.mine });
+					ctx.ui?.notify(formatTasksPlainText(tasks), "info");
 					return;
 				}
 				await openTasksOverlay(ctx, tasksOverlayDeps(taskStore, (taskId) => {
 					currentWidget?.setActiveTask(taskId, false);
 					currentWidget?.update();
-				}));
+				}, (task) => {
+					// One message per owner completion, so the agent reads it on its next turn.
+					log.info("task_completed_notice_sent", { taskId: task.id });
+					try { pi.sendMessage(taskCompletionNotice(task), { triggerTurn: true }); } catch {}
+				}), { mine: cmd.mine });
 			},
 		});
 	}

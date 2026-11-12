@@ -35,6 +35,8 @@ export interface WorkloadTask {
   /** Owner and description ride along for the drilldown's detail pane; absent on older peers. */
   owner?: string;
   description?: string;
+  /** #1090: the owner's task is visible here but is not agent work in flight. */
+  assignee?: string;
 }
 
 /** Raw active entries on the answering peer. */
@@ -64,6 +66,8 @@ export interface DescribeTask {
   /** Optional: an older peer does not send them, and the detail pane says `—` rather than guessing. */
   owner?: string;
   description?: string;
+  /** #1090: `user` renders `[you]` in the row; absent counts as the agent's task. */
+  assignee?: string;
 }
 
 export interface DescribeCron {
@@ -123,7 +127,9 @@ export function openBlockers(
     });
 }
 
-/** Filter each list to its active entries and count them. */
+/** Filter each list to its active entries and count them. The task COUNT is agent work in flight:
+ *  the owner's tasks stay in `active.tasks` so the drilldown still lists them, but they are not
+ *  the agent's open work and must not inflate `☰n` (#1090). */
 export function collectWorkload(
   agents: WorkloadAgent[],
   tasks: WorkloadTask[],
@@ -136,7 +142,7 @@ export function collectWorkload(
   };
   const counts: PeerWorkloadCounts = {
     agents: active.agents.length,
-    tasks: active.tasks.length,
+    tasks: active.tasks.filter((task) => task.assignee !== "user").length,
     crons: active.crons.length,
   };
   log.debug("workload_collected", counts);
@@ -160,6 +166,7 @@ export function toDescribeDetail(active: ActiveWorkload, now = Date.now()): Peer
       blockedBy: (task.blockedBy ?? []).map((id) => sanitizePeerText(id, ID_MAX)),
       ...(task.owner !== undefined ? { owner: sanitizePeerText(task.owner, NAME_MAX) } : {}),
       ...(task.description !== undefined ? { description: sanitizePeerText(task.description, PURPOSE_MAX) } : {}),
+      ...(task.assignee !== undefined ? { assignee: sanitizePeerText(task.assignee, STATE_MAX) } : {}),
     })),
     crons: active.crons.map((cron) => {
       const view = toCronStatusTaskView(cron, { overlayId: cron.id });
@@ -267,6 +274,7 @@ export function workloadSectionLines(
           status: sanitizePeerText(task.status, STATE_MAX),
           subject: sanitizePeerText(task.subject, SUBJECT_MAX),
           blockedBy: (task.blockedBy ?? []).map((id) => sanitizePeerText(id, ID_MAX)),
+          assignee: sanitizePeerText(task.assignee ?? "", STATE_MAX),
         })}`,
       );
     }

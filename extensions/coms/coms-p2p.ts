@@ -770,6 +770,8 @@ export default function (pi: ExtensionAPI) {
 				description: String(t?.description ?? ""),
 				// #1082: the drilldown marks blocked tasks, so the open blockers survive the projection.
 				blockedBy: openBlockers(Array.isArray(t?.blockedBy) ? t.blockedBy.map(String) : [], statusById),
+				// #1090: the drilldown tags the owner's rows; the agent-task count ignores them.
+				assignee: String(t?.assignee ?? "llm"),
 			}));
 			return collectWorkload(sources.agents(), tasks, sources.crons());
 		} catch (err) {

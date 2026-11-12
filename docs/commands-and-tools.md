@@ -202,11 +202,13 @@ Unified session status in one notification: async agents, cron tasks, git branch
 
 Task manager for the current session's task list.
 
-- **Arguments:** optional subcommand — none (list), `create`, `start <id>`, `done <id>`, `clear completed`, `clear all`
-- **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` select, `Enter` opens a task, `n` adds a task from one line, `e` edits the focused task's subject, `x` deletes the focused task, `Esc` closes
-- **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store. An empty board opens the create dialog directly, since there is no row to press `n` on. The edit dialog starts pre-filled with the current subject (Enter saves, Esc cancels). A blank or cancelled line writes nothing, and an unchanged subject is a no-op
-- **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] <subject>`; a task with blockers is marked `⛔ blocked`
-- **Detail:** subject, status, owner, blocked-by, description, created and updated
+- **Arguments:** optional subcommand — none (list), `mine` (list), `create`, `start <id>`, `done <id>`, `clear completed`, `clear all`
+- **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` select, `Enter` opens a task, `n` adds a task from one line, `e` edits the focused task's subject, `d` marks the focused task done, `x` deletes the focused task, `Space` toggles multi-select, `Esc` closes
+- **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store. An empty board opens the create dialog directly, since there is no row to press `n` on. `n` asks who the task is for (`you` or `llm`) once the line is accepted. The edit dialog starts pre-filled with the current subject (Enter saves, Esc cancels). A blank or cancelled line writes nothing, and an unchanged subject is a no-op
+- **`d`:** completes the focused task. On a task assigned to `you` it opens an optional one-line note dialog first — an empty line completes without a note, `Esc` cancels and changes nothing. The outcome is kept on the record (`completionNote`, `completedBy`), and the session receives one message reading `Task #<id> "<subject>" marked done by you`, plus the note verbatim when there is one, so the agent learns the result on its next turn
+- **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] <subject>`, then the assignee tag — `[you]` or `[llm]`; a task with blockers is marked `⛔ blocked`. Tasks assigned to `you` sort above `[llm]` tasks within their status group
+- **Assignee:** a task is `llm` (the agent does it, the default for every existing task) or `user` (only the owner can — a merge, a live check in a real UI, an approval). User tasks never produce a reminder and are not counted as an agent's open work; `/tasks mine` (and a toggle in the overlay) shows only them
+- **Detail:** subject, status, assignee, owner, blocked-by, description, created and updated
 - **`create`:** prompts for subject and description (bridged, so pidash can answer it too)
 - **`start <id>` / `done <id>`:** move a task to `in_progress` / `completed`; an unknown id is reported, `done` on a completed task is a no-op, and `start` refuses to reopen completed work
 - **`clear completed` / `clear all`:** delete matching tasks and report the count
@@ -215,6 +217,7 @@ Task manager for the current session's task list.
 
 ```
 /tasks
+/tasks mine
 /tasks create
 /tasks start 3
 /tasks done 3
@@ -265,14 +268,14 @@ Project memory, backed by topic files under `.pi/memory/topics/`. See [Memory Ar
 
 ### Task* (7 tools)
 
-The session task list behind `/tasks` and the task widget. Statuses are `pending`, `in_progress`, `completed`, `deleted` (deleted is a status, not a hard delete, except through `TaskBulkDelete`).
+The session task list behind `/tasks` and the task widget. Statuses are `pending`, `in_progress`, `completed`, `deleted` (deleted is a status, not a hard delete, except through `TaskBulkDelete`). Every task is assigned to `llm` (the agent, the default) or `user` (the owner), shown as `[llm]` / `[you]`.
 
 | Tool | Purpose | Key parameters |
 |---|---|---|
-| `TaskCreate` | Create one task | `subject`, `description`, `activeForm` (spinner text), `agentType` (descriptive metadata only — it does not dispatch an agent), `metadata` |
+| `TaskCreate` | Create one task | `subject`, `description`, `activeForm` (spinner text), `assignee` (`llm` = the agent does it, the default; `user` = only the owner can, e.g. a merge or an approval), `agentType` (descriptive metadata only — it does not dispatch an agent), `metadata` |
 | `TaskList` | List all tasks as `id`, `subject`, `status`, `owner`, `blockedBy` | none |
 | `TaskGet` | Full task detail including `blocks` and `blockedBy` | `taskId` |
-| `TaskUpdate` | Update a task; `in_progress` sets it as the widget's active task | `taskId`, `status`, `subject`, `description`, `activeForm`, `owner`, `metadata` (merge, `null` deletes), `addBlocks[]`, `addBlockedBy[]` |
+| `TaskUpdate` | Update a task; `in_progress` sets it as the widget's active task | `taskId`, `status`, `subject`, `description`, `activeForm`, `assignee`, `owner`, `metadata` (merge, `null` deletes), `addBlocks[]`, `addBlockedBy[]` |
 | `TaskBulkCreate` | Create several tasks in one call | `tasks[]` (`subject`, `description`, `blockedBy[]`) |
 | `TaskBulkUpdate` | Update several tasks in one call | `updates[]` (`taskId`, `status`, `subject`, `description`, `addBlockedBy[]`, `addBlocks[]`) |
 | `TaskBulkDelete` | Hard-delete several tasks by id | `taskIds[]` |

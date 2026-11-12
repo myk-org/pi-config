@@ -160,7 +160,7 @@ describe("toTaskRowView", () => {
 
 	it("keeps the id/status/subject row label", () => {
 		const row = toTaskRowView(task());
-		assert.equal(row.label, "#3 [completed] wire the overlay");
+		assert.equal(row.label, "#3 [completed] [llm] wire the overlay");
 		assert.equal(row.blocked, false);
 	});
 
@@ -217,8 +217,8 @@ describe("formatTasksPlainText", () => {
 			task({ id: "4", subject: "wait on 3", status: "pending", blockedBy: ["3"] }),
 		]);
 		assert.deepEqual(text.split("\n"), [
-			"✔ #3 [completed] wire the overlay",
-			"◻ #4 [pending] wait on 3 ⛔ blocked",
+			"◻ #4 [pending] [llm] wait on 3 ⛔ blocked",
+			"✔ #3 [completed] [llm] wire the overlay",
 			TASKS_HINT,
 		]);
 	});
@@ -513,7 +513,7 @@ describe("openTasksOverlay footer (#1089)", () => {
 		const footer = frames[0].find((line) => line.includes("Space select")) ?? "";
 		assert.equal(
 			footer.trim(),
-			"Space select · x delete · n add · e edit · Enter view · Esc close",
+			"Space select · x delete · n add · e edit · d done · f mine/all · Enter view · Esc close",
 		);
 	});
 });
