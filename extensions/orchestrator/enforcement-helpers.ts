@@ -2298,7 +2298,7 @@ export function realGitSub(command: string, sub: string): boolean {
  * Argument regions of every real `git <sub>` invocation: the statement-scoped
  * text after the subcommand, up to the next ; & | or newline — so arguments
  * of OTHER statements in a compound command are never included
- * ("git add f.ts && bash .dev/x.sh" must not treat .dev/x.sh as staged).
+ * ("git add f.ts && bash scripts/x.sh" must not treat scripts/x.sh as staged).
  * Regions are raw (quotes intact); consumers inspecting FLAGS must strip
  * quoted spans first (a -m message is not an argument list).
  */
