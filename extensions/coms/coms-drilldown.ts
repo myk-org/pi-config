@@ -53,9 +53,29 @@ export interface DrilldownItem {
   detail: Array<[string, string]>;
 }
 
-/** What the row's id column shows. The composite identity is internal by contract (#1084). */
-export function itemIdLabel(item: { displayId?: string }): string {
-  return item.displayId ?? "";
+/** What the row's id column shows. The composite identity is internal by contract (#1084).
+ *  Logged because "which id did we display for this row" is otherwise unanswerable after the
+ *  fact — the pane shows the answer but keeps no record of it. */
+export function itemIdLabel(item: { id?: string; displayId?: string }): string {
+  const label = item.displayId ?? "";
+  // Ids only, truncated: the composite stays bookkeeping and no peer text is logged.
+  log.debug("item_id_label", {
+    id: String(item.id ?? "").slice(0, 40),
+    label: label.slice(0, 40),
+  });
+  return label;
+}
+
+/** Which path opened a detail pane: the one-item shortcut or a row of a section list. Logged at
+ *  CONSTRUCTION only — a per-render line would be noise on every keypress. */
+export type DetailOpenPath = "direct" | "list";
+
+export function logDetailOpen(path: DetailOpenPath, item: DrilldownItem): void {
+  log.debug("drilldown_detail_open", {
+    path,
+    id: String(item.id).slice(0, 40),
+    pairs: item.detail.length,
+  });
 }
 
 /** `0:texture` — position first, so the identity survives any truncation or duplication below. */
