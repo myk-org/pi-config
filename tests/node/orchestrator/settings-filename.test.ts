@@ -25,16 +25,30 @@ import { makeTempDir } from "../helpers/temp-dirs.js";
 const JSON_NAME = "pi-config-settings.json";
 const MIGRATED_NAME = `${LEGACY_SETTINGS_FILENAME}.migrated`;
 
-/** Every warning the settings source emits while `body` runs. */
-function captureWarnings(body: () => void): string[] {
-	const messages: string[] = [];
-	setSettingsSourceLogger({ debug: () => {}, warn: (message) => messages.push(message) });
+interface LogEntry {
+	level: "info" | "warn";
+	message: string;
+}
+
+/** Every info/warning the settings source emits while `body` runs, with its level. */
+function captureLogs(body: () => void): LogEntry[] {
+	const entries: LogEntry[] = [];
+	setSettingsSourceLogger({
+		debug: () => {},
+		info: (message) => entries.push({ level: "info", message }),
+		warn: (message) => entries.push({ level: "warn", message }),
+	});
 	try {
 		body();
 	} finally {
-		setSettingsSourceLogger({ debug: () => {}, warn: () => {} });
+		setSettingsSourceLogger({ debug: () => {}, info: () => {}, warn: () => {} });
 	}
-	return messages;
+	return entries;
+}
+
+/** Every warning the settings source emits while `body` runs. */
+function captureWarnings(body: () => void): string[] {
+	return captureLogs(body).map((entry) => entry.message);
 }
 
 describe("single settings filename", () => {
@@ -206,14 +220,14 @@ describe("single settings filename", () => {
 		execFileSync("git", ["init", "-q"], { cwd: root, stdio: "ignore" });
 		execFileSync("git", ["add", "-f", join(".pi", LEGACY_SETTINGS_FILENAME)], { cwd: root, stdio: "ignore" });
 
-		const warnings = captureWarnings(() =>
+		const logs = captureLogs(() =>
 			assert.equal(findSettingsFile(piDir, { scope: "global" }), join(piDir, JSON_NAME)),
 		);
 
 		assert.deepEqual(JSON.parse(readFileSync(join(piDir, JSON_NAME), "utf-8")), { dco: true });
 		assert.equal(existsSync(legacy), false, "the legacy file is moved aside");
 		assert.ok(existsSync(join(piDir, MIGRATED_NAME)));
-		assert.deepEqual(warnings, ["settings_legacy_jsonc_migrated"]);
+		assert.deepEqual(logs, [{ level: "info", message: "settings_legacy_jsonc_migrated" }]);
 	});
 
 	it("strands nothing when the publish is DENIED: no target, so the legacy file stays exactly where it is", () => {
@@ -244,9 +258,9 @@ describe("single settings filename", () => {
 			throw Object.assign(new Error("denied"), { code: "EPERM" });
 		});
 		try {
-			const warnings = captureWarnings(() => migrateLegacySettingsFile(piDir));
+			const logs = captureLogs(() => migrateLegacySettingsFile(piDir));
 
-			assert.deepEqual(warnings, ["settings_legacy_jsonc_migrated"], "not reported as a failure");
+			assert.deepEqual(logs, [{ level: "info", message: "settings_legacy_jsonc_migrated" }], "not reported as a failure");
 			assert.deepEqual(JSON.parse(readFileSync(join(piDir, JSON_NAME), "utf8")), { dco: true }, "the racer's content is kept");
 			assert.equal(existsSync(legacy), false, "the readable target makes the rename safe");
 			assert.ok(existsSync(join(piDir, MIGRATED_NAME)));
@@ -264,10 +278,78 @@ describe("single settings filename", () => {
 		const linked = join(home, ".pi");
 		symlinkSync(realGlobal, linked);
 
-		captureWarnings(() => assert.equal(findSettingsFile(linked, { scope: "global" }), join(linked, JSON_NAME)));
+		const logs = captureLogs(() =>
+			assert.equal(findSettingsFile(linked, { scope: "global" }), join(linked, JSON_NAME)),
+		);
 
 		assert.deepEqual(JSON.parse(readFileSync(join(realGlobal, JSON_NAME), "utf-8")), { dco: true });
 		assert.equal(existsSync(legacy), false, "the legacy file in the linked-to dir is moved aside");
+		assert.deepEqual(logs, [{ level: "info", message: "settings_legacy_jsonc_migrated" }]);
+	});
+
+	it("refuses a PROJECT dir reached through a symlinked .pi: nothing read, published or renamed outside", () => {
+		// A checkout that ships `.pi` as a link into a writable dir outside itself.
+		const target = makeTempDir("settings-filename-dir-symlink-");
+		const legacy = join(target, LEGACY_SETTINGS_FILENAME);
+		const bytes = JSON.stringify({ dangerous_command_allowlist: ["*"] });
+		writeFileSync(legacy, bytes);
+		const checkout = join(root, "checkout");
+		mkdirSync(checkout, { recursive: true });
+		const linked = join(checkout, ".pi");
+		symlinkSync(target, linked);
+
+		const logs = captureLogs(() => assert.equal(findSettingsFile(linked), null));
+
+		assert.equal(existsSync(join(target, JSON_NAME)), false, "no .json is published through the link");
+		assert.equal(existsSync(join(target, MIGRATED_NAME)), false, "and nothing is renamed there");
+		assert.equal(readFileSync(legacy, "utf-8"), bytes, "the linked-to file is untouched");
+		assert.deepEqual(logs, [{ level: "warn", message: "settings_legacy_jsonc_dir_symlink_refused" }]);
+	});
+
+	it("refuses a PROJECT dir BELOW the repo root reached through a symlinked component: a repo can ship that", () => {
+		// `sub` is inside the checkout, so a clone can ship it as a link — the settings dir under it is
+		// attacker-chosen. Only a component at or below the repo root counts.
+		const outside = makeTempDir("settings-filename-component-");
+		const outsidePi = join(outside, ".pi");
+		mkdirSync(outsidePi, { recursive: true });
+		const legacy = join(outsidePi, LEGACY_SETTINGS_FILENAME);
+		const bytes = JSON.stringify({ dangerous_command_allowlist: ["*"] });
+		writeFileSync(legacy, bytes);
+		symlinkSync(outside, join(root, "sub"));
+
+		const logs = captureLogs(() => assert.equal(findSettingsFile(join(root, "sub", ".pi")), null));
+
+		assert.equal(existsSync(join(outsidePi, JSON_NAME)), false, "no .json is published through the shipped link");
+		assert.equal(readFileSync(legacy, "utf-8"), bytes, "nothing read, renamed or written there");
+		assert.deepEqual(logs, [{ level: "warn", message: "settings_legacy_jsonc_dir_symlink_refused" }]);
+	});
+
+	it("migrates a PROJECT dir reached through a SYMLINKED ANCESTOR: a symlinked home or /mnt/data is the user's own layout", () => {
+		// The link sits ABOVE the checkout, so no repo shipped it. Refusing here would skip the
+		// migration for every checkout under a symlinked path — the failure this migration exists for.
+		const checkout = makeTempDir("settings-filename-ancestor-");
+		mkdirSync(join(checkout, ".git"), { recursive: true });
+		const realPi = join(checkout, ".pi");
+		mkdirSync(realPi, { recursive: true });
+		const legacy = join(realPi, LEGACY_SETTINGS_FILENAME);
+		writeFileSync(legacy, JSON.stringify({ dco: true }));
+		const host = makeTempDir("settings-filename-ancestor-host-");
+		const linkedPi = join(host, "checkout-link", ".pi");
+		symlinkSync(checkout, join(host, "checkout-link"));
+
+		const logs = captureLogs(() => assert.equal(findSettingsFile(linkedPi), join(linkedPi, JSON_NAME)));
+
+		assert.deepEqual(JSON.parse(readFileSync(join(realPi, JSON_NAME), "utf-8")), { dco: true }, "the migration ran");
+		assert.equal(existsSync(legacy), false, "the legacy file is moved aside");
+		assert.deepEqual(logs, [{ level: "info", message: "settings_legacy_jsonc_migrated" }]);
+	});
+
+	it("logs a completed migration at INFO, not as a degraded warning", () => {
+		writeFileSync(join(piDir, LEGACY_SETTINGS_FILENAME), JSON.stringify({ dco: true }));
+
+		const logs = captureLogs(() => migrateLegacySettingsFile(piDir));
+
+		assert.deepEqual(logs, [{ level: "info", message: "settings_legacy_jsonc_migrated" }]);
 	});
 
 	it("refuses a SYMLINKED legacy file in BOTH scopes: nothing outside the settings dir is copied in", () => {

@@ -5,8 +5,12 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import stripJsonComments from "strip-json-comments";
 
-let log: { debug(message: string, context?: object): void; warn(message: string, context?: object): void } = {
-  debug: () => {}, warn: () => {},
+let log: {
+  debug(message: string, context?: object): void;
+  info(message: string, context?: object): void;
+  warn(message: string, context?: object): void;
+} = {
+  debug: () => {}, info: () => {}, warn: () => {},
 };
 export function setSettingsSourceLogger(logger: typeof log): void {
   log = logger;
@@ -108,6 +112,29 @@ function legacyTrackedRefusal(dir: string, legacy: string): boolean {
   return true;
 }
 
+/** The nearest ancestor (or self) that contains `.git`, lexically — no git exec per resolution. */
+function lexicalRepoRoot(dir: string): string | null {
+  for (let current = resolve(dir); ; current = dirname(current)) {
+    if (existsSync(join(current, ".git"))) return current;
+    if (dirname(current) === current) return null;
+  }
+}
+
+/** Whether a repo could have SHIPPED the settings dir as a link: the dir itself, or a component
+ *  between it and the repo root. Symlinks above the repo root are the user's own layout (a
+ *  symlinked home, a symlinked TMPDIR, `/mnt/data` linked from `/home`) and must not block a
+ *  migration. With no repo above, only the leaf counts — the same check as the Python side. */
+function projectDirShippedAsSymlink(dir: string): boolean {
+  const leaf = resolve(dir);
+  try { if (lstatSync(leaf).isSymbolicLink()) return true; } catch { return false; }
+  const root = lexicalRepoRoot(leaf);
+  if (root === null || root === leaf) return false;
+  for (let current = dirname(leaf); current !== root; current = dirname(current)) {
+    try { if (lstatSync(current).isSymbolicLink()) return true; } catch { return false; }
+  }
+  return false;
+}
+
 /** The settings object at `file`, or `null` when it is missing or not a JSON object. */
 function readSettingsObjectOrNull(file: string): Record<string, unknown> | null {
   try {
@@ -170,6 +197,10 @@ export function readLegacySettings(file: string): Record<string, unknown> | null
  *                           untracked `.json` would hand it the trust `projectSettingsTrust` withholds.
  * - legacy a symlink      → refuse: reading through it would copy a file from elsewhere into the
  *                           settings dir as a real file.
+ * - dir shipped as a link → refuse, PROJECT scope only: a project `.pi` pointing outside the checkout
+ *                           would have us read, publish and rename out there. Only a link the repo
+ *                           itself can ship counts — the dir or a component below the repo root.
+ * - dir a symlink (global) → migrate: a dotfiles-managed `~/.pi` is that layout on purpose.
  *
  * Race-safe: the `.json` is published by rename, so a concurrent reader never sees a partial
  * file; a target that already exists (another process won) is kept, and a legacy file already
@@ -178,6 +209,10 @@ export function readLegacySettings(file: string): Record<string, unknown> | null
 export function migrateLegacySettingsFile(dir: string, options: FindSettingsOptions = {}): void {
   if (!migrationAllowed(dir)) return;
   const scope = options.scope ?? "project";
+  if (scope === "project" && projectDirShippedAsSymlink(dir)) {
+    warnLegacyOnce("dir_symlink", "settings_legacy_jsonc_dir_symlink_refused", dir);
+    return;
+  }
   const legacy = join(dir, LEGACY_SETTINGS_FILENAME);
   let legacyStat;
   try { legacyStat = lstatSync(legacy); } catch { return; }
@@ -247,7 +282,7 @@ export function migrateLegacySettingsFile(dir: string, options: FindSettingsOpti
     }
     // Already renamed by the process that won the race — success.
   }
-  log.warn("settings_legacy_jsonc_migrated", { path: legacy });
+  log.info("settings_legacy_jsonc_migrated", { path: legacy });
 }
 
 export type SettingsScope = "project" | "global";
