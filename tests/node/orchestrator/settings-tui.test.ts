@@ -810,20 +810,20 @@ describe("readSettingsFile / writeSettingsFile", () => {
     assert.deepEqual(result, data);
   });
 
-  it("writes data to .jsonc file", () => {
-    const jsoncPath = join(tempDir, "pi-config-settings.jsonc");
-    writeFileSync(jsoncPath, '// user comments\n{"dco": true}');
-    writeSettingsFile(jsoncPath, { dco: true, use_worktrees: true });
-    const content = readFileSync(jsoncPath, "utf-8");
+  it("writes data to the settings file", () => {
+    const settingsPath = join(tempDir, "pi-config-settings.json");
+    writeFileSync(settingsPath, '{"dco": true}');
+    writeSettingsFile(settingsPath, { dco: true, use_worktrees: true });
+    const content = readFileSync(settingsPath, "utf-8");
     assert.ok(content.includes('"use_worktrees": true'), "should have new data");
     assert.ok(content.includes('"dco": true'), "should preserve existing keys");
   });
 
-  it("strips comments from .jsonc on write (per spec)", () => {
-    const jsoncPath = join(tempDir, "pi-config-settings-comments.jsonc");
-    writeFileSync(jsoncPath, '// user comments\n{"dco": true}');
-    writeSettingsFile(jsoncPath, { dco: true });
-    const content = readFileSync(jsoncPath, "utf-8");
+  it("writes plain JSON even when the source file carried comments (per spec)", () => {
+    const settingsPath = join(tempDir, "pi-config-settings-comments.json");
+    writeFileSync(settingsPath, '// user comments\n{"dco": true}');
+    writeSettingsFile(settingsPath, { dco: true });
+    const content = readFileSync(settingsPath, "utf-8");
     assert.ok(!content.includes("// user comments"), "comments should be stripped");
   });
 

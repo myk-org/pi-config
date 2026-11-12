@@ -477,7 +477,7 @@ describe("extension settings", () => {
 	});
 });
 
-describe("JSONC and file discovery", () => {
+describe("Settings file discovery", () => {
 	let tmp: string;
 	let globalTmp: string;
 	const prev = {
@@ -486,8 +486,8 @@ describe("JSONC and file discovery", () => {
 
 	beforeEach(() => {
 		clearSettingsCache();
-		tmp = makeTempDir("pi-ext-settings-jsonc-");
-		globalTmp = makeTempDir("pi-ext-global-jsonc-");
+		tmp = makeTempDir("pi-ext-settings-file-");
+		globalTmp = makeTempDir("pi-ext-global-file-");
 		setGlobalSettingsPath(join(globalTmp, "pi-config-settings.json"));
 		delete process.env.PI_COMS_MAX_HOPS;
 	});
@@ -503,10 +503,10 @@ describe("JSONC and file discovery", () => {
 		}
 	});
 
-	it("JSONC settings file parses correctly", () => {
+	it("settings file with comments still parses", () => {
 		mkdirSync(join(tmp, ".pi"), { recursive: true });
 		writeFileSync(
-			join(tmp, ".pi", "pi-config-settings.jsonc"),
+			join(tmp, ".pi", "pi-config-settings.json"),
 			`{
   // project comment
   "image_model": "https://example.com/model", // trailing
@@ -519,7 +519,7 @@ describe("JSONC and file discovery", () => {
 		assert.equal(getSetting(tmp, "coms_max_hops"), 7);
 	});
 
-	it("findSettingsFile prefers .jsonc over .json", () => {
+	it("ignores a legacy .jsonc next to an existing .json", () => {
 		mkdirSync(join(tmp, ".pi"), { recursive: true });
 		writeFileSync(
 			join(tmp, ".pi", "pi-config-settings.jsonc"),
@@ -530,24 +530,14 @@ describe("JSONC and file discovery", () => {
 			JSON.stringify({ image_model: "from-json" }),
 		);
 		clearSettingsCache();
-		assert.equal(getSetting(tmp, "image_model"), "from-jsonc");
+		assert.equal(getSetting(tmp, "image_model"), "from-json");
 	});
 
-	it("Falls back to .json when no .jsonc exists", () => {
-		mkdirSync(join(tmp, ".pi"), { recursive: true });
+	it("Global settings file supports comments", () => {
+		const globalJson = join(globalTmp, "pi-config-settings.json");
+		setGlobalSettingsPath(globalJson);
 		writeFileSync(
-			join(tmp, ".pi", "pi-config-settings.json"),
-			JSON.stringify({ image_model: "from-json-only" }),
-		);
-		clearSettingsCache();
-		assert.equal(getSetting(tmp, "image_model"), "from-json-only");
-	});
-
-	it("Global settings file supports .jsonc", () => {
-		const globalJsonc = join(globalTmp, "pi-config-settings.jsonc");
-		setGlobalSettingsPath(globalJsonc);
-		writeFileSync(
-			globalJsonc,
+			globalJson,
 			`{
   // global comment
   "image_model": "https://cdn.example.com/global", // keep // in string

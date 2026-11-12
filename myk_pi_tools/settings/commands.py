@@ -2,27 +2,273 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import math
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
 import click
 import commentjson
 
-SETTINGS_FILENAMES = ("pi-config-settings.jsonc", "pi-config-settings.json")
+log = logging.getLogger(__name__)
+
+SETTINGS_FILENAMES = ("pi-config-settings.json",)
+
+# Legacy settings file, no longer read: migrated away once, then ignored (issue #1086).
+LEGACY_SETTINGS_FILENAME = "pi-config-settings.jsonc"
+
+# Suffix the legacy file is moved to — it can never shadow the `.json` again.
+LEGACY_MIGRATED_SUFFIX = ".migrated"
+
+# One warning per directory and reason: settings resolution runs on nearly every tool call, so a
+# file that stays ignored/refused/corrupt must not re-log on each read. Path only, never values.
+_LEGACY_WARNED: set[tuple[str, Path]] = set()
 
 
-def _find_settings_file(directory: Path) -> Path | None:
-    """Find the first existing settings file (.jsonc preferred over .json)."""
+def _warn_legacy_once(reason: str, message: str, path: Path) -> None:
+    key = (reason, path.parent)
+    if key in _LEGACY_WARNED:
+        return
+    _LEGACY_WARNED.add(key)
+    log.warning("%s path=%s", message, path)
+
+
+class _LegacySymlinkRefused(Exception):
+    """`O_NOFOLLOW` refused the open — the legacy pathname is a symlink."""
+
+
+def _read_legacy_bytes(legacy: Path) -> bytes | None:
+    """Read the legacy file from an fd opened with `O_NOFOLLOW`.
+
+    The open, not a prior lstat, is what refuses a symlink: a process that swaps the file for one
+    after the pre-check cannot get its target's contents imported. None means "absent".
+    """
+    try:
+        fd = os.open(legacy, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise _LegacySymlinkRefused from exc
+        raise
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read()
+
+
+def _strip_json_comments(text: str) -> str:
+    """Drop `//` and `/* */` comments outside strings (matches TS strip-json-comments).
+
+    Raises ValueError on an unterminated block comment, so a broken legacy file counts as corrupt.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                elif text[j] == '"':
+                    j += 1
+                    break
+                else:
+                    j += 1
+            out.append(text[i:j])
+            i = j
+        elif text.startswith("//", i):
+            end = text.find("\n", i)
+            i = n if end == -1 else end
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            if end == -1:
+                raise ValueError("unterminated block comment")
+            i = end + 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _read_legacy_settings(legacy: Path) -> tuple[dict[str, Any], bytes] | None:
+    """Parse the legacy file; None means "nothing to migrate".
+
+    Returns the bytes that were parsed along with the object, so the caller can re-read and
+    compare them before retiring the file. Path only, values never logged.
+    """
+    try:
+        raw_bytes = _read_legacy_bytes(legacy)
+    except _LegacySymlinkRefused:
+        _warn_legacy_once("symlink", "settings_legacy_jsonc_symlink_refused", legacy)
+        return None
+    except (OSError, MemoryError):
+        _warn_legacy_once("corrupt", "settings_legacy_jsonc_corrupt", legacy)
+        return None
+    if raw_bytes is None:
+        # A racing process already renamed it away: not corruption.
+        return None
+    try:
+        # RecursionError (deeply nested) and MemoryError are corruption of the same kind as a
+        # syntax error: refused, never raised out of settings resolution.
+        raw = json.loads(_strip_json_comments(raw_bytes.decode("utf-8")))
+    except (ValueError, RecursionError, MemoryError):
+        _warn_legacy_once("corrupt", "settings_legacy_jsonc_corrupt", legacy)
+        return None
+    if not isinstance(raw, dict):
+        _warn_legacy_once("corrupt", "settings_legacy_jsonc_corrupt", legacy)
+        return None
+    return raw, raw_bytes
+
+
+def _free_migrated_path(legacy: Path) -> Path | None:
+    """First free `*.migrated[.N]` name, so a second migration never replaces the first backup."""
+    base = legacy.with_name(LEGACY_SETTINGS_FILENAME + LEGACY_MIGRATED_SUFFIX)
+    for attempt in range(100):
+        candidate = base if attempt == 0 else base.with_name(f"{base.name}.{attempt}")
+        if not os.path.lexists(candidate):
+            return candidate
+    return None
+
+
+def _legacy_tracked(directory: Path, legacy: Path) -> bool:
+    """Whether git tracks the legacy file. `unknown` (git failed) counts as tracked."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", str(legacy)],
+            cwd=str(directory),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        log.warning("settings_legacy_jsonc_git_check_failed path=%s fallback=not migrated", legacy)
+        return True
+    if result.returncode == 1:
+        return False
+    if result.returncode == 128 and "not a git repository" in result.stderr.lower():
+        return False
+    if result.returncode == 0:
+        return bool(result.stdout.strip())
+    log.warning("settings_legacy_jsonc_git_check_failed path=%s fallback=not migrated", legacy)
+    return True
+
+
+def _migrate_legacy_settings(settings_dir: Path, scope: str = "project") -> None:
+    """One-time migration away from the legacy `.jsonc` settings file (issue #1086).
+
+    - `.json` exists     -> migrate nothing; the legacy file is ignored (logged once per dir).
+    - `.json` missing    -> write its parsed content to `.json` (temp file, then atomic publish),
+                            then move the legacy file to `*.jsonc.migrated`.
+    - legacy unparseable -> refuse: nothing written, nothing renamed.
+    - legacy tracked     -> refuse, PROJECT scope only: laundering a clone's tracked file into an
+                            untracked `.json` would hand it the trust the project settings root
+                            withholds. A dotfiles-managed global `~/.pi` still migrates.
+    - legacy a symlink   -> refuse: copying through it would import a file from elsewhere.
+    - dir a symlink      -> refuse, PROJECT scope only: a project `.pi` pointing into a directory
+                            outside the checkout would have us read, publish and rename there. A
+                            dotfiles-managed global `~/.pi` is exactly that layout on purpose.
+    """
+    if scope == "project" and settings_dir.is_symlink():
+        _warn_legacy_once("dir_symlink", "settings_legacy_jsonc_dir_symlink_refused", settings_dir)
+        return
+    legacy = settings_dir / LEGACY_SETTINGS_FILENAME
+    # Early, clear refusal; the binding guarantee against a swap is O_NOFOLLOW inside the read.
+    if legacy.is_symlink():
+        _warn_legacy_once("symlink", "settings_legacy_jsonc_symlink_refused", legacy)
+        return
+    if not legacy.exists():
+        return
+    target = settings_dir / SETTINGS_FILENAMES[0]
+    if target.exists():
+        _warn_legacy_once("ignored", "settings_legacy_jsonc_ignored", legacy)
+        return
+    # Parse BEFORE the git check: a corrupt legacy file never migrates, so it must not cost a
+    # git exec on every settings resolution.
+    parsed = _read_legacy_settings(legacy)
+    if parsed is None:
+        return
+    data, raw_bytes = parsed
+    if scope == "project" and _legacy_tracked(settings_dir, legacy):
+        _warn_legacy_once("tracked", "settings_legacy_jsonc_tracked_refused", legacy)
+        return
+    try:
+        # `1e400` parses to inf and dumps to `Infinity`, which is not JSON — the Node reader would
+        # fall back to an empty object and lose every other setting in the file.
+        payload = json.dumps(data, indent=2, allow_nan=False) + "\n"
+        # Refuse anything the `.json` reader itself cannot parse: commentjson recurses per nesting
+        # level, so a deeply nested file would crash the next resolution instead of resolving.
+        commentjson.loads(payload)
+    except (ValueError, RecursionError):
+        _warn_legacy_once("corrupt", "settings_legacy_jsonc_corrupt", legacy)
+        return
+
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError:
+        log.warning("settings_legacy_jsonc_migrate_failed path=%s", legacy)
+        return
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        # os.link publishes the full content atomically and never overwrites an existing target:
+        # if another process won the race, keep theirs.
+        try:
+            os.link(tmp, target)
+        except FileExistsError:
+            pass
+        except OSError:
+            log.warning("settings_legacy_jsonc_migrate_failed path=%s", legacy)
+            return
+    except OSError:
+        log.warning("settings_legacy_jsonc_migrate_failed path=%s", legacy)
+        return
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    # Re-read before retiring: an edit between the read above and this rename would be moved to a
+    # name resolution never reads while `.json` keeps the older snapshot.
+    try:
+        current: bytes | None = _read_legacy_bytes(legacy)
+    except (_LegacySymlinkRefused, OSError, MemoryError):
+        current = None
+    if current is not None and current != raw_bytes:
+        _warn_legacy_once("changed", "settings_legacy_jsonc_changed_during_migration", legacy)
+        return
+
+    migrated = _free_migrated_path(legacy)
+    if migrated is None:
+        log.warning("settings_legacy_jsonc_rename_failed path=%s", legacy)
+        return
+    try:
+        legacy.rename(migrated)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        # Content is safe in `.json` and the legacy name is no longer read: cosmetic only.
+        log.warning("settings_legacy_jsonc_rename_failed path=%s", legacy)
+        return
+    log.info("settings_legacy_jsonc_migrated path=%s", legacy)
+
+
+def _find_settings_file(directory: Path, scope: str = "project") -> Path | None:
+    """Find the settings file, migrating a legacy `.jsonc` away first. Scope defaults to
+    `project`: only the global callers opt into the weaker tracked-file refusal."""
+    _migrate_legacy_settings(directory, scope)
     for name in SETTINGS_FILENAMES:
         p = directory / name
         if p.is_file():
+            log.debug("settings_file_found path=%s", p)
             return p
+    log.debug("settings_file_not_found dir=%s", directory)
     return None
 
 
@@ -175,7 +421,7 @@ def _load_settings_file(path: Path) -> dict[str, Any]:
         return {}
     try:
         raw = commentjson.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, json.JSONDecodeError, ValueError, RecursionError):
         return {}
     if not isinstance(raw, dict):
         return {}
@@ -194,7 +440,7 @@ def _settings_file_has_key(path: Path, key: str) -> bool:
         return False
     try:
         raw = commentjson.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, json.JSONDecodeError, ValueError, RecursionError):
         return False
     return isinstance(raw, dict) and key in raw
 
@@ -392,7 +638,9 @@ def get_setting(key: str, cwd: Path | None = None) -> SettingValue:
     pi_dir = root / ".pi"
     project_path = _find_settings_file(pi_dir) or (pi_dir / SETTINGS_FILENAMES[0])
     project = _load_settings_file(project_path)
-    global_path = _find_settings_file(Path.home() / ".pi") or (Path.home() / ".pi" / SETTINGS_FILENAMES[0])
+    global_path = _find_settings_file(Path.home() / ".pi", scope="global") or (
+        Path.home() / ".pi" / SETTINGS_FILENAMES[0]
+    )
     global_settings = _load_settings_file(global_path)
     merged = {**global_settings, **project}
 

@@ -16,7 +16,7 @@ import { readFileSync, writeFileSync, realpathSync } from "node:fs";
 import path, { basename, join, resolve, dirname } from "node:path";
 import { supportsAsyncLlm } from "./async-capability.js";
 import { getGlobalSettingsPath, getSetting, getSettingsPath } from "./project-settings.js";
-import { SETTINGS_FILENAMES } from "./settings-source.js";
+import { LEGACY_SETTINGS_FILENAME, SETTINGS_FILENAMES } from "./settings-source.js";
 import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 import {
   conflictCandidateDirs,
@@ -853,13 +853,13 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           }
         };
         const resolved = resolve(ctx.cwd, filePath);
-        // Both filename variants (.jsonc first, .json) in both scopes, PLUS
-        // the resolved global path itself — its basename may differ from the
-        // standard filenames (e.g. the test-runner sandbox), and the global
-        // file carries the machine-wide allowlist either way.
+        // The single settings filename in both scopes, PLUS the resolved global path itself —
+        // its basename may differ from the standard filename (e.g. the test-runner sandbox),
+        // and the global file carries the machine-wide allowlist either way. The legacy
+        // `.jsonc` is guarded too: until it is migrated away it can still feed the `.json`.
         const settingsTargets = new Set<string>();
         for (const base of [dirname(getSettingsPath(ctx.cwd)), dirname(getGlobalSettingsPath())]) {
-          for (const name of SETTINGS_FILENAMES) {
+          for (const name of [...SETTINGS_FILENAMES, LEGACY_SETTINGS_FILENAME]) {
             settingsTargets.add(join(base, name));
             settingsTargets.add(toReal(join(base, name)));
           }
