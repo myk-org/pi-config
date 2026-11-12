@@ -29,6 +29,7 @@ import { registerSubagentTool } from "./subagent-tool.js";
 import { registerGithubAutocomplete } from "./github-autocomplete.js";
 import { registerExtendedAutocomplete } from "./extended-autocomplete.js";
 import { registerCron } from "./cron.js";
+import { publishWorkloadSources } from "../shared/workload-bridge.js";
 import { registerStatus } from "./status.js";
 import { registerNvim } from "./nvim.js";
 import { registerPreferenceExtractor } from "./preference-extractor.js";
@@ -141,6 +142,9 @@ export default function (pi: ExtensionAPI) {
   registerStatusLine(pi, IN_CONTAINER, terminalNotify);
   registerDreaming(pi, spawnAsyncAgent);
   const { getCronTasks } = registerCron(pi, spawnAsyncAgent);
+  // #1083: peers report their OWN workload — session crons live only in this process, so the
+  // coms extension must read them here rather than scan for them.
+  publishWorkloadSources({ agents: getAsyncJobs, crons: getCronTasks });
   registerSessionValidation(pi);
   registerGithubAutocomplete(pi);
   registerStatus(pi, IN_CONTAINER, getAsyncJobs, getCronTasks);

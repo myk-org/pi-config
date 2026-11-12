@@ -13,6 +13,12 @@ import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
 import { publishTaskStore } from "../shared/task-store-bridge.js";
 import { createBridgedUi } from "../shared/ui-bridge.js";
+import { openTasksOverlay } from "./tasks-ui.js";
+import {
+	TASKS_USAGE,
+	formatTasksPlainText,
+	parseTasksCommand,
+} from "./tasks-view.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import {
@@ -484,61 +490,43 @@ export default function (pi: ExtensionAPI) {
 	function registerTasksCommand(): void {
 		log.debug("registerTasksCommand called");
 		pi.registerCommand("tasks", {
-			description: "Manage tasks — view, create, clear completed",
-			handler: tasksCmdHandler = async (_args: string, ctx: any) => {
-				log.debug("/tasks handler called");
-				// #968 part B: menus are bridged — answerable from TUI or pidash browser
-				const bridgedUi = createBridgedUi(pi);
-				const mainMenu = async (): Promise<void> => {
-					const tasks = taskStore.list();
-					const taskCount = tasks.length;
-					const completedCount = tasks.filter(t => t.status === "completed").length;
-					const choices = [`View all tasks (${taskCount})`, "Create task"];
-					if (completedCount > 0) choices.push(`Clear completed (${completedCount})`);
-					if (taskCount > 0) choices.push(`Clear all (${taskCount})`);
-					const choice = await bridgedUi.select(ctx, "Tasks", choices);
-					if (!choice) return;
-					if (choice.startsWith("View")) await viewTasks();
-					else if (choice === "Create task") await createTask();
-					else if (choice.startsWith("Clear completed")) { taskStore.clearCompleted(); if (taskScope === "session") taskStore.deleteFileIfEmpty(); currentWidget?.update(); await mainMenu(); }
-					else if (choice.startsWith("Clear all")) { taskStore.clearAll(); if (taskScope === "session") taskStore.deleteFileIfEmpty(); currentWidget?.update(); await mainMenu(); }
-				};
-				const viewTasks = async (): Promise<void> => {
-					const tasks = taskStore.list();
-					if (tasks.length === 0) { await bridgedUi.select(ctx, "No tasks", ["← Back"]); return mainMenu(); }
-					const statusIcon = (s: string) => s === "completed" ? "✔" : s === "in_progress" ? "◼" : "◻";
-					const choices = tasks.map(t => `${statusIcon(t.status)} #${t.id} [${t.status}] ${t.subject}`);
-					choices.push("← Back");
-					const selected = await bridgedUi.select(ctx, "Tasks", choices);
-					if (!selected || selected === "← Back") return mainMenu();
-					const match = selected.match(/#(\d+)/);
-					if (match) await viewTaskDetail(match[1]);
-					else return viewTasks();
-				};
-				const viewTaskDetail = async (taskId: string): Promise<void> => {
-					const task = taskStore.get(taskId);
-					if (!task) return viewTasks();
-					const actions: string[] = [];
-					if (task.status === "pending") actions.push("▸ Start (in_progress)");
-					if (task.status === "in_progress") actions.push("✓ Complete");
-					actions.push("✗ Delete", "← Back");
-					const title = `#${task.id} [${task.status}] ${task.subject}\n${task.description}`;
-					const action = await bridgedUi.select(ctx, title, actions);
-					if (action === "▸ Start (in_progress)") { taskStore.update(taskId, { status: "in_progress" }); currentWidget?.setActiveTask(taskId); currentWidget?.update(); return viewTasks(); }
-					else if (action === "✓ Complete") { taskStore.update(taskId, { status: "completed" }); currentWidget?.setActiveTask(taskId, false); currentWidget?.update(); return viewTasks(); }
-					else if (action === "✗ Delete") { taskStore.update(taskId, { status: "deleted" }); currentWidget?.setActiveTask(taskId, false); currentWidget?.update(); return viewTasks(); }
-					return viewTasks();
-				};
-				const createTask = async (): Promise<void> => {
+			description: "Tasks: list overlay, create, clear completed|all",
+			handler: tasksCmdHandler = async (args: string, ctx: any) => {
+				const cmd = parseTasksCommand(args);
+				log.debug("/tasks handler called", cmd.kind);
+				if (cmd.kind === "usage") { ctx.ui?.notify(TASKS_USAGE, "warning"); return; }
+				if (cmd.kind === "clear-completed" || cmd.kind === "clear-all") {
+					const cleared = cmd.kind === "clear-completed" ? taskStore.clearCompleted() : taskStore.clearAll();
+					if (taskScope === "session") taskStore.deleteFileIfEmpty();
+					currentWidget?.update();
+					log.info("tasks_cleared", { scope: cmd.kind, cleared });
+					ctx.ui?.notify(`Cleared ${cleared} task${cleared === 1 ? "" : "s"}.`, "info");
+					return;
+				}
+				if (cmd.kind === "create") {
+					// #968 part B: prompts are bridged — answerable from TUI or pidash browser
+					const bridgedUi = createBridgedUi(pi);
 					const subject = await bridgedUi.input(ctx, "Task subject");
-					if (!subject) return mainMenu();
+					if (!subject) return;
 					const description = await bridgedUi.input(ctx, "Task description");
-					if (!description) return mainMenu();
+					if (!description) return;
 					taskStore.create(subject, description, { type: "local", origin: "user", session: "", project: process.cwd() });
 					currentWidget?.update();
-					return mainMenu();
-				};
-				await mainMenu();
+					log.info("tasks_created_via_command");
+					return;
+				}
+				// list — overlay when there is a UI, plain text otherwise
+				if (!ctx.hasUI) { ctx.ui?.notify(formatTasksPlainText(taskStore.list()), "info"); return; }
+				await openTasksOverlay(ctx, {
+					listTasks: () => taskStore.list(),
+					deleteTask: (taskId) => {
+						taskStore.update(taskId, { status: "deleted" });
+						currentWidget?.setActiveTask(taskId, false);
+						currentWidget?.update();
+						log.info("task_deleted", { taskId });
+						return true;
+					},
+				});
 			},
 		});
 	}

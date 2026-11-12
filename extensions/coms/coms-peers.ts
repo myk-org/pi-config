@@ -6,6 +6,8 @@
  * (rootcoz ↔ pi-sidecar), so a project-scoped list would hide exactly the peers a user is
  * coordinating.
  */
+import { formatWorkloadSuffix, type PeerWorkloadCounts } from "./coms-workload.js";
+
 export interface RegistryRow {
   /** Project namespace (the registry directory name). */
   project: string;
@@ -25,6 +27,8 @@ export interface RegistryRow {
   /** Who spawned this peer as a process, from the supervisor's record, which is the more
    *  authoritative answer when both exist. */
   createdBy?: string | null;
+  /** #1083: the peer's own active counts. `null`/absent = not reported = `unknown`, never 0. */
+  workload?: PeerWorkloadCounts | null;
 }
 
 export interface PeerFilter {
@@ -77,7 +81,7 @@ export function formatPeerTable(rows: RegistryRow[]): string {
       const queue = row.queueDepth ? ` queue:${row.queueDepth}` : "";
       const ctx = row.contextUsedPct === null ? "" : ` ctx:${Math.round(row.contextUsedPct)}%`;
       const pid = row.pid ? ` pid:${row.pid}` : "";
-      return `● ${row.name} · ${row.project} (${state}${queue}${ctx}${pid}) — ${row.cwd || "?"}`;
+      return `● ${row.name} · ${row.project} (${state}${queue}${ctx}${pid})${formatWorkloadSuffix(row.workload)} — ${row.cwd || "?"}`;
     });
   return `${rows.length} peer(s):\n${lines.join("\n")}`;
 }

@@ -21,7 +21,7 @@
 | :--- | :--- | :--- |
 | Launcher wrapper | Registers a session with its name, purpose, model, color, and cwd | Each session appears as a named peer |
 | Registry files | One JSON entry per live session, grouped by project | Peers from other repos stay invisible |
-| Pool widget | Renders connected peers, queue depth, and context usage | You can see who is online and busy at a glance |
+| Pool widget | Renders connected peers, queue depth, context usage, and active workload | You can see who is online, busy, and how much work each peer is carrying |
 | Messaging tools | `coms_list`, `coms_send`, `coms_broadcast`, `coms_history`, `coms_get` | Agents can discover peers, delegate work, and inspect message state |
 | Queue and task tools | `coms_queue_*` and `coms_task_*` | Queued messages and delegated tasks can be inspected and edited |
 
@@ -54,7 +54,15 @@ This is what makes peer lists readable instead of showing only opaque session ID
 
 ### Heartbeats and Presence
 
-Every connected session sends heartbeat updates every 30 seconds. Those updates include context-window usage, queue depth, and optional task summary data.
+Every connected session sends heartbeat updates every 30 seconds. Those updates include context-window usage, queue depth, optional task summary data, and a `workload` block: how many async agents, open tasks, and scheduled crons the peer itself is running.
+
+### Peer Workload
+
+Each peer reports its **own** active work: async agents that are neither complete nor failed, tasks that are not completed, and crons this replica actually runs (`leader !== false`) — session crons included, which is why the peer self-reports instead of a scanner reading files.
+
+The pool widget and peer list append `⏳2 ✓5 ⏰1` (agents, tasks, crons), showing only non-zero counts. A peer that reports no workload field renders `unknown`, never `0`: absence is not idleness.
+
+Selecting a peer in the `/coms` peer overlay asks that peer directly for the detail — agents with elapsed time, task rows, and cron schedules. The peer answers over its own socket from its own memory; nothing scans another process's files. No reply within two seconds renders `workload  unknown (no reply within 2s)`.
 
 Dead peers are removed from the registry in two phases. A newly registered entry gets a grace period (`coms_entry_grace_period_ms`, default 30 seconds) so a just-booted session is never pruned early. After that, the entry is probed by connecting to its socket: peers that respond are kept, peers that do not are removed from the registry. Timestamp staleness alone never prunes an entry, which is what keeps laptop suspend/resume from wiping out live peers.
 

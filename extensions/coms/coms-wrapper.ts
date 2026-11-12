@@ -21,6 +21,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { activationVerified, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
+import { requestDescribe } from "./coms-describe.js";
+import type { PeerWorkloadCounts } from "./coms-workload.js";
 
 const log = createLogger("coms");
 
@@ -211,6 +213,9 @@ export function registerComs(pi: ExtensionAPI) {
             if (ctx?.hasUI) {
                 await openComsPeersOverlay(ctx, {
                     listPeers: () => filterRegistry(attachCreatedBy(readRegistryRows()).filter(rowAlive), { project: projectScope }),
+                    // #1083: the drilldown asks the PEER for its own state. No reply inside the
+                    // timeout is `unknown` — never a filesystem scan of another process.
+                    describePeer: (row) => requestDescribe(row.endpoint),
                     killPeer: (row) => killPeers({ name: row.name, project: row.project }).text,
                     killAll: () => {
                         const scope = resolveKillScope({ all: true, project: projectScope }, ownProject(), log);
@@ -348,6 +353,13 @@ export function registerComs(pi: ExtensionAPI) {
         } catch { /* default */ }
         return path.join(base, "peers");
     };
+    /** #1083: the registry's `workload` is reported by the peer, so a malformed or absent value
+     *  means `unknown` (null) rather than a zero count. */
+    const readWorkload = (value: any): PeerWorkloadCounts | null => {
+        const counts = (["agents", "tasks", "crons"] as const).every((key) => typeof value?.[key] === "number" && Number.isFinite(value[key]) && value[key] >= 0);
+        if (!counts) return null;
+        return { agents: value.agents, tasks: value.tasks, crons: value.crons };
+    };
     const readRegistryRows = (): RegistryRow[] => {
         const rows: RegistryRow[] = [];
         let projects: string[] = [];
@@ -374,6 +386,8 @@ export function registerComs(pi: ExtensionAPI) {
                         heartbeatAt: typeof entry.heartbeat_at === "string" ? entry.heartbeat_at : null,
                         origin: typeof entry.origin === "string" ? entry.origin : null,
                         createdBy: null,
+                        // #1083: a peer that reports nothing stays null — never 0.
+                        workload: readWorkload(entry.workload),
                     });
                 } catch (error: any) {
                     log.warn("coms_registry_entry_unreadable", { file: path.join(comsRoot(), project, "agents", file), error: String(error?.message ?? error) });

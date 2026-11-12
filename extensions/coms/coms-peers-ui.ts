@@ -8,6 +8,7 @@
  */
 import type { Component } from "@earendil-works/pi-tui";
 import { describePeerOrigin } from "./coms-peers.js";
+import { renderWorkloadPart, workloadSectionLines, type PeerWorkloadDetail } from "./coms-workload.js";
 import { OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -24,6 +25,9 @@ export interface ComsPeersOverlayDeps {
   killPeer: (row: RegistryRow) => string;
   /** Kill every live peer. */
   killAll: () => string;
+  /** #1083: ask the focused peer for its own active workload. Resolves null when it does not
+   *  answer in time — rendered as `unknown`, never as a filesystem-derived guess. */
+  describePeer?: (row: RegistryRow) => Promise<PeerWorkloadDetail | null>;
   heartbeatAgeSeconds?: (row: RegistryRow) => number | null;
   emptyMessage?: string;
 }
@@ -45,17 +49,22 @@ export async function openComsPeersOverlay(
       borderTitle: (rows) => `peers · ${rows.filter((r) => r.busy).length} busy / ${rows.length}`,
       footerHints: "↑↓/jk navigate · Space select · x kill peer · X kill all · Esc close",
       listItems: toRows,
-      rowParts: (row, theme: Theme) => ({
-        glyph: row.busy ? theme.fg("warning", "◆") : theme.fg("success", "●"),
-        title: row.name,
-        idLabel: theme.fg("dim", row.project),
-        rightParts: [
-          theme.fg("muted", row.busy ? "busy" : "idle"),
-          ...(row.queueDepth ? [theme.fg("dim", `queue:${row.queueDepth}`)] : []),
-          ...(row.contextUsedPct === null ? [] : [theme.fg("dim", `ctx:${Math.round(row.contextUsedPct)}%`)]),
-          ...(row.pid ? [theme.fg("dim", `pid:${row.pid}`)] : []),
-        ],
-      }),
+      rowParts: (row, theme: Theme) => {
+        // #1083: the peer's own active work — or `unknown`, never a fabricated 0.
+        const workload = renderWorkloadPart(row.workload, theme).trim();
+        return {
+          glyph: row.busy ? theme.fg("warning", "◆") : theme.fg("success", "●"),
+          title: row.name,
+          idLabel: theme.fg("dim", row.project),
+          rightParts: [
+            theme.fg("muted", row.busy ? "busy" : "idle"),
+            ...(row.queueDepth ? [theme.fg("dim", `queue:${row.queueDepth}`)] : []),
+            ...(row.contextUsedPct === null ? [] : [theme.fg("dim", `ctx:${Math.round(row.contextUsedPct)}%`)]),
+            ...(row.pid ? [theme.fg("dim", `pid:${row.pid}`)] : []),
+            ...(workload ? [workload] : []),
+          ],
+        };
+      },
       onX: (row) => {
         status = deps.killPeer(row);
         log.info("overlay_kill_peer", { name: row.name, project: row.project });
@@ -73,6 +82,18 @@ export async function openComsPeersOverlay(
     },
     createDetail: (row, tui, theme: Theme, done): Component => {
       const peerId = row.id;
+      // #1083: ask the peer once, when the detail opens. `pending` renders nothing, so a slow
+      // peer never paints a count it has not reported; the answer (or the 2s timeout) is picked
+      // up by OverlayScrollDetail's own 1s invalidate tick — no polling of files.
+      const workload: { state: "pending" | "done"; detail: PeerWorkloadDetail | null } = { state: "pending", detail: null };
+      const ask = deps.describePeer;
+      if (ask) {
+        void ask(row)
+          .then((detail) => { workload.detail = detail; workload.state = "done"; log.debug("describe_resolved", { peer: row.name, answered: detail !== null }); })
+          .catch((err) => { workload.detail = null; workload.state = "done"; log.warn("describe_failed", { peer: row.name, error: err instanceof Error ? err.message : String(err) }); });
+      } else {
+        workload.state = "done";
+      }
       // OverlayScrollDetail owns the detail contract: key handling, scrolling and done(). A bare
       // Text here painted over the chat and never released the session (user-reported hang).
       return new OverlayScrollDetail(
@@ -108,6 +129,10 @@ export async function openComsPeersOverlay(
               "",
             ];
             if (status) lines.push(status);
+            if (workload.state === "done") {
+              lines.push("");
+              lines.push(...workloadSectionLines(workload.detail));
+            }
             return lines;
           },
         },

@@ -14,7 +14,7 @@ This page documents the parity contract and the seamless-switch walkthrough
 | Dangerous-command approvals | `ui.select` prompt | same prompt rendered inline | first answer wins; enforcement semantics identical either way |
 | Commit-trailer selection | `ui.select` prompt | same prompt rendered inline | first answer wins |
 | Project-agent confirmation | `ui.confirm` prompt | same prompt rendered inline | first answer wins |
-| `/tasks` menus | bridged select menus | Tasks panel (dedicated) | both operate the same live TaskStore |
+| `/tasks` | fullscreen task list/detail overlay; `create` prompts are bridged | Tasks panel (dedicated) | both operate the same live TaskStore |
 | Coms peers | pool widget | Coms panel | same registry, same `deliverPrompt` path |
 | New session / compact | `/new`, `/compact` | sidebar `+`, InfoBar `compact` | session lifecycle events broadcast to all browsers |
 | Memory status | situation report (implicit) | Memory panel | read from the same scoring/topic modules |
@@ -56,7 +56,7 @@ ends. Run it yourself to verify parity after changes.
    enforcement semantics.
 5. **Tasks from browser** — open the Tasks panel (InfoBar `☐` icon). Create
    "Demo task". The TUI task widget updates live. Start it from the browser;
-   the TUI spinner picks it up. Complete it from the TUI `/tasks` menu — the
+   the TUI spinner picks it up. Complete it with `TaskUpdate` from the TUI — the
    panel's counter updates without refresh. Both tabs converge.
 6. **Coms from browser** — with a peer session running, open the Coms panel:
    the peer appears with live busy/queue/context state. Send a message from

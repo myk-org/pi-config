@@ -197,15 +197,21 @@ Unified session status in one notification: async agents, cron tasks, git branch
 
 ### /tasks
 
-Interactive task manager for the current session's task list.
+Task manager for the current session's task list.
 
-- **Arguments:** none — the command opens a menu
-- **Menu:** `View all tasks (N)`, `Create task`, `Clear completed (N)` (only when completed tasks exist), `Clear all (N)` (only when tasks exist)
-- **Task list view:** `✔` completed, `◼` in progress, `◻` pending; select a task to open its detail actions: `▸ Start (in_progress)`, `✓ Complete`, `✗ Delete`
+- **Arguments:** optional subcommand — none (list), `create`, `clear completed`, `clear all`
+- **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` select, `Enter` opens a task, `x` deletes the focused task, `Esc` closes
+- **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] <subject>`; a task with blockers is marked `⛔ blocked`
+- **Detail:** subject, status, owner, blocked-by, description, created and updated
+- **`create`:** prompts for subject and description (bridged, so pidash can answer it too)
+- **`clear completed` / `clear all`:** delete matching tasks and report the count
 - **Note:** when the task scope is `session` and the list becomes empty, the backing file is deleted.
 
 ```
 /tasks
+/tasks create
+/tasks clear completed
+/tasks clear all
 ```
 
 More detail: [Daemon and WebSockets](daemon-and-websockets.html) for how task state is persisted and shared.

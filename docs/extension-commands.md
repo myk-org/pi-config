@@ -24,7 +24,7 @@ the internals that are not visible from usage alone.
 | `/coms` | `coms/coms-wrapper.ts` | P2P agent communication (start/stop/status) |
 | `/coms-queue` | `coms/coms-p2p.ts` | View and kill queued peer messages |
 | `/repair` | `session-validation.ts` | Repair session — fix orphaned tool calls that break API requests |
-| `/tasks` | `pitasks/index.ts` | Manage tasks — view, create, clear completed |
+| `/tasks` | `pitasks/index.ts` + `tasks-ui.ts` | Task list overlay (like `/cron list`), plus `create` and `clear completed\|all` |
 | `/external-ai-models-refresh` | `extended-autocomplete.ts` | Refresh AI CLI model cache |
 
 ## Cron Delivery Internals
