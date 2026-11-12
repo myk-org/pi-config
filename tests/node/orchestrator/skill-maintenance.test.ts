@@ -411,6 +411,60 @@ describe("shell guard (Qodo #1079)", () => {
     assert.equal(bashSkillVerdict(cwd, `python3 -c 'open("${globalSkill()}", "w")'`)?.block, true);
   });
 
+  it("blocks a command substitution anywhere in the command", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    const read = `cat ${path.join(root, "marked", "SKILL.md")}`;
+    assert.equal(
+      bashSkillVerdict(cwd, `${read} $(python3 -c 'open("${path.join(root, "marked", "SKILL.md")}", "w")')`)?.block,
+      true,
+    );
+    assert.equal(bashSkillVerdict(cwd, "`printf x` >> ~/.agents/skills/x/SKILL.md")?.block, true);
+  });
+
+  it("blocks a read verb whose option runs a program", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "rg --pre=./rewrite.sh pattern ~/.agents/skills/x/SKILL.md")?.block, true);
+  });
+
+  it("blocks mkdir through a symlinked parent", () => {
+    const { cwd, root } = project();
+    const outside = tempDir("skill-maint-outside-");
+    fs.symlinkSync(outside, path.join(root, "linked"));
+    assert.equal(bashSkillVerdict(cwd, `mkdir -p ${path.join(root, "linked", "new")}`)?.block, true);
+  });
+
+  it("blocks mkdir with an operand outside the skills tree", () => {
+    const { cwd, root } = project();
+    assert.equal(bashSkillVerdict(cwd, `mkdir -p ${path.join(root, "ok")} /tmp/elsewhere`)?.block, true);
+  });
+
+  it("blocks a command substitution anywhere in the command", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    const read = `cat ${path.join(root, "marked", "SKILL.md")}`;
+    const nested = `${read} $(python3 -c 'open("${path.join(root, "marked", "SKILL.md")}", "w")')`;
+    assert.equal(bashSkillVerdict(cwd, nested)?.block, true);
+    assert.equal(bashSkillVerdict(cwd, "printf x $(date) >> ~/.agents/skills/x/SKILL.md")?.block, true);
+  });
+
+  it("blocks a read verb whose option runs a program", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "rg --pre=./rewrite.sh pattern ~/.agents/skills/x/SKILL.md")?.block, true);
+  });
+
+  it("blocks mkdir through a symlinked parent", () => {
+    const { cwd, root } = project();
+    const outside = tempDir("skill-maint-outside-");
+    fs.symlinkSync(outside, path.join(root, "linked"));
+    assert.equal(bashSkillVerdict(cwd, `mkdir -p ${path.join(root, "linked", "new")}`)?.block, true);
+  });
+
+  it("blocks mkdir with an operand outside the skills tree", () => {
+    const { cwd, root } = project();
+    assert.equal(bashSkillVerdict(cwd, `mkdir -p ${path.join(root, "ok")} /tmp/elsewhere`)?.block, true);
+  });
+
   it("allows mkdir inside the owned skills tree", () => {
     const { cwd, root } = project();
     assert.equal(bashSkillVerdict(cwd, `mkdir -p ${path.join(root, "brand-new")}`), null);

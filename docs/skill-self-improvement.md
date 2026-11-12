@@ -62,24 +62,19 @@ A skill file is writable only when it is **marked** *and* its real path (after `
 The rule is enforced in code by a `tool_call` guard on `write`/`edit`/`multi_edit`, so a blocked write is
 refused before it happens and the agent is told what to do instead.
 
-The shell is a read-only view of skills, with one exception. A `bash` command that references a skills area
-is allowed only when its verb is unambiguously read-only (`cat`, `less`, `head`, `tail`, `grep`, `rg`, `ls`,
-`stat`, `wc`, `diff`, `md5sum`, `sha256sum`) and it carries no write operator. A write is allowed only into a
-**marked skill of this project** — as the destination of `cp`/`mv`, or as the target of a redirection or
-`sed -i` — because that is the same file the `write`/`edit` guard already trusts. Everything else blocks,
-ambiguity included: a `~` target, a redirection glued to the path (`>/path`), a bare `SKILL.md` after a `cd`
-into a skills directory, a path through a symlink out of every area, a `cp`/`mv` whose source and destination
-cannot be told apart, and a destructive verb (`rm`, `chmod`, `truncate`, `dd`).
+### The shell reads skills, never writes them
 
-Chains are classified per command: a `;`, `&&`, `||` or `|` splits the line, and every segment must stand on
-its own. `mkdir` is allowed inside the owned tree, so a new skill directory can be created (the file itself
-still needs the marker).
+A `bash` command that names a skills area passes only when **every** `;`, `&&`, `||` or `|` segment is a read:
+an allowlisted verb (`cat`, `less`, `head`, `tail`, `grep`, `rg`, `ls`, `stat`, `wc`, `diff`, `md5sum`,
+`sha256sum`) with no write operator. `mkdir` is the one exception, and only for a directory inside this
+project's own `.pi/skills/` that resolves there — the `SKILL.md` itself still has to be written with
+`write`/`edit`, where the marker and ownership apply.
 
-**No shell write to a skill is allowed at all** — `>`, `>>`, `>&`, `tee`, `cp`, `mv`, `rm`, `sed -i`,
-`install`, `dd`, `truncate`, `chmod` all block, whatever the shape. Earlier versions tried to classify shell
-writes (`cp` source vs destination, `-t`, `--target-directory=<path>`, pipelines, glued redirections) and each
-shape was another bypass, so the rule is now one line: the shell reads skills, `write`/`edit` writes them —
-where ownership, the marker, provenance and the notice already apply.
+Everything else blocks, including the shapes that defeated earlier versions: `>`, `>>`, `>&`, `tee`, `cp`, `mv`,
+`rm`, `sed -i`, `install`, `dd`, `truncate`, `chmod`; a bare `SKILL.md`; a `cd`; a command substitution
+(`$(…)`, backticks); an option that runs a program (`--pre`); a path through a symlink; and any reference the
+guard cannot resolve. The shell is not a second way to write a skill — one write path means one place to be
+correct.
 
 Known limit, stated rather than guessed at: a path built by shell expansion — `t=…; … > "$t"`, `eval`,
 `find -exec` — carries no literal reference, so no text rule can see it. The change still reaches the turn-end

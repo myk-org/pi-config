@@ -883,6 +883,14 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
   if (/(?:^|[\s;&|])cd\s/.test(maskQuoted(command))) {
     return block(`a command that changes directory cannot be classified against a skill path. ${hint}`);
   }
+  // Nested commands run before the outer one: `cat skill $(python3 -c …)` writes first.
+  if (/\$\(|`/.test(command)) {
+    return block(`this command embeds a command substitution, which can run any program. ${hint}`);
+  }
+  // Options that execute a program for each file turn a "read" into a write.
+  if (/\s(?:--pre|--pre-glob|--exec|-exec)\b/.test(maskQuoted(command))) {
+    return block(`this command's options execute another program. ${hint}`);
+  }
 
   const segments = command.split(SHELL_SEPARATORS).map((segment) => segment.trim()).filter(Boolean);
   for (const segment of segments) {
@@ -897,8 +905,18 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
       return block(`this shell command writes (${verb || "?"}) and names a skill. ${hint}`);
     }
     if (READ_ONLY_VERBS.has(verb)) continue;
-    if (verb === "mkdir" && segmentRefs.length > 0 && segmentRefs.every((ref) => allOwnedLexical(projectCwd, ref.abs))) {
-      continue;
+    if (verb === "mkdir" && segmentRefs.length > 0) {
+      // Every operand must be a path this project owns *after* symlinks resolve, and a
+      // directory we create must be inside the owned tree — a linked parent escapes it.
+      const operands = shellTokens(masked).filter((token, index) => index > 0 && !token.startsWith("-"));
+      const allOperandsAreSkills = operands.every((operand) =>
+        segmentRefs.some((ref) => ref.abs === path.resolve(projectCwd, operand)),
+      );
+      const allOwned = segmentRefs.every(
+        (ref) => allOwnedLexical(projectCwd, ref.abs) && isOwnedSkillPath(projectCwd, ref.abs),
+      );
+      if (allOperandsAreSkills && allOwned) continue;
+      return block(`mkdir here would create a directory outside this project's own skills tree. ${hint}`);
     }
     return block(`this shell command ("${verb || "?"}") touches a skill path and is not a known read. ${hint}`);
   }
