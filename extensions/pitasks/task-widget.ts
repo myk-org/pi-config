@@ -5,6 +5,7 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
 import type { TaskStore } from "./task-store.js";
+import { sortTaskRows, toTaskRowView } from "./tasks-view.js";
 
 const log = createLogger("pitasks");
 
@@ -109,8 +110,8 @@ export class TaskWidget {
 	}
 
 	private buildWidgetLines(tui: any, theme: any): string[] {
-		const sortOrder = this.config.sortOrder ?? "id";
-		const tasks = this.store.list(sortOrder);
+		// One order for both surfaces: status group, the owner's tasks first, then id (#1090).
+		const tasks = sortTaskRows(this.store.list());
 		const w = tui.terminal.columns;
 		const truncate = (line: string) => truncateToWidth(line, w);
 		if (tasks.length === 0) return [];
@@ -118,11 +119,14 @@ export class TaskWidget {
 		const completed = tasks.filter(t => t.status === "completed");
 		const inProgress = tasks.filter(t => t.status === "in_progress");
 		const pending = tasks.filter(t => t.status === "pending");
+		// "yours" is the owner's OPEN work: completed rows are already counted as done.
+		const yours = tasks.filter(t => t.assignee === "user" && t.status !== "completed").length;
 		const parts: string[] = [];
 		if (completed.length > 0) parts.push(`${completed.length} done`);
 		if (inProgress.length > 0) parts.push(`${inProgress.length} in progress`);
 		if (pending.length > 0) parts.push(`${pending.length} open`);
-		const statusText = `${tasks.length} tasks (${parts.join(", ")})`;
+		const yoursText = yours > 0 ? `${parts.length > 0 ? " · " : ""}${yours} yours` : "";
+		const statusText = `${tasks.length} tasks (${parts.join(", ")}${yoursText})`;
 		const spinnerChar = SPINNER[this.widgetFrame % SPINNER.length];
 		const lines: string[] = [truncate(theme.fg("accent", "●") + " " + theme.fg("accent", statusText))];
 
@@ -157,16 +161,17 @@ export class TaskWidget {
 				return ` ${theme.fg("dim", tokenParts.length ? `(${elapsed} · ${tokenParts.join(" ")})` : `(${elapsed})`)}`;
 			})() : "";
 
+			const tag = theme.fg("dim", toTaskRowView(task).tag);
 			let text: string;
 			if (task.status === "in_progress") {
 				const form = task.activeForm || task.subject;
 				const agentId = task.metadata?.agentId;
 				const agentLabel = agentId ? ` (agent ${agentId.slice(0, 5)})` : "";
-				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${theme.fg("accent", form + agentLabel + "…")}${stats}`;
+				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${tag} ${theme.fg("accent", form + agentLabel + "…")}${stats}`;
 			} else if (task.status === "completed") {
-				text = `  ${icon} ${theme.fg("dim", theme.strikethrough("#" + task.id + " " + task.subject))}${stats}`;
+				text = `  ${icon} ${tag} ${theme.fg("dim", theme.strikethrough("#" + task.id + " " + task.subject))}${stats}`;
 			} else {
-				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${task.subject}${stats}`;
+				text = `  ${icon} ${theme.fg("dim", "#" + task.id)} ${tag} ${task.subject}${stats}`;
 			}
 			lines.push(truncate(text + suffix));
 		}

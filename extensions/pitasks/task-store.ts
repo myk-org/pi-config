@@ -8,8 +8,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import type { Task, TaskStatus, TaskStoreData } from "./types.js";
+import type { Task, TaskAssignee, TaskCompletedBy, TaskStatus, TaskStoreData } from "./types.js";
 import { createLogger } from "../shared/logger.js";
+import { taskAssigneeRank } from "./tasks-view.js";
 
 const log = createLogger("pitasks");
 
@@ -18,7 +19,7 @@ function sortById(a: Task, b: Task): number {
 }
 function sortByStatus(a: Task, b: Task): number {
 	const rank = (s: string) => s === "completed" ? 0 : s === "in_progress" ? 1 : 2;
-	return rank(a.status) - rank(b.status) || Number(a.id) - Number(b.id);
+	return rank(a.status) - rank(b.status) || taskAssigneeRank(a) - taskAssigneeRank(b) || Number(a.id) - Number(b.id);
 }
 function sortByRecent(a: Task, b: Task): number {
 	return b.updatedAt - a.updatedAt || Number(b.id) - Number(a.id);
@@ -65,8 +66,13 @@ function isProcessRunning(pid: number): boolean {
 function normalizeTask(t: any): Task {
 	const now = Date.now();
 	log.debug("task_normalized", { taskId: t.id, hasTelemetry: !!t.telemetry });
+	const { completionNote, completedBy, ...rest } = t ?? {};
 	return {
-		...t,
+		...rest,
+		// #1090: old records carry no assignee; the agent was the only possibility back then.
+		assignee: t?.assignee === "user" ? "user" : "llm",
+		...(typeof completionNote === "string" && completionNote ? { completionNote } : {}),
+		...(completedBy === "user" || completedBy === "llm" ? { completedBy } : {}),
 		createdBy: t.createdBy && typeof t.createdBy === "object" ? t.createdBy :
 			(t.metadata?.coms_origin ? { type: "coms" as const, origin: t.metadata.coms_origin.sender_name || "", session: t.metadata.coms_origin.sender_session || "", project: "" } :
 			{ type: "local" as const, origin: "system", session: "", project: "" }),
@@ -202,7 +208,7 @@ export class TaskStore {
 		}
 	}
 
-	create(subject: string, description: string, createdBy: Task["createdBy"], activeForm?: string, metadata?: Record<string, any>): Task {
+	create(subject: string, description: string, createdBy: Task["createdBy"], activeForm?: string, metadata?: Record<string, any>, assignee: TaskAssignee = "llm"): Task {
 		const __task = this.withLock(() => {
 			const now = Date.now();
 			const task: Task = {
@@ -210,6 +216,7 @@ export class TaskStore {
 				subject,
 				description,
 				status: "pending",
+				assignee,
 				activeForm,
 				owner: undefined,
 				createdBy,
@@ -232,7 +239,7 @@ export class TaskStore {
 		return __task;
 	}
 
-	createTasks(tasks: Array<{ subject: string; description: string; createdBy: Task["createdBy"]; blockedBy?: string[]; activeForm?: string; metadata?: Record<string, any> }>): Task[] {
+	createTasks(tasks: Array<{ subject: string; description: string; createdBy: Task["createdBy"]; blockedBy?: string[]; activeForm?: string; metadata?: Record<string, any>; assignee?: TaskAssignee }>): Task[] {
 		const __tasks = this.withLock(() => {
 			const now = Date.now();
 			const created: Task[] = [];
@@ -242,6 +249,7 @@ export class TaskStore {
 					subject: t.subject,
 					description: t.description,
 					status: "pending",
+					assignee: t.assignee === "user" ? "user" : "llm",
 					activeForm: t.activeForm,
 					owner: undefined,
 					createdBy: t.createdBy,
@@ -282,6 +290,9 @@ export class TaskStore {
 		description?: string;
 		activeForm?: string;
 		owner?: string;
+		assignee?: TaskAssignee;
+		completedBy?: TaskCompletedBy;
+		completionNote?: string;
 		metadata?: Record<string, any>;
 		telemetry?: Task["telemetry"];
 		addBlocks?: string[];
@@ -326,6 +337,9 @@ export class TaskStore {
 			if (fields.description !== undefined) { task.description = fields.description; changedFields.push("description"); }
 			if (fields.activeForm !== undefined) { task.activeForm = fields.activeForm; changedFields.push("activeForm"); }
 			if (fields.owner !== undefined) { task.owner = fields.owner; changedFields.push("owner"); }
+			if (fields.assignee !== undefined) { task.assignee = fields.assignee === "user" ? "user" : "llm"; changedFields.push("assignee"); }
+			if (fields.completedBy !== undefined) { task.completedBy = fields.completedBy; changedFields.push("completedBy"); }
+			if (fields.completionNote !== undefined) { task.completionNote = fields.completionNote; changedFields.push("completionNote"); }
 
 			if (fields.metadata !== undefined) {
 				for (const [key, value] of Object.entries(fields.metadata)) {
@@ -409,6 +423,9 @@ export class TaskStore {
 				if (fields.description !== undefined) { task.description = fields.description; changedFields.push("description"); }
 				if (fields.activeForm !== undefined) { task.activeForm = fields.activeForm; changedFields.push("activeForm"); }
 				if (fields.owner !== undefined) { task.owner = fields.owner; changedFields.push("owner"); }
+				if (fields.assignee !== undefined) { task.assignee = fields.assignee === "user" ? "user" : "llm"; changedFields.push("assignee"); }
+				if (fields.completedBy !== undefined) { task.completedBy = fields.completedBy; changedFields.push("completedBy"); }
+				if (fields.completionNote !== undefined) { task.completionNote = fields.completionNote; changedFields.push("completionNote"); }
 
 				if (fields.metadata !== undefined) {
 					for (const [key, value] of Object.entries(fields.metadata)) {

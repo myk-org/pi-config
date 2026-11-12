@@ -161,8 +161,9 @@ function taskItem(task: DescribeTask, index: number): DrilldownItem {
   const blockedBy = (task.blockedBy ?? []).map((blocker) => sanitizePeerText(blocker, ID_MAX));
   const owner = sanitizePeerText(task.owner ?? "", NAME_MAX);
   const description = sanitizePeerText(task.description ?? "", DESCRIPTION_MAX);
+  const assignee = sanitizePeerText(task.assignee ?? "", STATE_MAX);
   // The list line is THE task row definition, shared with `/tasks` and the workload pane.
-  const row = formatTaskRowLine({ id: id || "?", status, subject, blockedBy });
+  const row = formatTaskRowLine({ id: id || "?", status, subject, blockedBy, assignee });
   const detail: Array<[string, string]> = [
     ["Subject", subject || "—"],
     ["Status", status || "?"],

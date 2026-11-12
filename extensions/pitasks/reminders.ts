@@ -29,17 +29,36 @@ export function shouldFireReminder(agentBusy: boolean, matchingCount: number): b
 	return result;
 }
 
-/** Select active tasks (pending or in_progress) and whether any are in_progress. */
-export function selectActiveTasks(tasks: Array<{ status: string }>): { active: any[]; anyInProgress: boolean } {
-	const active = tasks.filter(t => t.status === "pending" || t.status === "in_progress");
+/** Select active tasks (pending or in_progress) and whether any are in_progress. A task the OWNER
+ *  has to do is never the agent's work, so it never qualifies for a reminder (#1090). */
+export function selectActiveTasks(tasks: Array<{ status: string; assignee?: string }>): { active: any[]; anyInProgress: boolean } {
+	const active = tasks.filter(t => (t.status === "pending" || t.status === "in_progress") && t.assignee !== "user");
 	log.debug("selectActiveTasks", tasks.length, active.length);
 	return { active, anyInProgress: active.some(t => t.status === "in_progress") };
+}
+
+/**
+ * The stale nudge's input: tasks the AGENT started and left in progress past the threshold, plus
+ * nothing that can match one. A task assigned to the owner never nags, and it is not the agent's
+ * stuck work either (#1090).
+ */
+export function selectStaleTasks<T extends {
+	status: string;
+	assignee?: string;
+	statusHistory?: { in_progress_at?: string | null } | null;
+}>(tasks: readonly T[], now: number, threshold: number): T[] {
+	return tasks.filter((task) => {
+		const startedAt = task.statusHistory?.in_progress_at;
+		if (task.status !== "in_progress" || task.assignee === "user" || !startedAt) return false;
+		return now - new Date(startedAt).getTime() > threshold;
+	});
 }
 
 /** Minimal task shape the pending-age gate needs. */
 export interface ReminderTask {
 	id?: string;
 	status: string;
+	assignee?: string;
 	createdAt?: number;
 	statusHistory?: { pending_at?: string | null } | null;
 }
