@@ -62,12 +62,19 @@ A skill file is writable only when it is **marked** *and* its real path (after `
 The rule is enforced in code by a `tool_call` guard on `write`/`edit`/`multi_edit`, so a blocked write is
 refused before it happens and the agent is told what to do instead.
 
-The shell is a read-only view of skills. A `bash` command that both writes (`>`, `>>`, `tee`, `cp`, `mv`,
-`sed -i`, `install`, `truncate`, `rm`, `chmod`, `dd`) and names a skill (`skills/…` or `SKILL.md`) is refused
-outright, whichever direction the path points. Token-level classification cannot be made safe — a glued `>`,
-`~` expansion, a symlinked directory, a `cd` into a skills directory, or `cp source dest` each found a way
-around it — so the guard fails closed instead of guessing. Read a skill with `cat`, `rg` or the read tool;
-edit a marked one with `write`/`edit`.
+The shell is a read-only view of skills, with one exception. A `bash` command that references a skills area
+is allowed only when its verb is unambiguously read-only (`cat`, `less`, `head`, `tail`, `grep`, `rg`, `ls`,
+`stat`, `wc`, `diff`, `md5sum`, `sha256sum`) and it carries no write operator. A write is allowed only into a
+**marked skill of this project** — as the destination of `cp`/`mv`, or as the target of a redirection or
+`sed -i` — because that is the same file the `write`/`edit` guard already trusts. Everything else blocks,
+ambiguity included: a `~` target, a redirection glued to the path (`>/path`), a bare `SKILL.md` after a `cd`
+into a skills directory, a path through a symlink out of every area, a `cp`/`mv` whose source and destination
+cannot be told apart, and a destructive verb (`rm`, `chmod`, `truncate`, `dd`).
+
+Known limit, stated rather than guessed at: a path built by shell expansion — `t=…; … > "$t"`, `eval`,
+`find -exec` — carries no literal reference, so no text rule can see it. The change still reaches the turn-end
+notice, and every allowed shell write into a marked skill is audited (mtime and size are compared, so a
+same-length rewrite counts).
 
 The skills directory follows the **main checkout**, like `.pi/memory`: a session running in a linked worktree
 maintains the same `.pi/skills/` the project really has, so a worktree cannot reach an unguarded copy.

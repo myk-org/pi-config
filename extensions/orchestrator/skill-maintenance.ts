@@ -754,36 +754,172 @@ function pathFromInput(input: unknown): string | null {
   return null;
 }
 
-/** Shell tokens that write, whatever the path syntax around them. */
-const BASH_WRITE_TOKENS = /(?:^|[^>])>>?(?![=&])|\btee\b|\bcp\b|\bmv\b|\bsed\s+-i|\binstall\b|\btruncate\b|\brm\b|\bchmod\b|\bdd\b/;
+/** Verbs that can only read a file — the shell's whole read surface for skills. */
+const READ_ONLY_VERBS = new Set([
+  "cat", "less", "head", "tail", "grep", "rg", "ls", "stat", "wc", "diff", "md5sum", "sha256sum",
+]);
 
-/** Anything that names a skill file — a path under `skills/`, or a bare SKILL.md. */
-const BASH_SKILL_REFERENCE = /skills[\\/]|\bSKILL\.md\b/;
+/** Operators that write. Their presence makes the command a write, whatever the verb. */
+const BASH_WRITE_OPERATORS = /(?:[^>])>>?(?![=&])|\btee\b|\bcp\b|\bmv\b|\brm\b|\bsed\s+-i|\binstall\b|\bdd\b|\btruncate\b/;
 
-/**
- * Shell guard (Qodo #1079): fail closed.
- *
- * A shell cannot be parsed here — redirection prefixes, `~` expansion, symlinked
- * directories, `cd` into a skills dir and `cp source dest` all defeat token-level
- * classification, and each guess produced another way around the guard. So a shell
- * command that both writes and names a skill is refused outright: skills are edited
- * through `write`/`edit` (where the marker and ownership rule apply), or by the human.
- * Reads are untouched.
- */
-export function bashSkillVerdict(
+/** Destructive operators: no provenance vocabulary fits a deletion, so they block outright. */
+const BASH_DESTRUCTIVE = /\brm\b|\bchmod\b|\btruncate\b|\bdd\b/;
+
+/** Expand the literal home forms a shell would expand, so they cannot hide a path. */
+function expandHomeToken(token: string): string {
+  return token
+    .replace(/^~(?=$|\/)/, os.homedir())
+    .replace(/^\$\{?HOME\}?(?=$|\/)/, os.homedir());
+}
+
+/** Whitespace/operator split, quotes and leading redirections stripped. */
+function shellTokens(command: string): string[] {
+  return command
+    .split(/[\s;|&()<>`]+/)
+    .map((token) => expandHomeToken(token.replace(/^[0-9&]?>+/, "").replace(/["']/g, "")))
+    .filter(Boolean);
+}
+
+/** Lexically inside a skills directory we know, even when it does not resolve there. */
+function lexicallyUnderSkillsRoot(projectCwd: string, abs: string): boolean {
+  const realCwd = realpathNearestExisting(resolveMainCheckoutRoot(projectCwd)) ?? path.resolve(projectCwd);
+  const roots = [
+    path.join(realCwd, ".pi", "skills"),
+    path.join(realCwd, ".agents", "skills"),
+    path.join(os.homedir(), ".pi", "agent", "skills"),
+    path.join(os.homedir(), ".agents", "skills"),
+  ];
+  return roots.some((root) => {
+    const rel = path.relative(root, abs);
+    return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+  });
+}
+
+export interface ShellSkillReference {
+  token: string;
+  abs: string;
+  /** Resolved area, or null when the path's meaning cannot be established. */
+  area: SkillArea | null;
+  /** True when the token is only a bare SKILL.md (meaning depends on the cwd). */
+  bare: boolean;
+}
+
+/** Everything in a command that touches a skills area, literal only. */
+export function shellSkillReferences(
   projectCwd: string,
   command: string,
-): { block: true; reason: string } | null {
-  if (typeof command !== "string" || command === "") return null;
-  if (!BASH_WRITE_TOKENS.test(command)) return null;
-  if (!BASH_SKILL_REFERENCE.test(command)) return null;
-  log.warn("skill_write_bash_blocked", { command: command.slice(0, 200) });
+): { refs: ShellSkillReference[]; cdIntoSkills: boolean } {
+  const refs: ShellSkillReference[] = [];
+  const tokens = shellTokens(command);
+  let cdIntoSkills = false;
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    const abs = path.resolve(projectCwd, token);
+    const area = skillAreaOf(projectCwd, abs);
+    const bare = path.basename(token) === "SKILL.md" && !token.includes("/");
+    const isRef = area !== null || lexicallyUnderSkillsRoot(projectCwd, abs) || bare;
+    if (!isRef) continue;
+    if (token === "cd" && tokens[i + 1]) continue;
+    if (tokens[i - 1] === "cd") {
+      cdIntoSkills = true;
+      refs.push({ token, abs, area, bare: false });
+      continue;
+    }
+    refs.push({ token, abs, area, bare });
+  }
+  return { refs, cdIntoSkills };
+}
+
+/** Owned *and* marked — the only skill a shell command may write. */
+function writableByShell(projectCwd: string, abs: string): { skill: string; file: string } | null {
+  const skill = ownedSkillName(projectCwd, abs);
+  if (!skill || !isMarkedSkillNamed(projectCwd, skill)) return null;
+  const root = ownedSkillsRoot(projectCwd);
+  if (!root) return null;
+  const real = realpathNearestExisting(abs) ?? abs;
+  return { skill, file: path.relative(path.join(root, skill), real) };
+}
+
+export type ShellVerdict =
+  | { block: true; reason: string }
+  | { block: false; writes: Array<{ abs: string; skill: string; file: string }> };
+
+/**
+ * Shell guard (Qodo #1079, fail-closed text rule).
+ *
+ * A command that references a skills area may only READ it, with an allowlisted verb
+ * and no write operator. A write is allowed only into an owned + marked skill (as the
+ * destination for `cp`/`mv`), where the file-tool rule already applies. Everything
+ * else — `~` expansion, a glued `>`, a `cd`-relative `SKILL.md`, a path through a
+ * symlink, a shape whose source/destination cannot be told apart — BLOCKS. Ambiguity
+ * never passes. Returns null when the command references no skills area at all.
+ *
+ * Known limit (documented, not widened around): a path built by shell expansion
+ * (`t=…; … > "$t"`, `eval`, `find -exec`) carries no literal reference, so no text rule
+ * can see it. The file change still reaches the turn-end notice.
+ */
+export function bashSkillVerdict(projectCwd: string, command: string): ShellVerdict | null {
+  if (typeof command !== "string" || command.trim() === "") return null;
+  const { refs } = shellSkillReferences(projectCwd, command);
+  if (refs.length === 0) return null;
+
+  const block = (reason: string): ShellVerdict => {
+    log.warn("skill_shell_blocked", { reason, command: command.slice(0, 200) });
+    return { block: true, reason: `⛔ ${reason}` };
+  };
+  const skillsHint =
+    `Skills are read-only from the shell. Read one with cat/rg/ls; ` +
+    `edit a marked skill in ${path.join(projectCwd, ".pi", "skills")}/ with the write/edit tools ` +
+    `(run /adopt-skill <name> first if it is not marked yet).`;
+
+  if (BASH_DESTRUCTIVE.test(command)) {
+    return block(`a destructive shell command names a skill path. ${skillsHint}`);
+  }
+
+  const verb = shellTokens(command)[0] ?? "";
+  if (!BASH_WRITE_OPERATORS.test(command)) {
+    if (READ_ONLY_VERBS.has(verb)) {
+      log.debug("skill_shell_read_allowed", { verb });
+      return null;
+    }
+    return block(
+      `this command touches a skill path but "${verb || "?"}" is not a known read-only command. ${skillsHint}`,
+    );
+  }
+
+  // A write. Writable targets are owned + marked skills, nothing else.
+  const writable = refs.map((ref) => ({ ref, target: writableByShell(projectCwd, ref.abs) }));
+  const isCopy = /\bcp\b|\bmv\b/.test(command);
+  if (isCopy) {
+    const operands = shellTokens(command).filter((token, index) => index > 0 && !token.startsWith("-"));
+    if (operands.length !== 2) {
+      return block(`cannot tell the source from the destination in this ${verb}. ${skillsHint}`);
+    }
+    const [source, destination] = operands;
+    const sourceAbs = path.resolve(projectCwd, source);
+    const destinationAbs = path.resolve(projectCwd, destination);
+    const sourceIsSkill = refs.some((ref) => ref.abs === sourceAbs);
+    const destinationIsSkill = refs.some((ref) => ref.abs === destinationAbs);
+    if (sourceIsSkill && !destinationIsSkill) {
+      log.debug("skill_shell_copy_from_skill", { source });
+      return null; // reading a skill into a normal file
+    }
+    if (destinationIsSkill && !sourceIsSkill) {
+      const target = writableByShell(projectCwd, destinationAbs);
+      if (target) return { block: false, writes: [{ abs: destinationAbs, ...target }] };
+      return block(`the destination of this ${verb} is not a marked skill of this project. ${skillsHint}`);
+    }
+    return block(`this ${verb} involves skills in a shape the guard cannot classify. ${skillsHint}`);
+  }
+
+  const unmarked = writable.filter((entry) => entry.target === null);
+  if (unmarked.length > 0 || writable.length === 0) {
+    return block(`this shell write names a skill this project does not maintain. ${skillsHint}`);
+  }
+  log.debug("skill_shell_write_allowed", { targets: writable.length });
   return {
-    block: true,
-    reason:
-      `⛔ Shell writes to skills are refused: this command both writes and names a skill file. ` +
-      `Edit a marked skill in ${path.join(projectCwd, ".pi", "skills")}/ with the write/edit tools ` +
-      `(or run /adopt-skill <name> first); a shipped or user-global skill belongs to someone else — copy it into the project yourself.`,
+    block: false,
+    writes: writable.map((entry) => ({ abs: entry.ref.abs, ...entry.target! })),
   };
 }
 
@@ -800,6 +936,8 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
   let recordedThisTurn = new Set<string>();
   /** Writes allowed at tool_call and not yet confirmed by a successful tool_result. */
   const pendingWrites = new Map<string, { skill: string; file: string; path: string; written: boolean }>();
+  /** Skill files an allowed shell command may have written, with their pre-call state. */
+  const pendingShellWrites = new Map<string, Array<{ abs: string; skill: string; file: string; mtimeMs: number | null; size: number | null }>>();
   /** Skills named by `/skill:` since the last turn ended — they open the next turn. */
   let invokedBeforeTurn = new Set<string>();
   /** Set when a provenance append failed this turn, so the notice can say so. */
@@ -886,7 +1024,21 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
 
     if (toolName === "bash") {
       const command = typeof (input as any)?.command === "string" ? (input as any).command : "";
-      return bashSkillVerdict(ctx.cwd, command) ?? undefined;
+      const shell = bashSkillVerdict(ctx.cwd, command);
+      if (shell?.block) return { block: true, reason: shell.reason };
+      if (shell && shell.writes.length > 0) {
+        const before = shell.writes.map((write) => {
+          try {
+            const stat = fs.statSync(write.abs);
+            return { abs: write.abs, skill: write.skill, file: write.file, mtimeMs: stat.mtimeMs, size: stat.size };
+          } catch {
+            return { abs: write.abs, skill: write.skill, file: write.file, mtimeMs: null, size: null };
+          }
+        });
+        pendingShellWrites.set(String((event as any)?.toolCallId ?? ""), before);
+        log.debug("skill_shell_write_tracked", { files: before.length });
+      }
+      return undefined;
     }
     if (!WRITE_TOOLS.has(toolName)) return;
     const target = pathFromInput(input);
@@ -922,6 +1074,34 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
     }
 
     const callId = String((event as any)?.toolCallId ?? "");
+    const shellWrites = pendingShellWrites.get(callId);
+    if (shellWrites) {
+      pendingShellWrites.delete(callId);
+      // mtime as well as size: a `sed -i` rewrite of the same length is still a change.
+      const sessionId = (ctx as any)?.sessionManager?.getSessionId?.() ?? "";
+      for (const before of shellWrites) {
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(before.abs);
+        } catch {
+          continue; // the command did not write it
+        }
+        if (before.mtimeMs === stat.mtimeMs && before.size === stat.size) continue;
+        const ok = appendProvenance(ctx.cwd, [
+          {
+            skill: before.skill,
+            action: before.mtimeMs === null ? "written" : "patched",
+            file: before.file,
+            sessionId,
+            turnId: turnIdOf(sessionId),
+            at: new Date().toISOString(),
+          },
+        ]);
+        if (!ok) provenanceFailed = true;
+        log.info("skill_shell_write_recorded", { skill: before.skill, file: before.file });
+      }
+    }
+
     const pending = pendingWrites.get(callId);
     if (pending) {
       pendingWrites.delete(callId);
@@ -977,6 +1157,7 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
       invokedBeforeTurn = new Set();
       nudgedSkills = new Set();
       pendingWrites.clear();
+      pendingShellWrites.clear();
     }
   });
 

@@ -339,9 +339,10 @@ progress. It does not commit, push, create a PR, or post results.
   symlinked/dangling paths and unmarked project skills are blocked with a reason (`/adopt-skill <name>` marks one).
   Agents are steered mid-turn when a marked skill they used fails, every allowed `write`/`edit` is recorded in
   `.pi/data/skill-review.jsonl` (append-only), and one line reports the turn's changes — see
-  `docs/skill-self-improvement.md`. A shell command that both writes and names a skill is refused (the shell is
-  a read-only view of skills: token-level parsing cannot be made safe). No model call, no setting: it is not an
-  async agent at all.
+  `docs/skill-self-improvement.md`. From the shell a skill is read-only (allowlisted read verbs, no write
+  operator); a shell write is allowed only into a marked project skill and is audited, and every other
+  reference — `~`, glued `>`, `cd`-relative `SKILL.md`, a symlink out of the area, an ambiguous `cp`/`mv`, a
+  destructive verb — blocks. No model call, no setting: it is not an async agent at all.
 - Project settings: see `docs/project-settings.md`
 - Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.
