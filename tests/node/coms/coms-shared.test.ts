@@ -48,6 +48,27 @@ describe("registry-wide peer view", () => {
     assert.deepEqual(selectKillTargets(rows, { name: "ghost" }, alive).missing, ["ghost"]);
   });
 
+  // Render-only sanitization (#1084). A peer whose name carries a control character must stay
+  // ADDRESSABLE by that raw value — identity is the wire value — while the rendered row strips it.
+  // If this ever fails, the fix is to sanitize in the projection, not to widen it into identity.
+  it("renders a hostile name stripped yet still resolves it by the raw value", () => {
+    const raw = "peer\u0007one\x1b[2J";
+    const rows = [row({ name: raw })];
+    const table = formatPeerTable(rows);
+    assert.equal(table.includes("\u0007"), false, "a control character must not reach the table");
+    assert.equal(table.includes("\x1b"), false, "an escape sequence must not reach the table");
+    assert.match(table, /● peerone · proj-a/);
+
+    // Identity is untouched: the raw value is what filters and kill targeting compare against.
+    assert.deepEqual(filterRegistry(rows, { name: raw }).map((r) => r.name), [raw]);
+    assert.deepEqual(selectKillTargets(rows, { name: raw }, () => true).targets.map((r) => r.name), [raw]);
+    assert.deepEqual(
+      selectKillTargets(rows, { name: "peerone" }, () => true).missing,
+      ["peerone"],
+      "the stripped form is a render artifact, not an address",
+    );
+  });
+
   it("shows the live state that makes the list worth watching", () => {
     const table = formatPeerTable([row({ busy: true, queueDepth: 2, contextUsedPct: 41 })]);
     assert.match(table, /● peer1 · proj-a \(busy queue:2 ctx:41% pid:100\)/);
