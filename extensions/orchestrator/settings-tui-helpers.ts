@@ -5,7 +5,7 @@
 
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join as joinPath, resolve, sep } from "node:path";
+import { basename, dirname, join as joinPath, sep } from "node:path";
 import stripJsonComments from "strip-json-comments";
 import {
   type SettingsKeyDef,
@@ -14,6 +14,7 @@ import {
   getSettingsPath,
   getGlobalSettingsPath,
 } from "./project-settings.js";
+import { LEGACY_SETTINGS_FILENAME, SETTINGS_FILENAMES, legacyMigrationBlocked, nearestRealPath } from "./settings-source.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("settings_tui");
@@ -217,24 +218,6 @@ export class SettingsFileCorruptError extends Error {
     super(`refusing to overwrite unparseable settings file: ${filePath}`);
     this.name = "SettingsFileCorruptError";
     log.error("settings_write_refused_corrupt", { filePath });
-  }
-}
-
-/** `realpath` of the nearest path that exists, so a symlinked parent cannot hide the target. */
-function nearestRealPath(target: string): string {
-  const absolute = resolve(target);
-  const tail: string[] = [];
-  let current = absolute;
-  for (;;) {
-    try {
-      const real = realpathSync(current);
-      return tail.length > 0 ? joinPath(real, ...tail.reverse()) : real;
-    } catch {
-      const parent = dirname(current);
-      if (parent === current) return absolute;
-      tail.push(basename(current));
-      current = parent;
-    }
   }
 }
 
@@ -527,8 +510,9 @@ export function writeSettingsFile(
   data: Record<string, unknown>,
   options: { dedupeBackup?: boolean } = {},
 ): void {
-  // Write directly to target file. Per issue spec: "comments are lost on write — acceptable
-  // since the example.jsonc is the reference."
+  // Write directly to target file: comments are lost on write, by design — the settings file is
+  // plain JSON and pi-config-settings.example.json (documented in docs/project-settings.md) is
+  // the reference.
   const dir = dirname(filePath);
 
   // Refuse BEFORE touching the filesystem: creating the parent of a rejected path would
@@ -545,6 +529,13 @@ export function writeSettingsFile(
   }
 
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+
+  // A corrupt legacy `.jsonc` is repaired by hand, not bypassed: creating `.json` now would make
+  // the legacy file "ignored", so the human's fix could never be migrated. Same soft refusal as
+  // an unparseable target — the callers already report it and keep running.
+  if (SETTINGS_FILENAMES.includes(basename(filePath)) && legacyMigrationBlocked(dir)) {
+    throw new SettingsFileCorruptError(joinPath(dir, LEGACY_SETTINGS_FILENAME));
+  }
 
   const existedBefore = existsSync(filePath);
   if (!existedBefore && options.dedupeBackup === true && editSessionDepth > 0) {

@@ -250,6 +250,16 @@ describe("transformComsHeaders", () => {
     assert.equal(result, "📨 **manager** `@ /home/user/project`");
   });
 
+  it("styles a user-authored header (#1077)", () => {
+    const result = transformComsHeaders("[from USER (a human), via manager → worker @ /repo] do it");
+    assert.equal(result, "👤 **USER** via **manager** → **worker** `@ /repo` do it");
+  });
+
+  it("styles a user-authored header without a self name", () => {
+    const result = transformComsHeaders("[from USER (a human), via manager @ /repo]");
+    assert.equal(result, "👤 **USER** via **manager** `@ /repo`");
+  });
+
   it("escapes markdown in self name", () => {
     const result = transformComsHeaders("[from peer → self_name @ /cwd]");
     assert.ok(result.includes("self\\_name"));

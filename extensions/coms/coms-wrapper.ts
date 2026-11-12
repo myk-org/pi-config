@@ -10,7 +10,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import * as path from "node:path";
 import * as os from "node:os";
-import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, pruneStaleRegistry, type DeferredUpstream } from "./coms-shared.js";
+import { parseFlags, tokenizeArgs, createDeferredProxy, persistState, pruneStaleRegistry, parseComsTell, type DeferredUpstream } from "./coms-shared.js";
 import upstreamComsInit from "./coms-p2p.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { setComsActive } from "../shared/coms-active.js";
@@ -19,7 +19,7 @@ import { Type } from "typebox";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { activationVerified, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
+import { activationVerified, completeTellArgs, filterRegistry, formatPeerTable, isFreshHeartbeat, pickSupervisionRecord, buildPeerSpawn, planActiveClaim, planPeerKills, resolveKillScope, resolveListScope, resolvePeerScope, supervisedPeerKeys, type RegistryRow } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
 
 const log = createLogger("coms");
@@ -174,11 +174,41 @@ export function registerComs(pi: ExtensionAPI) {
         }
     };
 
+    /** #1077: the user's own message to a peer. The command layer is the only place allowed to
+     *  claim origin "user", so this calls the bridge coms-p2p publishes — never coms_send, whose
+     *  input an agent controls. Failures come back as text, never as a silent drop. */
+    const tellPeer = async (target: string, prompt: string, project?: string): Promise<string> => {
+        const send = (globalThis as any).__comsUserSend as
+            | ((p: { target: string; prompt: string; project?: string }) => Promise<{ ok: boolean; message: string }>)
+            | undefined;
+        if (typeof send !== "function") {
+            log.warn("coms_tell_unavailable", { target });
+            return "📡 coms is not active — run /coms start first.";
+        }
+        const result = await send({ target, prompt, project });
+        log.info("coms_tell", { target, project: project ?? null, ok: result.ok });
+        return `${result.ok ? "📡" : "⚠️"} ${result.message}`;
+    };
+
     const comsCmdHandler = async (args: string, ctx: any, entry: "tool" | "slash" | "cli" = "slash") => {
         const trimmed = (args || "").trim();
         const parts = tokenizeArgs(trimmed);
         const subcommand = parts[0] || "status";
 
+        if (subcommand === "tell") {
+            const tell = parseComsTell(trimmed.slice("tell".length));
+            if (!tell) {
+                try { ctx.ui.notify("Usage: /coms tell [--project <p>] <peer> <message>", "warning"); } catch {}
+                return;
+            }
+            if (!state.active) {
+                try { ctx.ui.notify("📡 coms not active — run /coms start first.", "warning"); } catch {}
+                return;
+            }
+            const result = await tellPeer(tell.peer, tell.message, tell.project);
+            try { ctx.ui.notify(result, result.startsWith("⚠️") ? "error" : "info"); } catch {}
+            return;
+        }
         if (subcommand === "start") {
             const result = await activateComs(parts.slice(1), ctx, entry);
             try { ctx.ui.notify(result.message, result.ok ? "info" : "error"); } catch {}
@@ -219,6 +249,7 @@ export function registerComs(pi: ExtensionAPI) {
                         if (scope.refused) return scope.refused;
                         return killPeers(scope).text;
                     },
+                    tellPeer: (request) => tellPeer(request.target, request.prompt, request.project),
                 });
                 return;
             }
@@ -242,11 +273,11 @@ export function registerComs(pi: ExtensionAPI) {
                 ctx.ui.notify(state.active ? "📡 coms: active (P2P)" : "📡 coms: inactive — run /coms start", "info");
             } catch {}
         } else {
-            try { ctx.ui.notify(`📡 coms: unknown subcommand "${subcommand}". Use: start | stop | status`, "warning"); } catch {}
+            try { ctx.ui.notify(`📡 coms: unknown subcommand "${subcommand}". Use: start | stop | status | tell | list | kill`, "warning"); } catch {}
         }
     };
     pi.registerCommand("coms", {
-        description: "P2P agent communication: /coms start | stop | status | list [--all] | kill <name|all>",
+        description: "P2P agent communication: /coms start | stop | status | tell <peer> <message> | list [--all] | kill <name|all>",
         getArgumentCompletions: (prefix: string) => {
             // Parse: split on whitespace, trailing space means "next token position"
             const tokens = prefix.trim().split(/\s+/).filter(Boolean);
@@ -262,6 +293,7 @@ export function registerComs(pi: ExtensionAPI) {
                     { v: "start", l: "start", d: "Start P2P agent communication" },
                     { v: "stop", l: "stop", d: "Stop coms" },
                     { v: "status", l: "status", d: "Show coms status" },
+                    { v: "tell ", l: "tell", d: "Send a peer a message from YOU (the peer sees it is from the user)" },
                     { v: "list", l: "list", d: "List spawned peers (name, pids, state)" },
                     { v: "kill ", l: "kill", d: "Stop a peer: kill <name> | kill all" },
                 ]);
@@ -269,6 +301,12 @@ export function registerComs(pi: ExtensionAPI) {
             if (completed[0] === "kill") {
                 const names = attachCreatedBy(readRegistryRows()).filter(rowAlive).map((row) => row.name);
                 return mk([...names.map((n) => ({ v: n, l: n, d: "Stop this peer" })), { v: "all", l: "all", d: "Stop every running peer" }]);
+            }
+            if (completed[0] === "tell") {
+                // Same live-row enumeration as kill (a gone peer must not complete), extended with
+                // the --project scope for a name that exists in several projects.
+                const options = completeTellArgs(attachCreatedBy(readRegistryRows()).filter(rowAlive), completed);
+                return options ? mk(options) : null;
             }
             if (completed[0] === "start" && (lastPart.startsWith("-") || lastPart === "")) {
                 const used = new Set(completed.filter(p => p.startsWith("--")));

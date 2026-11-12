@@ -1430,6 +1430,107 @@ export function dangerousCommandHash(command: string): string {
   return createHash("sha256").update(command).digest("hex");
 }
 
+// ── Session-scoped dangerous-command approvals (issue #1073) ──────────
+// A middle scope between "run once" and a PERSISTED "always allow": the
+// grant lasts the session and then evaporates. Memory only — never written
+// to a settings file (that is what makes it safe to hand out for a need
+// that lasts minutes). The store lives on globalThis keyed by Symbol.for
+// so it survives `ctx.reload()`: a reload rebinds the extension instance
+// while the process and the user's session stay alive.
+const SESSION_GRANTS = Symbol.for("pi-config.dangerousSessionApprovals");
+/** Buckets kept at once. A session that never emits `session_shutdown`
+ *  (a sidecar `AgentSession.dispose()` does not) is evicted once this many
+ *  newer sessions have taken grants — the store can never grow without
+ *  bound in a long-lived process. */
+const MAX_SESSION_BUCKETS = 64;
+
+function sessionGrantStore(): Map<string, Set<string>> {
+  const g = globalThis as unknown as Record<symbol, unknown>;
+  if (!(g[SESSION_GRANTS] instanceof Map)) g[SESSION_GRANTS] = new Map<string, Set<string>>();
+  return g[SESSION_GRANTS] as Map<string, Set<string>>;
+}
+
+/** Approve one statement for the rest of this session (memory only).
+ *  A null session id stores NOTHING: an id-less bucket would be shared by
+ *  every context in the process (#1073 review). */
+export function grantDangerousSessionApproval(sessionId: string | null, statement: string): void {
+  if (!sessionId) return;
+  const store = sessionGrantStore();
+  const set = store.get(sessionId) ?? new Set<string>();
+  set.add(normalizeDangerousStatement(statement));
+  // Re-insert so Map order stays least-recently-used-first.
+  store.delete(sessionId);
+  store.set(sessionId, set);
+  while (store.size > MAX_SESSION_BUCKETS) {
+    const oldest = store.keys().next().value;
+    if (oldest === undefined) break;
+    store.delete(oldest);
+    // Never silently: a user whose grant vanished gets re-prompted, and the
+    // operator must be able to tell eviction from a clear (review of #1073).
+    enfLog.warn("dangerous_session_grants_evicted", { bucketHash: createHash("sha256").update(oldest).digest("hex").slice(0, 12), buckets: store.size });
+  }
+}
+
+/** True when this session already approved the statement. Never true for a
+ *  stdin-fed shell — the same rule that keeps it out of persisted approvals
+ *  (it carries none of the script it will run). */
+export function hasDangerousSessionApproval(sessionId: string | null, statement: string): boolean {
+  if (!sessionId || isStdinFedShellStatement(statement)) return false;
+  const store = sessionGrantStore();
+  const set = store.get(sessionId);
+  if (set === undefined) return false;
+  // Touch: an active session must not be the next bucket evicted.
+  store.delete(sessionId);
+  store.set(sessionId, set);
+  return set.has(normalizeDangerousStatement(statement));
+}
+
+/** Drop this session's grants (session end / new / fork / resume). Called
+ *  outside a reload — a reload keeps the same running session. */
+export function clearDangerousSessionApprovals(sessionId: string | null): void {
+  if (!sessionId) return;
+  sessionGrantStore().delete(sessionId);
+}
+
+/** Test hook: wipe every session's grants. */
+export function clearAllDangerousSessionApprovals(): void {
+  sessionGrantStore().clear();
+}
+
+/** Approval scopes the gate OFFERS for a statement (issue #1073). Pure, so
+ *  the menu, the "what this grants" text and the grant handler all derive
+ *  from one tested source.
+ *  - a statement that cannot be approved beyond the current run (stdin-fed
+ *    shell) offers run-once and deny only;
+ *  - the project scope is offered only when the project settings file is
+ *    trustable to store it. */
+export type DangerousApprovalScope = "once" | "session" | "project" | "everywhere" | "deny";
+
+export function dangerousApprovalScopes(opts: {
+  approvableBeyondRun: boolean;
+  projectTrustable: boolean;
+  sessionAvailable: boolean;
+}): DangerousApprovalScope[] {
+  if (!opts.approvableBeyondRun) return ["once", "deny"];
+  return [
+    "once",
+    ...(opts.sessionAvailable ? (["session"] as const) : []),
+    ...(opts.projectTrustable ? (["project"] as const) : []),
+    "everywhere",
+    "deny",
+  ];
+}
+
+/** What each scope grants, and for how long — shown on the prompt so the
+ *  user picks a scope knowing its lifetime. */
+export const DANGEROUS_SCOPE_GRANTS: Record<DangerousApprovalScope, string> = {
+  once: "run once — this command, now, nothing else",
+  session: "this session — every later run of the SAME statement until the session ends (memory only, never written to settings)",
+  project: "this project — stored in the project settings file, applies to future sessions in this folder",
+  everywhere: "everywhere — stored in your global settings, applies to every future session on this machine",
+  deny: "no — blocked, nothing is approved",
+};
+
 export interface DangerousAllowlistMatch {
   /** The matched settings entry (may contain wildcards). */
   entry: string;

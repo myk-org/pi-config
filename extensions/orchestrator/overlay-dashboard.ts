@@ -75,6 +75,9 @@ export interface OverlayListSpec<
   onXSelected?: (items: TItem[]) => void;
   /** Optional bulk-action key (a) — destructive, so callers should confirm first. */
   onKillAll?: () => void;
+  /** Optional compose key (m): the caller needs the whole terminal for a text dialog, so the
+   *  list closes and can be re-opened once the composed text is handled. */
+  onCompose?: (item: TItem) => void;
 }
 
 export interface OverlayDetailSpec {
@@ -226,6 +229,15 @@ export class OverlayListDashboard<
       this.spec.onKillAll();
       this.invalidate();
       this.tui.requestRender(true);
+      return;
+    }
+    if (data === "m" && this.spec.onCompose) {
+      const item = items[this.selection.index];
+      if (item) {
+        log.debug("list_compose_key", { id: item.id });
+        this.spec.onCompose(item);
+        this.close(null);
+      }
       return;
     }
     if (data === "x") {

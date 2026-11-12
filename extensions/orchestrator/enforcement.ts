@@ -16,7 +16,7 @@ import { readFileSync, writeFileSync, realpathSync } from "node:fs";
 import path, { basename, join, resolve, dirname } from "node:path";
 import { supportsAsyncLlm } from "./async-capability.js";
 import { getGlobalSettingsPath, getSetting, getSettingsPath } from "./project-settings.js";
-import { SETTINGS_FILENAMES } from "./settings-source.js";
+import { LEGACY_SETTINGS_FILENAME, SETTINGS_FILENAMES } from "./settings-source.js";
 import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 import {
   conflictCandidateDirs,
@@ -25,11 +25,17 @@ import {
   messageFileTrailerState,
   maskQuotedRegions,
   isStdinFedShellStatement,
+  hasDangerousSessionApproval,
+  grantDangerousSessionApproval,
+  clearDangerousSessionApprovals,
+  dangerousApprovalScopes,
+  DANGEROUS_SCOPE_GRANTS,
 } from "./enforcement-helpers.js";
 import {
   DANGEROUS,
   isNoexecSyntaxCheck,
   dangerousPatternLabel,
+  dangerousPatternExplanations,
   getCurrentBranch,
   isInsideGitWorkTree,
   getMainBranch,
@@ -452,6 +458,18 @@ async function notifyApprovalResults(
   }
 }
 
+/** Session id for session-scoped approvals, or null when this context has
+ *  none. Null means the gate offers NO session scope: an id-less bucket
+ *  would be shared by every context in the process (review of #1073). */
+function sessionIdOf(ctx: any): string | null {
+  try {
+    const id = ctx?.sessionManager?.getSessionId?.();
+    return typeof id === "string" && id.trim() !== "" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Dangerous command confirmation with UI prompt */
 async function checkDangerousCommands(command: string, cwd: string, ctx: any): Promise<EnforcementResult> {
   // Split on statement separators AND pipes (incl. single `&` — background
@@ -546,9 +564,24 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     // perf): the per-statement findDangerousAllowlistEntry ran a synchronous
     // git exec per statement — batch the load and match in memory.
     const allowlists = loadDangerousAllowlists(cwd);
+    const sessionId = sessionIdOf(ctx);
     for (const stmt of dangerousStmts) {
       if (isStdinFedShellStatement(stmt)) {
         unapproved.push(stmt);
+        continue;
+      }
+      // Session scope (issue #1073) — checked BEFORE the prompt, like a
+      // stored entry: the user already answered for this session.
+      if (hasDangerousSessionApproval(sessionId, stmt)) {
+        // info, not warn: honoring a grant the user already gave is a normal
+        // state, and this fires on every later run (review of #1073).
+        log.info("dangerous_command_allowed_session", {
+          dangerousPattern: DANGEROUS.filter((p) => p.test(stmt))
+            .map((p) => dangerousPatternLabel(p))
+            .join(", "),
+          hashPrefix: dangerousCommandHash(stmt).slice(0, 12),
+          persisted: false,
+        });
         continue;
       }
       const allowMatch = matchDangerousAllowlist(allowlists, stmt);
@@ -585,19 +618,35 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
     const decide = async (remaining: string[]): Promise<EnforcementResult | undefined> => {
       const list = remaining
         .map((stmt) => {
-          const label = dangerousPatternLabel(DANGEROUS.find((p) => p.test(stmt)) ?? /./);
+          // EVERY rule the statement trips, each with its own risk and reach —
+          // one statement can be both a recursive delete and an escalation.
+          const rules = dangerousPatternExplanations(DANGEROUS.filter((p) => p.test(stmt)))
+            .map(
+              (e) =>
+                `    ↳ ${e.why}\n      · can be lost: ${e.consequence}\n      · approval covers: ${e.grants}`,
+            )
+            .join("\n");
           const stdinFed = isStdinFedShellStatement(stmt)
-            ? "\n    ↳ reads its script from stdin — run-once only, never persistently approvable"
+            ? "\n    ↳ reads its script from stdin — run-once only, never approvable beyond this run"
             : "";
-          return `  ${stmt}\n    ↳ ${label}${stdinFed}`;
+          return `  ${stmt}\n${rules}${stdinFed}`;
         })
         .join("\n");
       const scopeNote = projectTrustable
         ? ""
         : "\n\nℹ️ The project settings file is not trustable for approvals (git-tracked or\nsymlinked) — persistent approvals can only be stored globally.";
-      // Only statements that carry their own script are persistently
-      // approvable (Qodo PR #950 R6) — stdin-fed shells are run-once only.
+      // Only statements that carry their own script are approvable beyond
+      // this run (Qodo PR #950 R6) — stdin-fed shells are run-once only.
       const persistable = remaining.filter((stmt) => !isStdinFedShellStatement(stmt));
+      // Scope menu and its "what this grants" text come from ONE tested
+      // resolver (issue #1073) so the prompt cannot promise a scope the gate
+      // does not offer.
+      const offeredScopes = dangerousApprovalScopes({
+        approvableBeyondRun: persistable.length > 0,
+        projectTrustable,
+        sessionAvailable: sessionId !== null,
+      });
+      const grants = offeredScopes.map((s) => `  • ${DANGEROUS_SCOPE_GRANTS[s]}`).join("\n");
       // Option labels are truncated for the menu; keep them unique.
       // Computed ONCE — the choice handler looks up by the same objects.
       const seen = new Map<string, number>();
@@ -611,6 +660,7 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
       const options = [
         "Yes — run once",
         ...labeled.flatMap(({ label }) => [
+          ...(offeredScopes.includes("session") ? [`Allow for this session: ${label}`] : []),
           ...(projectTrustable ? [`Always allow (this project): ${label}`] : []),
           `Always allow (everywhere): ${label}`,
         ]),
@@ -622,7 +672,7 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
           : []),
         "No",
       ];
-      const promptTitle = `⚠️ Dangerous statement${remaining.length > 1 ? "s" : ""} (of the full command):\n\n${list}${scopeNote}\n\nAllow?`;
+      const promptTitle = `⚠️ Dangerous statement${remaining.length > 1 ? "s" : ""} (of the full command):\n\n${list}${scopeNote}\n\nWhat each answer grants:\n${grants}\n\nAllow?`;
       const ok = bridgedUi
         ? await bridgedUi.select(ctx, promptTitle, options)
         : await ctx.ui.select(promptTitle, options);
@@ -649,6 +699,23 @@ async function checkDangerousCommands(command: string, cwd: string, ctx: any): P
           await notifyApprovalResults(saved.length, failed, scopes, ctx.ui);
         }
         return undefined;
+      }
+      if (ok.startsWith("Allow for this session: ")) {
+        const chosen = labeled.find(({ label }) => ok === `Allow for this session: ${label}`)?.stmt;
+        if (chosen !== undefined) {
+          // Memory only — no settings write exists on this path at all.
+          grantDangerousSessionApproval(sessionId, chosen);
+          log.info("dangerous_command_session_approval_granted", {
+            dangerousPattern: DANGEROUS.filter((p) => p.test(chosen))
+              .map((p) => dangerousPatternLabel(p))
+              .join(", "),
+            hashPrefix: dangerousCommandHash(chosen).slice(0, 12),
+            persisted: false,
+          });
+          const still = remaining.filter((s) => s !== chosen);
+          if (still.length === 0) return undefined;
+          return decide(still);
+        }
       }
       if (ok.startsWith("Always allow (this project): ") || ok.startsWith("Always allow (everywhere): ")) {
         const scope = ok.startsWith("Always allow (everywhere): ") ? "global" : "project";
@@ -697,6 +764,17 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     } else {
       delete process.env.PI_COMMENT_SIGNATURE;
     }
+  });
+
+  // Session-scoped dangerous-command approvals die with the session (issue
+  // #1073). "reload" is the one reason that must NOT clear them: it rebinds
+  // the extension while the same session keeps running, and the store lives
+  // on globalThis precisely so the grants survive that.
+  pi.on("session_shutdown", (event: any, ctx: any) => {
+    if (event?.reason === "reload") return;
+    const sessionId = sessionIdOf(ctx);
+    clearDangerousSessionApprovals(sessionId);
+    log.debug("dangerous_session_approvals_cleared", { reason: event?.reason, hasSessionId: sessionId !== null });
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -775,13 +853,13 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           }
         };
         const resolved = resolve(ctx.cwd, filePath);
-        // Both filename variants (.jsonc first, .json) in both scopes, PLUS
-        // the resolved global path itself — its basename may differ from the
-        // standard filenames (e.g. the test-runner sandbox), and the global
-        // file carries the machine-wide allowlist either way.
+        // The single settings filename in both scopes, PLUS the resolved global path itself —
+        // its basename may differ from the standard filename (e.g. the test-runner sandbox),
+        // and the global file carries the machine-wide allowlist either way. The legacy
+        // `.jsonc` is guarded too: until it is migrated away it can still feed the `.json`.
         const settingsTargets = new Set<string>();
         for (const base of [dirname(getSettingsPath(ctx.cwd)), dirname(getGlobalSettingsPath())]) {
-          for (const name of SETTINGS_FILENAMES) {
+          for (const name of [...SETTINGS_FILENAMES, LEGACY_SETTINGS_FILENAME]) {
             settingsTargets.add(join(base, name));
             settingsTargets.add(toReal(join(base, name)));
           }

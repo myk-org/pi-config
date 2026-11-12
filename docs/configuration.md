@@ -4,13 +4,13 @@ Every key below is declared in `settings-keys.json` at the repository root, whic
 
 ## Settings Files
 
-Both settings files accept `.jsonc` (JSON with comments) or plain `.json`. If a directory contains both names, the `.jsonc` file is used and the `.json` file is ignored.
+Both settings files use the same name, `pi-config-settings.json` — plain JSON. It is the only settings filename read, project and global; a legacy `pi-config-settings.jsonc` is migrated into it once and then ignored (see [Project Settings Internals](project-settings.html)).
 
 ### Project settings file
 
 | Parameter | Type | Default | Description | Effect |
 |---|---|---|---|---|
-| Path | string | none | `.pi/pi-config-settings.jsonc` (or `.pi/pi-config-settings.json`) in the repository root. | Highest-precedence settings source for the current project. |
+| Path | string | none | `.pi/pi-config-settings.json` in the repository root. | Highest-precedence settings source for the current project. |
 
 ```json
 {
@@ -24,7 +24,7 @@ Both settings files accept `.jsonc` (JSON with comments) or plain `.json`. If a 
 
 | Parameter | Type | Default | Description | Effect |
 |---|---|---|---|---|
-| Path | string | none | `~/.pi/pi-config-settings.jsonc` (or `~/.pi/pi-config-settings.json`) in the current user's home directory. | Fallback settings source for all projects when a key is not set in the project file. |
+| Path | string | none | `~/.pi/pi-config-settings.json` in the current user's home directory. | Fallback settings source for all projects when a key is not set in the project file. |
 
 ```json
 {

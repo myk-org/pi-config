@@ -56,7 +56,7 @@ pi
 
 ### 2. Add project settings
 
-Create `.pi/pi-config-settings.jsonc` in your repository root (`.json` also works; if both exist the `.jsonc` file wins):
+Create `.pi/pi-config-settings.json` in your repository root — it is the only settings filename read:
 
 ```json
 {
@@ -122,8 +122,8 @@ The installer can also add `.pi/` and `.worktrees/` to your global git excludes 
 
 Skip the settings file when you prefer env vars. Resolution order:
 
-1. `.pi/pi-config-settings.jsonc` (project; `.json` is the fallback name)
-2. `~/.pi/pi-config-settings.jsonc` (global; `.json` is the fallback name)
+1. `.pi/pi-config-settings.json` (project)
+2. `~/.pi/pi-config-settings.json` (global)
 3. Environment variables (for example `PI_DREAM_INTERVAL_HOURS=3`, `CLI_AGENTS=claude,cursor`)
 4. Built-in defaults
 

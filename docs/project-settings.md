@@ -6,10 +6,24 @@ covers the machinery underneath: the schema source, the CLI, prompt injection, a
 
 ## Settings Files and Resolution
 
-Settings live in `.pi/pi-config-settings.jsonc` (preferred) or `.pi/pi-config-settings.json` at the repository
-root; `.jsonc` allows comments and wins if both exist. A global fallback lives at
-`~/.pi/pi-config-settings.jsonc` or `.json`. Values resolve project file → global file → environment variable →
+Settings live in `.pi/pi-config-settings.json` at the repository root; a global fallback lives at
+`~/.pi/pi-config-settings.json`. Values resolve project file → global file → environment variable →
 default.
+
+`pi-config-settings.json` is the only settings filename read or written (issue #1086). A legacy
+`pi-config-settings.jsonc` used to win over the `.json` file, which silently hid settings written to
+`.json` — including `dangerous_command_allowlist` entries added by an approval, so the gate started
+prompting for commands it had already allowed. The legacy file is handled once: if its `.json`
+counterpart is absent its parsed content is written to `.json` — published by an atomic rename, so a
+concurrent reader never parses a partial file — and the file is renamed to
+`pi-config-settings.jsonc.migrated`; if `.json` already exists it is left alone and ignored; if it
+cannot be parsed it is refused, never overwritten (same contract as a corrupt settings file), and
+settings writes to that directory are refused until the file is repaired so a fresh `.json` cannot
+bypass it; a legacy file that git tracks or that is a symlink is never migrated, because a clone
+could otherwise ship a tracked `.jsonc` and have it laundered into the untracked `.json` that
+`projectSettingsTrust` accepts. That tracked-file refusal applies to the project scope only: a
+home directory cannot be attacked by a repo shipping a file, and refusing there would break a
+dotfiles-managed `~/.pi`. The migration logs paths only, never values.
 
 See [Configuration & Settings](configuration.html) for the full resolution walkthrough.
 
@@ -37,7 +51,7 @@ use conditional assembly — `{{IF:}}` / `{{IFNOT:}}` blocks, comparison literal
 `requires_setting` / `requires` frontmatter gates. See [Rules and Layers](rules-and-layers.html) for the full
 conditional grammar and the distinction between the two mechanisms.
 
-Never instruct agents to read `pi-config-settings.jsonc` / `.json` manually.
+Never instruct agents to read `pi-config-settings.json` manually.
 
 ## Settings TUI
 
@@ -52,9 +66,9 @@ For what it looks like from the user side, see [Configuration & Settings](config
 - **Agent lists:** `acpx_agents` and `cli_agents` use multi-select with ☑/☐ toggles.
 - **Agent overrides:** Nested per-agent provider/model editor.
 - **Secret masking:** Keys matching `token|secret|password|auth` are masked in the list and never prefilled in the editor.
-- **Write format:** The TUI writes plain JSON (atomic write-then-rename) to the scope's settings file — the
-  existing `.jsonc` file when one is present. Comments in the written file are lost on write, by design;
-  the shipped `pi-config-settings.example.jsonc` is the commented reference.
+- **Write format:** The TUI writes plain JSON (atomic write-then-rename) to the scope's settings file.
+  Comments in the written file are lost on write, by design; the shipped `pi-config-settings.example.json`
+  is the reference.
 - **Immediate save:** Each change writes immediately with `clearSettingsCache()`.
 
 Files: `extensions/orchestrator/settings-tui.ts`, `settings-tui-helpers.ts`, `settings-tui-submenus.ts`.

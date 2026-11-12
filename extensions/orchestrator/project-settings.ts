@@ -1,9 +1,10 @@
 /**
- * Project-level settings — loads .pi/pi-config-settings.jsonc (or .json) with env var fallback.
+ * Project-level settings — loads .pi/pi-config-settings.json with env var fallback.
  *
  * Resolution order:
- * 1. Project .pi/pi-config-settings.jsonc or .json (wins if set, .jsonc preferred)
- * 2. Global ~/.pi/pi-config-settings.jsonc or .json (fallback for all projects)
+ * 1. Project .pi/pi-config-settings.json (wins if set; the only settings filename — a legacy
+ *    .jsonc is migrated away once, see migrateLegacySettingsFile)
+ * 2. Global ~/.pi/pi-config-settings.json (fallback for all projects)
  * 3. Env var (PI_COMMIT_TRAILER, PI_USE_WORKTREES, PI_DREAM_INTERVAL_HOURS, PI_DCO,
  *    ACPX_AGENTS, CLI_AGENTS, PI_PIDASH_ENABLE, PI_PIDIFF_ENABLE, PI_PIDASH_PORT, PI_IMAGE_MODEL,
  *    PI_INTERNAL_OPERATIONS_PROVIDER, PI_INTERNAL_OPERATIONS_MODEL, PI_REVIEW_LOOP_MAX_CYCLES,
@@ -325,7 +326,7 @@ export function getGlobalSettingsPath(): string {
   if (process.env.NODE_TEST_CONTEXT !== undefined) {
     return join(tmpdir(), `pi-config-test-global-settings-${process.pid}.json`);
   }
-  return findSettingsFile(join(homedir(), ".pi")) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
+  return findSettingsFile(join(homedir(), ".pi"), { scope: "global" }) ?? join(homedir(), ".pi", SETTINGS_FILENAMES[0]);
 }
 
 export function loadGlobalSettings(): ProjectSettings {

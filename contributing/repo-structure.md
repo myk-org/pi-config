@@ -51,6 +51,7 @@ pi-config/
 │   │   ├── async-wait.ts            # Shared helper for waiting on async result files
 │   │   ├── cron.ts                   # /cron scheduled tasks and session/project scope handling
 │   │   ├── dreaming.ts              # Background memory consolidation (inspired by OpenClaw)
+│   │   ├── skill-maintenance.ts     # /adopt-skill, marked-skill write guard, in-turn nudge, provenance + one-line notice
 │   │   ├── enforcement.ts           # Command enforcement (python/pip, git, security, dangerous) + memory-based enforcement rules
 │   │   ├── enforcement-helpers.ts   # Pure helpers for dangerous-command enforcement (read-only detection, .pi/tmp/ path validation)
 │   │   ├── enforcement-rules.ts     # Enforcement rules engine — trigger matching + action execution for memory-based enforcement
@@ -237,7 +238,7 @@ pi-config/
 ├── entrypoint.sh                    # Container entrypoint (gitignore + CLI agent symlinks, then pi)
 ├── README.md                        # Project README
 ├── AGENTS.md                        # Contributor rules (this repo)
-├── pi-config-settings.example.jsonc # Example project settings file (JSONC with comments)
+├── pi-config-settings.example.json  # Example project settings file (plain JSON)
 ├── tests/                           # Test suite
 │   ├── node/                        # Node.js tests (tsx + node:test)
 │   │   ├── acpx-provider/           # ACPX createProvider / runtime-model tests

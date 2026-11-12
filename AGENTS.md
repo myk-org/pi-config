@@ -280,6 +280,10 @@ progress. It does not commit, push, create a PR, or post results.
   `priority: true` (jump the peer's queued backlog). `coms_broadcast(targets, prompt)` fans out to multiple peers (`["*"]` = project);
   `coms_history` queries the per-session JSONL trail in `~/.pi/coms/history.jsonl`. Peers emit `⚙busy` state and ~60s progress signals
   while processing inbound work.
+- User-authored messages (#1077): `/coms tell <peer> <message>` and the `m` composer in `/coms list` stamp envelope `origin: "user"`
+  through the `globalThis.__comsUserSend` bridge coms-p2p publishes; `coms_send`/`coms_broadcast` never pass it (schemas carry no
+  `origin`), and `resolvePromptOrigin` accepts only the literal `true`, so tool input cannot claim human authority. Receiver marks the
+  header `(from the USER)` and history `(USER)`.
 - COMS queue recovery is irreversible: call `coms_queue_inspect`, review its body-free result, then pass its one-time `preview_id` to
   `coms_queue_clear` or `coms_queue_delete`. Never use `coms_send.clearPrevious`; it is rejected. Preview tokens are owner-bound and
   expire after five minutes. RPC recovery providers retain at most 20 previews per provider and must implement an atomic
@@ -333,6 +337,16 @@ progress. It does not commit, push, create a PR, or post results.
   `overrideConflicts`
 - Enforcement honesty (code vs injected): see `contributing/enforcement-honesty-map.md`
 - Memory inventory CLI: `uv run myk-pi-tools memory status`
+- Skill maintenance (issue #1074): `extensions/orchestrator/skill-maintenance.ts`. A skill is maintained when its
+  `SKILL.md` frontmatter carries `skill-maintenance: auto`; only a **marked** skill whose real path (after `realpath`) is
+  under `<project>/.pi/skills/` may be written. Shipped package skills, `~/.pi/agent/skills/`, third-party skills,
+  symlinked/dangling paths and unmarked project skills are blocked with a reason (`/adopt-skill <name>` marks one).
+  Agents are steered mid-turn when a marked skill they used fails, every allowed `write`/`edit` is recorded in
+  `.pi/data/skill-review.jsonl` (append-only), and one line reports the turn's changes — see
+  `docs/skill-self-improvement.md`. The shell only reads skills — allowlisted read verbs with no write
+  operator, `mkdir` inside the owned tree, nothing else; every shell write blocks (`>`, `>>`, `>&`, `tee`,
+  `cp`, `mv`, `rm`, `sed -i`, …), as does any reference it cannot resolve. No model call, no setting: it is
+  not an async agent at all.
 - Project settings: see `docs/project-settings.md`
 - Settings keys definition: `settings-keys.json` (repo root) — single source of truth for all setting keys, types, env vars, and defaults.
   Both TypeScript (`extensions/orchestrator/project-settings.ts`) and Python (`myk_pi_tools/settings/commands.py`) derive from this file.
@@ -360,7 +374,7 @@ progress. It does not commit, push, create a PR, or post results.
   all review learning (it happened: session-loop PRs stored nothing and taught nothing — issue #942).
 - Settings TUI: `/pi-config-settings [project|global]` — interactive settings editor in the pi session.
 - Agent settings injection: use `{{SETTINGS:key1,key2}}` in agent `.md` files — `substituteSettingsPlaceholders` only (not rules `assembleRuleText`). See `docs/project-settings.md`.
-  Never instruct agents to read `pi-config-settings.jsonc`/`.json` manually.
+  Never instruct agents to read `pi-config-settings.json` manually.
 - When adding slash command arguments: update autocomplete in `extended-autocomplete.ts`
 - Memory `*(enforced)*` marker: entries with this marker are hash-keyed — never change their text, only add/remove whole entries
 - Remote script exec enforcement (`checkRemoteExecBlock` in `enforcement-helpers.ts`):
