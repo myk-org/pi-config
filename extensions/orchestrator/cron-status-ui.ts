@@ -13,6 +13,7 @@ import {
   type CronStatusTaskView,
 } from "./cron-status-format.js";
 import {
+  bulkRemove,
   bulkResultMessage,
   openListDetailOverlay,
   OverlayScrollDetail,
@@ -128,14 +129,14 @@ export async function openCronStatusOverlay(
       },
       selectable: true,
       onXSelected: (rows) => {
-        // Each removal is persisted on its own; a rejected id must be named, never counted.
-        const failed = rows
-          .filter((row) => !deps.removeTask(row.id))
-          .map((row) => `#${row.taskId}`);
-        log.info("cron_overlay_bulk_remove", { selected: rows.length, failed: failed.length });
+        // Each removal is persisted on its own: a rejected id must be named, never counted, and a
+        // throw on one row (store lock timeout) must not leave the rest of the selection behind.
+        const { failed, errors } = bulkRemove(rows, (row) => deps.removeTask(row.id));
+        const names = failed.map((row) => `#${row.taskId}`);
+        log.info("cron_overlay_bulk_remove", { selected: rows.length, failed: names.length, errors });
         ctx.ui.notify(
-          bulkResultMessage("removed", "cron", rows.length, failed),
-          failed.length === 0 ? "info" : "warning",
+          bulkResultMessage("removed", "cron", rows.length, names),
+          names.length === 0 ? "info" : "warning",
         );
       },
     },

@@ -8,6 +8,7 @@ import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-a
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, Input, Text } from "@earendil-works/pi-tui";
 import {
+	bulkRemove,
 	bulkResultMessage,
 	openListDetailOverlay,
 	OverlayScrollDetail,
@@ -163,12 +164,14 @@ export async function openTasksOverlay(
 					selectable: true,
 					onXSelected: (tasks) => {
 						// Same destructive action `x` does per row, so no confirmation — but the row store can
-						// reject a delete, and those ids must be named rather than counted as deleted.
-						const failed = tasks.filter((task) => !deps.deleteTask(task.id)).map((task) => `#${task.id}`);
-						log.info("tasks_overlay_bulk_delete", { selected: tasks.length, failed: failed.length });
+						// reject a delete, and those ids must be named rather than counted as deleted. Each delete
+						// is isolated: a throw on one task must not abort the rest of the selection.
+						const { failed, errors } = bulkRemove(tasks, (task) => deps.deleteTask(task.id));
+						const names = failed.map((task) => `#${task.id}`);
+						log.info("tasks_overlay_bulk_delete", { selected: tasks.length, failed: names.length, errors });
 						ctx.ui.notify(
-							bulkResultMessage("deleted", "task", tasks.length, failed),
-							failed.length === 0 ? "info" : "warning",
+							bulkResultMessage("deleted", "task", tasks.length, names),
+							names.length === 0 ? "info" : "warning",
 						);
 					},
 				},

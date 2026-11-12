@@ -210,6 +210,25 @@ describe("openCronStatusOverlay multi-select (#1087)", () => {
     ]);
   });
 
+  it("keeps removing after one removal throws", async () => {
+    // A store write-lock timeout on #1 must not abandon #2 the user also selected.
+    const { ctx, notifications } = makeCtx([" ", "j", " ", "x"]);
+    const removed: string[] = [];
+    await openCronStatusOverlay(ctx, {
+      listTasks: three,
+      removeTask: (id) => {
+        if (id === "session:1") throw new Error("store is locked");
+        removed.push(id);
+        return true;
+      },
+      togglePaused: () => ({ ok: true, paused: true }),
+    });
+    assert.deepEqual(removed, ["session:2"], "the throw did not abort the remaining removal");
+    assert.deepEqual(notifications, [
+      { message: "removed 1 of 2 crons — failed: #session:1", level: "warning" },
+    ]);
+  });
+
   it("p on a mixed selection pauses every selected cron", async () => {
     const { ctx, notifications } = makeCtx([" ", "j", " ", "p"]);
     const pressed: string[] = [];
