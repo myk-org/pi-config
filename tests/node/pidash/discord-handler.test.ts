@@ -321,4 +321,31 @@ describe("discord messageCreate routing", () => {
       mock.timers.reset();
     }
   });
+
+  it("logs a message dropped in a channel the user does not own", async () => {
+    // The refusal the owner reproduced had no log line at all; a silent drop is undiagnosable.
+    (globalThis as any).__piConfigSessionId = "inbound-route-log-test";
+    try {
+      const bot = startBot({ live: ["s2"] });
+      const replies: string[] = [];
+      await bot.handler(message("m10", "hello there", replies, { channelId: "chan-not-owned" }));
+      assert.deepEqual(replies, []);
+
+      const dir = path.join(tmp, ".pi", "logs", "pidash-discord");
+      const readTree = (root: string): string => fs.readdirSync(root, { withFileTypes: true })
+        .map((entry) => {
+          const full = path.join(root, entry.name);
+          return entry.isDirectory() ? readTree(full) : fs.readFileSync(full, "utf8");
+        })
+        .join("");
+      const body = readTree(dir);
+      assert.match(body, /discord_inbound_dropped/);
+      assert.match(body, /channel-not-owned/);
+      assert.match(body, /chan-not-owned/);
+      // Ids only: the message body must never reach the log.
+      assert.doesNotMatch(body, /hello there/);
+    } finally {
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
 });
