@@ -162,11 +162,16 @@ describe("drilldown payload (#1083)", () => {
 
 describe("workload widget suffix", () => {
   it("renders only the non-zero counts", () => {
-    assert.equal(formatWorkloadSuffix({ agents: 2, tasks: 5, crons: 1 }), " ⏳2 ◻5 ⏰1");
-    assert.equal(formatWorkloadSuffix({ agents: 0, tasks: 3, crons: 0 }), " ◻3");
-    // The task count is OPEN work: a tick would read as "done", so it must never appear.
-    assert.equal(formatWorkloadSuffix({ agents: 0, tasks: 3, crons: 0 }).includes("✓"), false);
-    assert.equal(formatWorkloadSuffix({ agents: 2, tasks: 5, crons: 1 }).includes("✓"), false);
+    assert.equal(formatWorkloadSuffix({ agents: 2, tasks: 5, crons: 1 }), " ⏳2 ☰5 ⏰1");
+    assert.equal(formatWorkloadSuffix({ agents: 0, tasks: 3, crons: 0 }), " ☰3");
+    // The count is OPEN work that mixes pending and in-progress: a tick would claim "done", and a
+    // row glyph would claim one state the aggregate does not have.
+    for (const suffix of [
+      formatWorkloadSuffix({ agents: 0, tasks: 3, crons: 0 }),
+      formatWorkloadSuffix({ agents: 2, tasks: 5, crons: 1 }),
+    ]) {
+      for (const glyph of ["✓", "◻", "◼"]) assert.equal(suffix.includes(glyph), false, `no ${glyph} in ${suffix}`);
+    }
     assert.equal(formatWorkloadSuffix({ agents: 1, tasks: 0, crons: 0 }), " ⏳1");
   });
 

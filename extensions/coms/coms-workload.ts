@@ -174,11 +174,12 @@ export function toDescribeDetail(active: ActiveWorkload, now = Date.now()): Peer
   return detail;
 }
 
-/** `⏳2 ◻5 ⏰1` for non-zero counts, nothing when the peer reports none, `unknown` when it
+/** `⏳2 ☰5 ⏰1` for non-zero counts, nothing when the peer reports none, `unknown` when it
  *  reports no workload at all — absence is never rendered as zero.
  *
- *  The task glyph is `◻` (open), the same one `formatTaskRowLine` uses for a pending row: this
- *  count is OPEN tasks, never a completed tally, so `✓` must not appear in the suffix at all. */
+ *  The task glyph is `☰`: the count is OPEN tasks (anything not completed), so it mixes pending
+ *  and in-progress. `◻`/`◼`/`✓` are per-task ROW glyphs in `/tasks` and must not be reused for an
+ *  aggregate that spans both states — a row glyph here would claim a status the number lacks. */
 export function renderWorkloadPart(
   counts: PeerWorkloadCounts | null | undefined,
   theme?: { fg: (color: any, text: string) => string },
@@ -187,7 +188,7 @@ export function renderWorkloadPart(
   if (!counts) return " " + paint("dim", "unknown");
   const parts: string[] = [];
   if (counts.agents > 0) parts.push(paint("accent", `⏳${counts.agents}`));
-  if (counts.tasks > 0) parts.push(paint("success", `◻${counts.tasks}`));
+  if (counts.tasks > 0) parts.push(paint("success", `☰${counts.tasks}`));
   if (counts.crons > 0) parts.push(paint("warning", `⏰${counts.crons}`));
   if (parts.length === 0) return "";
   return " " + parts.join(" ");

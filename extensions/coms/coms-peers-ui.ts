@@ -9,7 +9,7 @@
  */
 import type { Component } from "@earendil-works/pi-tui";
 import { renderWorkloadPart } from "./coms-workload.js";
-import { backTarget, buildDrilldownRows, type DrilldownItem, type DrilldownRow } from "./coms-drilldown.js";
+import { backTarget, buildDrilldownRows, buildPeerInfoRow, type DrilldownItem, type DrilldownRow } from "./coms-drilldown.js";
 import { sanitizePeerText } from "./peer-text.js";
 import type { DescribeResult } from "./coms-describe.js";
 import { OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
@@ -51,10 +51,13 @@ export async function openComsPeersOverlay(
   // happens inside its callback).
   const composeQueue: Row[] = [];
   const peerQueue: Row[] = [];
+  // #1084: Esc from the drilldown returns to the peer list focused on the peer it came from.
+  let reselectPeer: string | undefined;
 
   for (;;) {
     await openListDetailOverlay< string, Row>(ctx, {
       emptyMessage: deps.emptyMessage ?? "No peers in the coms registry.",
+      initialSelectionId: reselectPeer,
       listSpec: {
         title: "Coms peers",
         countLabel: (rows) => `${rows.length} peer${rows.length === 1 ? "" : "s"}`,
@@ -104,6 +107,7 @@ export async function openComsPeersOverlay(
 
     const inspected = peerQueue.pop();
     if (inspected) {
+      reselectPeer = inspected.id;
       await openPeerDrilldown(ctx, deps, inspected);
       continue;
     }
@@ -163,14 +167,22 @@ async function openPeerDrilldown(ctx: any, deps: ComsPeersOverlayDeps, row: Row)
       result = { ok: false, reason: "malformed" };
     }
   }
-  const rows = buildDrilldownRows(result);
+  // #1084 finding 2: identity and location come back as the first row — the same registry fields
+  // the old text pane showed, read from the row this list already holds (no new RPC, no files).
+  const rows = [
+    buildPeerInfoRow({ ...row, heartbeatAgeSeconds: deps.heartbeatAgeSeconds?.(row) ?? null }),
+    ...buildDrilldownRows(result),
+  ];
   log.debug("drilldown_opened", { peer: row.name, rows: rows.length, answered: result.ok });
   const header = peerHeader(row, deps);
 
   const sectionQueue: DrilldownRow[] = [];
+  // #1084 finding 4: Esc from a section re-opens this list on that section, not on row 0.
+  let reselectSection: string | undefined;
   for (;;) {
     await openListDetailOverlay<string, DrilldownRow>(ctx, {
       emptyMessage: "This peer reported no work.",
+      initialSelectionId: reselectSection,
       listSpec: {
         title: `Peer ${sanitizePeerText(row.name, 40)}`,
         countLabel: (items) => `${items.length} section${items.length === 1 ? "" : "s"}`,
@@ -192,6 +204,7 @@ async function openPeerDrilldown(ctx: any, deps: ComsPeersOverlayDeps, row: Row)
       log.debug("drilldown_esc", { to: backTarget({ level: "sections", peer: row.name })?.level ?? "close" });
       return;
     }
+    reselectSection = section.id;
     await openSectionOverlay(ctx, row, section);
   }
 }

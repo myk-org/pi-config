@@ -13,12 +13,15 @@ import { formatTaskRowLine } from "../pitasks/tasks-view.js";
 import type { DescribeResult } from "./coms-describe.js";
 import {
   WORKLOAD_NONE_LINE,
+  renderWorkloadPart,
   workloadUnknownLine,
   type DescribeAgent,
   type DescribeCron,
   type DescribeTask,
+  type PeerWorkloadCounts,
   type WorkloadTruncation,
 } from "./coms-workload.js";
+import { describePeerOrigin } from "./coms-peers.js";
 import { sanitizePeerText } from "./peer-text.js";
 import { createLogger } from "../shared/logger.js";
 
@@ -35,11 +38,21 @@ const NEXT_MAX = 24;
 const DESCRIPTION_MAX = 120;
 
 /** One row inside a section, already reduced to text: `row` is the list line, `detail` the
- *  (label, value) pairs the detail pane shows. Read-only: no action is attached to either. */
+ *  (label, value) pairs the detail pane shows. Read-only: no action is attached to either.
+ *
+ *  `id` is the row IDENTITY (position-prefixed), not the reported id: the reported id is
+ *  truncated for display, so two entries sharing a 40-char prefix — or reporting the same id —
+ *  would otherwise collapse into one row and Enter could open either. The display keeps the
+ *  truncated id, the identity stays unique and stable. */
 export interface DrilldownItem {
   id: string;
   row: string;
   detail: Array<[string, string]>;
+}
+
+/** `0:texture` — position first, so the identity survives any truncation or duplication below. */
+function rowId(index: number, reported: string): string {
+  return `${index}:${reported}`;
 }
 
 /** One level-2 row. A `section` row opens its items; a status row (unknown / nothing active)
@@ -73,18 +86,18 @@ function statusRow(label: string): DrilldownRow {
   return {
     id: "section:status",
     label,
-    items: [{ id: "status", row: label, detail: [["workload", label]] }],
+    items: [{ id: rowId(0, "status"), row: label, detail: [["workload", label]] }],
   };
 }
 
-function agentItem(agent: DescribeAgent): DrilldownItem {
+function agentItem(agent: DescribeAgent, index: number): DrilldownItem {
   const id = sanitizePeerText(agent.id, ID_MAX);
   const name = sanitizePeerText(agent.name, NAME_MAX);
   const state = sanitizePeerText(agent.state, STATE_MAX);
   const elapsed = sanitizePeerText(agent.elapsed, ELAPSED_MAX);
   const purpose = sanitizePeerText(agent.purpose, PURPOSE_MAX);
   return {
-    id: id || "?",
+    id: rowId(index, id || "?"),
     // Same columns as the async-status row: identity, state, elapsed, purpose.
     row: [name ? `${name} (${id})` : id, state, elapsed, purpose].filter(Boolean).join("  "),
     detail: [
@@ -96,7 +109,7 @@ function agentItem(agent: DescribeAgent): DrilldownItem {
   };
 }
 
-function taskItem(task: DescribeTask): DrilldownItem {
+function taskItem(task: DescribeTask, index: number): DrilldownItem {
   const id = sanitizePeerText(task.id, ID_MAX);
   const status = sanitizePeerText(task.status, STATE_MAX);
   const subject = sanitizePeerText(task.subject, SUBJECT_MAX);
@@ -112,16 +125,16 @@ function taskItem(task: DescribeTask): DrilldownItem {
     ["Blocked by", blockedBy.length > 0 ? blockedBy.map((b) => `#${b}`).join(", ") : "—"],
     ["Description", description || "—"],
   ];
-  return { id: id || "?", row, detail };
+  return { id: rowId(index, id || "?"), row, detail };
 }
 
-function cronItem(cron: DescribeCron): DrilldownItem {
+function cronItem(cron: DescribeCron, index: number): DrilldownItem {
   const id = sanitizePeerText(cron.id, ID_MAX);
   const schedule = sanitizePeerText(cron.schedule, SCHEDULE_MAX);
   const next = sanitizePeerText(cron.next, NEXT_MAX);
   const description = sanitizePeerText(cron.description, DESCRIPTION_MAX);
   return {
-    id: id || "?",
+    id: rowId(index, id || "?"),
     // The peer already formatted these with the cron-status helpers it renders locally.
     row: [id, schedule, next, description].filter(Boolean).join("  "),
     detail: [
@@ -132,9 +145,9 @@ function cronItem(cron: DescribeCron): DrilldownItem {
   };
 }
 
-function truncatedItem(more: number): DrilldownItem {
+function truncatedItem(more: number, index: number): DrilldownItem {
   const row = `… ${more} more`;
-  return { id: `more:${more}`, row, detail: [["truncated", row]] };
+  return { id: rowId(index, `more:${more}`), row, detail: [["truncated", row]] };
 }
 
 /**
@@ -156,7 +169,10 @@ export function buildDrilldownRows(result: DescribeResult): DrilldownRow[] {
       id: "section:agents",
       label: `async agents (${agents.length})`,
       section: "agents",
-      items: [...agents.map(agentItem), ...(truncated.agents ? [truncatedItem(truncated.agents)] : [])],
+      items: [
+        ...agents.map(agentItem),
+        ...(truncated.agents ? [truncatedItem(truncated.agents, agents.length)] : []),
+      ],
     });
   }
   if (tasks.length > 0) {
@@ -164,7 +180,10 @@ export function buildDrilldownRows(result: DescribeResult): DrilldownRow[] {
       id: "section:tasks",
       label: `tasks (${tasks.length})`,
       section: "tasks",
-      items: [...tasks.map(taskItem), ...(truncated.tasks ? [truncatedItem(truncated.tasks)] : [])],
+      items: [
+        ...tasks.map(taskItem),
+        ...(truncated.tasks ? [truncatedItem(truncated.tasks, tasks.length)] : []),
+      ],
     });
   }
   if (crons.length > 0) {
@@ -172,7 +191,10 @@ export function buildDrilldownRows(result: DescribeResult): DrilldownRow[] {
       id: "section:crons",
       label: `crons (${crons.length})`,
       section: "crons",
-      items: [...crons.map(cronItem), ...(truncated.crons ? [truncatedItem(truncated.crons)] : [])],
+      items: [
+        ...crons.map(cronItem),
+        ...(truncated.crons ? [truncatedItem(truncated.crons, crons.length)] : []),
+      ],
     });
   }
   if (rows.length === 0) {
@@ -181,4 +203,54 @@ export function buildDrilldownRows(result: DescribeResult): DrilldownRow[] {
   }
   log.debug("drilldown_sections", { rows: rows.length, agents: agents.length, tasks: tasks.length, crons: crons.length });
   return rows;
+}
+
+/** The registry fields the peer list already holds — no new RPC, no filesystem read. */
+export interface PeerInfoSource {
+  name: string;
+  project: string;
+  cwd?: string | null;
+  purpose?: string | null;
+  pid?: number | null;
+  endpoint?: string | null;
+  busy: boolean;
+  queueDepth?: number | null;
+  contextUsedPct?: number | null;
+  origin?: string | null;
+  createdBy?: string | null;
+  workload?: PeerWorkloadCounts | null;
+  heartbeatAgeSeconds?: number | null;
+}
+
+/**
+ * The first row of a peer's drilldown (#1084): identity and location, which the section list no
+ * longer has a text pane for. One item, so Enter opens the same read-only detail view as any item;
+ * an absent field renders `—` instead of being dropped or guessed.
+ */
+export function buildPeerInfoRow(peer: PeerInfoSource): DrilldownRow {
+  const origin = describePeerOrigin(peer as any);
+  const dash = (value: string): string => value || "—";
+  const age = peer.heartbeatAgeSeconds;
+  const workload = renderWorkloadPart(peer.workload).trim();
+  const detail: Array<[string, string]> = [
+    ["Name", dash(sanitizePeerText(peer.name, 40))],
+    ["Project", dash(sanitizePeerText(peer.project, 40))],
+    ["cwd", dash(sanitizePeerText(peer.cwd ?? "", 120))],
+    ["Purpose", dash(sanitizePeerText(peer.purpose ?? "", 120))],
+    ["Created by", origin.by === "unknown" ? "unknown (no record)" : `${sanitizePeerText(origin.by, 40)} · via ${sanitizePeerText(origin.via, 40)}`],
+    ["pid", peer.pid === null || peer.pid === undefined ? "—" : String(peer.pid)],
+    ["Socket", dash(sanitizePeerText(peer.endpoint ?? "", 80))],
+    ["Heartbeat", typeof age === "number" ? `${age}s ago` : "unknown"],
+    ["State", `${peer.busy ? "busy" : "idle"}${peer.queueDepth ? ` · queue ${peer.queueDepth}` : ""}${peer.contextUsedPct === null || peer.contextUsedPct === undefined ? "" : ` · ctx ${Math.round(peer.contextUsedPct)}%`}`],
+    // Same suffix the peer line shows: `unknown` when it did not report, never a fabricated 0.
+    ["Workload", workload || "unknown"],
+  ];
+  const name = sanitizePeerText(peer.name, 40) || "?";
+  const project = sanitizePeerText(peer.project, 40) || "?";
+  log.debug("drilldown_peer_info", { fields: detail.length });
+  return {
+    id: "section:peer",
+    label: "peer info",
+    items: [{ id: rowId(0, "peer"), row: `${name} · ${project}`, detail }],
+  };
 }
