@@ -90,6 +90,17 @@ to nested agents. See `packages/pi-sidecar/README.md` for usage.
 
 pi-sidecar tests are part of the test suite. Breaking pi-sidecar is breaking the project.
 
+## Tests
+
+- **No suite may depend on ambient env for a code path it asserts.** A suite that asserts
+  parent-process behaviour must make that true itself — set the variable for the run and
+  restore it. `PI_SUBAGENT_CHILD` is the classic trap: `registerSubagentTool` and a dozen
+  other extensions early-return when it is `1`, so the same suite run from a subagent child
+  silently registers nothing and fails later as `undefined.execute`. Use
+  `withSubagentChildEnv` (`tests/node/helpers/subagent-env.ts`), then `assert.ok(tool)` right
+  where the tool is constructed, so a future early-return names itself. Cover the guarded
+  side with its own test (var set → nothing registered), not by inheritance.
+
 ## Definition of Done
 
 A change is complete when ALL pass:

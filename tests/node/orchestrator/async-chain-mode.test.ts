@@ -9,6 +9,7 @@ import { fireOnComplete, firePendingCompletions, registerAsyncAgents } from "../
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
 
 const log = createLogger("subagent-async-chain-test");
@@ -59,17 +60,22 @@ function harness(opts: { hasUI?: boolean; confirm?: (title: string, message?: st
     events: { on() {}, emit() {} },
   } as any;
 
-  registerSubagentTool(
-    pi,
-    (agent: string, task: string, spawnCwd: string, agents: any[], options?: any) => {
-      if (throwNextSpawn) throw new Error("spawn exploded");
-      if (failNextSpawn) return { id: "", error: "spawn refused" };
-      const id = `job-${spawns.length + 1}`;
-      spawns.push({ agent, task, cwd: spawnCwd, agents, options, onComplete: options?.onComplete });
-      return { id, model: undefined };
-    },
-    () => ({ killed: [], errors: [] }),
-  );
+  // This suite asserts parent-process behaviour, so PI_SUBAGENT_CHILD is absent here
+  // whichever shell runs the tests.
+  withSubagentChildEnv(undefined, () => {
+    registerSubagentTool(
+      pi,
+      (agent: string, task: string, spawnCwd: string, agents: any[], options?: any) => {
+        if (throwNextSpawn) throw new Error("spawn exploded");
+        if (failNextSpawn) return { id: "", error: "spawn refused" };
+        const id = `job-${spawns.length + 1}`;
+        spawns.push({ agent, task, cwd: spawnCwd, agents, options, onComplete: options?.onComplete });
+        return { id, model: undefined };
+      },
+      () => ({ killed: [], errors: [] }),
+    );
+  });
+  assert.ok(tool, "the subagent tool must be registered — a parent process that registers nothing means an early return fired (PI_SUBAGENT_CHILD)");
 
   const ctx = {
     cwd,
@@ -104,6 +110,20 @@ const chain = (cwd: string) => [
   { agent: "worker", task: "step one", cwd, estimatedSeconds: 5, taskId: "-1" },
   { agent: "worker", task: "step two after {previous}", cwd, estimatedSeconds: 5, taskId: "-1" },
 ];
+
+describe("subagent tool registration", () => {
+  it("does not register the tool in a subagent child (no recursive spawning)", () => {
+    let registered: any;
+    withSubagentChildEnv("1", () => {
+      registerSubagentTool(
+        { registerTool(definition: any) { registered = definition; }, on() {}, events: { on() {}, emit() {} } } as any,
+        () => ({ id: "unused" }),
+        () => ({ killed: [], errors: [] }),
+      );
+    });
+    assert.equal(registered, undefined, "PI_SUBAGENT_CHILD=1 must skip registration entirely");
+  });
+});
 
 describe("subagent async chain mode", () => {
   it("spawns only the first step", async () => {

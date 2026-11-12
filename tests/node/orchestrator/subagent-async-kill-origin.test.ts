@@ -7,6 +7,7 @@ import { registerSubagentTool } from "../../../extensions/orchestrator/subagent-
 import type { AsyncKillOrigin } from "../../../extensions/orchestrator/async-agents.js";
 import { createLogger } from "../../../extensions/shared/logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 
 
 const log = createLogger("subagent-async-kill-test");
@@ -27,14 +28,19 @@ function harness() {
     events: { on() {}, emit() {} },
   } as any;
 
-  registerSubagentTool(
-    pi,
-    () => ({ id: "unused", error: "spawn is not exercised by this test" }),
-    (target: string, origin?: AsyncKillOrigin) => {
-      killCalls.push({ target, origin });
-      return { killed: [target], errors: [] };
-    },
-  );
+  // This suite asserts parent-process behaviour, so PI_SUBAGENT_CHILD is absent here
+  // whichever shell runs the tests.
+  withSubagentChildEnv(undefined, () => {
+    registerSubagentTool(
+      pi,
+      () => ({ id: "unused", error: "spawn is not exercised by this test" }),
+      (target: string, origin?: AsyncKillOrigin) => {
+        killCalls.push({ target, origin });
+        return { killed: [target], errors: [] };
+      },
+    );
+  });
+  assert.ok(tool, "the subagent tool must be registered — a parent process that registers nothing means an early return fired (PI_SUBAGENT_CHILD)");
 
   const ctx = {
     cwd,
