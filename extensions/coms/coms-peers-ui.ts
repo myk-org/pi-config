@@ -9,7 +9,7 @@
  */
 import type { Component } from "@earendil-works/pi-tui";
 import { renderWorkloadPart } from "./coms-workload.js";
-import { backTarget, buildDrilldownRows, buildPeerInfoRow, itemIdLabel, sectionCountLabel, sectionEnterMode, type DrilldownItem, type DrilldownRow } from "./coms-drilldown.js";
+import { backTarget, buildDrilldownRows, buildPeerInfoRow, itemIdLabel, logDetailOpen, sectionCountLabel, sectionEnterMode, type DrilldownItem, type DrilldownRow } from "./coms-drilldown.js";
 import { sanitizePeerText } from "./peer-text.js";
 import type { DescribeResult } from "./coms-describe.js";
 import { OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
@@ -213,7 +213,7 @@ async function openPeerDrilldown(ctx: any, deps: ComsPeersOverlayDeps, row: Row)
     if (sectionEnterMode(section.items) === "detail") {
       await ctx.ui.custom(
         (tui: any, theme: Theme, _kb: any, done: (value: null) => void) =>
-          itemDetailComponent(section.items[0], tui, theme, done),
+          itemDetailComponent(section.items[0], tui, theme, done, "direct"),
         OVERLAY_OPTS,
       );
       continue;
@@ -248,7 +248,8 @@ async function openSectionOverlay(
         rightParts: [],
       }),
     },
-    createDetail: itemDetailComponent,
+    createDetail: (item, tui, theme, done): Component =>
+      itemDetailComponent(item, tui, theme, done, "list"),
   });
 }
 
@@ -259,7 +260,10 @@ function itemDetailComponent(
   tui: any,
   theme: Theme,
   done: (value: null) => void,
+  path: "direct" | "list",
 ): Component {
+  // Construction only (never per render), ids and counts only.
+  logDetailOpen(path, item);
   return new OverlayScrollDetail(
     tui,
     theme,
