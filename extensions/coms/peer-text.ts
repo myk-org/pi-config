@@ -23,8 +23,10 @@ const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 
 /** The in-band authorship tag (#1077) and its fragments. Origin is decided by the envelope's
  *  structured `origin` field — this line is display only — so peer text must never be able to
- *  print it and pose as the human (#1084). */
-const MARKER_FULL = /\[from USER \(a human\), via[^\]]*\]?/gi;
+ *  print it and pose as the human (#1084). The full form needs its closing bracket AND stays
+ *  inside MARKER_MAX chars, so an unfinished marker cannot swallow the rest of a message. */
+const MARKER_MAX = 120;
+const MARKER_FULL = new RegExp(`\\[from USER \\(a human\\), via[^\\]]{0,${MARKER_MAX}}\\]`, "gi");
 const MARKER_FROM_USER = /\bfrom USER\b/gi;
 const MARKER_HUMAN = /\(a human\)/gi;
 const MARKER_LEADING = /^\s*\[from\s+/i;

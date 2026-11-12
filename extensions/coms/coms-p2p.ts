@@ -932,6 +932,7 @@ export default function (pi: ExtensionAPI) {
 								env.sender_name,
 								env.sender_cwd,
 								inboundOrigin(env),
+								env.sender_session,
 							),
 							display: true,
 							details: { msg_id: env.msg_id, steer: true, target_msg_id: currentInbound.msg_id },
@@ -1042,7 +1043,7 @@ export default function (pi: ExtensionAPI) {
 			pi.sendMessage(
 				{
 					customType: formatComsInboundType(env.sender_name, sanitizeComsName(identity?.name ?? "?"), env.sender_cwd, env.origin),
-					content: buildInboundContent("", env.prompt, env.tasks, env.sender_name, env.sender_cwd, env.origin),
+					content: buildInboundContent("", env.prompt, env.tasks, env.sender_name, env.sender_cwd, env.origin, env.sender_session),
 					display: true,
 					details: {
 						msg_id: env.msg_id,
@@ -3378,7 +3379,7 @@ Do not respond to this message.`;
 					pi.sendMessage(
 						{
 							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd, next.origin),
-							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin),
+							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin, next.sender_session),
 							display: true,
 							details: {
 								msg_id: next.msg_id,
@@ -3423,7 +3424,7 @@ Do not respond to this message.`;
 							content: buildInboundContent(
 								`[NOTE: your previous reply was not captured because a user message arrived in the same turn. ` +
 								`This is a re-injection — please reply to this peer message now.]`,
-								inbound.prompt, inbound.tasks ?? null, inbound.sender_name, inbound.sender_cwd, inbound.origin),
+								inbound.prompt, inbound.tasks ?? null, inbound.sender_name, inbound.sender_cwd, inbound.origin, inbound.sender_session),
 							display: true,
 							details: {
 								msg_id: inbound.msg_id,
@@ -3459,7 +3460,7 @@ Do not respond to this message.`;
 							pi.sendMessage(
 								{
 									customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd, next.origin),
-									content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin),
+									content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin, next.sender_session),
 									display: true,
 									details: {
 										msg_id: next.msg_id,
@@ -3527,7 +3528,7 @@ Do not respond to this message.`;
 					pi.sendMessage(
 						{
 							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd, next.origin),
-							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin),
+							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin, next.sender_session),
 							display: true,
 							details: {
 								msg_id: next.msg_id,
@@ -3623,7 +3624,7 @@ Do not respond to this message.`;
 					try {
 						pi.sendMessage({
 							customType: formatComsInboundType(senderPending[0].sender_name, sanitizeComsName(identity?.name ?? "?"), senderPending[0].sender_cwd, senderPending[0].origin),
-							content: buildInboundContent("", senderPending[0].prompt, senderPending[0].tasks, senderPending[0].sender_name, senderPending[0].sender_cwd, senderPending[0].origin),
+							content: buildInboundContent("", senderPending[0].prompt, senderPending[0].tasks, senderPending[0].sender_name, senderPending[0].sender_cwd, senderPending[0].origin, senderPending[0].sender_session),
 							display: true,
 							details: { msg_id: senderPending[0].msg_id, sender_session: senderPending[0].sender_session, response_schema: senderPending[0].response_schema ?? null },
 						}, { deliverAs: "followUp", triggerTurn: true });
@@ -3637,7 +3638,7 @@ Do not respond to this message.`;
 					try {
 						pi.sendMessage({
 							customType: formatComsInboundType(primary.sender_name, sanitizeComsName(identity?.name ?? "?"), primary.sender_cwd, bundle.origin),
-							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin),
+							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin, primary.sender_session),
 							display: true,
 							details: { msg_id: primary.msg_id, sender_session: primary.sender_session, response_schema: primary.response_schema ?? null, bundled_msg_ids: senderPending.map(i => i.msg_id) },
 						}, { deliverAs: "followUp", triggerTurn: true });
@@ -3743,7 +3744,7 @@ Do not respond to this message.`;
 					pi.sendMessage(
 						{
 							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd, next.origin),
-							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin),
+							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin, next.sender_session),
 							display: true,
 							details: {
 								msg_id: next.msg_id,
@@ -3774,7 +3775,7 @@ Do not respond to this message.`;
 					pi.sendMessage(
 						{
 							customType: formatComsInboundType(primary.sender_name, sanitizeComsName(identity?.name ?? "?"), primary.sender_cwd, bundle.origin),
-							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin),
+							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin, primary.sender_session),
 							display: true,
 							details: {
 								msg_id: primary.msg_id,

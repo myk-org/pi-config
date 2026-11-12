@@ -590,6 +590,8 @@ export function buildInboundContent(
 	senderName?: string,
 	senderCwd?: string,
 	origin?: PromptOrigin,
+	/** The sender's registry session id — the fallback address when its name cannot be quoted. */
+	senderSessionId?: string,
 ): string {
 	// Sanitize peer-controlled values — strip control chars, tag-breaking brackets and the origin
 	// marker (#1084), then cap. A name can otherwise close the tag early or pose as the human.
@@ -601,8 +603,12 @@ export function buildInboundContent(
 	const originTag = origin === "user" ? "USER (a human), via " : "";
 	const fromTag = safeName ? `[from ${originTag}${safeName}${safeCwd ? ` @ ${safeCwd}` : ''}] ` : '';
 	let content = header ? `${fromTag}${header}\n\n${prompt}` : `${fromTag}${prompt}`;
-	if (safeName) {
-		content += `\n\nReply to me via coms_send(target="${safeName}")`;
+	if (senderName) {
+		// The hint is an ADDRESS: coms_send resolves the RAW registry name, so it stays verbatim —
+		// sanitizing it would name a peer that does not exist. Only the displayed tag is sanitized.
+		// A name that cannot be quoted safely falls back to the sender's session id.
+		const address = /^[^"\r\n\x00-\x1f\x7f]+$/.test(senderName) ? senderName : senderSessionId;
+		if (address) content += `\n\nReply to me via coms_send(target="${address}")`;
 	}
 	if (tasks && tasks.length > 0) {
 		content += `\n\n## Assigned Tasks\n\nThese tasks have been added to your task list. Work through them in order:\n\n`;

@@ -31,6 +31,7 @@ const worker: RegistryRow = {
 /** Minimal ctx: the list opens once, the keys are fed to it, the second open closes immediately. */
 function makeCtx(keys: string[], typed: string | undefined) {
   const inputTitles: string[] = [];
+  const notifications: string[] = [];
   let opened = 0;
   const tui = { terminal: { rows: 20 }, requestRender: () => {} };
   // `close` is the cancel keybinding the dashboard really checks — needed when a test presses a
@@ -39,7 +40,7 @@ function makeCtx(keys: string[], typed: string | undefined) {
   const ctx = {
     hasUI: true,
     ui: {
-      notify: () => {},
+      notify: (message: string) => { notifications.push(message); },
       input: async (title: string) => {
         inputTitles.push(title);
         return typed;
@@ -54,7 +55,7 @@ function makeCtx(keys: string[], typed: string | undefined) {
       },
     },
   };
-  return { ctx, inputTitles, openedCount: () => opened };
+  return { ctx, inputTitles, notifications, openedCount: () => opened };
 }
 
 describe("openComsPeersOverlay compose key (#1077)", () => {
@@ -102,5 +103,34 @@ describe("openComsPeersOverlay compose key (#1077)", () => {
       killAll: () => "killed all",
     });
     assert.deepEqual(inputTitles, []);
+  });
+});
+
+describe("openComsPeersOverlay failure reporting (#1084)", () => {
+  it("sanitizes the whole failed-send status before notifying", async () => {
+    // The status carries the peer's own socket error: a raw ESC/BEL would reach the terminal.
+    const hostile = "\u26a0\ufe0f delivery to worker failed: \u001b[2J\u0007boom";
+    const { ctx, notifications } = makeCtx(["m"], "hi");
+    await openComsPeersOverlay(ctx, {
+      listPeers: () => [worker],
+      killPeer: () => "killed",
+      killAll: () => "killed all",
+      tellPeer: async () => hostile,
+    });
+    assert.equal(notifications.length, 1);
+    assert.equal(/[\u001b\u0007]/.test(notifications[0]), false);
+    assert.match(notifications[0], /boom/);
+    assert.equal(notifications[0].length <= 120, true);
+  });
+
+  it("stays quiet when the send succeeded", async () => {
+    const { ctx, notifications } = makeCtx(["m"], "hi");
+    await openComsPeersOverlay(ctx, {
+      listPeers: () => [worker],
+      killPeer: () => "killed",
+      killAll: () => "killed all",
+      tellPeer: async () => "\ud83d\udce1 sent to worker",
+    });
+    assert.deepEqual(notifications, []);
   });
 });

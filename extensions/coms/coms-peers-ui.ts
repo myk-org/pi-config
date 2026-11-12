@@ -169,7 +169,8 @@ export async function openComsPeersOverlay(
     // so the reopened list's own lines are not on screen yet.
     if (status.startsWith("⚠")) {
       log.warn("overlay_tell_failed", { name: request.target, project: request.project ?? null });
-      try { ctx.ui.notify(status, "error"); } catch {}
+      // The status carries the peer's own error text; sanitize the whole line, not just the name.
+      try { ctx.ui.notify(sanitizePeerText(status, 120), "error"); } catch {}
     }
   }
 }
