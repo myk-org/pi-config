@@ -155,7 +155,7 @@ for example — the prompt offers persistent approvals per statement:
 
   sudo zsh
     ↳ sudo
-  bash .dev/deploy-all.sh
+  bash scripts/build-extension-uis.sh
     ↳ bare shell invocation
 
 Allow?
@@ -163,8 +163,8 @@ Allow?
   → Yes — run once
     Always allow (this project): sudo zsh
     Always allow (everywhere): sudo zsh
-    Always allow (this project): bash .dev/deploy-all.sh
-    Always allow (everywhere): bash .dev/deploy-all.sh
+    Always allow (this project): bash scripts/build-extension-uis.sh
+    Always allow (everywhere): bash scripts/build-extension-uis.sh
     Always allow all of the above (this project)
     Always allow all of the above (everywhere)
     No
