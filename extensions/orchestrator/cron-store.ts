@@ -22,6 +22,8 @@ export interface DurableCronTask {
   createdAt: number;
   lastRun?: number;
   nextRun?: number;
+  /** Paused by the user: the definition is kept, no timer is armed (issue #1087). */
+  paused?: boolean;
 }
 export interface DurableCronEnvelope { version: 1; tasks: DurableCronTask[]; }
 export interface CronLockOwner { pid: number; process_start_token: string; instance_id: string; heartbeat_at: string; pid_namespace?: string; fd?: number; }
@@ -188,6 +190,7 @@ export function validateDurableCronTask(task: unknown): asserts task is DurableC
   // Disk data is untrusted: guard the type before parseModelOverride, which assumes a string.
   if (value.model !== undefined && (typeof value.model !== "string" || !parseModelOverride(value.model))) throw new Error("Invalid durable cron model");
   if ((value.lastRun !== undefined && !Number.isFinite(value.lastRun)) || (value.nextRun !== undefined && !Number.isFinite(value.nextRun))) throw new Error("Invalid durable cron timestamp");
+  if (value.paused !== undefined && typeof value.paused !== "boolean") throw new Error("Invalid durable cron paused flag");
 }
 function validate(tasks: DurableCronTask[]) { for (const task of tasks) validateDurableCronTask(task); }
 function atomicWrite(file: string, content: string) {

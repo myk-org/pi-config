@@ -62,7 +62,7 @@ Schedule, list, and remove cron tasks. `add` is not handled directly: anything t
 
 - **Arguments:** `list | list-all | remove <id>` (also `rm` / `delete`), plus the `--persist` flag
 - **Flags:** `--persist` scope the task to the project (`.pi/cron/crons.json`) instead of the session. `--scope` and `--project` are rejected with an error pointing at `--persist`.
-- **Listing:** `list` opens a cron status overlay; `list-all` shows every scope instead of just project-scoped tasks
+- **Listing:** `list` opens a cron status overlay; `list-all` shows every scope instead of just project-scoped tasks. In the overlay `p` pauses/resumes the focused cron and `x` removes it
 
 ```
 /cron list
@@ -203,7 +203,8 @@ Unified session status in one notification: async agents, cron tasks, git branch
 Task manager for the current session's task list.
 
 - **Arguments:** optional subcommand — none (list), `create`, `start <id>`, `done <id>`, `clear completed`, `clear all`
-- **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` select, `Enter` opens a task, `x` deletes the focused task, `Esc` closes
+- **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` select, `Enter` opens a task, `n` adds a task from one line, `e` edits the focused task's subject, `x` deletes the focused task, `Esc` closes
+- **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store. A blank or cancelled line writes nothing, and an unchanged subject is a no-op (the edit dialog shows the current subject as the placeholder)
 - **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] <subject>`; a task with blockers is marked `⛔ blocked`
 - **Detail:** subject, status, owner, blocked-by, description, created and updated
 - **`create`:** prompts for subject and description (bridged, so pidash can answer it too)

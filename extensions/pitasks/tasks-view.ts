@@ -103,6 +103,36 @@ export function taskDetailRows(task: Task): Array<[string, string]> {
 	return [...rows, TASKS_HINT].join("\n");
 }
 
+/** List keys beyond the shared ones (j/k, Enter, x, Esc) — issue #1087. */
+export function tasksOverlayIntent(key: string): "add" | "edit" | undefined {
+	if (key === "n") return "add";
+	if (key === "e") return "edit";
+	return undefined;
+}
+
+/** What the overlay's one-line dialog asked for, turned into at most one store write. */
+export type TaskComposeIntent =
+	| { kind: "create"; subject: string }
+	| { kind: "rename"; id: string; subject: string }
+	/** Nothing is written: the dialog was cancelled, the line was blank, or nothing changed. */
+	| { kind: "skip"; reason: "cancelled" | "blank" | "unchanged" };
+
+/**
+ * A blank line is refused rather than stored as an empty subject, and re-typing the current
+ * subject is a no-op, so neither path writes.
+ */
+export function planTaskCompose(
+	input: string | undefined,
+	current?: { id: string; subject: string },
+): TaskComposeIntent {
+	if (input === undefined) return { kind: "skip", reason: "cancelled" };
+	const subject = input.trim();
+	if (!subject) return { kind: "skip", reason: "blank" };
+	if (!current) return { kind: "create", subject };
+	if (subject === current.subject) return { kind: "skip", reason: "unchanged" };
+	return { kind: "rename", id: current.id, subject };
+}
+
 export type TaskAction = "start" | "done";
 export type TaskActionOutcome = "applied" | "missing" | "unchanged" | "refused";
 
@@ -158,12 +188,28 @@ export function tasksOverlayDeps(
 	store: {
 		list: () => Task[];
 		get: (id: string) => Task | undefined;
-		update: (id: string, fields: { status: "deleted" }) => unknown;
+		create: (subject: string, description: string, createdBy: Task["createdBy"]) => { id: string };
+		update: (id: string, fields: { status: "deleted" } | { subject: string }) => unknown;
 	},
 	onDeleted?: (id: string) => void,
 ): TasksUiDeps {
 	return {
 		listTasks: () => store.list(),
+		// The one-line dialog only carries a subject; the description stays empty like a fresh task.
+		createTask: (subject) => {
+			const task = store.create(subject, "", { type: "local", origin: "user", session: "", project: process.cwd() });
+			log.info("task_created", { id: task.id });
+			return task.id;
+		},
+		updateTaskSubject: (id, subject) => {
+			if (!store.get(id)) {
+				log.warn("task_edit_missing", { id });
+				return false;
+			}
+			store.update(id, { subject });
+			log.info("task_subject_updated", { id });
+			return true;
+		},
 		deleteTask: (id) => {
 			if (!store.get(id)) {
 				log.warn("task_delete_missing", { id });
@@ -182,4 +228,8 @@ export interface TasksUiDeps {
 	listTasks: () => Task[];
 	/** Delete by task id. Returns true when the task was removed. */
 	deleteTask: (id: string) => boolean;
+	/** Create a task from one line of input; returns the new task id. */
+	createTask: (subject: string) => string;
+	/** Rename a task's subject. Returns false when the task is gone. */
+	updateTaskSubject: (id: string, subject: string) => boolean;
 }

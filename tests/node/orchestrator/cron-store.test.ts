@@ -201,6 +201,22 @@ describe("durable cron store", () => {
     assert.deepEqual(readDurableCronStore(store).tasks, [task()]);
   });
 
+  it("keeps a paused task across a store round-trip", () => {
+    const store = tempStore();
+    mutateDurableCronStore(store, (tasks) => [...tasks, { ...task(), paused: true }]);
+    assert.equal(readDurableCronStore(store).tasks[0].paused, true);
+    // Resume rewrites the flag without dropping the definition.
+    mutateDurableCronStore(store, (tasks) => tasks.map((stored) => ({ ...stored, paused: false })));
+    assert.deepEqual(readDurableCronStore(store).tasks, [{ ...task(), paused: false }]);
+  });
+
+  it("rejects a non-boolean paused flag", () => {
+    assert.doesNotThrow(() => validateDurableCronTask({ ...task(), paused: true }));
+    assert.throws(() => validateDurableCronTask({ ...task(), paused: "yes" }), /Invalid durable cron paused flag/);
+    const store = tempStore();
+    assert.throws(() => mutateDurableCronStore(store, () => [{ ...task(), paused: 1 } as any]), /Invalid durable cron paused flag/);
+  });
+
   it("keeps the canonical leader lock present during cross-process contention", async () => {
     const store = tempStore();
     const fixture = fileURLToPath(new URL("./fixtures/cron-store-leader-worker.ts", import.meta.url));

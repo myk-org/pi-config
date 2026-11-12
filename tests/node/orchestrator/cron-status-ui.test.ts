@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   cronDetailRows,
+  cronStateLabel,
   formatCronSchedule,
   formatLastRunLabel,
   formatNextRunLabel,
@@ -77,6 +78,22 @@ describe("cronDetailRows", () => {
       ([label]) => label,
     );
     assert.deepEqual(rows, ["Schedule", "Last run", "Next run", "Created"]);
+  });
+});
+
+describe("cronStateLabel", () => {
+  it("marks a paused cron and leaves the active text alone", () => {
+    assert.equal(cronStateLabel({ paused: true, leader: true }), "⏸ paused");
+    assert.equal(cronStateLabel({ paused: false }), "active");
+    assert.equal(cronStateLabel({}), "active");
+    assert.equal(cronStateLabel({ leader: false }), "waiting for leader");
+  });
+
+  it("carries paused through the overlay view", () => {
+    const view = (overrides: Record<string, unknown>) =>
+      toCronStatusTaskView({ id: 1, description: "x", task: "y", createdAt: 0, ...overrides } as any, { overlayId: "1" });
+    assert.equal(view({ paused: true }).paused, true);
+    assert.equal(view({}).paused, undefined);
   });
 });
 

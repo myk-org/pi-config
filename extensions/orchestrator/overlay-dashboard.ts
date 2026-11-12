@@ -78,6 +78,10 @@ export interface OverlayListSpec<
   /** Optional compose key (m): the caller needs the whole terminal for a text dialog, so the
    *  list closes and can be re-opened once the composed text is handled. */
   onCompose?: (item: TItem) => void;
+  /** Optional extra single-key actions (e.g. `n` add, `e` edit, `p` pause). "close" hands the
+   *  terminal to the caller (a dialog), "redraw" refreshes the rows in place, false means the
+   *  key was not handled and the built-in keys below still see it. */
+  onKey?: (key: string, item: TItem | undefined) => "close" | "redraw" | false;
   /** Enter hands the item back to the caller instead of opening a detail pane: a caller that
    *  navigates a level deeper opens its own overlay and re-opens this list when that one closes,
    *  which is what makes Esc walk back one level at a time. */
@@ -211,6 +215,18 @@ export class OverlayListDashboard<
         this.invalidate();
         this.tui.requestRender(true);
       }
+      return;
+    }
+    const action = this.spec.onKey?.(data, items[this.selection.index]);
+    if (action === "close") {
+      log.debug("list_key_action", { key: data, outcome: "close" });
+      this.close(null);
+      return;
+    }
+    if (action === "redraw") {
+      log.debug("list_key_action", { key: data, outcome: "redraw" });
+      this.invalidate();
+      this.tui.requestRender(true);
       return;
     }
     if (this.spec.selectable && (matchesKey(data, Key.space) || data === " ")) {

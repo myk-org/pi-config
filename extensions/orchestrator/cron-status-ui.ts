@@ -5,6 +5,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   cronDetailRows,
+  cronStateLabel,
   formatCronSchedule,
   formatLastRunLabel,
   formatNextRunLabel,
@@ -14,10 +15,14 @@ import {
   openListDetailOverlay,
   OverlayScrollDetail,
 } from "./overlay-dashboard.js";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("cron_status_ui");
 
 export type { CronStatusTaskView } from "./cron-status-format.js";
 export {
   cronDetailRows,
+  cronStateLabel,
   formatCronSchedule,
   formatLastRunLabel,
   formatNextRunLabel,
@@ -29,6 +34,8 @@ export interface CronStatusUiDeps {
   listTasks: () => CronStatusTaskView[];
   /** Remove by scope-qualified task id. Return true if removed. */
   removeTask: (id: string) => boolean;
+  /** Pause/resume by scope-qualified task id. Return true if toggled. */
+  togglePaused: (id: string) => boolean;
   title?: string;
   emptyMessage?: string;
   borderTitle?: (tasks: readonly CronStatusTaskView[]) => string;
@@ -53,11 +60,13 @@ export async function openCronStatusOverlay(
       borderTitle:
         deps.borderTitle ??
         ((tasks) => `scheduled · ${tasks.length}`),
-      footerHints: "↑↓/jk select · Enter view · x remove · Esc close",
+      footerHints: "↑↓/jk select · Enter view · p pause/resume · x remove · Esc close",
       listItems: () => deps.listTasks(),
       rowParts: (task, theme) => {
         const now = Date.now();
         const rightParts = [
+          // An active row keeps today's text; only a paused row gains a state label.
+          ...(task.paused ? [theme.fg("warning", cronStateLabel(task))] : []),
           theme.fg("muted", formatCronSchedule(task)),
           theme.fg("dim", formatLastRunLabel(task, now)),
           theme.fg("muted", formatNextRunLabel(task, now)),
@@ -71,6 +80,13 @@ export async function openCronStatusOverlay(
           idLabel: theme.fg("dim", `#${task.taskId}`),
           rightParts,
         };
+      },
+      onKey: (key, task) => {
+        if (key !== "p" || !task) return false;
+        log.debug("cron_overlay_pause_key", { id: task.id, paused: !!task.paused });
+        deps.togglePaused(task.id);
+        // Stays open: the row must flip between `⏸ paused` and the active text in place.
+        return "redraw";
       },
       onX: (task) => {
         deps.removeTask(task.id);

@@ -8,9 +8,11 @@ import {
 	formatTasksPlainText,
 	nextTaskStatus,
 	parseTasksCommand,
+	planTaskCompose,
 	taskDetailRows,
 	taskStatusGlyph,
 	tasksOverlayDeps,
+	tasksOverlayIntent,
 	toTaskRowView,
 } from "../../../extensions/pitasks/tasks-view.ts";
 import type { Task, TaskStatus } from "../../../extensions/pitasks/types.ts";
@@ -228,9 +230,66 @@ describe("formatTasksPlainText", () => {
 });
 
 describe("tasksOverlayDeps", () => {
+	function deps(store: { list?: () => Task[]; get?: (id: string) => Task | undefined } = {}) {
+		const created: string[] = [];
+		const updated: Array<[string, string]> = [];
+		const ui = tasksOverlayDeps({
+			list: store.list ?? (() => []),
+			get: store.get ?? (() => undefined),
+			create: (subject) => { created.push(subject); return { id: String(created.length) }; },
+			update: (id, fields) => { if ("subject" in fields) updated.push([id, fields.subject]); },
+		});
+		return { ui, created, updated };
+	}
+
+	it("maps n and e to add and edit, and ignores every other key", () => {
+		assert.equal(tasksOverlayIntent("n"), "add");
+		assert.equal(tasksOverlayIntent("e"), "edit");
+		for (const key of ["x", "j", "k", "m", "N", ""]) {
+			assert.equal(tasksOverlayIntent(key), undefined);
+		}
+	});
+
+	it("creates a task from the typed subject", () => {
+		const { ui, created } = deps();
+		const plan = planTaskCompose("  ship the overlay  ");
+		assert.deepEqual(plan, { kind: "create", subject: "ship the overlay" });
+		if (plan.kind === "create") ui.createTask(plan.subject);
+		assert.deepEqual(created, ["ship the overlay"]);
+	});
+
+	it("renames through the store", () => {
+		const { ui, updated } = deps({ get: () => task({ id: "3" }) });
+		const plan = planTaskCompose("new subject", { id: "3", subject: "old subject" });
+		assert.deepEqual(plan, { kind: "rename", id: "3", subject: "new subject" });
+		if (plan.kind === "rename") ui.updateTaskSubject(plan.id, plan.subject);
+		assert.deepEqual(updated, [["3", "new subject"]]);
+	});
+
+	it("refuses a cancelled or blank line instead of writing an empty subject", () => {
+		const { created, updated } = deps({ get: () => task({ id: "3" }) });
+		assert.deepEqual(planTaskCompose(undefined), { kind: "skip", reason: "cancelled" });
+		assert.deepEqual(planTaskCompose("   ", { id: "3", subject: "old" }), { kind: "skip", reason: "blank" });
+		assert.deepEqual(created, []);
+		assert.deepEqual(updated, []);
+	});
+
+	it("treats an unchanged subject as a no-op", () => {
+		const { created, updated } = deps({ get: () => task({ id: "3", subject: "same" }) });
+		assert.deepEqual(planTaskCompose(" same ", { id: "3", subject: "same" }), { kind: "skip", reason: "unchanged" });
+		assert.deepEqual(created, []);
+		assert.deepEqual(updated, []);
+	});
+
+	it("reports a vanished task instead of writing", () => {
+		const { ui, updated } = deps();
+		assert.equal(ui.updateTaskSubject("99", "anything"), false);
+		assert.deepEqual(updated, []);
+	});
+
 	it("reads the live store on every call, never a snapshot", () => {
 		let tasks = [task({ id: "1" })];
-		const deps = tasksOverlayDeps({ list: () => tasks, get: () => undefined, update: () => undefined });
+		const deps = tasksOverlayDeps({ list: () => tasks, get: () => undefined, create: () => ({ id: "1" }), update: () => undefined });
 		assert.equal(deps.listTasks().length, 1);
 		tasks = [task({ id: "1" }), task({ id: "2" })];
 		assert.equal(deps.listTasks().length, 2);
@@ -243,7 +302,8 @@ describe("tasksOverlayDeps", () => {
 			{
 				list: () => [task({ id: "3" })],
 				get: (id) => (id === "3" ? task({ id: "3" }) : undefined),
-				update: (id, fields) => { updates.push([id, fields.status]); },
+				create: () => ({ id: "4" }),
+				update: (id, fields) => { updates.push([id, "status" in fields ? fields.status : fields.subject]); },
 			},
 			(id) => { deleted.push(id); },
 		);
@@ -257,6 +317,7 @@ describe("tasksOverlayDeps", () => {
 			{
 				list: () => [task({ id: "3" })],
 				get: () => task({ id: "3" }),
+				create: () => ({ id: "4" }),
 				update: () => undefined,
 			},
 			(id) => { deleted.push(id); },
@@ -267,7 +328,7 @@ describe("tasksOverlayDeps", () => {
 
 	it("does not write for an unknown id", () => {
 		let writes = 0;
-		const deps = tasksOverlayDeps({ list: () => [], get: () => undefined, update: () => { writes++; } });
+		const deps = tasksOverlayDeps({ list: () => [], get: () => undefined, create: () => ({ id: "1" }), update: () => { writes++; } });
 		assert.equal(deps.deleteTask("99"), false);
 		assert.equal(writes, 0);
 	});
