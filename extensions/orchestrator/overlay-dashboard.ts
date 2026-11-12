@@ -87,8 +87,12 @@ export interface OverlayListSpec<
   /** Optional compose key (m): the caller needs the whole terminal for a text dialog, so the
    *  list closes and can be re-opened once the composed text is handled. Compose acts on the
    *  SELECTION, like `x`: every multi-selected row, or just the focused one when nothing is
-   *  selected. Handling only the focused row silently dropped the rest (#1084). */
-  onCompose?: (items: TItem[]) => void;
+   *  selected. Handling only the focused row silently dropped the rest (#1084).
+   *
+   *  `missingIds` names selected rows that are GONE by the time `m` is pressed (a peer left, a job
+   *  finished). They are reported, never filtered away in silence: a send that reached less than
+   *  the whole selection must say so. */
+  onCompose?: (items: TItem[], missingIds: readonly TId[]) => void;
   /** Optional extra single-key actions (e.g. `n` add, `e` edit, `p` pause). "close" hands the
    *  terminal to the caller (a dialog), "redraw" refreshes the rows in place, false means the
    *  key was not handled and the built-in keys below still see it. `selected` is the Space-picked
@@ -276,14 +280,16 @@ export class OverlayListDashboard<
     }
     if (data === "m" && this.spec.onCompose) {
       // Same target set `x` uses: the multi-selection when there is one, else the focused row.
-      const targets = this.multi.size > 0
-        ? items.filter((i) => this.multi.has(i.id))
-        : [items[this.selection.index]].filter(Boolean);
-      if (targets.length > 0) {
-        log.debug("list_compose_key", { rows: targets.length, multi: this.multi.size > 0 });
-        this.spec.onCompose(targets);
-        this.close(null);
-      }
+      const wanted = this.multi.size > 0
+        ? [...this.multi]
+        : [items[this.selection.index]?.id].filter((id): id is TId => id !== undefined);
+      // Row order for what survived, the ids for what did not — a vanished peer is reported, not
+      // dropped: an empty `targets` still reaches the caller instead of `m` doing nothing.
+      const targets = items.filter((item) => wanted.includes(item.id));
+      const missingIds = wanted.filter((id) => !items.some((item) => item.id === id));
+      log.debug("list_compose_key", { rows: targets.length, missing: missingIds.length, multi: this.multi.size > 0 });
+      this.spec.onCompose(targets, missingIds);
+      this.close(null);
       return;
     }
     if (data === "x") {

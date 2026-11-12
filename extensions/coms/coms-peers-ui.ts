@@ -29,8 +29,10 @@ export interface ComsPeersOverlayDeps {
   killPeer: (row: RegistryRow) => string;
   /** Kill every live peer. */
   killAll: () => string;
-  /** Send the user's own message to a peer (#1077). Absent means no composer is offered. */
-  tellPeer?: (request: { target: string; prompt: string; project?: string }) => Promise<string>;
+  /** Send the user's own message to a peer (#1077). Absent means no composer is offered.
+   *  Returns a stated outcome: a caller that sniffs text to decide delivery counts a dead socket
+   *  as a success (#1084). */
+  tellPeer?: (request: { target: string; prompt: string; project?: string }) => Promise<TellOutcome>;
   /** The shared list→detail overlay. Injected only by tests, which need to drive Enter without a
    *  TUI; production always uses the default. */
   openOverlay?: typeof openListDetailOverlay;
@@ -43,6 +45,9 @@ export interface ComsPeersOverlayDeps {
 
 type Row = RegistryRow & { id: string };
 
+/** Delivery is stated, never inferred from a message's first character. */
+export type TellOutcome = { ok: true } | { ok: false; reason: string; code: string };
+
 export async function openComsPeersOverlay(
   ctx: any,
   deps: ComsPeersOverlayDeps,
@@ -53,7 +58,8 @@ export async function openComsPeersOverlay(
   // list closes and is re-opened after each. The overlay hands the focused row over through these
   // queues (a bare variable would be narrowed to null across the await, since the assignment
   // happens inside its callback).
-  const composeQueue: Row[][] = [];
+  // Each entry: the rows that survived to this moment, and the selected ids that had already gone.
+  const composeQueue: Array<{ rows: Row[]; missing: readonly string[] }> = [];
   const peerQueue: Row[] = [];
   // #1084: Esc from the drilldown returns to the peer list focused on the peer it came from.
   let reselectPeer: string | undefined;
@@ -104,7 +110,7 @@ export async function openComsPeersOverlay(
           try { ctx.ui.notify(sanitizePeerText(killed, 120), "info"); } catch {}
         },
         // Compose acts on the selection (the overlay hands over every selected row).
-        onCompose: deps.tellPeer ? (rows) => { composeQueue.push(rows); } : undefined,
+        onCompose: deps.tellPeer ? (rows, missingIds) => { composeQueue.push({ rows, missing: missingIds }); } : undefined,
         // #1084: Enter walks INTO the peer instead of opening a wall of text.
         onSelect: (row) => { peerQueue.push(row); },
       },
@@ -118,11 +124,23 @@ export async function openComsPeersOverlay(
     }
 
     const picked = composeQueue.pop();
-    if (!picked || picked.length === 0 || !deps.tellPeer) return;
+    if (!picked || !deps.tellPeer) return;
     // Dedupe by id, keeping row order: the same peer twice must be sent to once, not twice.
-    const targets = [...new Map(picked.map((row) => [row.id, row])).values()];
-    // Same one-line dialog the rest of pi uses; Esc or an empty line means "nothing to send" and
-    // returns to the list rather than dropping the user back into the session.
+    const targets = [...new Map(picked.rows.map((row) => [row.id, row])).values()];
+    const missing = [...new Set(picked.missing)];
+    const total = targets.length + missing.length;
+    const nameOf = (id: string): string => sanitizePeerText(id.slice(id.indexOf(":") + 1), 40) || id;
+    const goneNote = missing.length > 0
+      ? ` · ${missing.length} peer${missing.length === 1 ? "" : "s"} left before sending: ${missing.map(nameOf).join(", ")}`
+      : "";
+
+    // Everyone left before the dialog opened: say nothing was sent, do not ask for text.
+    if (targets.length === 0) {
+      log.warn("overlay_tell_nothing_sent", { selected: total, missing: missing.length });
+      try { ctx.ui.notify(sanitizePeerText(`⚠️ nothing sent${goneNote}`, 160), "error"); } catch {}
+      continue;
+    }
+
     const title = targets.length === 1
       ? `Message ${sanitizePeerText(targets[0].name, 40)} (sent as you)`
       : `Message ${targets.length} peers (sent as you)`;
@@ -132,37 +150,45 @@ export async function openComsPeersOverlay(
       log.debug("overlay_tell_cancelled", { count: targets.length });
       continue;
     }
-    // One request per peer, one result each: a partial send must never read as success.
+
+    // One request per peer. Only a stated `ok` counts as delivered; a failure keeps its reason.
     let sent = 0;
     const failed: string[] = [];
     const failures: string[] = [];
+    const failCodes: string[] = [];
     for (const target of targets) {
       const request = buildTellRequest(target, text ?? "");
       if (!request) continue;
+      const name = sanitizePeerText(target.name, 40);
+      // ONE event and ONE level for every non-delivery, whatever produced it (#1084 finding 3).
+      const fail = (code: string, reason: string): void => {
+        failed.push(name);
+        failures.push(reason);
+        failCodes.push(code);
+        log.error("overlay_tell_failed", { name: request.target, code, peers: targets.length });
+      };
       try {
         const result = await deps.tellPeer(request);
-        if (result.startsWith("⚠")) {
-          failed.push(sanitizePeerText(target.name, 40));
-          failures.push(result);
-          log.warn("overlay_tell_failed", { name: request.target, project: request.project ?? null, peers: targets.length });
-        } else {
-          sent += 1;
-        }
+        if (result.ok) sent += 1;
+        else fail(result.code, result.reason);
       } catch (err) {
-        failed.push(sanitizePeerText(target.name, 40));
-        log.error("overlay_tell_threw", { name: request.target, error: err instanceof Error ? err.message : String(err) });
+        fail("threw", err instanceof Error ? err.message : String(err));
       }
     }
-    log.info("overlay_tell_peer", { peer: picked.length, unique: targets.length, sent, failed: failed.length, chars: first.prompt.length });
-    // ONE line for the whole send: per-peer notifies would bury the failures.
-    if (targets.length > 1 || failed.length > 0) {
-      // One failing peer keeps its reason (that is what the user acts on); several get names only,
-      // because N reasons in one line is unreadable.
+    log.info("overlay_tell_peer", { selected: picked.rows.length, unique: targets.length, sent, failed: failed.length, missing: missing.length, chars: first.prompt.length });
+
+    // ONE line for the whole send: per-peer notifies would bury the failures. The count is stated
+    // ("sent 1 of 3") whenever the selection did not fully arrive, so a partial send cannot read
+    // as success.
+    const sentPart = missing.length > 0 || failed.length > 0 ? `sent ${sent} of ${total}` : `sent ${sent} peer${sent === 1 ? "" : "s"}`;
+    if (targets.length + missing.length > 1 || failed.length > 0 || missing.length > 0) {
+      // One failing peer keeps its reason (that is what the user acts on); several get names only.
       const reason = failed.length === 1 && failures[0] ? ` (${failures[0]})` : "";
-      const summary = failed.length === 0
-        ? `📡 sent ${sent} peer${sent === 1 ? "" : "s"}`
-        : `⚠️ sent ${sent} · failed ${failed.length}: ${failed.join(", ")}${reason}`;
-      try { ctx.ui.notify(sanitizePeerText(summary, 120), failed.length === 0 ? "info" : "error"); } catch {}
+      const failurePart = failed.length > 0 ? ` · failed ${failed.length}: ${failed.join(", ")}${reason}` : "";
+      const summary = failed.length === 0 && missing.length === 0
+        ? `📡 ${sentPart}`
+        : `⚠️ ${sentPart}${failurePart}${goneNote}`;
+      try { ctx.ui.notify(sanitizePeerText(summary, 200), failed.length === 0 && missing.length === 0 ? "info" : "error"); } catch {}
     }
 
   }
