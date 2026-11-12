@@ -31,13 +31,16 @@ Full-screen overlay listing running and queued async agents, with live output pe
 
 Start, stop, or inspect P2P inter-agent communication. Coms is off by default and is activated explicitly with `/coms start`; all `coms_*` tools return "coms not active" until then.
 
-- **Arguments:** `start | stop | status` (no argument is treated as an error with a usage hint)
+- **Arguments:** `start | stop | status | tell [--project <p>] <peer> <message> | list [--all] | kill <peer|all>` (no argument shows the status)
 
 ```
 /coms start
 /coms status
+/coms tell impl-42 rerun the failing suite — I already approved it
 /coms stop
 ```
+
+`/coms tell` sends the message as YOU: the envelope carries `origin: "user"`, so the peer can tell a human decided from another model guessing. Agent tools cannot set that (`coms_send` always sends `origin: "peer"`), and a failed delivery is reported rather than dropped. Argument completion lives with the command in `extensions/coms/coms-wrapper.ts` (peer names come from the live registry, so a dead peer never completes) — `tell` completes exactly like `kill`, including `--project`.
 
 See [Inter-Agent Communication](inter-agent-communication.html) for the peer protocol and message semantics.
 

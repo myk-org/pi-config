@@ -87,7 +87,7 @@ for `git-expert` to commit.
 | `/status`                                                                                       | Unified session snapshot — async agents, cron tasks, git branch, context usage                                                                                                                                                                                                                                                                                                                                                                             |
 | `/nvim-changed-files`                                                                           | Send git changed files to nvim's quickfix list (only inside nvim)                                                                                                                                                                                                                                                                                                                                                                                          |
 | `/pidiff start\|stop\|restart\|status`                                                          | Manage the pidiff diff viewer server (per-project)                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `/coms start\|stop\|status`                                                                     | P2P local agent communication (Unix socket)                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `/coms start\|stop\|status\|tell`                                                          | P2P local agent communication (Unix socket); `tell <peer> <message>` writes a peer as the user |
 
 ### Inter-Agent Communication (coms)
 
@@ -142,6 +142,13 @@ Messaging semantics (#924):
   in `~/.pi/coms/history.jsonl` (fail-soft, size-rotated) and queryable via
   `coms_history`; defaults to this session's traffic, `all_sessions: true`
   shows the whole machine's trail.
+- **User messages** — `/coms tell <peer> <message>` (or `m` on the focused peer
+  in `/coms list`) delivers with `origin: "user"`, so the peer knows a human
+  said it. Only the command layer can set that: `coms_send`/`coms_broadcast`
+  always send `origin: "peer"` and their schemas have no `origin` field, so
+  tool input cannot claim human authority. Headers mark a user inbound
+  `(from the USER)`, `coms_history` marks the record `(USER)`, and a failed
+  delivery is notified instead of dropped.
 
 Queue recovery is explicit. Run `coms_queue_inspect` first and review its
 body-free preview. Then pass its `preview_id` to `coms_queue_clear`.

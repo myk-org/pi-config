@@ -19,6 +19,10 @@
  *   /create-skill <Tab>          → (free-text name)
  *   /cron <Tab>                  → add, list, remove
  *   /dream-auto <Tab>            → on, off
+ *
+ * NOT here: `/coms`. `kill` and `tell` (and their `--project` scope) are completed in
+ * `extensions/coms/coms-wrapper.ts`, because peer-name completion needs the live registry rows so a
+ * dead peer never completes. Keep the two consistent there; do not enumerate them here.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -630,5 +634,8 @@ export function registerExtendedAutocomplete(pi: ExtensionAPI): void {
   };
 
   const completions = registerCompletions(pi, ctx);
+  // Completions live with the command that owns them: `/coms kill|tell` (and their `--project`)
+  // are completed from `extensions/coms/coms-wrapper.ts`, where the live registry rows are, so a
+  // gone peer never completes. A pointer, not a second enumeration — one source, next to the handler.
   setupPromptTemplateInterceptor(pi, ctx, completions);
 }

@@ -141,6 +141,12 @@ Peer cards and `coms_list` include a busy indicator (`⚙busy`) whenever the pee
 
 `coms_send` and `coms_broadcast` accept `priority: true` to jump the receiver's queued message backlog. This affects delivery order only — it never interrupts an in-flight turn (use steer for that). Reserve it for urgent messages, for example "stop — the build is broken", that must not wait behind long-running queued work.
 
+## Messaging a Peer as the User
+
+`/coms tell <peer> <message>` (or `/coms tell --project <p> <peer> <message>`) delivers a message to a peer with `origin: "user"` — the peer knows a human typed it, not another model. In `/coms list`, `m` opens a one-line composer for the focused peer and sends the same way. Delivery is synchronous: the overlay reports the `msg_id`, and a failure (no such peer, dead socket) is notified to you instead of being dropped.
+
+Only the command layer can claim human authorship. `coms_send`, `coms_broadcast`, and the `tasks` path always send `origin: "peer"`, their schemas have no `origin` parameter, and a spoofed value in tool input is ignored — an agent cannot manufacture an approval it did not get. On the receiving side the inbound header and its machine-readable prefix say `USER (a human)`, and `coms_history` marks the record `(USER)`.
+
 ## Message History
 
 Every prompt and reply — in both directions, steers included — is appended to a local JSONL trail at `~/.pi/coms/history.jsonl` (fail-soft: delivery never waits on history; the file is size-rotated so it stays bounded). The `coms_history` tool queries it by peer, direction, `msg_id`, time range (`since`), or status substring, and returns the most recent matching records. By default it shows only the current session's traffic; `all_sessions: true` shows the whole machine's trail. Use it to answer "what did I send this peer and what came back?" when debugging multi-agent workflows.
@@ -158,6 +164,7 @@ The internals mostly stay out of your way, but they explain several behaviors yo
 | `/coms` shows a different set of peers | You toggled `include_explicit` or switched the displayed project |
 | A peer shows `⚙busy` | It is currently processing an inbound message |
 | A pending reply shows a progress note | The peer sent a progress signal (~60s interval) while still working |
+| An inbound says `(from the USER)` | You sent it with `/coms tell` or the `m` composer — it is not another agent's guess |
 
 A few practical implications are worth remembering:
 

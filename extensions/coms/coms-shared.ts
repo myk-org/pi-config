@@ -484,13 +484,93 @@ export async function readTaskSummary(_cwd: string, _sessionId?: string): Promis
 	} catch { return null; }
 }
 
+/** Who authored an inbound prompt: a human (only the command layer knows that) or another
+ *  agent's model. "peer" is the default so a missing or unrecognised value can never claim
+ *  human authority. */
+export type PromptOrigin = "user" | "peer";
+
+/** Decide the envelope `origin`. Only the CALLER'S ROLE produces `user`, and only as the literal
+ *  boolean `true`: a value that merely looks like an origin (a JSON string from tool input, an
+ *  absent field) degrades to `peer`, so a tool cannot spoof human authority (#1077). */
+export function resolvePromptOrigin(userAuthored: unknown): PromptOrigin {
+	return userAuthored === true ? "user" : "peer";
+}
+
+/** True when a received envelope claims human authorship — the receiver trusts the literal only. */
+export function isUserOrigin(value: unknown): boolean {
+	return value === "user";
+}
+
+/** The origin a RECEIVER reads off an envelope: only the exact literal "user" counts, so a missing
+ *  field (older sender), a forged value, or a malformed one all read as a peer message. */
+export function receivedPromptOrigin(value: unknown): PromptOrigin {
+	return isUserOrigin(value) ? "user" : "peer";
+}
+
+/** One bundled inbound as it is rendered to the receiver. Origin is PER MESSAGE: a user message
+ *  and another agent's message from the same peer arrive in one bundle, and labelling the whole
+ *  bundle "from the user" would launder the agent's text as a human decision (#1077). */
+export interface BundledInbound {
+	msg_id: string;
+	prompt: string;
+	origin?: PromptOrigin;
+}
+
+/** Render a FIFO bundle: each message carries its own origin tag, and `origin` is returned only
+ *  when EVERY message shares it (mixed bundles get no bundle-level marker). */
+export function buildBundledContent(
+	senderName: string,
+	messages: BundledInbound[],
+): { header: string; content: string; origin?: PromptOrigin } {
+	const safeSender = sanitizeComsName(senderName);
+	const origins = new Set(messages.map((m) => m.origin ?? "peer"));
+	const shared = origins.size === 1 ? messages[0]?.origin ?? "peer" : undefined;
+	const content = messages.map((m, idx) => {
+		const tag = (m.origin ?? "peer") === "user" ? `[from USER (a human), via ${safeSender}] ` : `[from ${safeSender}] `;
+		return `--- Message ${idx + 1} of ${messages.length} [${m.msg_id}] ---\n${tag}${m.prompt}`;
+	}).join("\n\n");
+	const mixed = shared === undefined
+		? " ORIGINS ARE MIXED: messages tagged [from USER (a human), via …] are the human's words; the rest are another agent's. Weigh them differently."
+		: "";
+	// The only trace of WHY a bundle rendered its labels the way it did — a mixed bundle gets no
+	// bundle-level marker, which looks like a missing one unless this line says otherwise.
+	log.debug("bundle_origins", { messages: messages.length, shared: shared ?? "mixed", origins: [...origins].join(",") });
+	const header = `[BUNDLED: ${messages.length} messages from ${safeSender}. Later messages may override earlier ones. Read ALL before acting.${mixed}]`;
+	return { header, content, ...(shared ? { origin: shared } : {}) };
+}
+
+/** Build the command-layer send request from the peers overlay composer. A blank line means
+ *  "nothing to send" (Esc and empty input are the same decision), so it yields null. */
+export function buildTellRequest(
+	peer: { name: string; project?: string | null },
+	text: string,
+): { target: string; prompt: string; project?: string } | null {
+	const prompt = text.trim();
+	if (!prompt) return null;
+	return { target: peer.name, prompt, ...(peer.project ? { project: peer.project } : {}) };
+}
+
+/** Parse `/coms tell [--project <p>] <peer> <message…>` (the text after "tell"). The message is
+ *  taken from the raw argument, not from tokens, so its original spacing and dashes survive. */
+export function parseComsTell(detail: string): { peer: string; message: string; project?: string } | null {
+	const match = detail.trim().match(/^(?:--project\s+(\S+)\s+)?(\S+)\s+([\s\S]+)$/);
+	if (!match) return null;
+	const [, project, peer, message] = match;
+	const text = message.trim();
+	if (!text) return null;
+	return { peer, message: text, ...(project ? { project } : {}) };
+}
+
 /** Build the customType string for coms inbound display (shown as the header by pi).
  *  Sanitizes all inputs since senderName/senderCwd come from untrusted peers. */
-export function formatComsInboundType(senderName: string, selfName: string, senderCwd: string): string {
+export function formatComsInboundType(senderName: string, selfName: string, senderCwd: string, origin?: PromptOrigin): string {
 	const safeSender = sanitizeComsName(senderName);
 	const safeSelf = sanitizeComsName(selfName);
 	const safeCwd = senderCwd.replace(/[\x00-\x1f\x7f-\x9f\[\]]/g, "").trim() || "?";
-	return `from ${safeSender} → ${safeSelf} @ ${safeCwd}`;
+	// Only a user-authored message gets a marker: peer is the norm and a marker on every
+	// inbound would just be noise to read past.
+	const originTag = origin === "user" ? " (from the USER)" : "";
+	return `from ${safeSender} → ${safeSelf} @ ${safeCwd}${originTag}`;
 }
 
 export function buildInboundContent(
@@ -499,12 +579,15 @@ export function buildInboundContent(
 	tasks?: Array<{ subject: string; description: string }> | null,
 	senderName?: string,
 	senderCwd?: string,
+	origin?: PromptOrigin,
 ): string {
 	// Sanitize peer-controlled values — strip control chars and limit length
 	const safeName = senderName ? senderName.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 100) : undefined;
 	const safeCwd = senderCwd ? senderCwd.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 200) : undefined;
-	// Machine-readable prefix so the LLM can distinguish coms messages from user input
-	const fromTag = safeName ? `[from ${safeName}${safeCwd ? ` @ ${safeCwd}` : ''}] ` : '';
+	// Machine-readable prefix so the LLM can distinguish coms messages from user input. The
+	// origin comes before the name: "a human decided this" is the part that changes the reply.
+	const originTag = origin === "user" ? "USER (a human), via " : "";
+	const fromTag = safeName ? `[from ${originTag}${safeName}${safeCwd ? ` @ ${safeCwd}` : ''}] ` : '';
 	let content = header ? `${fromTag}${header}\n\n${prompt}` : `${fromTag}${prompt}`;
 	if (safeName) {
 		content += `\n\nReply to me via coms_send(target="${safeName}")`;

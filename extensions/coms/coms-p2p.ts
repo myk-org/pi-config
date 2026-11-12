@@ -20,9 +20,10 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyExtensionDefaults } from "./themeMap.js";
 import {
-	buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, type BroadcastTargetResult } from "./coms-shared.js";
+	buildBundledContent, buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, type BroadcastTargetResult, resolvePromptOrigin, receivedPromptOrigin, type PromptOrigin } from "./coms-shared.js";
 import { appendHistoryRecord, queryHistoryRecords, truncatePreview, type HistoryRecord } from "./coms-history.js";
 import { openListDetailOverlay, OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
+import { projectProblem, userTargetProblem } from "./coms-peers.js";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -78,6 +79,15 @@ interface PromptEnvelope extends Envelope {
 	priority?: boolean;
 	/** #924 §1: inject into the receiver's IN-FLIGHT turn instead of queueing. */
 	steer?: boolean;
+	/** #1077: who authored this prompt. Only the command layer (`/coms tell`, the peers overlay)
+	 *  sets "user"; every tool-driven send leaves it unset, which means "peer". */
+	origin?: PromptOrigin;
+}
+
+/** A received origin counts only as the exact literal: a forged or malformed value is a peer
+ *  message, so an unknown cannot claim human authority. */
+function inboundOrigin(env: { origin?: unknown }): PromptOrigin {
+	return receivedPromptOrigin(env.origin);
 }
 
 interface ResponseEnvelope extends Envelope {
@@ -239,6 +249,8 @@ interface InboundContext {
 	priority?: boolean;
 	/** #924 §1: steers accepted into this inbound's turn so far (cap guard). */
 	steerCount?: number;
+	/** #1077: the sender's claim of human authorship (literal "user" only). */
+	origin?: PromptOrigin;
 	/** #924 §6: last progress-signal emission for this inbound (ms epoch). */
 	lastProgressAt?: number;
 }
@@ -910,13 +922,14 @@ export default function (pi: ExtensionAPI) {
 				try {
 					pi.sendMessage(
 						{
-							customType: `steer from ${sanitizeComsName(env.sender_name)} → ${sanitizeComsName(identity.name)} @ ${sanitizeComsName(env.sender_cwd || "?")}`,
+							customType: `steer from ${sanitizeComsName(env.sender_name)} → ${sanitizeComsName(identity.name)} @ ${sanitizeComsName(env.sender_cwd || "?")}${inboundOrigin(env) === "user" ? " (from the USER)" : ""}`,
 							content: buildInboundContent(
 								`[STEER from ${sanitizeComsName(env.sender_name)} — mid-turn course correction. Read this BEFORE continuing your current work; it may change instructions.]`,
 								env.prompt,
 								null,
 								env.sender_name,
 								env.sender_cwd,
+								inboundOrigin(env),
 							),
 							display: true,
 							details: { msg_id: env.msg_id, steer: true, target_msg_id: currentInbound.msg_id },
@@ -937,6 +950,7 @@ export default function (pi: ExtensionAPI) {
 						session: env.sender_session,
 						preview: truncatePreview(env.prompt),
 						status: `injected into ${currentInbound.msg_id}`,
+						origin: inboundOrigin(env),
 					});
 					// Terminal receipt for the sender's pending entry: the steer was
 					// delivered mid-turn; no separate response will ever come for it.
@@ -959,6 +973,7 @@ export default function (pi: ExtensionAPI) {
 						session: env.sender_session,
 						preview: truncatePreview(env.prompt),
 						status: "steer_failed — queued normally",
+						origin: inboundOrigin(env),
 					});
 				log.warn("steer_failed_queued", env.msg_id, "from", env.sender_name);
 			} else {
@@ -981,6 +996,7 @@ export default function (pi: ExtensionAPI) {
 			queued_at: nowIso(),
 			fulfilled: false,
 			...(env.priority ? { priority: true } : {}),
+			origin: inboundOrigin(env),
 		};
 		// PRIORITY (#924 §4): priority prompts jump ahead of the first
 		// non-priority pending inbound; arrival order is preserved among
@@ -1001,6 +1017,7 @@ export default function (pi: ExtensionAPI) {
 			session: env.sender_session,
 			preview: truncatePreview(env.prompt),
 			status: env.priority ? "queued (priority)" : "queued",
+			origin: inboundOrigin(env),
 		});
 		log.debug("recovery_inbound_enqueued", { msgId: env.msg_id, sender: env.sender_name, state: "queued" });
 		maybeRefreshWidget();
@@ -1022,8 +1039,8 @@ export default function (pi: ExtensionAPI) {
 		try {
 			pi.sendMessage(
 				{
-					customType: formatComsInboundType(env.sender_name, sanitizeComsName(identity?.name ?? "?"), env.sender_cwd),
-					content: buildInboundContent("", env.prompt, env.tasks, env.sender_name, env.sender_cwd),
+					customType: formatComsInboundType(env.sender_name, sanitizeComsName(identity?.name ?? "?"), env.sender_cwd, env.origin),
+					content: buildInboundContent("", env.prompt, env.tasks, env.sender_name, env.sender_cwd, env.origin),
 					display: true,
 					details: {
 						msg_id: env.msg_id,
@@ -1688,6 +1705,9 @@ export default function (pi: ExtensionAPI) {
 		// Publish who we are so an activation path can VERIFY that a peer really exists (a socket
 		// bind can fail and be swallowed upstream, which used to look like a successful start).
 		(globalThis as any).__comsSelf = { sessionId: comsSessionId, name, project, endpoint, origin: activationOrigin };
+		// The user-send bridge is published HERE, not at extension init: it is cleared on shutdown,
+		// so a `/coms stop` + `/coms start` cycle must re-publish it or `/coms tell` breaks.
+		publishUserSendBridge();
 		includeExplicit = false;
 		displayProject = project;
 
@@ -2290,10 +2310,16 @@ Do not respond to this message.`;
 			tasks?: Array<{ subject: string; description: string }>;
 			steer?: boolean;
 			priority?: boolean;
+			/** #1077: set ONLY by the command layer (`/coms tell`, peers overlay). The coms_* tools
+			 *  never pass it, so tool input cannot claim human authority. */
+			userAuthored?: boolean;
 		},
 	): Promise<{ msg_id: string; hops: number }> {
 		if (!identity) throw new Error("coms not initialised");
-		const hops = currentInbound ? currentInbound.hops + 1 : 0;
+		const origin = resolvePromptOrigin(params.userAuthored);
+		// A human typing `/coms tell` starts a conversation: it does not inherit the hop depth of the
+		// peer message this session happens to be answering, so the cap cannot refuse the user.
+		const hops = params.userAuthored === true ? 0 : currentInbound ? currentInbound.hops + 1 : 0;
 		if (hops >= MAX_HOPS) {
 			throw new Error(`coms: hop limit reached (${hops} >= ${MAX_HOPS})`);
 		}
@@ -2328,6 +2354,7 @@ Do not respond to this message.`;
 			tasks: params.tasks ?? null,
 			...(params.steer ? { steer: true } : {}),
 			...(params.priority ? { priority: true } : {}),
+			origin,
 		};
 
 		// Register before sending. A peer may acknowledge and respond before
@@ -2381,7 +2408,10 @@ Do not respond to this message.`;
 			if (entry.timer) clearTimeout(entry.timer);
 			throw error;
 		}
-		comsSendCalledThisTurn.add(target.coms_session_id);
+		// A user-authored send is not the agent replying: guarding it would suppress the agent's own
+		// reply to the same peer in this turn (the human's message and the answer are different
+		// messages). Only tool/auto-capture sends claim "already replied".
+		if (params.userAuthored !== true) comsSendCalledThisTurn.add(target.coms_session_id);
 
 		if (params.tasks && params.tasks.length > 0 && target.coms_session_id) {
 			try {
@@ -2404,9 +2434,70 @@ Do not respond to this message.`;
 			session: target.coms_session_id,
 			preview: truncatePreview(promptText),
 			status: [params.steer ? "steer" : null, params.priority ? "priority" : null].filter(Boolean).join("+") || "sent",
+			origin,
 		});
 		log.debug("outbound_prompt", msg_id, "to", target.name, "hops", hops);
 		return { msg_id, hops };
+	}
+
+	/** #1077: the user path refuses ambiguity — a human aiming at one peer must never land on
+	 *  another, so unlike the agent tools (which pick the freshest match) this returns a message
+	 *  that names the candidates and points at `--project`. */
+	async function resolveUserTarget(name: string, project?: string): Promise<{ target?: RegistryEntry; error?: string }> {
+		if (!identity) return { error: "coms is not active — run /coms start first." };
+		if (project) {
+			// The value is joined under the coms root by pruneDeadEntries, so it is validated exactly
+			// like the spawn path (no separators, no "..", no control chars) BEFORE anything is read.
+			const problem = projectProblem(project);
+			if (problem) {
+				log.warn("user_send_project_refused", { project, reason: problem });
+				return { error: `invalid --project: ${problem}` };
+			}
+		}
+		const ident = identity;
+		const projects = project ? [project] : [ident.project, ...listProjects().filter((p) => p !== ident.project)];
+		const matches: Array<{ project: string; entry: RegistryEntry }> = [];
+		for (const proj of projects) {
+			let entries: RegistryEntry[] = [];
+			try { entries = await pruneDeadEntries(proj, process.cwd()); } catch { continue; }
+			for (const entry of entries) {
+				if (entry.coms_session_id === name || entry.name === name) matches.push({ project: proj, entry });
+			}
+			// A session id is unique by construction: stop before a name scan reaches other projects.
+			if (matches.some((m) => m.entry.coms_session_id === name)) break;
+		}
+		const bySession = matches.filter((m) => m.entry.coms_session_id === name);
+		const found = bySession.length > 0 ? bySession : matches;
+		const problem = userTargetProblem(found.map((m) => ({ name: m.entry.name, project: m.project })), name, project);
+		if (problem) {
+			log.warn("user_send_refused", { target: name, matches: found.length, reason: problem });
+			return { error: problem };
+		}
+		return { target: found[0].entry };
+	}
+
+	/** #1077 command-layer bridge: `/coms tell` and the peers overlay composer deliver through the
+	 *  SAME path as coms_send, but they are the only callers that stamp origin "user" — the wrapper
+	 *  that owns `/coms` cannot reach this closure. Returns text and never throws, so a delivery
+	 *  failure reaches the user instead of being dropped on the floor. */
+	function publishUserSendBridge(): void {
+		(globalThis as any).__comsUserSend = async (params: { target: string; prompt: string; project?: string }): Promise<{ ok: boolean; message: string }> => {
+			const resolved = await resolveUserTarget(params.target, params.project);
+			if (!resolved.target) {
+				log.warn("user_send_target_missing", { target: params.target, project: params.project ?? null });
+				return { ok: false, message: resolved.error ?? `no live peer "${params.target}"` };
+			}
+			const target = resolved.target;
+			try {
+				const { msg_id } = await deliverPrompt(target, { prompt: params.prompt, userAuthored: true });
+				log.info("user_send", msg_id, "to", target.name, "chars", params.prompt.length);
+				return { ok: true, message: `sent to ${target.name} (${msg_id})` };
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
+				log.error("user_send_failed", target.name, reason);
+				return { ok: false, message: `delivery to ${target.name} failed: ${reason}` };
+			}
+		};
 	}
 
 	// ━━ Tools ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2719,7 +2810,7 @@ Do not respond to this message.`;
 				limit: params.limit,
 			});
 			const lines = records.map((r) =>
-				`${r.ts} [${r.direction}] ${r.peer} — ${r.preview}${r.status ? ` (${r.status})` : ""} [${r.msg_id}]`);
+				`${r.ts} [${r.direction}] ${r.peer}${r.origin === "user" ? " (USER)" : ""} — ${r.preview}${r.status ? ` (${r.status})` : ""} [${r.msg_id}]`);
 			const text = records.length === 0
 				? "No matching coms history records."
 				: `${records.length} record(s) (newest last):\n${lines.join("\n")}`;
@@ -3276,8 +3367,8 @@ Do not respond to this message.`;
 				try {
 					pi.sendMessage(
 						{
-							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd),
-							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd),
+							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd, next.origin),
+							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin),
 							display: true,
 							details: {
 								msg_id: next.msg_id,
@@ -3318,11 +3409,11 @@ Do not respond to this message.`;
 				try {
 					pi.sendMessage(
 						{
-							customType: formatComsInboundType(inbound.sender_name, sanitizeComsName(identity?.name ?? "?"), inbound.sender_cwd),
+							customType: formatComsInboundType(inbound.sender_name, sanitizeComsName(identity?.name ?? "?"), inbound.sender_cwd, inbound.origin),
 							content: buildInboundContent(
 								`[NOTE: your previous reply was not captured because a user message arrived in the same turn. ` +
 								`This is a re-injection — please reply to this peer message now.]`,
-								inbound.prompt, inbound.tasks ?? null, inbound.sender_name, inbound.sender_cwd),
+								inbound.prompt, inbound.tasks ?? null, inbound.sender_name, inbound.sender_cwd, inbound.origin),
 							display: true,
 							details: {
 								msg_id: inbound.msg_id,
@@ -3357,8 +3448,8 @@ Do not respond to this message.`;
 						try {
 							pi.sendMessage(
 								{
-									customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd),
-									content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd),
+									customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd, next.origin),
+									content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin),
 									display: true,
 									details: {
 										msg_id: next.msg_id,
@@ -3425,8 +3516,8 @@ Do not respond to this message.`;
 				try {
 					pi.sendMessage(
 						{
-							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd),
-							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd),
+							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd, next.origin),
+							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin),
 							display: true,
 							details: {
 								msg_id: next.msg_id,
@@ -3521,8 +3612,8 @@ Do not respond to this message.`;
 					log.debug("agent_end_fifo_next", senderPending[0].msg_id, "from", senderPending[0].sender_name);
 					try {
 						pi.sendMessage({
-							customType: formatComsInboundType(senderPending[0].sender_name, sanitizeComsName(identity?.name ?? "?"), senderPending[0].sender_cwd),
-							content: buildInboundContent("", senderPending[0].prompt, senderPending[0].tasks, senderPending[0].sender_name, senderPending[0].sender_cwd),
+							customType: formatComsInboundType(senderPending[0].sender_name, sanitizeComsName(identity?.name ?? "?"), senderPending[0].sender_cwd, senderPending[0].origin),
+							content: buildInboundContent("", senderPending[0].prompt, senderPending[0].tasks, senderPending[0].sender_name, senderPending[0].sender_cwd, senderPending[0].origin),
 							display: true,
 							details: { msg_id: senderPending[0].msg_id, sender_session: senderPending[0].sender_session, response_schema: senderPending[0].response_schema ?? null },
 						}, { deliverAs: "followUp", triggerTurn: true });
@@ -3531,15 +3622,12 @@ Do not respond to this message.`;
 					const primary = senderPending[0];
 					currentInbound = primary;
 					bundledInbounds = senderPending.slice(1);
-					const bundledContent = senderPending.map((ib, idx) =>
-						`--- Message ${idx + 1} of ${senderPending.length} [${ib.msg_id}] ---\n${ib.prompt}`
-					).join("\n\n");
-					const header = `[BUNDLED: ${senderPending.length} messages from ${primary.sender_name}. Later messages may override earlier ones. Read ALL before acting.]`;
-					log.debug("agent_end_fifo_bundle", senderPending.length, "from", primary.sender_name);
+					const bundle = buildBundledContent(primary.sender_name, senderPending);
+					log.debug("agent_end_fifo_bundle", senderPending.length, "from", primary.sender_name, "origins", senderPending.map((ib) => ib.origin ?? "peer").join(","));
 					try {
 						pi.sendMessage({
-							customType: formatComsInboundType(primary.sender_name, sanitizeComsName(identity?.name ?? "?"), primary.sender_cwd),
-							content: buildInboundContent(header, bundledContent, null, primary.sender_name, primary.sender_cwd),
+							customType: formatComsInboundType(primary.sender_name, sanitizeComsName(identity?.name ?? "?"), primary.sender_cwd, bundle.origin),
+							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin),
 							display: true,
 							details: { msg_id: primary.msg_id, sender_session: primary.sender_session, response_schema: primary.response_schema ?? null, bundled_msg_ids: senderPending.map(i => i.msg_id) },
 						}, { deliverAs: "followUp", triggerTurn: true });
@@ -3644,8 +3732,8 @@ Do not respond to this message.`;
 				try {
 					pi.sendMessage(
 						{
-							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd),
-							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd),
+							customType: formatComsInboundType(next.sender_name, sanitizeComsName(identity?.name ?? "?"), next.sender_cwd, next.origin),
+							content: buildInboundContent("", next.prompt, next.tasks, next.sender_name, next.sender_cwd, next.origin),
 							display: true,
 							details: {
 								msg_id: next.msg_id,
@@ -3669,17 +3757,14 @@ Do not respond to this message.`;
 				currentInbound = primary;
 				bundledInbounds = senderPending.slice(1);
 
-				const bundledContent = senderPending.map((ib, idx) =>
-					`--- Message ${idx + 1} of ${senderPending.length} [${ib.msg_id}] ---\n${ib.prompt}`
-				).join("\n\n");
-
-				const header = `[BUNDLED: ${senderPending.length} messages from ${primary.sender_name}. Later messages may override earlier ones. Read ALL before acting.]`;
+				const bundle = buildBundledContent(primary.sender_name, senderPending);
+				log.debug("fifo_bundle", senderPending.length, "from", primary.sender_name, "origins", senderPending.map((ib) => ib.origin ?? "peer").join(","));
 
 				try {
 					pi.sendMessage(
 						{
-							customType: formatComsInboundType(primary.sender_name, sanitizeComsName(identity?.name ?? "?"), primary.sender_cwd),
-							content: buildInboundContent(header, bundledContent, null, primary.sender_name, primary.sender_cwd),
+							customType: formatComsInboundType(primary.sender_name, sanitizeComsName(identity?.name ?? "?"), primary.sender_cwd, bundle.origin),
+							content: buildInboundContent(bundle.header, bundle.content, null, primary.sender_name, primary.sender_cwd, bundle.origin),
 							display: true,
 							details: {
 								msg_id: primary.msg_id,
@@ -3999,7 +4084,7 @@ Do not respond to this message.`;
 	const handleSigint = () => { log.info("signal_received", { signal: "SIGINT" }); void cleanShutdown(); };
 	const handleSigterm = () => { log.info("signal_received", { signal: "SIGTERM" }); void cleanShutdown(); };
 	pi.on("session_shutdown", async () => {
-		(globalThis as any).__comsSelf = null; await cleanShutdown(); });
+		(globalThis as any).__comsSelf = null; (globalThis as any).__comsUserSend = null; await cleanShutdown(); });
 	process.on("SIGINT", handleSigint);
 	process.on("SIGTERM", handleSigterm);
 }
