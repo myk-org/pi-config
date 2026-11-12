@@ -16,6 +16,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createLogger } from "../shared/logger.js";
+import type { PromptOrigin } from "./coms-shared.js";
 
 const log = createLogger("coms-history");
 
@@ -34,6 +35,8 @@ export interface HistoryRecord {
 	preview: string;
 	status?: string;
 	error?: string | null;
+	/** Who authored the prompt: a human (via `/coms tell` or the peer overlay) or another agent. */
+	origin?: PromptOrigin;
 }
 
 export interface HistoryFilter {
