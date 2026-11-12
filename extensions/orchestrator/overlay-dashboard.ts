@@ -76,6 +76,11 @@ export interface OverlayListSpec<
   onX?: (item: TItem) => void;
   /** Opt-in multi-select: Space toggles the focused row; `x` then acts on the whole selection. */
   selectable?: boolean;
+  /** The dashboard owns no selection a caller can keep: a re-opened list would start empty and
+   *  silently drop what the user ticked (coms: tick peers, inspect one, Esc back, `m` sent to the
+   *  focused row only). The caller persists the ids it is given and passes them back as
+   *  `initialSelectionIds`; nothing here knows what the rows mean. */
+  onSelectionChange?: (ids: TId[]) => void;
   /** Called instead of onX while the multi-select set is non-empty. */
   onXSelected?: (items: TItem[]) => void;
   /** Optional bulk-action key (a) — destructive, so callers should confirm first. */
@@ -144,8 +149,8 @@ export class OverlayListDashboard<
   private ticker: ReturnType<typeof setInterval>;
   private cachedWidth: number | undefined;
   private cachedLines: string[] | undefined;
-  /** Multi-selected ids — empty unless spec.selectable is set. */
-  private readonly multi = new Set<TId>();
+  /** Multi-selected ids — seeded by the caller, reported back on every change. */
+  private readonly multi: Set<TId>;
 
   constructor(
     private tui: TUI,
@@ -154,7 +159,9 @@ export class OverlayListDashboard<
     private spec: OverlayListSpec<TId, TItem>,
     private selection: OverlaySelection<TId>,
     private done: (value: TId | null) => void,
+    initialMulti: readonly TId[] = [],
   ) {
+    this.multi = new Set(initialMulti);
     this.ticker = setInterval(() => { this.invalidate(); this.tui.requestRender(); }, 1000);
   }
 
@@ -230,6 +237,7 @@ export class OverlayListDashboard<
         if (this.multi.has(focused.id)) this.multi.delete(focused.id);
         else this.multi.add(focused.id);
         log.debug("list_multi_select_toggle", { id: focused.id, size: this.multi.size });
+        this.spec.onSelectionChange?.([...this.multi]);
         this.invalidate();
         this.tui.requestRender(true);
       }
@@ -241,6 +249,7 @@ export class OverlayListDashboard<
       // stale ids would survive and a following `x` would act on them (or on nothing) instead
       // of on the newly focused running row.
       this.multi.clear();
+      this.spec.onSelectionChange?.([]);
       this.spec.onKillAll();
       this.invalidate();
       this.tui.requestRender(true);
@@ -265,6 +274,7 @@ export class OverlayListDashboard<
         const selected = items.filter((i) => this.multi.has(i.id));
         // Cleared unconditionally: killed jobs disappear, and stale ids would leak.
         this.multi.clear();
+        this.spec.onSelectionChange?.([]);
         log.debug("list_multi_x", { count: selected.length });
         if (selected.length > 0) this.spec.onXSelected?.(selected);
         if (this.items().length === 0) {
@@ -578,6 +588,10 @@ export async function openListDetailOverlay<
     /** Re-open the list focused on this row (a caller returning from a deeper level). An id that
      *  is no longer there falls back to the first row. */
     initialSelectionId?: TId;
+    /** Re-open the list with these rows still ticked. The caller keeps them across re-opens
+     *  (`listSpec.onSelectionChange` gives it the new set); ids that no longer exist are simply
+     *  never matched. */
+    initialSelectionIds?: readonly TId[];
     /** Omitted by a list whose Enter navigates deeper (`listSpec.onSelect`). */
     createDetail?: (
       item: TItem,
@@ -611,6 +625,7 @@ export async function openListDetailOverlay<
           options.listSpec,
           selection,
           done,
+          options.initialSelectionIds ?? [],
         ),
       OVERLAY_OPTS,
     );
