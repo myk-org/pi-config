@@ -12,7 +12,7 @@ function harness(options: { selectable?: boolean; killAll?: boolean } = {}) {
   log.debug("create_harness", { selectable: options.selectable === true });
   const kills: string[][] = [];
   const keyCalls: Array<{ key: string; id: string | undefined; selected: string[] }> = [];
-  const composes: Array<{ ids: string[]; missing: string[] }> = [];
+  const composes: Array<{ ids: string[]; missing: readonly string[] }> = [];
   let killAllCalls = 0;
   let rows: Row[] = [
     { id: "a", status: "running" },
@@ -36,7 +36,7 @@ function harness(options: { selectable?: boolean; killAll?: boolean } = {}) {
     onX: (job: Row) => { kills.push([job.id]); },
     onXSelected: (items: Row[]) => { kills.push(items.map((i) => i.id)); },
     onKillAll: options.killAll === false ? undefined : () => { killAllCalls++; },
-    onCompose: (items: Row[], missingIds: string[]) => {
+    onCompose: (items: Row[], missingIds: readonly string[]) => {
       composes.push({ ids: items.map((i) => i.id), missing: missingIds });
     },
     // Returns false so the built-in keys still act; this only records what onKey was handed.
