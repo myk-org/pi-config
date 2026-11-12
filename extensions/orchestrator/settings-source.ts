@@ -96,6 +96,36 @@ function legacyTracked(dir: string, legacy: string): boolean {
   }
 }
 
+/** Directories whose tracked legacy file was already refused in THIS process: settings resolution
+ *  runs on nearly every tool call, so the git check must run once per directory, not per read. A
+ *  stale entry can only keep NOT migrating (the safe side); untracking the file is picked up by a
+ *  fresh process, which runs the check again. */
+const legacyTrackedRefused = new Set<string>();
+function legacyTrackedRefusal(dir: string, legacy: string): boolean {
+  if (legacyTrackedRefused.has(dirname(legacy))) return true;
+  if (!legacyTracked(dir, legacy)) return false;
+  legacyTrackedRefused.add(dirname(legacy));
+  return true;
+}
+
+/** The settings object at `file`, or `null` when it is missing or not a JSON object. */
+function readSettingsObjectOrNull(file: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(stripJsonComments(readFileSync(file, "utf8")));
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Publishing is the step that can be DENIED (Windows EPERM), and a denied publish must not strand
+ *  the legacy file — so it is a seam, like `setRepoRootResolverForTests`. */
+let publishSettingsFile: (from: string, to: string) => void = renameSync;
+
+export function setPublishSettingsFileForTests(publish: ((from: string, to: string) => void) | null): void {
+  publishSettingsFile = publish ?? renameSync;
+}
+
 /** A legacy file that exists while its `.json` does not, and cannot be parsed. Writing `.json` now
  *  would make the legacy file "ignored", so a file a human repairs afterwards could never be
  *  migrated — settings writes to this directory are refused until the legacy file is fixed. */
@@ -169,7 +199,7 @@ export function migrateLegacySettingsFile(dir: string, options: FindSettingsOpti
   // its tracked legacy file must not be laundered into the untracked `.json`. The user's own home
   // directory cannot be attacked that way, and refusing there breaks a dotfiles-managed `~/.pi`
   // (this machine: `~/.pi` links into a repo that tracks `pi-config-settings.json`).
-  if (scope === "project" && legacyTracked(dir, legacy)) {
+  if (scope === "project" && legacyTrackedRefusal(dir, legacy)) {
     warnLegacyOnce("tracked", "settings_legacy_jsonc_tracked_refused", legacy);
     return;
   }
@@ -181,21 +211,29 @@ export function migrateLegacySettingsFile(dir: string, options: FindSettingsOpti
     log.warn("settings_legacy_jsonc_migrate_failed", { path: legacy });
     return;
   }
+  let publishError: NodeJS.ErrnoException | undefined;
   try {
     // Publish by RENAME, not by creating the target first: the `.json` pathname appears with its
     // full content, so a concurrent reader never parses a partial file and falls back to defaults.
     // A target that already exists means another process published it — keep theirs, and the
     // legacy rename below is still ours to do (a racer that got there first reports ENOENT).
-    if (!existsSync(target)) renameSync(tmp, target);
+    if (!existsSync(target)) publishSettingsFile(tmp, target);
   } catch (error) {
-    // Windows refuses to replace an existing target instead of returning EEXIST on rename.
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "EEXIST" && code !== "EPERM") {
-      log.warn("settings_legacy_jsonc_migrate_failed", { path: legacy });
-      return;
-    }
+    // Windows refuses to replace an existing target instead of returning EEXIST on rename, and a
+    // denied rename is indistinguishable by code from one lost to a racer — so decide by the RESULT.
+    publishError = error as NodeJS.ErrnoException;
   } finally {
     try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* temp file left behind */ }
+  }
+
+  // Nothing may be renamed unless a readable target exists: renaming the legacy file after a DENIED
+  // publish would leave neither file readable, and the user's settings would simply be gone.
+  if (readSettingsObjectOrNull(target) === null) {
+    log.warn("settings_legacy_jsonc_migrate_failed", {
+      path: legacy,
+      code: publishError?.code ?? (existsSync(target) ? "invalid_target" : "ENOENT"),
+    });
+    return;
   }
 
   try {

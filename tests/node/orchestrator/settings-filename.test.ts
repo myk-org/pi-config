@@ -15,6 +15,7 @@ import {
 	findSettingsFile,
 	migrateLegacySettingsFile,
 	readLegacySettings,
+	setPublishSettingsFileForTests,
 	setSettingsSourceLogger,
 } from "../../../extensions/orchestrator/settings-source.js";
 import { SettingsFileCorruptError, writeSettingsFile } from "../../../extensions/orchestrator/settings-tui-helpers.js";
@@ -147,6 +148,41 @@ describe("single settings filename", () => {
 		assert.equal(existsSync(join(piDir, `${MIGRATED_NAME}.migrated`)), false, "migrated only once");
 	});
 
+	it("runs the tracked-file git check once per directory, however often settings are resolved", () => {
+		const legacy = join(piDir, LEGACY_SETTINGS_FILENAME);
+		writeFileSync(legacy, JSON.stringify({ dco: true }));
+		execFileSync("git", ["init", "-q"], { cwd: root, stdio: "ignore" });
+		execFileSync("git", ["add", "-f", join(".pi", LEGACY_SETTINGS_FILENAME)], { cwd: root, stdio: "ignore" });
+
+		// A `git` first on PATH that records each call and delegates: settings resolution runs on
+		// nearly every tool call, so a tracked legacy file must cost exactly one subprocess.
+		const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+		const shimDir = makeTempDir("settings-filename-git-");
+		const calls = join(shimDir, "calls");
+		writeFileSync(
+			join(shimDir, "git"),
+			`#!/bin/sh\necho "$@" >> ${JSON.stringify(calls)}\nexec ${JSON.stringify(realGit)} "$@"\n`,
+			{ mode: 0o755 },
+		);
+		const savedPath = process.env.PATH;
+		process.env.PATH = `${shimDir}:${savedPath ?? ""}`;
+		try {
+			const warnings = captureWarnings(() => {
+				for (let i = 0; i < 4; i++) assert.equal(findSettingsFile(piDir), null);
+			});
+
+			assert.deepEqual(warnings, ["settings_legacy_jsonc_tracked_refused"], "the refusal is still reported once");
+			assert.equal(
+				readFileSync(calls, "utf8").trim().split("\n").length,
+				1,
+				"one git subprocess per directory, not one per resolution",
+			);
+		} finally {
+			if (savedPath === undefined) delete process.env.PATH;
+			else process.env.PATH = savedPath;
+		}
+	});
+
 	it("refuses a TRACKED legacy file in a PROJECT dir (the default scope): no untracked .json copy, no rename", () => {
 		const legacy = join(piDir, LEGACY_SETTINGS_FILENAME);
 		const bytes = JSON.stringify({ dangerous_command_allowlist: ["*"] });
@@ -178,6 +214,45 @@ describe("single settings filename", () => {
 		assert.equal(existsSync(legacy), false, "the legacy file is moved aside");
 		assert.ok(existsSync(join(piDir, MIGRATED_NAME)));
 		assert.deepEqual(warnings, ["settings_legacy_jsonc_migrated"]);
+	});
+
+	it("strands nothing when the publish is DENIED: no target, so the legacy file stays exactly where it is", () => {
+		const legacy = join(piDir, LEGACY_SETTINGS_FILENAME);
+		const bytes = JSON.stringify({ dco: true });
+		writeFileSync(legacy, bytes);
+		// Windows hands back EPERM for a rename it refused, indistinguishable by code from a racer.
+		setPublishSettingsFileForTests(() => {
+			throw Object.assign(new Error("denied"), { code: "EPERM" });
+		});
+		try {
+			const warnings = captureWarnings(() => migrateLegacySettingsFile(piDir));
+
+			assert.equal(existsSync(join(piDir, JSON_NAME)), false, "no .json appeared");
+			assert.equal(readFileSync(legacy, "utf8"), bytes, "the settings are still readable where the user left them");
+			assert.equal(existsSync(join(piDir, MIGRATED_NAME)), false, "nothing is renamed away from a missing target");
+			assert.deepEqual(warnings, ["settings_legacy_jsonc_migrate_failed"]);
+		} finally {
+			setPublishSettingsFileForTests(null);
+		}
+	});
+
+	it("treats a publish error with a VALID target as another process's win: the legacy file is renamed", () => {
+		const legacy = join(piDir, LEGACY_SETTINGS_FILENAME);
+		writeFileSync(legacy, JSON.stringify({ dco: false }));
+		setPublishSettingsFileForTests((_from, to) => {
+			writeFileSync(to, `${JSON.stringify({ dco: true }, null, 2)}\n`); // the racer published first
+			throw Object.assign(new Error("denied"), { code: "EPERM" });
+		});
+		try {
+			const warnings = captureWarnings(() => migrateLegacySettingsFile(piDir));
+
+			assert.deepEqual(warnings, ["settings_legacy_jsonc_migrated"], "not reported as a failure");
+			assert.deepEqual(JSON.parse(readFileSync(join(piDir, JSON_NAME), "utf8")), { dco: true }, "the racer's content is kept");
+			assert.equal(existsSync(legacy), false, "the readable target makes the rename safe");
+			assert.ok(existsSync(join(piDir, MIGRATED_NAME)));
+		} finally {
+			setPublishSettingsFileForTests(null);
+		}
 	});
 
 	it("migrates a GLOBAL dir reached through a symlinked parent: ~/.pi -> dotfiles/.pi is that layout", () => {
