@@ -143,9 +143,9 @@ Peer cards and `coms_list` include a busy indicator (`⚙busy`) whenever the pee
 
 ## Messaging a Peer as the User
 
-`/coms tell <peer> <message>` (or `/coms tell --project <p> <peer> <message>`) delivers a message to a peer with `origin: "user"` — the peer knows a human typed it, not another model. In `/coms list`, `m` opens a one-line composer for the focused peer and sends the same way. Delivery is synchronous: the overlay reports the `msg_id`, and a failure (no such peer, dead socket) is notified to you instead of being dropped.
+`/coms tell <peer> <message>` (or `/coms tell --project <p> <peer> <message>`) delivers a message to a peer with `origin: "user"`, so the receiver reads it as a human's words rather than another model's. In `/coms list`, `m` opens a one-line composer for the focused peer and sends the same way. Delivery is synchronous: the overlay reports the `msg_id`, and a failure (no such peer, dead socket) is notified to you instead of being dropped.
 
-Only the command layer can claim human authorship. `coms_send`, `coms_broadcast`, and the `tasks` path always send `origin: "peer"`, their schemas have no `origin` parameter, and a spoofed value in tool input is ignored — an agent cannot manufacture an approval it did not get. On the receiving side the inbound header and its machine-readable prefix say `USER (a human)`, and `coms_history` marks the record `(USER)`.
+Only the command layer can claim human authorship. `coms_send`, `coms_broadcast`, and the `tasks` path always send `origin: "peer"`, their schemas have no `origin` parameter, and a spoofed value in tool input is ignored — an agent's own tool calls cannot manufacture an approval it did not get, and that is the whole guarantee. On the receiving side the inbound header and its machine-readable prefix say `USER (a human)`, and `coms_history` marks the record `(USER)`: that marker is display only and unauthenticated, because any process that can write to the peer's socket can assert `origin: "user"`. Verifying authorship would need signed identities, which coms does not have.
 
 ## Message History
 
@@ -164,7 +164,7 @@ The internals mostly stay out of your way, but they explain several behaviors yo
 | `/coms` shows a different set of peers | You toggled `include_explicit` or switched the displayed project |
 | A peer shows `⚙busy` | It is currently processing an inbound message |
 | A pending reply shows a progress note | The peer sent a progress signal (~60s interval) while still working |
-| An inbound says `(from the USER)` | You sent it with `/coms tell` or the `m` composer — it is not another agent's guess |
+| An inbound says `(from the USER)` | A human sent it with `/coms tell` or the `m` composer. The marker is display only and unauthenticated — any local process can assert it |
 
 A few practical implications are worth remembering:
 

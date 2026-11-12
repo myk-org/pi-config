@@ -143,12 +143,14 @@ Messaging semantics (#924):
   `coms_history`; defaults to this session's traffic, `all_sessions: true`
   shows the whole machine's trail.
 - **User messages** — `/coms tell <peer> <message>` (or `m` on the focused peer
-  in `/coms list`) delivers with `origin: "user"`, so the peer knows a human
-  said it. Only the command layer can set that: `coms_send`/`coms_broadcast`
+  in `/coms list`) delivers with `origin: "user"`, so the receiver reads it as a
+  human's words. Only the command layer can set that: `coms_send`/`coms_broadcast`
   always send `origin: "peer"` and their schemas have no `origin` field, so
-  tool input cannot claim human authority. Headers mark a user inbound
-  `(from the USER)`, `coms_history` marks the record `(USER)`, and a failed
-  delivery is notified instead of dropped.
+  tool input cannot claim human authority. The header marker `(from the USER)` and
+  history's `(USER)` are display only and unauthenticated — any process that can
+  write to the peer's socket can assert `origin: "user"`; verifying authorship
+  would need signed identities, which coms does not have. A failed delivery is
+  notified instead of dropped.
 
 Queue recovery is explicit. Run `coms_queue_inspect` first and review its
 body-free preview. Then pass its `preview_id` to `coms_queue_clear`.
