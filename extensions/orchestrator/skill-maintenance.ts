@@ -883,9 +883,9 @@ export function bashSkillVerdict(projectCwd: string, command: string): ShellVerd
   if (/(?:^|[\s;&|])cd\s/.test(maskQuoted(command))) {
     return block(`a command that changes directory cannot be classified against a skill path. ${hint}`);
   }
-  // Nested commands run before the outer one: `cat skill $(python3 -c …)` writes first.
-  if (/\$\(|`/.test(command)) {
-    return block(`this command embeds a command substitution, which can run any program. ${hint}`);
+  // Nested commands run before the outer one: `cat skill $(python3 -c …)`, `<(...)`, `>(...)`.
+  if (/\$\(|`|<\s*\(|>\s*\(/.test(command)) {
+    return block(`this command embeds a nested command (substitution or process substitution). ${hint}`);
   }
   // Options that execute a program for each file turn a "read" into a write.
   if (/\s(?:--pre|--pre-glob|--exec|-exec)\b/.test(maskQuoted(command))) {

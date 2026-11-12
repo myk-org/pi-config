@@ -448,6 +448,14 @@ describe("shell guard (Qodo #1079)", () => {
     assert.equal(bashSkillVerdict(cwd, "printf x $(date) >> ~/.agents/skills/x/SKILL.md")?.block, true);
   });
 
+  it("blocks process substitution, which also runs a nested command", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    const read = `cat ${path.join(root, "marked", "SKILL.md")}`;
+    const nested = `${read} <(python3 -c 'open("${path.join(root, "unmarked", "SKILL.md")}", "w")')`;
+    assert.equal(bashSkillVerdict(cwd, nested)?.block, true);
+  });
+
   it("blocks a read verb whose option runs a program", () => {
     const { cwd } = project();
     assert.equal(bashSkillVerdict(cwd, "rg --pre=./rewrite.sh pattern ~/.agents/skills/x/SKILL.md")?.block, true);

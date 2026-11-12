@@ -72,7 +72,7 @@ project's own `.pi/skills/` that resolves there — the `SKILL.md` itself still 
 
 Everything else blocks, including the shapes that defeated earlier versions: `>`, `>>`, `>&`, `tee`, `cp`, `mv`,
 `rm`, `sed -i`, `install`, `dd`, `truncate`, `chmod`; a bare `SKILL.md`; a `cd`; a command substitution
-(`$(…)`, backticks); an option that runs a program (`--pre`); a path through a symlink; and any reference the
+(`$(…)`, backticks, `<(…)`, `>(…)`); an option that runs a program (`--pre`); a path through a symlink; and any reference the
 guard cannot resolve. The shell is not a second way to write a skill — one write path means one place to be
 correct.
 
