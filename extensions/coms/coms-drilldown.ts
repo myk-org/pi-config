@@ -46,8 +46,16 @@ const DESCRIPTION_MAX = 120;
  *  truncated id, the identity stays unique and stable. */
 export interface DrilldownItem {
   id: string;
+  /** The peer-supplied id as DISPLAY: the composite `id` is bookkeeping and must never reach a
+   *  pane. Absent for rows with nothing to name (`peer info`, a status row). */
+  displayId?: string;
   row: string;
   detail: Array<[string, string]>;
+}
+
+/** What the row's id column shows. The composite identity is internal by contract (#1084). */
+export function itemIdLabel(item: { displayId?: string }): string {
+  return item.displayId ?? "";
 }
 
 /** `0:texture` — position first, so the identity survives any truncation or duplication below. */
@@ -98,6 +106,7 @@ function agentItem(agent: DescribeAgent, index: number): DrilldownItem {
   const purpose = sanitizePeerText(agent.purpose, PURPOSE_MAX);
   return {
     id: rowId(index, id || "?"),
+    displayId: id || "?",
     // Same columns as the async-status row: identity, state, elapsed, purpose.
     row: [name ? `${name} (${id})` : id, state, elapsed, purpose].filter(Boolean).join("  "),
     detail: [
@@ -125,7 +134,7 @@ function taskItem(task: DescribeTask, index: number): DrilldownItem {
     ["Blocked by", blockedBy.length > 0 ? blockedBy.map((b) => `#${b}`).join(", ") : "—"],
     ["Description", description || "—"],
   ];
-  return { id: rowId(index, id || "?"), row, detail };
+  return { id: rowId(index, id || "?"), displayId: id || "?", row, detail };
 }
 
 function cronItem(cron: DescribeCron, index: number): DrilldownItem {
@@ -135,6 +144,7 @@ function cronItem(cron: DescribeCron, index: number): DrilldownItem {
   const description = sanitizePeerText(cron.description, DESCRIPTION_MAX);
   return {
     id: rowId(index, id || "?"),
+    displayId: id || "?",
     // The peer already formatted these with the cron-status helpers it renders locally.
     row: [id, schedule, next, description].filter(Boolean).join("  "),
     detail: [
@@ -263,4 +273,13 @@ export function sectionCountLabel(rows: ReadonlyArray<{ section?: string }>): st
   const sections = rows.filter((row) => row.section !== undefined).length;
   log.debug("section_count_label", { rows: rows.length, sections });
   return sections === 0 ? "" : `${sections} section${sections === 1 ? "" : "s"}`;
+}
+
+/** One item is one Enter step, not two: a section holding exactly one entry opens that entry's
+ *  detail directly, because a one-row list exists only to be pressed again. Applied uniformly —
+ *  `peer info` is just a section with one item, not a special case. */
+export function sectionEnterMode(items: ReadonlyArray<unknown>): "detail" | "list" {
+  const mode = items.length === 1 ? "detail" : "list";
+  log.debug("section_enter_mode", { mode, items: items.length });
+  return mode;
 }

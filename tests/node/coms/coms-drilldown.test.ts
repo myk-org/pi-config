@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { backTarget, buildDrilldownRows, buildPeerInfoRow, sectionCountLabel } from "../../../extensions/coms/coms-drilldown.js";
+import { backTarget, buildDrilldownRows, buildPeerInfoRow, itemIdLabel, sectionCountLabel, sectionEnterMode } from "../../../extensions/coms/coms-drilldown.js";
 import type { DescribeResult } from "../../../extensions/coms/coms-describe.js";
 import { formatTaskRowLine } from "../../../extensions/pitasks/tasks-view.js";
 
@@ -292,5 +292,48 @@ describe("peer info workload wording (#1084 finding 4): none active ≠ unknown"
 
   it("shows the suffix when there is work", () => {
     assert.equal(workloadOf({ agents: 0, tasks: 3, crons: 1 }), "☰3 ⏰1");
+  });
+});
+
+describe("sectionEnterMode (#1084 UX): one item costs one Enter", () => {
+  it("opens the detail directly for a single-item section", () => {
+    assert.equal(sectionEnterMode([{ id: "0:peer" }]), "detail");
+    // `peer info` is not special: it is just a section holding one item.
+    assert.equal(sectionEnterMode(buildPeerInfoRow({ name: "w", project: "p", busy: false }).items), "detail");
+  });
+
+  it("keeps the list for two or more items", () => {
+    assert.equal(sectionEnterMode([{ id: "a" }, { id: "b" }]), "list");
+    const rows = buildDrilldownRows(answered({
+      tasks: [{ id: "1", status: "pending", subject: "one" }, { id: "2", status: "pending", subject: "two" }],
+    }));
+    assert.equal(sectionEnterMode(rows[0].items), "list");
+  });
+});
+
+describe("itemIdLabel (#1084 UX): the composite identity never reaches a pane", () => {
+  it("shows the reported id, not the index prefix", () => {
+    const rows = buildDrilldownRows(answered({
+      crons: [{ id: "session:abc", schedule: "every 1h", next: "in 1h", description: "d" }],
+    }));
+    const item = rows[0].items[0];
+    assert.equal(item.id, "0:session:abc");
+    assert.equal(itemIdLabel(item), "session:abc");
+  });
+
+  it("derives it from the composite form directly", () => {
+    assert.equal(itemIdLabel({ displayId: "abc" }), "abc");
+    assert.equal(itemIdLabel({}), "");
+  });
+
+  it("shows no id at all for the peer info row", () => {
+    const info = buildPeerInfoRow({ name: "w", project: "p", busy: false });
+    assert.equal(info.items[0].id, "0:peer");
+    assert.equal(itemIdLabel(info.items[0]), "");
+  });
+
+  it("shows no id for a status row either", () => {
+    const rows = buildDrilldownRows({ ok: false, reason: "timeout" });
+    assert.equal(itemIdLabel(rows[0].items[0]), "");
   });
 });

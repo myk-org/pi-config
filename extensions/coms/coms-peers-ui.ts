@@ -9,14 +9,14 @@
  */
 import type { Component } from "@earendil-works/pi-tui";
 import { renderWorkloadPart } from "./coms-workload.js";
-import { backTarget, buildDrilldownRows, buildPeerInfoRow, sectionCountLabel, type DrilldownItem, type DrilldownRow } from "./coms-drilldown.js";
+import { backTarget, buildDrilldownRows, buildPeerInfoRow, itemIdLabel, sectionCountLabel, sectionEnterMode, type DrilldownItem, type DrilldownRow } from "./coms-drilldown.js";
 import { sanitizePeerText } from "./peer-text.js";
 import type { DescribeResult } from "./coms-describe.js";
 import { OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
-import { openListDetailOverlay } from "../orchestrator/overlay-dashboard.js";
+import { OVERLAY_OPTS, openListDetailOverlay } from "../orchestrator/overlay-dashboard.js";
 import { buildTellRequest } from "./coms-shared.js";
 import type { RegistryRow } from "./coms-peers.js";
 
@@ -209,6 +209,15 @@ async function openPeerDrilldown(ctx: any, deps: ComsPeersOverlayDeps, row: Row)
       return;
     }
     reselectSection = section.id;
+    // One item is one Enter step: open its detail directly instead of a row list of one.
+    if (sectionEnterMode(section.items) === "detail") {
+      await ctx.ui.custom(
+        (tui: any, theme: Theme, _kb: any, done: (value: null) => void) =>
+          itemDetailComponent(section.items[0], tui, theme, done),
+        OVERLAY_OPTS,
+      );
+      continue;
+    }
     await openSectionOverlay(ctx, row, section, deps.openOverlay ?? openListDetailOverlay);
   }
 }
@@ -234,20 +243,32 @@ async function openSectionOverlay(
       rowParts: (item, theme: Theme) => ({
         glyph: theme.fg("accent", "·"),
         title: item.row,
-        idLabel: theme.fg("dim", item.id),
+        // The composite row identity is bookkeeping: only the peer's own id may be shown.
+        idLabel: itemIdLabel(item) ? theme.fg("dim", itemIdLabel(item)) : "",
         rightParts: [],
       }),
     },
-    createDetail: (item, tui, theme: Theme, done): Component =>
-      new OverlayScrollDetail(
-        tui,
-        theme,
-        {
-          footerHints: "↑↓/jk scroll · Esc back",
-          getHeader: (t) => t.fg("accent", t.bold(sanitizePeerText(item.row, 120))),
-          getBodyLines: (t) => item.detail.map(([label, value]) => `${t.fg("muted", label.padEnd(11))}  ${value}`),
-        },
-        done,
-      ),
+    createDetail: itemDetailComponent,
   });
+}
+
+/** The read-only detail pane for one item — used by a section list AND by the single-item path,
+ *  so the two can never render differently. */
+function itemDetailComponent(
+  item: DrilldownItem,
+  tui: any,
+  theme: Theme,
+  done: (value: null) => void,
+): Component {
+  return new OverlayScrollDetail(
+    tui,
+    theme,
+    {
+      // Read-only: acting on a peer's own work would need a remote command protocol.
+      footerHints: "↑↓/jk scroll · Esc back · read-only: remote data",
+      getHeader: (t) => t.fg("accent", t.bold(sanitizePeerText(item.row, 120))),
+      getBodyLines: (t) => item.detail.map(([label, value]) => `${t.fg("muted", label.padEnd(11))}  ${value}`),
+    },
+    done,
+  );
 }
