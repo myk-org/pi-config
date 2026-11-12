@@ -44,6 +44,8 @@ import { sanitizePeerText } from "./peer-text.js";
 // ━━ Constants ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 const log = createLogger("coms");
+/** #1084: the tell path's own trail (resolve/completion); coms-shared logs parse/build. */
+const tellLog = createLogger("coms-tell");
 const RECOVERY_PREVIEW_TTL_MS = 5 * 60 * 1000;
 const MAX_RECOVERY_PREVIEWS_PER_SESSION = 20;
 let COMS_DIR = path.join(os.homedir(), ".pi", "coms");
@@ -2459,7 +2461,11 @@ Do not respond to this message.`;
 		const matches: Array<{ project: string; entry: RegistryEntry }> = [];
 		for (const proj of projects) {
 			let entries: RegistryEntry[] = [];
-			try { entries = await pruneDeadEntries(proj, process.cwd()); } catch { continue; }
+			try { entries = await pruneDeadEntries(proj, process.cwd()); } catch (err) {
+				// One unreadable project must not abort the scan, and must not vanish either.
+				log.warn("user_target_scan_failed", { project: proj, error: err instanceof Error ? err.message : String(err) });
+				continue;
+			}
 			for (const entry of entries) {
 				if (entry.coms_session_id === name || entry.name === name) matches.push({ project: proj, entry });
 			}
@@ -2484,18 +2490,22 @@ Do not respond to this message.`;
 		(globalThis as any).__comsUserSend = async (params: { target: string; prompt: string; project?: string }): Promise<{ ok: boolean; message: string }> => {
 			const resolved = await resolveUserTarget(params.target, params.project);
 			if (!resolved.target) {
-				log.warn("user_send_target_missing", { target: params.target, project: params.project ?? null });
+				// The decision and its one warn live in resolveUserTarget; this is the send path's trail.
+				log.debug("user_send_target_missing", { target: params.target, project: params.project ?? null });
+				tellLog.debug("tell_target_unresolved", { reason: resolved.error ?? "no match" });
 				return { ok: false, message: resolved.error ?? `no live peer "${params.target}"` };
 			}
 			const target = resolved.target;
+			const safeTarget = sanitizePeerText(target.name, 40);
 			try {
 				const { msg_id } = await deliverPrompt(target, { prompt: params.prompt, userAuthored: true });
 				log.info("user_send", msg_id, "to", target.name, "chars", params.prompt.length);
-				return { ok: true, message: `sent to ${target.name} (${msg_id})` };
+				tellLog.debug("tell_completion", { count: 1 });
+				return { ok: true, message: `sent to ${safeTarget} (${msg_id})` };
 			} catch (error) {
 				const reason = error instanceof Error ? error.message : String(error);
 				log.error("user_send_failed", target.name, reason);
-				return { ok: false, message: `delivery to ${target.name} failed: ${reason}` };
+				return { ok: false, message: `delivery to ${safeTarget} failed: ${reason}` };
 			}
 		};
 	}

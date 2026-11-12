@@ -15,8 +15,11 @@ import * as crypto from "node:crypto";
 import * as os from "node:os";
 import { setComsActive } from "../shared/coms-active.js";
 import { createLogger } from "../shared/logger.js";
+import { stripOriginMarker } from "./peer-text.js";
 
 const log = createLogger("coms");
+/** #1084: the tell helpers' own trail — parse/build/resolve outcomes, never message text. */
+const tellLog = createLogger("coms-tell");
 
 /**
  * Tokenize a command string respecting double and single quotes.
@@ -526,8 +529,13 @@ export function buildBundledContent(
 	const origins = new Set(messages.map((m) => m.origin ?? "peer"));
 	const shared = origins.size === 1 ? messages[0]?.origin ?? "peer" : undefined;
 	const content = messages.map((m, idx) => {
-		const tag = (m.origin ?? "peer") === "user" ? `[from USER (a human), via ${safeSender}] ` : `[from ${safeSender}] `;
-		return `--- Message ${idx + 1} of ${messages.length} [${m.msg_id}] ---\n${tag}${m.prompt}`;
+		const msgOrigin = m.origin ?? "peer";
+		const tag = msgOrigin === "user" ? `[from USER (a human), via ${safeSender}] ` : `[from ${safeSender}] `;
+		// Origin is decided by the envelope's structured field; this tag is display only. A peer body
+		// that printed the marker itself would read as a human line, so peer text loses it — the
+		// human's own words are never rewritten.
+		const body = msgOrigin === "user" ? m.prompt : stripOriginMarker(m.prompt);
+		return `--- Message ${idx + 1} of ${messages.length} [${m.msg_id}] ---\n${tag}${body}`;
 	}).join("\n\n");
 	const mixed = shared === undefined
 		? " ORIGINS ARE MIXED: messages tagged [from USER (a human), via …] are the human's words; the rest are another agent's. Weigh them differently."
@@ -547,6 +555,7 @@ export function buildTellRequest(
 ): { target: string; prompt: string; project?: string } | null {
 	const prompt = text.trim();
 	if (!prompt) return null;
+	tellLog.debug("tell_built", { target: peer.name, origin: "user" });
 	return { target: peer.name, prompt, ...(peer.project ? { project: peer.project } : {}) };
 }
 
@@ -558,6 +567,7 @@ export function parseComsTell(detail: string): { peer: string; message: string; 
 	const [, project, peer, message] = match;
 	const text = message.trim();
 	if (!text) return null;
+	tellLog.debug("tell_parsed", { hasProject: !!project, messageLength: text.length });
 	return { peer, message: text, ...(project ? { project } : {}) };
 }
 
@@ -581,9 +591,11 @@ export function buildInboundContent(
 	senderCwd?: string,
 	origin?: PromptOrigin,
 ): string {
-	// Sanitize peer-controlled values — strip control chars and limit length
-	const safeName = senderName ? senderName.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 100) : undefined;
-	const safeCwd = senderCwd ? senderCwd.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 200) : undefined;
+	// Sanitize peer-controlled values — strip control chars, tag-breaking brackets and the origin
+	// marker (#1084), then cap. A name can otherwise close the tag early or pose as the human.
+	const cleanTagPart = (value: string) => stripOriginMarker(value).replace(/[\x00-\x1f\x7f[\]]/g, "").trim();
+	const safeName = senderName ? cleanTagPart(senderName).slice(0, 100) : undefined;
+	const safeCwd = senderCwd ? cleanTagPart(senderCwd).slice(0, 200) : undefined;
 	// Machine-readable prefix so the LLM can distinguish coms messages from user input. The
 	// origin comes before the name: "a human decided this" is the part that changes the reply.
 	const originTag = origin === "user" ? "USER (a human), via " : "";
@@ -679,9 +691,9 @@ export function buildComsPeersPayload(
 }
 
 /** Sanitize a coms identity name for safe embedding in header strings.
- *  Strips all control characters (C0/C1), brackets; replaces whitespace with hyphens. */
+ *  Strips the origin marker, control characters (C0/C1) and brackets; whitespace → hyphens. */
 export function sanitizeComsName(name: string): string {
-	return name
+	return stripOriginMarker(name)
 		.replace(/[\x00-\x1f\x7f-\x9f\[\]]/g, "") // strip C0/C1 control chars + brackets
 		.trim()
 		.replace(/\s+/g, "-")                        // whitespace → hyphens (keep as single token)

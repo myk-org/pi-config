@@ -157,7 +157,7 @@ export async function openComsPeersOverlay(
     // Same one-line dialog the rest of pi uses; Esc or an empty line means "nothing to send" and
     // returns to the list rather than dropping the user back into the session. The list is closed
     // while the dialog is up and re-opens after the send — the composer needs the whole terminal.
-    const text = await ctx.ui.input(`Message ${target.name} (sent as you)`, "one line to the peer");
+    const text = await ctx.ui.input(`Message ${sanitizePeerText(target.name, 40)} (sent as you)`, "one line to the peer");
     const request = buildTellRequest(target, text ?? "");
     if (!request) {
       log.debug("overlay_tell_cancelled", { name: target.name, project: target.project });
@@ -165,5 +165,11 @@ export async function openComsPeersOverlay(
     }
     status = await deps.tellPeer(request);
     log.info("overlay_tell_peer", { name: request.target, project: request.project ?? null, chars: request.prompt.length });
+    // A failed user send must reach the user where they are looking: the composer closed the list,
+    // so the reopened list's own lines are not on screen yet.
+    if (status.startsWith("⚠")) {
+      log.warn("overlay_tell_failed", { name: request.target, project: request.project ?? null });
+      try { ctx.ui.notify(status, "error"); } catch {}
+    }
   }
 }

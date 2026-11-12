@@ -21,6 +21,24 @@ const ANSI_ESC = /\x1b[@-_]/g;
 /** C0 (minus the whitespace we collapse) and C1 controls. */
 const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 
+/** The in-band authorship tag (#1077) and its fragments. Origin is decided by the envelope's
+ *  structured `origin` field — this line is display only — so peer text must never be able to
+ *  print it and pose as the human (#1084). */
+const MARKER_FULL = /\[from USER \(a human\), via[^\]]*\]?/gi;
+const MARKER_FROM_USER = /\bfrom USER\b/gi;
+const MARKER_HUMAN = /\(a human\)/gi;
+const MARKER_LEADING = /^\s*\[from\s+/i;
+
+/** Remove the origin marker and its fragments from a peer-supplied string. `[from ` is stripped
+ *  only where it leads, so prose that happens to quote a tag mid-sentence survives. */
+export function stripOriginMarker(text: string): string {
+  return text
+    .replace(MARKER_FULL, " ")
+    .replace(MARKER_FROM_USER, " ")
+    .replace(MARKER_HUMAN, " ")
+    .replace(MARKER_LEADING, " ");
+}
+
 /**
  * One peer-supplied line: no escape sequences, no control characters, single-line, capped.
  * `max` is a hard cap — callers pass the width the field is allowed to occupy.
@@ -32,10 +50,11 @@ export function sanitizePeerText(text: unknown, max = 120): string {
     .replace(ANSI_CSI, "")
     .replace(ANSI_CHARSET, "")
     .replace(ANSI_ESC, "")
-    .replace(CONTROL, "")
+    .replace(CONTROL, "");
+  const deMarked = stripOriginMarker(stripped)
     .replace(/\s+/g, " ")
     .trim();
-  const out = stripped.length > max ? stripped.slice(0, max).trimEnd() : stripped;
+  const out = deMarked.length > max ? deMarked.slice(0, max).trimEnd() : deMarked;
   // A count, never the content: a hostile name is exactly what must not land in the log.
   if (out !== raw) log.debug("peer_text_sanitized", { before: raw.length, after: out.length });
   return out;
