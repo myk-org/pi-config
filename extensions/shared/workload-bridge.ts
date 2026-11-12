@@ -59,3 +59,9 @@ export function publishedWorkloadSources(): WorkloadSources | null {
   if (!sources || typeof sources.agents !== "function" || typeof sources.crons !== "function") return null;
   return sources;
 }
+
+/** Drop the published getters on shutdown: a torn-down runtime must not answer a describe. */
+export function clearWorkloadSources(): void {
+  delete (globalThis as Record<symbol, unknown>)[WORKLOAD_SOURCES_SYMBOL];
+  log.debug("workload_sources_cleared", { at: Date.now() });
+}

@@ -35,7 +35,7 @@ import { setLogFilePrefix } from "../shared/file-logger.js";
 import { probeStaleSocket } from "./probe-socket.js";
 import { isUserMessageDuringInbound, computeMixedTurn } from "./mixed-turn.js";
 import { buildQueuePreview, clearLocalQueue, type QueueRecoveryItem, type QueueRecoveryPreview } from "./queue-recovery.js";
-import { collectWorkload, renderWorkloadPart, type PeerWorkloadCounts, type PeerWorkloadDetail, type WorkloadTask } from "./coms-workload.js";
+import { collectWorkload, renderWorkloadPart, toDescribeDetail, type ActiveWorkload, type PeerWorkloadCounts, type WorkloadTask } from "./coms-workload.js";
 import { publishedWorkloadSources } from "../shared/workload-bridge.js";
 import { publishedTaskStore } from "../shared/task-store-bridge.js";
 
@@ -733,7 +733,7 @@ export default function (pi: ExtensionAPI) {
 	 *  the published task store, crons from the orchestrator (session crons exist ONLY there).
 	 *  Null when any source is absent: a partial count would be a guess, and the viewer must show
 	 *  `unknown` instead. No filesystem fallback: this reads own in-process state only. */
-	function ownWorkload(): { counts: PeerWorkloadCounts; detail: PeerWorkloadDetail } | null {
+	function ownWorkload(): { counts: PeerWorkloadCounts; active: ActiveWorkload } | null {
 		const sources = publishedWorkloadSources();
 		const store = publishedTaskStore() as { list?: () => unknown[] } | null;
 		if (!sources || typeof store?.list !== "function") {
@@ -745,6 +745,8 @@ export default function (pi: ExtensionAPI) {
 				id: String(t?.id ?? "?"),
 				status: String(t?.status ?? ""),
 				subject: String(t?.subject ?? ""),
+				// #1082: the drilldown marks blocked tasks, so the flag must survive the projection.
+				blockedBy: Array.isArray(t?.blockedBy) ? t.blockedBy.map(String) : [],
 			}));
 			return collectWorkload(sources.agents(), tasks, sources.crons());
 		} catch (err) {
@@ -1150,13 +1152,15 @@ export default function (pi: ExtensionAPI) {
 		} catch { /* ignore */ }
 	}
 
-	/** #1083: the drilldown answer, built from this peer's own state — never from files. A peer
-	 *  whose sources are missing answers `detail: null`, which the requester renders as `unknown`. */
+	/** #1083: the drilldown answer, built from this peer's own state — never from files. The
+	 *  payload is projected (no job output, no worker dirs); a peer whose sources are missing
+	 *  answers `detail: null`, which the requester renders as `unknown` — not as `none active`. */
 	function handleDescribe(socket: net.Socket, env: DescribeEnvelope): void {
 		const workload = ownWorkload();
-		log.debug("describe_in", { msgId: env.msg_id, answered: workload !== null });
+		const detail = workload ? toDescribeDetail(workload.active) : null;
+		log.debug("describe_in", { msgId: env.msg_id, answered: workload !== null, agents: detail?.agents.length, tasks: detail?.tasks.length, crons: detail?.crons.length });
 		try {
-			socket.write(JSON.stringify({ type: "describe_reply", msg_id: env.msg_id, detail: workload?.detail ?? null }) + "\n");
+			socket.write(JSON.stringify({ type: "describe_reply", msg_id: env.msg_id, detail }) + "\n");
 		} catch {
 			// ignore
 		}

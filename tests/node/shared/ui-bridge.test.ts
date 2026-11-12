@@ -1,7 +1,7 @@
 /** #968 B — ui-bridge race semantics: browser/TUI first-answer-wins, dismiss, confirm mapping. */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createBridgedUi } from "../../../extensions/shared/ui-bridge.ts";
+import { createBridgedUi, isBrowserDispatch, markBrowserDispatch } from "../../../extensions/shared/ui-bridge.ts";
 
 type Handler = (data: unknown) => void;
 
@@ -173,5 +173,28 @@ describe("ui-bridge degrade path (no ctx.ui.custom)", () => {
     const ctx = { hasUI: false, ui: { confirm: async () => { called = true; return true; } } };
     assert.equal(await bridged.confirm(ctx as any, "Run?"), false);
     assert.equal(called, false);
+  });
+});
+
+describe("browser dispatch marker (#1082)", () => {
+  it("is false for a terminal command and for anything unmarked", () => {
+    assert.equal(isBrowserDispatch({ hasUI: true }), false);
+    assert.equal(isBrowserDispatch({ hasUI: false }), false);
+    assert.equal(isBrowserDispatch(undefined), false);
+    assert.equal(isBrowserDispatch(null), false);
+  });
+
+  it("marks the context pidash hands a browser-dispatched command", () => {
+    const ctx: Record<string, unknown> = { hasUI: true };
+    markBrowserDispatch(ctx);
+    assert.equal(isBrowserDispatch(ctx), true);
+  });
+
+  it("does not tag the live context, only the copy", () => {
+    const live = { hasUI: true };
+    const copy = { ...live };
+    markBrowserDispatch(copy);
+    assert.equal(isBrowserDispatch(copy), true);
+    assert.equal(isBrowserDispatch(live), false, "the session ctx must stay unmarked");
   });
 });

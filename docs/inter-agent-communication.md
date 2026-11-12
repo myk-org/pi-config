@@ -58,11 +58,16 @@ Every connected session sends heartbeat updates every 30 seconds. Those updates 
 
 ### Peer Workload
 
-Each peer reports its **own** active work: async agents that are neither complete nor failed, tasks that are not completed, and crons this replica actually runs (`leader !== false`) — session crons included, which is why the peer self-reports instead of a scanner reading files.
+Each peer reports its **own** active work: async agents that are *running* (a queued job is waiting, not in flight), tasks that are not completed, and crons this replica actually runs (`leader !== false`) — session crons included, which is why the peer self-reports instead of a scanner reading files.
 
 The pool widget and peer list append `⏳2 ✓5 ⏰1` (agents, tasks, crons), showing only non-zero counts. A peer that reports no workload field renders `unknown`, never `0`: absence is not idleness.
 
-Selecting a peer in the `/coms` peer overlay asks that peer directly for the detail — agents with elapsed time, task rows, and cron schedules. The peer answers over its own socket from its own memory; nothing scans another process's files. No reply within two seconds renders `workload  unknown (no reply within 2s)`.
+Selecting a peer in the `/coms` peer overlay asks that peer directly for the detail — agent identity and elapsed time, task rows in the same format `/tasks` uses, and cron schedules. The peer answers over its own socket from its own memory, with a projected payload (no job output, no worker directories); nothing scans another process's files.
+
+Three answers are kept apart:
+- the peer answered with work → the sections it reported
+- the peer answered with nothing active → `workload  none active`
+- no usable answer → `unknown`, with the reason: `(no reply within 2s)`, `(malformed reply)`, `(reply too large)`, or `(peer cannot report its own workload)`
 
 Dead peers are removed from the registry in two phases. A newly registered entry gets a grace period (`coms_entry_grace_period_ms`, default 30 seconds) so a just-booted session is never pruned early. After that, the entry is probed by connecting to its socket: peers that respond are kept, peers that do not are removed from the registry. Timestamp staleness alone never prunes an entry, which is what keeps laptop suspend/resume from wiping out live peers.
 

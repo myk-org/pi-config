@@ -12,6 +12,9 @@ const log = createLogger("pitasks");
 export const TASKS_USAGE =
 	"Usage: /tasks [create | start <id> | done <id> | clear completed | clear all]";
 export const TASKS_EMPTY_MESSAGE = "No tasks.";
+/** Text output (headless or browser) carries the actions the overlay cannot offer there. */
+export const TASKS_HINT =
+	"Subcommands: /tasks create · start <id> · done <id> · clear completed · clear all";
 
 export type TasksCommand =
 	| { kind: "list" }
@@ -36,7 +39,7 @@ export function parseTasksCommand(args: string | undefined): TasksCommand {
 		if (parts.length !== 2 || !/^\d+$/.test(id)) return { kind: "usage" };
 		return { kind: sub, id };
 	}
-	if (sub === "clear") {
+	if (sub === "clear" && parts.length === 2) {
 		if (target === "completed") return { kind: "clear-completed" };
 		if (target === "all") return { kind: "clear-all" };
 	}
@@ -95,18 +98,26 @@ export function taskDetailRows(task: Task): Array<[string, string]> {
 }
 
 /** Headless (no UI) listing — the same rows the overlay would show. */export function formatTasksPlainText(tasks: readonly Task[]): string {
-	if (tasks.length === 0) return TASKS_EMPTY_MESSAGE;
 	log.debug("tasks_plain_list", { count: tasks.length });
-	return tasks.map(formatTaskRowLine).join("\n");
+	const rows = tasks.length === 0 ? [TASKS_EMPTY_MESSAGE] : tasks.map(formatTaskRowLine);
+	return [...rows, TASKS_HINT].join("\n");
 }
 
 export type TaskAction = "start" | "done";
-export type TaskActionOutcome = "applied" | "missing" | "unchanged";
+export type TaskActionOutcome = "applied" | "missing" | "unchanged" | "refused";
 
-/** The status `start`/`done` sets, or null when the task already has it (idempotent). */
-export function nextTaskStatus(current: string, action: TaskAction): TaskStatus | null {
+/** What `/tasks start|done <id>` would do to a task in this status. */
+export type TaskTransition =
+	| { kind: "set"; status: TaskStatus }
+	/** Already in the target status — idempotent, no write. */
+	| { kind: "none" }
+	/** Completed work is not reopened by `start`; `done` on it stays idempotent. */
+	| { kind: "refused" };
+
+export function nextTaskStatus(current: string, action: TaskAction): TaskTransition {
+	if (action === "start" && current === "completed") return { kind: "refused" };
 	const target: TaskStatus = action === "start" ? "in_progress" : "completed";
-	return current === target ? null : target;
+	return current === target ? { kind: "none" } : { kind: "set", status: target };
 }
 
 export interface TaskActionDeps {
@@ -127,13 +138,48 @@ export function applyTaskAction(
 		log.warn("task_action_missing", { action, id });
 		return "missing";
 	}
-	const status = nextTaskStatus(task.status, action);
-	if (!status) {
+	const transition = nextTaskStatus(task.status, action);
+	if (transition.kind === "refused") {
+		log.info("task_action_refused", { action, id, status: task.status });
+		return "refused";
+	}
+	if (transition.kind === "none") {
 		log.debug("task_action_unchanged", { action, id, status: task.status });
 		return "unchanged";
 	}
-	deps.update(id, status);
-	deps.onChanged?.(id, status);
-	log.info("task_action_applied", { action, id, status });
+	deps.update(id, transition.status);
+	deps.onChanged?.(id, transition.status);
+	log.info("task_action_applied", { action, id, status: transition.status });
 	return "applied";
+}
+
+/** The deps `openTasksOverlay` needs, bound to the live store (never a snapshot). */
+export function tasksOverlayDeps(
+	store: {
+		list: () => Task[];
+		get: (id: string) => Task | undefined;
+		update: (id: string, fields: { status: "deleted" }) => unknown;
+	},
+	onDeleted?: (id: string) => void,
+): TasksUiDeps {
+	return {
+		listTasks: () => store.list(),
+		deleteTask: (id) => {
+			if (!store.get(id)) {
+				log.warn("task_delete_missing", { id });
+				return false;
+			}
+			store.update(id, { status: "deleted" });
+			onDeleted?.(id);
+			log.info("task_deleted", { id });
+			return true;
+		},
+	};
+}
+
+/** What the overlay renders — pure data + callbacks, no TUI types. */
+export interface TasksUiDeps {
+	listTasks: () => Task[];
+	/** Delete by task id. Returns true when the task was removed. */
+	deleteTask: (id: string) => boolean;
 }

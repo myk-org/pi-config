@@ -721,9 +721,10 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 - Collapsible thinking and tool blocks with copy buttons
 - ask_user tool bridging (answer from browser or TUI)
 - **Full TUI parity (#968)** — every interactive prompt and surface is answerable/operable from either TUI or browser, first answer wins:
-  - Dangerous-command approvals, commit-trailer selection, project-agent confirmations, and `/tasks` menus render in both surfaces
+  - Dangerous-command approvals, commit-trailer selection, project-agent confirmations, and `/tasks create` prompts render in both surfaces
+  - `/tasks` itself is a terminal-only overlay, so a browser-sent `/tasks` answers with the same task list as plain text
   - Tasks panel (view/create/start/complete/delete/clear) driven through the live TaskStore with live updates
-  - Coms peer list (busy state, queue depth, context %) + send message to a peer (same delivery path as `coms_send`)
+  - Coms peer list (busy state, queue depth, context %, own-workload counts) + send message to a peer (same delivery path as `coms_send`)
   - New-session creation (name + initial model) and `/compact` from the browser
   - Memory status (usage, topics, situation report)
   - MCP server management (list/login/logout)

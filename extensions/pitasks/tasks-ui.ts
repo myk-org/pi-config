@@ -14,16 +14,11 @@ import {
 	TASKS_EMPTY_MESSAGE,
 	taskDetailRows,
 	toTaskRowView,
+	type TasksUiDeps,
 } from "./tasks-view.js";
 import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("pitasks");
-
-export interface TasksUiDeps {
-	listTasks: () => Task[];
-	/** Delete by task id. Returns true when the task was removed. */
-	deleteTask: (id: string) => boolean;
-}
 
 function glyphColor(status: string): "success" | "warning" | "muted" {
 	if (status === "completed") return "success";

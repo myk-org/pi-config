@@ -19,7 +19,9 @@ import {
 	applyTaskAction,
 	formatTasksPlainText,
 	parseTasksCommand,
+	tasksOverlayDeps,
 } from "./tasks-view.js";
+import { isBrowserDispatch } from "../shared/ui-bridge.js";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import {
@@ -514,6 +516,7 @@ export default function (pi: ExtensionAPI) {
 						},
 					});
 					if (outcome === "missing") { ctx.ui?.notify(`No task #${cmd.id}.`, "warning"); return; }
+					if (outcome === "refused") { ctx.ui?.notify(`Task #${cmd.id} is completed; it is not restarted by /tasks start.`, "warning"); return; }
 					if (outcome === "unchanged") { ctx.ui?.notify(`Task #${cmd.id} is already ${cmd.kind === "done" ? "completed" : "in progress"}.`, "info"); return; }
 					ctx.ui?.notify(`Task #${cmd.id} → ${cmd.kind === "done" ? "completed" : "in progress"}.`, "info");
 					return;
@@ -530,18 +533,17 @@ export default function (pi: ExtensionAPI) {
 					log.info("tasks_created_via_command");
 					return;
 				}
-				// list — overlay when there is a UI, plain text otherwise
-				if (!ctx.hasUI) { ctx.ui?.notify(formatTasksPlainText(taskStore.list()), "info"); return; }
-				await openTasksOverlay(ctx, {
-					listTasks: () => taskStore.list(),
-					deleteTask: (taskId) => {
-						taskStore.update(taskId, { status: "deleted" });
-						currentWidget?.setActiveTask(taskId, false);
-						currentWidget?.update();
-						log.info("task_deleted", { taskId });
-						return true;
-					},
-				});
+				// list — the fullscreen overlay needs a real terminal. No UI, or a command dispatched
+				// from the pidash browser (whose user cannot see the terminal), gets the same plain text.
+				if (!ctx.hasUI || isBrowserDispatch(ctx)) {
+					log.debug("tasks_list_plain_text", { hasUI: !!ctx.hasUI, browser: isBrowserDispatch(ctx), count: taskStore.list().length });
+					ctx.ui?.notify(formatTasksPlainText(taskStore.list()), "info");
+					return;
+				}
+				await openTasksOverlay(ctx, tasksOverlayDeps(taskStore, (taskId) => {
+					currentWidget?.setActiveTask(taskId, false);
+					currentWidget?.update();
+				}));
 			},
 		});
 	}

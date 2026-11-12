@@ -8,7 +8,8 @@
  */
 import type { Component } from "@earendil-works/pi-tui";
 import { describePeerOrigin } from "./coms-peers.js";
-import { renderWorkloadPart, workloadSectionLines, type PeerWorkloadDetail } from "./coms-workload.js";
+import { renderWorkloadPart, workloadSectionLines, workloadUnknownLine } from "./coms-workload.js";
+import type { DescribeResult } from "./coms-describe.js";
 import { OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -25,9 +26,9 @@ export interface ComsPeersOverlayDeps {
   killPeer: (row: RegistryRow) => string;
   /** Kill every live peer. */
   killAll: () => string;
-  /** #1083: ask the focused peer for its own active workload. Resolves null when it does not
-   *  answer in time — rendered as `unknown`, never as a filesystem-derived guess. */
-  describePeer?: (row: RegistryRow) => Promise<PeerWorkloadDetail | null>;
+  /** #1083: ask the focused peer for its own active workload. `ok` = it answered (possibly
+   *  with nothing active); `reason` = it never did — rendered as `unknown`, never as zeros. */
+  describePeer?: (row: RegistryRow) => Promise<DescribeResult>;
   heartbeatAgeSeconds?: (row: RegistryRow) => number | null;
   emptyMessage?: string;
 }
@@ -85,13 +86,18 @@ export async function openComsPeersOverlay(
       // #1083: ask the peer once, when the detail opens. `pending` renders nothing, so a slow
       // peer never paints a count it has not reported; the answer (or the 2s timeout) is picked
       // up by OverlayScrollDetail's own 1s invalidate tick — no polling of files.
-      const workload: { state: "pending" | "done"; detail: PeerWorkloadDetail | null } = { state: "pending", detail: null };
+      const workload: { state: "pending" | "done"; result: DescribeResult | null } = { state: "pending", result: null };
       const ask = deps.describePeer;
       if (ask) {
         void ask(row)
-          .then((detail) => { workload.detail = detail; workload.state = "done"; log.debug("describe_resolved", { peer: row.name, answered: detail !== null }); })
-          .catch((err) => { workload.detail = null; workload.state = "done"; log.warn("describe_failed", { peer: row.name, error: err instanceof Error ? err.message : String(err) }); });
+          .then((result) => { workload.result = result; workload.state = "done"; log.debug("describe_resolved", { peer: row.name, answered: result.ok }); })
+          .catch((err) => {
+            workload.result = { ok: false, reason: "malformed" };
+            workload.state = "done";
+            log.warn("describe_failed", { peer: row.name, error: err instanceof Error ? err.message : String(err) });
+          });
       } else {
+        workload.result = { ok: false, reason: "no-sources" };
         workload.state = "done";
       }
       // OverlayScrollDetail owns the detail contract: key handling, scrolling and done(). A bare
@@ -131,7 +137,9 @@ export async function openComsPeersOverlay(
             if (status) lines.push(status);
             if (workload.state === "done") {
               lines.push("");
-              lines.push(...workloadSectionLines(workload.detail));
+              const result = workload.result;
+              // An answered peer with nothing active says so; only silence is `unknown`.
+              lines.push(...(result?.ok ? workloadSectionLines(result.detail) : [workloadUnknownLine(result?.reason ?? "timeout")]));
             }
             return lines;
           },

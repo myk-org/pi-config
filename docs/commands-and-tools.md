@@ -204,8 +204,9 @@ Task manager for the current session's task list.
 - **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] <subject>`; a task with blockers is marked `⛔ blocked`
 - **Detail:** subject, status, owner, blocked-by, description, created and updated
 - **`create`:** prompts for subject and description (bridged, so pidash can answer it too)
-- **`start <id>` / `done <id>`:** move a task to `in_progress` / `completed`; an unknown id is reported, and `done` on a completed task is a no-op
+- **`start <id>` / `done <id>`:** move a task to `in_progress` / `completed`; an unknown id is reported, `done` on a completed task is a no-op, and `start` refuses to reopen completed work
 - **`clear completed` / `clear all`:** delete matching tasks and report the count
+- **No terminal, or a command sent from the pidash browser:** the same rows are printed as plain text (followed by the subcommand hint) instead of opening the overlay
 - **Note:** when the task scope is `session` and the list becomes empty, the backing file is deleted.
 
 ```

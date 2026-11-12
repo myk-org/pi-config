@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
 	TASKS_EMPTY_MESSAGE,
+	TASKS_HINT,
 	TASKS_USAGE,
 	applyTaskAction,
 	formatTasksPlainText,
@@ -9,6 +10,7 @@ import {
 	parseTasksCommand,
 	taskDetailRows,
 	taskStatusGlyph,
+	tasksOverlayDeps,
 	toTaskRowView,
 } from "../../../extensions/pitasks/tasks-view.ts";
 import type { Task, TaskStatus } from "../../../extensions/pitasks/types.ts";
@@ -73,6 +75,13 @@ describe("parseTasksCommand", () => {
 		assert.deepEqual(parseTasksCommand("create extra"), { kind: "usage" });
 	});
 
+	it("never acts on a clear with extra words", () => {
+		assert.deepEqual(parseTasksCommand("clear completed now"), { kind: "usage" });
+		assert.deepEqual(parseTasksCommand("clear all please"), { kind: "usage" });
+		assert.deepEqual(parseTasksCommand("done 3 now"), { kind: "usage" });
+		assert.deepEqual(parseTasksCommand("start 3 4"), { kind: "usage" });
+	});
+
 	it("documents the usage string", () => {
 		assert.match(TASKS_USAGE, /^Usage: \/tasks/);
 		assert.match(TASKS_USAGE, /start <id>/);
@@ -112,10 +121,20 @@ describe("start / done subcommands", () => {
 		const result = run("done", "3", [task({ id: "3", status: "completed" })]);
 		assert.equal(result.outcome, "unchanged");
 		assert.deepEqual(result.updates, []);
-		assert.equal(nextTaskStatus("completed", "done"), null);
-		assert.equal(nextTaskStatus("in_progress", "start"), null);
-		assert.equal(nextTaskStatus("pending", "start"), "in_progress");
-		assert.equal(nextTaskStatus("pending", "done"), "completed");
+	});
+
+	it("refuses to restart a completed task with start", () => {
+		const result = run("start", "3", [task({ id: "3", status: "completed" })]);
+		assert.equal(result.outcome, "refused");
+		assert.deepEqual(result.updates, [], "a refused start must not write");
+	});
+
+	it("maps every status/action pair", () => {
+		assert.deepEqual(nextTaskStatus("completed", "done"), { kind: "none" });
+		assert.deepEqual(nextTaskStatus("completed", "start"), { kind: "refused" });
+		assert.deepEqual(nextTaskStatus("in_progress", "start"), { kind: "none" });
+		assert.deepEqual(nextTaskStatus("pending", "start"), { kind: "set", status: "in_progress" });
+		assert.deepEqual(nextTaskStatus("pending", "done"), { kind: "set", status: "completed" });
 	});
 });
 
@@ -171,7 +190,7 @@ describe("taskDetailRows", () => {
 
 describe("formatTasksPlainText", () => {
 	it("uses the overlay empty message when there are no tasks", () => {
-		assert.equal(formatTasksPlainText([]), TASKS_EMPTY_MESSAGE);
+		assert.equal(formatTasksPlainText([]).split("\n")[0], TASKS_EMPTY_MESSAGE);
 	});
 
 	it("lists one line per task with blocked marker", () => {
@@ -182,6 +201,47 @@ describe("formatTasksPlainText", () => {
 		assert.deepEqual(text.split("\n"), [
 			"✔ #3 [completed] wire the overlay",
 			"◻ #4 [pending] wait on 3 ⛔ blocked",
+			TASKS_HINT,
 		]);
+	});
+
+	it("always names the subcommands the text output replaces", () => {
+		for (const hint of ["create", "start <id>", "done <id>", "clear completed", "clear all"]) {
+			assert.match(TASKS_HINT, new RegExp(hint.replace(/[<>]/g, (c) => `\\${c}`)));
+		}
+		assert.equal(formatTasksPlainText([task()]).split("\n").at(-1), TASKS_HINT);
+	});
+});
+
+describe("tasksOverlayDeps", () => {
+	it("reads the live store on every call, never a snapshot", () => {
+		let tasks = [task({ id: "1" })];
+		const deps = tasksOverlayDeps({ list: () => tasks, get: () => undefined, update: () => undefined });
+		assert.equal(deps.listTasks().length, 1);
+		tasks = [task({ id: "1" }), task({ id: "2" })];
+		assert.equal(deps.listTasks().length, 2);
+	});
+
+	it("deletes through the store and reports it", () => {
+		const updates: Array<[string, string]> = [];
+		const deleted: string[] = [];
+		const deps = tasksOverlayDeps(
+			{
+				list: () => [task({ id: "3" })],
+				get: (id) => (id === "3" ? task({ id: "3" }) : undefined),
+				update: (id, fields) => { updates.push([id, fields.status]); },
+			},
+			(id) => { deleted.push(id); },
+		);
+		assert.equal(deps.deleteTask("3"), true);
+		assert.deepEqual(updates, [["3", "deleted"]]);
+		assert.deepEqual(deleted, ["3"]);
+	});
+
+	it("does not write for an unknown id", () => {
+		let writes = 0;
+		const deps = tasksOverlayDeps({ list: () => [], get: () => undefined, update: () => { writes++; } });
+		assert.equal(deps.deleteTask("99"), false);
+		assert.equal(writes, 0);
 	});
 });

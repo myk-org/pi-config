@@ -21,6 +21,7 @@ import { checkHealth, ensureUiBuilt, spawnDaemon as spawnDaemonGeneric, killDaem
 import { getSetting } from "../orchestrator/project-settings.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { firstLiveExtensionCtx, isLiveExtensionCtx, resolveSessionStartCtx } from "../shared/live-ctx.js";
+import { markBrowserDispatch } from "../shared/ui-bridge.js";
 import { createLogger } from "../shared/logger.js";
 import { projectTurnEndEvent } from "./event-projection.js";
 import { pidashModelInfo } from "./model-info.js";
@@ -1136,7 +1137,10 @@ export function registerPidash(
         const ctx = rawCtx?.ui ? { ...rawCtx, ui: { ...rawCtx.ui, notify: (msg: string, level?: string) => {
           if (ws && connected) { try { ws.send(JSON.stringify({ type: "notification", level: level || "info", message: String(msg) })); } catch {} }
           return rawCtx.ui.notify(msg, level);
-        } } } : rawCtx;
+        } } } : Object.create(rawCtx);
+        // Tag the copy: a command from the browser must not open a terminal-only overlay its
+        // user cannot see or drive (#1082). The live ctx object is never mutated.
+        markBrowserDispatch(ctx);
         await handler(arg, ctx);
       } catch (e: any) {
         log.error(`command /${cmdName} error:`, e);
