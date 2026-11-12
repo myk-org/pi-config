@@ -1865,6 +1865,7 @@ export function setupDiscordBot(opts: {
       watchedSessionId: state.watchedSessionId ?? null,
       targets: state.targets ?? {},
       isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
+      hasPendingQuestion: (sessionId) => Boolean((state.pendingPrompts ?? {})[sessionId]),
     });
     const noTargetReply = () => message.reply(inbound.deadTarget
       ? "The session this channel belonged to is gone. Use `/sessions` and pick one."
@@ -1909,7 +1910,12 @@ export function setupDiscordBot(opts: {
         (content) => void message.reply(content).catch(() => {}),
         answerSession,
       );
-      if (outcome === "answered" || outcome === "cancelled") return;
+      if (outcome === "answered" || outcome === "cancelled") {
+        // The answer is in, so this session's question target is done — button answers already do
+        // this; without it the channel kept routing to a session that no longer asked (Qodo 704cfa32).
+        if (answerSession) releasePromptOnlyTarget(state, answerSession);
+        return;
+      }
       if (outcome === "expired") {
         await message.reply("The waiting prompt expired; sending your message as a new prompt.").catch(() => {});
       } else if (outcome === "not-an-answer" && (state.pendingPrompt?.method === "confirm" || hasPrompt) && text) {
