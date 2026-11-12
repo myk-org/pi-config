@@ -369,6 +369,40 @@ export function setupDiscordBot(opts: {
     else log.info("discord_inbound_dropped", record);
   }
 
+  /** The owner's rule: "Not watching any session" is true only when NO session is connected. A
+   *  connected session is a session the input can go to, so refusing while something runs hides both
+   *  the reason and the message the user meant to send. Nothing is picked blind: the record says why,
+   *  how many candidates there were, and which handler asked. A live watch never reaches here — the
+   *  resolver already returned it as `watch` — so "the watched one if present" is that same rule. */
+  function routeToActiveSession(
+    resolved: InboundSession,
+    where: {
+      /** context-menu, slash-command:<name>, messageCreate — the site that had to refuse. */
+      handler: string;
+      channelId?: string | null;
+      guildId?: string | null;
+      watchedSessionId?: string | null;
+      userId?: string | null;
+    },
+  ): InboundSession {
+    if (resolved.sessionId || resolved.ambiguous) return resolved;
+    const active = [...piClients.entries()].filter(([, client]) => Boolean(client?.ws)).map(([sessionId]) => sessionId);
+    if (!active.length) return resolved;
+    const lastActivity = (sessionId: string) => Number(piClients.get(sessionId)?.session?.lastActivity) || 0;
+    const sessionId = active.reduce((newest, id) => (lastActivity(id) > lastActivity(newest) ? id : newest));
+    log.info("discord_inbound_fallback", {
+      reason: active.length === 1 ? "fallback_single_active" : "fallback_newest_active",
+      sessionId,
+      candidates: active.length,
+      handler: where.handler,
+      channelId: where.channelId ?? null,
+      guildId: where.guildId ?? null,
+      watchedSessionId: where.watchedSessionId ?? null,
+      userId: where.userId ?? null,
+    });
+    return { ...resolved, sessionId, source: "active" };
+  }
+
   const seenMessages = new Set<string>();
   function firstSighting(key: string): boolean {
     if (!key) return true;
@@ -1248,12 +1282,18 @@ export function setupDiscordBot(opts: {
       // The SAME resolver every other inbound path uses. Asking "is a session watched" refused a
       // channel that was delivering a live session's output — the bot was writing into it, so it is
       // an address for that session (Qodo #1075).
-      const inbound = resolveInboundSession({
+      const inbound = routeToActiveSession(resolveInboundSession({
         channelId,
         threadSessionId: Object.entries(state.threads ?? {}).find(([, threadId]) => threadId === channelId)?.[0] ?? null,
         watchedSessionId: state.watchedSessionId ?? null,
         targets: state.targets ?? {},
         isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
+      }), {
+        handler: "context-menu",
+        channelId,
+        guildId: interaction.guildId,
+        watchedSessionId: state.watchedSessionId ?? null,
+        userId: interaction.user.id,
       });
       const targetSession = inbound.sessionId;
       if (!targetSession) {
@@ -1344,7 +1384,7 @@ export function setupDiscordBot(opts: {
 
     if (!interaction.isChatInputCommand?.()) return;
     const name = interaction.commandName;
-    const watched = state.watchedSessionId;
+    let watched = state.watchedSessionId;
 
     if (name === "sessions") {
       const sessions = sessionSummaries();
@@ -1407,6 +1447,17 @@ export function setupDiscordBot(opts: {
       return;
     }
 
+    // Same owner rule as the message and menu paths: a connected session is a target, so the guard
+    // below may only refuse when NOTHING is connected (issue #1075).
+    if (!watched) {
+      watched = routeToActiveSession({ sessionId: null, source: "none" }, {
+        handler: `slash-command:${name}`,
+        channelId: interaction.channelId,
+        guildId: interaction.guildId,
+        watchedSessionId: null,
+        userId: interaction.user.id,
+      }).sessionId;
+    }
     if (!watched) {
       logInboundDrop({
         reason: "interaction-no-watch",
@@ -2086,29 +2137,15 @@ export function setupDiscordBot(opts: {
       resolved.sessionId || !state.watchedSessionId || state.responseChannelId !== message.channelId
         ? resolved
         : { sessionId: state.watchedSessionId, source: "watch" };
-    // The owner's rule: "Not watching any session" is true only when NO session is connected. A
-    // connected session is a session the text can go to, so refusing while something runs hides both
-    // the reason and the message the user meant to send. Nothing is picked blind: the choice carries
-    // its reason and the number of candidates. A live watch is already resolved as `watch` above, a
-    // thread is identity (never liveness), and one channel carrying two sessions is a real conflict.
-    const routeToActiveSession = (resolved: InboundSession): InboundSession => {
-      if (resolved.sessionId || resolved.ambiguous) return resolved;
-      const active = [...piClients.entries()].filter(([, client]) => Boolean(client?.ws)).map(([sessionId]) => sessionId);
-      if (!active.length) return resolved;
-      const lastActivity = (sessionId: string) => Number(piClients.get(sessionId)?.session?.lastActivity) || 0;
-      const sessionId = active.reduce((newest, id) => (lastActivity(id) > lastActivity(newest) ? id : newest));
-      log.info("discord_inbound_fallback", {
-        reason: active.length === 1 ? "fallback_single_active" : "fallback_newest_active",
-        sessionId,
-        candidates: active.length,
-        channelId: message.channelId,
-        guildId: message.guildId ?? null,
-        watchedSessionId: state.watchedSessionId ?? null,
-        userId,
-      });
-      return { ...resolved, sessionId, source: "active" };
-    };
-    let inbound = routeToActiveSession(streamingChannelFallback(resolveInbound()));
+    // A thread is identity (never liveness) and one channel carrying two sessions is a real conflict;
+    // both are decided by the resolver and the fallback leaves them alone.
+    let inbound = routeToActiveSession(streamingChannelFallback(resolveInbound()), {
+      handler: "messageCreate",
+      channelId: message.channelId,
+      guildId: message.guildId,
+      watchedSessionId: state.watchedSessionId ?? null,
+      userId,
+    });
     const noTargetReply = () => message.reply(inbound.deadTarget
       ? "The session this channel belonged to is gone. Use `/sessions` and pick one."
       : "Not watching any session. Use `/sessions` and pick one.").catch(() => {});
@@ -2217,7 +2254,13 @@ export function setupDiscordBot(opts: {
         await message.reply("The waiting prompt expired; sending your message as a new prompt.").catch(() => {});
         // The question that named this channel is gone, so the routing decision must be taken again —
         // keeping it sent the text to a session that had already stopped asking (Qodo ce99abaf).
-        inbound = routeToActiveSession(streamingChannelFallback(resolveInbound()));
+        inbound = routeToActiveSession(streamingChannelFallback(resolveInbound()), {
+          handler: "messageCreate",
+          channelId: message.channelId,
+          guildId: message.guildId,
+          watchedSessionId: state.watchedSessionId ?? null,
+          userId,
+        });
       } else if (outcome === "not-an-answer" && (state.pendingPrompt?.method === "confirm" || hasPrompt) && text) {
         // Not an answer to a yes/no question, but it IS a message the user meant
         // to send: forward it and keep the prompt available (Qodo 85cacb2c).

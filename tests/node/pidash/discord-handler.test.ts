@@ -205,6 +205,20 @@ function contextMenu(replies: string[], opts: { channelId?: string } = {}): any 
   };
 }
 
+/** A slash command interaction; `replies` records the text of each reply. */
+function slash(name: string, replies: string[]): any {
+  return {
+    user: { id: USER, username: "tester" },
+    channelId: DM,
+    guildId: null,
+    commandName: name,
+    isChatInputCommand: () => true,
+    isRepliable: () => true,
+    options: { getString: () => null },
+    reply: async (payload: any) => { replies.push(String(payload?.content ?? "")); },
+  };
+}
+
 describe("discord messageCreate routing", () => {
   after(() => {
     process.env = savedEnv;
@@ -644,12 +658,65 @@ describe("discord messageCreate routing", () => {
     assert.match(replies[0] ?? "", /^Sent to /);
   });
 
-  it("a context menu still refuses a channel nothing is watching or delivering into", async () => {
-    const bot = startBot({ live: ["s9"], watchedSessionId: null, threads: {} });
-    const replies: string[] = [];
-    await bot.interaction(contextMenu(replies, { channelId: PLAIN }));
-    assert.deepEqual(bot.sends, []);
-    assert.deepEqual(replies, ["Not watching any session. Use `/sessions` first."]);
+  it("a context menu falls back to the only active session instead of refusing", async () => {
+    // The owner's rule reaches this site too: nothing watches this channel, but s9 is connected, so
+    // the prompt has a target. Refusing here was the bug (#1075).
+    (globalThis as any).__piConfigSessionId = "interaction-fallback-menu";
+    pinLevel("info");
+    try {
+      const bot = startBot({ live: ["s9"], watchedSessionId: null, threads: {} });
+      const replies: string[] = [];
+      await bot.interaction(contextMenu(replies, { channelId: PLAIN }));
+      assert.deepEqual(bot.sends.map((s) => s.sessionId), ["s9"]);
+      assert.doesNotMatch(replies.join("\n"), /Not watching any session/);
+      assert.match(readLogs(), /discord_inbound_fallback \{"reason":"fallback_single_active","sessionId":"s9","candidates":1,"handler":"context-menu"/);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("a slash command acts on the only active session instead of refusing", async () => {
+    (globalThis as any).__piConfigSessionId = "interaction-fallback-slash";
+    pinLevel("info");
+    try {
+      const bot = startBot({ live: ["s1"], watchedSessionId: null, threads: {} });
+      const statusReplies: string[] = [];
+      await bot.interaction(slash("status", statusReplies));
+      assert.equal(statusReplies.length, 1);
+      assert.doesNotMatch(statusReplies.join("\n"), /Not watching any session/);
+      // /stop goes all the way to the gateway, so the payload names the session the guard picked.
+      await bot.interaction(slash("stop", []));
+      assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.command]), [["s1", "abort"]]);
+      const body = readLogs();
+      assert.match(body, /discord_inbound_fallback \{"reason":"fallback_single_active","sessionId":"s1","candidates":1,"handler":"slash-command:status"/);
+      assert.match(body, /"handler":"slash-command:stop"/);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("the menu and the slash command refuse only when no session is active, logging each time", async () => {
+    (globalThis as any).__piConfigSessionId = "interaction-refusal-none";
+    pinLevel("info");
+    try {
+      const bot = startBot({ live: [], watchedSessionId: null, threads: {} });
+      const menuReplies: string[] = [];
+      await bot.interaction(contextMenu(menuReplies, { channelId: PLAIN }));
+      const slashReplies: string[] = [];
+      await bot.interaction(slash("status", slashReplies));
+      const refusal = "Not watching any session. Use `/sessions` first.";
+      assert.deepEqual(menuReplies, [refusal]);
+      assert.deepEqual(slashReplies, [refusal]);
+      const body = readLogs();
+      // Nothing was picked, so no fallback line — and both refusals are on the record.
+      assert.doesNotMatch(body, /discord_inbound_fallback/);
+      assert.equal(body.match(/discord_inbound_dropped \{[^\n]*"reason":"interaction-no-watch"/g)?.length, 2);
+    } finally {
+      setLogLevelPin(LOG_NAME, null);
+      delete (globalThis as any).__piConfigSessionId;
+    }
   });
 
   it("a context menu says the session is gone when this channel's target died", async () => {
