@@ -128,6 +128,11 @@ function registerCompletions(
 
   // ── Completion definitions ──────────────────────────────────────
 
+  // `/adopt-skill` is NOT here on purpose: it completes live project state (the
+  // unmarked skills under `.pi/skills/`), so it registers its own
+  // `getArgumentCompletions` in `skill-maintenance.ts` — the same pattern as `/coms`
+  // in `extensions/coms/coms-wrapper.ts`. Add a note here if you are looking for it.
+
   const completions: Record<string, CompletionFn> = {
     "external-ai": (prefix: string) => {
       const parts = prefix.split(/\s+/);

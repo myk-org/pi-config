@@ -4,8 +4,8 @@
  * A skill is maintained only when its frontmatter carries `skill-maintenance: auto`.
  * The write guard is the whole safety story: marked + real path under
  * `<project>/.pi/skills/`, everything else refused with a reason that says what it
- * is. Provenance is recorded at write time, and a skill that just failed steers the
- * turn to fix itself.
+ * is. Provenance is recorded after a write succeeds, and a skill that just failed
+ * steers the turn to fix itself.
  */
 
 import { describe, it, beforeEach, afterEach } from "node:test";
@@ -17,6 +17,7 @@ import path from "node:path";
 import {
   adoptSkill,
   appendProvenance,
+  bashSkillVerdict,
   classifySkillWrite,
   completeUnmarkedSkills,
   diffSkillTree,
@@ -45,6 +46,9 @@ const envBackup: Record<string, string | undefined> = {};
 const MARKED = `---\nname: searxng\ndescription: "Search with the local instance"\n${MARKER_LINE}\n---\n\n# SearXNG\n\nRun the query.\n`;
 const UNMARKED = `---\nname: searxng\ndescription: "Search with the local instance"\n---\n\n# SearXNG\n\nRun the query.\n`;
 
+/** A write tool input. */
+const write = (content: string) => ({ content });
+
 function project(): { cwd: string; root: string } {
   const cwd = makeTempDir("skill-maint-");
   const root = path.join(cwd, ".pi", "skills");
@@ -67,6 +71,16 @@ function tempDir(prefix: string): string {
   return dir;
 }
 
+function provenanceRecords(cwd: string): any[] {
+  const file = provenancePath(cwd);
+  if (!fs.existsSync(file)) return [];
+  return fs
+    .readFileSync(file, "utf-8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
 beforeEach(() => {
   for (const key of ["PI_SUBAGENT_CHILD", "PI_AGENT_NAME"]) {
     envBackup[key] = process.env[key];
@@ -82,23 +96,33 @@ afterEach(() => {
   while (cleanups.length > 0) cleanups.pop()!();
 });
 
-describe("ownership — real path under <project>/.pi/skills (issue #1074)", () => {
-  it("owns an existing skill file and a new file inside an owned skill", () => {
+describe("ownership — real path under <project>/.pi/skills", () => {
+  it("owns an existing skill file inside the project", () => {
     const { cwd, root } = project();
     const file = writeSkill(root, "searxng");
     assert.equal(isOwnedSkillPath(cwd, file), true);
-    assert.equal(isOwnedSkillPath(cwd, path.join(root, "searxng", "references", "api.md")), true);
-    assert.equal(isOwnedSkillPath(cwd, path.join(root, "new-skill", "SKILL.md")), true);
     assert.equal(ownedSkillName(cwd, file), "searxng");
   });
 
-  it("rejects the skills directory itself and paths outside it", () => {
+  it("owns a not-yet-created file inside an owned skill", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "searxng");
+    assert.equal(isOwnedSkillPath(cwd, path.join(root, "searxng", "references", "api.md")), true);
+    assert.equal(isOwnedSkillPath(cwd, path.join(root, "new-skill", "SKILL.md")), true);
+  });
+
+  it("rejects the skills directory itself", () => {
     const { cwd, root } = project();
     writeSkill(root, "searxng");
     assert.equal(isOwnedSkillPath(cwd, root), false);
+    assert.equal(isOwnedSkillPath(cwd, ""), false);
+  });
+
+  it("rejects a path outside the project", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "searxng");
     assert.equal(isOwnedSkillPath(cwd, path.join(cwd, ".pi", "memory", "lessons.md")), false);
     assert.equal(isOwnedSkillPath(cwd, path.join(root, "..", "..", "outside.md")), false);
-    assert.equal(isOwnedSkillPath(cwd, ""), false);
   });
 
   it("rejects a symlink inside .pi/skills that resolves outside", () => {
@@ -107,19 +131,24 @@ describe("ownership — real path under <project>/.pi/skills (issue #1074)", () 
     fs.mkdirSync(path.join(outside, "victim"), { recursive: true });
     fs.writeFileSync(path.join(outside, "victim", "SKILL.md"), "# Victim\n");
     fs.symlinkSync(path.join(outside, "victim"), path.join(root, "linked"));
-
     assert.equal(isOwnedSkillPath(cwd, path.join(root, "linked", "SKILL.md")), false);
     assert.equal(isOwnedSkillPath(cwd, path.join(root, "linked", "new.md")), false);
   });
 
-  it("rejects a DANGLING symlink inside the owned tree (write would land outside)", () => {
+  it("rejects a dangling symlink inside the owned tree", () => {
     const { cwd, root } = project();
     const outside = tempDir("skill-maint-dangling-");
-    // target does not exist yet: realpath reconstruction used to call this owned
     fs.symlinkSync(path.join(outside, "not-yet-created.md"), path.join(root, "dangling.md"));
     assert.equal(isOwnedSkillPath(cwd, path.join(root, "dangling.md")), false);
-    const verdict = classifySkillWrite(cwd, path.join(root, "dangling.md"), MARKED);
+  });
+
+  it("blocks a dangling symlink write through the classifier", () => {
+    const { cwd, root } = project();
+    const outside = tempDir("skill-maint-dangling-");
+    fs.symlinkSync(path.join(outside, "not-yet-created.md"), path.join(root, "dangling.md"));
+    const verdict = classifySkillWrite(cwd, path.join(root, "dangling.md"), write(MARKED));
     assert.equal(verdict.allow, false);
+    assert.match(verdict.reason ?? "", /symlink/);
   });
 
   it("rejects a .pi/skills directory that is itself a symlink out of the project", () => {
@@ -132,116 +161,238 @@ describe("ownership — real path under <project>/.pi/skills (issue #1074)", () 
 
     assert.equal(ownedSkillsRoot(cwd), null);
     assert.equal(isOwnedSkillPath(cwd, path.join(cwd, ".pi", "skills", "searxng", "SKILL.md")), false);
-    assert.equal(classifySkillWrite(cwd, path.join(cwd, ".pi", "skills", "searxng", "SKILL.md"), MARKED).allow, false);
+    assert.equal(
+      classifySkillWrite(cwd, path.join(cwd, ".pi", "skills", "searxng", "SKILL.md"), write(MARKED)).allow,
+      false,
+    );
   });
 });
 
-describe("the marker decides (issue #1074)", () => {
+describe("known skills roots only (Qodo HIGH — ordinary files stay writable)", () => {
+  it("treats a directory merely named skills as an ordinary path", () => {
+    const cwd = path.join(tempDir("skill-maint-src-"), "skills", "foo");
+    fs.mkdirSync(path.join(cwd, ".pi", "skills"), { recursive: true });
+    const ordinary = path.join(cwd, "notes", "skills", "thing.md");
+    assert.equal(skillAreaOf(cwd, ordinary), null);
+    assert.equal(classifySkillWrite(cwd, ordinary, write("text")).allow, true);
+  });
+
+  it("treats a project checked out under ~/src/skills/<name> as ordinary", () => {
+    const cwd = path.join(tempDir("skill-maint-src-"), "skills", "myproject");
+    fs.mkdirSync(path.join(cwd, ".pi", "skills"), { recursive: true });
+    const ordinary = path.join(cwd, "src", "index.ts");
+    assert.equal(skillAreaOf(cwd, ordinary), null);
+    assert.equal(classifySkillWrite(cwd, ordinary, write("x")).allow, true);
+  });
+
+  it("treats the repository's own shipped skills directory as ordinary", () => {
+    const { cwd } = project();
+    const shipped = path.join(cwd, "skills", "conflict-resolver", "SKILL.md");
+    assert.equal(skillAreaOf(cwd, shipped), null);
+    assert.equal(classifySkillWrite(cwd, shipped, write("x")).allow, true);
+  });
+
+  it("names user-global skills", () => {
+    const { cwd } = project();
+    const globalPi = path.join(os.homedir(), ".pi", "agent", "skills", "homeassistant", "SKILL.md");
+    const globalAgents = path.join(os.homedir(), ".agents", "skills", "homeassistant", "SKILL.md");
+    assert.equal(skillAreaOf(cwd, globalPi), "user-global");
+    assert.equal(skillAreaOf(cwd, globalAgents), "user-global");
+    const verdict = classifySkillWrite(cwd, globalPi, write(MARKED));
+    assert.equal(verdict.allow, false);
+    assert.match(verdict.reason ?? "", /user-global/);
+  });
+
+  it("names packaged skills under node_modules", () => {
+    const { cwd } = project();
+    const pkg = path.join(tempDir("skill-maint-pkg-"), "node_modules", "pi-orchestrator-config", "skills", "x", "SKILL.md");
+    assert.equal(skillAreaOf(cwd, pkg), "package");
+    const verdict = classifySkillWrite(cwd, pkg, write(MARKED));
+    assert.equal(verdict.allow, false);
+    assert.match(verdict.reason ?? "", /package/);
+  });
+
+  it("names the project's .agents/skills discovery directory", () => {
+    const { cwd } = project();
+    const agents = path.join(cwd, ".agents", "skills", "x", "SKILL.md");
+    fs.mkdirSync(path.dirname(agents), { recursive: true });
+    assert.equal(skillAreaOf(cwd, agents), "project-agents");
+    assert.match(classifySkillWrite(cwd, agents, write(MARKED)).reason ?? "", /\.agents\/skills/);
+  });
+});
+
+describe("the marker decides", () => {
   it("reads skill-maintenance: auto from frontmatter only", () => {
     assert.equal(isMarkedSkill(MARKED), true);
     assert.equal(isMarkedSkill(UNMARKED), false);
+  });
+
+  it("ignores the marker outside frontmatter", () => {
     assert.equal(isMarkedSkill("# no frontmatter\nskill-maintenance: auto\n"), false);
+  });
+
+  it("ignores a different marker value", () => {
     assert.equal(isMarkedSkill(`---\nname: x\nskill-maintenance: manual\n---\n`), false);
   });
 
-  it("stamps the marker and the instruction, creating frontmatter when absent", () => {
+  it("stamps the marker into content that has frontmatter", () => {
     const stamped = stampSkill(UNMARKED);
     assert.equal(stamped.changed, true);
     assert.equal(isMarkedSkill(stamped.content), true);
     assert.ok(stamped.content.includes(MAINTAINER_INSTRUCTION));
-    // marker inside frontmatter, instruction after it
-    assert.ok(stamped.content.indexOf(MARKER_LINE) < stamped.content.indexOf("---\n\n" + MAINTAINER_INSTRUCTION));
+    assert.ok(stamped.content.includes("# SearXNG"));
+  });
 
+  it("creates frontmatter when the skill has none", () => {
     const bare = stampSkill("# Bare skill\n");
     assert.equal(isMarkedSkill(bare.content), true);
     assert.ok(bare.content.startsWith(`---\n${MARKER_LINE}\n---\n`));
-
-    const again = stampSkill(stamped.content);
-    assert.equal(again.changed, false);
-    assert.equal(again.content, stamped.content);
   });
 
-  it("allows a marked owned skill and blocks an unmarked one with the adopt hint", () => {
+  it("leaves stamped content alone on a second pass", () => {
+    const once = stampSkill(UNMARKED);
+    const twice = stampSkill(once.content);
+    assert.equal(twice.changed, false);
+    assert.equal(twice.content, once.content);
+  });
+
+  it("allows a marked owned skill", () => {
     const { cwd, root } = project();
     const marked = writeSkill(root, "marked", MARKED);
-    const unmarked = writeSkill(root, "unmarked", UNMARKED);
-
-    assert.deepEqual(
-      { allow: classifySkillWrite(cwd, marked, "edit").allow, skill: classifySkillWrite(cwd, marked, "edit").skill },
-      { allow: true, skill: "marked" },
-    );
-    const blocked = classifySkillWrite(cwd, unmarked, "edited body");
-    assert.equal(blocked.allow, false);
-    assert.match(blocked.reason ?? "", /\/adopt-skill unmarked/);
+    const verdict = classifySkillWrite(cwd, marked, { edits: [{ oldText: "Run the query.", newText: "Run it." }] });
+    assert.equal(verdict.allow, true);
+    assert.equal(verdict.skill, "marked");
   });
 
-  it("allows a write that itself introduces the marker (no creation deadlock)", () => {
+  it("blocks an unmarked owned skill with the adopt hint", () => {
     const { cwd, root } = project();
-    const created = path.join(root, "fresh", "SKILL.md");
-    assert.equal(classifySkillWrite(cwd, created, MARKED).allow, true);
-    // ...but not an unmarked creation
-    assert.equal(classifySkillWrite(cwd, path.join(root, "fresh2", "SKILL.md"), UNMARKED).allow, false);
+    const unmarked = writeSkill(root, "unmarked", UNMARKED);
+    const verdict = classifySkillWrite(cwd, unmarked, { edits: [{ oldText: "Run the query.", newText: "Run it." }] });
+    assert.equal(verdict.allow, false);
+    assert.match(verdict.reason ?? "", /\/adopt-skill unmarked/);
   });
 
-  it("names package, user-global and third-party skills as not ours", () => {
-    const { cwd } = project();
-    const pkg = path.join(tempDir("skill-maint-pkg-"), "node_modules", "pi-orchestrator-config", "skills", "x", "SKILL.md");
-    const globalPi = path.join(os.homedir(), ".pi", "agent", "skills", "homeassistant", "SKILL.md");
-    const globalAgents = path.join(os.homedir(), ".agents", "skills", "homeassistant", "SKILL.md");
-    const thirdParty = path.join(tempDir("skill-maint-repo-"), "skills", "conflict-resolver", "SKILL.md");
-    const repoFile = path.join(cwd, "extensions", "orchestrator", "index.ts");
+  it("allows an edit that adds the marker to an unmarked skill", () => {
+    const { cwd, root } = project();
+    const unmarked = writeSkill(root, "unmarked", UNMARKED);
+    const verdict = classifySkillWrite(cwd, unmarked, {
+      edits: [{ oldText: "description: \"Search with the local instance\"\n", newText: `description: "Search with the local instance"\n${MARKER_LINE}\n` }],
+    });
+    assert.equal(verdict.allow, true);
+  });
 
-    assert.equal(skillAreaOf(cwd, pkg), "package");
-    assert.match(classifySkillWrite(cwd, pkg, MARKED).reason ?? "", /package/);
-    assert.equal(skillAreaOf(cwd, globalPi), "user-global");
-    assert.equal(skillAreaOf(cwd, globalAgents), "user-global");
-    assert.match(classifySkillWrite(cwd, globalPi, MARKED).reason ?? "", /user-global/);
-    assert.equal(skillAreaOf(cwd, thirdParty), "third-party");
-    assert.match(classifySkillWrite(cwd, thirdParty, MARKED).reason ?? "", /adopt-skill/);
-    assert.equal(skillAreaOf(cwd, repoFile), null);
-    assert.equal(classifySkillWrite(cwd, repoFile, "anything").allow, true);
+  it("refuses an edit to an unmarked skill that touches prose and quotes a marker elsewhere", () => {
+    const { cwd, root } = project();
+    const unmarked = writeSkill(root, "unmarked", UNMARKED);
+    const verdict = classifySkillWrite(cwd, unmarked, {
+      edits: [{ oldText: "Run the query.", newText: `Run the query.\n\nNever add \`${MARKER_LINE}\` by hand.` }],
+    });
+    assert.equal(verdict.allow, false);
+  });
+
+  it("allows a marked creation under .pi/skills", () => {
+    const { cwd, root } = project();
+    assert.equal(classifySkillWrite(cwd, path.join(root, "fresh", "SKILL.md"), write(MARKED)).allow, true);
+  });
+
+  it("refuses an unmarked creation under .pi/skills", () => {
+    const { cwd, root } = project();
+    assert.equal(classifySkillWrite(cwd, path.join(root, "fresh", "SKILL.md"), write(UNMARKED)).allow, false);
   });
 
   it("reads the new text out of write and edit shapes", () => {
     assert.equal(incomingText({ content: "abc" }), "abc");
-    assert.equal(incomingText({ newText: "abc" }), "abc");
     assert.equal(incomingText({ edits: [{ newText: "a" }, { newText: "b" }] }), "a\nb");
     assert.equal(incomingText(null), "");
   });
 });
 
+describe("bash guard (Qodo #1079)", () => {
+  it("blocks a shell write to a user-global skill", () => {
+    const { cwd } = project();
+    const global = path.join(os.homedir(), ".pi", "agent", "skills", "x", "SKILL.md");
+    const verdict = bashSkillVerdict(cwd, `echo hacked > ${global}`);
+    assert.equal(verdict?.block, true);
+    assert.match(verdict?.reason ?? "", /does not own/);
+  });
+
+  it("blocks a shell copy into the project's .agents/skills", () => {
+    const { cwd } = project();
+    const verdict = bashSkillVerdict(cwd, `cp SKILL.md ${path.join(cwd, ".agents", "skills", "x", "SKILL.md")}`);
+    assert.equal(verdict?.block, true);
+  });
+
+  it("leaves a read of a global skill alone", () => {
+    const { cwd } = project();
+    const global = path.join(os.homedir(), ".pi", "agent", "skills", "x", "SKILL.md");
+    assert.equal(bashSkillVerdict(cwd, `cat ${global}`), null);
+  });
+
+  it("leaves an ordinary write alone", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "echo hi > notes.txt"), null);
+  });
+});
+
 describe("/adopt-skill", () => {
-  it("marks an unmarked project skill and is idempotent", () => {
+  it("marks an unmarked project skill", () => {
     const { cwd, root } = project();
     const file = writeSkill(root, "searxng", UNMARKED);
-
-    const first = adoptSkill(cwd, "searxng");
-    assert.equal(first.ok, true);
-    assert.match(first.message, /now maintained/);
+    const result = adoptSkill(cwd, "searxng");
+    assert.equal(result.ok, true);
+    assert.match(result.message, /now maintained/);
     const content = fs.readFileSync(file, "utf-8");
     assert.equal(isMarkedSkill(content), true);
     assert.ok(content.includes(MAINTAINER_INSTRUCTION));
-    assert.ok(content.includes("# SearXNG")); // body preserved
+  });
 
+  it("is idempotent", () => {
+    const { cwd, root } = project();
+    const file = writeSkill(root, "searxng", UNMARKED);
+    adoptSkill(cwd, "searxng");
+    const once = fs.readFileSync(file, "utf-8");
     const second = adoptSkill(cwd, "searxng");
     assert.equal(second.ok, true);
     assert.match(second.message, /already maintained/);
-    assert.equal(fs.readFileSync(file, "utf-8"), content);
+    assert.equal(fs.readFileSync(file, "utf-8"), once);
   });
 
-  it("creates frontmatter when the skill has none", () => {
-    const { cwd, root } = project();
-    const file = writeSkill(root, "bare", "# Bare\n");
-    assert.equal(adoptSkill(cwd, "bare").ok, true);
-    const content = fs.readFileSync(file, "utf-8");
-    assert.ok(content.startsWith(`---\n${MARKER_LINE}\n---\n`));
-    assert.equal(isMarkedSkill(content), true);
-  });
-
-  it("refuses a skill that lives outside the project and one that does not exist", () => {
+  it("refuses a path traversal in the skill name", () => {
     const { cwd } = project();
-    assert.match(adoptSkill(cwd, "definitely-missing").message, /No project skill named/);
+    const outside = tempDir("skill-maint-outside-");
+    const victim = path.join(outside, "victim", "SKILL.md");
+    fs.mkdirSync(path.dirname(victim), { recursive: true });
+    fs.writeFileSync(victim, UNMARKED);
 
+    const result = adoptSkill(cwd, "../../../../" + path.relative(path.dirname(path.dirname(cwd)), victim));
+    assert.equal(result.ok, false);
+    assert.equal(fs.readFileSync(victim, "utf-8"), UNMARKED);
+  });
+
+  it("refuses an absolute path as the skill name", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "searxng", UNMARKED);
+    const result = adoptSkill(cwd, path.join(root, "searxng", "SKILL.md"));
+    assert.equal(result.ok, false);
+    assert.match(result.message, /not a skill name/);
+  });
+
+  it("refuses a symlinked skill without touching the outside file", () => {
+    const { cwd, root } = project();
+    const outside = tempDir("skill-maint-outside-");
+    const victimDir = path.join(outside, "victim");
+    fs.mkdirSync(victimDir, { recursive: true });
+    fs.writeFileSync(path.join(victimDir, "SKILL.md"), UNMARKED);
+    fs.symlinkSync(victimDir, path.join(root, "linked"));
+
+    const result = adoptSkill(cwd, "linked");
+    assert.equal(result.ok, false);
+    assert.match(result.message, /symlink|does not resolve/);
+    assert.equal(fs.readFileSync(path.join(victimDir, "SKILL.md"), "utf-8"), UNMARKED);
+  });
+
+  it("refuses a skill that lives outside the project", () => {
+    const { cwd } = project();
     const fakeHome = tempDir("skill-maint-home-");
     fs.mkdirSync(path.join(fakeHome, ".agents", "skills", "elsewhere"), { recursive: true });
     fs.writeFileSync(path.join(fakeHome, ".agents", "skills", "elsewhere", "SKILL.md"), UNMARKED);
@@ -257,6 +408,11 @@ describe("/adopt-skill", () => {
     }
   });
 
+  it("reports a name that does not exist in the project", () => {
+    const { cwd } = project();
+    assert.match(adoptSkill(cwd, "definitely-missing").message, /No project skill named/);
+  });
+
   it("offers only unmarked project skills to autocomplete", () => {
     const { cwd, root } = project();
     writeSkill(root, "marked", MARKED);
@@ -270,32 +426,43 @@ describe("/adopt-skill", () => {
   });
 });
 
-describe("snapshot / diff / notice", () => {
-  it("reports a modified skill as patched and a new skill as written", () => {
-    const { cwd, root } = project();
-    const existing = writeSkill(root, "searxng");
-    const owned = ownedSkillsRoot(cwd);
-    const before = snapshotSkillTree(owned);
-
-    fs.writeFileSync(existing, "# SearXNG\n\nnew step\n");
-    fs.mkdirSync(path.join(root, "homeassistant"), { recursive: true });
-    fs.writeFileSync(path.join(root, "homeassistant", "SKILL.md"), MARKED);
-
-    assert.deepEqual(diffSkillTree(owned, before, snapshotSkillTree(owned)), [
-      { skill: "homeassistant", action: "written", file: "SKILL.md" },
-      { skill: "searxng", action: "patched", file: "SKILL.md" },
-    ]);
-  });
-
-  it("does not follow symlinks out of the owned tree", () => {
+describe("snapshot", () => {
+  it("skips symlinks out of the owned tree", () => {
     const { cwd, root } = project();
     const outside = tempDir("skill-maint-outside-");
     fs.writeFileSync(path.join(outside, "SKILL.md"), "# Outside\n");
     fs.symlinkSync(outside, path.join(root, "linked"));
     assert.equal(snapshotSkillTree(ownedSkillsRoot(cwd)).size, 0);
   });
+});
 
-  it("writes one line, one entry per skill, and says when provenance failed", () => {
+describe("diff", () => {
+  it("reports a modified skill as patched", () => {
+    const { cwd, root } = project();
+    const existing = writeSkill(root, "searxng");
+    const owned = ownedSkillsRoot(cwd);
+    const before = snapshotSkillTree(owned);
+    fs.writeFileSync(existing, "# SearXNG\n\nnew step\n");
+    assert.deepEqual(diffSkillTree(owned, before, snapshotSkillTree(owned)), [
+      { skill: "searxng", action: "patched", file: "SKILL.md" },
+    ]);
+  });
+
+  it("reports a new skill as written", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "searxng");
+    const owned = ownedSkillsRoot(cwd);
+    const before = snapshotSkillTree(owned);
+    fs.mkdirSync(path.join(root, "homeassistant"), { recursive: true });
+    fs.writeFileSync(path.join(root, "homeassistant", "SKILL.md"), MARKED);
+    assert.deepEqual(diffSkillTree(owned, before, snapshotSkillTree(owned)), [
+      { skill: "homeassistant", action: "written", file: "SKILL.md" },
+    ]);
+  });
+});
+
+describe("notice", () => {
+  it("names each skill once in one line", () => {
     const notice = formatSkillReviewNotice([
       { skill: "image-pixel-measurement", action: "patched", file: "SKILL.md" },
       { skill: "image-pixel-measurement", action: "patched", file: "references/x.md" },
@@ -307,32 +474,57 @@ describe("snapshot / diff / notice", () => {
         "Skill 'homeassistant' written (references/voice-pe-ecosystem.md)",
     );
     assert.equal(notice.split("\n").length, 1);
-    assert.match(formatSkillReviewNotice([{ skill: "x", action: "patched", file: "SKILL.md" }], true), /provenance write failed/);
+  });
+
+  it("says when provenance failed", () => {
+    assert.match(
+      formatSkillReviewNotice([{ skill: "x", action: "patched", file: "SKILL.md" }], true),
+      /provenance write failed/,
+    );
+  });
+
+  it("is empty when nothing changed", () => {
     assert.equal(formatSkillReviewNotice([]), "");
   });
 });
 
-describe("provenance is append-only", () => {
+describe("provenance", () => {
   it("appends records without rewriting earlier lines", () => {
     const { cwd } = project();
     const one = { skill: "a", action: "patched" as const, file: "SKILL.md", sessionId: "s1", turnId: "s1:1", at: "t1" };
     const two = { skill: "b", action: "written" as const, file: "SKILL.md", sessionId: "s2", turnId: "s2:2", at: "t2" };
     assert.equal(appendProvenance(cwd, [one]), true);
     assert.equal(appendProvenance(cwd, [two]), true);
-    const lines = fs.readFileSync(provenancePath(cwd), "utf-8").trim().split("\n");
-    assert.deepEqual(lines.map((line) => JSON.parse(line).skill), ["a", "b"]);
+    assert.deepEqual(provenanceRecords(cwd).map((record) => record.skill), ["a", "b"]);
   });
 
-  it("reports failure instead of pretending", () => {
+  it("reports failure when the trail cannot be written", () => {
     const { cwd } = project();
-    const file = provenancePath(cwd);
-    fs.mkdirSync(cwd, { recursive: true });
-    // a directory where the trail file should be: the append cannot succeed
-    fs.mkdirSync(file, { recursive: true });
+    fs.mkdirSync(provenancePath(cwd), { recursive: true }); // a directory where the file goes
     assert.equal(
       appendProvenance(cwd, [{ skill: "a", action: "patched", file: "SKILL.md", sessionId: "s", turnId: "s:1", at: "t" }]),
       false,
     );
+  });
+
+  it("rotates an over-large trail to the newest records", () => {
+    const { cwd } = project();
+    const file = provenancePath(cwd);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const pad = "x".repeat(600);
+    const original = Array.from({ length: 2100 }, (_, i) => JSON.stringify({ skill: `old-${i + 1}`, pad }));
+    fs.writeFileSync(file, `${original.join("\n")}\n`);
+    assert.ok(fs.statSync(file).size > 1_000_000);
+
+    appendProvenance(cwd, [
+      { skill: "newest", action: "patched", file: "SKILL.md", sessionId: "s", turnId: "s:9", at: "t" },
+    ]);
+
+    const kept = provenanceRecords(cwd);
+    assert.equal(kept.length, 2000);
+    const firstOriginal = 2100 + 1 - 2000 + 1;
+    assert.equal(kept[0].skill, `old-${firstOriginal}`);
+    assert.equal(kept[kept.length - 1].skill, "newest");
   });
 });
 
@@ -380,57 +572,105 @@ function harness(cwd: string): Harness {
   };
 }
 
-describe("write guard in the main session (issue #1074)", () => {
-  it("blocks an unmarked project skill and allows a marked one, recording the write", async () => {
+describe("write guard in the main session", () => {
+  it("blocks an unmarked project skill", async () => {
     const { cwd, root } = project();
-    const marked = writeSkill(root, "marked", MARKED);
     const unmarked = writeSkill(root, "unmarked", UNMARKED);
     const h = harness(cwd);
     await h.emit("turn_start", { turnIndex: 3 });
-
-    const blocked = await h.emit("tool_call", { toolName: "edit", input: { path: unmarked, newText: "x" } });
+    const blocked = await h.emit("tool_call", {
+      toolCallId: "c1",
+      toolName: "edit",
+      input: { path: unmarked, edits: [{ oldText: "Run the query.", newText: "Run it." }] },
+    });
     assert.equal(blocked?.block, true);
     assert.match(blocked?.reason ?? "", /\/adopt-skill unmarked/);
+  });
 
-    const allowed = await h.emit("tool_call", { toolName: "edit", input: { path: marked, newText: "x" } });
+  it("allows a marked skill and records the write after it succeeds", async () => {
+    const { cwd, root } = project();
+    const marked = writeSkill(root, "marked", MARKED);
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 3 });
+    const allowed = await h.emit("tool_call", {
+      toolCallId: "c2",
+      toolName: "edit",
+      input: { path: marked, edits: [{ oldText: "Run the query.", newText: "Run it." }] },
+    });
     assert.equal(allowed, undefined);
+    // nothing recorded before the tool ran
+    assert.deepEqual(provenanceRecords(cwd), []);
 
-    const record = JSON.parse(fs.readFileSync(provenancePath(cwd), "utf-8").trim());
+    await h.emit("tool_result", {
+      toolCallId: "c2",
+      toolName: "edit",
+      input: { path: marked },
+      isError: false,
+    });
+    const [record] = provenanceRecords(cwd);
     assert.deepEqual(
       { skill: record.skill, action: record.action, file: record.file, sessionId: record.sessionId, turnId: record.turnId },
       { skill: "marked", action: "patched", file: "SKILL.md", sessionId: "test-session", turnId: "test-session:3" },
     );
   });
 
+  it("does not record a write whose tool call failed", async () => {
+    const { cwd, root } = project();
+    const marked = writeSkill(root, "marked", MARKED);
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 3 });
+    await h.emit("tool_call", {
+      toolCallId: "c3",
+      toolName: "write",
+      input: { path: marked, content: MARKED },
+    });
+    await h.emit("tool_result", { toolCallId: "c3", toolName: "write", input: { path: marked }, isError: true });
+    assert.deepEqual(provenanceRecords(cwd), []);
+  });
+
   it("leaves bash and non-skill writes alone", async () => {
     const { cwd } = project();
     const h = harness(cwd);
     await h.emit("turn_start", { turnIndex: 1 });
-    assert.equal(await h.emit("tool_call", { toolName: "bash", input: { command: "echo hi > x" } }), undefined);
-    assert.equal(await h.emit("tool_call", { toolName: "write", input: { path: "src/index.ts", content: "x" } }), undefined);
+    assert.equal(await h.emit("tool_call", { toolCallId: "b1", toolName: "bash", input: { command: "echo hi > x" } }), undefined);
+    assert.equal(
+      await h.emit("tool_call", { toolCallId: "b2", toolName: "write", input: { path: "src/index.ts", content: "x" } }),
+      undefined,
+    );
   });
 
-  it("records a created skill as written and reports it in the turn-end notice", async () => {
+  it("blocks a bash write to a skill this project does not own", async () => {
+    const { cwd } = project();
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    const blocked = await h.emit("tool_call", {
+      toolCallId: "b3",
+      toolName: "bash",
+      input: { command: `echo x > ${path.join(os.homedir(), ".agents", "skills", "y", "SKILL.md")}` },
+    });
+    assert.equal(blocked?.block, true);
+  });
+});
+
+describe("end-of-turn notice", () => {
+  it("reports a created skill once", async () => {
     const { cwd, root } = project();
     const h = harness(cwd);
     await h.emit("turn_start", { turnIndex: 5 });
     const created = path.join(root, "fresh", "SKILL.md");
-    assert.equal(await h.emit("tool_call", { toolName: "write", input: { path: created, content: MARKED } }), undefined);
-
+    await h.emit("tool_call", { toolCallId: "c5", toolName: "write", input: { path: created, content: MARKED } });
     fs.mkdirSync(path.join(root, "fresh"), { recursive: true });
     fs.writeFileSync(created, MARKED);
+    await h.emit("tool_result", { toolCallId: "c5", toolName: "write", input: { path: created }, isError: false });
     await h.emit("turn_end", { turnIndex: 5 });
 
-    assert.equal(h.messages.length, 1);
-    assert.equal(h.messages[0].customType, "skill-maintenance");
-    assert.equal(h.messages[0].content, "\u{1F4D9} Self-improvement review: Skill 'fresh' written (SKILL.md)");
-    const lines = fs.readFileSync(provenancePath(cwd), "utf-8").trim().split("\n");
-    // one record at write time, and the turn-end diff does not duplicate it
-    assert.equal(lines.length, 1);
-    assert.equal(JSON.parse(lines[0]).action, "written");
+    const notices = h.messages.filter((message) => message.customType === "skill-maintenance");
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].content, "\u{1F4D9} Self-improvement review: Skill 'fresh' written (SKILL.md)");
+    assert.equal(provenanceRecords(cwd).length, 1);
   });
 
-  it("says so in the notice when provenance cannot be written", async () => {
+  it("says so when provenance cannot be written", async () => {
     const { cwd, root } = project();
     const file = writeSkill(root, "searxng", MARKED);
     const h = harness(cwd);
@@ -438,12 +678,19 @@ describe("write guard in the main session (issue #1074)", () => {
     fs.rmSync(provenancePath(cwd), { recursive: true, force: true });
     fs.mkdirSync(provenancePath(cwd), { recursive: true }); // append must fail
 
+    await h.emit("tool_call", {
+      toolCallId: "c9",
+      toolName: "write",
+      input: { path: file, content: `${MARKED}\nchanged\n` },
+    });
     fs.writeFileSync(file, `${MARKED}\nchanged\n`);
+    await h.emit("tool_result", { toolCallId: "c9", toolName: "write", input: { path: file }, isError: false });
     await h.emit("turn_end", { turnIndex: 9 });
 
-    assert.equal(h.messages.length, 1);
-    assert.match(h.messages[0].content, /patched/);
-    assert.match(h.messages[0].content, /provenance write failed/);
+    const notices = h.messages.filter((message) => message.customType === "skill-maintenance");
+    assert.equal(notices.length, 1);
+    assert.match(notices[0].content, /patched/);
+    assert.match(notices[0].content, /provenance write failed/);
   });
 
   it("emits nothing when no skill file changed", async () => {
@@ -452,11 +699,41 @@ describe("write guard in the main session (issue #1074)", () => {
     const h = harness(cwd);
     await h.emit("turn_start", { turnIndex: 2 });
     await h.emit("turn_end", { turnIndex: 2 });
-    assert.equal(h.messages.length, 0);
+    assert.equal(h.messages.filter((message) => message.customType === "skill-maintenance").length, 0);
+  });
+
+  it("does not attribute a user's editor change to the turn", async () => {
+    const { cwd, root } = project();
+    const file = writeSkill(root, "searxng", MARKED);
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 11 });
+    // the user edits the file in their editor — no tool call involved
+    fs.writeFileSync(file, `${MARKED}\nuser edit\n`);
+    await h.emit("turn_end", { turnIndex: 11 });
+
+    assert.equal(h.messages.filter((message) => message.customType === "skill-maintenance").length, 1);
+    assert.deepEqual(provenanceRecords(cwd), []);
+  });
+
+  it("reconciles a turn that never reached turn_end", async () => {
+    const { cwd, root } = project();
+    const file = writeSkill(root, "searxng", MARKED);
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    fs.writeFileSync(file, `${MARKED}\naborted turn edit\n`);
+    // no turn_end: the turn was aborted
+    await h.emit("turn_start", { turnIndex: 2 });
+
+    const notices = h.messages.filter((message) => message.customType === "skill-maintenance");
+    assert.equal(notices.length, 1);
+    assert.match(notices[0].content, /'searxng' patched/);
+
+    await h.emit("turn_end", { turnIndex: 2 });
+    assert.equal(h.messages.filter((message) => message.customType === "skill-maintenance").length, 1);
   });
 });
 
-describe("in-turn nudge (issue #1074)", () => {
+describe("in-turn nudge", () => {
   it("steers once when a marked skill used this turn fails", async () => {
     const { cwd, root } = project();
     const file = writeSkill(root, "searxng", MARKED);
@@ -464,29 +741,36 @@ describe("in-turn nudge (issue #1074)", () => {
     await h.emit("turn_start", { turnIndex: 4 });
     await h.emit("input", { text: "/skill:searxng find the docs" });
 
-    await h.emit("tool_result", { toolName: "read", input: { path: file }, isError: true });
-    assert.equal(h.messages.length, 1);
-    assert.equal(h.messages[0].customType, "skill-maintenance-nudge");
-    assert.match(h.messages[0].content, /`searxng` just failed/);
-    assert.equal(h.messages[0].options.deliverAs, "steer");
+    await h.emit("tool_result", { toolCallId: "t1", toolName: "read", input: { path: file }, isError: true });
+    const nudges = h.messages.filter((message) => message.customType === "skill-maintenance-nudge");
+    assert.equal(nudges.length, 1);
+    assert.match(nudges[0].content, /`searxng` just failed/);
+    assert.equal(nudges[0].options.deliverAs, "steer");
 
-    // once per skill per turn
-    await h.emit("tool_result", { toolName: "read", input: { path: file }, isError: true });
-    assert.equal(h.messages.length, 1);
+    await h.emit("tool_result", { toolCallId: "t2", toolName: "read", input: { path: file }, isError: true });
+    assert.equal(h.messages.filter((message) => message.customType === "skill-maintenance-nudge").length, 1);
   });
 
-  it("uses the error signal, not a missing duration", async () => {
+  it("nudges after an invocation that arrived before turn_start", async () => {
+    const { cwd, root } = project();
+    const file = writeSkill(root, "searxng", MARKED);
+    const h = harness(cwd);
+    await h.emit("input", { text: "/skill:searxng" }); // real order: input first
+    await h.emit("turn_start", { turnIndex: 4 });
+    await h.emit("tool_result", { toolCallId: "t3", toolName: "read", input: { path: file }, isError: true });
+    assert.equal(h.messages.filter((message) => message.customType === "skill-maintenance-nudge").length, 1);
+  });
+
+  it("uses the error signal only", async () => {
     const { cwd, root } = project();
     const file = writeSkill(root, "searxng", MARKED);
     const h = harness(cwd);
     await h.emit("turn_start", { turnIndex: 6 });
     await h.emit("input", { text: "/skill:searxng" });
-
-    await h.emit("tool_result", { toolName: "read", input: { path: file }, isError: false });
-    assert.equal(h.messages.length, 0);
-
-    await h.emit("tool_result", { toolName: "read", input: { path: file }, isError: true });
-    assert.equal(h.messages.length, 1);
+    await h.emit("tool_result", { toolCallId: "t4", toolName: "read", input: { path: file }, isError: false });
+    assert.equal(h.messages.filter((message) => message.customType === "skill-maintenance-nudge").length, 0);
+    await h.emit("tool_result", { toolCallId: "t5", toolName: "read", input: { path: file }, isError: true });
+    assert.equal(h.messages.filter((message) => message.customType === "skill-maintenance-nudge").length, 1);
   });
 
   it("never nudges about an unmarked skill", async () => {
@@ -495,33 +779,37 @@ describe("in-turn nudge (issue #1074)", () => {
     const h = harness(cwd);
     await h.emit("turn_start", { turnIndex: 7 });
     await h.emit("input", { text: "/skill:unmarked" });
-    await h.emit("tool_result", { toolName: "bash", input: { command: "ls" }, isError: true });
-    assert.equal(h.messages.length, 0);
+    await h.emit("tool_result", { toolCallId: "t6", toolName: "bash", input: { command: "ls" }, isError: true });
+    assert.equal(h.messages.filter((message) => message.customType === "skill-maintenance-nudge").length, 0);
     assert.deepEqual(markedSkillsInText(cwd, "/skill:unmarked"), []);
   });
 });
 
 describe("command registration", () => {
-  it("registers /adopt-skill with autocomplete of unmarked skills", async () => {
+  it("autocompletes unmarked skills", async () => {
     const { cwd, root } = project();
     writeSkill(root, "marked", MARKED);
     writeSkill(root, "unmarked", UNMARKED);
     const h = harness(cwd);
+    await h.emit("session_start");
     const command = h.commands.get("adopt-skill");
     assert.ok(command);
-    await h.emit("session_start");
     assert.deepEqual(
       command.getArgumentCompletions("").map((item: any) => item.value),
       ["unmarked"],
     );
+  });
 
+  it("adopts a skill through the command handler", async () => {
+    const { cwd, root } = project();
+    writeSkill(root, "unmarked", UNMARKED);
+    const h = harness(cwd);
     const notices: string[] = [];
-    const ctx = {
+    await h.commands.get("adopt-skill").handler("unmarked", {
       cwd,
       ui: { notify: (message: string) => notices.push(message) },
       sessionManager: { getSessionId: () => "s" },
-    };
-    await command.handler("unmarked", ctx);
+    });
     assert.match(notices[0], /now maintained/);
     assert.equal(readSkillFile(cwd, "unmarked")!.includes(MARKER_LINE), true);
   });
