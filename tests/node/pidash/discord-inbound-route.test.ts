@@ -99,7 +99,7 @@ describe("inboundRouteRecord", () => {
     });
     assert.deepEqual(Object.keys(record).sort(), [
       "ambiguous", "channelId", "deadTarget", "deadWatch", "guildId", "inboundSessionId", "inboundSource",
-      "isDm", "ownsTarget", "reason", "targetKeys", "threadSessionId", "watchLive", "watchedSessionId",
+      "isDm", "ownsTarget", "reason", "targetKeys", "threadSessionId", "userId", "watchLive", "watchedSessionId",
     ]);
     const serialized = JSON.stringify(record);
     assert.doesNotMatch(serialized, /text|body|content|message|attach/i);

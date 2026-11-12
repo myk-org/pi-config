@@ -104,6 +104,8 @@ export interface InboundRouteFacts {
   watchLive: boolean;
   targets?: Record<string, { channelId: string; threadId?: string | null }> | null;
   ownsTarget: boolean;
+  /** The author. Several users can share one fallback channel, so a drop is per-user, not per-channel. */
+  userId?: string | null;
   inbound?: InboundSession | null;
 }
 
@@ -129,6 +131,7 @@ export function inboundRouteRecord(facts: InboundRouteFacts): Record<string, unk
     deadWatch: Boolean(facts.inbound?.deadWatch),
     deadTarget: Boolean(facts.inbound?.deadTarget),
     ambiguous: Boolean(facts.inbound?.ambiguous),
+    userId: facts.userId ?? null,
   };
 }
 
@@ -314,7 +317,8 @@ export function setupDiscordBot(opts: {
     throttle = false,
   ): void {
     if (throttle) {
-      const key = `${facts.reason}:${facts.channelId}`;
+      // Per USER as well: a shared fallback channel would otherwise hide every later user's drop.
+      const key = `${facts.reason}:${facts.channelId}:${facts.userId ?? ""}`;
       const last = dropLoggedAt.get(key);
       const now = Date.now();
       if (last !== undefined && now - last < INBOUND_DROP_LOG_WINDOW_MS) return;
@@ -1212,6 +1216,7 @@ export function setupDiscordBot(opts: {
           watchLive: false,
           targets: state.targets,
           ownsTarget: false,
+          userId: interaction.user.id,
         }, "info");
         await interaction.reply({ content: "Not watching any session. Use `/sessions` first.", ephemeral: true }).catch(() => {});
         return;
@@ -1226,6 +1231,7 @@ export function setupDiscordBot(opts: {
           watchLive: false,
           targets: state.targets,
           ownsTarget: false,
+          userId: interaction.user.id,
         });
         await interaction.reply({ content: "The watched session is disconnected.", ephemeral: true }).catch(() => {});
         return;
@@ -1345,6 +1351,7 @@ export function setupDiscordBot(opts: {
         watchLive: false,
         targets: state.targets,
         ownsTarget: false,
+        userId: interaction.user.id,
       });
       state.watchedSessionId = null;
       persist();
@@ -1939,6 +1946,7 @@ export function setupDiscordBot(opts: {
           watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
           targets: state.targets,
           ownsTarget: false,
+          userId,
         }, "info", true);
         return;
       }
@@ -1957,6 +1965,7 @@ export function setupDiscordBot(opts: {
           watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
           targets: state.targets,
           ownsTarget: false,
+          userId,
         }, "info", true);
         return;
       }
@@ -2006,6 +2015,7 @@ export function setupDiscordBot(opts: {
       watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
       targets: state.targets,
       ownsTarget: authorOwnsChannel,
+      userId,
       inbound,
     }, level);
 

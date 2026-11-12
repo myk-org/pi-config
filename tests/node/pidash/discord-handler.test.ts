@@ -347,11 +347,62 @@ describe("discord messageCreate routing", () => {
       assert.match(body, /chan-not-owned/);
       // A routine refusal is not a degradation: this record is INFO, not WARN.
       assert.match(body, /\[info\] \[pidash-discord\] discord_inbound_dropped \{"reason":"channel-not-owned"/);
-      // One line for the pair: the same channel and reason inside the window is suppressed.
-      assert.equal(body.match(/channel-not-owned/g)?.length, 1);
+      // One line for the pair: the same channel, reason and author inside the window is suppressed.
+      assert.equal(body.match(/"reason":"channel-not-owned","channelId":"chan-not-owned"/g)?.length, 1);
       // Ids only: the message body must never reach the log.
       assert.doesNotMatch(body, /hello there/);
       assert.doesNotMatch(body, /hello again/);
+    } finally {
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("logs a shared channel's drop for each user of it", async () => {
+    // Throttling per channel alone would hide the second user's drop; the key includes the author.
+    (globalThis as any).__piConfigSessionId = "inbound-route-shared-log-test";
+    const previousAllowAll = process.env.DISCORD_ALLOW_ALL;
+    process.env.DISCORD_ALLOW_ALL = "true";
+    try {
+      const bot = startBot({ live: ["s2"], threads: { s2: THREAD }, extraUsers: [USER2] });
+      const replies: string[] = [];
+      await bot.handler(message("m12", "hi", replies, { channelId: "chan-shared" }));
+      await bot.handler(message("m13", "hi", replies, { channelId: "chan-shared", author: USER2 }));
+      assert.deepEqual(replies, []);
+
+      const readTree = (root: string): string => fs.readdirSync(root, { withFileTypes: true })
+        .map((entry) => {
+          const full = path.join(root, entry.name);
+          return entry.isDirectory() ? readTree(full) : fs.readFileSync(full, "utf8");
+        })
+        .join("");
+      const body = readTree(path.join(tmp, ".pi", "logs", "pidash-discord"));
+      assert.equal(body.match(/"reason":"channel-not-owned","channelId":"chan-shared"/g)?.length, 2);
+      assert.match(body, /"userId":"u1"/);
+      assert.match(body, /"userId":"u2"/);
+    } finally {
+      process.env.DISCORD_ALLOW_ALL = previousAllowAll;
+      delete (globalThis as any).__piConfigSessionId;
+    }
+  });
+
+  it("logs the /stop and /cancel refusals", async () => {
+    (globalThis as any).__piConfigSessionId = "inbound-route-refusal-log-test";
+    try {
+      const bot = startBot({ live: [], watchedSessionId: null, threads: {}, dmChannelId: DM });
+      const replies: string[] = [];
+      await bot.handler(message("m14", "/stop", replies, { dm: true }));
+      await bot.handler(message("m15", "/cancel", replies, { dm: true }));
+      assert.deepEqual(replies, ["Not watching any session. Use `/sessions` and pick one.", "Nothing pending."]);
+
+      const readTree = (root: string): string => fs.readdirSync(root, { withFileTypes: true })
+        .map((entry) => {
+          const full = path.join(root, entry.name);
+          return entry.isDirectory() ? readTree(full) : fs.readFileSync(full, "utf8");
+        })
+        .join("");
+      const body = readTree(path.join(tmp, ".pi", "logs", "pidash-discord"));
+      assert.match(body, /\{"reason":"stop-no-target"/);
+      assert.match(body, /\{"reason":"cancel-nothing-pending"/);
     } finally {
       delete (globalThis as any).__piConfigSessionId;
     }
