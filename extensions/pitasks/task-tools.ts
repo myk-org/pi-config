@@ -55,6 +55,7 @@ NOTE that you should not use this tool if there is only one trivial task to do. 
 - **subject**: A brief, actionable title in imperative form (e.g., "Fix authentication bug in login flow")
 - **description**: Detailed description of what needs to be done, including context and acceptance criteria
 - **activeForm** (optional): Present continuous form shown in the spinner when the task is in_progress (e.g., "Fixing authentication bug"). If omitted, the spinner shows the subject instead.
+- **assignee** (optional): who must do it — \`llm\` (default) means the agent does it; \`user\` means the owner must. Pick \`user\` for a step that needs their hands or credentials: a merge, a live check in a real UI, an approval. One task per owner action, subject = the action, description = what to do and what "done" looks like. Never assign \`user\` to work an agent could do itself, and never start, edit or complete a \`user\` task on their behalf — they close it in \`/tasks\`.
 
 All tasks are created with status \`pending\`.
 
