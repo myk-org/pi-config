@@ -18,6 +18,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
 import {
+  bulkResultMessage,
   enterAction,
   reconcileSelection,
   selectionIndexFor,
@@ -28,6 +29,7 @@ import {
 const log = createLogger("overlay-dashboard");
 
 export {
+  bulkResultMessage,
   enterAction,
   reconcileSelection,
   selectionIndexFor,
@@ -85,8 +87,14 @@ export interface OverlayListSpec<
   onCompose?: (item: TItem) => void;
   /** Optional extra single-key actions (e.g. `n` add, `e` edit, `p` pause). "close" hands the
    *  terminal to the caller (a dialog), "redraw" refreshes the rows in place, false means the
-   *  key was not handled and the built-in keys below still see it. */
-  onKey?: (key: string, item: TItem | undefined) => "close" | "redraw" | false;
+   *  key was not handled and the built-in keys below still see it. `selected` is the Space-picked
+   *  set (empty when nothing is selected), so an action that only makes sense on one row can
+   *  refuse instead of silently acting on the focused one. */
+  onKey?: (
+    key: string,
+    item: TItem | undefined,
+    selected: readonly TItem[],
+  ) => "close" | "redraw" | false;
   /** Enter hands the item back to the caller instead of opening a detail pane: a caller that
    *  navigates a level deeper opens its own overlay and re-opens this list when that one closes,
    *  which is what makes Esc walk back one level at a time. */
@@ -160,6 +168,12 @@ export class OverlayListDashboard<
     return this.spec.listItems();
   }
 
+  /** The rows Space picked, in list order; ids whose row is gone are dropped. */
+  private selectedItems(): TItem[] {
+    if (this.multi.size === 0) return [];
+    return this.items().filter((item) => this.multi.has(item.id));
+  }
+
   private cleanup(): boolean {
     if (this.closed) return false;
     this.closed = true;
@@ -222,7 +236,7 @@ export class OverlayListDashboard<
       }
       return;
     }
-    const action = this.spec.onKey?.(data, items[this.selection.index]);
+    const action = this.spec.onKey?.(data, items[this.selection.index], this.selectedItems());
     if (action === "close") {
       log.debug("list_key_action", { key: data, outcome: "close" });
       this.close(null);
@@ -267,7 +281,7 @@ export class OverlayListDashboard<
     }
     if (data === "x") {
       if (this.multi.size > 0) {
-        const selected = items.filter((i) => this.multi.has(i.id));
+        const selected = this.selectedItems();
         // Cleared unconditionally: killed jobs disappear, and stale ids would leak.
         this.multi.clear();
         log.debug("list_multi_x", { count: selected.length });
@@ -344,12 +358,17 @@ export class OverlayListDashboard<
     return lines;
   }
 
-  /** Spec hints, falling back to the shared defaults (+ toggle hint when selectable). */
+  /** Spec hints, falling back to the shared defaults (+ toggle hint when selectable). The bulk
+   *  keys named are only the ones this spec really wires, so a list that has `x` but no `X` does
+   *  not advertise a selection action that goes nowhere. */
   private footerText(): string {
     if (this.spec.footerHints) return this.spec.footerHints;
     if (!this.spec.selectable) return DEFAULT_LIST_HINTS;
-    log.debug("list_footer_hints", { source: "default", selectable: true });
-    return `${DEFAULT_LIST_HINTS} · ${SELECT_HINT}`;
+    const bulk = [...(this.spec.onXSelected ? ["x"] : []), ...(this.spec.onKillAll ? ["X"] : [])];
+    log.debug("list_footer_hints", { source: "default", selectable: true, bulk: bulk.length });
+    return bulk.length === 0
+      ? `${DEFAULT_LIST_HINTS} · ${SELECT_HINT}`
+      : `${DEFAULT_LIST_HINTS} · ${SELECT_HINT} · ${bulk.join("/")} on selection`;
   }
 
   private renderRows(

@@ -127,8 +127,8 @@ describe("toCronStatusTaskView", () => {
 });
 
 /** Only input handling is exercised: `ctx.ui.custom` is mocked so the real OverlayListDashboard
- *  receives the keystroke, which is where `p` lives (#1089). */
-function makeCtx() {
+ *  receives the keystrokes, which is where `p` lives (#1089). */
+function makeCtx(keys: string[] = ["p"]) {
   const notifications: Array<{ message: string; level: string }> = [];
   const tui = { terminal: { rows: 20 }, requestRender: () => {} };
   // `close` is the cancel keybinding the dashboard really checks.
@@ -140,7 +140,7 @@ function makeCtx() {
       custom: async (factory: any) =>
         new Promise((resolve) => {
           const component = factory(tui, {}, keybindings, resolve);
-          component.handleInput("p");
+          for (const key of keys) component.handleInput(key);
           component.handleInput("close");
         }),
     },
@@ -148,11 +148,15 @@ function makeCtx() {
   return { ctx: ctx as any, notifications };
 }
 
-const row = (overrides: Record<string, unknown> = {}) =>
-  toCronStatusTaskView(
-    { id: "1", description: "x", task: "y", createdAt: 0, ...overrides } as any,
-    { overlayId: "session:1" },
+/** One view per distinct id: the overlay row id is the scope-qualified key, so a helper that
+ *  reused one overlayId would give every row the same id and make multi-select untestable. */
+const row = (overrides: Record<string, unknown> = {}) => {
+  const id = String(overrides.id ?? "1");
+  return toCronStatusTaskView(
+    { id, description: "x", task: "y", createdAt: 0, ...overrides } as any,
+    { overlayId: `session:${id}` },
   );
+};
 
 describe("openCronStatusOverlay pause key (#1089)", () => {
   it("toggles the focused row", async () => {
@@ -175,5 +179,71 @@ describe("openCronStatusOverlay pause key (#1089)", () => {
       togglePaused: () => ({ ok: false, paused: false }),
     });
     assert.deepEqual(notifications, [{ message: "Could not save the pause state of #session:1.", level: "warning" }]);
+  });
+});
+
+describe("openCronStatusOverlay multi-select (#1087)", () => {
+  const three = () => [row(), row({ id: "2" }), row({ id: "3" })];
+
+  it("x removes exactly the selected crons and reports once", async () => {
+    // Space #1, j, Space #2, j to #3 (not selected), x, close.
+    const { ctx, notifications } = makeCtx([" ", "j", " ", "j", "x"]);
+    const removed: string[] = [];
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => three().filter((r) => !removed.includes(r.id)),
+      removeTask: (id) => { removed.push(id); return true; },
+      togglePaused: () => ({ ok: true, paused: true }),
+    });
+    assert.deepEqual(removed, ["session:1", "session:2"], "the focused-but-unselected #3 is untouched");
+    assert.deepEqual(notifications, [{ message: "removed 2 crons", level: "info" }]);
+  });
+
+  it("names a cron whose removal was rejected", async () => {
+    const { ctx, notifications } = makeCtx([" ", "j", " ", "x"]);
+    await openCronStatusOverlay(ctx, {
+      listTasks: three,
+      removeTask: (id) => id !== "session:2",
+      togglePaused: () => ({ ok: true, paused: true }),
+    });
+    assert.deepEqual(notifications, [
+      { message: "removed 1 of 2 crons — failed: #session:2", level: "warning" },
+    ]);
+  });
+
+  it("p on a mixed selection pauses every selected cron", async () => {
+    const { ctx, notifications } = makeCtx([" ", "j", " ", "p"]);
+    const pressed: string[] = [];
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => [row(), row({ id: "2", paused: true }), row({ id: "3" })],
+      removeTask: () => true,
+      togglePaused: (id) => { pressed.push(id); return { ok: true, paused: true }; },
+    });
+    // #1 was active so the group pauses; #2 is already paused, so it needs no write.
+    assert.deepEqual(pressed, ["session:1"]);
+    assert.deepEqual(notifications, [{ message: "paused 2 crons", level: "info" }]);
+  });
+
+  it("p on an all-paused selection resumes every selected cron", async () => {
+    const { ctx, notifications } = makeCtx([" ", "j", " ", "p"]);
+    const pressed: string[] = [];
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => [row({ paused: true }), row({ id: "2", paused: true }), row({ id: "3" })],
+      removeTask: () => true,
+      togglePaused: (id) => { pressed.push(id); return { ok: true, paused: false }; },
+    });
+    assert.deepEqual(pressed, ["session:1", "session:2"]);
+    assert.deepEqual(notifications, [{ message: "resumed 2 crons", level: "info" }]);
+  });
+
+  it("names a cron whose pause write failed, instead of claiming the whole group", async () => {
+    const { ctx, notifications } = makeCtx([" ", "j", " ", "p"]);
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => [row(), row({ id: "2" })],
+      removeTask: () => true,
+      togglePaused: (id) => ({ ok: id !== "session:1", paused: true }),
+    });
+    assert.deepEqual(notifications, [
+      { message: "paused 1 of 2 crons — failed: #session:1", level: "warning" },
+    ]);
   });
 });

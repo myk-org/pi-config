@@ -369,13 +369,79 @@ describe("taskComposePrompt (#1089)", () => {
 	});
 });
 
+describe("openTasksOverlay multi-select (#1087)", () => {
+	/** A store whose `status: "deleted"` writes are recorded, so "which ids" is observable. */
+	function deleteTracking(initial: Task[]) {
+		const deleted: string[] = [];
+		const tasks = [...initial];
+		return {
+			deleted,
+			store: {
+				list: () => tasks.filter((t) => !deleted.includes(t.id)),
+				get: (id: string) => tasks.find((t) => t.id === id),
+				create: () => ({ id: "99" }),
+				update: (id: string, fields: { status?: string }) => {
+					if (fields.status === "deleted") deleted.push(id);
+				},
+			},
+		};
+	}
+
+	it("x deletes exactly the selected tasks and notifies once", async () => {
+		// Space #1, j, Space #2, j to #3 (not selected), x, then close.
+		const { ctx, notifications } = makeTasksCtx([[" ", "j", " ", "j", "x", "close"]]);
+		const memory = deleteTracking([
+			task({ id: "1", status: "pending" }),
+			task({ id: "2", status: "pending" }),
+			task({ id: "3", status: "pending" }),
+		]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.deepEqual(memory.deleted, ["1", "2"], "the focused-but-unselected #3 is untouched");
+		assert.deepEqual(notifications, [{ message: "deleted 2 tasks", level: "info" }]);
+	});
+
+	it("names a task whose delete did not go through", async () => {
+		const { ctx, notifications } = makeTasksCtx([[" ", "j", " ", "x", "close"]]);
+		const deps = {
+			listTasks: () => [task({ id: "1" }), task({ id: "2" })],
+			deleteTask: (id: string) => id !== "2",
+			createTask: () => "99",
+			updateTaskSubject: () => true,
+		};
+		await openTasksOverlay(ctx, deps);
+		assert.deepEqual(notifications, [
+			{ message: "deleted 1 of 2 tasks — failed: #2", level: "warning" },
+		]);
+	});
+
+	for (const key of ["n", "e"]) {
+		it(`refuses ${key} while a selection exists, without opening a dialog`, async () => {
+			const { ctx, notifications, openedCount } = makeTasksCtx([[" ", key, "close"]]);
+			const memory = inMemoryStore([task({ id: "3", subject: "wire the overlay" })]);
+			await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+			assert.equal(openedCount(), 1, "the list is not re-opened: no dialog ran");
+			assert.deepEqual(memory.created, []);
+			assert.equal(notifications.length, 1);
+			assert.equal(notifications[0].level, "warning");
+			assert.match(notifications[0].message, /clear the selection \(Space\)/);
+		});
+	}
+
+	it("still acts on the focused row when nothing is selected", async () => {
+		const { ctx, openedCount } = makeTasksCtx([["e"], ["\n"]]);
+		const memory = inMemoryStore([task({ id: "3", subject: "wire the overlay" })]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.equal(openedCount(), 3, "the edit dialog opened, then the list re-opened");
+	});
+});
+
 /**
  * An empty board has no row to press `n` on: `openTasksOverlay` must open the create dialog
  * itself. `ctx.ui.custom` is mocked so the real list overlay and the real input dialog receive
  * the keystrokes (#1089).
  */
 function makeTasksCtx(opens: string[][]) {
-	const notifications: string[] = [];
+	const notifications: Array<{ message: string; level: string }> = [];
 	let opened = 0;
 	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 	const tui = { terminal: { rows: 20 }, requestRender: () => {} };
@@ -383,7 +449,7 @@ function makeTasksCtx(opens: string[][]) {
 	const ctx = {
 		hasUI: true,
 		ui: {
-			notify: (message: string) => { notifications.push(message); },
+			notify: (message: string, level: string) => { notifications.push({ message, level }); },
 			input: async () => undefined,
 			custom: async (factory: any) => {
 				const keys = opens[opened];

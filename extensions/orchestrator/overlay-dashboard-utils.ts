@@ -7,6 +7,19 @@ const log = createLogger("overlay-dashboard");
 
 export type OverlayId = string | number;
 
+/** One line for a bulk write: what worked, and the rows whose write did not. A bulk action that
+ *  reports success while some rows failed is a lie the user cannot see (#1087). */
+export function bulkResultMessage(
+  verb: string,
+  noun: string,
+  total: number,
+  failed: readonly string[],
+): string {
+  const done = total - failed.length;
+  if (failed.length === 0) return `${verb} ${done} ${noun}${done === 1 ? "" : "s"}`;
+  return `${verb} ${done} of ${total} ${noun}s — failed: ${failed.join(", ")}`;
+}
+
 export interface OverlaySelection<TId extends OverlayId = OverlayId> {
   id?: TId;
   index: number;

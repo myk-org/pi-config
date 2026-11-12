@@ -8,6 +8,7 @@ import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-a
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, Input, Text } from "@earendil-works/pi-tui";
 import {
+	bulkResultMessage,
 	openListDetailOverlay,
 	OverlayScrollDetail,
 } from "../orchestrator/overlay-dashboard.js";
@@ -101,7 +102,7 @@ export async function openTasksOverlay(
 						const done = tasks.filter((t) => t.status === "completed").length;
 						return `tasks · ${done} done / ${tasks.length}`;
 					},
-					footerHints: "↑↓/jk select · Enter view · n add · e edit · x delete · Esc close",
+					footerHints: "Space select · x delete selected · n add · e edit · Enter view",
 					listItems: () => deps.listTasks(),
 					rowParts: (task, theme) => {
 						const row = toTaskRowView(task);
@@ -112,9 +113,19 @@ export async function openTasksOverlay(
 							rightParts: row.blocked ? [theme.fg("warning", "⛔ blocked")] : [],
 						};
 					},
-					onKey: (key, task) => {
+					onKey: (key, task, selected) => {
 						const intent = tasksOverlayIntent(key);
 						if (!intent) return false;
+						// Add/edit are single-row by nature: acting on the focused row while rows are picked
+						// would silently ignore the selection, so refuse and leave the rows selected.
+						if (selected.length > 0) {
+							log.debug("tasks_overlay_key_refused", { intent, selected: selected.length });
+							ctx.ui.notify(
+								`${intent === "add" ? "Add" : "Edit"} works on one task — clear the selection (Space) first.`,
+								"warning",
+							);
+							return "redraw";
+						}
 						if (intent === "add") queue.push({ kind: "add" });
 						else if (task) queue.push({ kind: "edit", task });
 						else return false;
@@ -124,6 +135,17 @@ export async function openTasksOverlay(
 					onX: (task) => {
 						log.info("tasks_overlay_delete", { taskId: task.id });
 						deps.deleteTask(task.id);
+					},
+					selectable: true,
+					onXSelected: (tasks) => {
+						// Same destructive action `x` does per row, so no confirmation — but the row store can
+						// reject a delete, and those ids must be named rather than counted as deleted.
+						const failed = tasks.filter((task) => !deps.deleteTask(task.id)).map((task) => `#${task.id}`);
+						log.info("tasks_overlay_bulk_delete", { selected: tasks.length, failed: failed.length });
+						ctx.ui.notify(
+							bulkResultMessage("deleted", "task", tasks.length, failed),
+							failed.length === 0 ? "info" : "warning",
+						);
 					},
 				},
 				createDetail: (task, tui, theme, done) => {
