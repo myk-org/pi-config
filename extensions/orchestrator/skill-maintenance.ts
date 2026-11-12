@@ -759,11 +759,22 @@ const READ_ONLY_VERBS = new Set([
   "cat", "less", "head", "tail", "grep", "rg", "ls", "stat", "wc", "diff", "md5sum", "sha256sum",
 ]);
 
-/** Operators that write. Their presence makes the command a write, whatever the verb. */
-const BASH_WRITE_OPERATORS = /(?:[^>])>>?(?![=&])|\btee\b|\bcp\b|\bmv\b|\brm\b|\bsed\s+-i|\binstall\b|\bdd\b|\btruncate\b/;
+/** Any redirection is a write, however it is spelled (`>`, `>>`, `>&`, `2>`). */
+const BASH_WRITE_OPERATORS = /[>]|\btee\b|\bcp\b|\bmv\b|\brm\b|\bsed\s+-i|\binstall\b|\bdd\b|\btruncate\b/;
 
-/** Destructive operators: no provenance vocabulary fits a deletion, so they block outright. */
+/** Destructive verbs — no provenance vocabulary fits a deletion. */
 const BASH_DESTRUCTIVE = /\brm\b|\bchmod\b|\btruncate\b|\bdd\b/;
+
+/** Verbs that may create directories (a new skill needs one). */
+const MK_DIR = /^mkdir$/;
+
+/** Shell control operators that start a new command. */
+const SHELL_SEPARATORS = /(?:&&|\|\||;|\|\n)/;
+
+/** Replace quoted text with spaces: operators and verbs inside quotes are arguments. */
+function maskQuoted(command: string): string {
+  return command.replace(/'(?:[^'\\]|\\.)*'/g, " ").replace(/"(?:[^"\\]|\\.)*"/g, " ");
+}
 
 /** Expand the literal home forms a shell would expand, so they cannot hide a path. */
 function expandHomeToken(token: string): string {
@@ -773,8 +784,8 @@ function expandHomeToken(token: string): string {
 }
 
 /** Whitespace/operator split, quotes and leading redirections stripped. */
-function shellTokens(command: string): string[] {
-  return command
+function shellTokens(segment: string): string[] {
+  return segment
     .split(/[\s;|&()<>`]+/)
     .map((token) => expandHomeToken(token.replace(/^[0-9&]?>+/, "").replace(/["']/g, "")))
     .filter(Boolean);
@@ -800,7 +811,7 @@ export interface ShellSkillReference {
   abs: string;
   /** Resolved area, or null when the path's meaning cannot be established. */
   area: SkillArea | null;
-  /** True when the token is only a bare SKILL.md (meaning depends on the cwd). */
+  /** A bare `SKILL.md`: its meaning depends on the cwd, so it can never be classified. */
   bare: boolean;
 }
 
@@ -810,34 +821,50 @@ export function shellSkillReferences(
   command: string,
 ): { refs: ShellSkillReference[]; cdIntoSkills: boolean } {
   const refs: ShellSkillReference[] = [];
-  const tokens = shellTokens(command);
   let cdIntoSkills = false;
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
+  for (const token of shellTokens(command)) {
+    if (token === "cd") continue;
     const abs = path.resolve(projectCwd, token);
     const area = skillAreaOf(projectCwd, abs);
     const bare = path.basename(token) === "SKILL.md" && !token.includes("/");
     const isRef = area !== null || lexicallyUnderSkillsRoot(projectCwd, abs) || bare;
     if (!isRef) continue;
-    if (token === "cd" && tokens[i + 1]) continue;
-    if (tokens[i - 1] === "cd") {
+    if (bare) {
+      // `cd` into a skill then a bare name: the target exists, but which file it is does not.
+      for (const [index, candidate] of shellTokens(command).entries()) {
+        if (candidate === "cd") void index;
+      }
       cdIntoSkills = true;
-      refs.push({ token, abs, area, bare: false });
-      continue;
     }
     refs.push({ token, abs, area, bare });
   }
   return { refs, cdIntoSkills };
 }
 
-/** Owned *and* marked — the only skill a shell command may write. */
+/** Owned *and* marked, and a file — the only skill a shell command may write. */
 function writableByShell(projectCwd: string, abs: string): { skill: string; file: string } | null {
   const skill = ownedSkillName(projectCwd, abs);
   if (!skill || !isMarkedSkillNamed(projectCwd, skill)) return null;
   const root = ownedSkillsRoot(projectCwd);
   if (!root) return null;
+  try {
+    if (!fs.statSync(abs).isFile()) return null;
+  } catch {
+    return null;
+  }
   const real = realpathNearestExisting(abs) ?? abs;
   return { skill, file: path.relative(path.join(root, skill), real) };
+}
+
+/** True when every reference in a segment sits lexically inside the owned skills tree. */
+function allRefsOwnedLexical(projectCwd: string, refs: ShellSkillReference[]): boolean {
+  const root = ownedSkillsRoot(projectCwd);
+  if (!root) return false;
+  const lexicalRoot = path.join(realpathNearestExisting(resolveMainCheckoutRoot(projectCwd)) ?? projectCwd, ".pi", "skills");
+  return refs.every((ref) => {
+    const rel = path.relative(lexicalRoot, ref.abs);
+    return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+  });
 }
 
 export type ShellVerdict =
@@ -848,11 +875,14 @@ export type ShellVerdict =
  * Shell guard (Qodo #1079, fail-closed text rule).
  *
  * A command that references a skills area may only READ it, with an allowlisted verb
- * and no write operator. A write is allowed only into an owned + marked skill (as the
- * destination for `cp`/`mv`), where the file-tool rule already applies. Everything
- * else — `~` expansion, a glued `>`, a `cd`-relative `SKILL.md`, a path through a
- * symlink, a shape whose source/destination cannot be told apart — BLOCKS. Ambiguity
- * never passes. Returns null when the command references no skills area at all.
+ * and no write operator. A write is allowed only into an owned + marked skill — as a
+ * `cp` destination, a redirection target, or a `sed -i` operand — where the file-tool
+ * rule already applies; `mkdir` is allowed inside the owned tree so a new skill can be
+ * created (the file itself still needs the marker). Everything else BLOCKS: `~`
+ * expansion, a glued redirection, a bare `SKILL.md` (its target depends on the cwd), a
+ * symlink out of every area, an unclassifiable `cp`/`mv` shape, `mv` of a skill (it
+ * removes the source), destructive verbs, and any segment of a `;`/`&&`/`||`/pipe chain
+ * that fails on its own. Ambiguity never passes. Null when no skills area is referenced.
  *
  * Known limit (documented, not widened around): a path built by shell expansion
  * (`t=…; … > "$t"`, `eval`, `find -exec`) carries no literal reference, so no text rule
@@ -860,67 +890,84 @@ export type ShellVerdict =
  */
 export function bashSkillVerdict(projectCwd: string, command: string): ShellVerdict | null {
   if (typeof command !== "string" || command.trim() === "") return null;
-  const { refs } = shellSkillReferences(projectCwd, command);
+  const masked = maskQuoted(command);
+  const { refs, cdIntoSkills } = shellSkillReferences(projectCwd, command);
   if (refs.length === 0) return null;
 
   const block = (reason: string): ShellVerdict => {
     log.warn("skill_shell_blocked", { reason, command: command.slice(0, 200) });
     return { block: true, reason: `⛔ ${reason}` };
   };
-  const skillsHint =
+  const hint =
     `Skills are read-only from the shell. Read one with cat/rg/ls; ` +
     `edit a marked skill in ${path.join(projectCwd, ".pi", "skills")}/ with the write/edit tools ` +
     `(run /adopt-skill <name> first if it is not marked yet).`;
 
-  if (BASH_DESTRUCTIVE.test(command)) {
-    return block(`a destructive shell command names a skill path. ${skillsHint}`);
+  if (refs.some((ref) => ref.bare)) {
+    return block(`a bare SKILL.md means whatever the working directory is, so it cannot be classified. ${hint}`);
+  }
+  if (BASH_DESTRUCTIVE.test(masked)) {
+    return block(`a destructive shell command names a skill path. ${hint}`);
+  }
+  if (cdIntoSkills) {
+    return block(`this command changes directory into a skills area. ${hint}`);
+  }
+  if (/\bmv\b/.test(masked)) {
+    return block(`mv on a skill removes the source file. ${hint}`);
   }
 
-  const verb = shellTokens(command)[0] ?? "";
-  if (!BASH_WRITE_OPERATORS.test(command)) {
-    if (READ_ONLY_VERBS.has(verb)) {
-      log.debug("skill_shell_read_allowed", { verb });
-      return null;
-    }
-    return block(
-      `this command touches a skill path but "${verb || "?"}" is not a known read-only command. ${skillsHint}`,
-    );
-  }
+  // Every command in a chain must stand on its own: `cat a && uv run python -c …` was a bypass.
+  const segments = command.split(SHELL_SEPARATORS).map((segment) => segment.trim()).filter(Boolean);
+  const writes: Array<{ abs: string; skill: string; file: string }> = [];
+  for (const segment of segments) {
+    const segmentMasked = maskQuoted(segment);
+    const segmentRefs = shellSkillReferences(projectCwd, segment).refs;
+    const verb = shellTokens(segmentMasked)[0] ?? "";
 
-  // A write. Writable targets are owned + marked skills, nothing else.
-  const writable = refs.map((ref) => ({ ref, target: writableByShell(projectCwd, ref.abs) }));
-  const isCopy = /\bcp\b|\bmv\b/.test(command);
-  if (isCopy) {
-    const operands = shellTokens(command).filter((token, index) => index > 0 && !token.startsWith("-"));
-    if (operands.length !== 2) {
-      return block(`cannot tell the source from the destination in this ${verb}. ${skillsHint}`);
+    // Raw text, quotes included: `python3 -c 'open(".pi/skills/…","w")'` names a skill
+    // inside a quoted argument, which masking hides but the shell still opens.
+    const segmentNamesSkill = /skills[\\/]|\bSKILL\.md\b/.test(segment);
+    if (segmentRefs.length === 0 && !segmentNamesSkill) continue;
+    if (!segmentRefs.length) {
+      // Names a skill in a form we cannot resolve (quoted inside an interpreter, a
+      // glob, a relative path after cd): only an allowlisted read verb passes.
+      if (READ_ONLY_VERBS.has(verb) && !BASH_WRITE_OPERATORS.test(segmentMasked)) continue;
+      return block(`this command names a skill without a path the guard can resolve ("${verb || "?"}"). ${hint}`);
     }
-    const [source, destination] = operands;
-    const sourceAbs = path.resolve(projectCwd, source);
-    const destinationAbs = path.resolve(projectCwd, destination);
-    const sourceIsSkill = refs.some((ref) => ref.abs === sourceAbs);
-    const destinationIsSkill = refs.some((ref) => ref.abs === destinationAbs);
-    if (sourceIsSkill && !destinationIsSkill) {
-      log.debug("skill_shell_copy_from_skill", { source });
-      return null; // reading a skill into a normal file
+    if (!BASH_WRITE_OPERATORS.test(segmentMasked)) {
+      if (READ_ONLY_VERBS.has(verb)) continue;
+      if (MK_DIR.test(verb) && allRefsOwnedLexical(projectCwd, segmentRefs)) continue;
+      return block(`this command touches a skill path but "${verb || "?"}" is not a known read-only command. ${hint}`);
     }
-    if (destinationIsSkill && !sourceIsSkill) {
-      const target = writableByShell(projectCwd, destinationAbs);
-      if (target) return { block: false, writes: [{ abs: destinationAbs, ...target }] };
-      return block(`the destination of this ${verb} is not a marked skill of this project. ${skillsHint}`);
-    }
-    return block(`this ${verb} involves skills in a shape the guard cannot classify. ${skillsHint}`);
-  }
 
-  const unmarked = writable.filter((entry) => entry.target === null);
-  if (unmarked.length > 0 || writable.length === 0) {
-    return block(`this shell write names a skill this project does not maintain. ${skillsHint}`);
+    if (/\bcp\b/.test(segmentMasked)) {
+      const operands = shellTokens(segmentMasked).filter((token, index) => index > 0 && !token.startsWith("-"));
+      if (operands.length !== 2) {
+        return block(`cannot tell the source from the destination in this cp. ${hint}`);
+      }
+      const [source, destination] = operands;
+      const sourceAbs = path.resolve(projectCwd, source);
+      const destinationAbs = path.resolve(projectCwd, destination);
+      const sourceIsSkill = segmentRefs.some((ref) => ref.abs === sourceAbs);
+      const destinationIsSkill = segmentRefs.some((ref) => ref.abs === destinationAbs);
+      if (sourceIsSkill && !destinationIsSkill) continue; // reading a skill into a normal file
+      if (destinationIsSkill && !sourceIsSkill) {
+        const target = writableByShell(projectCwd, destinationAbs);
+        if (!target) return block(`the destination of this cp is not a marked skill of this project. ${hint}`);
+        writes.push({ abs: destinationAbs, ...target });
+        continue;
+      }
+      return block(`this cp involves skills in a shape the guard cannot classify. ${hint}`);
+    }
+
+    const targets = segmentRefs.map((ref) => ({ ref, target: writableByShell(projectCwd, ref.abs) }));
+    if (targets.some((entry) => entry.target === null)) {
+      return block(`this shell write names a skill this project does not maintain. ${hint}`);
+    }
+    for (const entry of targets) writes.push({ abs: entry.ref.abs, ...entry.target! });
   }
-  log.debug("skill_shell_write_allowed", { targets: writable.length });
-  return {
-    block: false,
-    writes: writable.map((entry) => ({ abs: entry.ref.abs, ...entry.target! })),
-  };
+  log.debug("skill_shell_verdict", { writes: writes.length, segments: segments.length });
+  return writes.length === 0 ? null : { block: false, writes };
 }
 
 export function registerSkillMaintenance(pi: ExtensionAPI): void {

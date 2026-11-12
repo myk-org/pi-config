@@ -384,6 +384,43 @@ describe("shell guard (Qodo #1079)", () => {
     assert.deepEqual(verdict && !verdict.block ? verdict.writes.map((w) => w.file) : [], ["SKILL.md"]);
   });
 
+  it("blocks every segment of a shell chain on its own", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    const read = `cat ${path.join(root, "marked", "SKILL.md")}`;
+    assert.equal(bashSkillVerdict(cwd, read), null);
+    // the second segment is an interpreter writing an unmarked skill
+    const chain = `${read} && uv run python3 -c 'open("${path.join(root, "unmarked", "SKILL.md")}", "w")'`;
+    assert.equal(bashSkillVerdict(cwd, chain)?.block, true);
+  });
+
+  it("blocks a write redirection into a global skill", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "cat README.md > ~/.agents/skills/x/SKILL.md")?.block, true);
+    assert.equal(bashSkillVerdict(cwd, "cat README.md 2> ~/.agents/skills/x/SKILL.md")?.block, true);
+  });
+
+  it("blocks mv of a global skill", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "mv ~/.agents/skills/x/SKILL.md ./backup.md")?.block, true);
+  });
+
+  it("allows mkdir inside the owned skills tree", () => {
+    const { cwd, root } = project();
+    assert.equal(bashSkillVerdict(cwd, `mkdir -p ${path.join(root, "brand-new")}`), null);
+  });
+
+  it("allows a read whose search term looks destructive", () => {
+    const { cwd } = project();
+    assert.equal(bashSkillVerdict(cwd, "rg 'rm' ~/.agents/skills/x/SKILL.md"), null);
+  });
+
+  it("blocks a bare SKILL.md after cd, which the audit could not follow", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    assert.equal(bashSkillVerdict(cwd, `cd ${path.join(root, "marked")} && printf x >> SKILL.md`)?.block, true);
+  });
+
   it("blocks a shell write into an unmarked project skill", () => {
     const { cwd, root } = project();
     writeSkill(root, "unmarked", UNMARKED);
