@@ -468,17 +468,6 @@ describe("resolveInboundSession", () => {
     assert.deepEqual([r.sessionId, r.source], ["s2", "watch"]);
   });
 
-  it("lets a question waiting in this channel outrank the watch", () => {
-    const r = resolveInboundSession({
-      channelId: "ch",
-      watchedSessionId: "s2",
-      targets: { s3: { channelId: "ch", threadId: null } },
-      isLive: live("s2", "s3"),
-      hasPendingQuestion: (sessionId) => sessionId === "s3",
-    });
-    assert.deepEqual([r.sessionId, r.source], ["s3", "target"]);
-  });
-
   it("resolves nothing for a channel that carries no session", () => {
     // Only the empty case: the DM rule (the bot passes no session, so the engine cancels the newest
     // question) lives in the handler and is pinned in discord-handler.test.ts.

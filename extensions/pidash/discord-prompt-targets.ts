@@ -397,8 +397,6 @@ export function resolveInboundSession(input: {
   watchedSessionId?: string | null;
   targets?: Record<string, { channelId: string; threadId?: string | null }> | null;
   isLive: (sessionId: string) => boolean;
-  /** This session has a question waiting for an answer (liveness alone does not say). */
-  hasPendingQuestion?: (sessionId: string) => boolean;
 }): InboundSession {
   const { channelId, isLive } = input;
   const thread = (input.threadSessionId ?? "").trim();
@@ -409,6 +407,7 @@ export function resolveInboundSession(input: {
   // A thread IS its session: identity, not liveness, decides. Falling back to the watch when a
   // thread's session is disconnected delivers that thread's text into a different session.
   if (thread) return { sessionId: thread, source: "thread", ...dead };
+  if (watched && isLive(watched)) return { sessionId: watched, source: "watch", ...dead };
 
   // A target whose channel is exactly this channel, preferring a thread match over a channel match:
   // a thread is a narrower address than the channel that contains it.
@@ -417,23 +416,10 @@ export function resolveInboundSession(input: {
       ? [{ sessionId, exactThread: target.threadId === channelId, live: isLive(sessionId) }]
       : []);
   const delivering = onChannel.filter((match) => match.live).sort((a, b) => Number(b.exactThread) - Number(a.exactThread));
-  /** Two equally specific live matches are a refusal, not a guess. */
-  const ambiguous = (matches: typeof delivering) => matches.length > 1 && matches[0]!.exactThread === matches[1]!.exactThread;
-
-  // A question waiting in THIS channel belongs to the session that asked here: answering the watch
-  // instead approved a different agent's prompt (Qodo 704cfa32).
-  const awaiting = delivering.filter((match) => input.hasPendingQuestion?.(match.sessionId));
-  if (awaiting.length > 0) {
-    if (ambiguous(awaiting)) return { sessionId: null, source: "none", ambiguous: true, ...dead };
-    return { sessionId: awaiting[0]!.sessionId, source: "target", ...dead };
+  if (delivering.length > 1 && delivering[0]!.exactThread === delivering[1]!.exactThread) {
+    return { sessionId: null, source: "none", ambiguous: true, ...dead };
   }
-
-  // Otherwise the agreed order holds: the watch outranks a plain channel that only carries output (#1072).
-  if (watched && isLive(watched)) return { sessionId: watched, source: "watch", ...dead };
-  if (delivering.length > 0) {
-    if (ambiguous(delivering)) return { sessionId: null, source: "none", ambiguous: true, ...dead };
-    return { sessionId: delivering[0]!.sessionId, source: "target", ...dead };
-  }
+  if (delivering.length > 0) return { sessionId: delivering[0]!.sessionId, source: "target", ...dead };
 
   // A channel whose session died says so: "not watching" would hide why it went quiet.
   return { sessionId: null, source: "none", ...dead, ...(onChannel.length ? { deadTarget: true } : {}) };

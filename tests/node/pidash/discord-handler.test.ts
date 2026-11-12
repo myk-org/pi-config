@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { after, describe, it } from "node:test";
+import { after, describe, it, mock } from "node:test";
 
 import { setupDiscordBot } from "../../../extensions/pidash/discord-bot.ts";
 
@@ -127,8 +127,8 @@ function startBot(opts: {
   const piClients = new Map<string, any>();
   for (const sessionId of opts.live) {
     piClients.set(sessionId, {
-      session: { sessionId, active: true },
-      ws: { send: (raw: string) => sends.push(JSON.parse(raw)) },
+      session: { sessionId, active: true, cwd: "/work", supportsImages: true },
+      ws: { send: (raw: string) => sends.push({ sessionId, ...JSON.parse(raw) }) },
       replaying: false,
     });
   }
@@ -277,8 +277,7 @@ describe("discord messageCreate routing", () => {
     assert.deepEqual(bot.sends.map((s) => [s.sessionId, s.id]), [["s5", "q5"]]);
   });
 
-  it("refuses to answer in a channel two sessions deliver into", async () => {
-    // No session can be named for this channel, so answering "the newest question" would approve one
+  it("refuses to answer in a channel two sessions deliver into", async () => {    // No session can be named for this channel, so answering "the newest question" would approve one
     // of them blind.
     const bot = startBot({
       live: ["s2", "s9"],
@@ -296,5 +295,30 @@ describe("discord messageCreate routing", () => {
     await bot.handler(message("m8", "yes", replies, { channelId: PLAIN }));
     assert.deepEqual(bot.sends, []);
     assert.deepEqual(replies, ["This channel carries more than one session. Send in that session's thread or use `/sessions`."]);
+  });
+
+  it("answers nothing once the channel's question has expired", async () => {
+    mock.timers.enable({ apis: ["Date"] });
+    try {
+      const bot = startBot({
+        live: ["s2", "s5"],
+        watchedSessionId: "s2",
+        threads: { s2: THREAD },
+        responseChannelId: PLAIN,
+        dmChannelId: null,
+      });
+      bot.hooks[0]!("s5", { type: "extension_ui_request", id: "q5", method: "confirm", title: "Proceed?" });
+      await settle();
+      // Past the prompt TTL: the question that put s5's target in this channel is dead.
+      mock.timers.tick(60 * 60 * 1000);
+
+      const replies: string[] = [];
+      await bot.handler(message("m9", "yes", replies, { channelId: PLAIN }));
+      // The stale target must not keep naming the channel: the watch takes it, per the routing order.
+      assert.deepEqual(bot.sends.map((s) => s.sessionId), ["s2"]);
+      assert.match(replies[0] ?? "", /expired/);
+    } finally {
+      mock.timers.reset();
+    }
   });
 });

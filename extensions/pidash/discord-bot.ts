@@ -1859,13 +1859,12 @@ export function setupDiscordBot(opts: {
     // Inbound and outbound must agree on WHICH session a channel is. Outbound delivers through
     // `targets`; inbound used to look only at the thread and the watch, so a channel that was
     // streaming a session's output could still be told "not watching any session".
-    const inbound = resolveInboundSession({
+    let inbound = resolveInboundSession({
       channelId: message.channelId,
       threadSessionId,
       watchedSessionId: state.watchedSessionId ?? null,
       targets: state.targets ?? {},
       isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
-      hasPendingQuestion: (sessionId) => Boolean((state.pendingPrompts ?? {})[sessionId]),
     });
     const noTargetReply = () => message.reply(inbound.deadTarget
       ? "The session this channel belonged to is gone. Use `/sessions` and pick one."
@@ -1896,11 +1895,22 @@ export function setupDiscordBot(opts: {
       return;
     }
 
-    // A prompt can be pending for the session this channel belongs to even though the user is watching
-    // a different one — that is the cross-session case: answering here must reach the asking session,
-    // not the watched one. A DM names no session, so it answers the newest question; a guild channel
-    // answers only for the session it IS, or a reply here could approve another session's question.
-    const answerSession = message.guildId ? inbound.sessionId ?? undefined : undefined;
+    // Which pending question is this message answering? Routing (above) is about where a channel's
+    // output goes; a question delivered into THIS channel belongs to the session that asked here, even
+    // when the user watches a different one. Two asking here is a refusal: nobody can tell them apart.
+    const askersHere = message.guildId
+      ? Object.entries(state.targets ?? {})
+        .filter(([sessionId, target]) => Boolean(target)
+          && (target!.threadId === message.channelId || target!.channelId === message.channelId)
+          && Boolean((state.pendingPrompts ?? {})[sessionId]))
+        .map(([sessionId]) => sessionId)
+      : [];
+    if (askersHere.length > 1) {
+      await message.reply("This channel carries more than one session. Send in that session's thread or use `/sessions`.").catch(() => {});
+      return;
+    }
+    // A DM names no session, so it answers the newest question.
+    const answerSession = message.guildId ? askersHere[0] ?? inbound.sessionId ?? undefined : undefined;
     const hasPrompt = message.guildId
       ? Boolean(answerSession && (state.pendingPrompts ?? {})[answerSession])
       : Boolean(state.pendingPrompt);
@@ -1918,6 +1928,15 @@ export function setupDiscordBot(opts: {
       }
       if (outcome === "expired") {
         await message.reply("The waiting prompt expired; sending your message as a new prompt.").catch(() => {});
+        // The question that named this channel is gone, so the routing decision must be taken again —
+        // keeping it sent the text to a session that had already stopped asking (Qodo ce99abaf).
+        inbound = resolveInboundSession({
+          channelId: message.channelId,
+          threadSessionId,
+          watchedSessionId: state.watchedSessionId ?? null,
+          targets: state.targets ?? {},
+          isLive: (sessionId) => Boolean(piClients.get(sessionId)?.ws),
+        });
       } else if (outcome === "not-an-answer" && (state.pendingPrompt?.method === "confirm" || hasPrompt) && text) {
         // Not an answer to a yes/no question, but it IS a message the user meant
         // to send: forward it and keep the prompt available (Qodo 85cacb2c).
