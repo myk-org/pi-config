@@ -23,7 +23,7 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { fileLog } from "../shared/file-logger.js";
-import { getProjectDataDir } from "./utils.js";
+import { getProjectDataDir, resolveMainCheckoutRoot } from "./utils.js";
 
 const log = createLogger("skill-maintenance");
 
@@ -43,6 +43,9 @@ export const PROVENANCE_FILE = "skill-review.jsonl";
 /** Rotate the trail (keep the tail) once it grows past this, so it cannot grow unbounded. */
 const PROVENANCE_MAX_BYTES = 1_000_000;
 const PROVENANCE_KEEP_LINES = 2000;
+
+/** Deep enough for any real skill tree; a change below the cap must still be noticed. */
+const MAX_SKILL_DEPTH = 32;
 
 const WRITE_TOOLS = new Set(["write", "edit", "multi_edit"]);
 
@@ -97,7 +100,10 @@ export function realpathNearestExisting(target: string): string | null {
  * to somewhere else, and then nothing under it is ours to edit.
  */
 export function ownedSkillsRoot(projectCwd: string): string | null {
-  const realCwd = realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd);
+  // The project's skills live in the MAIN checkout, like `.pi/memory`: a linked
+  // worktree must resolve to the same directory, or skills there read as ordinary
+  // files and an unmarked write slips past the guard (Qodo #1079).
+  const realCwd = realpathNearestExisting(resolveMainCheckoutRoot(projectCwd)) ?? path.resolve(projectCwd);
   const resolved = realpathNearestExisting(path.join(realCwd, ".pi", "skills"));
   if (!resolved) return null;
   const rel = path.relative(realCwd, resolved);
@@ -387,7 +393,7 @@ export function classifySkillWrite(
   // Lexically inside our own skills dir but not owned: a symlink (dangling or
   // resolved) put it, or the whole `.pi/skills` dir, outside the project. Checked
   // before the "ordinary file" early return, or a dangling link reads as writable.
-  const lexicalRoot = path.join(realpathNearestExisting(projectCwd) ?? path.resolve(projectCwd), ".pi", "skills");
+  const lexicalRoot = path.join(realpathNearestExisting(resolveMainCheckoutRoot(projectCwd)) ?? path.resolve(projectCwd), ".pi", "skills");
   const lexicalRel = path.relative(lexicalRoot, abs);
   const lexicallyInSkills =
     lexicalRel !== "" && lexicalRel !== ".." && !lexicalRel.startsWith(`..${path.sep}`) && !path.isAbsolute(lexicalRel);
@@ -403,7 +409,7 @@ export function classifySkillWrite(
   }
 
   if (area === "package") {
-    log.info("skill_write_package_refused", { candidate });
+    log.warn("skill_write_package_refused", { candidate });
     return {
       allow: false,
       path: abs,
@@ -414,7 +420,7 @@ export function classifySkillWrite(
     };
   }
   if (area === "user-global") {
-    log.info("skill_write_global_refused", { candidate });
+    log.warn("skill_write_global_refused", { candidate });
     return {
       allow: false,
       path: abs,
@@ -440,14 +446,31 @@ export function classifySkillWrite(
     };
   }
 
+  // An auxiliary file (references/*.md, scripts) belongs to its skill: it is judged by
+  // the owning SKILL.md, never by applying the auxiliary edit to SKILL.md (Qodo #1079).
+  const current = skill ? readSkillFile(projectCwd, skill) : null;
+  const isSkillFile = file === "SKILL.md";
+  if (!isSkillFile && current !== null) {
+    if (isMarkedSkill(current)) return { allow: true, path: abs, skill, file };
+    log.warn("skill_write_aux_unmarked", { skill: skill ?? null, file: file ?? null });
+    return {
+      allow: false,
+      path: abs,
+      skill,
+      file,
+      reason:
+        `⛔ "${skill ?? candidate}" is owned by this project but not marked for maintenance, so its files cannot be edited. ` +
+        `Run /adopt-skill ${skill ?? "<name>"}.`,
+    };
+  }
+
   // Classify against the RESULTING content (Qodo HIGH): an edit's replacement fragment
   // is not the file, so "the fragment looks marked" must not unlock an unmarked skill.
-  const current = skill ? readSkillFile(projectCwd, skill) : null;
   const result = resultingContent(current, input);
   if (result !== null && isMarkedSkill(result)) {
     return { allow: true, path: abs, skill, file };
   }
-  log.info("skill_write_unmarked", { skill: skill ?? null, candidate });
+  log.warn("skill_write_unmarked", { skill: skill ?? null, candidate });
   return {
     allow: false,
     path: abs,
@@ -472,19 +495,25 @@ export function snapshotSkillTree(root: string | null): Map<string, string> {
     return snapshot;
   }
   const walk = (dir: string, depth: number): void => {
-    if (depth > 8) {
-      log.warn("skill_snapshot_depth_cap", { dir });
+    if (depth > MAX_SKILL_DEPTH) {
+      log.warn("skill_snapshot_depth_cap", { dir, max: MAX_SKILL_DEPTH });
       return;
     }
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT") {
+        // Normal: this project has no `.pi/skills/` yet. Not a warning per turn.
+        log.debug("skill_snapshot_absent", { dir });
+        return;
+      }
       log.warn("skill_snapshot_readdir_failed", {
         dir,
         reason: String((err as Error)?.message ?? err).slice(0, 200),
       });
-      return; // absent tree — nothing owned yet
+      return;
     }
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
@@ -653,7 +682,7 @@ export function adoptSkill(projectCwd: string, name: string): AdoptResult {
   }
   if (!fs.existsSync(file)) {
     const elsewhere = skillExistsOutside(projectCwd, name);
-    log.info("adopt_skill_refused", { name, existsElsewhere: elsewhere });
+    log.warn("adopt_skill_refused", { name, existsElsewhere: elsewhere });
     return {
       ok: false,
       message: elsewhere
@@ -775,6 +804,10 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
   let recordedThisTurn = new Set<string>();
   /** Writes allowed at tool_call and not yet confirmed by a successful tool_result. */
   const pendingWrites = new Map<string, { skill: string; file: string; path: string; written: boolean }>();
+  /** Owned-tree snapshot taken before an allowed bash write, for its audit record. */
+  const pendingBashSnapshots = new Map<string, Map<string, string>>();
+  /** Skills named by `/skill:` since the last turn ended — they open the next turn. */
+  let invokedBeforeTurn = new Set<string>();
   /** Set when a provenance append failed this turn, so the notice can say so. */
   let provenanceFailed = false;
   /** False until the first snapshot is taken, so a cold start reports nothing. */
@@ -832,16 +865,24 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
     } catch (err) {
       log.error("skill_reconcile_start_failed", { reason: String((err as Error)?.message ?? err).slice(0, 200) });
     }
-    // NOTE: usedSkills is NOT cleared here — `input` fires before turn_start, so
-    // clearing it dropped the `/skill:` invocation that triggered this turn.
+    // `input` fires before turn_start, so keep what it parked for this turn and drop
+    // anything an interrupted turn left behind — a stale skill must not be steered,
+    // and a stale nudge flag must not silence a real one (Qodo #1079).
+    usedSkills = new Set(invokedBeforeTurn);
+    invokedBeforeTurn = new Set();
+    nudgedSkills = new Set();
     recordedThisTurn = new Set();
     provenanceFailed = false;
   });
 
-  // `/skill:<name>` in the user's message counts as using that skill.
+  // `/skill:<name>` in the user's message counts as using that skill. Input arrives
+  // BEFORE turn_start, so the names are parked and adopted by the turn they open.
   pi.on("input", (event, ctx) => {
     currentCwd = ctx.cwd;
-    for (const name of markedSkillsInText(ctx.cwd, (event as any)?.text ?? "")) usedSkills.add(name);
+    for (const name of markedSkillsInText(ctx.cwd, (event as any)?.text ?? "")) {
+      usedSkills.add(name);
+      invokedBeforeTurn.add(name);
+    }
   });
 
   // ── write guard: marked + owned only, for every session ──────────────────
@@ -851,14 +892,23 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
 
     if (toolName === "bash") {
       const command = typeof (input as any)?.command === "string" ? (input as any).command : "";
-      return bashSkillVerdict(ctx.cwd, command) ?? undefined;
+      const verdict = bashSkillVerdict(ctx.cwd, command);
+      if (verdict) return verdict;
+      // An allowed shell write into an owned skill still needs an audit line: diff the
+      // tree around our own command, never the whole turn (Qodo #1079).
+      if (BASH_WRITE_TOKENS.test(command) && command.includes("skills")) {
+        const callId = String((event as any)?.toolCallId ?? "");
+        pendingBashSnapshots.set(callId, snapshotSkillTree(ownedSkillsRoot(ctx.cwd)));
+        log.debug("skill_bash_write_tracked", { callId });
+      }
+      return undefined;
     }
     if (!WRITE_TOOLS.has(toolName)) return;
     const target = pathFromInput(input);
     if (!target) return;
     const verdict = classifySkillWrite(ctx.cwd, target, input);
     if (!verdict.allow) {
-      log.warn("skill_write_blocked", { toolName, target, skill: verdict.skill });
+      log.debug("skill_write_blocked", { toolName, target, skill: verdict.skill });
       return { block: true, reason: verdict.reason ?? "skill write blocked" };
     }
     if (!verdict.skill) return;
@@ -887,6 +937,32 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
     }
 
     const callId = String((event as any)?.toolCallId ?? "");
+    const bashBefore = pendingBashSnapshots.get(callId);
+    if (bashBefore) {
+      pendingBashSnapshots.delete(callId);
+      if ((event as any)?.isError !== true) {
+        const root = ownedSkillsRoot(ctx.cwd);
+        const changes = diffSkillTree(root, bashBefore, snapshotSkillTree(root));
+        if (changes.length > 0) {
+          const sessionId = (ctx as any)?.sessionManager?.getSessionId?.() ?? "";
+          const ok = appendProvenance(
+            ctx.cwd,
+            changes.map((change) => ({
+              ...change,
+              sessionId,
+              turnId: turnIdOf(sessionId),
+              at: new Date().toISOString(),
+            })),
+          );
+          if (!ok) provenanceFailed = true;
+          for (const change of changes) {
+            if (root) recordedThisTurn.add(path.join(root, change.skill, change.file));
+          }
+          log.info("skill_bash_write_recorded", { changes: changes.length });
+        }
+      }
+    }
+
     const pending = pendingWrites.get(callId);
     if (pending) {
       pendingWrites.delete(callId);
@@ -939,8 +1015,10 @@ export function registerSkillMaintenance(pi: ExtensionAPI): void {
       fileLog("skill-maintenance", "error", "skill-maintenance", "turn_end reconcile failed", err);
     } finally {
       usedSkills = new Set();
+      invokedBeforeTurn = new Set();
       nudgedSkills = new Set();
       pendingWrites.clear();
+      pendingBashSnapshots.clear();
     }
   });
 

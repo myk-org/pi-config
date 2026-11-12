@@ -61,7 +61,12 @@ A skill file is writable only when it is **marked** *and* its real path (after `
 
 The rule is enforced in code by a `tool_call` guard on `write`/`edit`/`multi_edit`, so a blocked write is
 refused before it happens and the agent is told what to do instead. `bash` stays available to the main agent;
-the guard polices the file tools, not the shell.
+the guard checks the simple shell write forms (a write-ish token plus a path under a skills directory this
+project does not own) and logs `skill_write_bash_unchecked` for a write it cannot resolve.
+
+The skills directory follows the **main checkout**, like `.pi/memory`: a session running in a linked worktree
+maintains the same `.pi/skills/` the project really has, so a worktree cannot reach an unguarded copy. A shell
+write into an owned skill is allowed and audited: the guard diffs the tree around that one command.
 
 ## The In-Turn Nudge
 

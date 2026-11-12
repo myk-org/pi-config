@@ -9,6 +9,7 @@
  */
 
 import { describe, it, beforeEach, afterEach } from "node:test";
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -281,7 +282,7 @@ describe("the marker decides", () => {
     assert.equal(verdict.allow, true);
   });
 
-  it("refuses an edit to an unmarked skill that touches prose and quotes a marker elsewhere", () => {
+  it("refuses a prose-only edit to an unmarked skill, even one quoting the marker", () => {
     const { cwd, root } = project();
     const unmarked = writeSkill(root, "unmarked", UNMARKED);
     const verdict = classifySkillWrite(cwd, unmarked, {
@@ -300,7 +301,7 @@ describe("the marker decides", () => {
     assert.equal(classifySkillWrite(cwd, path.join(root, "fresh", "SKILL.md"), write(UNMARKED)).allow, false);
   });
 
-  it("reads the new text out of write and edit shapes", () => {
+  it("reads the new text out of a write input", () => {
     assert.equal(incomingText({ content: "abc" }), "abc");
     assert.equal(incomingText({ edits: [{ newText: "a" }, { newText: "b" }] }), "a\nb");
     assert.equal(incomingText(null), "");
@@ -587,7 +588,7 @@ describe("write guard in the main session", () => {
     assert.match(blocked?.reason ?? "", /\/adopt-skill unmarked/);
   });
 
-  it("allows a marked skill and records the write after it succeeds", async () => {
+  it("allows a marked skill (write recorded only after success)", async () => {
     const { cwd, root } = project();
     const marked = writeSkill(root, "marked", MARKED);
     const h = harness(cwd);
@@ -628,7 +629,7 @@ describe("write guard in the main session", () => {
     assert.deepEqual(provenanceRecords(cwd), []);
   });
 
-  it("leaves bash and non-skill writes alone", async () => {
+  it("leaves a shell write to an ordinary file alone", async () => {
     const { cwd } = project();
     const h = harness(cwd);
     await h.emit("turn_start", { turnIndex: 1 });
@@ -812,5 +813,138 @@ describe("command registration", () => {
     });
     assert.match(notices[0], /now maintained/);
     assert.equal(readSkillFile(cwd, "unmarked")!.includes(MARKER_LINE), true);
+  });
+});
+
+
+describe("second-round findings (Qodo #1079)", () => {
+  it("guards the main checkout's skills from a linked worktree", () => {
+    const repo = tempDir("skill-maint-repo-");
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@example.com"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "README.md"), "x\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-qm", "init"], { cwd: repo });
+    const worktree = path.join(tempDir("skill-maint-wt-"), "wt");
+    execFileSync("git", ["worktree", "add", "-q", worktree], { cwd: repo });
+
+    const root = path.join(repo, ".pi", "skills");
+    fs.mkdirSync(root, { recursive: true });
+    const unmarked = writeSkill(root, "unmarked", UNMARKED);
+
+    // a worktree session must see the project's real skills, not treat them as ordinary
+    assert.equal(ownedSkillsRoot(worktree), fs.realpathSync(root));
+    assert.equal(isOwnedSkillPath(worktree, unmarked), true);
+    assert.equal(
+      classifySkillWrite(worktree, unmarked, { edits: [{ oldText: "Run the query.", newText: "Run it." }] }).allow,
+      false,
+    );
+    assert.deepEqual(listUnmarkedSkills(worktree), ["unmarked"]);
+  });
+
+  it("allows a references file of a marked skill", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    const reference = path.join(root, "marked", "references", "api.md");
+    const verdict = classifySkillWrite(cwd, reference, write("# API\n\nUse --flag.\n"));
+    assert.equal(verdict.allow, true);
+    assert.equal(verdict.file, path.join("references", "api.md"));
+  });
+
+  it("refuses a references file of an unmarked skill", () => {
+    const { cwd, root } = project();
+    writeSkill(root, "unmarked", UNMARKED);
+    const reference = path.join(root, "unmarked", "references", "api.md");
+    const verdict = classifySkillWrite(cwd, reference, write("# API\n"));
+    assert.equal(verdict.allow, false);
+    assert.match(verdict.reason ?? "", /\/adopt-skill unmarked/);
+  });
+
+  it("records a shell write into an owned skill", async () => {
+    const { cwd, root } = project();
+    const file = writeSkill(root, "marked", MARKED);
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    const command = `printf 'more\\n' >> ${path.relative(cwd, file)}`;
+    assert.equal(await h.emit("tool_call", { toolCallId: "b1", toolName: "bash", input: { command } }), undefined);
+    fs.writeFileSync(file, `${MARKED}\nshell edit\n`);
+    await h.emit("tool_result", { toolCallId: "b1", toolName: "bash", input: { command }, isError: false });
+
+    const [record] = provenanceRecords(cwd);
+    assert.equal(record.skill, "marked");
+    assert.equal(record.action, "patched");
+    assert.equal(record.file, "SKILL.md");
+  });
+
+  it("does not record a failed shell write", async () => {
+    const { cwd, root } = project();
+    const file = writeSkill(root, "marked", MARKED);
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    const command = `printf 'x' >> ${path.relative(cwd, file)}`;
+    await h.emit("tool_call", { toolCallId: "b2", toolName: "bash", input: { command } });
+    await h.emit("tool_result", { toolCallId: "b2", toolName: "bash", input: { command }, isError: true });
+    assert.deepEqual(provenanceRecords(cwd), []);
+  });
+
+  it("nudges again after an aborted turn", async () => {
+    const { cwd, root } = project();
+    const file = writeSkill(root, "marked", MARKED);
+    const h = harness(cwd);
+    await h.emit("turn_start", { turnIndex: 1 });
+    await h.emit("input", { text: "/skill:marked" });
+    await h.emit("tool_result", { toolCallId: "t1", toolName: "read", input: { path: file }, isError: true });
+    // the turn is aborted: no turn_end
+    await h.emit("turn_start", { turnIndex: 2 });
+    await h.emit("tool_result", { toolCallId: "t2", toolName: "read", input: { path: file }, isError: true });
+
+    const nudges = h.messages.filter((message) => message.customType === "skill-maintenance-nudge");
+    assert.equal(nudges.length, 2);
+  });
+
+  it("does not steer about a skill left over from an aborted turn", async () => {
+    const { cwd, root } = project();
+    writeSkill(root, "marked", MARKED);
+    const h = harness(cwd);
+    // real order: the invocation arrives before the turn it opens
+    await h.emit("input", { text: "/skill:marked" });
+    await h.emit("turn_start", { turnIndex: 1 });
+    // aborted before any failure; the next turn carries no invocation
+    await h.emit("turn_start", { turnIndex: 2 });
+    await h.emit("tool_result", {
+      toolCallId: "t3",
+      toolName: "read",
+      input: { path: path.join(cwd, "README.md") },
+      isError: true,
+    });
+    assert.equal(h.messages.filter((message) => message.customType === "skill-maintenance-nudge").length, 0);
+  });
+
+  it("logs an unreadable skills tree without warning for an absent one", async () => {
+    const home = makeTempDir("skill-maint-log-");
+    cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
+    const originalHome = process.env.HOME;
+    process.env.HOME = home;
+    const unreadable = path.join(home, "locked");
+    fs.mkdirSync(unreadable, { recursive: true });
+    fs.chmodSync(unreadable, 0o000);
+    try {
+      const { getPiLogPath, setGlobalSessionId } = await import("../../../extensions/shared/file-logger.js");
+      setGlobalSessionId("skill-maint-log-test");
+      const missing = path.join(home, "nope", ".pi", "skills");
+      assert.equal(snapshotSkillTree(missing).size, 0);
+      assert.equal(snapshotSkillTree(unreadable).size, 0);
+      const logPath = getPiLogPath("skill-maintenance");
+      assert.ok(logPath);
+      const body = fs.readFileSync(logPath, "utf-8");
+      assert.match(body, /skill_snapshot_readdir_failed/);
+      assert.ok(body.includes(unreadable), "the failing directory is named");
+      assert.ok(!body.includes(missing), "an absent skills tree is not a warning");
+    } finally {
+      fs.chmodSync(unreadable, 0o755);
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+    }
   });
 });
