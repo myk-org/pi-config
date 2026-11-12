@@ -354,11 +354,11 @@ Use `/review-status` to inspect the current review loop state. Pass a worktree p
 Copy the example file to your project and customize:
 
 ```bash
-cp pi-config-settings.example.jsonc .pi/pi-config-settings.json
+cp pi-config-settings.example.json .pi/pi-config-settings.json
 ```
 
-Settings files support JSONC (JSON with `//` comments).
-See [`pi-config-settings.example.jsonc`](pi-config-settings.example.jsonc) for all available settings with descriptions.
+`pi-config-settings.json` is the only settings filename read, project and global.
+See [`pi-config-settings.example.json`](pi-config-settings.example.json) for all available settings with descriptions.
 
 Resolution order: project file → global `~/.pi/pi-config-settings.json` → env var → default.
 

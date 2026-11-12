@@ -9,14 +9,14 @@
  */
 import type { Component } from "@earendil-works/pi-tui";
 import { renderWorkloadPart } from "./coms-workload.js";
-import { backTarget, buildDrilldownRows, type DrilldownItem, type DrilldownRow } from "./coms-drilldown.js";
+import { backTarget, buildDrilldownRows, buildPeerInfoRow, itemIdLabel, sectionCountLabel, sectionEnterMode, type DrilldownItem, type DrilldownRow } from "./coms-drilldown.js";
 import { sanitizePeerText } from "./peer-text.js";
 import type { DescribeResult } from "./coms-describe.js";
 import { OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
-import { openListDetailOverlay } from "../orchestrator/overlay-dashboard.js";
+import { OVERLAY_OPTS, openListDetailOverlay } from "../orchestrator/overlay-dashboard.js";
 import { buildTellRequest } from "./coms-shared.js";
 import type { RegistryRow } from "./coms-peers.js";
 
@@ -31,6 +31,9 @@ export interface ComsPeersOverlayDeps {
   killAll: () => string;
   /** Send the user's own message to a peer (#1077). Absent means no composer is offered. */
   tellPeer?: (request: { target: string; prompt: string; project?: string }) => Promise<string>;
+  /** The shared list→detail overlay. Injected only by tests, which need to drive Enter without a
+   *  TUI; production always uses the default. */
+  openOverlay?: typeof openListDetailOverlay;
   /** #1083: ask the focused peer for its own active workload. `ok` = it answered (possibly
    *  with nothing active); `reason` = it never did — rendered as `unknown`, never as zeros. */
   describePeer?: (row: RegistryRow) => Promise<DescribeResult>;
@@ -44,6 +47,7 @@ export async function openComsPeersOverlay(
   ctx: any,
   deps: ComsPeersOverlayDeps,
 ): Promise<void> {
+  const openOverlay = deps.openOverlay ?? openListDetailOverlay;
   const toRows = (): Row[] => deps.listPeers().map((row) => ({ ...row, id: `${row.project}:${row.name}` }));
   // `m` needs the whole terminal for a text dialog, and Enter navigates a level deeper, so the
   // list closes and is re-opened after each. The overlay hands the focused row over through these
@@ -51,10 +55,13 @@ export async function openComsPeersOverlay(
   // happens inside its callback).
   const composeQueue: Row[] = [];
   const peerQueue: Row[] = [];
+  // #1084: Esc from the drilldown returns to the peer list focused on the peer it came from.
+  let reselectPeer: string | undefined;
 
   for (;;) {
-    await openListDetailOverlay< string, Row>(ctx, {
+    await openOverlay<string, Row>(ctx, {
       emptyMessage: deps.emptyMessage ?? "No peers in the coms registry.",
+      initialSelectionId: reselectPeer,
       listSpec: {
         title: "Coms peers",
         countLabel: (rows) => `${rows.length} peer${rows.length === 1 ? "" : "s"}`,
@@ -104,6 +111,7 @@ export async function openComsPeersOverlay(
 
     const inspected = peerQueue.pop();
     if (inspected) {
+      reselectPeer = inspected.id;
       await openPeerDrilldown(ctx, deps, inspected);
       continue;
     }
@@ -163,17 +171,25 @@ async function openPeerDrilldown(ctx: any, deps: ComsPeersOverlayDeps, row: Row)
       result = { ok: false, reason: "malformed" };
     }
   }
-  const rows = buildDrilldownRows(result);
+  // #1084 finding 2: identity and location come back as the first row — the same registry fields
+  // the old text pane showed, read from the row this list already holds (no new RPC, no files).
+  const rows = [
+    buildPeerInfoRow({ ...row, heartbeatAgeSeconds: deps.heartbeatAgeSeconds?.(row) ?? null }),
+    ...buildDrilldownRows(result),
+  ];
   log.debug("drilldown_opened", { peer: row.name, rows: rows.length, answered: result.ok });
   const header = peerHeader(row, deps);
 
   const sectionQueue: DrilldownRow[] = [];
+  // #1084 finding 4: Esc from a section re-opens this list on that section, not on row 0.
+  let reselectSection: string | undefined;
   for (;;) {
-    await openListDetailOverlay<string, DrilldownRow>(ctx, {
+    await (deps.openOverlay ?? openListDetailOverlay)<string, DrilldownRow>(ctx, {
       emptyMessage: "This peer reported no work.",
+      initialSelectionId: reselectSection,
       listSpec: {
         title: `Peer ${sanitizePeerText(row.name, 40)}`,
-        countLabel: (items) => `${items.length} section${items.length === 1 ? "" : "s"}`,
+        countLabel: sectionCountLabel,
         borderTitle: () => header,
         footerHints: "↑↓/jk navigate · Enter open · Esc back · read-only (reported by the peer)",
         listItems: () => rows,
@@ -192,15 +208,30 @@ async function openPeerDrilldown(ctx: any, deps: ComsPeersOverlayDeps, row: Row)
       log.debug("drilldown_esc", { to: backTarget({ level: "sections", peer: row.name })?.level ?? "close" });
       return;
     }
-    await openSectionOverlay(ctx, row, section);
+    reselectSection = section.id;
+    // One item is one Enter step: open its detail directly instead of a row list of one.
+    if (sectionEnterMode(section.items) === "detail") {
+      await ctx.ui.custom(
+        (tui: any, theme: Theme, _kb: any, done: (value: null) => void) =>
+          itemDetailComponent(section.items[0], tui, theme, done),
+        OVERLAY_OPTS,
+      );
+      continue;
+    }
+    await openSectionOverlay(ctx, row, section, deps.openOverlay ?? openListDetailOverlay);
   }
 }
 
 /** Level 3: one section's items, the detail pane reusing the fields the peer reported. */
-async function openSectionOverlay(ctx: any, row: Row, section: DrilldownRow): Promise<void> {
+async function openSectionOverlay(
+  ctx: any,
+  row: Row,
+  section: DrilldownRow,
+  openOverlay: typeof openListDetailOverlay,
+): Promise<void> {
   const title = `${section.label} · ${sanitizePeerText(row.name, 40)}`;
   log.debug("drilldown_section_open", { peer: row.name, section: section.section ?? "status", items: section.items.length });
-  await openListDetailOverlay<string, DrilldownItem>(ctx, {
+  await openOverlay<string, DrilldownItem>(ctx, {
     emptyMessage: `${section.label}: nothing to show.`,
     listSpec: {
       title,
@@ -212,20 +243,32 @@ async function openSectionOverlay(ctx: any, row: Row, section: DrilldownRow): Pr
       rowParts: (item, theme: Theme) => ({
         glyph: theme.fg("accent", "·"),
         title: item.row,
-        idLabel: theme.fg("dim", item.id),
+        // The composite row identity is bookkeeping: only the peer's own id may be shown.
+        idLabel: itemIdLabel(item) ? theme.fg("dim", itemIdLabel(item)) : "",
         rightParts: [],
       }),
     },
-    createDetail: (item, tui, theme: Theme, done): Component =>
-      new OverlayScrollDetail(
-        tui,
-        theme,
-        {
-          footerHints: "↑↓/jk scroll · Esc back",
-          getHeader: (t) => t.fg("accent", t.bold(sanitizePeerText(item.row, 120))),
-          getBodyLines: (t) => item.detail.map(([label, value]) => `${t.fg("muted", label.padEnd(11))}  ${value}`),
-        },
-        done,
-      ),
+    createDetail: itemDetailComponent,
   });
+}
+
+/** The read-only detail pane for one item — used by a section list AND by the single-item path,
+ *  so the two can never render differently. */
+function itemDetailComponent(
+  item: DrilldownItem,
+  tui: any,
+  theme: Theme,
+  done: (value: null) => void,
+): Component {
+  return new OverlayScrollDetail(
+    tui,
+    theme,
+    {
+      // Read-only: acting on a peer's own work would need a remote command protocol.
+      footerHints: "↑↓/jk scroll · Esc back · read-only: remote data",
+      getHeader: (t) => t.fg("accent", t.bold(sanitizePeerText(item.row, 120))),
+      getBodyLines: (t) => item.detail.map(([label, value]) => `${t.fg("muted", label.padEnd(11))}  ${value}`),
+    },
+    done,
+  );
 }

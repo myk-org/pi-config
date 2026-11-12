@@ -175,8 +175,12 @@ export function toDescribeDetail(active: ActiveWorkload, now = Date.now()): Peer
   return detail;
 }
 
-/** `⏳2 ✓5 ⏰1` for non-zero counts, nothing when the peer reports none, `unknown` when it
- *  reports no workload at all — absence is never rendered as zero. */
+/** `⏳2 ☰5 ⏰1` for non-zero counts, nothing when the peer reports none, `unknown` when it
+ *  reports no workload at all — absence is never rendered as zero.
+ *
+ *  The task glyph is `☰`: the count is OPEN tasks (anything not completed), so it mixes pending
+ *  and in-progress. `◻`/`◼`/`✓` are per-task ROW glyphs in `/tasks` and must not be reused for an
+ *  aggregate that spans both states — a row glyph here would claim a status the number lacks. */
 export function renderWorkloadPart(
   counts: PeerWorkloadCounts | null | undefined,
   theme?: { fg: (color: any, text: string) => string },
@@ -185,10 +189,19 @@ export function renderWorkloadPart(
   if (!counts) return " " + paint("dim", "unknown");
   const parts: string[] = [];
   if (counts.agents > 0) parts.push(paint("accent", `⏳${counts.agents}`));
-  if (counts.tasks > 0) parts.push(paint("success", `✓${counts.tasks}`));
+  if (counts.tasks > 0) parts.push(paint("success", `☰${counts.tasks}`));
   if (counts.crons > 0) parts.push(paint("warning", `⏰${counts.crons}`));
   if (parts.length === 0) return "";
   return " " + parts.join(" ");
+}
+
+/** The workload as WORDS, for panes that have no room for glyphs (#1084). One place decides the
+ *  three cases so a pane cannot turn "nothing active" into "cannot find out":
+ *  not reported → `unknown`; reported and empty → `none active`; otherwise the suffix. */
+export function workloadStateLabel(counts: PeerWorkloadCounts | null | undefined): string {
+  if (!counts) return "unknown";
+  if (counts.agents === 0 && counts.tasks === 0 && counts.crons === 0) return "none active";
+  return renderWorkloadPart(counts).trim();
 }
 
 export function formatWorkloadSuffix(counts: PeerWorkloadCounts | null | undefined): string {

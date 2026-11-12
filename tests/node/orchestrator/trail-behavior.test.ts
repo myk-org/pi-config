@@ -103,7 +103,7 @@ function linkedWorktree(main: string) {
 }
 function settings(root: string, values: Record<string, unknown>) {
   mkdirSync(join(root, ".pi"), { recursive: true });
-  writeFileSync(join(root, ".pi/pi-config-settings.jsonc"), JSON.stringify(values));
+  writeFileSync(join(root, ".pi/pi-config-settings.json"), JSON.stringify(values));
 }
 const defaultRoot = makeTempDir("trail-behavior-default-");
 let defaultSession = 0;

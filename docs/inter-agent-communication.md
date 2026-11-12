@@ -60,15 +60,14 @@ Every connected session sends heartbeat updates every 30 seconds. Those updates 
 
 Each peer reports its **own** active work: async agents that are *running* (a queued job is waiting, not in flight), tasks that are not completed, and crons this replica actually runs (`leader !== false`) — session crons included, which is why the peer self-reports instead of a scanner reading files.
 
-The pool widget and peer list append `⏳2 ✓5 ⏰1` (agents, tasks, crons), showing only non-zero counts. A peer that reports no workload field renders `unknown`, never `0`: absence is not idleness.
+The pool widget and peer list append `⏳2 ☰5 ⏰1` — running agents, **open** tasks, active crons, in that order — showing only non-zero counts. `☰` means open tasks including in-progress: the count is work still outstanding, so `✓` (done) never appears, and `◻`/`◼` are row glyphs inside `/tasks` only, never an aggregate. A peer that reports no workload field renders `unknown`, never `0`: absence is not idleness.
 
 Every peer-supplied string is sanitized before rendering — name, purpose, subject, cwd, socket path, task ids and states: escape sequences and control characters are stripped, whitespace collapsed, and each field capped (purpose/subject/cwd 120, id/state 40, socket 80). A peer cannot move the viewer's cursor, clear its screen, or forge a prompt, and sanitization is render-only: a peer is still addressed by its raw name.
 
-Selecting a peer in the `/coms` peer overlay opens a navigable drilldown: a list of that peer's
-sections with their counts (`async agents (3)`, `tasks (5)`, `crons (1)`), and Enter on a section
+Selecting a peer in the `/coms` peer overlay opens a navigable drilldown: a `peer info` row first (name, project, cwd, purpose, creator, socket, heartbeat, state and the workload line — the registry fields the peer list already holds), then a list of that peer's sections with their counts (`async agents (3)`, `tasks (5)`, `crons (1)`), and Enter on a section
 opens the same overlay `/async-status`, `/tasks` and `/cron list` use, fed by that peer's answer —
 agent identity and elapsed time, task rows in the exact format `/tasks` renders, and cron schedules.
-Esc walks back one level (section → sections → peer list). The drilldown is **read-only**: acting on
+Esc walks back one level (section → sections → peer list) and lands on the row you came from, not on the first one. The drilldown is **read-only**: acting on
 another session's tasks or crons would need a remote command protocol, and a key that silently does
 nothing is worse than no key, so the section footers say so. The peer answers over its own socket
 from its own memory, with a projected payload (no job output, no worker directories); nothing scans
@@ -79,7 +78,7 @@ Three answers are kept apart:
 - the peer answered with nothing active → `workload  none active`
 - no usable answer → `unknown`, with the reason kept distinct: `(not reported)` for a peer with no workload support, `(no reply within 2s)` for silence or a dead connection, `(malformed reply)` for a reply that could not be parsed, `(reply too large)` beyond the 1 MiB cap, and `(error: <code>)` when the peer rejected the request or failed internally — a local code such as `internal-error`, never the peer's own error text
 
-In the pidash browser the peer list shows the same workload counts (`⏳n ✓n ⏰n`, or `unknown`), and a browser-sent `/tasks` returns the task rows as text; the drilldown overlay and its detail lines are terminal-only.
+A browser-sent `/tasks` returns the task rows as text; the workload suffix and the drilldown overlay are terminal-only.
 
 Dead peers are removed from the registry in two phases. A newly registered entry gets a grace period (`coms_entry_grace_period_ms`, default 30 seconds) so a just-booted session is never pruned early. After that, the entry is probed by connecting to its socket: peers that respond are kept, peers that do not are removed from the registry. Timestamp staleness alone never prunes an entry, which is what keeps laptop suspend/resume from wiping out live peers.
 

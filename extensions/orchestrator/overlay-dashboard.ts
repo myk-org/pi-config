@@ -18,7 +18,9 @@ import {
 } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
 import {
+  enterAction,
   reconcileSelection,
+  selectionIndexFor,
   type OverlayId,
   type OverlaySelection,
 } from "./overlay-dashboard-utils.js";
@@ -26,7 +28,10 @@ import {
 const log = createLogger("overlay-dashboard");
 
 export {
+  enterAction,
   reconcileSelection,
+  selectionIndexFor,
+  type EnterAction,
   type OverlayId,
   type OverlaySelection,
 } from "./overlay-dashboard-utils.js";
@@ -575,6 +580,9 @@ export async function openListDetailOverlay<
   options: {
     emptyMessage: string;
     listSpec: OverlayListSpec<TId, TItem>;
+    /** Re-open the list focused on this row (a caller returning from a deeper level). An id that
+     *  is no longer there falls back to the first row. */
+    initialSelectionId?: TId;
     /** Omitted by a list whose Enter navigates deeper (`listSpec.onSelect`). */
     createDetail?: (
       item: TItem,
@@ -586,7 +594,11 @@ export async function openListDetailOverlay<
 ): Promise<void> {
   if (!ctx.hasUI) return;
 
-  const selection: OverlaySelection<TId> = { index: 0 };
+  // Seeded from the caller's row so Esc returns to where the user was, not to row 0.
+  const selection: OverlaySelection<TId> = {
+    index: selectionIndexFor(options.listSpec.listItems(), options.initialSelectionId),
+    ...(options.initialSelectionId !== undefined ? { id: options.initialSelectionId } : {}),
+  };
 
   while (true) {
     const items = options.listSpec.listItems();
@@ -615,12 +627,13 @@ export async function openListDetailOverlay<
 
     // A list whose Enter goes a level deeper returns to its caller, which opens the next level
     // and comes back here on Esc — that is the whole back-navigation contract.
-    if (options.listSpec.onSelect) {
-      options.listSpec.onSelect(item);
+    const action = enterAction({ onSelect: options.listSpec.onSelect, createDetail: options.createDetail });
+    if (action === "navigate") {
+      options.listSpec.onSelect?.(item);
       return;
     }
     const createDetail = options.createDetail;
-    if (!createDetail) return;
+    if (action === "none" || !createDetail) return;
 
     await ctx.ui.custom<null>(
       (tui, theme, _kb, done) =>
