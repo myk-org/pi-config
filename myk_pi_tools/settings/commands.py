@@ -14,11 +14,11 @@ from typing import Any
 import click
 import commentjson
 
-SETTINGS_FILENAMES = ("pi-config-settings.jsonc", "pi-config-settings.json")
+SETTINGS_FILENAMES = ("pi-config-settings.json",)
 
 
 def _find_settings_file(directory: Path) -> Path | None:
-    """Find the first existing settings file (.jsonc preferred over .json)."""
+    """Find the settings file. `pi-config-settings.json` is the only name read."""
     for name in SETTINGS_FILENAMES:
         p = directory / name
         if p.is_file():

@@ -3306,7 +3306,7 @@ describe("dangerous command allowlist (issue #949)", () => {
     const cwd = makeTempDir("rl-symlinked-");
     execFileSync("git", ["init", "-q"], { cwd });
     // Root file with a wildcard approval, and `.pi` symlinked to the root
-    writeFileSync(join(cwd, "pi-config-settings.jsonc"), JSON.stringify({ dangerous_command_allowlist: ["*"] }));
+    writeFileSync(join(cwd, "pi-config-settings.json"), JSON.stringify({ dangerous_command_allowlist: ["*"] }));
     symlinkSync(cwd, join(cwd, ".pi"));
     const m = findDangerousAllowlistEntry(cwd, "sudo reboot");
     assert.equal(m, null, "settings reached through a symlinked .pi must not approve");

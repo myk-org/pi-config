@@ -341,7 +341,7 @@ describe("file-logger", () => {
   it("ACPX shim import enables debug from project settings without project-settings import", () => {
     const project = makeTempDir("pi-file-log-setting-");
     mkdirSync(join(project, ".pi"));
-    writeFileSync(join(project, ".pi", "pi-config-settings.jsonc"), '{"log_acpx_provider":"debug"}');
+    writeFileSync(join(project, ".pi", "pi-config-settings.json"), '{"log_acpx_provider":"debug"}');
 
     const script = `
       await import(${JSON.stringify(join(REPO, "extensions/acpx-provider/index.ts"))});
@@ -362,7 +362,7 @@ describe("file-logger", () => {
     const home = makeTempDir("pi-settings-audit-home-");
     mkdirSync(join(root, ".pi"));
     mkdirSync(join(home, ".pi"));
-    writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":"debug","private_value":"do-not-log"}');
+    writeFileSync(join(root, ".pi", "pi-config-settings.json"), '{"log_coms":"debug","private_value":"do-not-log"}');
     const script = `
       process.env.HOME = ${JSON.stringify(home)};
       delete process.env.__PI_PARENT_SESSION_ID;
@@ -388,8 +388,8 @@ describe("file-logger", () => {
     const home = makeTempDir("pi-file-log-home-");
     mkdirSync(join(root, ".pi"));
     mkdirSync(join(home, ".pi"));
-    writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":42}');
-    writeFileSync(join(home, ".pi", "pi-config-settings.jsonc"), '{"log_coms":"debug"}');
+    writeFileSync(join(root, ".pi", "pi-config-settings.json"), '{"log_coms":42}');
+    writeFileSync(join(home, ".pi", "pi-config-settings.json"), '{"log_coms":"debug"}');
     const script = `
       process.env.HOME = ${JSON.stringify(home)};
       const { isLevelEnabled } = await import(${JSON.stringify(join(REPO, "extensions/shared/file-logger.ts"))});
@@ -404,7 +404,7 @@ describe("file-logger", () => {
   it("caches standalone repository resolution for repeated lookups", () => {
     const root = makeTempDir("pi-file-log-cache-");
     mkdirSync(join(root, ".pi"));
-    writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":"debug"}');
+    writeFileSync(join(root, ".pi", "pi-config-settings.json"), '{"log_coms":"debug"}');
     const script = `
       const settings = await import(${JSON.stringify(join(REPO, "extensions/orchestrator/settings-source.ts"))});
       let resolutions = 0;
@@ -439,7 +439,7 @@ describe("file-logger", () => {
     mkdirSync(join(root, ".git"));
     mkdirSync(join(root, ".pi"));
     mkdirSync(nested, { recursive: true });
-    writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":"debug"}');
+    writeFileSync(join(root, ".pi", "pi-config-settings.json"), '{"log_coms":"debug"}');
     const script = `
       const { isLevelEnabled } = await import(${JSON.stringify(join(REPO, "extensions/shared/file-logger.ts"))});
       if (!isLevelEnabled("coms", "debug")) process.exit(1);
@@ -459,7 +459,7 @@ describe("file-logger", () => {
     writeFileSync(join(worktree, ".git"), `gitdir: ${join(root, ".git", "worktrees", "test")}\n`);
     mkdirSync(join(root, ".git", "worktrees", "test"), { recursive: true });
     writeFileSync(join(root, ".git", "worktrees", "test", "commondir"), "../..\n");
-    writeFileSync(join(root, ".pi", "pi-config-settings.jsonc"), '{"log_coms":"debug"}');
+    writeFileSync(join(root, ".pi", "pi-config-settings.json"), '{"log_coms":"debug"}');
     const script = `
       const { isLevelEnabled } = await import(${JSON.stringify(join(REPO, "extensions/shared/file-logger.ts"))});
       if (!isLevelEnabled("coms", "debug")) process.exit(1);

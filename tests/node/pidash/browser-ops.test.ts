@@ -44,7 +44,7 @@ describe("browser-ops settings", () => {
     try {
       const fromRoot = buildSettingsPayload(dir, "project");
       assert.ok(fromRoot.settingsPath, "project payload carries settingsPath");
-      assert.equal(fromRoot.settingsPath, join(dir, ".pi", "pi-config-settings.jsonc"));
+      assert.equal(fromRoot.settingsPath, join(dir, ".pi", "pi-config-settings.json"));
 
       // A session running in a repo subdirectory resolves to the SAME
       // settings file — this identity is what SettingsPanel uses to accept
@@ -68,7 +68,7 @@ describe("browser-ops settings", () => {
     try {
       const r1 = applySetting(dir, "project", "dco", true);
       assert.ok(r1.ok, r1.error);
-      const file = join(dir, ".pi", "pi-config-settings.jsonc");
+      const file = join(dir, ".pi", "pi-config-settings.json");
       assert.ok(existsSync(file), "settings file created");
       const onDisk = JSON.parse(readFileSync(file, "utf-8"));
       assert.equal(onDisk.dco, true);
@@ -91,7 +91,7 @@ describe("browser-ops settings", () => {
   it("applySetting preserves existing keys in the file", () => {
     const dir = tempProject();
     try {
-      const file = join(dir, ".pi", "pi-config-settings.jsonc");
+      const file = join(dir, ".pi", "pi-config-settings.json");
       writeFileSync(file, JSON.stringify({ pidash_enable: true }), "utf-8");
       const r = applySetting(dir, "project", "dco", true);
       assert.ok(r.ok, r.error);

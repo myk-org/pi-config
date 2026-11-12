@@ -374,7 +374,7 @@ progress. It does not commit, push, create a PR, or post results.
   all review learning (it happened: session-loop PRs stored nothing and taught nothing — issue #942).
 - Settings TUI: `/pi-config-settings [project|global]` — interactive settings editor in the pi session.
 - Agent settings injection: use `{{SETTINGS:key1,key2}}` in agent `.md` files — `substituteSettingsPlaceholders` only (not rules `assembleRuleText`). See `docs/project-settings.md`.
-  Never instruct agents to read `pi-config-settings.jsonc`/`.json` manually.
+  Never instruct agents to read `pi-config-settings.json` manually.
 - When adding slash command arguments: update autocomplete in `extended-autocomplete.ts`
 - Memory `*(enforced)*` marker: entries with this marker are hash-keyed — never change their text, only add/remove whole entries
 - Remote script exec enforcement (`checkRemoteExecBlock` in `enforcement-helpers.ts`):

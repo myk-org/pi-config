@@ -527,8 +527,9 @@ export function writeSettingsFile(
   data: Record<string, unknown>,
   options: { dedupeBackup?: boolean } = {},
 ): void {
-  // Write directly to target file. Per issue spec: "comments are lost on write — acceptable
-  // since the example.jsonc is the reference."
+  // Write directly to target file: comments are lost on write, by design — the settings file is
+  // plain JSON and pi-config-settings.example.json (documented in docs/project-settings.md) is
+  // the reference.
   const dir = dirname(filePath);
 
   // Refuse BEFORE touching the filesystem: creating the parent of a rejected path would

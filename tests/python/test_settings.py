@@ -116,10 +116,10 @@ def test_parse_agent_name_list_none() -> None:
     assert parse_agent_name_list(None) == []
 
 
-def test_jsonc_settings_file_parses_correctly(_isolated_settings: Path) -> None:
+def test_settings_file_with_comments_still_parses(_isolated_settings: Path) -> None:
     pi_dir = _isolated_settings / ".pi"
     pi_dir.mkdir()
-    (pi_dir / "pi-config-settings.jsonc").write_text(
+    (pi_dir / "pi-config-settings.json").write_text(
         """{
   // project comment
   "image_model": "https://example.com/model", // trailing
@@ -132,7 +132,7 @@ def test_jsonc_settings_file_parses_correctly(_isolated_settings: Path) -> None:
     assert get_setting("coms_max_hops", cwd=_isolated_settings) == 7
 
 
-def test_find_settings_file_prefers_jsonc_over_json(_isolated_settings: Path) -> None:
+def test_legacy_jsonc_settings_file_is_ignored(_isolated_settings: Path) -> None:
     pi_dir = _isolated_settings / ".pi"
     pi_dir.mkdir()
     (pi_dir / "pi-config-settings.jsonc").write_text(
@@ -143,7 +143,7 @@ def test_find_settings_file_prefers_jsonc_over_json(_isolated_settings: Path) ->
         json.dumps({"image_model": "from-json"}),
         encoding="utf-8",
     )
-    assert get_setting("image_model", cwd=_isolated_settings) == "from-jsonc"
+    assert get_setting("image_model", cwd=_isolated_settings) == "from-json"
 
 
 def test_int_env_strict_parsing_rejects_malformed(
