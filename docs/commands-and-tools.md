@@ -204,7 +204,7 @@ Task manager for the current session's task list.
 
 - **Arguments:** optional subcommand — none (list), `create`, `start <id>`, `done <id>`, `clear completed`, `clear all`
 - **List view:** the same fullscreen list → detail overlay as `/cron list` and `/async-status`: `↑↓`/`j`/`k` select, `Enter` opens a task, `n` adds a task from one line, `e` edits the focused task's subject, `x` deletes the focused task, `Esc` closes
-- **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store. A blank or cancelled line writes nothing, and an unchanged subject is a no-op (the edit dialog shows the current subject as the placeholder)
+- **`n` / `e`:** the list closes for the one-line input and re-opens on the freshly read store. An empty board opens the create dialog directly, since there is no row to press `n` on. The edit dialog starts pre-filled with the current subject (Enter saves, Esc cancels). A blank or cancelled line writes nothing, and an unchanged subject is a no-op
 - **Rows:** `✔` completed, `◼` in progress, `◻` pending, then `#<id> [<status>] <subject>`; a task with blockers is marked `⛔ blocked`
 - **Detail:** subject, status, owner, blocked-by, description, created and updated
 - **`create`:** prompts for subject and description (bridged, so pidash can answer it too)

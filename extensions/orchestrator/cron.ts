@@ -7,11 +7,11 @@ import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { decideAsyncLlmDispatch } from "./async-capability.js";
-import { formatCronSchedule, cronStateLabel, toCronStatusTaskView } from "./cron-status-format.js";
+import { formatCronSchedule, cronStateLabel, toCronStatusTaskView, type CronPauseResult } from "./cron-status-format.js";
 import { parseModelOverride } from "./parse-model-override.js";
 import { openCronStatusOverlay } from "./cron-status-ui.js";
 import { setSlot } from "./status-bar.js";
-import { acquireLeaderLock, durableCronSupported, isLeaderLockCurrent, mutateDurableCronStore, readDurableCronStore, refreshLeaderLock, releaseLeaderLock, validateDurableCronTask, type CronLockOwner, type CronScope, type DurableCronTask } from "./cron-store.js";
+import { acquireLeaderLock, durableCronSupported, isLeaderLockCurrent, mutateDurableCronStore, readDurableCronStore, refreshLeaderLock, releaseLeaderLock, setDurableCronPaused, validateDurableCronTask, type CronLockOwner, type CronScope, type DurableCronTask } from "./cron-store.js";
 
 const log = createLogger("cron");
 export interface CronTask { id: string; scope: CronScope; cwd: string; description: string; task: string; intervalMs?: number; atHour?: number; atMinute?: number; /** "provider/model-id" or bare "model-id"; undefined inherits the normal resolution chain. */ model?: string; /** Paused by the user: kept, never armed (issue #1087). */ paused?: boolean; createdAt: number; lastRun?: number; nextRun?: number; leader?: boolean; }
@@ -87,8 +87,8 @@ export function decideCronArm(task: { paused?: boolean; scope: CronScope; leader
   return "arm";
 }
 
-export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronTasks: () => CronTask[] } {
-  if (process.env.PI_SUBAGENT_CHILD === "1") return { getCronTasks: () => [] };
+export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronTasks: () => CronTask[]; togglePaused: (id: string) => CronPauseResult } {
+  if (process.env.PI_SUBAGENT_CHILD === "1") return { getCronTasks: () => [], togglePaused: () => ({ ok: false, paused: false }) };
   const tasks = new Map<string, CronTask>(); const timers = new Map<string, Timer>();
   currentCronTasks = () => tasks.values();
   const owned = new Map<string, CronLockOwner>(); const instanceId = randomUUID(); let ctx: any; let watchers: fs.FSWatcher[] = []; let health: ReturnType<typeof setInterval> | undefined;
@@ -107,13 +107,32 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
   const stores = () => ctx ? [{ scope: "project" as const, file: projectStore(ctx.cwd) }] : [];
   function updateStatus() {
     try { if (ctx?.hasUI) setSlot("crons", ctx.ui.theme.fg("muted", `⏰ ${tasks.size} cron${tasks.size === 1 ? "" : "s"}`), ctx); } catch {}
-    pi.events.emit("pidash:cron-status", { count: tasks.size, tasks: [...tasks.values()].map(t => ({ id: qualifyCronId(t), scope: t.scope, description: t.description, schedule: formatCronSchedule(t), lastRun: t.lastRun, nextRun: t.nextRun, leader: t.leader })) });
+    pi.events.emit("pidash:cron-status", { count: tasks.size, tasks: [...tasks.values()].map(t => ({ id: qualifyCronId(t), scope: t.scope, description: t.description, schedule: formatCronSchedule(t), lastRun: t.lastRun, nextRun: t.nextRun, leader: t.leader, paused: t.paused === true })) });
   }
-  function persist(task: CronTask) {
+  /** A full-record write keeps the STORED `paused` flag: a leader that has not synced yet would
+   *  otherwise overwrite a pause another replica just stored with its own `paused: false` (#1089). */
+  function persist(task: CronTask): boolean {
     try {
-      if (task.scope === "session") { if (sessionStore) writeSessionTasks(sessionStore, [...tasks.values()].filter(t => t.scope === "session")); return; }
-      mutateDurableCronStore(projectStore(task.cwd), old => old.map(t => t.id === task.id ? task as DurableCronTask : t));
-    } catch (error: any) { log.error("cron_persist_failed", qualifyCronId(task), error?.message || error); }
+      if (task.scope === "session") { if (sessionStore) writeSessionTasks(sessionStore, [...tasks.values()].filter(t => t.scope === "session")); return true; }
+      mutateDurableCronStore(projectStore(task.cwd), old => old.map(t => t.id === task.id ? { ...task, paused: t.paused } as DurableCronTask : t));
+      return true;
+    } catch (error: any) { log.error("cron_persist_failed", qualifyCronId(task), error?.message || error); return false; }
+  }
+  /** Write only the `paused` flag of the stored record; true when it reached the store. */
+  function persistPaused(task: CronTask, paused: boolean): boolean {
+    try {
+      if (durable(task.scope)) return setDurableCronPaused(projectStore(task.cwd), task.id, paused);
+      if (sessionStore) writeSessionTasks(sessionStore, [...tasks.values()].filter(t => t.scope === "session").map(t => (t.id === task.id ? { ...t, paused } : t)));
+      return true;
+    } catch (error: any) { log.warn("cron_pause_write_failed", { id: qualifyCronId(task), paused, reason: error?.message || error }); return false; }
+  }
+  /** The CURRENT paused flag: a durable task re-reads the store, because a peer may have toggled it. */
+  function storedPaused(task: CronTask): boolean {
+    if (durable(task.scope)) {
+      const stored = readDurableCronStore(projectStore(task.cwd)).tasks.find(t => t.id === task.id);
+      if (stored) task.paused = stored.paused === true;
+    }
+    return task.paused === true;
   }
   async function execute(task: CronTask) {
     try {
@@ -156,7 +175,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
     if (decideCronArm(task) === "skip") { log.debug("cron_timer_skipped", { id: qualifyCronId(task), paused: task.paused === true, leader: task.leader !== false }); return; }
     const schedule = (runAt = task.nextRun ?? Date.now() + nextDelay(task)) => {
       const delay = Math.max(0, runAt - Date.now());
-      const timer = setTimeout(async () => { try { await execute(task); if (!durable(task.scope) || (task.leader && owned.has(projectStore(task.cwd)))) schedule(Date.now() + nextDelay(task)); } catch (error: any) { log.error("cron_timer_failed", qualifyCronId(task), error?.message || error); } }, delay);
+      const timer = setTimeout(async () => { try { await execute(task); if (storedPaused(task)) { log.debug("cron_rearm_skipped", { id: qualifyCronId(task), reason: "paused_during_run" }); return; } if (!durable(task.scope) || (task.leader && owned.has(projectStore(task.cwd)))) schedule(Date.now() + nextDelay(task)); } catch (error: any) { log.error("cron_timer_failed", qualifyCronId(task), error?.message || error); } }, delay);
       task.nextRun = runAt; persist(task); updateStatus(); timer.unref?.(); timers.set(task.id, timer);
     };
     schedule();
@@ -167,7 +186,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
     for (const raw of disk) {
       try { validateDurableCronTask(raw); } catch (error: any) { log.error("invalid durable cron ignored", raw && typeof raw === "object" ? (raw as any).id : "unknown", error?.message || error); continue; }
       const task: CronTask = { ...raw, leader }; const existing = tasks.get(task.id);
-      if (!existing) { tasks.set(task.id, task); start(task); } else { const changed = existing.intervalMs !== task.intervalMs || existing.atHour !== task.atHour || existing.atMinute !== task.atMinute || existing.paused !== task.paused || existing.leader !== leader; Object.assign(existing, task); if (changed) start(existing); }
+      if (!existing) { tasks.set(task.id, task); start(task); } else { const changed = existing.intervalMs !== task.intervalMs || existing.atHour !== task.atHour || existing.atMinute !== task.atMinute || existing.paused !== task.paused || existing.leader !== leader; const resumed = existing.paused === true && task.paused !== true; Object.assign(existing, task); existing.paused = task.paused; if (resumed) existing.nextRun = undefined; if (changed) start(existing); }
     }
   }
   function election() {
@@ -203,14 +222,18 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
     updateStatus(); return true;
   }
   /** Pause/resume a cron: the definition is kept and only the timer changes (#1087). */
-  function togglePaused(qualified: string) {
+  function togglePaused(qualified: string): CronPauseResult {
     const [kind, id] = qualified.split(":", 2); const scope = kind === "persist" ? "project" : kind as CronScope;
     const task = id ? tasks.get(id) : undefined;
-    if (!task || task.scope !== scope) { log.warn("cron_pause_missing", { id: qualified }); return false; }
-    task.paused = !task.paused;
-    persist(task);
-    if (task.paused) stop(task.id); else start(task);
-    updateStatus(); log.info("cron_paused", { id: qualifyCronId(task), paused: task.paused }); return true;
+    if (!task || task.scope !== scope) { log.warn("cron_pause_missing", { id: qualified }); return { ok: false, paused: false }; }
+    const paused = !task.paused;
+    // The in-memory flip is kept off the write: a failed write must leave the row showing the state
+    // the store still holds, never one it never accepted.
+    if (!persistPaused(task, paused)) { log.warn("cron_pause_unchanged", { id: qualifyCronId(task), paused }); return { ok: false, paused: task.paused === true }; }
+    task.paused = paused;
+    // Resuming starts a FRESH interval: occurrences missed while paused are not caught up (#1087).
+    if (paused) stop(task.id); else { task.nextRun = undefined; start(task); }
+    updateStatus(); log.info("cron_paused", { id: qualifyCronId(task), paused }); return { ok: true, paused };
   }
   pi.registerTool({ name: "cron_manage", description: "Manage scheduled tasks. Set persist=true to keep a task across Pi sessions in this project. Set model to \"provider/model-id\" (or a bare \"model-id\") to pin that cron's model.", parameters: Type.Object({ action: Type.Union([Type.Literal("add"), Type.Literal("list"), Type.Literal("remove")]), persist: Type.Optional(Type.Boolean()), description: Type.Optional(Type.String()), task: Type.Optional(Type.String()), model: Type.Optional(Type.String()), interval_seconds: Type.Optional(Type.Number()), at_hour: Type.Optional(Type.Number()), at_minute: Type.Optional(Type.Number()), id: Type.Optional(Type.String()) }), async execute(_id: string, params: any) {
     const scope: CronScope = params.persist ? "project" : "session";
@@ -257,5 +280,5 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): { getCronT
       try { fs.unlinkSync(sessionStore); } catch (error: any) { if (error?.code !== "ENOENT") log.warn("cron session cleanup failed", error?.message || error); }
     }
   });
-  return { getCronTasks: () => [...tasks.values()] };
+  return { getCronTasks: () => [...tasks.values()], togglePaused };
 }

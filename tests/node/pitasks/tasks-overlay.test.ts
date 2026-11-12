@@ -9,6 +9,7 @@ import {
 	nextTaskStatus,
 	parseTasksCommand,
 	planTaskCompose,
+	taskComposePrompt,
 	taskDetailRows,
 	taskStatusGlyph,
 	tasksOverlayDeps,
@@ -16,6 +17,7 @@ import {
 	toTaskRowView,
 } from "../../../extensions/pitasks/tasks-view.ts";
 import type { Task, TaskStatus } from "../../../extensions/pitasks/types.ts";
+import { openTasksOverlay } from "../../../extensions/pitasks/tasks-ui.ts";
 
 function task(overrides: Partial<Task> = {}): Task {
 	return {
@@ -242,9 +244,15 @@ describe("tasksOverlayDeps", () => {
 		return { ui, created, updated };
 	}
 
-	it("maps n and e to add and edit, and ignores every other key", () => {
+	it("maps n to add", () => {
 		assert.equal(tasksOverlayIntent("n"), "add");
+	});
+
+	it("maps e to edit", () => {
 		assert.equal(tasksOverlayIntent("e"), "edit");
+	});
+
+	it("ignores every other key", () => {
 		for (const key of ["x", "j", "k", "m", "N", ""]) {
 			assert.equal(tasksOverlayIntent(key), undefined);
 		}
@@ -266,9 +274,15 @@ describe("tasksOverlayDeps", () => {
 		assert.deepEqual(updated, [["3", "new subject"]]);
 	});
 
-	it("refuses a cancelled or blank line instead of writing an empty subject", () => {
+	it("refuses a cancelled line", () => {
 		const { created, updated } = deps({ get: () => task({ id: "3" }) });
 		assert.deepEqual(planTaskCompose(undefined), { kind: "skip", reason: "cancelled" });
+		assert.deepEqual(created, []);
+		assert.deepEqual(updated, []);
+	});
+
+	it("refuses a blank line instead of writing an empty subject", () => {
+		const { created, updated } = deps({ get: () => task({ id: "3" }) });
 		assert.deepEqual(planTaskCompose("   ", { id: "3", subject: "old" }), { kind: "skip", reason: "blank" });
 		assert.deepEqual(created, []);
 		assert.deepEqual(updated, []);
@@ -330,6 +344,125 @@ describe("tasksOverlayDeps", () => {
 		let writes = 0;
 		const deps = tasksOverlayDeps({ list: () => [], get: () => undefined, create: () => ({ id: "1" }), update: () => { writes++; } });
 		assert.equal(deps.deleteTask("99"), false);
+		assert.equal(writes, 0);
+	});
+});
+
+describe("taskComposePrompt (#1089)", () => {
+	it("starts a create with an empty line", () => {
+		assert.deepEqual(taskComposePrompt(), { title: "New task subject", initialValue: "" });
+	});
+
+	it("starts an edit from the current subject, not a placeholder", () => {
+		assert.deepEqual(taskComposePrompt({ id: "3", subject: "wire the overlay" }), {
+			title: "Edit #3 subject",
+			initialValue: "wire the overlay",
+		});
+	});
+
+	it("feeds the prefill back into the unchanged decision", () => {
+		const current = { id: "3", subject: "wire the overlay" };
+		assert.deepEqual(planTaskCompose(taskComposePrompt(current).initialValue, current), {
+			kind: "skip",
+			reason: "unchanged",
+		});
+	});
+});
+
+/**
+ * An empty board has no row to press `n` on: `openTasksOverlay` must open the create dialog
+ * itself. `ctx.ui.custom` is mocked so the real list overlay and the real input dialog receive
+ * the keystrokes (#1089).
+ */
+function makeTasksCtx(opens: string[][]) {
+	const notifications: string[] = [];
+	let opened = 0;
+	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+	const tui = { terminal: { rows: 20 }, requestRender: () => {} };
+	const keybindings = { matches: (data: string, action: string) => action === "tui.select.cancel" && data === "close" };
+	const ctx = {
+		hasUI: true,
+		ui: {
+			notify: (message: string) => { notifications.push(message); },
+			input: async () => undefined,
+			custom: async (factory: any) => {
+				const keys = opens[opened];
+				opened += 1;
+				if (!keys) return null; // a further open: close it
+				return new Promise((resolve) => {
+					const component = factory(tui, theme, keybindings, resolve);
+					for (const key of keys) component.handleInput(key);
+				});
+			},
+		},
+	};
+	return { ctx: ctx as any, notifications, openedCount: () => opened };
+}
+
+function inMemoryStore(initial: Task[] = []) {
+	const tasks = [...initial];
+	const created: string[] = [];
+	return {
+		tasks,
+		created,
+		store: {
+			list: () => tasks,
+			get: (id: string) => tasks.find((t) => t.id === id),
+			create: (subject: string) => { created.push(subject); const next = task({ id: String(tasks.length + 1), subject, status: "pending" }); tasks.push(next); return { id: next.id }; },
+			update: () => undefined,
+		},
+	};
+}
+
+describe("openTasksOverlay first task (#1089)", () => {
+	it("creates the first task when the board is empty", async () => {
+		const { ctx, openedCount } = makeTasksCtx([["first task", "\n"]]);
+		const memory = inMemoryStore();
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.deepEqual(memory.created, ["first task"]);
+		assert.equal(memory.tasks.length, 1, "the created task is visible to the next list");
+		assert.equal(openedCount(), 2, "the list re-opens on the new task");
+	});
+
+	it("returns instead of reopening a cancelled first-task dialog", async () => {
+		const { ctx, openedCount } = makeTasksCtx([["\x1b"]]);
+		const memory = inMemoryStore();
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.deepEqual(memory.created, []);
+		assert.equal(memory.tasks.length, 0);
+		assert.equal(openedCount(), 1, "a cancel must not loop");
+	});
+
+	it("does not create from a blank first-task line", async () => {
+		const { ctx } = makeTasksCtx([["\n"]]);
+		const memory = inMemoryStore();
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.deepEqual(memory.created, []);
+	});
+});
+
+describe("openTasksOverlay edit prefill (#1089)", () => {
+	it("opens the edit dialog on the current subject", async () => {
+		// 1st open: the list, `e` on the focused row. 2nd: the subject dialog, typed onto the
+		// prefill. A placeholder-only dialog would submit " x", not "wire the overlay x".
+		const { ctx } = makeTasksCtx([["e"], [" x", "\n"]]);
+		const memory = inMemoryStore([task({ id: "3", subject: "wire the overlay" })]);
+		const updates: Array<[string, string]> = [];
+		await openTasksOverlay(ctx, tasksOverlayDeps({
+			...memory.store,
+			update: (id, fields) => { if ("subject" in fields) updates.push([id, fields.subject]); },
+		}));
+		assert.deepEqual(updates, [["3", "wire the overlay x"]]);
+	});
+
+	it("writes nothing when the prefilled subject is saved unchanged", async () => {
+		const { ctx } = makeTasksCtx([["e"], ["\n"]]);
+		const memory = inMemoryStore([task({ id: "3", subject: "wire the overlay" })]);
+		let writes = 0;
+		await openTasksOverlay(ctx, tasksOverlayDeps({
+			...memory.store,
+			update: () => { writes++; },
+		}));
 		assert.equal(writes, 0);
 	});
 });

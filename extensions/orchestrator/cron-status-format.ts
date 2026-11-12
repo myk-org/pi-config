@@ -101,6 +101,11 @@ export function cronStateLabel(task: { paused?: boolean; leader?: boolean }): st
   return task.leader === false ? "waiting for leader" : "active";
 }
 
+/** Whether the pause reached the store — the caller must not show a state that was never written. */
+export type CronPauseResult =
+  | { ok: true; paused: boolean }
+  | { ok: false; paused: boolean };
+
 /** Detail rows rendered by the cron task overlay, uncolored (label, value). */
 export function cronDetailRows(
   task: CronStatusTaskView,

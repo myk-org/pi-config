@@ -110,6 +110,17 @@ export function tasksOverlayIntent(key: string): "add" | "edit" | undefined {
 	return undefined;
 }
 
+/**
+ * The one-line subject dialog's title and starting text. An edit starts from the CURRENT subject
+ * (a placeholder would turn a rename into a full retype); a create starts empty.
+ */
+export function taskComposePrompt(
+	current?: { id: string; subject: string },
+): { title: string; initialValue: string } {
+	if (!current) return { title: "New task subject", initialValue: "" };
+	return { title: `Edit #${current.id} subject`, initialValue: current.subject };
+}
+
 /** What the overlay's one-line dialog asked for, turned into at most one store write. */
 export type TaskComposeIntent =
 	| { kind: "create"; subject: string }

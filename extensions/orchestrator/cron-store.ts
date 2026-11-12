@@ -237,6 +237,21 @@ export function mutateDurableCronStore(store: string, change: (tasks: DurableCro
     log.debug("cron_mutation_kernel_lock", { store, outcome: "released" });
   }
 }
+/**
+ * Write ONLY the `paused` flag of one stored task, preserving every other field a peer may have
+ * written. A rejoining leader persists its whole in-memory record, so a full-record pause write
+ * could be clobbered by it; this read-modify-write cannot (#1089).
+ */
+export function setDurableCronPaused(store: string, id: string, paused: boolean): boolean {
+  let found = false;
+  mutateDurableCronStore(store, (tasks) => tasks.map((task) => {
+    if (task.id !== id) return task;
+    found = true;
+    return { ...task, paused };
+  }));
+  log.debug("cron_pause_persisted", { store, id, paused, found });
+  return found;
+}
 export function acquireLeaderLock(store: string, instanceId: string, deps: StartTokenDeps = startTokenDeps): CronLockOwner | null { return acquireDirectoryLock(lockPath(store, "leader"), instanceId, true, deps); }
 export function isLeaderLockCurrent(store: string, owner: CronLockOwner): boolean {
   const current = readOwner(lockPath(store, "leader"));

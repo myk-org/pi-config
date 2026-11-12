@@ -9,6 +9,7 @@ import {
   formatCronSchedule,
   formatLastRunLabel,
   formatNextRunLabel,
+  type CronPauseResult,
   type CronStatusTaskView,
 } from "./cron-status-format.js";
 import {
@@ -19,7 +20,7 @@ import { createLogger } from "../shared/logger.js";
 
 const log = createLogger("cron_status_ui");
 
-export type { CronStatusTaskView } from "./cron-status-format.js";
+export type { CronPauseResult, CronStatusTaskView } from "./cron-status-format.js";
 export {
   cronDetailRows,
   cronStateLabel,
@@ -34,8 +35,8 @@ export interface CronStatusUiDeps {
   listTasks: () => CronStatusTaskView[];
   /** Remove by scope-qualified task id. Return true if removed. */
   removeTask: (id: string) => boolean;
-  /** Pause/resume by scope-qualified task id. Return true if toggled. */
-  togglePaused: (id: string) => boolean;
+  /** Pause/resume by scope-qualified task id. `ok` is false when the store write failed. */
+  togglePaused: (id: string) => CronPauseResult;
   title?: string;
   emptyMessage?: string;
   borderTitle?: (tasks: readonly CronStatusTaskView[]) => string;
@@ -83,8 +84,11 @@ export async function openCronStatusOverlay(
       },
       onKey: (key, task) => {
         if (key !== "p" || !task) return false;
-        log.debug("cron_overlay_pause_key", { id: task.id, paused: !!task.paused });
-        deps.togglePaused(task.id);
+        const result = deps.togglePaused(task.id);
+        log.debug("cron_overlay_pause_key", { id: task.id, paused: !!task.paused, ok: result.ok });
+        // A failed write must not show a green state: the row would claim a pause the store never
+        // accepted, and a follow-up `p` would then read the wrong starting state.
+        if (!result.ok) ctx.ui.notify(`Could not save the pause state of #${task.taskId}.`, "warning");
         // Stays open: the row must flip between `⏸ paused` and the active text in place.
         return "redraw";
       },

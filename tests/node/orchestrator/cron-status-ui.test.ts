@@ -9,6 +9,7 @@ import {
   resolveNextRunAt,
   toCronStatusTaskView,
 } from "../../../extensions/orchestrator/cron-status-format.ts";
+import { openCronStatusOverlay } from "../../../extensions/orchestrator/cron-status-ui.ts";
 
 function sample(overrides: Record<string, unknown> = {}) {
   return toCronStatusTaskView(
@@ -82,10 +83,16 @@ describe("cronDetailRows", () => {
 });
 
 describe("cronStateLabel", () => {
-  it("marks a paused cron and leaves the active text alone", () => {
+  it("marks a paused cron", () => {
     assert.equal(cronStateLabel({ paused: true, leader: true }), "⏸ paused");
+  });
+
+  it("leaves the active text alone", () => {
     assert.equal(cronStateLabel({ paused: false }), "active");
     assert.equal(cronStateLabel({}), "active");
+  });
+
+  it("names a non-leader replica", () => {
     assert.equal(cronStateLabel({ leader: false }), "waiting for leader");
   });
 
@@ -116,5 +123,57 @@ describe("toCronStatusTaskView", () => {
     assert.equal(v.id, "cron-1-abc.json:3");
     assert.equal(v.taskId, "cron-1-abc.json:3");
     assert.equal(v.isLocal, false);
+  });
+});
+
+/** Only input handling is exercised: `ctx.ui.custom` is mocked so the real OverlayListDashboard
+ *  receives the keystroke, which is where `p` lives (#1089). */
+function makeCtx() {
+  const notifications: Array<{ message: string; level: string }> = [];
+  const tui = { terminal: { rows: 20 }, requestRender: () => {} };
+  // `close` is the cancel keybinding the dashboard really checks.
+  const keybindings = { matches: (data: string, action: string) => action === "tui.select.cancel" && data === "close" };
+  const ctx = {
+    hasUI: true,
+    ui: {
+      notify: (message: string, level: string) => notifications.push({ message, level }),
+      custom: async (factory: any) =>
+        new Promise((resolve) => {
+          const component = factory(tui, {}, keybindings, resolve);
+          component.handleInput("p");
+          component.handleInput("close");
+        }),
+    },
+  };
+  return { ctx: ctx as any, notifications };
+}
+
+const row = (overrides: Record<string, unknown> = {}) =>
+  toCronStatusTaskView(
+    { id: "1", description: "x", task: "y", createdAt: 0, ...overrides } as any,
+    { overlayId: "session:1" },
+  );
+
+describe("openCronStatusOverlay pause key (#1089)", () => {
+  it("toggles the focused row", async () => {
+    const { ctx, notifications } = makeCtx();
+    const toggled: string[] = [];
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => [row(), row({ id: "2" })],
+      removeTask: () => true,
+      togglePaused: (id) => { toggled.push(id); return { ok: true, paused: true }; },
+    });
+    assert.deepEqual(toggled, ["session:1"]);
+    assert.deepEqual(notifications, []);
+  });
+
+  it("warns instead of showing a pause the store never accepted", async () => {
+    const { ctx, notifications } = makeCtx();
+    await openCronStatusOverlay(ctx, {
+      listTasks: () => [row()],
+      removeTask: () => true,
+      togglePaused: () => ({ ok: false, paused: false }),
+    });
+    assert.deepEqual(notifications, [{ message: "Could not save the pause state of #session:1.", level: "warning" }]);
   });
 });
