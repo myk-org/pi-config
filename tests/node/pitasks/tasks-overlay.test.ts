@@ -414,6 +414,27 @@ describe("openTasksOverlay multi-select (#1087)", () => {
 		]);
 	});
 
+	it("keeps deleting after one delete throws", async () => {
+		// A store write-lock timeout on #1 must not abandon #2 the user also selected.
+		const { ctx, notifications } = makeTasksCtx([[" ", "j", " ", "x", "close"]]);
+		const deleted: string[] = [];
+		const deps = {
+			listTasks: () => [task({ id: "1" }), task({ id: "2" })],
+			deleteTask: (id: string) => {
+				if (id === "1") throw new Error("store is locked");
+				deleted.push(id);
+				return true;
+			},
+			createTask: () => "99",
+			updateTaskSubject: () => true,
+		};
+		await openTasksOverlay(ctx, deps);
+		assert.deepEqual(deleted, ["2"], "the throw did not abort the remaining delete");
+		assert.deepEqual(notifications, [
+			{ message: "deleted 1 of 2 tasks — failed: #1", level: "warning" },
+		]);
+	});
+
 	for (const key of ["n", "e"]) {
 		it(`refuses ${key} while a selection exists, without opening a dialog`, async () => {
 			const { ctx, notifications, openedCount } = makeTasksCtx([[" ", key, "close"]]);
@@ -442,6 +463,8 @@ describe("openTasksOverlay multi-select (#1087)", () => {
  */
 function makeTasksCtx(opens: string[][]) {
 	const notifications: Array<{ message: string; level: string }> = [];
+	/** Rendered frame of every list that opened — the footer is asserted through what is drawn. */
+	const frames: string[][] = [];
 	let opened = 0;
 	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 	const tui = { terminal: { rows: 20 }, requestRender: () => {} };
@@ -457,12 +480,13 @@ function makeTasksCtx(opens: string[][]) {
 				if (!keys) return null; // a further open: close it
 				return new Promise((resolve) => {
 					const component = factory(tui, theme, keybindings, resolve);
+					frames.push(component.render(100));
 					for (const key of keys) component.handleInput(key);
 				});
 			},
 		},
 	};
-	return { ctx: ctx as any, notifications, openedCount: () => opened };
+	return { ctx: ctx as any, notifications, openedCount: () => opened, frames };
 }
 
 function inMemoryStore(initial: Task[] = []) {
@@ -479,6 +503,20 @@ function inMemoryStore(initial: Task[] = []) {
 		},
 	};
 }
+
+describe("openTasksOverlay footer (#1089)", () => {
+	it("names only keys that work, with or without a selection", async () => {
+		// `x` deletes the selection when there is one and the focused row otherwise, and Esc
+		// always closes — the footer must not promise one and hide the other.
+		const { ctx, frames } = makeTasksCtx([["close"]]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(inMemoryStore([task({ id: "3" })]).store));
+		const footer = frames[0].find((line) => line.includes("Space select")) ?? "";
+		assert.equal(
+			footer.trim(),
+			"Space select · x delete · n add · e edit · Enter view · Esc close",
+		);
+	});
+});
 
 describe("openTasksOverlay first task (#1089)", () => {
 	it("creates the first task when the board is empty", async () => {

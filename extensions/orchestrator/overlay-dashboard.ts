@@ -18,6 +18,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
 import {
+  bulkRemove,
   bulkResultMessage,
   enterAction,
   reconcileSelection,
@@ -29,6 +30,7 @@ import {
 const log = createLogger("overlay-dashboard");
 
 export {
+  bulkRemove,
   bulkResultMessage,
   enterAction,
   reconcileSelection,

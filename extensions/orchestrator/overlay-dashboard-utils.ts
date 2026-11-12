@@ -20,6 +20,25 @@ export function bulkResultMessage(
   return `${verb} ${done} of ${total} ${noun}s — failed: ${failed.join(", ")}`;
 }
 
+/** One delete per row, each isolated: a store write-lock timeout on one row must not abort the
+ *  removals the user asked for, and a `false` return is a failure just like a throw (#1089). */
+export function bulkRemove<T>(
+  rows: readonly T[],
+  remove: (row: T) => boolean,
+): { failed: T[]; errors: string[] } {
+  const failed: T[] = [];
+  const errors: string[] = [];
+  for (const row of rows) {
+    try {
+      if (!remove(row)) failed.push(row);
+    } catch (err) {
+      failed.push(row);
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+  return { failed, errors };
+}
+
 export interface OverlaySelection<TId extends OverlayId = OverlayId> {
   id?: TId;
   index: number;

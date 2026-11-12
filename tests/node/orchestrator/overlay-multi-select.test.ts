@@ -163,7 +163,6 @@ describe("OverlayListDashboard multi-select", () => {
     h.press(" ");            // select the focused row (a)
     h.press("j");            // focus b, still unselected
     h.press("q");            // a key no built-in handles
-    log.debug("case", { via: "onKey-selection" });
     assert.deepEqual(h.keyCalls.at(-1), { key: "q", id: "b", selected: ["a"] });
     h.dash.dispose();
   });
