@@ -56,7 +56,7 @@ ends. Run it yourself to verify parity after changes.
    enforcement semantics.
 5. **Tasks from browser** — open the Tasks panel (InfoBar `☐` icon). Create
    "Demo task". The TUI task widget updates live. Start it from the browser;
-   the TUI spinner picks it up. Complete it with `TaskUpdate` from the TUI — the
+   the TUI spinner picks it up. Complete it with `/tasks done <id>` from the TUI — the
    panel's counter updates without refresh. Both tabs converge.
 6. **Coms from browser** — with a peer session running, open the Coms panel:
    the peer appears with live busy/queue/context state. Send a message from

@@ -16,6 +16,7 @@ import { createBridgedUi } from "../shared/ui-bridge.js";
 import { openTasksOverlay } from "./tasks-ui.js";
 import {
 	TASKS_USAGE,
+	applyTaskAction,
 	formatTasksPlainText,
 	parseTasksCommand,
 } from "./tasks-view.js";
@@ -501,6 +502,20 @@ export default function (pi: ExtensionAPI) {
 					currentWidget?.update();
 					log.info("tasks_cleared", { scope: cmd.kind, cleared });
 					ctx.ui?.notify(`Cleared ${cleared} task${cleared === 1 ? "" : "s"}.`, "info");
+					return;
+				}
+				if (cmd.kind === "start" || cmd.kind === "done") {
+					const outcome = applyTaskAction(cmd.kind, cmd.id, {
+						get: (taskId) => taskStore.get(taskId),
+						update: (taskId, status) => { taskStore.update(taskId, { status }); },
+						onChanged: (taskId, status) => {
+							currentWidget?.setActiveTask(taskId, status === "in_progress");
+							currentWidget?.update();
+						},
+					});
+					if (outcome === "missing") { ctx.ui?.notify(`No task #${cmd.id}.`, "warning"); return; }
+					if (outcome === "unchanged") { ctx.ui?.notify(`Task #${cmd.id} is already ${cmd.kind === "done" ? "completed" : "in progress"}.`, "info"); return; }
+					ctx.ui?.notify(`Task #${cmd.id} → ${cmd.kind === "done" ? "completed" : "in progress"}.`, "info");
 					return;
 				}
 				if (cmd.kind === "create") {

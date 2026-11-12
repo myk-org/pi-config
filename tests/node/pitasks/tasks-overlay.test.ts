@@ -3,13 +3,15 @@ import { describe, it } from "node:test";
 import {
 	TASKS_EMPTY_MESSAGE,
 	TASKS_USAGE,
+	applyTaskAction,
 	formatTasksPlainText,
+	nextTaskStatus,
 	parseTasksCommand,
 	taskDetailRows,
 	taskStatusGlyph,
 	toTaskRowView,
 } from "../../../extensions/pitasks/tasks-view.ts";
-import type { Task } from "../../../extensions/pitasks/types.ts";
+import type { Task, TaskStatus } from "../../../extensions/pitasks/types.ts";
 
 function task(overrides: Partial<Task> = {}): Task {
 	return {
@@ -50,6 +52,20 @@ describe("parseTasksCommand", () => {
 		assert.deepEqual(parseTasksCommand("clear all"), { kind: "clear-all" });
 	});
 
+	it("routes start and done by id", () => {
+		assert.deepEqual(parseTasksCommand("start 3"), { kind: "start", id: "3" });
+		assert.deepEqual(parseTasksCommand("done 12"), { kind: "done", id: "12" });
+		assert.deepEqual(parseTasksCommand("  done  #7  "), { kind: "done", id: "7" });
+	});
+
+	it("prints usage for start/done without a usable id", () => {
+		assert.deepEqual(parseTasksCommand("start"), { kind: "usage" });
+		assert.deepEqual(parseTasksCommand("done"), { kind: "usage" });
+		assert.deepEqual(parseTasksCommand("done abc"), { kind: "usage" });
+		assert.deepEqual(parseTasksCommand("done #"), { kind: "usage" });
+		assert.deepEqual(parseTasksCommand("done 3 4"), { kind: "usage" });
+	});
+
 	it("prints usage for unknown subcommands and incomplete clear", () => {
 		assert.deepEqual(parseTasksCommand("view"), { kind: "usage" });
 		assert.deepEqual(parseTasksCommand("clear"), { kind: "usage" });
@@ -59,7 +75,47 @@ describe("parseTasksCommand", () => {
 
 	it("documents the usage string", () => {
 		assert.match(TASKS_USAGE, /^Usage: \/tasks/);
-		assert.match(TASKS_USAGE, /\/tasks clear completed/);
+		assert.match(TASKS_USAGE, /start <id>/);
+		assert.match(TASKS_USAGE, /done <id>/);
+		assert.match(TASKS_USAGE, /clear completed/);
+	});
+});
+
+describe("start / done subcommands", () => {
+	const run = (action: "start" | "done", id: string, tasks: Task[]) => {
+		const updates: Array<[string, TaskStatus]> = [];
+		const outcome = applyTaskAction(action, id, {
+			get: (taskId) => tasks.find((t) => t.id === taskId),
+			update: (taskId, status) => { updates.push([taskId, status]); },
+			onChanged: (taskId) => { updates.push([`changed:${taskId}`, "in_progress"]); },
+		});
+		return { outcome, updates };
+	};
+
+	it("moves a pending task to in_progress and a task to completed", () => {
+		const started = run("start", "3", [task({ id: "3", status: "pending" })]);
+		assert.equal(started.outcome, "applied");
+		assert.deepEqual(started.updates[0], ["3", "in_progress"]);
+
+		const done = run("done", "3", [task({ id: "3", status: "in_progress" })]);
+		assert.equal(done.outcome, "applied");
+		assert.deepEqual(done.updates[0], ["3", "completed"]);
+	});
+
+	it("reports an unknown id instead of throwing", () => {
+		const result = run("done", "99", [task({ id: "3" })]);
+		assert.equal(result.outcome, "missing");
+		assert.deepEqual(result.updates, []);
+	});
+
+	it("is idempotent for done on a completed task", () => {
+		const result = run("done", "3", [task({ id: "3", status: "completed" })]);
+		assert.equal(result.outcome, "unchanged");
+		assert.deepEqual(result.updates, []);
+		assert.equal(nextTaskStatus("completed", "done"), null);
+		assert.equal(nextTaskStatus("in_progress", "start"), null);
+		assert.equal(nextTaskStatus("pending", "start"), "in_progress");
+		assert.equal(nextTaskStatus("pending", "done"), "completed");
 	});
 });
 
