@@ -322,13 +322,16 @@ describe("discord messageCreate routing", () => {
     }
   });
 
-  it("logs a message dropped in a channel the user does not own", async () => {
-    // The refusal the owner reproduced had no log line at all; a silent drop is undiagnosable.
+  it("logs a message dropped in a channel the user does not own, once per channel", async () => {
+    // The refusal the owner reproduced had no log line at all; a silent drop is undiagnosable. It is
+    // routine traffic though, so it logs at INFO and is throttled: every message in every channel the
+    // bot can see reaches this handler.
     (globalThis as any).__piConfigSessionId = "inbound-route-log-test";
     try {
       const bot = startBot({ live: ["s2"] });
       const replies: string[] = [];
       await bot.handler(message("m10", "hello there", replies, { channelId: "chan-not-owned" }));
+      await bot.handler(message("m11", "hello again", replies, { channelId: "chan-not-owned" }));
       assert.deepEqual(replies, []);
 
       const dir = path.join(tmp, ".pi", "logs", "pidash-discord");
@@ -342,8 +345,13 @@ describe("discord messageCreate routing", () => {
       assert.match(body, /discord_inbound_dropped/);
       assert.match(body, /channel-not-owned/);
       assert.match(body, /chan-not-owned/);
+      // A routine refusal is not a degradation: this record is INFO, not WARN.
+      assert.match(body, /\[info\] \[pidash-discord\] discord_inbound_dropped \{"reason":"channel-not-owned"/);
+      // One line for the pair: the same channel and reason inside the window is suppressed.
+      assert.equal(body.match(/channel-not-owned/g)?.length, 1);
       // Ids only: the message body must never reach the log.
       assert.doesNotMatch(body, /hello there/);
+      assert.doesNotMatch(body, /hello again/);
     } finally {
       delete (globalThis as any).__piConfigSessionId;
     }

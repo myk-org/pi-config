@@ -64,6 +64,8 @@ import { parseEnvFile, resolveDiscordConfig } from "./discord-config.ts";
 import { checkoutName } from "../shared/chat/chat-sessions.ts";
 
 const log = createLogger("pidash-discord");
+/** A hot refusal repeats per message; one line per channel+reason per minute is enough. */
+const INBOUND_DROP_LOG_WINDOW_MS = 60_000;
 
 const SEEN_MESSAGE_LIMIT = 500;
 const STREAM_EDIT_INTERVAL_MS = 1500;
@@ -300,6 +302,29 @@ export function setupDiscordBot(opts: {
       }
     }
     return null;
+  }
+
+  /** Routine refusals arrive per message — every message in every channel the bot can see reaches
+   *  the handler — so warning on each one floods the log and pays synchronous I/O per message. One
+   *  line per channel and reason per minute is enough to diagnose a reproduction. */
+  const dropLoggedAt = new Map<string, number>();
+  function logInboundDrop(
+    facts: Omit<InboundRouteFacts, "reason"> & { reason: string },
+    level: "info" | "warn" = "warn",
+    throttle = false,
+  ): void {
+    if (throttle) {
+      const key = `${facts.reason}:${facts.channelId}`;
+      const last = dropLoggedAt.get(key);
+      const now = Date.now();
+      if (last !== undefined && now - last < INBOUND_DROP_LOG_WINDOW_MS) return;
+      if (dropLoggedAt.size > 500) dropLoggedAt.clear();
+      dropLoggedAt.set(key, now);
+    }
+    const record = inboundRouteRecord(facts);
+    // WARN is for a failure the user feels; a routine refusal is INFO (Qodo 52959087).
+    if (level === "warn") log.warn("discord_inbound_dropped", record);
+    else log.info("discord_inbound_dropped", record);
   }
 
   const seenMessages = new Set<string>();
@@ -1179,7 +1204,7 @@ export function setupDiscordBot(opts: {
       const state = userState(interaction.user.id);
       const targetSession = state.watchedSessionId;
       if (!targetSession) {
-        log.warn("discord_inbound_dropped", inboundRouteRecord({
+        logInboundDrop({
           reason: "interaction-no-watch",
           channelId: interaction.channelId,
           guildId: interaction.guildId,
@@ -1187,13 +1212,13 @@ export function setupDiscordBot(opts: {
           watchLive: false,
           targets: state.targets,
           ownsTarget: false,
-        }));
+        }, "info");
         await interaction.reply({ content: "Not watching any session. Use `/sessions` first.", ephemeral: true }).catch(() => {});
         return;
       }
       const client = piClients.get(targetSession);
       if (!client?.ws) {
-        log.warn("discord_inbound_dropped", inboundRouteRecord({
+        logInboundDrop({
           reason: "interaction-session-disconnected",
           channelId: interaction.channelId,
           guildId: interaction.guildId,
@@ -1201,7 +1226,7 @@ export function setupDiscordBot(opts: {
           watchLive: false,
           targets: state.targets,
           ownsTarget: false,
-        }));
+        });
         await interaction.reply({ content: "The watched session is disconnected.", ephemeral: true }).catch(() => {});
         return;
       }
@@ -1298,7 +1323,7 @@ export function setupDiscordBot(opts: {
     }
 
     if (!watched) {
-      log.warn("discord_inbound_dropped", inboundRouteRecord({
+      logInboundDrop({
         reason: "interaction-no-watch",
         channelId: interaction.channelId,
         guildId: interaction.guildId,
@@ -1306,13 +1331,13 @@ export function setupDiscordBot(opts: {
         watchLive: false,
         targets: state.targets,
         ownsTarget: false,
-      }));
+      }, "info");
       await acknowledge(interaction, "Not watching any session. Use `/sessions` first.");
       return;
     }
     const client = piClients.get(watched);
     if (!client) {
-      log.warn("discord_inbound_dropped", inboundRouteRecord({
+      logInboundDrop({
         reason: "interaction-session-gone",
         channelId: interaction.channelId,
         guildId: interaction.guildId,
@@ -1320,7 +1345,7 @@ export function setupDiscordBot(opts: {
         watchLive: false,
         targets: state.targets,
         ownsTarget: false,
-      }));
+      });
       state.watchedSessionId = null;
       persist();
       await acknowledge(interaction, "The watched session is gone; cleared.");
@@ -1906,7 +1931,7 @@ export function setupDiscordBot(opts: {
       const byThread = userForThread(message.channelId);
       // Somebody else's thread is never this author's channel.
       if (byThread && byThread[0] !== userId) {
-        log.warn("discord_inbound_dropped", inboundRouteRecord({
+        logInboundDrop({
           reason: "thread-owned-by-other",
           channelId: message.channelId,
           guildId: message.guildId,
@@ -1914,7 +1939,7 @@ export function setupDiscordBot(opts: {
           watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
           targets: state.targets,
           ownsTarget: false,
-        }));
+        }, "info", true);
         return;
       }
       // A plain channel can be a fallback target for SEVERAL users, so the target is looked up in the
@@ -1924,7 +1949,7 @@ export function setupDiscordBot(opts: {
       // The likeliest place a message dies: a channel that is neither this user's thread nor one of
       // their targets. Silent before, so the user saw nothing and the log said nothing either.
       if (!byThread && !ownsTarget) {
-        log.warn("discord_inbound_dropped", inboundRouteRecord({
+        logInboundDrop({
           reason: "channel-not-owned",
           channelId: message.channelId,
           guildId: message.guildId,
@@ -1932,7 +1957,7 @@ export function setupDiscordBot(opts: {
           watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
           targets: state.targets,
           ownsTarget: false,
-        }));
+        }, "info", true);
         return;
       }
       // A message is routed by the SESSION its thread belongs to, so writing in an older session's
@@ -1970,9 +1995,9 @@ export function setupDiscordBot(opts: {
 
     // Every refusal below leaves a trace: which channel, what it owns, what the resolver said, and why
     // we stopped. Ids and state only.
-    const ownsChannel = state.target?.channelId === message.channelId
+    const authorOwnsChannel = state.target?.channelId === message.channelId
       || Object.values(state.targets ?? {}).some((target) => target?.channelId === message.channelId);
-    const drop = (reason: string) => log.warn("discord_inbound_dropped", inboundRouteRecord({
+    const drop = (reason: string, level: "info" | "warn" = "warn") => logInboundDrop({
       reason,
       channelId: message.channelId,
       guildId: message.guildId,
@@ -1980,9 +2005,9 @@ export function setupDiscordBot(opts: {
       watchedSessionId: state.watchedSessionId ?? null,
       watchLive: Boolean(state.watchedSessionId && piClients.get(state.watchedSessionId)?.ws),
       targets: state.targets,
-      ownsTarget: ownsChannel,
+      ownsTarget: authorOwnsChannel,
       inbound,
-    }));
+    }, level);
 
     // Control words come BEFORE a pending prompt: /stop must never be blocked by
     // a question the agent is waiting on (Qodo a611b293).
@@ -1998,7 +2023,7 @@ export function setupDiscordBot(opts: {
     }
     if (/^\/(cancel|dismiss)$/i.test(text)) {
       if (!state.pendingPrompt) {
-        drop("cancel-nothing-pending");
+        drop("cancel-nothing-pending", "info");
         await message.reply("Nothing pending.").catch(() => {});
         return;
       }
