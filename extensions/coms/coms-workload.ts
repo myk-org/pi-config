@@ -32,6 +32,9 @@ export interface WorkloadTask {
   status: string;
   subject: string;
   blockedBy?: string[];
+  /** Owner and description ride along for the drilldown's detail pane; absent on older peers. */
+  owner?: string;
+  description?: string;
 }
 
 /** Raw active entries on the answering peer. */
@@ -58,6 +61,9 @@ export interface DescribeTask {
   status: string;
   subject: string;
   blockedBy: string[];
+  /** Optional: an older peer does not send them, and the detail pane says `—` rather than guessing. */
+  owner?: string;
+  description?: string;
 }
 
 export interface DescribeCron {
@@ -151,6 +157,8 @@ export function toDescribeDetail(active: ActiveWorkload, now = Date.now()): Peer
       status: sanitizePeerText(task.status, STATE_MAX),
       subject: sanitizePeerText(task.subject, SUBJECT_MAX),
       blockedBy: (task.blockedBy ?? []).map((id) => sanitizePeerText(id, ID_MAX)),
+      ...(task.owner !== undefined ? { owner: sanitizePeerText(task.owner, NAME_MAX) } : {}),
+      ...(task.description !== undefined ? { description: sanitizePeerText(task.description, PURPOSE_MAX) } : {}),
     })),
     crons: active.crons.map((cron) => {
       const view = toCronStatusTaskView(cron, { overlayId: cron.id });

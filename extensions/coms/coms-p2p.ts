@@ -764,6 +764,10 @@ export default function (pi: ExtensionAPI) {
 				id: String(t?.id ?? "?"),
 				status: String(t?.status ?? ""),
 				subject: String(t?.subject ?? ""),
+				// #1084: the requester's detail pane shows owner and description; both are the
+				// peer's own fields, so they travel with the projection instead of a second request.
+				owner: String(t?.owner ?? ""),
+				description: String(t?.description ?? ""),
 				// #1082: the drilldown marks blocked tasks, so the open blockers survive the projection.
 				blockedBy: openBlockers(Array.isArray(t?.blockedBy) ? t.blockedBy.map(String) : [], statusById),
 			}));

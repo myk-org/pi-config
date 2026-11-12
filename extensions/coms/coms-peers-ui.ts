@@ -8,8 +8,8 @@
  * screen to watch.
  */
 import type { Component } from "@earendil-works/pi-tui";
-import { formatPeerDetailLines } from "./coms-peers.js";
-import { renderWorkloadPart, workloadSectionLines, workloadUnknownLine } from "./coms-workload.js";
+import { renderWorkloadPart } from "./coms-workload.js";
+import { backTarget, buildDrilldownRows, type DrilldownItem, type DrilldownRow } from "./coms-drilldown.js";
 import { sanitizePeerText } from "./peer-text.js";
 import type { DescribeResult } from "./coms-describe.js";
 import { OverlayScrollDetail } from "../orchestrator/overlay-dashboard.js";
@@ -45,11 +45,12 @@ export async function openComsPeersOverlay(
   deps: ComsPeersOverlayDeps,
 ): Promise<void> {
   const toRows = (): Row[] => deps.listPeers().map((row) => ({ ...row, id: `${row.project}:${row.name}` }));
-  let status: string | null = null;
-  // `m` needs the whole terminal for a text dialog, so the list closes and is re-opened after the
-  // send. The overlay hands the focused row over through this queue (a bare variable would be
-  // narrowed to null across the await, since the assignment happens inside its callback).
+  // `m` needs the whole terminal for a text dialog, and Enter navigates a level deeper, so the
+  // list closes and is re-opened after each. The overlay hands the focused row over through these
+  // queues (a bare variable would be narrowed to null across the await, since the assignment
+  // happens inside its callback).
   const composeQueue: Row[] = [];
+  const peerQueue: Row[] = [];
 
   for (;;) {
     await openListDetailOverlay< string, Row>(ctx, {
@@ -79,78 +80,33 @@ export async function openComsPeersOverlay(
           };
         },
         onX: (row) => {
-          status = deps.killPeer(row);
+          // No detail pane holds a result any more, so the outcome is notified where the user looks.
+          const killed = deps.killPeer(row);
           log.info("overlay_kill_peer", { name: row.name, project: row.project });
+          try { ctx.ui.notify(sanitizePeerText(killed, 120), "info"); } catch {}
         },
         selectable: true,
         onXSelected: (rows) => {
-          const results = rows.map((row) => deps.killPeer(row));
-          status = results.join(" · ");
+          const results = rows.map((row) => deps.killPeer(row)).join(" · ");
           log.info("overlay_kill_selection", { count: rows.length });
+          try { ctx.ui.notify(sanitizePeerText(results, 120), "info"); } catch {}
         },
         onKillAll: () => {
-          status = deps.killAll();
+          const killed = deps.killAll();
           log.info("overlay_kill_all");
+          try { ctx.ui.notify(sanitizePeerText(killed, 120), "info"); } catch {}
         },
         onCompose: deps.tellPeer ? (row) => { composeQueue.push(row); } : undefined,
-      },
-      createDetail: (row, tui, theme: Theme, done): Component => {
-        const peerId = row.id;
-        // #1083: ask the peer once, when the detail opens. `pending` renders nothing, so a slow
-        // peer never paints a count it has not reported; the answer (or the 2s timeout) is picked
-        // up by OverlayScrollDetail's own 1s invalidate tick — no polling of files.
-        const workload: { state: "pending" | "done"; result: DescribeResult | null } = { state: "pending", result: null };
-        const ask = deps.describePeer;
-        if (ask) {
-          void ask(row)
-            .then((result) => { workload.result = result; workload.state = "done"; log.debug("describe_resolved", { peer: row.name, answered: result.ok }); })
-            .catch((err) => {
-              workload.result = { ok: false, reason: "malformed" };
-              workload.state = "done";
-              log.warn("describe_failed", { peer: row.name, error: err instanceof Error ? err.message : String(err) });
-            });
-        } else {
-          workload.result = { ok: false, reason: "not-reported" };
-          workload.state = "done";
-        }
-        // OverlayScrollDetail owns the detail contract: key handling, scrolling and done(). A bare
-        // Text here painted over the chat and never released the session (user-reported hang).
-        return new OverlayScrollDetail(
-          tui,
-          theme,
-          {
-            footerHints: "↑↓/jk scroll · x kill · Esc back",
-            onX: () => {
-              const current = deps.listPeers().find((p) => `${p.project}:${p.name}` === peerId);
-              if (!current) return false;
-              status = deps.killPeer(current);
-              return true;
-            },
-            getHeader: (t) => {
-              const current = deps.listPeers().find((p) => `${p.project}:${p.name}` === peerId) || row;
-              const state = current.busy ? t.fg("warning", "busy") : t.fg("success", "idle");
-              return `${state} ${t.fg("accent", t.bold(sanitizePeerText(current.name, 40)))} ${t.fg("dim", `· ${sanitizePeerText(current.project, 40)}`)}`;
-            },
-            getBodyLines: () => {
-              const current = deps.listPeers().find((p) => `${p.project}:${p.name}` === peerId) || row;
-              // One render boundary for every peer-supplied field (#1084).
-              const lines = formatPeerDetailLines(current, {
-                heartbeatAgeSeconds: deps.heartbeatAgeSeconds?.(current),
-                status,
-              });
-              if (workload.state === "done") {
-                lines.push("");
-                const result = workload.result;
-                // An answered peer with nothing active says so; only silence is `unknown`.
-                lines.push(...(result?.ok ? workloadSectionLines(result.detail, result.truncated) : [workloadUnknownLine(result?.reason ?? "timeout", result && !result.ok ? result.code : undefined)]));
-              }
-              return lines;
-            },
-          },
-          done,
-        );
+        // #1084: Enter walks INTO the peer instead of opening a wall of text.
+        onSelect: (row) => { peerQueue.push(row); },
       },
     });
+
+    const inspected = peerQueue.pop();
+    if (inspected) {
+      await openPeerDrilldown(ctx, deps, inspected);
+      continue;
+    }
 
     const target = composeQueue.pop();
     if (!target || !deps.tellPeer) return;
@@ -163,14 +119,113 @@ export async function openComsPeersOverlay(
       log.debug("overlay_tell_cancelled", { name: target.name, project: target.project });
       continue;
     }
-    status = await deps.tellPeer(request);
+    const result = await deps.tellPeer(request);
     log.info("overlay_tell_peer", { name: request.target, project: request.project ?? null, chars: request.prompt.length });
     // A failed user send must reach the user where they are looking: the composer closed the list,
     // so the reopened list's own lines are not on screen yet.
-    if (status.startsWith("⚠")) {
+    if (result.startsWith("⚠")) {
       log.warn("overlay_tell_failed", { name: request.target, project: request.project ?? null });
       // The status carries the peer's own error text; sanitize the whole line, not just the name.
-      try { ctx.ui.notify(sanitizePeerText(status, 120), "error"); } catch {}
+      try { ctx.ui.notify(sanitizePeerText(result, 120), "error"); } catch {}
     }
   }
+}
+
+/** One line of peer identity for the section list's border: the drilldown's own header, since the
+ *  old text pane is gone. */
+function peerHeader(row: Row, deps: ComsPeersOverlayDeps): string {
+  const parts = [sanitizePeerText(row.name, 40), sanitizePeerText(row.project, 40), row.busy ? "busy" : "idle"];
+  if (row.contextUsedPct !== null) parts.push(`ctx ${Math.round(row.contextUsedPct)}%`);
+  if (row.queueDepth) parts.push(`queue ${row.queueDepth}`);
+  const age = deps.heartbeatAgeSeconds?.(row);
+  if (typeof age === "number") parts.push(`hb ${age}s`);
+  return parts.join(" · ");
+}
+
+/**
+ * Level 2 + 3 (#1084): Enter on a peer lists its sections, Enter on a section opens the shared
+ * overlay for that section's items, Esc walks back one level. Data is the `describe` reply fetched
+ * once here — never the local store, never a file.
+ *
+ * READ-ONLY: acting on another session's tasks/crons would need a remote command protocol, and a
+ * key that silently does nothing is worse than no key, so the footer says so instead.
+ */
+async function openPeerDrilldown(ctx: any, deps: ComsPeersOverlayDeps, row: Row): Promise<void> {
+  const ask = deps.describePeer;
+  let result: DescribeResult;
+  if (!ask) {
+    result = { ok: false, reason: "not-reported" };
+  } else {
+    try {
+      result = await ask(row);
+    } catch (err) {
+      log.warn("drilldown_describe_failed", { peer: row.name, error: err instanceof Error ? err.message : String(err) });
+      result = { ok: false, reason: "malformed" };
+    }
+  }
+  const rows = buildDrilldownRows(result);
+  log.debug("drilldown_opened", { peer: row.name, rows: rows.length, answered: result.ok });
+  const header = peerHeader(row, deps);
+
+  const sectionQueue: DrilldownRow[] = [];
+  for (;;) {
+    await openListDetailOverlay<string, DrilldownRow>(ctx, {
+      emptyMessage: "This peer reported no work.",
+      listSpec: {
+        title: `Peer ${sanitizePeerText(row.name, 40)}`,
+        countLabel: (items) => `${items.length} section${items.length === 1 ? "" : "s"}`,
+        borderTitle: () => header,
+        footerHints: "↑↓/jk navigate · Enter open · Esc back · read-only (reported by the peer)",
+        listItems: () => rows,
+        rowParts: (item, theme: Theme) => ({
+          glyph: theme.fg("accent", "▸"),
+          title: item.label,
+          idLabel: "",
+          rightParts: [],
+        }),
+        onSelect: (item) => { sectionQueue.push(item); },
+      },
+    });
+    const section = sectionQueue.pop();
+    if (!section) {
+      // Esc from the sections hands control back to the caller, which re-opens the peer list.
+      log.debug("drilldown_esc", { to: backTarget({ level: "sections", peer: row.name })?.level ?? "close" });
+      return;
+    }
+    await openSectionOverlay(ctx, row, section);
+  }
+}
+
+/** Level 3: one section's items, the detail pane reusing the fields the peer reported. */
+async function openSectionOverlay(ctx: any, row: Row, section: DrilldownRow): Promise<void> {
+  const title = `${section.label} · ${sanitizePeerText(row.name, 40)}`;
+  log.debug("drilldown_section_open", { peer: row.name, section: section.section ?? "status", items: section.items.length });
+  await openListDetailOverlay<string, DrilldownItem>(ctx, {
+    emptyMessage: `${section.label}: nothing to show.`,
+    listSpec: {
+      title,
+      countLabel: (items) => `${items.length} item${items.length === 1 ? "" : "s"}`,
+      borderTitle: () => `${title} · read-only`,
+      // Acting on a peer's own work needs a remote command protocol; a silent no-op key would be worse.
+      footerHints: "↑↓/jk navigate · Enter view · Esc back · read-only: remote data",
+      listItems: () => section.items,
+      rowParts: (item, theme: Theme) => ({
+        glyph: theme.fg("accent", "·"),
+        title: item.row,
+        idLabel: theme.fg("dim", item.id),
+        rightParts: [],
+      }),
+    },
+    createDetail: (item, tui, theme: Theme, done): Component =>
+      new OverlayScrollDetail(
+        tui,
+        theme,
+        {
+          footerHints: "↑↓/jk scroll · Esc back",
+          getHeader: (t) => t.fg("accent", t.bold(sanitizePeerText(item.row, 120))),
+          getBodyLines: (t) => item.detail.map(([label, value]) => `${t.fg("muted", label.padEnd(11))}  ${value}`),
+        },
+        done,
+      ),
+  });
 }

@@ -78,6 +78,10 @@ export interface OverlayListSpec<
   /** Optional compose key (m): the caller needs the whole terminal for a text dialog, so the
    *  list closes and can be re-opened once the composed text is handled. */
   onCompose?: (item: TItem) => void;
+  /** Enter hands the item back to the caller instead of opening a detail pane: a caller that
+   *  navigates a level deeper opens its own overlay and re-opens this list when that one closes,
+   *  which is what makes Esc walk back one level at a time. */
+  onSelect?: (item: TItem) => void;
 }
 
 export interface OverlayDetailSpec {
@@ -555,7 +559,8 @@ export async function openListDetailOverlay<
   options: {
     emptyMessage: string;
     listSpec: OverlayListSpec<TId, TItem>;
-    createDetail: (
+    /** Omitted by a list whose Enter navigates deeper (`listSpec.onSelect`). */
+    createDetail?: (
       item: TItem,
       tui: TUI,
       theme: Theme,
@@ -592,9 +597,18 @@ export async function openListDetailOverlay<
     const item = options.listSpec.listItems().find((i) => i.id === picked);
     if (!item) continue;
 
+    // A list whose Enter goes a level deeper returns to its caller, which opens the next level
+    // and comes back here on Esc — that is the whole back-navigation contract.
+    if (options.listSpec.onSelect) {
+      options.listSpec.onSelect(item);
+      return;
+    }
+    const createDetail = options.createDetail;
+    if (!createDetail) return;
+
     await ctx.ui.custom<null>(
       (tui, theme, _kb, done) =>
-        options.createDetail(item, tui, theme, done),
+        createDetail(item, tui, theme, done),
       OVERLAY_OPTS,
     );
   }

@@ -64,7 +64,15 @@ The pool widget and peer list append `⏳2 ✓5 ⏰1` (agents, tasks, crons), sh
 
 Every peer-supplied string is sanitized before rendering — name, purpose, subject, cwd, socket path, task ids and states: escape sequences and control characters are stripped, whitespace collapsed, and each field capped (purpose/subject/cwd 120, id/state 40, socket 80). A peer cannot move the viewer's cursor, clear its screen, or forge a prompt, and sanitization is render-only: a peer is still addressed by its raw name.
 
-Selecting a peer in the `/coms` peer overlay asks that peer directly for the detail — agent identity and elapsed time, task rows in the same format `/tasks` uses, and cron schedules. The peer answers over its own socket from its own memory, with a projected payload (no job output, no worker directories); nothing scans another process's files.
+Selecting a peer in the `/coms` peer overlay opens a navigable drilldown: a list of that peer's
+sections with their counts (`async agents (3)`, `tasks (5)`, `crons (1)`), and Enter on a section
+opens the same overlay `/async-status`, `/tasks` and `/cron list` use, fed by that peer's answer —
+agent identity and elapsed time, task rows in the exact format `/tasks` renders, and cron schedules.
+Esc walks back one level (section → sections → peer list). The drilldown is **read-only**: acting on
+another session's tasks or crons would need a remote command protocol, and a key that silently does
+nothing is worse than no key, so the section footers say so. The peer answers over its own socket
+from its own memory, with a projected payload (no job output, no worker directories); nothing scans
+another process's files.
 
 Three answers are kept apart:
 - the peer answered with work → the sections it reported; a section trimmed by the 50-row cap ends with `… N more`, so a truncated list never looks complete

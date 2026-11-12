@@ -170,6 +170,8 @@ export function validateDetail(raw: any): {
           status: entry.status,
           subject: entry.subject,
           blockedBy: Array.isArray(entry.blockedBy) ? entry.blockedBy.filter((id: unknown) => typeof id === "string") : [],
+          ...(typeof entry.owner === "string" ? { owner: entry.owner } : {}),
+          ...(typeof entry.description === "string" ? { description: entry.description } : {}),
         }
       : null,
   );
