@@ -299,7 +299,12 @@ progress. It does not commit, push, create a PR, or post results.
   To confirm a reload landed: read `.pi/run/reload.done` and compare with the newest flag nonce. Verifying
   anything against a runtime that has not reloaded proves nothing — the old code is still loaded.
   A flag parked in `.pi/tmp/reload.flag` by a pre-#1020 requester is still consumed.
-  Fresh session starts clear stale flag/pending/done state (latest code is already loaded).
+  Fresh session starts clear stale flag/pending/done state (latest code is already loaded) — but only state that is
+  **older than five minutes** and only `reload.pending` that this session owns (`pendingOwnerIsClaimable`): a live other
+  session's handshake is never deleted, and a process that does not register the watcher (oneshot `pi -p`, `--mode json`,
+  piped print, headless `--mode rpc`) never touches flag/pending/done at all (#1091). A flag that appears while a reload
+  is in flight is a newer request: it is left for the watcher and triggers a second reload, so `reload.done` converges on
+  the newest nonce instead of reporting the older one. A manual `/reload` satisfies a sitting flag and publishes its nonce.
   Worktree sessions do NOT auto-reload (deploy writes the flag to the main checkout).
 - **MCP:** built into pi as `builtin:mcp` (#848). Servers in `mcp.json` —
   user `~/.pi/agent/mcp.json`, project `mcp.json` once trusted. Managed with

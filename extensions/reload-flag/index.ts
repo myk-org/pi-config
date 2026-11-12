@@ -25,10 +25,23 @@
  *   4. The requester polls `reload.done` for its nonce — match means the new
  *      runtime is live and subsequent tool calls run on the new code.
  *
- * Stale-state rules: `session_start` with any other reason (startup, new,
- * resume, fork) deletes flag/pending/done — a fresh session already runs the
- * latest code, so an unconsumed request is satisfied, not repeated. A manual
- * `/reload` satisfies a sitting flag too.
+ * Ownership (#1091 — the flag is per-cwd, the process that wrote it is not):
+ *
+ *   - Only a process that REGISTERS the watcher may touch the handshake. A
+ *     `pi -p` / `--mode json` / piped-print child can neither observe nor
+ *     satisfy a request, and used to delete a deploy's flag on its
+ *     `session_start` — the deploy then reported a stale `reload.done`.
+ *   - `reload.pending` belongs to the session that parked it
+ *     (`pendingOwnerIsClaimable`): a live OTHER owner's handshake is never
+ *     consumed, dispatched for, or cleaned up.
+ *   - `session_start` with any other reason (startup, new, resume, fork) only
+ *     clears state that is genuinely stale — older than STALE_HANDSHAKE_MS.
+ *     A fresh session already runs the latest code, so an abandoned request is
+ *     satisfied, not repeated.
+ *   - `reload.done` always carries the nonce of the code actually loaded. A
+ *     flag that appears while a reload is in flight is a NEWER request and is
+ *     left for the watcher, so the sequence converges on the newest nonce. A
+ *     manual `/reload` satisfies a sitting flag: its nonce is published.
  *
  * LOCATION (#1020): the handshake lives in `.pi/run/`, not `.pi/tmp/` — `.pi/tmp`
  * is throwaway by definition and must stay safe to wipe. Reads check the new
@@ -48,10 +61,10 @@
  */
 
 import { createLogger } from "../shared/logger.js";
-import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
+import { isPiOneshotInvocation, shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const log = createLogger("reload-flag");
@@ -60,6 +73,12 @@ export const RELOAD_COMMAND = "/reload-flag";
 export const RELOAD_FLAG_FILENAME = "reload.flag";
 export const RELOAD_PENDING_FILENAME = "reload.pending";
 export const RELOAD_DONE_FILENAME = "reload.done";
+
+/** How long idle handshake state may sit before a fresh INTERACTIVE session
+ *  treats it as abandoned (#1091). A deploy writes the flag and reloads within
+ *  seconds, so an older file belongs to a request nobody is waiting for — and
+ *  a younger one may be a request addressed to another live session. */
+export const STALE_HANDSHAKE_MS = 5 * 60_000;
 
 /** Runtime-state dir for the reload handshake (#1020). */
 export function reloadRunDir(cwd: string): string {
@@ -122,7 +141,13 @@ function removeControlFile(cwd: string, name: string): void {
 function writeControlFile(cwd: string, name: string, content: string): void {
   const dir = reloadRunDir(cwd);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(path.join(dir, name), content, "utf-8");
+  // Write + rename, never a bare truncate (#1091): every session in the cwd
+  // polls these files, and a mid-write empty `reload.pending` is deleted by the
+  // other watchers as garbage — which strands the handshake of the session that
+  // was writing it.
+  const tmp = path.join(dir, `${name}.${process.pid}.tmp`);
+  writeFileSync(tmp, content, "utf-8");
+  renameSync(tmp, path.join(dir, name));
 }
 
 /** Mirror a control file into the legacy dir for a requester that wrote its
@@ -163,6 +188,15 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+/** Older than STALE_HANDSHAKE_MS — safe for a fresh session to clear. */
+export function isStaleHandshakeFile(file: string): boolean {
+  try {
+    return Date.now() - statSync(file).mtimeMs > STALE_HANDSHAKE_MS;
+  } catch {
+    return false;
+  }
+}
+
 /** A parked handshake: the nonce plus the owner that parked it. */
 export interface ReloadPending {
   nonce: string;
@@ -196,6 +230,29 @@ export function pendingOwnerIsClaimable(pending: ReloadPending, self: string): b
   const pid = Number(pidStr);
   if (!Number.isInteger(pid) || pid <= 0) return true; // unparseable owner — treat as ours
   return !isPidAlive(pid);
+}
+
+/**
+ * Fresh-session cleanup, bounded twice (#1091): by ownership (another live
+ * session's pending is not ours to delete) and by age (a just-written flag may
+ * be a deploy in flight, not stale state). Anything younger than
+ * STALE_HANDSHAKE_MS is left alone — a fresh session reloaded nothing, so it
+ * has no business cancelling a request issued moments ago.
+ */
+function pruneStaleHandshake(cwd: string, owner: string, reason: string): void {
+  const pending = readReloadPending(cwd);
+  const foreignPending = pending !== null && !pendingOwnerIsClaimable(pending, owner);
+  for (const name of [RELOAD_FLAG_FILENAME, RELOAD_PENDING_FILENAME, RELOAD_DONE_FILENAME]) {
+    const file = findControlFile(cwd, name);
+    if (file === null) continue;
+    if (name === RELOAD_PENDING_FILENAME && foreignPending) {
+      log.debug("reload_flag_pending_foreign_owner_kept", { owner: pending.owner, reason });
+      continue;
+    }
+    if (!isStaleHandshakeFile(file)) continue;
+    removeControlFile(cwd, name);
+    log.debug("stale reload state removed at session start", { file: name, reason });
+  }
 }
 
 /**
@@ -241,6 +298,16 @@ export async function runReloadFlagCommand(
   } catch (e: unknown) {
     log.error("reload_flag_command_failed", { error: String(e) });
   }
+}
+
+/** May this process touch the handshake at all (#1091)? A print/json session
+ *  (`pi -p`, `--mode json`, piped stdout) never registers the watcher, so it
+ *  can neither observe nor satisfy a request — and must never delete one: the
+ *  flag is per-cwd, so a child starting mid-deploy used to wipe a request
+ *  addressed to the operator's TUI session. */
+export function isHandshakeParticipant(mode?: string | null, argv: string[] = process.argv): boolean {
+  if (mode === "print" || mode === "json") return false;
+  return !isPiOneshotInvocation(argv);
 }
 
 /** A headless `--mode rpc` session (a spawned coms peer) must NOT take part in the deploy
@@ -333,12 +400,11 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     // A pending handshake belonging to ANOTHER LIVE session must be left
-    // alone (Qodo PR #950 R9): session A parked it and is waiting for idle;
-    // if we (session B, same cwd) dispatched now, OUR reload would consume
-    // A's nonce, publish done, and steal A's continuation turn. Only a
-    // pending whose owner is us — or whose owner process is gone — is a
-    // stranded handshake we may recover.
-    if (!hasFlag && hasPending) {
+    // alone (Qodo PR #950 R9 + #1091): session A parked it and is waiting for
+    // idle; if we (session B, same cwd) dispatched now — even for a fresh
+    // flag — OUR reload would consume A's nonce, publish done, and steal A's
+    // continuation turn. A will reload and then dispatch the flag itself.
+    if (hasPending) {
       const pending = readReloadPending(liveCwd);
       if (pending && !pendingOwnerIsClaimable(pending, liveOwner ?? reloadOwnerId())) {
         log.debug("reload_flag_pending_foreign_owner", { owner: pending.owner });
@@ -369,15 +435,20 @@ export default function (pi: ExtensionAPI) {
     const reason: string = event?.reason ?? "startup";
     if (!isLiveExtensionCtx(ctx)) return;
     const cwd: string = ctx.cwd;
+    // #1091: a child/oneshot process that never registers the watcher must not
+    // delete flag/pending/done — it cannot satisfy the request, and the flag is
+    // per-cwd, so the request belongs to somebody else. Return BEFORE any file
+    // mutation, and start no watcher either (nothing here can act on it).
+    if (!isHandshakeParticipant(ctx.mode)) {
+      log.debug("reload-flag: not a handshake participant (print/json) — handshake left untouched", { reason });
+      return;
+    }
     liveCwd = cwd;
     liveOwner = reloadOwnerId(ctx);
     triggered = false;
 
     if (reason === "reload") {
       // We are the NEW runtime: finish the handshake by publishing the nonce.
-      // A manual /reload also satisfies a sitting flag — remove it so the
-      // next turn does not trigger a second reload.
-      removeControlFile(cwd, RELOAD_FLAG_FILENAME);
       const pendingPath = findControlFile(cwd, RELOAD_PENDING_FILENAME);
       const pendingRecord = readReloadPending(cwd);
       // Owner check (Qodo PR #950 R9): a pending handshake parked by ANOTHER
@@ -388,6 +459,10 @@ export default function (pi: ExtensionAPI) {
       if (pendingRecord && !pendingOwnerIsClaimable(pendingRecord, reloadOwnerId(ctx))) {
         log.info("reload_flag_pending_left_for_owner", { owner: pendingRecord.owner });
       } else if (pendingRecord) {
+        // The nonce WE loaded. Any flag present now was written while this
+        // reload was in flight — a NEWER request (#1091) — so it is left for
+        // the watcher: the second reload publishes ITS nonce, and the
+        // sequence converges on the newest one instead of reporting ours.
         const nonce = pendingRecord.nonce;
         removeControlFile(cwd, RELOAD_PENDING_FILENAME);
         writeControlFile(cwd, RELOAD_DONE_FILENAME, nonce);
@@ -437,17 +512,31 @@ export default function (pi: ExtensionAPI) {
             log.warn("reload_flag_stale_pending_remove_failed", { error: String(e) });
           }
         }
-        log.debug("reload session_start without pending nonce (manual /reload)");
-      }
-    } else {
-      // Fresh session: latest code is already loaded — clear stale state,
-      // including any legacy `.pi/tmp` copies left by the pre-#1020 layout.
-      for (const name of [RELOAD_FLAG_FILENAME, RELOAD_PENDING_FILENAME, RELOAD_DONE_FILENAME]) {
-        if (findControlFile(cwd, name) !== null) {
-          removeControlFile(cwd, name);
-          log.debug("stale reload state removed at session start", { file: name, reason });
+        // Manual /reload: it satisfies a sitting flag — the code just loaded
+        // IS the code the flag requested — so publish THAT nonce as done (the
+        // requester can then verify) and drop the flag so no second reload
+        // fires. A flag triggered reload never reaches here: it parked a
+        // pending nonce, and its flag is a newer request (#1091).
+        const flagPath = findControlFile(cwd, RELOAD_FLAG_FILENAME);
+        const sittingNonce = flagPath === null ? null : readNonce(flagPath);
+        if (sittingNonce !== null) {
+          // Drop the satisfied flag: the next turn must not reload again.
+          removeControlFile(cwd, RELOAD_FLAG_FILENAME);
+          writeControlFile(cwd, RELOAD_DONE_FILENAME, sittingNonce);
+          writeLegacyControlFile(cwd, RELOAD_DONE_FILENAME, sittingNonce);
+          log.info("reload_done", { nonce: sittingNonce, manual: true });
+        } else {
+          // No nonce yet (a flag mid-write): leave it — the watcher sees the
+          // finished write and dispatches the next reload.
+          log.debug("reload session_start without pending nonce (manual /reload)");
         }
       }
+    } else {
+      // Fresh session: latest code is already loaded — clear state that is
+      // genuinely stale, bounded by ownership and age (#1091). A flag written
+      // seconds ago may be a deploy in flight for another session in this
+      // checkout; deleting it destroys the handshake the deploy polls.
+      pruneStaleHandshake(cwd, reloadOwnerId(ctx), reason);
     }
 
     if (!watcher) {
@@ -468,6 +557,10 @@ export default function (pi: ExtensionAPI) {
   // Fallback for watchers that miss the file (also fires between turns).
   pi.on("turn_end", async (_event: any, ctx: any) => {
     if (!isLiveExtensionCtx(ctx)) return;
+    // #1091: same rule as session_start — a print/json child must not act on
+    // the handshake either (it would consume a request addressed to another
+    // session and never publish a done marker the requester can trust).
+    if (!isHandshakeParticipant(ctx.mode)) return;
     liveCwd = ctx.cwd;
     liveOwner = reloadOwnerId(ctx);
     try {

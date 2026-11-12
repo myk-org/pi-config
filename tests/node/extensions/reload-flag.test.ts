@@ -10,11 +10,13 @@
 
 import { test, describe, afterEach, it } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, utimesSync } from "node:fs";
 
 import path from "node:path";
 import reloadExtension, {
   shouldSkipReloadFlag,
+  isHandshakeParticipant,
+  STALE_HANDSHAKE_MS,
   RELOAD_COMMAND,
   runReloadFlagCommand,
   parkReloadNonce,
@@ -65,15 +67,21 @@ function legacyPath(cwd: string, name: string): string {
 }
 
 /** Mock ctx whose `mode` getter stays live (isLiveExtensionCtx compatible). */
-function makeCtx(cwd: string, reloads: { count: number }, sessionId = "test-session") {
+function makeCtx(cwd: string, reloads: { count: number }, sessionId = "test-session", mode = "agent") {
   return {
     cwd,
-    mode: "agent",
+    mode,
     sessionManager: { getSessionId: () => sessionId },
     reload: async () => {
       reloads.count++;
     },
   };
+}
+
+/** Age a control file past the stale bound (cleanup is time-bounded, #1091). */
+function backdate(file: string, ageMs = STALE_HANDSHAKE_MS * 2): void {
+  const when = new Date(Date.now() - ageMs);
+  utimesSync(file, when, when);
 }
 
 describe("reload-flag", () => {
@@ -342,7 +350,7 @@ describe("reload-flag", () => {
     }
   });
 
-  test("manual /reload satisfies a sitting flag — no second reload", async () => {
+  test("manual /reload satisfies a sitting flag — no second reload, done carries its nonce", async () => {
     const reg = register();
     const cwd = makeCwd();
     try {
@@ -352,6 +360,7 @@ describe("reload-flag", () => {
       // User reloaded manually BEFORE the watcher consumed the flag
       await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
       assert.ok(!existsSync(reloadFlagPath(cwd)), "sitting flag removed by manual reload");
+      assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "nonce-stale", "done = the code just loaded");
       await reg.handlers.get("turn_end")!({}, ctx);
       assert.equal(reg.sent.length, 0, "no double reload");
       await reg.handlers.get("session_shutdown")!({}, undefined);
@@ -368,12 +377,117 @@ describe("reload-flag", () => {
       writeFileSync(reloadFlagPath(cwd), "old");
       writeFileSync(reloadPendingPath(cwd), "older");
       writeFileSync(reloadDonePath(cwd), "oldest");
+      for (const file of [reloadFlagPath(cwd), reloadPendingPath(cwd), reloadDonePath(cwd)]) backdate(file);
       await reg.handlers.get("session_start")!({ reason: "startup" }, makeCtx(cwd, reloads));
       assert.ok(!existsSync(reloadFlagPath(cwd)));
       assert.ok(!existsSync(reloadPendingPath(cwd)));
       assert.ok(!existsSync(reloadDonePath(cwd)));
       await reg.handlers.get("turn_end")!({}, makeCtx(cwd, reloads));
       assert.equal(reg.sent.length, 0);
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("fresh session start keeps handshake state that is NOT old yet (#1091)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      const ctx = makeCtx(cwd, reloads, "session-B");
+      writeFileSync(reloadFlagPath(cwd), "deploy-in-flight");
+      writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: "p", owner: "" }));
+      writeFileSync(reloadDonePath(cwd), "stale-done");
+      backdate(reloadDonePath(cwd)); // only the done marker is old
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      assert.equal(readFileSync(reloadFlagPath(cwd), "utf-8"), "deploy-in-flight", "a just-written flag survives");
+      assert.ok(existsSync(reloadPendingPath(cwd)), "a just-parked pending survives");
+      assert.ok(!existsSync(reloadDonePath(cwd)), "an old done marker is still cleaned up");
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("a fresh session never deletes another session's pending, not even when old (#1091)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      writeFileSync(
+        reloadPendingPath(cwd),
+        JSON.stringify({ nonce: "nonce-A", owner: "1:session-A" }), // pid 1 = alive
+      );
+      backdate(reloadPendingPath(cwd));
+      const ctxB = makeCtx(cwd, reloads, "session-B");
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctxB);
+      assert.equal(JSON.parse(readFileSync(reloadPendingPath(cwd), "utf-8")).nonce, "nonce-A", "foreign pending kept");
+      await reg.handlers.get("turn_end")!({}, ctxB);
+      assert.equal(reg.sent.length, 0, "and B never dispatches for it");
+      await reg.handlers.get("session_shutdown")!({}, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("a print/json child session never deletes the handshake (#1091)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      writeFileSync(reloadFlagPath(cwd), "deploy-B");
+      writeFileSync(reloadPendingPath(cwd), JSON.stringify({ nonce: "nonce-1", owner: "1:session-A" }));
+      writeFileSync(reloadDonePath(cwd), "deploy-A");
+      for (const mode of ["json", "print"]) {
+        const ctx = makeCtx(cwd, { count: 0 }, "child", mode);
+        await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+        await reg.handlers.get("turn_end")!({}, ctx);
+      }
+      assert.equal(readFileSync(reloadFlagPath(cwd), "utf-8"), "deploy-B", "flag untouched");
+      assert.ok(existsSync(reloadPendingPath(cwd)), "pending untouched");
+      assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "deploy-A", "done untouched");
+      assert.equal(reg.sent.length, 0, "a child never dispatches the reload command");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("a flag written during an in-flight reload still reloads — done ends with the NEWER nonce (#1091)", async () => {
+    const reg = register();
+    const cwd = makeCwd();
+    try {
+      const reloads = { count: 0 };
+      const ctx = makeCtx(cwd, reloads, "session-A");
+      const command = reg.commands.get("reload-flag")!;
+      await reg.handlers.get("session_start")!({ reason: "startup" }, ctx);
+      // Deploy A: watcher dispatches, the command parks A's nonce and reloads.
+      writeFileSync(reloadFlagPath(cwd), "deploy-A");
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.deepEqual(reg.sent.map((s) => s.text), [RELOAD_COMMAND]);
+      await command("", ctx);
+      assert.equal(reloads.count, 1, "first reload fired");
+      assert.equal(JSON.parse(readFileSync(reloadPendingPath(cwd), "utf-8")).nonce, "deploy-A");
+      // Deploy B lands while A's reload is in flight...
+      writeFileSync(reloadFlagPath(cwd), "deploy-B");
+      // ...and a oneshot child starts in the same checkout in between.
+      const child = register();
+      await child.handlers.get("session_start")!(
+        { reason: "startup" },
+        makeCtx(cwd, { count: 0 }, "child", "json"),
+      );
+      assert.equal(readFileSync(reloadFlagPath(cwd), "utf-8"), "deploy-B", "the child deleted nothing");
+      // A's new runtime publishes the nonce it actually loaded, leaves B's flag.
+      await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
+      assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "deploy-A", "done = the nonce just loaded");
+      assert.equal(readFileSync(reloadFlagPath(cwd), "utf-8"), "deploy-B", "newer request left for the watcher");
+      // The watcher dispatches it → second reload → done converges on B.
+      await reg.handlers.get("turn_end")!({}, ctx);
+      assert.equal(reg.sent.length, 2, "second dispatch, not a swallowed request");
+      await command("", ctx);
+      assert.equal(reloads.count, 2, "second reload fired");
+      await reg.handlers.get("session_start")!({ reason: "reload" }, ctx);
+      assert.equal(readFileSync(reloadDonePath(cwd), "utf-8"), "deploy-B", "done ends with the NEWER nonce");
+      assert.ok(!existsSync(reloadFlagPath(cwd)), "no request left behind");
       await reg.handlers.get("session_shutdown")!({}, undefined);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
@@ -490,6 +604,17 @@ describe("reload-flag", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+});
+
+describe("isHandshakeParticipant", () => {
+  it("only an interactive session may touch the handshake (#1091)", () => {
+    assert.equal(isHandshakeParticipant("tui", ["node", "pi"]), true);
+    assert.equal(isHandshakeParticipant("agent", ["node", "pi"]), true);
+    assert.equal(isHandshakeParticipant("print", ["node", "pi"]), false);
+    assert.equal(isHandshakeParticipant("json", ["node", "pi"]), false);
+    assert.equal(isHandshakeParticipant("tui", ["node", "pi", "-p", "hi"]), false);
+    assert.equal(isHandshakeParticipant("tui", ["node", "pi", "--mode", "json"]), false);
   });
 });
 
