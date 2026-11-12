@@ -78,7 +78,7 @@ describe("openComsPeersOverlay compose key (#1077)", () => {
 
   it("treats a blank line as nothing to send and returns to the list", async () => {
     const sent: unknown[] = [];
-    const { ctx } = makeCtx(["m"], "   ");
+    const { ctx, openedCount } = makeCtx(["m"], "   ");
     await openComsPeersOverlay(ctx, {
       listPeers: () => [worker],
       killPeer: () => "killed",
@@ -89,6 +89,8 @@ describe("openComsPeersOverlay compose key (#1077)", () => {
       },
     });
     assert.deepEqual(sent, []);
+    // "returns to the list" is half the title, so it is asserted: the list re-opened.
+    assert.equal(openedCount(), 2);
   });
 
   it("offers no composer when the caller passes no tellPeer", async () => {

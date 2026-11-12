@@ -102,13 +102,16 @@ describe("buildBundledContent (#1077, Qodo: bundle labelled as the user's)", () 
 		assert.match(bundle.header, /ORIGINS ARE MIXED/);
 	});
 
-	it("keeps the shared origin when every message agrees, and defaults to peer", () => {
+	it("keeps the shared origin when every message agrees", () => {
 		const userOnly = buildBundledContent("sender", [
 			{ msg_id: "m1", prompt: "a", origin: "user" },
 			{ msg_id: "m2", prompt: "b", origin: "user" },
 		]);
 		assert.equal(userOnly.origin, "user");
 		assert.doesNotMatch(userOnly.header, /MIXED/);
+	});
+
+	it("defaults a message with no origin field to peer", () => {
 		const peerOnly = buildBundledContent("sender", [{ msg_id: "m1", prompt: "a" }]);
 		assert.equal(peerOnly.origin, "peer");
 		assert.match(peerOnly.content, /\[from sender\] a/);

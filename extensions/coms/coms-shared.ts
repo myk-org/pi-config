@@ -532,6 +532,9 @@ export function buildBundledContent(
 	const mixed = shared === undefined
 		? " ORIGINS ARE MIXED: messages tagged [from USER (a human), via …] are the human's words; the rest are another agent's. Weigh them differently."
 		: "";
+	// The only trace of WHY a bundle rendered its labels the way it did — a mixed bundle gets no
+	// bundle-level marker, which looks like a missing one unless this line says otherwise.
+	log.debug("bundle_origins", { messages: messages.length, shared: shared ?? "mixed", origins: [...origins].join(",") });
 	const header = `[BUNDLED: ${messages.length} messages from ${safeSender}. Later messages may override earlier ones. Read ALL before acting.${mixed}]`;
 	return { header, content, ...(shared ? { origin: shared } : {}) };
 }
