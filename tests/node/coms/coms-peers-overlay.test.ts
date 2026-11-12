@@ -165,3 +165,55 @@ describe("openComsPeersOverlay drilldown (#1084 finding 1)", () => {
     assert.equal(opened[2].listSpec.title, "Coms peers");
   });
 });
+
+describe("openComsPeersOverlay multi-select compose (#1084)", () => {
+  const peer = (name: string): RegistryRow => ({ ...worker, name, endpoint: `/tmp/${name}.sock` });
+
+  it("sends one request per selected peer and reports them in ONE notify line", async () => {
+    const sent: string[] = [];
+    const { ctx, notifications, inputTitles } = makeCtx([" ", "j", " ", "m"], "go");
+    await openComsPeersOverlay(ctx, {
+      listPeers: () => [peer("alpha"), peer("beta"), peer("gamma")],
+      killPeer: () => "killed",
+      killAll: () => "killed all",
+      tellPeer: async (request) => {
+        sent.push(request.target);
+        return `\ud83d\udce1 sent to ${request.target}`;
+      },
+    });
+    assert.deepEqual(sent, ["alpha", "beta"]);
+    assert.match(inputTitles[0], /Message 2 peers/);
+    assert.equal(notifications.length, 1, "one line for the whole send");
+    assert.match(notifications[0], /sent 2 peers/);
+  });
+
+  it("names the peer that failed and never reports a partial send as success", async () => {
+    const { ctx, notifications } = makeCtx([" ", "j", " ", "m"], "go");
+    await openComsPeersOverlay(ctx, {
+      listPeers: () => [peer("alpha"), peer("beta"), peer("gamma")],
+      killPeer: () => "killed",
+      killAll: () => "killed all",
+      tellPeer: async (request) =>
+        request.target === "beta" ? "\u26a0\ufe0f delivery to beta failed: gone" : `\ud83d\udce1 sent to ${request.target}`,
+    });
+    assert.equal(notifications.length, 1);
+    assert.match(notifications[0], /sent 1 · failed 1: beta/);
+    assert.equal(notifications[0].startsWith("\u26a0"), true);
+  });
+
+  it("sends once when the same peer is selected twice", async () => {
+    const sent: string[] = [];
+    // Space toggles: select alpha, deselect it, select it again — the id must still send once.
+    const { ctx } = makeCtx([" ", " ", " ", "m"], "go");
+    await openComsPeersOverlay(ctx, {
+      listPeers: () => [peer("alpha"), peer("beta")],
+      killPeer: () => "killed",
+      killAll: () => "killed all",
+      tellPeer: async (request) => {
+        sent.push(request.target);
+        return `\ud83d\udce1 sent to ${request.target}`;
+      },
+    });
+    assert.deepEqual(sent, ["alpha"]);
+  });
+});

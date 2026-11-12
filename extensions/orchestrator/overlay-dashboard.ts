@@ -81,8 +81,10 @@ export interface OverlayListSpec<
   /** Optional bulk-action key (a) — destructive, so callers should confirm first. */
   onKillAll?: () => void;
   /** Optional compose key (m): the caller needs the whole terminal for a text dialog, so the
-   *  list closes and can be re-opened once the composed text is handled. */
-  onCompose?: (item: TItem) => void;
+   *  list closes and can be re-opened once the composed text is handled. Compose acts on the
+   *  SELECTION, like `x`: every multi-selected row, or just the focused one when nothing is
+   *  selected. Handling only the focused row silently dropped the rest (#1084). */
+  onCompose?: (items: TItem[]) => void;
   /** Enter hands the item back to the caller instead of opening a detail pane: a caller that
    *  navigates a level deeper opens its own overlay and re-opens this list when that one closes,
    *  which is what makes Esc walk back one level at a time. */
@@ -241,10 +243,13 @@ export class OverlayListDashboard<
       return;
     }
     if (data === "m" && this.spec.onCompose) {
-      const item = items[this.selection.index];
-      if (item) {
-        log.debug("list_compose_key", { id: item.id });
-        this.spec.onCompose(item);
+      // Same target set `x` uses: the multi-selection when there is one, else the focused row.
+      const targets = this.multi.size > 0
+        ? items.filter((i) => this.multi.has(i.id))
+        : [items[this.selection.index]].filter(Boolean);
+      if (targets.length > 0) {
+        log.debug("list_compose_key", { rows: targets.length, multi: this.multi.size > 0 });
+        this.spec.onCompose(targets);
         this.close(null);
       }
       return;
