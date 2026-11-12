@@ -20,6 +20,8 @@ export interface CronStatusTaskView {
   createdAt: number;
   lastRun?: number;
   nextRun?: number;
+  /** Paused by the user: kept in the store, never armed (issue #1087). */
+  paused?: boolean;
   /** Optional scope and leader-state label shown in overlay rows. */
   sessionLabel?: string;
   isLocal?: boolean;
@@ -93,6 +95,17 @@ export function formatNextRunLabel(
   return `in ${formatRelativeMs(delta)}`;
 }
 
+/** One state word shared by `cron_manage list` and the overlay's paused row. */
+export function cronStateLabel(task: { paused?: boolean; leader?: boolean }): string {
+  if (task.paused) return "⏸ paused";
+  return task.leader === false ? "waiting for leader" : "active";
+}
+
+/** Whether the pause reached the store — the caller must not show a state that was never written. */
+export type CronPauseResult =
+  | { ok: true; paused: boolean }
+  | { ok: false; paused: boolean };
+
 /** Detail rows rendered by the cron task overlay, uncolored (label, value). */
 export function cronDetailRows(
   task: CronStatusTaskView,
@@ -128,6 +141,7 @@ export function toCronStatusTaskView(
     createdAt: number;
     lastRun?: number;
     nextRun?: number;
+    paused?: boolean;
   },
   opts: {
     overlayId: string;
@@ -148,6 +162,7 @@ export function toCronStatusTaskView(
     createdAt: task.createdAt,
     lastRun: task.lastRun,
     nextRun: task.nextRun,
+    paused: task.paused,
     sessionLabel: opts.sessionLabel,
     isLocal: opts.isLocal,
     cronFile: opts.cronFile,

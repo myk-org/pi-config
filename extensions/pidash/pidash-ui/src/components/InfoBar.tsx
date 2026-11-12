@@ -62,7 +62,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
   }>({ count: 0, agents: "", jobs: [] });
   const [cronTasks, setCronTasks] = useState<{
     count: number;
-    tasks: Array<{ id: string; description: string; schedule: string; lastRun?: number; nextRun?: number; leader?: boolean }>;
+    tasks: Array<{ id: string; description: string; schedule: string; lastRun?: number; nextRun?: number; leader?: boolean; paused?: boolean }>;
   }>({ count: 0, tasks: [] });
   const filterRef = useRef<HTMLInputElement>(null);
   const thinkingButtonRef = useRef<HTMLButtonElement>(null);
@@ -412,7 +412,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
                       <div className="flex-1 min-w-0">
                         <div className="font-medium text-foreground truncate">{task.description}</div>
                         <div className="text-muted-foreground text-[10px]">{task.schedule}</div>
-                        <div className="text-muted-foreground text-[10px]">last: {lastRunStr} · next: {nextRunStr}{task.leader === false ? " · waiting for leader" : ""}</div>
+                        <div className="text-muted-foreground text-[10px]">last: {lastRunStr} · next: {nextRunStr}{task.paused ? " · ⏸ paused" : task.leader === false ? " · waiting for leader" : ""}</div>
                       </div>
                       <div className="flex gap-1 shrink-0">
                         <button

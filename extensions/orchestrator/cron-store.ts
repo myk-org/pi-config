@@ -22,6 +22,8 @@ export interface DurableCronTask {
   createdAt: number;
   lastRun?: number;
   nextRun?: number;
+  /** Paused by the user: the definition is kept, no timer is armed (issue #1087). */
+  paused?: boolean;
 }
 export interface DurableCronEnvelope { version: 1; tasks: DurableCronTask[]; }
 export interface CronLockOwner { pid: number; process_start_token: string; instance_id: string; heartbeat_at: string; pid_namespace?: string; fd?: number; }
@@ -188,6 +190,7 @@ export function validateDurableCronTask(task: unknown): asserts task is DurableC
   // Disk data is untrusted: guard the type before parseModelOverride, which assumes a string.
   if (value.model !== undefined && (typeof value.model !== "string" || !parseModelOverride(value.model))) throw new Error("Invalid durable cron model");
   if ((value.lastRun !== undefined && !Number.isFinite(value.lastRun)) || (value.nextRun !== undefined && !Number.isFinite(value.nextRun))) throw new Error("Invalid durable cron timestamp");
+  if (value.paused !== undefined && typeof value.paused !== "boolean") throw new Error("Invalid durable cron paused flag");
 }
 function validate(tasks: DurableCronTask[]) { for (const task of tasks) validateDurableCronTask(task); }
 function atomicWrite(file: string, content: string) {
@@ -233,6 +236,21 @@ export function mutateDurableCronStore(store: string, change: (tasks: DurableCro
     fs.closeSync(kernel);
     log.debug("cron_mutation_kernel_lock", { store, outcome: "released" });
   }
+}
+/**
+ * Write ONLY the `paused` flag of one stored task, preserving every other field a peer may have
+ * written. A rejoining leader persists its whole in-memory record, so a full-record pause write
+ * could be clobbered by it; this read-modify-write cannot (#1089).
+ */
+export function setDurableCronPaused(store: string, id: string, paused: boolean): boolean {
+  let found = false;
+  mutateDurableCronStore(store, (tasks) => tasks.map((task) => {
+    if (task.id !== id) return task;
+    found = true;
+    return { ...task, paused };
+  }));
+  log.debug("cron_pause_persisted", { store, id, paused, found });
+  return found;
 }
 export function acquireLeaderLock(store: string, instanceId: string, deps: StartTokenDeps = startTokenDeps): CronLockOwner | null { return acquireDirectoryLock(lockPath(store, "leader"), instanceId, true, deps); }
 export function isLeaderLockCurrent(store: string, owner: CronLockOwner): boolean {

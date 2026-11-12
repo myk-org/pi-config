@@ -59,7 +59,7 @@ export async function openComsPeersOverlay(
   // queues (a bare variable would be narrowed to null across the await, since the assignment
   // happens inside its callback).
   // Each entry: the rows that survived to this moment, and the selected ids that had already gone.
-  const composeQueue: Array<{ rows: Row[]; missing: string[] }> = [];
+  const composeQueue: Array<{ rows: Row[]; missing: readonly string[] }> = [];
   // The ticks belong to the USER, not to one dashboard instance: entering a drilldown re-opens the
   // list with a fresh instance, so the selection survives here instead (a `Set` the overlay seeds
   // and reports back into). Same reason `reselectPeer` exists for the cursor.

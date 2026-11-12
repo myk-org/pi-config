@@ -108,6 +108,7 @@ Persisted tasks are written to `.pi/cron/crons.json` in the project and reloaded
 | See only persisted schedules | `/cron --persist list` | Filters the overlay down to project-scoped crons |
 | See all session schedules | `/cron list-all` | Cross-session view of active cron files |
 | Remove a known cron | `/cron remove <id>` | Direct removal by task ID |
+| Disable a cron without deleting it | `/cron list` → `p` | Toggles `⏸ paused`; the definition is kept and a persisted flag survives restarts. Resuming schedules a fresh interval (missed runs are not caught up), and a paused cron is not counted as a peer's active work |
 
 ### Pick the Model for Background Work
 

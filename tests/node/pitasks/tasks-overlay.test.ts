@@ -8,12 +8,16 @@ import {
 	formatTasksPlainText,
 	nextTaskStatus,
 	parseTasksCommand,
+	planTaskCompose,
+	taskComposePrompt,
 	taskDetailRows,
 	taskStatusGlyph,
 	tasksOverlayDeps,
+	tasksOverlayIntent,
 	toTaskRowView,
 } from "../../../extensions/pitasks/tasks-view.ts";
 import type { Task, TaskStatus } from "../../../extensions/pitasks/types.ts";
+import { openTasksOverlay } from "../../../extensions/pitasks/tasks-ui.ts";
 
 function task(overrides: Partial<Task> = {}): Task {
 	return {
@@ -228,9 +232,78 @@ describe("formatTasksPlainText", () => {
 });
 
 describe("tasksOverlayDeps", () => {
+	function deps(store: { list?: () => Task[]; get?: (id: string) => Task | undefined } = {}) {
+		const created: string[] = [];
+		const updated: Array<[string, string]> = [];
+		const ui = tasksOverlayDeps({
+			list: store.list ?? (() => []),
+			get: store.get ?? (() => undefined),
+			create: (subject) => { created.push(subject); return { id: String(created.length) }; },
+			update: (id, fields) => { if ("subject" in fields) updated.push([id, fields.subject]); },
+		});
+		return { ui, created, updated };
+	}
+
+	it("maps n to add", () => {
+		assert.equal(tasksOverlayIntent("n"), "add");
+	});
+
+	it("maps e to edit", () => {
+		assert.equal(tasksOverlayIntent("e"), "edit");
+	});
+
+	it("ignores every other key", () => {
+		for (const key of ["x", "j", "k", "m", "N", ""]) {
+			assert.equal(tasksOverlayIntent(key), undefined);
+		}
+	});
+
+	it("creates a task from the typed subject", () => {
+		const { ui, created } = deps();
+		const plan = planTaskCompose("  ship the overlay  ");
+		assert.deepEqual(plan, { kind: "create", subject: "ship the overlay" });
+		if (plan.kind === "create") ui.createTask(plan.subject);
+		assert.deepEqual(created, ["ship the overlay"]);
+	});
+
+	it("renames through the store", () => {
+		const { ui, updated } = deps({ get: () => task({ id: "3" }) });
+		const plan = planTaskCompose("new subject", { id: "3", subject: "old subject" });
+		assert.deepEqual(plan, { kind: "rename", id: "3", subject: "new subject" });
+		if (plan.kind === "rename") ui.updateTaskSubject(plan.id, plan.subject);
+		assert.deepEqual(updated, [["3", "new subject"]]);
+	});
+
+	it("refuses a cancelled line", () => {
+		const { created, updated } = deps({ get: () => task({ id: "3" }) });
+		assert.deepEqual(planTaskCompose(undefined), { kind: "skip", reason: "cancelled" });
+		assert.deepEqual(created, []);
+		assert.deepEqual(updated, []);
+	});
+
+	it("refuses a blank line instead of writing an empty subject", () => {
+		const { created, updated } = deps({ get: () => task({ id: "3" }) });
+		assert.deepEqual(planTaskCompose("   ", { id: "3", subject: "old" }), { kind: "skip", reason: "blank" });
+		assert.deepEqual(created, []);
+		assert.deepEqual(updated, []);
+	});
+
+	it("treats an unchanged subject as a no-op", () => {
+		const { created, updated } = deps({ get: () => task({ id: "3", subject: "same" }) });
+		assert.deepEqual(planTaskCompose(" same ", { id: "3", subject: "same" }), { kind: "skip", reason: "unchanged" });
+		assert.deepEqual(created, []);
+		assert.deepEqual(updated, []);
+	});
+
+	it("reports a vanished task instead of writing", () => {
+		const { ui, updated } = deps();
+		assert.equal(ui.updateTaskSubject("99", "anything"), false);
+		assert.deepEqual(updated, []);
+	});
+
 	it("reads the live store on every call, never a snapshot", () => {
 		let tasks = [task({ id: "1" })];
-		const deps = tasksOverlayDeps({ list: () => tasks, get: () => undefined, update: () => undefined });
+		const deps = tasksOverlayDeps({ list: () => tasks, get: () => undefined, create: () => ({ id: "1" }), update: () => undefined });
 		assert.equal(deps.listTasks().length, 1);
 		tasks = [task({ id: "1" }), task({ id: "2" })];
 		assert.equal(deps.listTasks().length, 2);
@@ -243,7 +316,8 @@ describe("tasksOverlayDeps", () => {
 			{
 				list: () => [task({ id: "3" })],
 				get: (id) => (id === "3" ? task({ id: "3" }) : undefined),
-				update: (id, fields) => { updates.push([id, fields.status]); },
+				create: () => ({ id: "4" }),
+				update: (id, fields) => { updates.push([id, "status" in fields ? fields.status : fields.subject]); },
 			},
 			(id) => { deleted.push(id); },
 		);
@@ -257,6 +331,7 @@ describe("tasksOverlayDeps", () => {
 			{
 				list: () => [task({ id: "3" })],
 				get: () => task({ id: "3" }),
+				create: () => ({ id: "4" }),
 				update: () => undefined,
 			},
 			(id) => { deleted.push(id); },
@@ -267,8 +342,231 @@ describe("tasksOverlayDeps", () => {
 
 	it("does not write for an unknown id", () => {
 		let writes = 0;
-		const deps = tasksOverlayDeps({ list: () => [], get: () => undefined, update: () => { writes++; } });
+		const deps = tasksOverlayDeps({ list: () => [], get: () => undefined, create: () => ({ id: "1" }), update: () => { writes++; } });
 		assert.equal(deps.deleteTask("99"), false);
+		assert.equal(writes, 0);
+	});
+});
+
+describe("taskComposePrompt (#1089)", () => {
+	it("starts a create with an empty line", () => {
+		assert.deepEqual(taskComposePrompt(), { title: "New task subject", initialValue: "" });
+	});
+
+	it("starts an edit from the current subject, not a placeholder", () => {
+		assert.deepEqual(taskComposePrompt({ id: "3", subject: "wire the overlay" }), {
+			title: "Edit #3 subject",
+			initialValue: "wire the overlay",
+		});
+	});
+
+	it("feeds the prefill back into the unchanged decision", () => {
+		const current = { id: "3", subject: "wire the overlay" };
+		assert.deepEqual(planTaskCompose(taskComposePrompt(current).initialValue, current), {
+			kind: "skip",
+			reason: "unchanged",
+		});
+	});
+});
+
+describe("openTasksOverlay multi-select (#1087)", () => {
+	/** A store whose `status: "deleted"` writes are recorded, so "which ids" is observable. */
+	function deleteTracking(initial: Task[]) {
+		const deleted: string[] = [];
+		const tasks = [...initial];
+		return {
+			deleted,
+			store: {
+				list: () => tasks.filter((t) => !deleted.includes(t.id)),
+				get: (id: string) => tasks.find((t) => t.id === id),
+				create: () => ({ id: "99" }),
+				update: (id: string, fields: { status?: string }) => {
+					if (fields.status === "deleted") deleted.push(id);
+				},
+			},
+		};
+	}
+
+	it("x deletes exactly the selected tasks and notifies once", async () => {
+		// Space #1, j, Space #2, j to #3 (not selected), x, then close.
+		const { ctx, notifications } = makeTasksCtx([[" ", "j", " ", "j", "x", "close"]]);
+		const memory = deleteTracking([
+			task({ id: "1", status: "pending" }),
+			task({ id: "2", status: "pending" }),
+			task({ id: "3", status: "pending" }),
+		]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.deepEqual(memory.deleted, ["1", "2"], "the focused-but-unselected #3 is untouched");
+		assert.deepEqual(notifications, [{ message: "deleted 2 tasks", level: "info" }]);
+	});
+
+	it("names a task whose delete did not go through", async () => {
+		const { ctx, notifications } = makeTasksCtx([[" ", "j", " ", "x", "close"]]);
+		const deps = {
+			listTasks: () => [task({ id: "1" }), task({ id: "2" })],
+			deleteTask: (id: string) => id !== "2",
+			createTask: () => "99",
+			updateTaskSubject: () => true,
+		};
+		await openTasksOverlay(ctx, deps);
+		assert.deepEqual(notifications, [
+			{ message: "deleted 1 of 2 tasks — failed: #2", level: "warning" },
+		]);
+	});
+
+	it("keeps deleting after one delete throws", async () => {
+		// A store write-lock timeout on #1 must not abandon #2 the user also selected.
+		const { ctx, notifications } = makeTasksCtx([[" ", "j", " ", "x", "close"]]);
+		const deleted: string[] = [];
+		const deps = {
+			listTasks: () => [task({ id: "1" }), task({ id: "2" })],
+			deleteTask: (id: string) => {
+				if (id === "1") throw new Error("store is locked");
+				deleted.push(id);
+				return true;
+			},
+			createTask: () => "99",
+			updateTaskSubject: () => true,
+		};
+		await openTasksOverlay(ctx, deps);
+		assert.deepEqual(deleted, ["2"], "the throw did not abort the remaining delete");
+		assert.deepEqual(notifications, [
+			{ message: "deleted 1 of 2 tasks — failed: #1", level: "warning" },
+		]);
+	});
+
+	for (const key of ["n", "e"]) {
+		it(`refuses ${key} while a selection exists, without opening a dialog`, async () => {
+			const { ctx, notifications, openedCount } = makeTasksCtx([[" ", key, "close"]]);
+			const memory = inMemoryStore([task({ id: "3", subject: "wire the overlay" })]);
+			await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+			assert.equal(openedCount(), 1, "the list is not re-opened: no dialog ran");
+			assert.deepEqual(memory.created, []);
+			assert.equal(notifications.length, 1);
+			assert.equal(notifications[0].level, "warning");
+			assert.match(notifications[0].message, /clear the selection \(Space\)/);
+		});
+	}
+
+	it("still acts on the focused row when nothing is selected", async () => {
+		const { ctx, openedCount } = makeTasksCtx([["e"], ["\n"]]);
+		const memory = inMemoryStore([task({ id: "3", subject: "wire the overlay" })]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.equal(openedCount(), 3, "the edit dialog opened, then the list re-opened");
+	});
+});
+
+/**
+ * An empty board has no row to press `n` on: `openTasksOverlay` must open the create dialog
+ * itself. `ctx.ui.custom` is mocked so the real list overlay and the real input dialog receive
+ * the keystrokes (#1089).
+ */
+function makeTasksCtx(opens: string[][]) {
+	const notifications: Array<{ message: string; level: string }> = [];
+	/** Rendered frame of every list that opened — the footer is asserted through what is drawn. */
+	const frames: string[][] = [];
+	let opened = 0;
+	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+	const tui = { terminal: { rows: 20 }, requestRender: () => {} };
+	const keybindings = { matches: (data: string, action: string) => action === "tui.select.cancel" && data === "close" };
+	const ctx = {
+		hasUI: true,
+		ui: {
+			notify: (message: string, level: string) => { notifications.push({ message, level }); },
+			input: async () => undefined,
+			custom: async (factory: any) => {
+				const keys = opens[opened];
+				opened += 1;
+				if (!keys) return null; // a further open: close it
+				return new Promise((resolve) => {
+					const component = factory(tui, theme, keybindings, resolve);
+					frames.push(component.render(100));
+					for (const key of keys) component.handleInput(key);
+				});
+			},
+		},
+	};
+	return { ctx: ctx as any, notifications, openedCount: () => opened, frames };
+}
+
+function inMemoryStore(initial: Task[] = []) {
+	const tasks = [...initial];
+	const created: string[] = [];
+	return {
+		tasks,
+		created,
+		store: {
+			list: () => tasks,
+			get: (id: string) => tasks.find((t) => t.id === id),
+			create: (subject: string) => { created.push(subject); const next = task({ id: String(tasks.length + 1), subject, status: "pending" }); tasks.push(next); return { id: next.id }; },
+			update: () => undefined,
+		},
+	};
+}
+
+describe("openTasksOverlay footer (#1089)", () => {
+	it("names only keys that work, with or without a selection", async () => {
+		// `x` deletes the selection when there is one and the focused row otherwise, and Esc
+		// always closes — the footer must not promise one and hide the other.
+		const { ctx, frames } = makeTasksCtx([["close"]]);
+		await openTasksOverlay(ctx, tasksOverlayDeps(inMemoryStore([task({ id: "3" })]).store));
+		const footer = frames[0].find((line) => line.includes("Space select")) ?? "";
+		assert.equal(
+			footer.trim(),
+			"Space select · x delete · n add · e edit · Enter view · Esc close",
+		);
+	});
+});
+
+describe("openTasksOverlay first task (#1089)", () => {
+	it("creates the first task when the board is empty", async () => {
+		const { ctx, openedCount } = makeTasksCtx([["first task", "\n"]]);
+		const memory = inMemoryStore();
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.deepEqual(memory.created, ["first task"]);
+		assert.equal(memory.tasks.length, 1, "the created task is visible to the next list");
+		assert.equal(openedCount(), 2, "the list re-opens on the new task");
+	});
+
+	it("returns instead of reopening a cancelled first-task dialog", async () => {
+		const { ctx, openedCount } = makeTasksCtx([["\x1b"]]);
+		const memory = inMemoryStore();
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.deepEqual(memory.created, []);
+		assert.equal(memory.tasks.length, 0);
+		assert.equal(openedCount(), 1, "a cancel must not loop");
+	});
+
+	it("does not create from a blank first-task line", async () => {
+		const { ctx } = makeTasksCtx([["\n"]]);
+		const memory = inMemoryStore();
+		await openTasksOverlay(ctx, tasksOverlayDeps(memory.store));
+		assert.deepEqual(memory.created, []);
+	});
+});
+
+describe("openTasksOverlay edit prefill (#1089)", () => {
+	it("opens the edit dialog on the current subject", async () => {
+		// 1st open: the list, `e` on the focused row. 2nd: the subject dialog, typed onto the
+		// prefill. A placeholder-only dialog would submit " x", not "wire the overlay x".
+		const { ctx } = makeTasksCtx([["e"], [" x", "\n"]]);
+		const memory = inMemoryStore([task({ id: "3", subject: "wire the overlay" })]);
+		const updates: Array<[string, string]> = [];
+		await openTasksOverlay(ctx, tasksOverlayDeps({
+			...memory.store,
+			update: (id, fields) => { if ("subject" in fields) updates.push([id, fields.subject]); },
+		}));
+		assert.deepEqual(updates, [["3", "wire the overlay x"]]);
+	});
+
+	it("writes nothing when the prefilled subject is saved unchanged", async () => {
+		const { ctx } = makeTasksCtx([["e"], ["\n"]]);
+		const memory = inMemoryStore([task({ id: "3", subject: "wire the overlay" })]);
+		let writes = 0;
+		await openTasksOverlay(ctx, tasksOverlayDeps({
+			...memory.store,
+			update: () => { writes++; },
+		}));
 		assert.equal(writes, 0);
 	});
 });

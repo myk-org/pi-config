@@ -9,10 +9,11 @@ interface Row { id: string; status: string }
 
 /** Fake TUI/Theme/KeybindingsManager — only what OverlayListDashboard touches.
  *  `persisted` = the selection a caller kept from a previous open (#1084 round trip). */
-function harness(options: { selectable?: boolean; persisted?: string[] } = {}) {
+function harness(options: { selectable?: boolean; killAll?: boolean; persisted?: string[] } = {}) {
   log.debug("create_harness", { selectable: options.selectable === true });
   const kills: string[][] = [];
-  const composes: Array<{ ids: string[]; missing: string[] }> = [];
+  const keyCalls: Array<{ key: string; id: string | undefined; selected: string[] }> = [];
+  const composes: Array<{ ids: string[]; missing: readonly string[] }> = [];
   const selectionChanges: string[][] = [];
   let killAllCalls = 0;
   let rows: Row[] = [
@@ -36,9 +37,14 @@ function harness(options: { selectable?: boolean; persisted?: string[] } = {}) {
     }),
     onX: (job: Row) => { kills.push([job.id]); },
     onXSelected: (items: Row[]) => { kills.push(items.map((i) => i.id)); },
-    onKillAll: () => { killAllCalls++; },
-    onCompose: (items: Row[], missingIds: string[]) => {
+    onKillAll: options.killAll === false ? undefined : () => { killAllCalls++; },
+    onCompose: (items: Row[], missingIds: readonly string[]) => {
       composes.push({ ids: items.map((i) => i.id), missing: missingIds });
+    },
+    // Returns false so the built-in keys still act; this only records what onKey was handed.
+    onKey: (key: string, item: Row | undefined, selected: readonly Row[]) => {
+      keyCalls.push({ key, id: item?.id, selected: selected.map((row) => row.id) });
+      return false as const;
     },
     onSelectionChange: (ids: string[]) => { selectionChanges.push(ids); },
   };
@@ -57,6 +63,7 @@ function harness(options: { selectable?: boolean; persisted?: string[] } = {}) {
     spec,
     selection,
     kills,
+    keyCalls,
     composes,
     get killAllCalls() { return killAllCalls; },
     footer: () => dash.render(100).find((l) => l.includes("select")) ?? "",
@@ -157,6 +164,36 @@ describe("OverlayListDashboard multi-select", () => {
     // confirm() prompt left the overlay hanging on hosts where it never resolved.
     assert.equal(h.killAllCalls, 1);
     h.dash.dispose();
+  });
+
+  it("hands onKey the focused row and the Space-picked selection", () => {
+    const h = harness({ selectable: true });
+    h.press(" ");            // select the focused row (a)
+    h.press("j");            // focus b, still unselected
+    h.press("q");            // a key no built-in handles
+    assert.deepEqual(h.keyCalls.at(-1), { key: "q", id: "b", selected: ["a"] });
+    h.dash.dispose();
+  });
+
+  it("hands onKey an empty selection when nothing is picked", () => {
+    const h = harness({ selectable: true });
+    h.press("j");
+    h.press("q");
+    assert.deepEqual(h.keyCalls.at(-1), { key: "q", id: "b", selected: [] });
+    h.dash.dispose();
+  });
+
+  it("advertises only the bulk keys the spec really wires", () => {
+    // A list with `x` on the selection but no kill-all must not promise `X`.
+    const partial = harness({ selectable: true, killAll: false });
+    const partialFooter = partial.footer();
+    assert.match(partialFooter, /x on selection/);
+    assert.doesNotMatch(partialFooter, /X on selection/);
+    partial.dash.dispose();
+
+    const full = harness({ selectable: true });
+    assert.match(full.footer(), /x\/X on selection/);
+    full.dash.dispose();
   });
 
   it("non-selectable overlays keep the original footer hints", () => {

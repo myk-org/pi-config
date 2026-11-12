@@ -8,7 +8,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { killAllJobs } from "../../../extensions/orchestrator/async-status-ui.js";
+import { killAllJobs, openAsyncStatusOverlay } from "../../../extensions/orchestrator/async-status-ui.js";
 
 type Job = { id: string; name: string; status: string };
 
@@ -23,6 +23,62 @@ function ctx() {
     ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
   };
 }
+
+describe("selection kill (x on Space-picked rows)", () => {
+  /** The real overlay with a mocked `ctx.ui.custom`, so `x` reaches the real onXSelected. */
+  function ui(keys: string[]) {
+    const notifications: { message: string; level: string }[] = [];
+    const tui = { terminal: { rows: 20 }, requestRender: () => {} };
+    const theme = { fg: (_c: string, text: string) => text, bold: (text: string) => text };
+    const keybindings = {
+      matches: (data: string, action: string) => action === "tui.select.cancel" && data === "close",
+    };
+    return {
+      notifications,
+      ctx: {
+        hasUI: true,
+        ui: {
+          notify: (message: string, level: string) => notifications.push({ message, level }),
+          custom: async (factory: any) =>
+            new Promise((resolve) => {
+              const component = factory(tui, theme, keybindings, resolve);
+              for (const key of keys) component.handleInput(key);
+              component.handleInput("close");
+            }),
+        },
+      },
+    };
+  }
+
+  const deps = (jobs: Job[], killJob: (id: string) => any) =>
+    ({ listJobs: () => jobs, killJob, formatDuration: (ms: number) => `${ms}ms` }) as any;
+
+  it("kills every selected job and reports the count once", async () => {
+    const h = ui([" ", "j", " ", "x"]);
+    const killed: string[] = [];
+    await openAsyncStatusOverlay(h.ctx as any, deps([job("a"), job("b"), job("c")], (id) => {
+      killed.push(id);
+      return { killed: [`agent-${id}`], errors: [] };
+    }));
+    assert.deepEqual(killed, ["a", "b"]);
+    assert.deepEqual(h.notifications, [{ message: "killed 2 async agents", level: "info" }]);
+  });
+
+  it("names a job whose selection kill failed instead of reporting a clean sweep", async () => {
+    const h = ui([" ", "j", " ", "x"]);
+    await openAsyncStatusOverlay(h.ctx as any, deps([job("a"), job("b")], (id) =>
+      id === "b"
+        ? { killed: [], errors: ["Could not stop agent-b (pid 1 still running)."] }
+        : { killed: [`agent-${id}`], errors: [] },
+    ));
+    assert.deepEqual(h.notifications, [
+      {
+        message: "killed 1 of 2 async agents — failed: b: Could not stop agent-b (pid 1 still running).",
+        level: "warning",
+      },
+    ]);
+  });
+});
 
 describe("killAllJobs", () => {
   it("attempts later jobs after one throws and reports partial failure", () => {

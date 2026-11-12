@@ -9,6 +9,7 @@ import { parseAsyncOutputLine } from "./async-status-parse.js";
 import {
   openListDetailOverlay,
   OverlayScrollDetail,
+  bulkResultMessage,
 } from "./overlay-dashboard.js";
 import { createLogger } from "../shared/logger.js";
 import { KILL_ORIGIN_LABELS, type AsyncKillOrigin } from "./async-agents.js";
@@ -131,27 +132,7 @@ export function killAllJobs(
     ctx.ui?.notify?.("No running async agents to kill.", "info");
     return;
   }
-  // Each kill is attempted independently: a failure on one job must not leave the
-  // remaining agents running after the user asked for all of them to die. A callback that
-  // returns errors (rather than throwing) counts as a failure too — signalling can fail
-  // while the worker is still alive, and reporting that as "killed" would be a lie.
-  const failed: string[] = [];
-  let killed = 0;
-  for (const job of targets) {
-    try {
-      const result = deps.killJob(job.id);
-      if (result?.errors?.length) {
-        failed.push(...result.errors);
-        log.error("kill_all: job kill reported errors", { job: job.id, errors: result.errors });
-        continue;
-      }
-      killed++;
-    } catch (e: any) {
-      const message = e?.message || String(e);
-      failed.push(`${job.id}: ${message}`);
-      log.error("kill_all: job kill failed", { job: job.id, error: message });
-    }
-  }
+  const { killed, failed } = killTargets(deps, targets);
   if (failed.length === 0) {
     log.info("kill_all: killed", { count: killed });
     ctx.ui?.notify?.(
@@ -165,6 +146,37 @@ export function killAllJobs(
     `Killed ${killed} of ${targets.length} async agents — ${failed.length} failed. See logs.`,
     "warning",
   );
+}
+
+/**
+ * Each kill is attempted independently: a failure on one job must not leave the remaining agents
+ * running after the user asked for all of them to die. A callback that returns errors (rather than
+ * throwing) counts as a failure too — signalling can fail while the worker is still alive, and
+ * reporting that as "killed" would be a lie. Returns the failed labels, never a silent count.
+ */
+function killTargets(
+  deps: AsyncStatusUiDeps,
+  targets: readonly AsyncStatusJobView[],
+): { killed: number; failed: string[] } {
+  const failed: string[] = [];
+  let killed = 0;
+  for (const job of targets) {
+    try {
+      const result = deps.killJob(job.id);
+      if (result?.errors?.length) {
+        // One entry per failed job: the count in the notify is jobs, not error strings.
+        failed.push(`${job.id}: ${result.errors.join("; ")}`);
+        log.error("kill_all: job kill reported errors", { job: job.id, errors: result.errors });
+        continue;
+      }
+      killed++;
+    } catch (e: any) {
+      const message = e?.message || String(e);
+      failed.push(`${job.id}: ${message}`);
+      log.error("kill_all: job kill failed", { job: job.id, error: message });
+    }
+  }
+  return { killed, failed };
 }
 
 /**
@@ -211,8 +223,16 @@ export async function openAsyncStatusOverlay(
       selectable: true,
       onXSelected: (jobs) => {
         const targets = jobs.filter((j) => isActive(j.status));
-        log.debug("kill_selection", { selected: jobs.length, killed: targets.length });
-        for (const job of targets) deps.killJob(job.id);
+        const { killed, failed } = killTargets(deps, targets);
+        log.debug("kill_selection", { selected: jobs.length, killed, failed: failed.length });
+        // Same honesty as `X`: a selection kill that hid a still-running agent would look like a
+        // clean sweep of the rows the user picked.
+        if (killed === 0 && failed.length === 0) return;
+        log.info("kill_selection: done", { killed, failed: failed.length });
+        ctx.ui?.notify?.(
+          bulkResultMessage("killed", "async agent", targets.length, failed),
+          failed.length === 0 ? "info" : "warning",
+        );
       },
       onKillAll: () => {
         void killAllJobs(ctx, deps);
