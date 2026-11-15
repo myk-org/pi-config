@@ -5,9 +5,9 @@
  * Session-scoped (default): in-memory Map — no disk I/O.
  * Shared (PI_TASK_LIST_ID set): ~/.pi/tasks/<listId>.json with file locking.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, watch, type FSWatcher } from "node:fs";
+import { constants, copyFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, unlinkSync, writeFileSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { Task, TaskStatus, TaskStoreData } from "./types.js";
 import { createLogger } from "../shared/logger.js";
 
@@ -31,6 +31,7 @@ const SORT_FNS: Record<string, (a: Task, b: Task) => number> = { id: sortById, s
 const TASKS_DIR = join(homedir(), ".pi", "tasks");
 const LOCK_RETRY_MS = 50;
 const LOCK_MAX_RETRIES = 100;
+const MAX_SYMLINK_HOPS = 8;
 
 function acquireLock(lockPath: string): void {
 	mkdirSync(dirname(lockPath), { recursive: true });
@@ -106,7 +107,8 @@ export class TaskStore {
 	private nextId = 1;
 	private tasks = new Map<string, Task>();
 	private _watcher: FSWatcher | null = null;
-	private _selfWrite = false;
+	private _targetWatchers = new Map<string, FSWatcher>();
+	private _corruptOnLoad = false;
 	private _onChange: (() => void) | null = null;
 
 	constructor(listIdOrPath?: string) {
@@ -124,28 +126,92 @@ export class TaskStore {
 		if (!this.filePath) return;
 		// Subagent children must not keep watchers — they prevent the child
 		// process from exiting, which blocks the parent's proc.on("close").
-		if (process.env.PI_SUBAGENT_CHILD === "1") return;
-		try {
-			if (existsSync(this.filePath)) {
-				this._watcher = watch(this.filePath, (eventType) => {
-					if (eventType === "change" || eventType === "rename") {
-						if (this._selfWrite) { this._selfWrite = false; return; }
-						try { this.load(); if (this._onChange) this._onChange(); } catch {}
-					}
-				});
-			} else {
-				const dir = dirname(this.filePath);
-				const filename = this.filePath.split("/").pop() || this.filePath.split("\\").pop() || "";
-				try {
-					mkdirSync(dir, { recursive: true });
-					this._watcher = watch(dir, (eventType, changedFile) => {
-						if (changedFile !== filename) return;
-						if (this._selfWrite) { this._selfWrite = false; return; }
-						try { this.load(); if (this._onChange) this._onChange(); } catch {}
-					});
-				} catch {}
+		if (process.env.PI_SUBAGENT_CHILD === "1") {
+			log.debug("task_watch_skipped_child", { filePath: this.filePath });
+			return;
+		}
+		this._watcher = this._watchPath(resolve(this.filePath), true);
+		this._syncTargetWatchers();
+	}
+
+	private _syncTargetWatchers(): void {
+		if (!this.filePath) return;
+		const rootPath = resolve(this.filePath);
+		const seen = new Set<string>([rootPath]);
+		const desired = new Set<string>();
+		let current = rootPath;
+		for (let hop = 0; hop < MAX_SYMLINK_HOPS; hop++) {
+			let linkTarget: string;
+			try {
+				linkTarget = readlinkSync(current);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException)?.code;
+				if (code !== "ENOENT" && code !== "EINVAL") {
+					log.warn("task_watch_symlink_failed", { path: current, code });
+				}
+				break;
 			}
-		} catch {}
+			const next = resolve(dirname(current), linkTarget);
+			for (;;) {
+				let watchTarget = next;
+				while (!existsSync(dirname(watchTarget))) {
+					const parent = dirname(watchTarget);
+					if (parent === watchTarget) break;
+					watchTarget = parent;
+				}
+				if (watchTarget === rootPath) break;
+				if (!this._targetWatchers.has(watchTarget)) {
+					const watcher = this._watchPath(watchTarget);
+					if (watcher) this._targetWatchers.set(watchTarget, watcher);
+				}
+				if (watchTarget === next || !existsSync(watchTarget) || !this._targetWatchers.has(watchTarget)) {
+					if (this._targetWatchers.has(watchTarget)) desired.add(watchTarget);
+					break;
+				}
+			}
+			if (seen.has(next)) break;
+			seen.add(next);
+			current = next;
+		}
+		for (const [watchedPath, watcher] of this._targetWatchers) {
+			if (!desired.has(watchedPath)) {
+				watcher.close();
+				this._targetWatchers.delete(watchedPath);
+			}
+		}
+		log.debug("task_watch_target_updated", { filePath: this.filePath, targets: Array.from(this._targetWatchers.keys()) });
+	}
+
+	private _watchPath(path: string, ensureParent = false): FSWatcher | null {
+		const dir = dirname(path);
+		const filename = basename(path);
+		try {
+			if (ensureParent) mkdirSync(dir, { recursive: true });
+			// Watch the directory so atomic replacements do not detach the watch from the pathname.
+			const watcher = watch(dir, (eventType, changedFile) => {
+				log.debug("task_watch_event", { filePath: this.filePath, eventType, changedFile });
+				if (changedFile !== filename) return;
+				// Events are invalidations, not one-to-one write receipts, including our own writes.
+				try {
+					this._syncTargetWatchers();
+					this.load();
+					this.notifyChange();
+					log.debug("task_watch_refreshed", { filePath: this.filePath, hasCallback: this._onChange !== null });
+				} catch (error) {
+					log.warn("task_watch_refresh_failed", { filePath: this.filePath, error: String(error) });
+				}
+			});
+			watcher.on("error", error => {
+				log.error("task_watch_error", { filePath: this.filePath, path, recovery: "explicit reopen required", error: String(error) });
+				watcher.close();
+				this.close();
+			});
+			log.debug("task_watch_started", { filePath: this.filePath, dir, filename });
+			return watcher;
+		} catch (error) {
+			log.warn("task_watch_start_failed", { filePath: this.filePath, dir, error: String(error) });
+			return null;
+		}
 	}
 
 	setOnChange(cb: () => void): void {
@@ -159,29 +225,61 @@ export class TaskStore {
 	}
 
 	close(): void {
-		if (this._watcher) { this._watcher.close(); this._watcher = null; }
+		const hadWatcher = this._watcher !== null || this._targetWatchers.size > 0;
+		for (const watcher of this._targetWatchers.values()) watcher.close();
+		this._targetWatchers.clear();
+		if (this._watcher) {
+			this._watcher.close();
+			this._watcher = null;
+		}
+		log.debug("task_watch_close", { filePath: this.filePath, hadWatcher });
 	}
 
 	reopen(): void {
-		if (!this._watcher) this._startWatcher();
+		const hadWatcher = this._watcher !== null;
+		if (!hadWatcher) this._startWatcher();
+		else this._syncTargetWatchers();
+		log.debug("task_watch_reopen", { filePath: this.filePath, reopened: !hadWatcher && this._watcher !== null });
 	}
 
 	private load(): void {
 		if (!this.filePath) return;
-		if (!existsSync(this.filePath)) return;
+		if (!existsSync(this.filePath)) {
+			this._corruptOnLoad = false;
+			return;
+		}
 		try {
 			const data = JSON.parse(readFileSync(this.filePath, "utf-8"));
+			this._corruptOnLoad = false;
 			this.nextId = data.nextId;
 			this.tasks.clear();
 			for (const t of data.tasks) {
 				this.tasks.set(t.id, normalizeTask(t));
 			}
-		} catch { /* corrupt file — start fresh */ }
+		} catch (error) {
+			this._corruptOnLoad = error instanceof SyntaxError;
+			log.error("task_store_load_failed", { filePath: this.filePath, errorType: error instanceof Error ? error.name : "unknown", errorCode: (error as NodeJS.ErrnoException)?.code });
+		}
 	}
 
 	private save(): void {
 		if (!this.filePath) return;
-		this._selfWrite = true;
+		if (this._corruptOnLoad) {
+			const backupPath = `${this.filePath}.corrupt`;
+			try {
+				copyFileSync(this.filePath, backupPath, constants.COPYFILE_EXCL);
+				log.warn("task_store_corrupt_preserved", { filePath: this.filePath, backupPath });
+			} catch (error) {
+				const errorCode = (error as NodeJS.ErrnoException)?.code;
+				if (errorCode === "EEXIST") {
+					log.debug("task_store_corrupt_preserve_skipped", { filePath: this.filePath, backupPath, errorCode });
+				} else {
+					log.warn("task_store_corrupt_preserve_failed", { filePath: this.filePath, backupPath, errorCode });
+				}
+			}
+			this._corruptOnLoad = false;
+		}
+		log.debug("task_store_save", { filePath: this.filePath, taskCount: this.tasks.size });
 		const data: TaskStoreData = { nextId: this.nextId, tasks: Array.from(this.tasks.values()) };
 		mkdirSync(dirname(this.filePath), { recursive: true });
 		const tmpPath = this.filePath + ".tmp";
