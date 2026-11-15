@@ -40,7 +40,7 @@ const task = (over: Partial<{ id: string; status: string; subject: string; block
   ...over,
 });
 
-const cron = (over: Partial<{ id: string; scope: string; description: string; task: string; createdAt: number; intervalMs?: number; leader?: boolean }> = {}) => ({
+const cron = (over: Partial<{ id: string; scope: string; description: string; task: string; createdAt: number; intervalMs?: number; leader?: boolean; paused?: boolean }> = {}) => ({
   id: "session:c1",
   scope: "session",
   description: "nightly audit",
@@ -75,6 +75,27 @@ describe("active counts (#1083)", () => {
     assert.equal(isActiveCron({ leader: true }), true);
     assert.equal(isActiveCron({}), true);
     assert.equal(isActiveCron({ leader: false }), false);
+  });
+
+  it("never counts a paused cron as active work (#1089)", () => {
+    assert.equal(isActiveCron({ paused: true }), false);
+    assert.equal(isActiveCron({ paused: true, leader: true }), false);
+    assert.equal(isActiveCron({ paused: false }), true);
+  });
+
+  it("drops a paused cron from the counts and the detail rows (#1089)", () => {
+    const crons = [cron({ id: "session:c1" }), cron({ id: "session:c2", paused: true })];
+    const { counts, active } = collectWorkload([], [], crons);
+    assert.deepEqual(counts, { agents: 0, tasks: 0, crons: 1 });
+    assert.deepEqual(toDescribeDetail(active).crons.map((c) => c.id), ["session:c1"]);
+    assert.equal(formatWorkloadSuffix(counts), " ⏰1");
+  });
+
+  it("reports none active when only a paused cron runs (#1089)", () => {
+    const { counts, active } = collectWorkload([], [], [cron({ id: "session:c1", paused: true })]);
+    assert.deepEqual(counts, { agents: 0, tasks: 0, crons: 0 });
+    assert.deepEqual(workloadSectionLines(toDescribeDetail(active)), [WORKLOAD_NONE_LINE]);
+    assert.equal(formatWorkloadSuffix(counts), "");
   });
 
   it("collects the active counts", () => {

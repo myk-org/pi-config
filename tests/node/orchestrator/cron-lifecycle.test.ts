@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { registerCron } from "../../../extensions/orchestrator/cron.js";
-import { readDurableCronStore } from "../../../extensions/orchestrator/cron-store.ts";
+import { mutateDurableCronStore, readDurableCronStore } from "../../../extensions/orchestrator/cron-store.ts";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.js";
 import { resolveAgentModelProvider } from "../../../extensions/orchestrator/resolve-agent-model.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -22,6 +23,7 @@ function makeCron() {
   delete process.env.PI_SUBAGENT_CHILD;
   const handlers = new Map<string, Function[]>();
   let tool: any;
+  const commands = new Map<string, any>();
   const intervals: any[] = [];
   const timeouts: any[] = [];
   const emitted: Array<{ event: string; data: any }> = [];
@@ -34,17 +36,17 @@ function makeCron() {
   Date.now = () => 123_456;
   (global as any).setInterval = (fn: Function, delay: number) => { const timer = { fn, delay, unref() {} }; intervals.push(timer); return timer; };
   (global as any).setTimeout = (fn: Function, delay: number) => { const timer = { fn, delay, scheduledAt: Date.now(), unref() {} }; timeouts.push(timer); return timer; };
-  (global as any).clearInterval = (timer: any) => { timer.cleared = true; };
-  (global as any).clearTimeout = (timer: any) => { timer.cleared = true; };
+  (global as any).clearInterval = (timer: any) => { if (timer) timer.cleared = true; };
+  (global as any).clearTimeout = (timer: any) => { if (timer) timer.cleared = true; };
   const pi: any = {
     events: { emit(event: string, data: any) { emitted.push({ event, data }); }, on() {} },
     on(event: string, fn: Function) { const list = handlers.get(event) || []; list.push(fn); handlers.set(event, list); },
     eventHandler(event: string, fn: Function) { const list = handlers.get(event) || []; list.push(fn); handlers.set(event, list); },
-    registerTool(value: any) { tool = value; }, registerCommand() {}, sendUserMessage(message: string, options: any) { messages.push({ message, options }); },
+    registerTool(value: any) { tool = value; }, registerCommand(name: string, command: any) { commands.set(name, command); }, sendUserMessage(message: string, options: any) { messages.push({ message, options }); },
   };
   let restored = false;
   const harness = {
-    pi, handlers, intervals, timeouts, emitted, messages, tool: () => tool,
+    pi, handlers, commands, intervals, timeouts, emitted, messages, tool: () => tool,
     restore() {
       if (restored) return;
       restored = true;
@@ -64,7 +66,288 @@ function makeCron() {
 
 function context(cwd: string, sessionId = "session-one", trusted = true) { return { cwd, mode: "interactive", hasUI: false, model: {}, isProjectTrusted: () => trusted, sessionManager: { getSessionId: () => sessionId } }; }
 
+describe("cron command validation", { concurrency: false }, () => {
+  for (const args of [undefined, "", " \t\n ", "--persist", " --persist --persist ", "add", "add --persist", "--persist add \t"]) {
+    it(`rejects an empty scheduling request: ${JSON.stringify(args)}`, async (t) => {
+      const cwd = makeTempDir("pi-cron-command-"); dirs.push(cwd);
+      const h = makeCron();
+      const cron = registerCron(h.pi, () => assert.fail("must not spawn an agent"));
+      const notifications: unknown[][] = [];
+      const writes = t.mock.method(fs, "writeFileSync");
+      syncBuiltinESMExports();
+      t.after(() => { writes.mock.restore(); syncBuiltinESMExports(); });
+      await h.commands.get("cron").handler(args, { ...context(cwd), ui: { notify: (...values: unknown[]) => notifications.push(values) } });
+      assert.deepEqual(h.messages, []);
+      assert.equal(writes.mock.calls.filter(call => String(call.arguments[0]).startsWith(cwd)).length, 0);
+      assert.deepEqual(cron.getCronTasks(), []);
+      assert.equal(h.timeouts.length, 0);
+      assert.equal(h.intervals.length, 0);
+      assert.deepEqual(notifications, [["/cron requires a message for the LLM to work on.", "warning"]]);
+    });
+  }
+
+  it("keeps existing schedules unchanged on rejection", async (t) => {
+    const cwd = makeTempDir("pi-cron-command-"); dirs.push(cwd);
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => assert.fail("must not spawn an agent"));
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    for (let i = 0; i < 3; i++) await h.tool().execute("seed", { action: "add", task: "check issues", interval_seconds: 60 });
+    const before = structuredClone(cron.getCronTasks());
+    const writes = t.mock.method(fs, "writeFileSync");
+    syncBuiltinESMExports();
+    t.after(() => { writes.mock.restore(); syncBuiltinESMExports(); });
+    const ctx = { ...context(cwd), ui: { notify() {} } };
+    await h.commands.get("cron").handler("--persist", ctx);
+    assert.deepEqual(cron.getCronTasks(), before);
+    assert.equal(writes.mock.calls.filter(call => String(call.arguments[0]).startsWith(cwd)).length, 0);
+    assert.deepEqual(h.messages, []);
+  });
+
+  it("removes known IDs locally through each alias", async () => {
+    const cwd = makeTempDir("pi-cron-command-"); dirs.push(cwd);
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => assert.fail("must not spawn an agent"));
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    for (let i = 0; i < 3; i++) await h.tool().execute("seed", { action: "add", task: "check issues", interval_seconds: 60 });
+    const before = cron.getCronTasks();
+    const ctx = { ...context(cwd), ui: { notify() {} } };
+    for (const [index, verb] of ["remove", "rm", "delete"].entries()) {
+      await h.commands.get("cron").handler(`${verb} session:${before[index].id}`, ctx);
+      assert.equal(cron.getCronTasks().length, 2 - index);
+    }
+    assert.deepEqual(h.messages, []);
+  });
+
+  for (const args of ["every hour check issues", "add every hour check issues", "--persist add every hour check issues", "add a label every hour", "address issues every hour", "remove", "unknown-command"]) {
+    it(`dispatches non-empty text once: ${args}`, async () => {
+      const h = makeCron();
+      registerCron(h.pi, () => assert.fail("command must not spawn directly"));
+      await h.commands.get("cron").handler(args, context(process.cwd()));
+      assert.equal(h.messages.length, 1);
+      assert.ok(h.messages[0].message.endsWith(`User request: "${args.replace("--persist ", "")}"`));
+      assert.ok(h.messages[0].message.includes(`Set persist to ${args.includes("--persist")}.`));
+    });
+  }
+
+  for (const args of ["list", "list-all", "--persist list", "remove session:missing", "rm session:missing", "delete session:missing", "--scope project", "--project"]) {
+    it(`keeps local handling without LLM dispatch: ${args}`, async () => {
+      const h = makeCron();
+      registerCron(h.pi, () => assert.fail("local commands must not spawn"));
+      await h.commands.get("cron").handler(args, { ...context(process.cwd()), ui: { notify() {} } });
+      assert.deepEqual(h.messages, []);
+    });
+  }
+});
+
 describe("cron lifecycle", { concurrency: false }, () => {
+  for (const persist of [false, true]) {
+    for (const action of ["resume", "remove", "shutdown", "switch", "kill-all"]) {
+      it(`fences an in-flight ${persist ? "project" : "session"} callback after ${action}`, async () => {
+        const cwd = makeTempDir("pi-cron-race-"); dirs.push(cwd);
+        const h = makeCron();
+        h.pi.events.on = h.pi.eventHandler;
+        const cron = registerCron(h.pi, () => {});
+        h.handlers.get("session_start")![0]({}, context(cwd));
+        await h.tool().execute("seed", { action: "add", persist, task: "/check", interval_seconds: 60 });
+        const task = cron.getCronTasks()[0];
+        const id = `${persist ? "persist" : "session"}:${task.id}`;
+        const old = h.timeouts.at(-1)!;
+        // execute() has returned a promise, but fire() is still awaiting it.
+        const pending = old.fn();
+        if (action === "resume") {
+          cron.togglePaused(id);
+          Date.now = () => 200_000;
+          cron.togglePaused(id);
+        } else if (action === "remove") await h.tool().execute("remove", { action: "remove", id });
+        else if (action === "shutdown") h.handlers.get("session_shutdown")![0]({ reason: "quit" });
+        else if (action === "kill-all") h.handlers.get("pidash:cron-kill")![0]("all");
+        else h.handlers.get("session_start")![0]({}, context(cwd, "session-two", false));
+        const count = h.timeouts.length;
+        await pending;
+        assert.equal(h.timeouts.length, count, "old continuation must not arm a timer");
+        if (action === "resume") {
+          const next = h.timeouts.at(-1)!;
+          assert.equal(next.delay, 60_000, "resume starts a fresh interval");
+          assert.equal(h.timeouts.filter(t => !t.cleared && t !== old).length, 1);
+          await next.fn();
+          assert.equal(h.messages.length, 2, "exactly one future fire");
+          cron.togglePaused(id);
+          const messages = h.messages.length;
+          await next.fn();
+          assert.equal(h.messages.length, messages, "a queued stale callback cannot dispatch");
+        }
+      });
+    }
+  }
+
+  for (const duringDiscovery of [false, true]) {
+    it(`stops a peer-removed project cron ${duringDiscovery ? "during discovery" : "before fire"}`, async () => {
+      const cwd = makeTempDir("pi-cron-peer-remove-"); dirs.push(cwd);
+      const h = makeCron();
+      const spawns: unknown[][] = [];
+      registerCron(h.pi, (...args: unknown[]) => spawns.push(args));
+      h.handlers.get("session_start")![0]({}, context(cwd));
+      await h.tool().execute("seed", { action: "add", persist: true, task: duringDiscovery ? "check issues" : "/check", model: "openai/gpt-5.4", interval_seconds: 60 });
+      const timer = h.timeouts.at(-1)!;
+      const pending = duringDiscovery ? timer.fn() : undefined;
+      mutateDurableCronStore(path.join(cwd, ".pi", "cron", "crons.json"), () => []);
+      const count = h.timeouts.length;
+      await (pending ?? timer.fn());
+      assert.equal(h.messages.length, 0);
+      assert.equal(spawns.length, 0);
+      assert.equal(h.timeouts.length, count, "peer removal must stop the timer chain before watcher sync");
+    });
+  }
+
+  it("stops a project cron when the store file is deleted before fire", async () => {
+    const cwd = makeTempDir("pi-cron-file-remove-"); dirs.push(cwd);
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => {});
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    await h.tool().execute("seed", { action: "add", persist: true, task: "/check", interval_seconds: 60 });
+    const timer = h.timeouts.at(-1)!;
+    fs.unlinkSync(path.join(cwd, ".pi", "cron", "crons.json"));
+    const count = h.timeouts.length;
+    await timer.fn();
+    assert.deepEqual(h.messages, []);
+    assert.equal(h.timeouts.length, count, "deleted store file must stop the timer chain");
+    assert.deepEqual(cron.getCronTasks(), []);
+  });
+
+  it("reschedules a project cron after a transient store parse error", async () => {
+    const cwd = makeTempDir("pi-cron-parse-error-"); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    const h = makeCron();
+    registerCron(h.pi, () => {});
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    await h.tool().execute("seed", { action: "add", persist: true, task: "/check", interval_seconds: 60 });
+    const saved = fs.readFileSync(store, "utf8");
+    const timer = h.timeouts.at(-1)!;
+    fs.writeFileSync(store, "{");
+    const count = h.timeouts.length;
+    await timer.fn();
+    assert.deepEqual(h.messages, []);
+    assert.equal(fs.readFileSync(store, "utf8"), "{", "rescheduling on read error must not clobber the store");
+    assert.equal(h.timeouts.length, count + 1, "transient parse error must re-arm the next interval");
+    fs.writeFileSync(store, saved);
+    await h.timeouts.at(-1)!.fn();
+    assert.equal(h.messages.length, 1);
+  });
+
+  it("reschedules a project cron after a transient store read error", async () => {
+    const cwd = makeTempDir("pi-cron-read-error-"); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    const h = makeCron();
+    registerCron(h.pi, () => {});
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    await h.tool().execute("seed", { action: "add", persist: true, task: "/check", interval_seconds: 60 });
+    const saved = fs.readFileSync(store, "utf8");
+    const timer = h.timeouts.at(-1)!;
+    fs.rmSync(store);
+    fs.mkdirSync(store);
+    const count = h.timeouts.length;
+    await timer.fn();
+    assert.deepEqual(h.messages, []);
+    assert.equal(h.timeouts.length, count + 1, "transient OS read error must re-arm the next interval");
+    fs.rmSync(store, { recursive: true, force: true });
+    fs.writeFileSync(store, saved);
+    await h.timeouts.at(-1)!.fn();
+    assert.equal(h.messages.length, 1);
+  });
+
+  it("reschedules after a transient store parse error during discovery", async () => {
+    const cwd = makeTempDir("pi-cron-discovery-error-"); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    const h = makeCron();
+    const spawns: unknown[][] = [];
+    registerCron(h.pi, (...args: unknown[]) => spawns.push(args));
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    await h.tool().execute("seed", { action: "add", persist: true, task: "check issues", model: "openai/gpt-5.4", interval_seconds: 60 });
+    const saved = fs.readFileSync(store, "utf8");
+    const timer = h.timeouts.at(-1)!;
+    const pending = timer.fn();
+    fs.writeFileSync(store, "{");
+    const count = h.timeouts.length;
+    await pending;
+    assert.equal(spawns.length, 0);
+    assert.equal(h.timeouts.length, count + 1, "transient parse error during discovery must still re-arm");
+    fs.writeFileSync(store, saved);
+    await h.timeouts.at(-1)!.fn();
+    assert.equal(spawns.length, 1);
+  });
+
+  it("keeps project tasks during sync when the store is transiently unreadable", async () => {
+    const cwd = makeTempDir("pi-cron-sync-error-"); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    const h = makeCron();
+    const cron = registerCron(h.pi, () => {});
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    await h.tool().execute("seed", { action: "add", persist: true, task: "/check", interval_seconds: 60 });
+    const timer = h.timeouts.at(-1)!;
+    fs.writeFileSync(store, "{");
+    h.intervals.find((item) => item.delay === 10_000)!.fn();
+    assert.equal(cron.getCronTasks().length, 1);
+    assert.equal(timer.cleared, undefined);
+  });
+
+  it("self-heals a disarmed leader timer during sync once the store is readable", async () => {
+    const cwd = makeTempDir("pi-cron-self-heal-"); dirs.push(cwd);
+    const store = path.join(cwd, ".pi", "cron", "crons.json");
+    fs.mkdirSync(path.dirname(store), { recursive: true });
+    fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [{ id: "due", scope: "project", cwd, description: "due", task: "/status", intervalMs: 10_000, createdAt: 1, nextRun: 1 }] }));
+    const h = makeCron();
+    registerCron(h.pi, () => {});
+    h.handlers.get("session_start")![0]({}, context(cwd));
+    const due = h.timeouts.find((timer) => timer.delay === 0)!;
+    const originalSetTimeout = global.setTimeout;
+    let failNextArm = false;
+    const originalSend = h.pi.sendUserMessage;
+    h.pi.sendUserMessage = (message: string, options: any) => {
+      originalSend(message, options);
+      failNextArm = true;
+    };
+    (global as any).setTimeout = (fn: Function, delay: number) => {
+      if (failNextArm) {
+        failNextArm = false;
+        throw new Error("transient timer arm failure");
+      }
+      return (originalSetTimeout as any)(fn, delay);
+    };
+    await due.fn();
+    assert.equal(h.messages.length, 1);
+    assert.equal(h.timeouts.filter((timer) => timer.delay === 10_000).length, 0);
+    h.intervals.find((item) => item.delay === 10_000)!.fn();
+    const healed = h.timeouts.find((timer) => timer.delay === 10_000);
+    assert.ok(healed, "syncStore must re-arm a disarmed active leader task even when fields are unchanged");
+    await healed.fn();
+    assert.equal(h.messages.length, 2);
+  });
+
+  for (const action of ["resume", "remove", "shutdown", "switch", "kill-all"]) {
+    it(`stops discovery's stale continuation after ${action}`, async () => {
+      const cwd = makeTempDir("pi-cron-discovery-"); dirs.push(cwd);
+      const h = makeCron();
+      h.pi.events.on = h.pi.eventHandler;
+      const spawns: unknown[][] = [];
+      const cron = registerCron(h.pi, (...args: unknown[]) => spawns.push(args));
+      h.handlers.get("session_start")![0]({}, context(cwd));
+      await h.tool().execute("seed", { action: "add", task: "check issues", model: "openai/gpt-5.4", interval_seconds: 60 });
+      const id = `session:${cron.getCronTasks()[0].id}`;
+      // import() always yields: keep discovery deferred until the lifecycle change is complete.
+      const pending = h.timeouts.at(-1)!.fn();
+      assert.equal(spawns.length, 0);
+      if (action === "resume") { cron.togglePaused(id); cron.togglePaused(id); }
+      else if (action === "remove") await h.tool().execute("remove", { action: "remove", id });
+      else if (action === "shutdown") h.handlers.get("session_shutdown")![0]({ reason: "quit" });
+      else if (action === "kill-all") h.handlers.get("pidash:cron-kill")![0]("all");
+      else h.handlers.get("session_start")![0]({}, context(cwd, "session-two", false));
+      const count = h.timeouts.length;
+      await pending;
+      assert.equal(spawns.length, 0, "invalidated discovery cannot dispatch");
+      assert.equal(h.timeouts.length, count, "invalidated discovery cannot reschedule");
+    });
+  }
+
   it("skips malformed durable records before scheduling timers", () => {
     const cwd = makeTempDir("pi-cron-project-"); dirs.push(cwd);
     const store = path.join(cwd, ".pi", "cron", "crons.json");

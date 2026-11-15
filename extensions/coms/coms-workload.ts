@@ -101,9 +101,10 @@ export function isActiveTask(task: Pick<WorkloadTask, "status">): boolean {
   return task.status !== "completed";
 }
 
-/** Active only: a scheduled cron this replica actually owns (a non-leader replica runs nothing). */
-export function isActiveCron(cron: Pick<WorkloadCron, "leader">): boolean {
-  return cron.leader !== false;
+/** Active only: a scheduled cron this replica actually owns and the user has not paused. A paused
+ *  cron keeps its definition but is not active work (same rule as agents and tasks). */
+export function isActiveCron(cron: Pick<WorkloadCron, "leader" | "paused">): boolean {
+  return cron.leader !== false && cron.paused !== true;
 }
 
 /**

@@ -54,7 +54,8 @@ Use the same `/async-status` overlay:
 
 4. Create a recurring schedule.
 
-Use `/cron` with natural language:
+Use `/cron` with natural language. A scheduling message is required. Bare `/cron`, whitespace-only input, `--persist` alone, and `add` without a request are rejected locally without calling the LLM or changing schedules:
+
 
 ```bash
 /cron Every day at 9:00 AM, run the git-expert to generate a daily summary.
@@ -108,6 +109,7 @@ Persisted tasks are written to `.pi/cron/crons.json` in the project and reloaded
 | See only persisted schedules | `/cron --persist list` | Filters the overlay down to project-scoped crons |
 | See all session schedules | `/cron list-all` | Cross-session view of active cron files |
 | Remove a known cron | `/cron remove <id>` | Direct removal by task ID |
+| Disable a cron without deleting it | `/cron list` → `p` | Toggles `⏸ paused`; the definition is kept and a persisted flag survives restarts. Resuming schedules a fresh interval (missed runs are not caught up), and a paused cron is not counted as a peer's active work |
 
 ### Pick the Model for Background Work
 

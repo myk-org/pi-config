@@ -38,6 +38,8 @@ export interface WorkloadCron {
   nextRun?: number;
   /** Project crons: false on a non-leader replica. Absent on session crons. */
   leader?: boolean;
+  /** Paused by the user: kept in the store, not active work (#1087). */
+  paused?: boolean;
 }
 
 export interface WorkloadSources {
