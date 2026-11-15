@@ -65,8 +65,10 @@
 import { createLogger } from "../shared/logger.js";
 import { isPiOneshotInvocation, shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
+import { resolveProcessStartToken } from "../orchestrator/cron-store.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import fs, { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -92,6 +94,13 @@ export function reloadLegacyDir(cwd: string): string {
 
 function controlFile(cwd: string, name: string): string {
   return path.join(reloadRunDir(cwd), name);
+}
+
+/** Stage `.claim` files under `.pi/run` so `.pi/tmp` never needs directory scans. */
+function claimPathInRunDir(cwd: string, sourceFile: string, suffix = ""): string {
+  const dir = reloadRunDir(cwd);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return path.join(dir, `${path.basename(sourceFile)}.${randomUUID()}${suffix}.claim`);
 }
 
 /**
@@ -141,7 +150,8 @@ function writeControlFile(cwd: string, name: string, content: string): void {
 /** Mirror a control file into the legacy dir for a requester that wrote its
  *  flag under `.pi/tmp` before the move and polls the completion marker there —
  *  without it that requester waits for its nonce forever (#1020). Best-effort
- *  after primary `.pi/run` publication: logs a warning and never throws. */
+ *  after primary `.pi/run` publication: logs debug when `.pi/tmp` is absent,
+ *  warn on other errors, and never throws. */
 function writeLegacyControlFile(cwd: string, name: string, content: string): void {
   const tmp = path.join(reloadLegacyDir(cwd), `${name}.${randomUUID()}.tmp`);
   try {
@@ -149,7 +159,12 @@ function writeLegacyControlFile(cwd: string, name: string, content: string): voi
     renameSync(tmp, path.join(reloadLegacyDir(cwd), name));
   } catch (error: unknown) {
     const code = (error as NodeJS.ErrnoException).code ?? "UNKNOWN";
-    log.warn("reload_legacy_mirror_failed", { code, cwd, name, error: String(error) });
+    const fields = { code, cwd, name, error: String(error) };
+    if (code === "ENOENT") {
+      log.debug("reload_legacy_mirror_failed", fields);
+    } else {
+      log.warn("reload_legacy_mirror_failed", fields);
+    }
     try {
       rmSync(tmp, { force: true });
     } catch (cleanupError: unknown) {
@@ -193,10 +208,19 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
-/** A parked handshake: the nonce plus the owner that parked it. */
+/** A parked handshake: the nonce plus the owner (and OS start token) that parked it. */
 export interface ReloadPending {
   nonce: string;
   owner: string;
+  startToken?: string;
+}
+
+function currentProcessStartToken(pid = process.pid): string | null {
+  return resolveProcessStartToken(pid, {
+    readFileSync: (file, encoding) => fs.readFileSync(file, encoding),
+    execFileSync,
+    platform: process.platform,
+  });
 }
 
 /** Parse the positive integer pid from a valid `<pid>:<session>` owner string. */
@@ -229,16 +253,27 @@ function inspectPendingFile(file: string): PendingInspection {
   const trimmed = rawText.trim();
   if (!trimmed) return { status: "corrupt" };
   try {
-    const parsed = JSON.parse(trimmed) as { nonce?: unknown; owner?: unknown };
+    const parsed = JSON.parse(trimmed) as { nonce?: unknown; owner?: unknown; startToken?: unknown };
+    const validStartToken =
+      parsed?.startToken === undefined ||
+      (typeof parsed.startToken === "string" && parsed.startToken.trim().length > 0);
     if (
       parsed !== null &&
       typeof parsed === "object" &&
       typeof parsed.nonce === "string" &&
       parsed.nonce.trim().length > 0 &&
       typeof parsed.owner === "string" &&
-      parsePendingOwnerPid(parsed.owner) !== null
+      parsePendingOwnerPid(parsed.owner) !== null &&
+      validStartToken
     ) {
-      return { status: "valid", record: { nonce: parsed.nonce.trim(), owner: parsed.owner } };
+      const startToken = typeof parsed.startToken === "string" ? parsed.startToken.trim() : undefined;
+      return {
+        status: "valid",
+        record:
+          startToken !== undefined
+            ? { nonce: parsed.nonce.trim(), owner: parsed.owner, startToken }
+            : { nonce: parsed.nonce.trim(), owner: parsed.owner },
+      };
     }
   } catch {
     // Syntactically invalid JSON falls through as corrupt.
@@ -247,7 +282,7 @@ function inspectPendingFile(file: string): PendingInspection {
 }
 
 /** Safely remove a specific corrupt pending file without clobbering a concurrent replacement. */
-function removeCorruptPendingFile(file: string): boolean {
+function removeCorruptPendingFile(cwd: string, file: string): boolean {
   const quarantine = `${file}.${randomUUID()}.corrupt`;
   try {
     renameSync(file, quarantine);
@@ -266,7 +301,7 @@ function removeCorruptPendingFile(file: string): boolean {
       linkSync(quarantine, file);
       rmSync(quarantine, { force: true });
     } catch (restoreError: unknown) {
-      const retained = `${file}.${randomUUID()}.claim`;
+      const retained = claimPathInRunDir(cwd, file);
       try {
         renameSync(quarantine, retained);
       } catch (retainError: unknown) {
@@ -292,14 +327,16 @@ function removeCorruptPendingFile(file: string): boolean {
 }
 
 function sweepCorruptPending(cwd: string): void {
+  const runPending = path.join(reloadRunDir(cwd), RELOAD_PENDING_FILENAME);
+  const legacyPending = path.join(reloadLegacyDir(cwd), RELOAD_PENDING_FILENAME);
   const candidates = [
-    path.join(reloadRunDir(cwd), RELOAD_PENDING_FILENAME),
-    path.join(reloadLegacyDir(cwd), RELOAD_PENDING_FILENAME),
+    ...(existsSync(runPending) ? [runPending] : []),
+    ...(existsSync(legacyPending) ? [legacyPending] : []),
     ...retainedRequests(cwd).filter((file) => path.basename(file).startsWith("reload.pending.")),
   ];
   for (const file of candidates) {
     if (inspectPendingFile(file).status === "corrupt") {
-      removeCorruptPendingFile(file);
+      removeCorruptPendingFile(cwd, file);
     }
   }
 }
@@ -311,62 +348,79 @@ export function readReloadPending(cwd: string, file = findControlFile(cwd, RELOA
   return inspected.status === "valid" ? inspected.record : null;
 }
 
+function detectPendingPidReuse(pending: ReloadPending): { pid: number; recorded: string; actual: string } | null {
+  if (!pending.startToken || pending.startToken === "unknown") return null;
+  const pid = parsePendingOwnerPid(pending.owner);
+  if (pid === null || !isPidAlive(pid)) return null;
+  const actual = currentProcessStartToken(pid);
+  if (actual === null || actual === pending.startToken) return null;
+  return { pid, recorded: pending.startToken, actual };
+}
+
+function pendingMatchesSelf(pending: ReloadPending, self: string): boolean {
+  return pending.owner === self && detectPendingPidReuse(pending) === null;
+}
+
 /** Does a pending handshake belong to US (same process + session), or is
- * its owner gone (crashed pi)? A live OTHER owner means: hands off. */
+ * its owner gone (crashed pi or reused PID)? A live OTHER owner means: hands off. */
 export function pendingOwnerIsClaimable(pending: ReloadPending, self: string): boolean {
-  if (pending.owner === self) return true;
+  if (pendingMatchesSelf(pending, self)) return true;
   const pid = parsePendingOwnerPid(pending.owner);
   if (pid === null) return true;
-  return !isPidAlive(pid);
+  if (!isPidAlive(pid)) return true;
+  const reused = detectPendingPidReuse(pending);
+  if (reused !== null) {
+    log.info("reload_pending_pid_reused", {
+      pid: reused.pid,
+      owner: pending.owner,
+      startToken: reused.recorded,
+      actualStartToken: reused.actual,
+    });
+    return true;
+  }
+  return false;
 }
 
 /**
- * Fresh-session inspection (#1091): only corrupt `reload.pending` records are
- * removed. Unconfirmed requests (`reload.flag`, valid `reload.pending`) and
- * `reload.done` completion markers survive regardless of age so a requester
- * polling after a long turn never loses completion proof.
+ * Fresh-session startup reconciliation (#1091): remove corrupt `reload.pending`
+ * records while preserving unconfirmed requests (`reload.flag`, valid
+ * `reload.pending`) and `reload.done` completion markers regardless of age.
  */
-function pruneStaleHandshake(cwd: string, owner: string, reason: string): void {
+export function reconcileStartupHandshake(cwd: string, owner: string, reason = "startup"): void {
   sweepCorruptPending(cwd);
-  for (const dir of [reloadRunDir(cwd), reloadLegacyDir(cwd)]) {
-    const pendingFile = path.join(dir, RELOAD_PENDING_FILENAME);
-    const pending = readReloadPending(cwd, pendingFile);
-    if (pending !== null && !pendingOwnerIsClaimable(pending, owner)) {
-      log.debug("reload_flag_foreign_handshake_kept", { file: pendingFile, owner, reason });
-      continue;
+  log.debug("reload_flag_startup_handshake_reconciled", { cwd, owner, reason });
+}
+
+/** Deterministic retries for claims left in `.pi/run` by interruption or restore collision. */
+function retainedRequests(cwd: string): string[] {
+  const dir = reloadRunDir(cwd);
+  try {
+    return readdirSync(dir)
+      .sort()
+      .filter((name) => /^reload\.(flag|pending)\..+\.claim$/.test(name))
+      .map((name) => path.join(dir, name));
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      log.warn("reload_flag_claim_scan_failed", { dir, error: String(error) });
     }
-    for (const name of [RELOAD_FLAG_FILENAME, RELOAD_PENDING_FILENAME, RELOAD_DONE_FILENAME]) {
-      const file = path.join(dir, name);
-      if (existsSync(file)) {
-        log.debug("reload_flag_handshake_kept_on_start", { file, owner, reason });
-      }
-    }
+    return [];
   }
 }
 
-/** Deterministic retries for claims left by interruption or restore collision. */
-function retainedRequests(cwd: string): string[] {
-  return [reloadRunDir(cwd), reloadLegacyDir(cwd)].flatMap(dir => {
-    try {
-      return readdirSync(dir).sort().filter(name =>
-        /^reload\.(flag|pending)\..+\.claim$/.test(name),
-      ).map(name => path.join(dir, name));
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        log.warn("reload_flag_claim_scan_failed", { dir, error: String(error) });
-      }
-      return [];
-    }
-  });
-}
-
 function hasForeignPending(cwd: string, owner: string): boolean {
-  const files = [reloadRunDir(cwd), reloadLegacyDir(cwd)].map(dir => path.join(dir, RELOAD_PENDING_FILENAME));
-  files.push(...retainedRequests(cwd).filter(file => path.basename(file).startsWith("reload.pending.")));
-  return files.some(file => {
+  const legacyPending = path.join(reloadLegacyDir(cwd), RELOAD_PENDING_FILENAME);
+  const files = [
+    path.join(reloadRunDir(cwd), RELOAD_PENDING_FILENAME),
+    ...(existsSync(legacyPending) ? [legacyPending] : []),
+    ...retainedRequests(cwd).filter((file) => path.basename(file).startsWith("reload.pending.")),
+  ];
+  return files.some((file) => {
     const record = readReloadPending(cwd, file);
-    return record !== null && !file.endsWith(`.release-${encodeURIComponent(record.owner)}.claim`)
-      && !pendingOwnerIsClaimable(record, owner);
+    return (
+      record !== null &&
+      !file.endsWith(`.release-${encodeURIComponent(record.owner)}.claim`) &&
+      !pendingOwnerIsClaimable(record, owner)
+    );
   });
 }
 
@@ -377,12 +431,24 @@ export function parkReloadNonce(cwd: string, owner: string): string | null {
     log.debug("reload_flag_claim_foreign_owner", { cwd, owner });
     return null;
   }
+  for (const dir of [reloadRunDir(cwd), reloadLegacyDir(cwd)]) {
+    const pendingFile = path.join(dir, RELOAD_PENDING_FILENAME);
+    if (!existsSync(pendingFile)) continue;
+    const record = readReloadPending(cwd, pendingFile);
+    if (record !== null && !pendingMatchesSelf(record, owner) && pendingOwnerIsClaimable(record, owner)) {
+      try {
+        renameSync(pendingFile, claimPathInRunDir(cwd, pendingFile));
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+  }
   const flag = findControlFile(cwd, RELOAD_FLAG_FILENAME);
   // Retry retained claims first. Their path is stable; never restore over a
   // newer publication. A recovered pending record needs another proven reload.
   const candidates = retainedRequests(cwd);
   if (flag !== null && readNonce(flag) !== null) {
-    const claimed = `${flag}.${randomUUID()}.claim`;
+    const claimed = claimPathInRunDir(cwd, flag);
     renameSync(flag, claimed);
     candidates.push(claimed);
   }
@@ -399,8 +465,10 @@ export function parkReloadNonce(cwd: string, owner: string): string | null {
     // Exclusive publication: concurrent consumers must not replace pending.
     const tmp = `${reloadPendingPath(cwd)}.${randomUUID()}.tmp`;
     mkdirSync(reloadRunDir(cwd), { recursive: true, mode: 0o700 });
+    const startToken = currentProcessStartToken(process.pid);
+    const payload: ReloadPending = startToken ? { nonce, owner, startToken } : { nonce, owner };
     try {
-      writeFileSync(tmp, JSON.stringify({ nonce, owner }), "utf-8");
+      writeFileSync(tmp, JSON.stringify(payload), "utf-8");
       linkSync(tmp, reloadPendingPath(cwd));
     } finally {
       rmSync(tmp, { force: true });
@@ -429,13 +497,9 @@ export async function runReloadFlagCommand(
       log.debug("reload_flag_command_foreign_owner", { cwd: ctx.cwd, owner });
       return false;
     }
-    if (!pending) {
+    if (!pending || !pendingMatchesSelf(pending, owner)) {
       if (parkReloadNonce(cwd, owner) === null) return false;
-    } else if (pending.owner !== owner) {
-      const file = findControlFile(cwd, RELOAD_PENDING_FILENAME)!;
-      renameSync(file, `${file}.${randomUUID()}.claim`);
-      if (parkReloadNonce(cwd, owner) === null) return false;
-      log.debug("reload_flag_pending_adopted_for_retry", { cwd, owner });
+      if (pending) log.debug("reload_flag_pending_adopted_for_retry", { cwd, owner });
     }
     if (typeof ctx.reload !== "function") {
       // Should be impossible (command ctx always carries actions) — but a
@@ -679,7 +743,7 @@ export default function (pi: ExtensionAPI) {
       sweepCorruptPending(cwd);
       // Claim before reading; completion must never unlink a newer pending.
       const pendingPath = findControlFile(cwd, RELOAD_PENDING_FILENAME);
-      const claimed = pendingPath === null ? null : `${pendingPath}.${randomUUID()}.claim`;
+      const claimed = pendingPath === null ? null : claimPathInRunDir(cwd, pendingPath);
       if (pendingPath !== null && claimed !== null) renameSync(pendingPath, claimed);
       const inspected = claimed === null ? { status: "absent" as const } : inspectPendingFile(claimed);
       if (inspected.status === "corrupt") {
@@ -687,19 +751,29 @@ export default function (pi: ExtensionAPI) {
         if (pendingPath !== null) log.warn("reload_pending_corrupt", { path: pendingPath });
       } else {
         const pendingRecord = inspected.status === "valid" ? inspected.record : null;
-        if (pendingRecord?.owner !== reloadOwnerId(ctx) && pendingPath !== null && claimed !== null) {
-          // A collision retains the claim for retry rather than replacing state.
-          linkSync(claimed, pendingPath);
-          rmSync(claimed);
+        const selfOwner = reloadOwnerId(ctx);
+        const isSelf = pendingRecord !== null && pendingMatchesSelf(pendingRecord, selfOwner);
+        if (!isSelf && pendingPath !== null && claimed !== null) {
+          // A collision retains the claim in .pi/run for retry rather than replacing state.
+          try {
+            linkSync(claimed, pendingPath);
+            rmSync(claimed);
+          } catch (restoreError: unknown) {
+            log.debug("reload_pending_reload_claim_retained", {
+              path: pendingPath,
+              claimed,
+              code: (restoreError as NodeJS.ErrnoException).code ?? "UNKNOWN",
+            });
+          }
         }
         // Owner check (Qodo PR #950 R9): a pending handshake parked by ANOTHER
         // LIVE session must survive our manual /reload untouched — consuming
         // it here would steal their nonce, publish their done marker, and send
         // THEIR continuation turn to us. Only claim it when it is ours or its
         // owner process is gone.
-        if (pendingRecord && !pendingOwnerIsClaimable(pendingRecord, reloadOwnerId(ctx))) {
+        if (pendingRecord && !pendingOwnerIsClaimable(pendingRecord, selfOwner)) {
           log.info("reload_flag_pending_left_for_owner", { owner: pendingRecord.owner });
-        } else if (pendingRecord?.owner === reloadOwnerId(ctx)) {
+        } else if (isSelf) {
           // The nonce WE loaded. Any flag present now was written while this
           // reload was in flight — a NEWER request (#1091) — so it is left for
           // the watcher: the second reload publishes ITS nonce, and the
@@ -756,7 +830,7 @@ export default function (pi: ExtensionAPI) {
     } else {
       // Fresh session: remove corrupt pending records only; preserve unconfirmed
       // requests and reload.done completion proof regardless of age (#1091).
-      pruneStaleHandshake(cwd, reloadOwnerId(ctx), reason);
+      reconcileStartupHandshake(cwd, reloadOwnerId(ctx), reason);
     }
     } catch (error: unknown) {
       log.warn("reload_flag_start_retry_retained", { cwd, owner: liveOwner, reason, error: String(error) });
@@ -799,11 +873,12 @@ export default function (pi: ExtensionAPI) {
       try {
         for (const dir of [reloadRunDir(liveCwd), reloadLegacyDir(liveCwd)]) {
           const file = path.join(dir, RELOAD_PENDING_FILENAME);
+          if (!existsSync(file)) continue;
           const pending = readReloadPending(liveCwd, file);
-          if (pending?.owner === liveOwner) {
+          if (pending && pendingMatchesSelf(pending, liveOwner)) {
             // Encode release intent in the atomic rename, not a later write
             // that could crash or overwrite a newer owner's publication.
-            const claimed = `${file}.${randomUUID()}.release-${encodeURIComponent(liveOwner)}.claim`;
+            const claimed = claimPathInRunDir(liveCwd, file, `.release-${encodeURIComponent(liveOwner)}`);
             renameSync(file, claimed);
             log.debug("reload_flag_departing_owner_released", { file, claimed, owner: liveOwner, reason: event.reason });
           }

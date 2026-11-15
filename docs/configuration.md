@@ -903,10 +903,11 @@ See [Managing Custom Agents](managing-custom-agents.html) for details.
 ## Reload handshake
 
 The interactive session watches `.pi/run/reload.flag`, with `.pi/tmp/reload.flag` as a
-legacy fallback. It claims one pathname by rename before reading its nonce, parks an
-owner-stamped `reload.pending`, waits for idle, then reloads through the public command
+legacy fallback. It claims one pathname by rename into `.pi/run` before reading its nonce, parks an
+owner- and `startToken`-stamped `reload.pending`, waits for idle, then reloads through the public command
 API. The replacement runtime publishes that pending nonce to `reload.done`, mirrored
-best-effort to the legacy directory (mirror write errors log `reload_legacy_mirror_failed`
+best-effort to the legacy directory (mirror write errors log `reload_legacy_mirror_failed` —
+at `debug` when `.pi/tmp` is absent and `warn` otherwise —
 without retaining `reload.pending`). A newer flag remains for another reload. Consuming
 one directory's request never removes the other directory's request.
 
@@ -930,15 +931,17 @@ The flag is a latest-publication slot, not a lossless queue for simultaneous pub
 A requester must poll for its exact nonce, never treat any completion marker as success.
 
 Unreadable claims, failed pending publication, and restoration collisions retain their
-request files. Watchers scan retained flag/pending claims in directory and filename order
-and retry them before newly claimed flags. Recovery parks an owned pending and performs
+`.claim` files in `.pi/run`. Watchers scan retained `.pi/run` claims in filename order
+and check legacy `.pi/tmp` control files by exact path without scanning `.pi/tmp`,
+retrying retained claims before newly claimed flags. Recovery parks an owned pending and performs
 another reload before confirmation. Exclusive pending publication prevents replacement of
 an existing current pending; a failed attempt retains the claim. A crash after pending
 publication but before claim removal can cause an extra reload, never an unproven completion.
 Empty or syntactically invalid `reload.pending` files are safely removed as corrupt
 (`reload_pending_corrupt`) so deploys never wedge, whereas transiently unreadable files
 (such as `EACCES`) remain untouched and retry with backoff. Live foreign pending claims stay
-with their owner unless that owner explicitly released them or its process has exited.
+with their owner unless that owner explicitly released them, its process has exited, or a
+mismatched OS `startToken` proves PID reuse (`reload_pending_pid_reused`).
 Keep `.pi/run` intact across retries; deleting runtime files discards recoverable requests.
 Legacy `.pi/tmp` compatibility remains subject to that directory's throwaway cleanup policy.
 Oneshot and headless RPC sessions never touch handshake state.

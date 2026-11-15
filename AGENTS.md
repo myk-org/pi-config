@@ -299,10 +299,13 @@ progress. It does not commit, push, create a PR, or post results.
   To confirm a reload landed: read `.pi/run/reload.done` and compare with the newest flag nonce. Verifying
   anything against a runtime that has not reloaded proves nothing — the old code is still loaded.
   A flag parked in `.pi/tmp/reload.flag` by a pre-#1020 requester is still consumed, and legacy `.pi/tmp/reload.done`
-  mirror write failures log `reload_legacy_mirror_failed` without failing completion or retaining `reload.pending`.
-  Fresh session starts remove only corrupt `reload.pending` files (empty or missing a valid `pid:session` owner);
-  unconfirmed requests and `reload.done` completion markers survive regardless of age so a requester polling after a long
-  turn never loses completion proof. A live other session's handshake is never deleted, and a process that does not
+  mirror write failures log `reload_legacy_mirror_failed` (`debug` when `.pi/tmp` is absent, `warn` otherwise) without
+  failing completion or retaining `reload.pending`.
+  Fresh session starts (`reconcileStartupHandshake`) remove only corrupt `reload.pending` files (empty or missing a valid
+  `pid:session` owner); unconfirmed requests and `reload.done` completion markers survive regardless of age so a requester
+  polling after a long turn never loses completion proof. `reload.pending` also records the owner's OS `startToken` so a
+  reused PID with a mismatched `startToken` is reclaimable (`reload_pending_pid_reused`), while a live other session's
+  handshake is never deleted, and a process that does not
   register the watcher (oneshot `pi -p`, `--mode json`, piped print, headless `--mode rpc`) never touches
   flag/pending/done at all (#1091). A flag that appears while a reload is in flight is a newer request: it is left for
   the watcher and triggers a second reload, so `reload.done` converges on the newest nonce instead of reporting the older
