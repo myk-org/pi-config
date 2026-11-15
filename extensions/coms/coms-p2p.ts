@@ -1500,7 +1500,7 @@ export default function (pi: ExtensionAPI) {
 					result = listTasks();
 					break;
 				case "update":
-					if (env.task_id && env.fields) {
+					if (env.task_id && env.fields && typeof env.fields === "object" && !Array.isArray(env.fields)) {
 						const t = getTask(env.task_id);
 						if (isPeerTaskCreator(t?.createdBy, env.sender_session)) {
 							result = updateTask(env.task_id, env.fields);

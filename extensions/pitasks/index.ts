@@ -127,6 +127,14 @@ function guardPeerTaskTransition(assignee: unknown, scopeId: string, taskId: str
 		log.debug("session_task_owner_transition_refused", { sessionId: scopeId, taskId, status: fields.status });
 		throw new Error(`Task #${taskId}: only the user may start or complete a user-assigned task`);
 	}
+	if (assignee === "user" && fields.assignee !== undefined) {
+		log.debug("session_task_owner_reassign_refused", { sessionId: scopeId, taskId });
+		throw new Error(`Task #${taskId}: only the user may reassign a user-assigned task`);
+	}
+	if (fields.completedBy !== undefined || fields.completionNote !== undefined) {
+		log.debug("session_task_peer_outcome_refused", { sessionId: scopeId, taskId });
+		throw new Error(`Task #${taskId}: only the user may record completion attribution or notes`);
+	}
 }
 
 /** Create multiple tasks at a resolved task store path. */
@@ -207,7 +215,7 @@ export function updateTasksForSession(sessionId: string, updates: Array<{ id: st
 		for (const { id, fields } of updates) {
 			const assignee = assignees.has(id) ? assignees.get(id) : store.get(id)?.assignee;
 			guardPeerTaskTransition(assignee, sessionId, id, fields);
-			assignees.set(id, fields.assignee ?? assignee);
+			assignees.set(id, fields.assignee !== undefined ? (fields.assignee === "user" ? "user" : "llm") : assignee);
 		}
 		return store.updateTasks(updates);
 	});

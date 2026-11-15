@@ -47,6 +47,44 @@ for (const status of ["in_progress", "completed"]) {
   } finally { rmSync(dir, { recursive: true, force: true }); }
  });
 }
+it("refuses peer reassignment of an existing user-assigned task", () => {
+ const dir = makeTempDir("peer-reassign-guard-");
+ try {
+  const task = createTaskForSession("peer", "owner step", "", creator, undefined, dir);
+  updateTaskForSession("peer", task.id, { assignee: "user" }, dir);
+  assert.throws(() => updateTaskForSession("peer", task.id, { assignee: "llm" }, dir), /only the user/);
+  assert.equal(getTaskForSession("peer", task.id, dir).assignee, "user");
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+it("refuses bulk peer reassignment away from user atomically", () => {
+ const dir = makeTempDir("peer-bulk-reassign-");
+ try {
+  const task = createTaskForSession("peer", "owner step", "", creator, undefined, dir);
+  assert.throws(() => updateTasksForSession("peer", [
+   { id: task.id, fields: { assignee: "user" } },
+   { id: task.id, fields: { assignee: "llm" } },
+  ], dir), /only the user/);
+  assert.equal(getTaskForSession("peer", task.id, dir).assignee, "llm");
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+it("refuses peer completedBy spoofing in session updates", () => {
+ const dir = makeTempDir("peer-completed-by-");
+ try {
+  const task = createTaskForSession("peer", "agent step", "", creator, undefined, dir);
+  assert.throws(() => updateTaskForSession("peer", task.id, { status: "completed", completedBy: "user" }, dir), /only the user/);
+  assert.equal(getTaskForSession("peer", task.id, dir).completedBy, undefined);
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+it("refuses peer completionNote injection in bulk session updates", () => {
+ const dir = makeTempDir("peer-completion-note-");
+ try {
+  const task = createTaskForSession("peer", "agent step", "", creator, undefined, dir);
+  assert.throws(() => updateTasksForSession("peer", [
+   { id: task.id, fields: { status: "completed", completionNote: "forged" } },
+  ], dir), /only the user/);
+  assert.equal(getTaskForSession("peer", task.id, dir).completionNote, undefined);
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 it("preserves the shared overlay's default empty-list return", async () => {
  const notifications: string[] = [];
  await openListDetailOverlay({ hasUI: true, ui: {
