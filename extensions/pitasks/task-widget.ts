@@ -75,8 +75,11 @@ export class TaskWidget {
 		log.debug("task_telemetry_active", { taskId, active, status: task?.status });
 		if (taskId && active && task) {
 			this.activeTaskIds.add(taskId);
-			const telemetry = task.telemetry ?? { startedAt: Date.now(), inputTokens: 0, outputTokens: 0 };
-			if (!task.telemetry) this.store.update(taskId, { telemetry });
+			const existing = task.telemetry;
+			const telemetry = existing
+				? { startedAt: existing.startedAt, inputTokens: existing.inputTokens, outputTokens: existing.outputTokens }
+				: { startedAt: Date.now(), inputTokens: 0, outputTokens: 0 };
+			if (!existing || existing.endedAt !== undefined) this.store.update(taskId, { telemetry });
 			this.metrics.set(taskId, telemetry);
 			this.ensureTimer();
 		} else if (taskId) {
@@ -86,16 +89,39 @@ export class TaskWidget {
 		this.update();
 	}
 
-	addTokenUsage(inputTokens: number, outputTokens: number): void {
-		log.debug("task_telemetry_usage", { activeTaskCount: this.activeTaskIds.size, inputTokens, outputTokens });
-		for (const id of this.activeTaskIds) {
-			const m = this.metrics.get(id);
-			if (m) {
-				m.inputTokens += inputTokens;
-				m.outputTokens += outputTokens;
-				this.store.update(id, { telemetry: m });
+	addTokenUsage(inputTokens: number, outputTokens: number, turnTaskRefs?: Iterable<string>): void {
+		const activeIds = [...this.activeTaskIds].filter(
+			(id) => this.metrics.has(id) && this.store.get(id)?.status === "in_progress",
+		);
+		const refSet = new Set<string>();
+		if (turnTaskRefs) {
+			for (const raw of turnTaskRefs) {
+				const id = String(raw).trim();
+				if (id && id !== "-1") refSet.add(id);
 			}
 		}
+		const refs = refSet.size > 0 ? activeIds.filter((id) => refSet.has(id)) : [];
+		const targetIds = refs.length > 0 ? refs : activeIds.length === 1 ? activeIds : [];
+		log.debug("task_telemetry_usage", {
+			activeTaskCount: activeIds.length,
+			turnRefCount: refSet.size,
+			matchedRefCount: refs.length,
+			creditedTaskIds: targetIds,
+			inputTokens,
+			outputTokens,
+		});
+		if (targetIds.length === 0) return;
+		const n = targetIds.length;
+		const inEach = Math.floor(inputTokens / n);
+		const outEach = Math.floor(outputTokens / n);
+		const inRem = inputTokens - inEach * n;
+		const outRem = outputTokens - outEach * n;
+		targetIds.forEach((id, i) => {
+			const m = this.metrics.get(id)!;
+			m.inputTokens += inEach + (i === 0 ? inRem : 0);
+			m.outputTokens += outEach + (i === 0 ? outRem : 0);
+			this.store.update(id, { telemetry: m });
+		});
 	}
 
 	private ensureTimer(): void {

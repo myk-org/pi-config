@@ -10,10 +10,20 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 
 import { join } from "node:path";
-import { decidePendingReminder, oldestPendingAt } from "../../../extensions/pitasks/reminders.ts";
+import {
+	collectActiveAsyncTaskIds,
+	decidePendingReminder,
+	oldestPendingAt,
+	selectStaleTasks,
+	staleReminderContent,
+} from "../../../extensions/pitasks/reminders.ts";
 import * as indexModule from "../../../extensions/pitasks/index.ts";
 import * as reminders from "../../../extensions/pitasks/reminders.ts";
 import registerPitasks from "../../../extensions/pitasks/index.ts";
+import {
+	clearWorkloadSources,
+	publishWorkloadSources,
+} from "../../../extensions/shared/workload-bridge.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -127,7 +137,7 @@ function task(agoMs: number, status: string = "pending") {
 }
 
 /** Boot the extension with a captured setInterval and a temp task store. */
-function boot(tasks: any[]) {
+function boot(tasks: any[], settingsOverrides: Record<string, unknown> = {}) {
 	const cwd = makeTempDir("pitasks-reminder-");
 	const storePath = join(cwd, "tasks.json");
 	writeFileSync(storePath, JSON.stringify({ nextId: tasks.length + 1, tasks }));
@@ -138,6 +148,7 @@ function boot(tasks: any[]) {
 			task_reminder_enabled: true,
 			task_reminder_interval_minutes: 10,
 			task_stale_in_progress_enabled: false,
+			...settingsOverrides,
 		}),
 	);
 
@@ -178,6 +189,7 @@ function boot(tasks: any[]) {
 		tick: () => { for (const fn of ticks) fn(); },
 		reminders: () => sent.filter(m => m.customType === "task-focus-reminder"),
 		restore: async () => {
+			clearWorkloadSources();
 			await emit("session_shutdown");
 			global.setInterval = prevSetInterval;
 			process.chdir(prevCwd);
@@ -219,6 +231,120 @@ describe("#1022 reminder timer wiring", () => {
 			await h.emit("turn_end", { message: { role: "assistant" } });
 			h.tick();
 			assert.equal(h.reminders().length, 1);
+		} finally {
+			await h.restore();
+		}
+	});
+});
+
+function inProgressTask(id: string, agoMs: number, assignee: "llm" | "user" = "llm") {
+	const at = Date.now() - agoMs;
+	return {
+		id,
+		subject: `Secret task ${id}`,
+		description: "",
+		status: "in_progress",
+		assignee,
+		createdAt: at,
+		statusHistory: {
+			pending_at: new Date(at).toISOString(),
+			in_progress_at: new Date(at).toISOString(),
+		},
+	};
+}
+
+describe("#1104 stale in-progress reminder", () => {
+	const STALE_MIN = 30;
+	const STALE_MS = STALE_MIN * MIN;
+
+	it("excludes an over-threshold task backed by a running async job", () => {
+		const candidate = { id: "590", status: "in_progress", assignee: "llm", statusHistory: { in_progress_at: new Date(NOW - 33 * MIN).toISOString() } };
+		const activeIds = collectActiveAsyncTaskIds([
+			{ id: "job-1", status: "running", taskId: "590" },
+		]);
+		assert.deepEqual(selectStaleTasks([candidate], NOW, STALE_MS, activeIds), []);
+	});
+
+	it("excludes an over-threshold task backed by a queued async job", () => {
+		const candidate = { id: "590", status: "in_progress", assignee: "llm", statusHistory: { in_progress_at: new Date(NOW - 33 * MIN).toISOString() } };
+		const activeIds = collectActiveAsyncTaskIds([
+			{ id: "job-1", status: "queued", taskId: "590" },
+		]);
+		assert.deepEqual(selectStaleTasks([candidate], NOW, STALE_MS, activeIds), []);
+	});
+
+	it("nags an over-threshold task whose async job finished or failed with threshold plus id", () => {
+		const candidate = { id: "590", status: "in_progress", assignee: "llm", statusHistory: { in_progress_at: new Date(NOW - 33 * MIN).toISOString() } };
+		const activeIds = collectActiveAsyncTaskIds([
+			{ id: "job-done", status: "complete", taskId: "590" },
+			{ id: "job-fail", status: "failed", taskId: "590" },
+			{ id: "job-unlinked", status: "running", taskId: "-1" },
+		]);
+		const stale = selectStaleTasks([candidate], NOW, STALE_MS, activeIds);
+		assert.equal(stale.length, 1);
+		assert.equal(
+			staleReminderContent(stale, STALE_MIN),
+			"⚠️ You have 1 task(s) stuck in progress (>30m, no running async agent: #590). Check your TaskList and update their status.",
+		);
+	});
+
+	it("excludes in-progress tasks younger than the stale threshold", () => {
+		const freshA = { id: "592", status: "in_progress", assignee: "llm", statusHistory: { in_progress_at: new Date(NOW - 1 * MIN).toISOString() } };
+		const boundary = { id: "593", status: "in_progress", assignee: "llm", statusHistory: { in_progress_at: new Date(NOW - STALE_MS).toISOString() } };
+		assert.deepEqual(selectStaleTasks([freshA, boundary], NOW, STALE_MS, new Set()), []);
+	});
+
+	it("excludes user-assigned in-progress tasks past the stale threshold", () => {
+		const ownerTask = { id: "594", status: "in_progress", assignee: "user", statusHistory: { in_progress_at: new Date(NOW - 90 * MIN).toISOString() } };
+		assert.deepEqual(selectStaleTasks([ownerTask], NOW, STALE_MS, new Set()), []);
+	});
+
+	it("suppresses the timer nudge while a linked async job is running", async () => {
+		const h = boot(
+			[inProgressTask("590", 33 * MIN), inProgressTask("592", 1 * MIN)],
+			{
+				task_reminder_enabled: false,
+				task_stale_in_progress_enabled: true,
+				task_stale_in_progress_minutes: 30,
+			},
+		);
+		try {
+			publishWorkloadSources({
+				agents: () => [{ id: "e2e-1", agent: "worker", task: "run e2e", status: "running", startedAt: Date.now() - 33 * MIN, taskId: "590" }],
+				crons: () => [],
+			});
+			h.tick();
+			assert.equal(h.reminders().length, 0);
+		} finally {
+			await h.restore();
+		}
+	});
+
+	it("emits threshold plus stuck task ids when no running async job backs the task", async () => {
+		const h = boot(
+			[
+				inProgressTask("590", 33 * MIN, "llm"),
+				inProgressTask("592", 1 * MIN, "llm"),
+				inProgressTask("593", 45 * MIN, "user"),
+			],
+			{
+				task_reminder_enabled: false,
+				task_stale_in_progress_enabled: true,
+				task_stale_in_progress_minutes: 30,
+			},
+		);
+		try {
+			publishWorkloadSources({
+				agents: () => [{ id: "done-1", agent: "worker", task: "finished", status: "complete", startedAt: Date.now() - 33 * MIN, taskId: "590" }],
+				crons: () => [],
+			});
+			h.tick();
+			assert.equal(h.reminders().length, 1);
+			assert.equal(
+				h.reminders()[0].content,
+				"⚠️ You have 1 task(s) stuck in progress (>30m, no running async agent: #590). Check your TaskList and update their status.",
+			);
+			assert.equal(h.reminders()[0].content.includes("Secret task"), false);
 		} finally {
 			await h.restore();
 		}
