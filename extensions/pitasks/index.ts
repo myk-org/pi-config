@@ -5,9 +5,8 @@
  * Added: store export for coms direct access.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
-import { TaskStore } from "./task-store.js";
+import { isAbsolute } from "node:path";
+import { TaskStore, resolveStorePath, type ResolveStorePathOptions } from "./task-store.js";
 import { TaskWidget } from "./task-widget.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
@@ -41,10 +40,12 @@ export {
 	decidePendingReminder,
 	oldestPendingAt,
 	pendingReminderContent,
+	resolveStorePath,
 	staleReminderContent,
 	selectActiveTasks,
 	selectStaleTasks,
 	shouldFireReminder,
+	type ResolveStorePathOptions,
 };
 
 const log = createLogger("pitasks");
@@ -95,89 +96,113 @@ export function deleteTask(id: string): boolean {
 	return taskStore.delete(id);
 }
 
-// ── Session-targeted task operations (for cross-session/peer access) ────
+// ── Session-targeted & store-path-targeted task operations (for cross-session/peer access) ────
+
+function withStoreAtPath<T>(storePath: string, fn: (store: TaskStore) => T): T {
+	const trimmed = typeof storePath === "string" ? storePath.trim() : "";
+	if (!trimmed || !isAbsolute(trimmed)) {
+		log.error("store_path_invalid", { storePath, isAbsolute: Boolean(trimmed && isAbsolute(trimmed)) });
+		throw new Error(`Valid absolute task store path required (got ${JSON.stringify(storePath)})`);
+	}
+	const store = new TaskStore(trimmed);
+	try {
+		return fn(store);
+	} finally {
+		store.close();
+	}
+}
+
+function requireSessionStorePath(sessionId: string, targetCwd?: string): string {
+	const storePath = resolveStorePath(sessionId, { cwd: targetCwd, piTasks: undefined, taskScope: "session" });
+	if (!storePath) {
+		log.error("session_store_path_unresolved", { sessionId, hasTargetCwd: Boolean(targetCwd) });
+		throw new Error("Session task store requires a non-empty sessionId");
+	}
+	return storePath;
+}
+
+function guardPeerTaskTransition(assignee: unknown, scopeId: string, taskId: string, fields: Record<string, any>): void {
+	if ((fields.status === "in_progress" || fields.status === "completed") &&
+		(assignee === "user" || fields.assignee === "user")) {
+		log.debug("session_task_owner_transition_refused", { sessionId: scopeId, taskId, status: fields.status });
+		throw new Error(`Task #${taskId}: only the user may start or complete a user-assigned task`);
+	}
+}
+
+/** Create multiple tasks at a resolved task store path. */
+export function createTasksAtStorePath(
+	storePath: string,
+	tasks: Array<{ subject: string; description: string; createdBy: any; blockedBy?: string[]; activeForm?: string; metadata?: Record<string, any> }>,
+): any[] {
+	log.debug("store_path_tasks_created", { storePath, count: tasks.length });
+	return withStoreAtPath(storePath, (store) => store.createTasks(tasks));
+}
+
+/** Get a task by ID from a resolved task store path. */
+export function getTaskAtStorePath(storePath: string, taskId: string): any {
+	log.debug("store_path_task_read", { storePath, taskId });
+	return withStoreAtPath(storePath, (store) => store.get(taskId));
+}
+
+/** List all tasks from a resolved task store path. */
+export function listTasksAtStorePath(storePath: string): any[] {
+	log.debug("store_path_tasks_listed", { storePath });
+	return withStoreAtPath(storePath, (store) => store.list());
+}
+
+/** Update a task at a resolved task store path. */
+export function updateTaskAtStorePath(storePath: string, taskId: string, fields: any, scopeId = storePath): any {
+	log.debug("store_path_task_updated", { storePath, taskId, fieldNames: Object.keys(fields) });
+	return withStoreAtPath(storePath, (store) => {
+		guardPeerTaskTransition(store.get(taskId)?.assignee, scopeId, taskId, fields);
+		return store.update(taskId, fields);
+	});
+}
+
+/** Delete a task from a resolved task store path. */
+export function deleteTaskAtStorePath(storePath: string, taskId: string): boolean {
+	log.debug("store_path_task_deleted", { storePath, taskId });
+	return withStoreAtPath(storePath, (store) => store.delete(taskId));
+}
 
 /** Create a task on a specific session's store. Used by coms for sender-side task creation. */
 export function createTaskForSession(sessionId: string, subject: string, description: string, createdBy?: any, metadata?: Record<string, any>, targetCwd?: string, activeForm?: string): any {
 	log.debug("session_task_created", { sessionId });
-	const base = targetCwd || process.cwd();
-	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
-	const store = new TaskStore(storePath);
-	try {
-		return store.create(subject, description, createdBy || { type: "local", origin: "system", session: "", project: "" }, activeForm, metadata);
-	} finally {
-		store.close();
-	}
+	const storePath = requireSessionStorePath(sessionId, targetCwd);
+	return withStoreAtPath(storePath, (store) =>
+		store.create(subject, description, createdBy || { type: "local", origin: "system", session: "", project: "" }, activeForm, metadata),
+	);
 }
 
 /** Create multiple tasks on a specific session's store. Used by coms for bulk task creation. */
 export function createTasksForSession(sessionId: string, tasks: Array<{ subject: string; description: string; createdBy: any; blockedBy?: string[]; activeForm?: string; metadata?: Record<string, any> }>, targetCwd?: string): any[] {
 	log.debug("session_tasks_created", { sessionId, count: tasks.length });
-	const base = targetCwd || process.cwd();
-	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
-	const store = new TaskStore(storePath);
-	try {
-		return store.createTasks(tasks);
-	} finally {
-		store.close();
-	}
+	return createTasksAtStorePath(requireSessionStorePath(sessionId, targetCwd), tasks);
 }
 
 /** Get a task from a specific session's store. */
 export function getTaskForSession(sessionId: string, taskId: string, targetCwd?: string): any {
 	log.debug("session_task_read", { sessionId, taskId });
-	const base = targetCwd || process.cwd();
-	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
-	const store = new TaskStore(storePath);
-	try {
-		return store.get(taskId);
-	} finally {
-		store.close();
-	}
+	return getTaskAtStorePath(requireSessionStorePath(sessionId, targetCwd), taskId);
 }
 
 /** List tasks from a specific session's store. */
 export function listTasksForSession(sessionId: string, targetCwd?: string): any[] {
 	log.debug("session_tasks_listed", { sessionId });
-	const base = targetCwd || process.cwd();
-	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
-	const store = new TaskStore(storePath);
-	try {
-		return store.list();
-	} finally {
-		store.close();
-	}
-}
-
-function guardPeerTaskTransition(assignee: unknown, sessionId: string, taskId: string, fields: Record<string, any>): void {
-	if ((fields.status === "in_progress" || fields.status === "completed") &&
-		(assignee === "user" || fields.assignee === "user")) {
-		log.debug("session_task_owner_transition_refused", { sessionId, taskId, status: fields.status });
-		throw new Error(`Task #${taskId}: only the user may start or complete a user-assigned task`);
-	}
+	return listTasksAtStorePath(requireSessionStorePath(sessionId, targetCwd));
 }
 
 /** Update a task on a specific session's store. */
 export function updateTaskForSession(sessionId: string, taskId: string, fields: any, targetCwd?: string): any {
 	log.debug("session_task_updated", { sessionId, taskId, fieldNames: Object.keys(fields) });
-	const base = targetCwd || process.cwd();
-	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
-	const store = new TaskStore(storePath);
-	try {
-		guardPeerTaskTransition(store.get(taskId)?.assignee, sessionId, taskId, fields);
-		return store.update(taskId, fields);
-	} finally {
-		store.close();
-	}
+	return updateTaskAtStorePath(requireSessionStorePath(sessionId, targetCwd), taskId, fields, sessionId);
 }
 
 /** Update multiple tasks on a specific session's store. Used by coms for bulk updates. */
 export function updateTasksForSession(sessionId: string, updates: Array<{ id: string; fields: Record<string, any> }>, targetCwd?: string): any[] {
 	log.debug("session_tasks_updated", { sessionId, count: updates.length });
-	const base = targetCwd || process.cwd();
-	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
-	const store = new TaskStore(storePath);
-	try {
+	const storePath = requireSessionStorePath(sessionId, targetCwd);
+	return withStoreAtPath(storePath, (store) => {
 		const assignees = new Map<string, unknown>();
 		for (const { id, fields } of updates) {
 			const assignee = assignees.has(id) ? assignees.get(id) : store.get(id)?.assignee;
@@ -185,48 +210,27 @@ export function updateTasksForSession(sessionId: string, updates: Array<{ id: st
 			assignees.set(id, fields.assignee ?? assignee);
 		}
 		return store.updateTasks(updates);
-	} finally {
-		store.close();
-	}
+	});
 }
 
 /** Delete a task from a specific session's store. */
 export function deleteTaskForSession(sessionId: string, taskId: string, targetCwd?: string): boolean {
 	log.debug("session_task_deleted", { sessionId, taskId });
-	const base = targetCwd || process.cwd();
-	const storePath = join(base, ".pi", "tasks", `tasks-${sessionId.replace(/[/\\]/g, "_")}.json`);
-	const store = new TaskStore(storePath);
-	try {
-		return store.delete(taskId);
-	} finally {
-		store.close();
-	}
+	return deleteTaskAtStorePath(requireSessionStorePath(sessionId, targetCwd), taskId);
 }
 
 export default function (pi: ExtensionAPI) {
 	if (process.env.PI_SUBAGENT_CHILD === "1") return;
 	if (shouldSkipOneshotRegister(log)) return;
 	let shuttingDown = false;
-	const taskScope = "session";
+	const taskScope: "session" | "project" = process.env.PI_TASK_SCOPE === "project" ? "project" : "session";
 	const piTasks = process.env.PI_TASKS;
-
-	function resolveStorePath(sessionId?: string): string | undefined {
-		if (piTasks === "off") return undefined;
-		if (piTasks?.startsWith("/")) return piTasks;
-		if (piTasks?.startsWith(".")) return resolve(piTasks);
-		if (piTasks) return piTasks;
-		if (taskScope === "session" && sessionId) {
-			return join(process.cwd(), ".pi", "tasks", `tasks-${sessionId}.json`);
-		}
-		if (taskScope === "session") return undefined;
-		return join(process.cwd(), ".pi", "tasks", "tasks.json");
-	}
 
 	const resumedActiveTaskIds = currentWidget?.getActiveTaskIds() ?? [];
 	currentStore?.setOnChange(() => {});
 	currentStore?.close();
 	currentWidget?.dispose();
-	let store = new TaskStore(resolveStorePath());
+	let store = new TaskStore(resolveStorePath(undefined, { cwd: process.cwd(), piTasks, taskScope }));
 	taskStore = store;
 	// Registration is the only publish site: the getter follows store swaps.
 	publishTaskStore(() => taskStore);
@@ -243,9 +247,14 @@ export default function (pi: ExtensionAPI) {
 
 	function upgradeStoreIfNeeded(ctx: any): void {
 		if (storeUpgraded) return;
-		if (taskScope === "session" && !piTasks) {
-			const sessionId = ctx.sessionManager?.getSessionId?.();
-			const path = resolveStorePath(sessionId);
+		const baseCwd = ctx?.cwd || process.cwd();
+		const sessionId = ctx?.sessionManager?.getSessionId?.();
+		const path = resolveStorePath(sessionId, { cwd: baseCwd, piTasks, taskScope });
+		if (!piTasks && taskScope === "session" && !path) {
+			log.debug("store_upgrade_deferred", { reason: "missing_session_id", cwd: baseCwd });
+			return;
+		}
+		if (path !== store.filePath) {
 			store.setOnChange(() => {});
 			store.close();
 			store = new TaskStore(path);

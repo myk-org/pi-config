@@ -102,6 +102,11 @@ This behavior matters because it keeps the experience conversational. To the use
 
 `coms_send` supports a `tasks` array alongside the prompt. Each task object has a `subject` and a `description`, and is shown to the receiving peer as structured work items instead of a loose prose blob.
 
+`coms_tasks_create`, `coms_task_list`, `coms_task_get`, `coms_task_update`, and `coms_task_delete` operate directly on the
+peer's advertised `TaskStore` file (resolved from the peer's `pi_session_id`, `PI_TASKS`, or `PI_TASK_SCOPE`, never its
+`coms_session_id`). `coms_tasks_create` verifies that created tasks are visible through the read path before reporting
+success, and fails explicitly if the peer has no addressable task store.
+
 This makes delegation clearer and easier to track when the receiving session uses the task system. For users, it means you can send a prompt plus a checklist, not just a paragraph.
 
 ### Hidden vs Discoverable Peers
