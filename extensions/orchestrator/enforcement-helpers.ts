@@ -2814,33 +2814,420 @@ export function messageFileTrailerState(
 const HARMLESS_PRODUCER_REDIRECT_RE =
 	/^(?:(?:\s+[12]|\s*&?)>>?\s*\/dev\/null(?=\s|$|[>&])|(?:\s+[12]|\s*)>&[12](?=\s|$|[>&]))*\s*$/;
 
+const PIPE_SEGMENT_HEAD_KEYWORDS = new Set(["!", "then", "do", "else", "elif", "time", "nohup"]);
+const PIPE_SUDO_NICE_VALUE_OPTIONS = new Set([...WRAPPER_VALUE_OPTIONS, "-D", "-n", "--adjustment"]);
+const PIPE_ENV_VALUE_OPTIONS = new Set(["-u", "--unset", "-C", "--chdir"]);
+const PIPE_TIMEOUT_VALUE_OPTIONS = new Set(["-s", "--signal", "-k", "--kill-after"]);
+const GIT_GLOBAL_SEP_VALUE_OPTS = new Set([
+	"-C",
+	"-c",
+	"--git-dir",
+	"--work-tree",
+	"--namespace",
+	"--exec-path",
+	"--config-env",
+]);
+const GIT_COMMIT_SEP_VALUE_OPTS = new Set([
+	"--author",
+	"--date",
+	"--cleanup",
+	"--pathspec-from-file",
+	"--trailer",
+	"--unified",
+	"--inter-hunk-context",
+	"-U",
+	"-t",
+	"--template",
+	"--fixup",
+	"--squash",
+]);
+
+interface PipeSegmentToken {
+	value: string;
+	unquoted: boolean;
+	assignmentPrefix: boolean;
+	hasExpansion: boolean;
+	unquotedExpansion: boolean;
+}
+
+interface ParsedPipeSegment {
+	tokens: PipeSegmentToken[];
+	sawInputRedirect: boolean;
+	sawStdoutRedirect: boolean;
+}
+
+/** Tokenize a single pipeline segment into shell words, tracking whether each token is
+ *  strictly unquoted literal text and stripping redirections while recording fd direction. */
+function tokenizePipeSegment(segment: string): ParsedPipeSegment | null {
+	const tokens: PipeSegmentToken[] = [];
+	let sawInputRedirect = false;
+	let sawStdoutRedirect = false;
+	let i = 0;
+
+	const skipSpace = (): void => {
+		while (i < segment.length) {
+			if (segment[i] === "\\" && segment[i + 1] === "\n") { i += 2; continue; }
+			if (segment[i] === "\\" && segment[i + 1] === "\r" && segment[i + 2] === "\n") { i += 3; continue; }
+			if (segment[i] === " " || segment[i] === "\t" || segment[i] === "\r") { i++; continue; }
+			break;
+		}
+	};
+
+	const readWord = (): PipeSegmentToken | null => {
+		let value = "";
+		let unquoted = true;
+		let rawPrefix = "";
+		let sawNonLiteral = false;
+		let hasExpansion = false;
+		let unquotedExpansion = false;
+		let has = false;
+		while (i < segment.length) {
+			if (segment[i] === "\\" && segment[i + 1] === "\n") { i += 2; continue; }
+			if (segment[i] === "\\" && segment[i + 1] === "\r" && segment[i + 2] === "\n") { i += 3; continue; }
+			const ch = segment[i]!;
+			if (ch === " " || ch === "\t" || ch === "\r" || ch === "<" || ch === ">") break;
+			if (ch === "&" && segment[i + 1] === ">") break;
+			has = true;
+			if (ch === "$" && segment[i + 1] === "'") {
+				unquoted = false;
+				sawNonLiteral = true;
+				let j = i + 2;
+				while (j < segment.length && segment[j] !== "'") {
+					if (segment[j] === "\\" && j + 1 < segment.length) j++;
+					j++;
+				}
+				if (j >= segment.length) return null;
+				value += segment.slice(i + 2, j);
+				i = j + 1;
+				continue;
+			}
+			if (ch === "'" || ch === '"') {
+				const close = matchingQuoteIndex(segment, i);
+				if (close === null) return null;
+				if (ch === '"') {
+					for (let q = i + 1; q < close; q++) {
+						if (segment[q] === "\\") { q++; continue; }
+						if ((segment[q] === "$" && q + 1 < close) || segment[q] === "`") {
+							hasExpansion = true;
+							break;
+						}
+					}
+				}
+				unquoted = false;
+				sawNonLiteral = true;
+				value += segment.slice(i + 1, close);
+				i = close + 1;
+				continue;
+			}
+			if (ch === "`") {
+				unquoted = false;
+				sawNonLiteral = true;
+				hasExpansion = true;
+				unquotedExpansion = true;
+				let j = i + 1;
+				while (j < segment.length && segment[j] !== "`") {
+					if (segment[j] === "\\" && j + 1 < segment.length) j++;
+					j++;
+				}
+				if (j >= segment.length) return null;
+				value += segment.slice(i, j + 1);
+				i = j + 1;
+				continue;
+			}
+			if (ch === "$" && segment[i + 1] === "(") {
+				const close = matchingSubstParenIndex(segment, i + 1);
+				if (close === null) return null;
+				unquoted = false;
+				sawNonLiteral = true;
+				hasExpansion = true;
+				unquotedExpansion = true;
+				value += segment.slice(i, close + 1);
+				i = close + 1;
+				continue;
+			}
+			if (ch === "$") {
+				unquoted = false;
+				sawNonLiteral = true;
+				hasExpansion = true;
+				unquotedExpansion = true;
+				value += "$";
+				i++;
+				continue;
+			}
+			if (ch === "\\") {
+				if (i + 1 >= segment.length) return null;
+				unquoted = false;
+				sawNonLiteral = true;
+				value += segment[i + 1]!;
+				i += 2;
+				continue;
+			}
+			value += ch;
+			if (!sawNonLiteral) rawPrefix += ch;
+			i++;
+		}
+		if (!has) return null;
+		return {
+			value,
+			unquoted,
+			assignmentPrefix: /^[A-Za-z_]\w*=/.test(rawPrefix),
+			hasExpansion,
+			unquotedExpansion,
+		};
+	};
+
+	while (i < segment.length) {
+		skipSpace();
+		if (i >= segment.length || segment[i] === "#") break;
+		const redir = /^(?:\d*<<<|\d*<<-?|\d*<&|\d*<>|\d*<|&>>|&>|\d*>>|\d*>&|\d*>\|?)/.exec(segment.slice(i));
+		if (redir) {
+			const op = redir[0];
+			if (op.includes("<")) {
+				sawInputRedirect = true;
+			} else {
+				const fd = /^\d+/.exec(op)?.[0];
+				if (op.startsWith("&") || fd === undefined || fd === "1") sawStdoutRedirect = true;
+			}
+			i += op.length;
+			skipSpace();
+			if (readWord() === null) return null;
+			continue;
+		}
+		const word = readWord();
+		if (word === null) return null;
+		tokens.push(word);
+	}
+	return { tokens, sawInputRedirect, sawStdoutRedirect };
+}
+
+function skipPipeSegmentPrefixes(tokens: PipeSegmentToken[]): { idx: number; abortCommit: boolean } {
+	let idx = 0;
+	while (idx < tokens.length) {
+		const tok = tokens[idx]!;
+		if (tok.assignmentPrefix) { idx++; continue; }
+		if (!tok.unquoted) break;
+		if (PIPE_SEGMENT_HEAD_KEYWORDS.has(tok.value)) {
+			idx++;
+			if (tok.value === "time" && tokens[idx]?.unquoted && tokens[idx]!.value === "-p") idx++;
+			continue;
+		}
+		if (tok.value === "rtk") {
+			idx++;
+			while (idx < tokens.length && tokens[idx]!.value.startsWith("-") && tokens[idx]!.value !== "-") {
+				if (tokens[idx]!.value === "--") { idx++; break; }
+				idx += WRAPPER_VALUE_OPTIONS.has(tokens[idx]!.value) ? 2 : 1;
+			}
+			continue;
+		}
+		if (tok.value === "command" || tok.value === "builtin" || tok.value === "exec") {
+			const w = tok.value;
+			idx++;
+			while (idx < tokens.length && tokens[idx]!.value.startsWith("-") && tokens[idx]!.value !== "-") {
+				const flag = tokens[idx]!.value;
+				if (flag === "--") { idx++; break; }
+				if (w === "command" && /^-[a-zA-Z]*[vV]/.test(flag)) {
+					return { idx: tokens.length, abortCommit: false };
+				}
+				idx += w === "exec" && flag === "-a" ? 2 : 1;
+			}
+			continue;
+		}
+		if (tok.value === "env") {
+			idx++;
+			while (idx < tokens.length) {
+				const cur = tokens[idx]!;
+				if (cur.assignmentPrefix || /^[A-Za-z_]\w*=/.test(cur.value)) { idx++; continue; }
+				if (!cur.value.startsWith("-") || cur.value === "-") break;
+				if (cur.value === "--") { idx++; break; }
+				if (cur.value.startsWith("-S") || cur.value === "--split-string" || cur.value.startsWith("--split-string=")) {
+					const restText = tokens.slice(idx).map((t) => t.value).join(" ");
+					return { idx: tokens.length, abortCommit: /\bgit\b[\s\S]*\bcommit\b/.test(restText) };
+				}
+				idx += PIPE_ENV_VALUE_OPTIONS.has(cur.value) ? 2 : 1;
+			}
+			continue;
+		}
+		if (tok.value === "sudo" || tok.value === "nice") {
+			idx++;
+			while (idx < tokens.length && tokens[idx]!.value.startsWith("-") && tokens[idx]!.value !== "-") {
+				const flag = tokens[idx]!.value;
+				if (flag === "--") { idx++; break; }
+				idx += PIPE_SUDO_NICE_VALUE_OPTIONS.has(flag) ? 2 : 1;
+			}
+			continue;
+		}
+		if (tok.value === "timeout") {
+			idx++;
+			while (idx < tokens.length && tokens[idx]!.value.startsWith("-") && tokens[idx]!.value !== "-") {
+				const flag = tokens[idx]!.value;
+				if (flag === "--") { idx++; break; }
+				idx += PIPE_TIMEOUT_VALUE_OPTIONS.has(flag) ? 2 : 1;
+			}
+			if (idx < tokens.length) idx++;
+			continue;
+		}
+		break;
+	}
+	return { idx, abortCommit: false };
+}
+
+/** True only when an intermediate pipeline segment is a `tee` stage that passes stdin to stdout unchanged. */
+function isPassthroughTeeSegment(segment: string): boolean {
+	const parsed = tokenizePipeSegment(segment);
+	if (!parsed || parsed.sawInputRedirect || parsed.sawStdoutRedirect) return false;
+	const { idx, abortCommit } = skipPipeSegmentPrefixes(parsed.tokens);
+	if (abortCommit) return false;
+	const cmdTok = parsed.tokens[idx];
+	if (!cmdTok || !cmdTok.unquoted || !(cmdTok.value === "tee" || cmdTok.value.endsWith("/tee"))) return false;
+	for (let k = idx + 1; k < parsed.tokens.length; k++) {
+		const tok = parsed.tokens[k]!;
+		if (tok.value === "-") return false;
+		if (tok.unquoted && (tok.value === "--help" || tok.value === "--version")) return false;
+	}
+	return true;
+}
+
+/** Classify a pipeline's final segment using unquoted command/option tokens only. */
+function classifyPipedFinalSegment(segment: string): "piped_stdin" | "unsafe_commit" | "not_commit" {
+	const parsed = tokenizePipeSegment(segment);
+	if (!parsed) return "unsafe_commit";
+	const { idx, abortCommit } = skipPipeSegmentPrefixes(parsed.tokens);
+	if (abortCommit) return "unsafe_commit";
+	const cmdTok = parsed.tokens[idx];
+	if (!cmdTok) return "not_commit";
+	if (!(cmdTok.value === "git" || cmdTok.value.endsWith("/git"))) {
+		return realGitSub(segment, "commit") ? "unsafe_commit" : "not_commit";
+	}
+	let k = idx + 1;
+	while (k < parsed.tokens.length && parsed.tokens[k]!.value.startsWith("-") && parsed.tokens[k]!.value !== "-") {
+		const optTok = parsed.tokens[k]!;
+		if (optTok.value === "--") { k++; break; }
+		if (GIT_GLOBAL_SEP_VALUE_OPTS.has(optTok.value)) {
+			if (!optTok.unquoted || !parsed.tokens[k + 1] || parsed.tokens[k + 1]!.unquotedExpansion) {
+				return "unsafe_commit";
+			}
+			k += 2;
+			continue;
+		}
+		if (optTok.hasExpansion) return "unsafe_commit";
+		k++;
+	}
+	const subTok = parsed.tokens[k];
+	if (!subTok) return "not_commit";
+	if (subTok.hasExpansion) return "unsafe_commit";
+	if (subTok.value !== "commit") return "not_commit";
+	if (!cmdTok.unquoted || !subTok.unquoted || parsed.sawInputRedirect) return "unsafe_commit";
+
+	let sawStdinFile = false;
+	for (let m = k + 1; m < parsed.tokens.length; m++) {
+		const tok = parsed.tokens[m]!;
+		if (tok.unquoted && tok.value === "--") break;
+		if (tok.value === "-F" || tok.value === "--file" || /^-[apzsnveioq]+F$/.test(tok.value)) {
+			const arg = parsed.tokens[m + 1];
+			if (!tok.unquoted || !arg || !arg.unquoted || arg.value !== "-" || sawStdinFile) return "unsafe_commit";
+			sawStdinFile = true;
+			m++;
+			continue;
+		}
+		if (tok.value === "-F-" || /^-[apzsnveioq]+F-$/.test(tok.value) || tok.value === "--file=-") {
+			if (!tok.unquoted || sawStdinFile) return "unsafe_commit";
+			sawStdinFile = true;
+			continue;
+		}
+		if (tok.value.startsWith("-F") || /^-[apzsnveioq]+F./.test(tok.value) || tok.value.startsWith("--file=")) {
+			return "unsafe_commit";
+		}
+		if (
+			tok.value === "-m" ||
+			tok.value === "--message" ||
+			/^-[apzsnveioq]*m/.test(tok.value) ||
+			tok.value.startsWith("--message=") ||
+			tok.value === "-C" ||
+			tok.value === "--reuse-message" ||
+			tok.value.startsWith("-C") ||
+			tok.value.startsWith("--reuse-message=") ||
+			tok.value === "-c" ||
+			tok.value === "--reedit-message" ||
+			tok.value.startsWith("-c") ||
+			tok.value.startsWith("--reedit-message=")
+		) {
+			return "unsafe_commit";
+		}
+		if (GIT_COMMIT_SEP_VALUE_OPTS.has(tok.value)) {
+			if (!tok.unquoted || !parsed.tokens[m + 1] || parsed.tokens[m + 1]!.unquotedExpansion) return "unsafe_commit";
+			m++;
+			continue;
+		}
+		if (tok.hasExpansion) return "unsafe_commit";
+	}
+	return sawStdinFile ? "piped_stdin" : "unsafe_commit";
+}
+
+function segmentInvokesGitCommit(segment: string): boolean {
+	const parsed = tokenizePipeSegment(segment);
+	if (!parsed) return true;
+	const { idx, abortCommit } = skipPipeSegmentPrefixes(parsed.tokens);
+	if (abortCommit) return true;
+	const cmdTok = parsed.tokens[idx];
+	if (!cmdTok) return false;
+	if (!(cmdTok.value === "git" || cmdTok.value.endsWith("/git"))) {
+		return realGitSub(segment, "commit");
+	}
+	let k = idx + 1;
+	while (k < parsed.tokens.length && parsed.tokens[k]!.value.startsWith("-") && parsed.tokens[k]!.value !== "-") {
+		const flag = parsed.tokens[k]!.value;
+		if (flag === "--") { k++; break; }
+		k += GIT_GLOBAL_SEP_VALUE_OPTS.has(flag) ? 2 : 1;
+	}
+	const subTok = parsed.tokens[k];
+	return Boolean(subTok && (subTok.value === "commit" || subTok.hasExpansion));
+}
+
 interface PipedCommitSpan {
 	stmtStart: number;
 	firstPipeIdx: number;
 	lastPipeIdx: number;
+	stmtEnd: number;
 	lastQuoteIdx: number;
 }
 
-/** Locate the message-producer segment of a `… | git commit … -F -` pipeline,
- *  honoring quotes, substitutions, comments, and statement boundaries. */
-function findPipedCommitSpan(command: string): PipedCommitSpan | null {
+/** Locate every `… | git commit … -F -` pipeline in `command`, honoring quotes,
+ *  substitutions, heredocs, comments, and statement boundaries. Returns `null` when
+ *  a pipeline invokes `git commit` in a non-injectable shape or has broken quoting. */
+function findPipedCommitSpans(command: string): PipedCommitSpan[] | null {
 	let stmtStart = 0;
-	let firstPipeIdx = -1;
-	let lastPipeIdx = -1;
+	let pipeOps: Array<{ start: number; end: number }> = [];
 	let lastQuoteIdx = -1;
+	let nonPipedCommits = 0;
+	const spans: PipedCommitSpan[] = [];
+	const pendingHeredocs: Array<{ delim: string; stripTabs: boolean }> = [];
 
-	const finishStatement = (stmtEnd: number): PipedCommitSpan | null => {
-		if (firstPipeIdx !== -1) {
-			const finalSegment = command.slice(lastPipeIdx, stmtEnd).replace(/\\\r?\n/g, " ");
-			if (/git\s+commit\s+.*-F\s*-(?=\s|$|[><])/.test(finalSegment) && !/<</.test(finalSegment)) {
-				return { stmtStart, firstPipeIdx, lastPipeIdx, lastQuoteIdx };
+	const finishStatement = (stmtEnd: number): boolean => {
+		if (pipeOps.length > 0) {
+			const lastPipe = pipeOps[pipeOps.length - 1]!;
+			const kind = classifyPipedFinalSegment(command.slice(lastPipe.end, stmtEnd));
+			if (kind === "unsafe_commit") return false;
+			if (kind === "piped_stdin") {
+				for (let p = 0; p < pipeOps.length - 1; p++) {
+					if (!isPassthroughTeeSegment(command.slice(pipeOps[p]!.end, pipeOps[p + 1]!.start))) {
+						return false;
+					}
+				}
+				spans.push({
+					stmtStart,
+					firstPipeIdx: pipeOps[0]!.start,
+					lastPipeIdx: lastPipe.start,
+					stmtEnd,
+					lastQuoteIdx,
+				});
 			}
+		} else if (segmentInvokesGitCommit(command.slice(stmtStart, stmtEnd))) {
+			nonPipedCommits++;
 		}
 		stmtStart = stmtEnd;
-		firstPipeIdx = -1;
-		lastPipeIdx = -1;
+		pipeOps = [];
 		lastQuoteIdx = -1;
-		return null;
+		return true;
 	};
 
 	for (let i = 0; i < command.length; i++) {
@@ -2854,10 +3241,28 @@ function findPipedCommitSpan(command: string): PipedCommitSpan | null {
 			i++;
 			continue;
 		}
+		if (ch === "<" && command[i + 1] === "<" && command[i + 2] !== "<") {
+			const m = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|([^\s;&|()<>'"`]+))/.exec(command.slice(i));
+			if (m) {
+				pendingHeredocs.push({ delim: m[2] ?? m[3] ?? m[4]!, stripTabs: m[1] === "-" });
+				i += m[0].length - 1;
+				continue;
+			}
+		}
+		if (ch === "'" && i > 0 && command[i - 1] === "$") {
+			let j = i + 1;
+			while (j < command.length && command[j] !== "'") {
+				if (command[j] === "\\" && j + 1 < command.length) j++;
+				j++;
+			}
+			if (j >= command.length) return null;
+			i = j;
+			continue;
+		}
 		if (ch === "'" || ch === '"') {
 			const close = matchingQuoteIndex(command, i);
 			if (close === null) return null;
-			if (firstPipeIdx === -1 && !/[<>]\s*$/.test(command.slice(stmtStart, i))) {
+			if (pipeOps.length === 0 && !(ch === '"' && i > 0 && command[i - 1] === "$") && !/[<>]\s*$/.test(command.slice(stmtStart, i))) {
 				lastQuoteIdx = close;
 			}
 			i = close;
@@ -2873,52 +3278,91 @@ function findPipedCommitSpan(command: string): PipedCommitSpan | null {
 			continue;
 		}
 		if (ch === "(" && i > 0 && (command[i - 1] === "$" || command[i - 1] === "<" || command[i - 1] === ">")) {
-			let depth = 1;
-			i++;
-			while (i < command.length && depth > 0) {
-				const d = command[i]!;
-				if (d === "\\" && i + 1 < command.length) { i += 2; continue; }
-				if (d === "'" || d === '"') {
-					const close = matchingQuoteIndex(command, i);
-					if (close === null) return null;
-					i = close + 1;
-					continue;
-				}
-				if (d === "(") depth++;
-				else if (d === ")") depth--;
-				i++;
-			}
-			if (depth > 0) return null;
-			i--;
+			const close = matchingSubstParenIndex(command, i);
+			if (close === null) return null;
+			i = close;
 			continue;
 		}
 		const two = command.slice(i, i + 2);
 		if (two === "&&" || two === "||") {
-			const hit = finishStatement(i);
-			if (hit) return hit;
+			if (!finishStatement(i)) return null;
 			i++;
 			stmtStart = i + 1;
 			continue;
 		}
-		if (ch === ";" || ch === "\n" || ch === "(" || ch === ")") {
-			const hit = finishStatement(i);
-			if (hit) return hit;
+		if (two === "|&") {
+			pipeOps.push({ start: i, end: i + 2 });
+			i++;
+			continue;
+		}
+		if (ch === "\n") {
+			if (!finishStatement(i)) return null;
+			if (pendingHeredocs.length > 0) {
+				let cursor = i + 1;
+				for (const h of pendingHeredocs) {
+					let closed = false;
+					while (cursor <= command.length) {
+						let lineEnd = command.indexOf("\n", cursor);
+						const atEnd = lineEnd === -1;
+						if (atEnd) lineEnd = command.length;
+						const line = command.slice(cursor, lineEnd).replace(/\r$/, "");
+						const matchesDelim = h.stripTabs ? line.replace(/^\t+/, "") === h.delim : line === h.delim;
+						cursor = atEnd ? command.length : lineEnd + 1;
+						if (matchesDelim) { closed = true; break; }
+						if (atEnd) break;
+					}
+					if (!closed) return null;
+				}
+				pendingHeredocs.length = 0;
+				stmtStart = cursor;
+				i = cursor - 1;
+				continue;
+			}
+			stmtStart = i + 1;
+			continue;
+		}
+		if (ch === ";" || ch === "(" || ch === ")") {
+			if (!finishStatement(i)) return null;
+			stmtStart = i + 1;
+			continue;
+		}
+		if (
+			(ch === "{" || ch === "}") &&
+			(i === 0 || /[\s;&|()]/.test(command[i - 1]!)) &&
+			(i + 1 >= command.length || /[\s;&|()]/.test(command[i + 1]!))
+		) {
+			if (!finishStatement(i)) return null;
 			stmtStart = i + 1;
 			continue;
 		}
 		if (ch === "&") {
-			if (command[i - 1] === ">" || command[i + 1] === ">" || command[i - 1] === "|") continue;
-			const hit = finishStatement(i);
-			if (hit) return hit;
+			if (command[i - 1] === ">" || command[i + 1] === ">" || command[i - 1] === "<") continue;
+			if (!finishStatement(i)) return null;
 			stmtStart = i + 1;
 			continue;
 		}
 		if (ch === "|") {
-			if (firstPipeIdx === -1) firstPipeIdx = i;
-			lastPipeIdx = i;
+			pipeOps.push({ start: i, end: i + 1 });
 		}
 	}
-	return finishStatement(command.length);
+	if (!finishStatement(command.length)) return null;
+	if (spans.length > 0 && nonPipedCommits > 0) return null;
+	if (spans.length === 0 && nonPipedCommits > 1) return null;
+	return spans;
+}
+
+/** End offsets of every real `git commit` subcommand token in `command` (length-preserving). */
+function realCommitEndOffsets(command: string): number[] {
+	const blankBodyOnly = (m: string) => {
+		const nl = m.indexOf("\n");
+		return nl === -1 ? m : m.slice(0, nl + 1) + m.slice(nl + 1).replace(/[^\n]/g, " ");
+	};
+	const heredocBlanked = command
+		.replace(/<<-(\s*)['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n[ \t]*\2\s*(?=\n|$)/gm, blankBodyOnly)
+		.replace(/<<(\s*)['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\2\s*(?=\n|$)/gm, blankBodyOnly);
+	const masked = maskQuotedProse(heredocBlanked);
+	const re = new RegExp(realGitSubRegex("commit").source, "g");
+	return [...masked.matchAll(re)].map((m) => (m.index ?? 0) + m[0].length);
 }
 
 /** Append `<Trailer>: PI (<model>)` to the message of a real commit invocation.
@@ -2928,28 +3372,59 @@ function findPipedCommitSpan(command: string): PipedCommitSpan | null {
 export function injectCommitTrailer(command: string, trailerName: string, modelId: string): string | null {
 	const identity = commitTrailerIdentity(trailerName, modelId);
 	// Pattern A: echo "..." [| tee ...] | git commit -F -
-	const pipedSpan = findPipedCommitSpan(command);
-	if (pipedSpan !== null) {
-		const producerPart = command.slice(pipedSpan.stmtStart, pipedSpan.firstPipeIdx);
-		if (pipedSpan.lastQuoteIdx < 0) {
-			enfLog.debug("inject_commit_trailer", "no quoted operand", trailerName, producerPart.trim().slice(0, 64));
-			return null;
+	const pipedSpans = findPipedCommitSpans(command);
+	if (pipedSpans === null) {
+		enfLog.debug("inject_commit_trailer", "unsafe piped commit", trailerName, command.trim().slice(0, 64));
+		return null;
+	}
+	const commitEnds = realCommitEndOffsets(command);
+	if (pipedSpans.length > 0) {
+		const hitsPerSpan = new Uint32Array(pipedSpans.length);
+		for (const end of commitEnds) {
+			const spanIdx = pipedSpans.findIndex((s) => s.lastPipeIdx < end && end <= s.stmtEnd);
+			if (spanIdx === -1 || ++hitsPerSpan[spanIdx]! > 1) {
+				enfLog.debug("inject_commit_trailer", "unaccounted commit", trailerName, command.trim().slice(0, 64));
+				return null;
+			}
 		}
-		const trailing = command.slice(pipedSpan.lastQuoteIdx + 1, pipedSpan.firstPipeIdx);
-		if (!HARMLESS_PRODUCER_REDIRECT_RE.test(trailing.replace(/\\\r?\n/g, " "))) {
-			enfLog.debug("inject_commit_trailer", "unquoted trailing operand", trailerName, trailing.trim().slice(0, 64));
-			return null;
+		const splices: Array<{ index: number; text: string }> = [];
+		for (const pipedSpan of pipedSpans) {
+			const producerPart = command.slice(pipedSpan.stmtStart, pipedSpan.firstPipeIdx);
+			const leadingAssignMatch = /^(?:\s*[A-Za-z_]\w*=(?:"(?:\\.|[^"\\])*"|'[^']*'|\S*)(?=\s|$))*/.exec(producerPart);
+			const producerCmdOffset = pipedSpan.stmtStart + (leadingAssignMatch?.[0].length ?? 0);
+			if (pipedSpan.lastQuoteIdx < producerCmdOffset) {
+				enfLog.debug("inject_commit_trailer", "no quoted operand", trailerName, producerPart.trim().slice(0, 64));
+				return null;
+			}
+			const trailing = command.slice(pipedSpan.lastQuoteIdx + 1, pipedSpan.firstPipeIdx);
+			if (!HARMLESS_PRODUCER_REDIRECT_RE.test(trailing.replace(/\\\r?\n/g, " "))) {
+				enfLog.debug("inject_commit_trailer", "unquoted trailing operand", trailerName, trailing.trim().slice(0, 64));
+				return null;
+			}
+			if (commandHasTrailerByName(command.slice(producerCmdOffset, pipedSpan.firstPipeIdx), trailerName)) {
+				enfLog.debug("inject_commit_trailer", "already present", trailerName);
+				continue;
+			}
+			const quoteChar = command[pipedSpan.lastQuoteIdx];
+			const escaped = quoteChar === "'"
+				? `${escapeForSingleQuote(trailerName)}: ${identity}`
+				: `${escapeForDoubleQuote(trailerName)}: ${identity}`;
+			splices.push({ index: pipedSpan.lastQuoteIdx, text: `\n\n${escaped}` });
 		}
-		if (commandHasTrailerByName(command.slice(pipedSpan.stmtStart, pipedSpan.lastPipeIdx), trailerName)) {
-			enfLog.debug("inject_commit_trailer", "already present", trailerName);
-			return null;
+		if (splices.length === 0) return null;
+		let out = command;
+		for (let i = splices.length - 1; i >= 0; i--) {
+			const splice = splices[i]!;
+			out = out.slice(0, splice.index) + splice.text + out.slice(splice.index);
 		}
-		const quoteChar = command[pipedSpan.lastQuoteIdx];
-		const escaped = quoteChar === "'"
-			? `${escapeForSingleQuote(trailerName)}: ${identity}`
-			: `${escapeForDoubleQuote(trailerName)}: ${identity}`;
-		enfLog.info("inject_commit_trailer", "piped", trailerName);
-		return command.slice(0, pipedSpan.lastQuoteIdx) + `\n\n${escaped}` + command.slice(pipedSpan.lastQuoteIdx);
+		enfLog.info("inject_commit_trailer", "piped", trailerName, splices.length);
+		return out;
+	}
+	if (commitEnds.length !== 1) {
+		if (commitEnds.length > 1) {
+			enfLog.debug("inject_commit_trailer", "multiple inline commits", trailerName, command.trim().slice(0, 64));
+		}
+		return null;
 	}
 	// Pattern B: git commit -m "..." or git commit -m '...'
 	const mFlagMatch = command.match(/git\s+commit\s+.*-m\s+(["'])([\s\S]*?)\1/);
@@ -2993,6 +3468,64 @@ function normalizeGhBodyFooters(payload: string, signature: string): string {
   });
 }
 
+/** Closing paren of a `$(...)`, `<(...)`, or `>(...)`, honoring quotes, escapes, comments, and heredocs. */
+function matchingSubstParenIndex(s: string, openParenIdx: number): number | null {
+  let depth = 1;
+  for (let i = openParenIdx + 1; i < s.length; i++) {
+    const ch = s[i]!;
+    if (ch === "#" && (i === openParenIdx + 1 || /[\s(;&|]/.test(s[i - 1]!))) {
+      while (i < s.length && s[i] !== "\n") i++;
+      continue;
+    }
+    if (s.startsWith("<<", i) && s[i + 2] !== "<") {
+      const opener = /^<<(-?)[ \t]*(['"]?)([\w-]+)\2[^\n]*\n/.exec(s.slice(i));
+      if (opener) {
+        const closer = new RegExp(String.raw`\n${opener[1] ? "\\t*" : ""}${opener[3]}\r?(?=\n|$)`).exec(
+          s.slice(i + opener[0].length - 1),
+        );
+        if (closer) {
+          i += opener[0].length - 1 + closer.index + closer[0].length - 1;
+          continue;
+        }
+      }
+    }
+    if (ch === "\\" && i + 1 < s.length) {
+      i++;
+      continue;
+    }
+    if (ch === "'" && s[i - 1] === "$") {
+      i++;
+      while (i < s.length && s[i] !== "'") {
+        if (s[i] === "\\" && i + 1 < s.length) i++;
+        i++;
+      }
+      if (i >= s.length) return null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      const close = matchingQuoteIndex(s, i);
+      if (close === null) return null;
+      i = close;
+      continue;
+    }
+    if (ch === "`") {
+      i++;
+      while (i < s.length && s[i] !== "`") {
+        if (s[i] === "\\" && i + 1 < s.length) i++;
+        i++;
+      }
+      if (i >= s.length) return null;
+      continue;
+    }
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return null;
+}
+
 /** Index of the matching closer for a quote at `openIdx`, honoring POSIX escapes. */
 function matchingQuoteIndex(s: string, openIdx: number): number | null {
   const q = s[openIdx];
@@ -3013,6 +3546,12 @@ function matchingQuoteIndex(s: string, openIdx: number): number | null {
           continue;
         }
       }
+    }
+    if (s[i] === "$" && s[i + 1] === "(") {
+      const closeParen = matchingSubstParenIndex(s, i + 1);
+      if (closeParen === null) return null;
+      i = closeParen;
+      continue;
     }
     if (s[i] === "\\") {
       i++;

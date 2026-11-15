@@ -2738,6 +2738,112 @@ describe("injectCommitTrailer", () => {
     assert.equal(out, 'echo "Assisted-by: PI (other)" | cat && echo "fix: x\n\nAssisted-by: PI (model-x)" | git commit -F -');
   });
 
+  it("ignores quoted git commit -F - arguments in a preceding pipeline", () => {
+    const out = injectCommitTrailer(
+      `echo "payload" | printf '%s\\n' 'git commit -F -' && echo "fix: x" | git commit -F -`,
+      "Assisted-by",
+      "model-x",
+    );
+    assert.equal(
+      out,
+      `echo "payload" | printf '%s\\n' 'git commit -F -' && echo "fix: x\n\nAssisted-by: PI (model-x)" | git commit -F -`,
+    );
+  });
+
+  it("ignores quoted git commit -F - text followed by words inside quotes", () => {
+    const out = injectCommitTrailer(
+      `echo "payload" | printf '%s\\n' 'git commit -F - --quiet' && echo "fix: x" | git commit -F -`,
+      "Assisted-by",
+      "model-x",
+    );
+    assert.equal(
+      out,
+      `echo "payload" | printf '%s\\n' 'git commit -F - --quiet' && echo "fix: x\n\nAssisted-by: PI (model-x)" | git commit -F -`,
+    );
+  });
+
+  it("ignores unquoted git commit -F - operands passed to echo", () => {
+    const out = injectCommitTrailer(
+      'echo "payload" | echo git commit -F - && echo "fix: x" | git commit -F -',
+      "Assisted-by",
+      "model-x",
+    );
+    assert.equal(
+      out,
+      'echo "payload" | echo git commit -F - && echo "fix: x\n\nAssisted-by: PI (model-x)" | git commit -F -',
+    );
+  });
+
+  it("injects trailers into every piped commit in a chained command", () => {
+    const out = injectCommitTrailer(
+      'echo "fix: a" | git commit -F - && echo "fix: b" | git commit -F -',
+      "Assisted-by",
+      "model-x",
+    );
+    assert.equal(
+      out,
+      'echo "fix: a\n\nAssisted-by: PI (model-x)" | git commit -F - && echo "fix: b\n\nAssisted-by: PI (model-x)" | git commit -F -',
+    );
+  });
+
+  it("skips an already-signed piped commit while injecting into a later unsigned one", () => {
+    const out = injectCommitTrailer(
+      'echo "fix: a\n\nAssisted-by: PI (model-x)" | git commit -F - && echo "fix: b" | git commit -F -',
+      "Assisted-by",
+      "model-x",
+    );
+    assert.equal(
+      out,
+      'echo "fix: a\n\nAssisted-by: PI (model-x)" | git commit -F - && echo "fix: b\n\nAssisted-by: PI (model-x)" | git commit -F -',
+    );
+  });
+
+  it("returns null when a later chained piped commit cannot be safely injected", () => {
+    assert.equal(
+      injectCommitTrailer(
+        "echo \"fix: a\" | git commit -F - && printf '%s\\n' $unquoted_var | git commit -F -",
+        "Assisted-by",
+        "model-x",
+      ),
+      null,
+    );
+  });
+
+  it("returns null when a piped commit is chained with an opaque commit shape", () => {
+    assert.equal(
+      injectCommitTrailer('echo "fix: a" | git commit -F - && git commit -F /tmp/msg', "Assisted-by", "model-x"),
+      null,
+    );
+  });
+
+  it("returns null when a non-tee intermediate stage replaces stdin", () => {
+    assert.equal(
+      injectCommitTrailer(`echo "payload" | printf '%s\\n' 'fix: x' | git commit -F -`, "Assisted-by", "model-x"),
+      null,
+    );
+  });
+
+  it("returns null when a piped commit is chained with an escaped git commit", () => {
+    assert.equal(
+      injectCommitTrailer('echo "fix: a" | git commit -F - && \\git commit -m "fix: b"', "Assisted-by", "model-x"),
+      null,
+    );
+  });
+
+  it("returns null when variable expansion appears in piped git commit options", () => {
+    assert.equal(
+      injectCommitTrailer('echo "fix: a" | git commit -F - $extra_flags', "Assisted-by", "model-x"),
+      null,
+    );
+  });
+
+  it("returns null when a later -F file option overrides -F -", () => {
+    assert.equal(
+      injectCommitTrailer('echo "fix: a" | git commit -F - -F /tmp/msg', "Assisted-by", "model-x"),
+      null,
+    );
+  });
+
   it("allows 2>/dev/null on the producer stage", () => {
     const out = injectCommitTrailer('echo "fix: x" 2>/dev/null | git commit -F -', "Assisted-by", "model-x");
     assert.equal(out, 'echo "fix: x\n\nAssisted-by: PI (model-x)" 2>/dev/null | git commit -F -');
@@ -2868,6 +2974,47 @@ describe("injectCommitTrailer piped shell commits (#1101)", () => {
     assert.ok(!body.includes("\\n"), `unexpected literal \\n in commit body: ${JSON.stringify(body)}`);
     assert.equal(body.trimEnd(), "fix: x\n\nAssisted-by: PI (model-x)");
     assert.equal(trailerValue, "PI (model-x)");
+  });
+
+  it("commits the real piped message with a trailer past a quoted git commit -F - pipeline", () => {
+    const { body, trailerValue } = commitPipedViaBash(
+      `echo "payload" | printf '%s\\n' 'git commit -F -' && echo "fix: x" | git commit -F -`,
+    );
+    assert.equal(body.trimEnd(), "fix: x\n\nAssisted-by: PI (model-x)");
+    assert.equal(trailerValue, "PI (model-x)");
+  });
+
+  it("commits the real piped message past a quoted git commit -F - flag string", () => {
+    const { body, trailerValue } = commitPipedViaBash(
+      `echo "payload" | printf '%s\\n' 'git commit -F - --quiet' && echo "fix: x" | git commit -F -`,
+    );
+    assert.equal(body.trimEnd(), "fix: x\n\nAssisted-by: PI (model-x)");
+    assert.equal(trailerValue, "PI (model-x)");
+  });
+
+  it("commits two chained piped -F - invocations with trailers on each commit", () => {
+    const cwd = makeTempDir("trailer-pipe-chain-");
+    execFileSync("git", ["init", "-q"], { cwd, env: gitEnv });
+    writeFileSync(join(cwd, "a.txt"), "1\n");
+    writeFileSync(join(cwd, "b.txt"), "2\n");
+    const cmd =
+      'git add a.txt && echo "fix: first" | git commit -F - && git add b.txt && echo "fix: second" | git commit -F -';
+    const injected = injectCommitTrailer(cmd, "Assisted-by", "model-x");
+    assert.ok(injected !== null, `expected injection for: ${cmd}`);
+    const run = spawnSync("bash", ["-c", injected], { cwd, env: gitEnv, encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    const firstBody = execFileSync("git", ["log", "-1", "--format=%B", "HEAD~1"], {
+      cwd,
+      env: gitEnv,
+      encoding: "utf8",
+    });
+    const secondBody = execFileSync("git", ["log", "-1", "--format=%B", "HEAD"], {
+      cwd,
+      env: gitEnv,
+      encoding: "utf8",
+    });
+    assert.equal(firstBody.trimEnd(), "fix: first\n\nAssisted-by: PI (model-x)");
+    assert.equal(secondBody.trimEnd(), "fix: second\n\nAssisted-by: PI (model-x)");
   });
 });
 
