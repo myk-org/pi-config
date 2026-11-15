@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  enterAction,
   reconcileSelection,
+  selectionIndexFor,
   type OverlayId,
   type OverlaySelection,
 } from "../../../extensions/orchestrator/overlay-dashboard-utils.ts";
@@ -98,5 +100,37 @@ describe("reconcileSelection", () => {
     reconcileSelection(sel, [{ id: 10 }, { id: 30 }, { id: 20 }]);
     assert.equal(sel.index, 1);
     assert.equal(sel.id, 30);
+  });
+});
+
+describe("enterAction (#1084 finding 3): the Enter seam", () => {
+  it("navigates when the caller handles Enter, opens a detail when one is wired", () => {
+    assert.equal(enterAction({ onSelect: () => {} }), "navigate");
+    assert.equal(enterAction({ createDetail: () => ({}) }), "detail");
+    assert.equal(enterAction({}), "none");
+  });
+
+  it("lets onSelect win over createDetail", () => {
+    assert.equal(enterAction({ onSelect: () => {}, createDetail: () => ({}) }), "navigate");
+  });
+
+  it("ignores non-function values", () => {
+    assert.equal(enterAction({ onSelect: true, createDetail: null }), "none");
+  });
+});
+
+describe("selectionIndexFor (#1084 finding 4): re-open on the same row", () => {
+  const items = [{ id: "section:peer" }, { id: "section:tasks" }, { id: "section:crons" }];
+
+  it("finds the row a caller came from", () => {
+    assert.equal(selectionIndexFor(items, "section:tasks"), 1);
+    assert.equal(selectionIndexFor(items, "section:peer"), 0);
+  });
+
+  it("falls back to the first row when the id is gone or absent", () => {
+    assert.equal(selectionIndexFor(items, "section:gone"), 0);
+    assert.equal(selectionIndexFor(items, undefined), 0);
+    assert.equal(selectionIndexFor(items, null), 0);
+    assert.equal(selectionIndexFor([], "anything"), 0);
   });
 });

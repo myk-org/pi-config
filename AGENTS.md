@@ -282,8 +282,9 @@ progress. It does not commit, push, create a PR, or post results.
   while processing inbound work.
 - User-authored messages (#1077): `/coms tell <peer> <message>` and the `m` composer in `/coms list` stamp envelope `origin: "user"`
   through the `globalThis.__comsUserSend` bridge coms-p2p publishes; `coms_send`/`coms_broadcast` never pass it (schemas carry no
-  `origin`), and `resolvePromptOrigin` accepts only the literal `true`, so tool input cannot claim human authority. Receiver marks the
-  header `(from the USER)` and history `(USER)`.
+  `origin`), and `resolvePromptOrigin` accepts only the literal `true`, so a tool call cannot claim human authorship — that is the
+  whole guarantee. The receiver's header marker `(from the USER)` and history's `(USER)` are display only and unauthenticated: any
+  process that can write to the peer's socket can set `origin: "user"`. Verifying authorship needs signed identities, out of scope.
 - COMS queue recovery is irreversible: call `coms_queue_inspect`, review its body-free result, then pass its one-time `preview_id` to
   `coms_queue_clear` or `coms_queue_delete`. Never use `coms_send.clearPrevious`; it is rejected. Preview tokens are owner-bound and
   expire after five minutes. RPC recovery providers retain at most 20 previews per provider and must implement an atomic

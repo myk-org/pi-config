@@ -18,7 +18,9 @@ import {
 } from "@earendil-works/pi-tui";
 import { createLogger } from "../shared/logger.js";
 import {
+  enterAction,
   reconcileSelection,
+  selectionIndexFor,
   type OverlayId,
   type OverlaySelection,
 } from "./overlay-dashboard-utils.js";
@@ -26,7 +28,10 @@ import {
 const log = createLogger("overlay-dashboard");
 
 export {
+  enterAction,
   reconcileSelection,
+  selectionIndexFor,
+  type EnterAction,
   type OverlayId,
   type OverlaySelection,
 } from "./overlay-dashboard-utils.js";
@@ -71,13 +76,28 @@ export interface OverlayListSpec<
   onX?: (item: TItem) => void;
   /** Opt-in multi-select: Space toggles the focused row; `x` then acts on the whole selection. */
   selectable?: boolean;
+  /** The dashboard owns no selection a caller can keep: a re-opened list would start empty and
+   *  silently drop what the user ticked (coms: tick peers, inspect one, Esc back, `m` sent to the
+   *  focused row only). The caller persists the ids it is given and passes them back as
+   *  `initialSelectionIds`; nothing here knows what the rows mean. */
+  onSelectionChange?: (ids: TId[]) => void;
   /** Called instead of onX while the multi-select set is non-empty. */
   onXSelected?: (items: TItem[]) => void;
   /** Optional bulk-action key (a) — destructive, so callers should confirm first. */
   onKillAll?: () => void;
   /** Optional compose key (m): the caller needs the whole terminal for a text dialog, so the
-   *  list closes and can be re-opened once the composed text is handled. */
-  onCompose?: (item: TItem) => void;
+   *  list closes and can be re-opened once the composed text is handled. Compose acts on the
+   *  SELECTION, like `x`: every multi-selected row, or just the focused one when nothing is
+   *  selected. Handling only the focused row silently dropped the rest (#1084).
+   *
+   *  `missingIds` names selected rows that are GONE by the time `m` is pressed (a peer left, a job
+   *  finished). They are reported, never filtered away in silence: a send that reached less than
+   *  the whole selection must say so. */
+  onCompose?: (items: TItem[], missingIds: TId[]) => void;
+  /** Enter hands the item back to the caller instead of opening a detail pane: a caller that
+   *  navigates a level deeper opens its own overlay and re-opens this list when that one closes,
+   *  which is what makes Esc walk back one level at a time. */
+  onSelect?: (item: TItem) => void;
 }
 
 export interface OverlayDetailSpec {
@@ -129,8 +149,8 @@ export class OverlayListDashboard<
   private ticker: ReturnType<typeof setInterval>;
   private cachedWidth: number | undefined;
   private cachedLines: string[] | undefined;
-  /** Multi-selected ids — empty unless spec.selectable is set. */
-  private readonly multi = new Set<TId>();
+  /** Multi-selected ids — seeded by the caller, reported back on every change. */
+  private readonly multi: Set<TId>;
 
   constructor(
     private tui: TUI,
@@ -139,7 +159,9 @@ export class OverlayListDashboard<
     private spec: OverlayListSpec<TId, TItem>,
     private selection: OverlaySelection<TId>,
     private done: (value: TId | null) => void,
+    initialMulti: readonly TId[] = [],
   ) {
+    this.multi = new Set(initialMulti);
     this.ticker = setInterval(() => { this.invalidate(); this.tui.requestRender(); }, 1000);
   }
 
@@ -215,6 +237,7 @@ export class OverlayListDashboard<
         if (this.multi.has(focused.id)) this.multi.delete(focused.id);
         else this.multi.add(focused.id);
         log.debug("list_multi_select_toggle", { id: focused.id, size: this.multi.size });
+        this.spec.onSelectionChange?.([...this.multi]);
         this.invalidate();
         this.tui.requestRender(true);
       }
@@ -226,18 +249,24 @@ export class OverlayListDashboard<
       // stale ids would survive and a following `x` would act on them (or on nothing) instead
       // of on the newly focused running row.
       this.multi.clear();
+      this.spec.onSelectionChange?.([]);
       this.spec.onKillAll();
       this.invalidate();
       this.tui.requestRender(true);
       return;
     }
     if (data === "m" && this.spec.onCompose) {
-      const item = items[this.selection.index];
-      if (item) {
-        log.debug("list_compose_key", { id: item.id });
-        this.spec.onCompose(item);
-        this.close(null);
-      }
+      // Same target set `x` uses: the multi-selection when there is one, else the focused row.
+      const wanted = this.multi.size > 0
+        ? [...this.multi]
+        : [items[this.selection.index]?.id].filter((id): id is TId => id !== undefined);
+      // Row order for what survived, the ids for what did not — a vanished peer is reported, not
+      // dropped: an empty `targets` still reaches the caller instead of `m` doing nothing.
+      const targets = items.filter((item) => wanted.includes(item.id));
+      const missingIds = wanted.filter((id) => !items.some((item) => item.id === id));
+      log.debug("list_compose_key", { rows: targets.length, missing: missingIds.length, multi: this.multi.size > 0 });
+      this.spec.onCompose(targets, missingIds);
+      this.close(null);
       return;
     }
     if (data === "x") {
@@ -245,6 +274,7 @@ export class OverlayListDashboard<
         const selected = items.filter((i) => this.multi.has(i.id));
         // Cleared unconditionally: killed jobs disappear, and stale ids would leak.
         this.multi.clear();
+        this.spec.onSelectionChange?.([]);
         log.debug("list_multi_x", { count: selected.length });
         if (selected.length > 0) this.spec.onXSelected?.(selected);
         if (this.items().length === 0) {
@@ -555,7 +585,15 @@ export async function openListDetailOverlay<
   options: {
     emptyMessage: string;
     listSpec: OverlayListSpec<TId, TItem>;
-    createDetail: (
+    /** Re-open the list focused on this row (a caller returning from a deeper level). An id that
+     *  is no longer there falls back to the first row. */
+    initialSelectionId?: TId;
+    /** Re-open the list with these rows still ticked. The caller keeps them across re-opens
+     *  (`listSpec.onSelectionChange` gives it the new set); ids that no longer exist are simply
+     *  never matched. */
+    initialSelectionIds?: readonly TId[];
+    /** Omitted by a list whose Enter navigates deeper (`listSpec.onSelect`). */
+    createDetail?: (
       item: TItem,
       tui: TUI,
       theme: Theme,
@@ -565,7 +603,11 @@ export async function openListDetailOverlay<
 ): Promise<void> {
   if (!ctx.hasUI) return;
 
-  const selection: OverlaySelection<TId> = { index: 0 };
+  // Seeded from the caller's row so Esc returns to where the user was, not to row 0.
+  const selection: OverlaySelection<TId> = {
+    index: selectionIndexFor(options.listSpec.listItems(), options.initialSelectionId),
+    ...(options.initialSelectionId !== undefined ? { id: options.initialSelectionId } : {}),
+  };
 
   while (true) {
     const items = options.listSpec.listItems();
@@ -583,6 +625,7 @@ export async function openListDetailOverlay<
           options.listSpec,
           selection,
           done,
+          options.initialSelectionIds ?? [],
         ),
       OVERLAY_OPTS,
     );
@@ -592,9 +635,19 @@ export async function openListDetailOverlay<
     const item = options.listSpec.listItems().find((i) => i.id === picked);
     if (!item) continue;
 
+    // A list whose Enter goes a level deeper returns to its caller, which opens the next level
+    // and comes back here on Esc — that is the whole back-navigation contract.
+    const action = enterAction({ onSelect: options.listSpec.onSelect, createDetail: options.createDetail });
+    if (action === "navigate") {
+      options.listSpec.onSelect?.(item);
+      return;
+    }
+    const createDetail = options.createDetail;
+    if (action === "none" || !createDetail) return;
+
     await ctx.ui.custom<null>(
       (tui, theme, _kb, done) =>
-        options.createDetail(item, tui, theme, done),
+        createDetail(item, tui, theme, done),
       OVERLAY_OPTS,
     );
   }
